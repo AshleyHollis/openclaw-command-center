@@ -1,9 +1,10 @@
-// PROTOTYPE: Three Space Page layouts, switchable via ?variant=. Fictional in-memory data only.
+// PROTOTYPE: Three original Space Page layouts plus one feedback-driven synthesis, switchable via ?variant=.
 
 const variants = [
   { key: 'A', name: 'Conversation studio' },
   { key: 'B', name: 'Working notebook' },
   { key: 'C', name: 'Conversation timeline' },
+  { key: 'D', name: 'Flexible workspace' },
 ];
 
 const conversations = [
@@ -52,6 +53,9 @@ const state = {
   mobileSurface: defaultMobileSurface(currentVariant()),
   searchOpen: false,
   notesCompact: false,
+  conversationPane: 'open',
+  notePane: 'open',
+  selectedFolder: 'projects',
 };
 
 function icon(name) {
@@ -70,6 +74,10 @@ function icon(name) {
     folder: '<path d="M3 6h7l2 2h9v11H3z"/>',
     lock: '<rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
     more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+    maximize: '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/>',
+    restore: '<path d="M8 8h11v11H8z"/><path d="M5 16H3V3h13v2"/>',
+    panelLeft: '<path d="M3 4h18v16H3zM9 4v16"/>',
+    panelRight: '<path d="M3 4h18v16H3zM15 4v16"/>',
   };
   return `<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name] ?? ''}</svg>`;
 }
@@ -110,6 +118,7 @@ function mobileNav() {
     A: [['chat', 'Chat'], ['notes', 'Notes'], ['history', 'History'], ['search', 'Search']],
     B: [['notes', 'Notes'], ['chat', 'Chat'], ['history', 'History'], ['search', 'Search']],
     C: [['history', 'History'], ['chat', 'Chat'], ['notes', 'Notes'], ['search', 'Search']],
+    D: [['chat', 'Chat'], ['history', 'Conversations'], ['notes', 'Notes'], ['search', 'Search']],
   };
   return `<nav class="mobile-nav" aria-label="Space sections">${orders[currentVariant()].map(([id, label]) => mobileTab(id, label)).join('')}</nav>`;
 }
@@ -214,6 +223,79 @@ function VariantC() {
   </main>`);
 }
 
+function paneControls(pane, focused = false) {
+  const label = pane === 'conversation' ? 'Conversations' : 'Notes';
+  return `<div class="pane-controls">
+    <button class="icon-button" type="button" data-action="${focused ? 'restore-pane' : 'focus-pane'}" data-pane="${pane}" aria-label="${focused ? `Restore ${label} pane` : `Focus ${label} pane`}">${icon(focused ? 'restore' : 'maximize')}</button>
+    ${focused ? '' : `<button class="icon-button" type="button" data-action="close-pane" data-pane="${pane}" aria-label="Close ${label} pane">${icon('close')}</button>`}
+  </div>`;
+}
+
+function dConversationBrowser(focused = false) {
+  const visible = conversations.filter(item => !item.archived);
+  return `<aside class="d-conversations ${focused ? 'is-focused' : ''}" aria-labelledby="d-conversations-title">
+    <header class="d-pane-header"><div><p class="eyebrow">Household</p><h2 id="d-conversations-title">Conversations</h2></div>${paneControls('conversation', focused)}</header>
+    <div class="d-conversation-search"><label class="sr-only" for="conversation-search-d">Search conversations</label>${icon('search')}<input id="conversation-search-d" type="search" placeholder="Search conversations"></div>
+    ${focused ? '<div class="d-filter-row"><button class="is-active" type="button">All conversations</button><button type="button">Primary Session</button><button type="button">Space Conversations</button></div>' : ''}
+    <div class="conversation-list d-list">${visible.map(item => {
+      const selected = item.id === state.selectedConversation;
+      return `<button type="button" class="conversation-item ${selected ? 'is-active' : ''}" data-action="select-conversation" data-id="${item.id}" aria-pressed="${selected}"><span class="conversation-icon">${icon(item.primary ? 'star' : 'chat')}</span><span><span class="conversation-top"><strong>${item.title}</strong><time>${item.time}</time></span><small>${item.meta}</small><span class="conversation-preview">${item.preview}</span></span></button>`;
+    }).join('')}</div>
+    <button class="d-new-conversation" type="button" data-action="new-conversation">${icon('plus')}New conversation</button>
+  </aside>`;
+}
+
+function dChatPanel() {
+  const conversation = activeConversation();
+  return `<section class="d-chat" aria-labelledby="d-chat-title">
+    <header class="d-chat-header"><div class="d-chat-tools"><button class="pane-toggle ${state.conversationPane === 'closed' ? '' : 'is-active'}" type="button" data-action="toggle-pane" data-pane="conversation" aria-pressed="${state.conversationPane !== 'closed'}">${icon('panelLeft')}<span>Conversations</span></button></div><div><p class="eyebrow">${conversation.meta}</p><h2 id="d-chat-title">${conversation.title}${conversation.primary ? '<span class="primary-badge">Primary</span>' : ''}</h2></div><div class="d-chat-tools"><button class="pane-toggle ${state.notePane === 'closed' ? '' : 'is-active'}" type="button" data-action="toggle-pane" data-pane="note" aria-pressed="${state.notePane !== 'closed'}">${icon('panelRight')}<span>Note</span></button></div></header>
+    <div class="message-stream d-message-stream">
+      <div class="migration-marker"><span>Imported conversation history</span><small>Original authors, timestamps, replies, and thread context preserved</small></div>
+      ${(messages[conversation.id] ?? []).map((message, index) => `<article class="message ${message.who}"><span class="message-avatar" aria-hidden="true">${message.who === 'you' ? 'AX' : 'OC'}</span><div><strong>${message.who === 'you' ? 'You' : 'OpenClaw'}</strong><p>${message.text}</p>${message.who === 'openclaw' && index === 1 ? `<button class="note-reference" type="button" data-action="open-note" data-id="hallway">${icon('note')}Hallway refresh <span>Open Note</span></button>` : ''}</div></article>`).join('')}
+    </div>
+    <form class="composer" data-action="send-message"><label class="sr-only" for="message-d">Message Household</label><textarea id="message-d" rows="2" placeholder="Message Household…"></textarea><div><span>Context: Household Notes</span><button type="submit" aria-label="Send message">${icon('send')}</button></div></form>
+  </section>`;
+}
+
+function dNotePreview(focused = false) {
+  const note = activeNote();
+  return `<aside class="d-note ${focused ? 'is-focused' : ''}" aria-labelledby="d-note-title">
+    <header class="d-pane-header"><div><p class="eyebrow">${focused ? 'Notes workspace' : 'Note preview'}</p><h2 id="d-note-title">${note.title}</h2></div>${paneControls('note', focused)}</header>
+    ${focused ? dNotesWorkspace() : `<article class="note-document"><p class="note-updated">${note.updated}</p>${markdown(note.body)}</article><footer class="d-note-footer"><button type="button" data-action="focus-pane" data-pane="note">${icon('maximize')}Open full Notes workspace</button></footer>`}
+  </aside>`;
+}
+
+function dNotesWorkspace() {
+  const note = activeNote();
+  const folders = [
+    { id: 'projects', label: 'Projects', count: 6 },
+    { id: 'maintenance', label: 'Maintenance', count: 11 },
+    { id: 'reference', label: 'Reference', count: 18 },
+    { id: 'archive', label: 'Archive', count: 9 },
+  ];
+  return `<div class="notes-workspace">
+    <nav class="folder-tree" aria-label="Household Note folders"><div class="folder-root">${icon('folder')}<strong>Household Notes</strong></div>${folders.map(folder => `<button type="button" data-action="select-folder" data-id="${folder.id}" class="${folder.id === state.selectedFolder ? 'is-active' : ''}" aria-pressed="${folder.id === state.selectedFolder}">${icon('folder')}<span>${folder.label}</span><small>${folder.count}</small></button>`).join('')}</nav>
+    <section class="note-browser" aria-labelledby="note-browser-title"><header><h3 id="note-browser-title">${folders.find(folder => folder.id === state.selectedFolder)?.label ?? 'Notes'}</h3><button class="icon-button" type="button" aria-label="Create Note">${icon('plus')}</button></header><div class="note-list-search"><label class="sr-only" for="note-search-d">Search Notes</label>${icon('search')}<input id="note-search-d" type="search" placeholder="Search Notes"></div><div class="note-browser-list">${notes.map(item => `<button type="button" data-action="select-note" data-id="${item.id}" class="${item.id === state.selectedNote ? 'is-active' : ''}" aria-pressed="${item.id === state.selectedNote}"><strong>${item.title}</strong><span>${item.updated}</span><small>${item.id === 'hallway' ? 'Projects / Hallway' : item.id === 'maintenance' ? 'Maintenance / Seasonal' : 'Reference / Suppliers'}</small></button>`).join('')}</div></section>
+    <section class="note-canvas" aria-labelledby="note-canvas-title"><header><div><p class="eyebrow">Household Notes / Projects / Hallway</p><h3 id="note-canvas-title">${note.title}</h3></div><span class="saved-state">Saved</span></header><article class="note-document"><p class="note-updated">${note.updated}</p>${markdown(note.body)}<h3>Long document example</h3><p>This focused canvas is designed to keep reading and editing comfortable when a Note grows well beyond a short side preview. The document scrolls independently while folders and the Note list remain available.</p></article></section>
+  </div>`;
+}
+
+function dMobileContent() {
+  if (state.mobileSurface === 'notes') return `<section class="d-mobile-notes">${dNotePreview(true)}</section>`;
+  if (state.mobileSurface === 'history') return dConversationBrowser(true);
+  if (state.mobileSurface === 'search') return searchResultsPanel();
+  return dChatPanel();
+}
+
+function VariantD() {
+  const focusedPane = state.notePane === 'focused' ? dNotePreview(true) : state.conversationPane === 'focused' ? dConversationBrowser(true) : null;
+  const layoutClass = `d-layout conversations-${state.conversationPane} note-${state.notePane}`;
+  return appShell(`<main id="main-content" class="variant-d">
+    <div class="desktop-layout ${layoutClass}">${focusedPane ?? `${state.conversationPane === 'open' ? dConversationBrowser() : ''}${dChatPanel()}${state.notePane === 'open' ? dNotePreview() : ''}`}</div>
+    <div class="mobile-layout">${dMobileContent()}</div>
+  </main>`);
+}
+
 function searchResultsPanel() {
   return `<section class="search-results" aria-labelledby="search-results-title"><header><p class="eyebrow">Space Search</p><h2 id="search-results-title">Results for “hallway”</h2><p>Across Notes, Space Conversations, and the read-only Legacy Conversation Archive.</p></header><ol>${searchResults.map(result => `<li><button type="button" data-action="search-result"><span class="source-badge">${result.source}</span><strong>${result.title}</strong><span>${result.excerpt}</span></button></li>`).join('')}</ol></section>`;
 }
@@ -228,7 +310,7 @@ function switcher() {
 }
 
 function render() {
-  const renderers = { A: VariantA, B: VariantB, C: VariantC };
+  const renderers = { A: VariantA, B: VariantB, C: VariantC, D: VariantD };
   document.querySelector('#app').innerHTML = renderers[currentVariant()]();
   document.querySelector('#prototype-switcher').innerHTML = switcher();
   bindActions();
@@ -271,6 +353,46 @@ function handleAction(event) {
     state.selectedNote = target.dataset.id;
     render();
     return announce(`${activeNote().title} opened`);
+  }
+  if (action === 'open-note') {
+    state.selectedNote = target.dataset.id;
+    state.notePane = 'open';
+    render();
+    return announce(`${activeNote().title} opened beside Chat`);
+  }
+  if (action === 'toggle-pane') {
+    const key = target.dataset.pane === 'conversation' ? 'conversationPane' : 'notePane';
+    state[key] = state[key] === 'closed' ? 'open' : 'closed';
+    render();
+    return announce(`${target.dataset.pane} pane ${state[key]}`);
+  }
+  if (action === 'close-pane') {
+    const key = target.dataset.pane === 'conversation' ? 'conversationPane' : 'notePane';
+    state[key] = 'closed';
+    render();
+    return announce(`${target.dataset.pane} pane closed`);
+  }
+  if (action === 'focus-pane') {
+    if (target.dataset.pane === 'conversation') {
+      state.conversationPane = 'focused';
+      state.notePane = 'closed';
+    } else {
+      state.notePane = 'focused';
+      state.conversationPane = 'closed';
+    }
+    render();
+    return announce(`${target.dataset.pane} pane focused`);
+  }
+  if (action === 'restore-pane') {
+    state.conversationPane = 'open';
+    state.notePane = 'open';
+    render();
+    return announce('Chat workspace restored');
+  }
+  if (action === 'select-folder') {
+    state.selectedFolder = target.dataset.id;
+    render();
+    return announce(`${target.textContent.trim()} folder selected`);
   }
   if (action === 'mobile-surface') {
     state.mobileSurface = target.dataset.surface;
