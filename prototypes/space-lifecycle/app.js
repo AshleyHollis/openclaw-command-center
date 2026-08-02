@@ -8,14 +8,16 @@ const variants = {
 };
 
 const scenarios = {
-  create: { label: 'Create Space', eyebrow: 'New durable context' },
-  migrate: { label: 'Import legacy', eyebrow: 'One-time text migration' },
-  garden: { label: 'Review proposal', eyebrow: 'Gated Space Gardening' },
+  create: { label: 'Creation flow', eyebrow: 'New durable context' },
+  migrate: { label: 'Legacy import', eyebrow: 'One-time text migration' },
+  garden: { label: 'Gardening proposal', eyebrow: 'Gated Space Gardening' },
 };
 
 const state = {
-  spaceName: 'Household',
+  spaceName: 'Garden',
   category: null,
+  createdSpace: null,
+  openedSpace: null,
   createStatus: 'draft',
   migrationStatus: 'ready',
   gardenStatus: 'pending',
@@ -44,7 +46,8 @@ function currentRoute() {
   const params = new URLSearchParams(location.search);
   const variant = variants[params.get('variant')] ? params.get('variant') : 'A';
   const scenario = scenarios[params.get('scenario')] ? params.get('scenario') : 'create';
-  return { variant, scenario };
+  const view = scenario === 'create' && params.get('view') === 'new' ? 'new' : scenario === 'create' ? 'spaces' : 'flow';
+  return { variant, scenario, view };
 }
 
 function updateRoute(patch) {
@@ -55,9 +58,20 @@ function updateRoute(patch) {
 }
 
 function shell(content, route) {
-  const intro = route.scenario === 'create'
-    ? 'Choose a Space name and one PARA Category. Command Center applies the standard Note Folder and Primary Session defaults.'
+  const spacesLanding = route.scenario === 'create' && route.view === 'spaces';
+  const newSpace = route.scenario === 'create' && route.view === 'new';
+  const intro = spacesLanding
+    ? 'Open a durable topic context or create a new one.'
+    : newSpace
+      ? 'Choose a Space name and one PARA Category. Command Center applies the standard Note Folder and Primary Session defaults.'
     : 'Review a consequential structural change without hiding authoritative sources or approval boundaries.';
+  const eyebrow = spacesLanding ? 'Spaces' : newSpace ? 'Spaces / New Space' : scenarios[route.scenario].eyebrow;
+  const heading = spacesLanding ? 'Your Spaces' : newSpace ? 'Create a Space' : 'Shape a Space';
+  const headingAction = spacesLanding
+    ? '<button class="primary-button heading-button" type="button" data-start-create>+ Create Space</button>'
+    : newSpace
+      ? '<button class="quiet-button" type="button" data-back-spaces>← Back to Spaces</button>'
+      : '<button class="quiet-button" type="button" data-reset>Reset fixture</button>';
   const scenarioNav = Object.entries(scenarios).map(([key, item]) => `
     <button class="scenario-tab" data-scenario="${key}" aria-pressed="${route.scenario === key}">
       <span>${item.label}</span>
@@ -87,11 +101,11 @@ function shell(content, route) {
         <main id="main-content" tabindex="-1">
           <header class="page-heading">
             <div>
-              <p class="eyebrow">${scenarios[route.scenario].eyebrow}</p>
-              <h1>Shape a Space</h1>
+              <p class="eyebrow">${eyebrow}</p>
+              <h1>${heading}</h1>
               <p>${intro}</p>
             </div>
-            <button class="quiet-button" type="button" data-reset>Reset fixture</button>
+            ${headingAction}
           </header>
           <nav class="scenario-nav" aria-label="Prototype scenario">${scenarioNav}</nav>
           ${content}
@@ -109,6 +123,35 @@ function prototypeSwitcher(route) {
       <div><strong>${route.variant} — ${variants[route.variant].name}</strong><span>${variants[route.variant].description}</span></div>
       <button type="button" data-cycle="1" aria-label="Next variant">→</button>
     </div>`;
+}
+
+function spacesLanding() {
+  const fixtures = [
+    { name: 'Household', category: 'Area', initial: 'H', detail: 'Home routines and shared context' },
+    { name: 'Vehicle', category: 'Area', initial: 'V', detail: 'Maintenance, records, and planning' },
+    { name: 'Cooking', category: 'Resource', initial: 'C', detail: 'Recipes and meal ideas' },
+    { name: 'Technology', category: 'Area', initial: 'T', detail: 'Devices, services, and upkeep' },
+    { name: 'Learning', category: 'Area', initial: 'L', detail: 'Courses and reference notes' },
+    { name: 'Admin', category: 'Area', initial: 'A', detail: 'Personal administration' },
+  ];
+  const spaces = state.createdSpace
+    ? [{ name: state.createdSpace.name, category: state.createdSpace.category, initial: state.createdSpace.name.slice(0, 1).toUpperCase(), detail: 'New Space', fresh: true }, ...fixtures]
+    : fixtures;
+  const options = spaces.map((space) => `<option value="${space.name}">${space.name} · ${space.category}</option>`).join('');
+  const cards = spaces.map((space) => `
+    <li class="space-card ${space.fresh ? 'is-new' : ''}">
+      <span class="space-initial" aria-hidden="true">${space.initial}</span>
+      <div><div class="space-title-row"><h3>${space.name}</h3>${space.fresh ? '<span class="new-badge">New</span>' : ''}</div><p>${space.detail}</p><span class="category-badge">${space.category}</span></div>
+      <button class="secondary-button" type="button" data-open-space="${space.name}">Open</button>
+    </li>`).join('');
+  return `<section class="spaces-landing" aria-labelledby="all-spaces-title">
+    ${state.openedSpace ? `<div class="status-banner" role="status">${icon('check')}<span>${state.openedSpace} would open as a Space Page in the production app.</span></div>` : ''}
+    <section class="space-launcher" aria-labelledby="space-launcher-title">
+      <div><p class="eyebrow">Quick open</p><h2 id="space-launcher-title">Choose an existing Space</h2></div>
+      <div class="launcher-controls"><label class="sr-only" for="existing-space">Existing Space</label><select id="existing-space" data-space-select>${options}</select><button class="primary-button" type="button" data-open-selected>Open Space</button></div>
+    </section>
+    <section class="all-spaces"><div class="section-heading"><div><p class="eyebrow">Browse</p><h2 id="all-spaces-title">All Spaces</h2></div><span>${spaces.length} Spaces</span></div><ul class="space-grid">${cards}</ul></section>
+  </section>`;
 }
 
 function sourceBoundary() {
@@ -289,7 +332,9 @@ function statusBanner(scenario) {
 
 function render() {
   const route = currentRoute();
-  const content = route.variant === 'A' ? variantA(route.scenario) : route.variant === 'B' ? variantB(route.scenario) : variantC(route.scenario);
+  const content = route.scenario === 'create' && route.view === 'spaces'
+    ? spacesLanding()
+    : route.variant === 'A' ? variantA(route.scenario) : route.variant === 'B' ? variantB(route.scenario) : variantC(route.scenario);
   document.querySelector('#app').innerHTML = shell(`${statusBanner(route.scenario)}${content}`, route);
   bindEvents(route);
 }
@@ -299,7 +344,19 @@ function announce(message) {
 }
 
 function bindEvents(route) {
-  document.querySelectorAll('[data-scenario]').forEach((button) => button.addEventListener('click', () => updateRoute({ scenario: button.dataset.scenario })));
+  document.querySelectorAll('[data-scenario]').forEach((button) => button.addEventListener('click', () => updateRoute({ scenario: button.dataset.scenario, view: button.dataset.scenario === 'create' ? 'spaces' : 'flow' })));
+  document.querySelector('[data-start-create]')?.addEventListener('click', () => updateRoute({ view: 'new' }));
+  document.querySelector('[data-back-spaces]')?.addEventListener('click', () => updateRoute({ view: 'spaces' }));
+  document.querySelectorAll('[data-open-space]').forEach((button) => button.addEventListener('click', () => {
+    state.openedSpace = button.dataset.openSpace;
+    announce(`${state.openedSpace} selected.`);
+    render();
+  }));
+  document.querySelector('[data-open-selected]')?.addEventListener('click', () => {
+    state.openedSpace = document.querySelector('[data-space-select]')?.value || 'Space';
+    announce(`${state.openedSpace} selected.`);
+    render();
+  });
   document.querySelectorAll('[data-category]').forEach((button) => button.addEventListener('click', () => {
     state.category = button.dataset.category;
     announce(`${state.category} selected as PARA Category.`);
@@ -322,8 +379,9 @@ function bindEvents(route) {
       return;
     }
     state.createStatus = 'created';
+    state.createdSpace = { name: state.spaceName, category: state.category };
     announce('Space plan accepted in the prototype.');
-    render();
+    updateRoute({ view: 'spaces' });
   }));
   document.querySelectorAll('[data-import]').forEach((button) => button.addEventListener('click', () => {
     state.migrationStatus = 'running';
@@ -344,7 +402,7 @@ function bindEvents(route) {
   }));
   document.querySelectorAll('[data-cycle]').forEach((button) => button.addEventListener('click', () => cycleVariant(Number(button.dataset.cycle))));
   document.querySelector('[data-reset]')?.addEventListener('click', () => {
-    state.spaceName = 'Household'; state.category = null; state.createStatus = 'draft'; state.migrationStatus = 'ready'; state.gardenStatus = 'pending'; state.gardenChoice = 'move'; state.packetSections = new Set(['structure']); render(); announce('Fictional prototype state reset.');
+    state.spaceName = 'Garden'; state.category = null; state.createdSpace = null; state.openedSpace = null; state.createStatus = 'draft'; state.migrationStatus = 'ready'; state.gardenStatus = 'pending'; state.gardenChoice = 'move'; state.packetSections = new Set(['structure']); render(); announce('Fictional prototype state reset.');
   });
 }
 

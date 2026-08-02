@@ -4,6 +4,8 @@
 
 Three structurally different interaction models for Space creation, one-time legacy migration, and gated Space Gardening. Variants and scenarios are URL-stable and switchable from the fixed prototype bar.
 
+The creation scenario now begins on the first-class **Spaces** destination. It provides a compact existing-Space selector, a browsable Space list, and a prominent **Create Space** action. Creation opens with `view=new` and returns to the list after the in-memory Space is created.
+
 - `?variant=A&scenario=create` — **Guided conversation**: name the Space, then answer the one required PARA Category question.
 - `?variant=B&scenario=create` — **Quick form**: enter the Space name and PARA Category together, then create immediately.
 - `?variant=C&scenario=create` — **Compact proposal**: confirm the two essentials while automatic defaults remain optionally inspectable.
