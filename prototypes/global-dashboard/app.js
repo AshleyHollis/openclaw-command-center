@@ -75,35 +75,11 @@ const attentionItems = [
     primary: 'Review tracker',
     secondary: 'Dismiss',
   },
-  {
-    id: 'attn-certification',
-    severity: 'due',
-    kind: 'Reminder',
-    title: 'Renew cloud certification profile',
-    summary: 'Due tomorrow · Learning',
-    source: 'Reminder',
-    time: 'Due tomorrow',
-    space: 'Learning',
-    primary: 'Mark done',
-    secondary: 'Open Space',
-  },
-  {
-    id: 'attn-meals',
-    severity: 'normal',
-    kind: 'Reminder',
-    title: 'Plan next week\'s dinners',
-    summary: 'Due Saturday · Cooking',
-    source: 'Reminder',
-    time: 'Due Saturday',
-    space: 'Cooking',
-    primary: 'Mark done',
-    secondary: 'Open Space',
-  },
 ];
 
 const reminders = [
-  { time: 'Today · 7:00 pm', title: 'Put the bins out tonight', space: 'Household' },
   { time: 'Tomorrow · 9:00 am', title: 'Renew cloud certification profile', space: 'Learning' },
+  { time: 'Friday · 5:00 pm', title: 'Check tyre pressures before the trip', space: 'Vehicle' },
   { time: 'Saturday · 10:00 am', title: 'Plan next week\'s dinners', space: 'Cooking' },
 ];
 
@@ -291,9 +267,10 @@ function attentionListRow(item) {
   return `<li class="inbox-row severity-${item.severity} ${handled ? 'is-done' : ''}">
     <button type="button" class="inbox-row-open" data-action="open-attention" data-id="${item.id}" aria-label="Open details for ${item.title}">
       <span class="inbox-row-icon">${icon(item.severity === 'high' ? 'alert' : item.kind === 'Reminder' ? 'clock' : 'spark')}</span>
-      <span class="inbox-row-main"><span class="inbox-row-meta"><strong>${item.kind}</strong><span>${snoozedFor ? `Snoozed ${snoozedFor}` : item.time}</span></span><span class="inbox-row-title">${item.title}</span><span class="inbox-row-summary">${handled ? 'Handled for this prototype session.' : item.summary}</span></span>
+      <span class="inbox-row-main"><span class="inbox-row-meta"><strong>${item.kind}</strong><span>${handled ? 'Handled' : snoozedFor ? `Snoozed ${snoozedFor}` : item.time}</span></span><span class="inbox-row-title">${item.title}</span></span>
       ${icon('arrow')}
     </button>
+    <div class="inbox-row-actions" aria-label="Quick actions for ${item.title}"><button class="small-button primary-small" type="button" data-action="attention-primary" data-id="${item.id}">${handled ? icon('check') + 'Done' : item.primary}</button>${handled ? '' : item.kind === 'Suggestion' ? `<button class="small-button" type="button" data-action="attention-secondary" data-id="${item.id}">Dismiss</button>` : `<button class="small-button" type="button" data-action="quick-snooze" data-id="${item.id}">${icon('clock')}Snooze 1h</button>`}</div>
   </li>`;
 }
 
@@ -321,12 +298,12 @@ function VariantD() {
     ${pageHeading('Sunday, 2 August', 'Good afternoon, Alex', 'Handle what needs you, then move into a Space.', true)}
     <div class="dashboard-grid-d">
       <section class="refined-inbox" aria-labelledby="attention-d-title">
-        <header class="inbox-banner"><div><p class="section-kicker">Needs you</p><h2 id="attention-d-title">Attention inbox <span>${visibleAttention.length}</span></h2><p>Open an item for its evidence and actions.</p></div><div class="segmented segmented-dark" aria-label="Filter attention items">${['all', 'reminder', 'operational'].map(filter => `<button type="button" data-action="filter-attention" data-filter="${filter}" class="${state.attentionFilter === filter ? 'is-active' : ''}" aria-pressed="${state.attentionFilter === filter}">${filter[0].toUpperCase() + filter.slice(1)}</button>`).join('')}</div></header>
+        <header class="inbox-banner"><div><h2 id="attention-d-title">Attention inbox <span>${visibleAttention.length}</span></h2><p>Items that need action now.</p></div><div class="segmented segmented-dark" aria-label="Filter attention items">${['all', 'reminder', 'operational'].map(filter => `<button type="button" data-action="filter-attention" data-filter="${filter}" class="${state.attentionFilter === filter ? 'is-active' : ''}" aria-pressed="${state.attentionFilter === filter}">${filter[0].toUpperCase() + filter.slice(1)}</button>`).join('')}</div></header>
         <ol class="inbox-rows">${visibleAttention.map(item => attentionListRow(item)).join('')}</ol>
-        <footer class="inbox-footer"><span>Showing ${visibleAttention.length} Attention Items</span><button class="small-button" type="button" data-action="load-more">Load more</button></footer>
+        <footer class="inbox-footer"><button class="small-button" type="button" data-action="load-more">Load more</button></footer>
       </section>
       <aside class="right-stack refined-right">
-        <section class="panel space-launcher" aria-labelledby="space-launcher-title"><div class="panel-heading"><div><p class="section-kicker">Go to a Space</p><h2 id="space-launcher-title">Space launcher</h2></div></div><label for="space-select">Space</label><select id="space-select" data-action="select-space-dropdown">${spaces.map(space => `<option value="${space.id}" ${space.id === selectedSpace.id ? 'selected' : ''}>${space.name}</option>`).join('')}</select><button class="primary-button" type="button" data-action="open-space">Open Space${icon('arrow')}</button></section>
+        <section class="panel space-launcher" aria-labelledby="space-launcher-title"><div class="panel-heading"><h2 id="space-launcher-title">Open a Space</h2></div><label class="sr-only" for="space-select">Choose a Space</label><select id="space-select" data-action="select-space-dropdown">${spaces.map(space => `<option value="${space.id}" ${space.id === selectedSpace.id ? 'selected' : ''}>${space.name}</option>`).join('')}</select><button class="primary-button" type="button" data-action="open-space">Open${icon('arrow')}</button></section>
         <section class="panel" aria-labelledby="reminders-d-title"><div class="panel-heading"><h2 id="reminders-d-title">Coming up</h2><a href="#reminders">All Reminders</a></div>${reminderList(3)}</section>
         <details class="panel quiet-activity" ${state.activityExpanded ? 'open' : ''}><summary><span>${icon('activity')}Recent OpenClaw Activity</span><span class="quiet-count">4 records</span></summary>${activityList(3)}</details>
       </aside>
@@ -418,7 +395,19 @@ function handleAction(event) {
     render();
     return announce('Attention Item handled');
   }
-  if (action === 'attention-secondary') return announce('Secondary action previewed; prototype data was not changed');
+  if (action === 'attention-secondary') {
+    if (target.textContent.trim() === 'Dismiss') {
+      state.completedAttentionIds.add(target.dataset.id);
+      render();
+      return announce('Attention Item dismissed');
+    }
+    return announce('Secondary action previewed; prototype data was not changed');
+  }
+  if (action === 'quick-snooze') {
+    state.snoozedAttention.set(target.dataset.id, '1 hour');
+    render();
+    return announce('Attention Item snoozed for 1 hour');
+  }
   if (action === 'confirm-snooze') {
     const form = target.closest('.snooze-form');
     const duration = form.querySelector('select').value;
