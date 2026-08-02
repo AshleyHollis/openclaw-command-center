@@ -13,6 +13,7 @@ const state = {
   selectedSpaceId: 'household',
   completedAttentionIds: new Set(),
   snoozedAttention: new Map(),
+  agentInvestigations: new Set(),
   dialogAttentionId: null,
   activityExpanded: false,
 };
@@ -36,6 +37,7 @@ const attentionItems = [
     source: 'Backup monitor',
     time: '22 minutes ago',
     space: null,
+    agentAction: 'Ask agent to fix',
     primary: 'Review backup',
     secondary: 'Snooze 1 hour',
   },
@@ -268,14 +270,16 @@ function VariantC() {
 function attentionListRow(item) {
   const snoozedFor = state.snoozedAttention.get(item.id);
   const handled = state.completedAttentionIds.has(item.id);
+  const investigating = state.agentInvestigations.has(item.id);
   const quickSnooze = `<div class="quick-snooze-split"><button class="small-button" type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="1 hour">${icon('clock')}Snooze 1h</button><details class="quick-snooze-options"><summary aria-label="Choose snooze duration for ${item.title}">${icon('chevron')}</summary><div class="quick-snooze-menu" aria-label="Snooze duration"><button type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="15 minutes">15 minutes</button><button type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="1 hour">1 hour</button><button type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="3 hours">3 hours</button><button type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="until tomorrow morning">Tomorrow morning</button><button type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="1 week">1 week</button></div></details></div>`;
+  const agentAction = item.agentAction && !handled ? `<button class="small-button primary-small agent-action ${investigating ? 'is-running' : ''}" type="button" data-action="agent-investigate" data-id="${item.id}" aria-pressed="${investigating}">${icon('spark')}${investigating ? 'Agent investigating' : item.agentAction}</button>` : '';
   return `<li class="inbox-row severity-${item.severity} ${handled ? 'is-done' : ''}">
     <button type="button" class="inbox-row-open" data-action="open-attention" data-id="${item.id}" aria-label="Open details for ${item.title}">
       <span class="inbox-row-icon">${icon(item.severity === 'high' ? 'alert' : item.kind === 'Reminder' ? 'clock' : 'spark')}</span>
-      <span class="inbox-row-main"><span class="inbox-row-meta"><strong>${item.kind}</strong><span>${handled ? 'Handled' : snoozedFor ? `Snoozed ${snoozedFor}` : item.time}</span></span><span class="inbox-row-title">${item.title}</span><span class="inbox-row-summary">${handled ? 'Handled for this prototype session.' : item.summary}</span></span>
+      <span class="inbox-row-main"><span class="inbox-row-meta"><strong>${item.kind}</strong><span>${handled ? 'Handled' : investigating ? 'Agent investigating now' : snoozedFor ? `Snoozed ${snoozedFor}` : item.time}</span></span><span class="inbox-row-title">${item.title}</span><span class="inbox-row-summary">${handled ? 'Handled for this prototype session.' : item.summary}</span>${investigating ? '<span class="inbox-agent-status">The agent is checking the failed verification and will report what it can safely resolve.</span>' : ''}</span>
       ${icon('arrow')}
     </button>
-    <div class="inbox-row-actions" aria-label="Quick actions for ${item.title}"><button class="small-button primary-small" type="button" data-action="attention-primary" data-id="${item.id}">${handled ? icon('check') + 'Done' : item.primary}</button>${handled ? '' : item.kind === 'Suggestion' ? `<button class="small-button" type="button" data-action="attention-secondary" data-id="${item.id}">Dismiss</button>` : quickSnooze}</div>
+    <div class="inbox-row-actions" aria-label="Quick actions for ${item.title}">${agentAction}<button class="small-button ${item.agentAction && !handled ? '' : 'primary-small'}" type="button" data-action="attention-primary" data-id="${item.id}">${handled ? icon('check') + 'Done' : item.primary}</button>${handled ? '' : item.kind === 'Suggestion' ? `<button class="small-button" type="button" data-action="attention-secondary" data-id="${item.id}">Dismiss</button>` : quickSnooze}</div>
   </li>`;
 }
 
@@ -284,13 +288,14 @@ function attentionDialog() {
   if (!item) return '';
   const handled = state.completedAttentionIds.has(item.id);
   const snoozedFor = state.snoozedAttention.get(item.id);
+  const investigating = state.agentInvestigations.has(item.id);
   return `<dialog class="attention-dialog" aria-labelledby="attention-dialog-title">
     <div class="dialog-shell">
       <header class="dialog-heading"><div><span class="severity-pill severity-${item.severity}">${icon(item.severity === 'high' ? 'alert' : item.kind === 'Reminder' ? 'clock' : 'spark')}${item.kind}</span><h2 id="attention-dialog-title">${item.title}</h2></div><button type="button" class="dialog-close icon-button" data-action="close-attention" aria-label="Close Attention Item details">×</button></header>
       <p class="dialog-summary">${item.summary}</p>
       <section class="dialog-evidence" aria-labelledby="why-title"><p class="section-kicker" id="why-title">Why this needs you</p><p>${item.kind === 'Operational' ? 'The source crossed its action threshold. Repeated records were deduplicated into this single Attention Item.' : item.kind === 'Reminder' ? 'A lightweight commitment reached its due window and now requires a decision.' : 'This proposal would change structural context, so OpenClaw cannot apply it silently.'}</p></section>
       <dl class="dialog-facts"><div><dt>Source</dt><dd>${item.source}</dd></div><div><dt>Space</dt><dd>${item.space ?? 'Global'}</dd></div><div><dt>Status</dt><dd>${handled ? 'Handled' : snoozedFor ? `Snoozed ${snoozedFor}` : 'Waiting for you'}</dd></div><div><dt>Raised</dt><dd>${item.time}</dd></div></dl>
-      <div class="dialog-actions"><button class="primary-button" type="button" data-action="attention-primary" data-id="${item.id}">${handled ? icon('check') + 'Handled' : item.primary}</button>${item.secondary.startsWith('Snooze') ? '' : `<button class="secondary-button" type="button" data-action="attention-secondary" data-id="${item.id}">${item.secondary}</button>`}</div>
+      <div class="dialog-actions">${item.agentAction && !handled ? `<button class="primary-button agent-action ${investigating ? 'is-running' : ''}" type="button" data-action="agent-investigate" data-id="${item.id}" aria-pressed="${investigating}">${icon('spark')}${investigating ? 'Agent investigating' : item.agentAction}</button>` : ''}<button class="${item.agentAction && !handled ? 'secondary-button' : 'primary-button'}" type="button" data-action="attention-primary" data-id="${item.id}">${handled ? icon('check') + 'Handled' : item.primary}</button>${item.secondary.startsWith('Snooze') ? '' : `<button class="secondary-button" type="button" data-action="attention-secondary" data-id="${item.id}">${item.secondary}</button>`}</div>
       <form class="snooze-form" data-id="${item.id}" method="dialog"><label for="snooze-duration">Snooze for</label><div><select id="snooze-duration" name="duration"><option value="15 minutes">15 minutes</option><option value="1 hour" selected>1 hour</option><option value="3 hours">3 hours</option><option value="until tomorrow morning">Until tomorrow morning</option><option value="1 week">1 week</option></select><button type="button" class="small-button" data-action="confirm-snooze" data-id="${item.id}">${icon('clock')}Snooze</button></div></form>
     </div>
   </dialog>`;
@@ -399,6 +404,11 @@ function handleAction(event) {
     state.completedAttentionIds.add(target.dataset.id);
     render();
     return announce('Attention Item handled');
+  }
+  if (action === 'agent-investigate') {
+    state.agentInvestigations.add(target.dataset.id);
+    render();
+    return announce('Agent investigation started. The agent will report before taking any action that needs approval.');
   }
   if (action === 'attention-secondary') {
     if (target.textContent.trim() === 'Dismiss') {

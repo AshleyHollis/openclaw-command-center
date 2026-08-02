@@ -225,9 +225,11 @@ button, a { min-block-size: 2.75rem; }
 .inbox-row-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inbox-row-title { color: var(--ink); font-size: .9rem; font-weight: 760; }
 .inbox-row-summary { color: var(--muted); font-size: .8rem; line-height: 1.45; }
+.inbox-agent-status { margin-block-start: .35rem; padding: .45rem .55rem; color: var(--brand-strong); background: var(--brand-soft); border-radius: .55rem; font-size: .75rem; line-height: 1.4; }
 .inbox-row-actions { display: flex; flex-wrap: wrap; gap: .5rem; padding: 0 1rem 1rem 3.95rem; }
 .inbox-row-actions .small-button { flex: 1; min-block-size: 2.75rem; padding: .5rem .65rem; white-space: nowrap; font-size: .75rem; }
 .inbox-row-actions .primary-small { color: white; background: var(--brand); border-color: var(--brand); }
+.agent-action.is-running { color: var(--brand-strong); background: var(--brand-soft); border-color: #95bba8; }
 .quick-snooze-split { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 2.75rem; flex: 1; min-inline-size: 8.75rem; }
 .quick-snooze-split > .small-button { inline-size: 100%; border-start-end-radius: 0; border-end-end-radius: 0; }
 .quick-snooze-options { position: relative; min-inline-size: 2.75rem; }
