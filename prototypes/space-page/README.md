@@ -16,6 +16,10 @@ Run from the repository root:
 powershell -ExecutionPolicy Bypass -File .\prototypes\space-page\serve.ps1
 ```
 
-Then open <http://localhost:4174/?variant=A>.
+The script starts at the issue-specific port `4206` and automatically advances to the next free port if another prototype is using it. Open the URL printed in the terminal. To request a different starting port:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\prototypes\space-page\serve.ps1 -Port 4300
+```
 
 All content is fictional. State is in memory and resets on refresh.
