@@ -78,9 +78,9 @@ const attentionItems = [
 ];
 
 const reminders = [
-  { time: 'Tomorrow · 9:00 am', title: 'Renew cloud certification profile', space: 'Learning' },
-  { time: 'Friday · 5:00 pm', title: 'Check tyre pressures before the trip', space: 'Vehicle' },
-  { time: 'Saturday · 10:00 am', title: 'Plan next week\'s dinners', space: 'Cooking' },
+  { day: 'Tomorrow', time: '9:00 am', title: 'Renew cloud certification profile', detail: 'Check the renewal requirements and update the expiry details.', space: 'Learning' },
+  { day: 'Friday', time: '5:00 pm', title: 'Check tyre pressures before the trip', detail: 'Add the cold pressures to the weekend trip checklist.', space: 'Vehicle' },
+  { day: 'Saturday', time: '10:00 am', title: 'Plan next week\'s dinners', detail: 'Start with the saved quick recipes and build the shopping list.', space: 'Cooking' },
 ];
 
 const activity = [
@@ -177,7 +177,11 @@ function spaceButton(space, expanded = false) {
 }
 
 function reminderList(limit = reminders.length) {
-  return `<ol class="timeline-list">${reminders.slice(0, limit).map(item => `<li><span class="timeline-dot" aria-hidden="true"></span><div><time>${item.time}</time><strong>${item.title}</strong><span>${item.space}</span></div></li>`).join('')}</ol>`;
+  return `<ol class="timeline-list">${reminders.slice(0, limit).map(item => `<li><span class="timeline-dot" aria-hidden="true"></span><div><time>${item.day} · ${item.time}</time><strong>${item.title}</strong><span>${item.space}</span></div></li>`).join('')}</ol>`;
+}
+
+function comingUpList() {
+  return `<ol class="coming-up-list">${reminders.map(item => `<li><time><span>${item.day}</span><strong>${item.time}</strong></time><div><strong>${item.title}</strong><p>${item.detail}</p><span class="coming-up-space">${item.space}</span></div></li>`).join('')}</ol>`;
 }
 
 function activityList(limit = activity.length) {
@@ -296,7 +300,7 @@ function VariantD() {
   const visibleAttention = attentionItems.filter(item => state.attentionFilter === 'all' || item.kind.toLowerCase() === state.attentionFilter);
   const selectedSpace = spaces.find(space => space.id === state.selectedSpaceId) ?? spaces[0];
   const content = `<main id="main-content" class="page page-d">
-    ${pageHeading('Sunday, 2 August', 'Good afternoon, Alex', 'Handle what needs you, then move into a Space.', true)}
+    <header class="page-heading page-heading-d"><div><p class="eyebrow">Sunday, 2 August</p><h1>Good afternoon, Alex</h1><p class="lede">Handle what needs you, then move into a Space.</p></div><section class="header-space-launcher" aria-labelledby="header-space-launcher-title"><label id="header-space-launcher-title" for="header-space-select">Open a Space</label><div><select id="header-space-select" data-action="select-space-dropdown">${spaces.map(space => `<option value="${space.id}" ${space.id === selectedSpace.id ? 'selected' : ''}>${space.name}</option>`).join('')}</select><button class="primary-button" type="button" data-action="open-space">Open${icon('arrow')}</button></div></section></header>
     <div class="dashboard-grid-d">
       <section class="refined-inbox" aria-labelledby="attention-d-title">
         <header class="inbox-banner"><div><h2 id="attention-d-title">Attention inbox <span>${visibleAttention.length}</span></h2><p>Items that need action now.</p></div><div class="segmented segmented-dark" aria-label="Filter attention items">${['all', 'reminder', 'operational'].map(filter => `<button type="button" data-action="filter-attention" data-filter="${filter}" class="${state.attentionFilter === filter ? 'is-active' : ''}" aria-pressed="${state.attentionFilter === filter}">${filter[0].toUpperCase() + filter.slice(1)}</button>`).join('')}</div></header>
@@ -304,8 +308,8 @@ function VariantD() {
         <footer class="inbox-footer"><button class="small-button" type="button" data-action="load-more">Load more</button></footer>
       </section>
       <aside class="right-stack refined-right">
-        <section class="panel space-launcher" aria-labelledby="space-launcher-title"><div class="panel-heading"><h2 id="space-launcher-title">Open a Space</h2></div><label class="sr-only" for="space-select">Choose a Space</label><select id="space-select" data-action="select-space-dropdown">${spaces.map(space => `<option value="${space.id}" ${space.id === selectedSpace.id ? 'selected' : ''}>${space.name}</option>`).join('')}</select><button class="primary-button" type="button" data-action="open-space">Open${icon('arrow')}</button></section>
-        <section class="panel" aria-labelledby="reminders-d-title"><div class="panel-heading"><h2 id="reminders-d-title">Coming up</h2><a href="#reminders">All Reminders</a></div>${reminderList(3)}</section>
+        <section class="panel space-launcher mobile-space-launcher" aria-labelledby="space-launcher-title"><div class="panel-heading"><h2 id="space-launcher-title">Open a Space</h2></div><label class="sr-only" for="space-select">Choose a Space</label><select id="space-select" data-action="select-space-dropdown">${spaces.map(space => `<option value="${space.id}" ${space.id === selectedSpace.id ? 'selected' : ''}>${space.name}</option>`).join('')}</select><button class="primary-button" type="button" data-action="open-space">Open${icon('arrow')}</button></section>
+        <section class="coming-up-panel" aria-labelledby="reminders-d-title"><header class="coming-up-banner"><div><h2 id="reminders-d-title">Coming up <span>${reminders.length}</span></h2><p>Planned reminders for the next few days.</p></div><a href="#reminders">All reminders</a></header>${comingUpList()}<footer class="coming-up-footer">Nothing else is due this week.</footer></section>
         <details class="panel quiet-activity" ${state.activityExpanded ? 'open' : ''}><summary><span>${icon('activity')}Recent OpenClaw Activity</span><span class="quiet-count">4 records</span></summary>${activityList(3)}</details>
       </aside>
     </div>

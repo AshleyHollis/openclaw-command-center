@@ -192,6 +192,11 @@ button, a { min-block-size: 2.75rem; }
 .activity-ledger .text-link { display: inline-flex; align-items: center; margin-block-start: .9rem; }
 
 /* Variant D — validated synthesis: scalable inbox, details drawer, simple Space selection */
+.page-heading-d { align-items: center; }
+.header-space-launcher { display: none; min-inline-size: min(100%, 24rem); padding: .75rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 3px 12px rgb(31 48 40 / .035); }
+.header-space-launcher label { color: var(--brand); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.header-space-launcher > div { display: grid; grid-template-columns: minmax(10rem, 1fr) auto; gap: .5rem; margin-block-start: .35rem; }
+.header-space-launcher select { min-inline-size: 0; min-block-size: 2.75rem; padding: .55rem 2.2rem .55rem .7rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line-strong); border-radius: .7rem; font: inherit; }
 .dashboard-grid-d { display: grid; gap: 1rem; }
 .refined-inbox { min-inline-size: 0; }
 .inbox-banner { display: grid; gap: 1rem; padding: 1.1rem; color: white; background: var(--brand-strong); border-radius: var(--radius-lg); box-shadow: 0 4px 18px rgb(31 48 40 / .045); }
@@ -240,6 +245,21 @@ button, a { min-block-size: 2.75rem; }
 .space-launcher label, .snooze-form label { color: var(--muted); font-size: .75rem; font-weight: 720; }
 .space-launcher select, .snooze-form select { min-inline-size: 0; min-block-size: 2.75rem; padding: .55rem 2.2rem .55rem .7rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line-strong); border-radius: .7rem; font: inherit; }
 .space-launcher .primary-button { inline-size: 100%; margin-block-start: .2rem; }
+.coming-up-panel { overflow: hidden; background: var(--surface); border-radius: var(--radius-lg); box-shadow: 0 4px 18px rgb(31 48 40 / .045); }
+.coming-up-banner { display: grid; gap: .75rem; padding: 1.1rem; color: white; background: var(--brand-strong); }
+.coming-up-banner h2 { font-size: clamp(1.35rem, 1.1rem + .8vw, 1.9rem); }
+.coming-up-banner h2 span { display: inline-grid; place-items: center; min-inline-size: 1.7rem; block-size: 1.7rem; margin-inline-start: .25rem; padding-inline: .4rem; color: var(--brand-strong); background: #d8eadf; border-radius: 999px; font-size: .78rem; vertical-align: .2rem; }
+.coming-up-banner p { margin-block-start: .3rem; color: #c9ded2; font-size: .84rem; }
+.coming-up-banner a { display: inline-flex; align-items: center; justify-self: start; min-block-size: 2.75rem; color: white; font-size: .8rem; font-weight: 720; text-underline-offset: .2rem; }
+.coming-up-list { display: grid; margin: 0; padding: 0 1rem; list-style: none; }
+.coming-up-list li { display: grid; grid-template-columns: 4.8rem minmax(0, 1fr); gap: .8rem; padding-block: 1rem; border-block-end: 1px solid var(--line); }
+.coming-up-list time { display: flex; flex-direction: column; color: var(--brand); font-size: .72rem; }
+.coming-up-list time strong { color: var(--ink); font-size: .8rem; }
+.coming-up-list li > div { display: grid; min-inline-size: 0; gap: .25rem; }
+.coming-up-list li > div > strong { font-size: .84rem; }
+.coming-up-list p { color: var(--muted); font-size: .76rem; line-height: 1.45; }
+.coming-up-space { justify-self: start; margin-block-start: .15rem; padding: .2rem .45rem; color: var(--brand-strong); background: var(--brand-soft); border-radius: 999px; font-size: .67rem; font-weight: 760; }
+.coming-up-footer { padding: .75rem 1rem; color: var(--muted); background: var(--canvas); font-size: .72rem; }
 
 .attention-dialog { inline-size: min(calc(100% - 1rem), 35rem); max-block-size: calc(100vh - 1rem); margin: auto; padding: 0; overflow: auto; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: 0 24px 60px rgb(16 28 22 / .28); }
 .attention-dialog::backdrop { background: rgb(20 31 26 / .46); backdrop-filter: blur(2px); }
@@ -310,6 +330,11 @@ button, a { min-block-size: 2.75rem; }
   .focus-context { grid-column: 1 / -1; grid-template-columns: 1.2fr .8fr; }
   .canvas-layout { grid-template-columns: minmax(0, 1.45fr) minmax(18rem, .65fr); align-items: start; }
   .dashboard-grid-d { grid-template-columns: minmax(0, 1.7fr) minmax(18rem, .72fr); align-items: start; }
+  .header-space-launcher { display: grid; }
+  .mobile-space-launcher { display: none; }
+  .inbox-banner, .coming-up-banner { min-block-size: 7.75rem; }
+  .coming-up-banner { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+  .coming-up-banner a { justify-self: end; }
   .refined-right { position: sticky; inset-block-start: 5.7rem; }
   .attention-dialog { inline-size: min(35rem, calc(100% - 2rem)); max-block-size: calc(100vh - 2rem); margin-block: 1rem; margin-inline: auto 1rem; }
   .day-rail { position: sticky; inset-block-start: 5.7rem; }
