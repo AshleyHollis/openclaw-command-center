@@ -10,7 +10,7 @@ const variants = [
 const state = {
   attentionFilter: 'all',
   selectedAttentionId: 'attn-backup',
-  selectedSpaceId: 'garden-studio',
+  selectedSpaceId: 'household',
   completedAttentionIds: new Set(),
   snoozedAttention: new Map(),
   dialogAttentionId: null,
@@ -18,10 +18,12 @@ const state = {
 };
 
 const spaces = [
-  { id: 'garden-studio', name: 'Garden studio', category: 'Project', note: '3 Notes changed', resume: 'Continue material shortlist', tone: 'moss' },
-  { id: 'home-care', name: 'Home care', category: 'Area', note: 'Reminder due today', resume: 'Review winter checklist', tone: 'clay' },
-  { id: 'bread-notes', name: 'Bread notes', category: 'Resource', note: '12 Notes', resume: 'Open hydration experiments', tone: 'sun' },
-  { id: 'camera-kit', name: 'Camera kit', category: 'Archive', note: 'Quiet for 18 days', resume: 'Browse conversation history', tone: 'ink' },
+  { id: 'household', name: 'Household', category: 'Area', note: '2 Notes changed', resume: 'Continue hallway paint shortlist', tone: 'moss' },
+  { id: 'vehicle', name: 'Vehicle', category: 'Area', note: 'Reminder due Friday', resume: 'Review weekend trip checklist', tone: 'clay' },
+  { id: 'technology', name: 'Technology', category: 'Area', note: '8 Notes', resume: 'Open backup checklist', tone: 'sun' },
+  { id: 'cooking', name: 'Cooking', category: 'Resource', note: 'Updated yesterday', resume: 'Browse weeknight meal notes', tone: 'ink' },
+  { id: 'admin', name: 'Admin', category: 'Area', note: '2 Reminders coming up', resume: 'Review renewal checklist', tone: 'moss' },
+  { id: 'learning', name: 'Learning', category: 'Area', note: 'Certification due soon', resume: 'Continue study plan', tone: 'clay' },
 ];
 
 const attentionItems = [
@@ -29,10 +31,10 @@ const attentionItems = [
     id: 'attn-backup',
     severity: 'high',
     kind: 'Operational',
-    title: 'Backup has not completed since Friday',
-    summary: 'The last two scheduled runs ended before the archive was verified.',
-    source: 'OpenClaw backup',
-    time: '18 minutes ago',
+    title: 'Last night\'s backup could not be verified',
+    summary: 'The workspace backup completed, but the off-site copy did not pass its freshness check.',
+    source: 'Backup monitor',
+    time: '22 minutes ago',
     space: null,
     primary: 'Review backup',
     secondary: 'Snooze 1 hour',
@@ -41,11 +43,11 @@ const attentionItems = [
     id: 'attn-reminder',
     severity: 'due',
     kind: 'Reminder',
-    title: 'Confirm the studio electrician',
-    summary: 'Due today · Garden studio',
+    title: 'Put the bins out tonight',
+    summary: 'Due at 7:00 pm · Household',
     source: 'Reminder',
-    time: 'Due 4:30 pm',
-    space: 'Garden studio',
+    time: 'Due 7:00 pm',
+    space: 'Household',
     primary: 'Mark done',
     secondary: 'Open Space',
   },
@@ -53,62 +55,62 @@ const attentionItems = [
     id: 'attn-gardening',
     severity: 'normal',
     kind: 'Suggestion',
-    title: 'Move three lighting Notes into Garden studio?',
-    summary: 'Space Gardening found a recurring topic. Nothing moves without your approval.',
+    title: 'Move the home-network Notes into Technology?',
+    summary: 'Space Gardening found recurring technology context in Household. Nothing moves without your approval.',
     source: 'Space Gardening',
     time: 'Yesterday',
-    space: 'Garden studio',
+    space: 'Technology',
     primary: 'Review proposal',
     secondary: 'Dismiss',
   },
   {
-    id: 'attn-filter',
+    id: 'attn-tracker',
     severity: 'normal',
     kind: 'Operational',
-    title: 'Water filter is nearing its replacement date',
-    summary: 'The household maintenance schedule reaches its replacement window this week.',
-    source: 'Scheduled maintenance',
-    time: '2 hours ago',
-    space: 'Home care',
-    primary: 'Review schedule',
+    title: 'Price tracker has not refreshed since this morning',
+    summary: 'The scheduled discovery run is late, but no existing price data has been lost.',
+    source: 'Automation health',
+    time: '3 hours ago',
+    space: 'Technology',
+    primary: 'Review tracker',
     secondary: 'Dismiss',
   },
   {
-    id: 'attn-flour',
+    id: 'attn-certification',
     severity: 'due',
     kind: 'Reminder',
-    title: 'Restock bread flour',
-    summary: 'Due tomorrow · Bread notes',
+    title: 'Renew cloud certification profile',
+    summary: 'Due tomorrow · Learning',
     source: 'Reminder',
     time: 'Due tomorrow',
-    space: 'Bread notes',
+    space: 'Learning',
     primary: 'Mark done',
     secondary: 'Open Space',
   },
   {
-    id: 'attn-archive',
+    id: 'attn-meals',
     severity: 'normal',
-    kind: 'Suggestion',
-    title: 'Archive the inactive Camera kit Space?',
-    summary: 'No conversations, Notes, or Reminders have changed in this Space for several weeks.',
-    source: 'Space Gardening',
-    time: 'Friday',
-    space: 'Camera kit',
-    primary: 'Review proposal',
-    secondary: 'Dismiss',
+    kind: 'Reminder',
+    title: 'Plan next week\'s dinners',
+    summary: 'Due Saturday · Cooking',
+    source: 'Reminder',
+    time: 'Due Saturday',
+    space: 'Cooking',
+    primary: 'Mark done',
+    secondary: 'Open Space',
   },
 ];
 
 const reminders = [
-  { time: 'Today · 4:30 pm', title: 'Confirm the studio electrician', space: 'Garden studio' },
-  { time: 'Tomorrow · 8:00 am', title: 'Put recycling out', space: 'Home care' },
-  { time: 'Thu · 6:00 pm', title: 'Feed the sourdough starter', space: 'Bread notes' },
+  { time: 'Today · 7:00 pm', title: 'Put the bins out tonight', space: 'Household' },
+  { time: 'Tomorrow · 9:00 am', title: 'Renew cloud certification profile', space: 'Learning' },
+  { time: 'Saturday · 10:00 am', title: 'Plan next week\'s dinners', space: 'Cooking' },
 ];
 
 const activity = [
-  { time: '11:42', title: 'Note refreshed', detail: 'Garden studio · Material shortlist' },
-  { time: '10:18', title: 'Automation completed', detail: 'Home care · Weekly maintenance scan' },
-  { time: 'Yesterday', title: 'Conversation summarized', detail: 'Bread notes · Hydration experiments' },
+  { time: '11:42', title: 'Note refreshed', detail: 'Technology · Backup checklist' },
+  { time: '10:18', title: 'Automation completed', detail: 'Admin · Weekly renewal scan' },
+  { time: 'Yesterday', title: 'Conversation summarized', detail: 'Vehicle · Weekend trip checklist' },
   { time: 'Yesterday', title: 'Search index updated', detail: '4 sources indexed' },
 ];
 
@@ -248,7 +250,7 @@ function VariantB() {
         <div class="focus-detail-top"><span class="severity-pill severity-${selected.severity}">${icon(selected.severity === 'high' ? 'alert' : selected.kind === 'Reminder' ? 'clock' : 'spark')}${selected.kind}</span><span>${selected.time}</span></div>
         <h2 id="focus-title">${selected.title}</h2>
         <p class="focus-summary">${selected.summary}</p>
-        <div class="evidence-box"><p class="section-kicker">Why this is here</p><p>${selected.kind === 'Operational' ? 'Two consecutive runs ended before verification, so one deduplicated Attention Item was raised.' : selected.kind === 'Reminder' ? 'This lightweight commitment is due today and belongs to the Garden studio Space.' : 'The proposed structural change requires approval. No Notes have moved.'}</p><dl><div><dt>Source</dt><dd>${selected.source}</dd></div><div><dt>Space</dt><dd>${selected.space ?? 'Global'}</dd></div><div><dt>Status</dt><dd>${state.completedAttentionIds.has(selected.id) ? 'Handled' : 'Waiting for you'}</dd></div></dl></div>
+        <div class="evidence-box"><p class="section-kicker">Why this is here</p><p>${selected.kind === 'Operational' ? 'The source crossed its action threshold, so one deduplicated Attention Item was raised.' : selected.kind === 'Reminder' ? `This lightweight commitment is due and belongs to the ${selected.space ?? 'related'} Space.` : 'The proposed structural change requires approval. No Notes have moved.'}</p><dl><div><dt>Source</dt><dd>${selected.source}</dd></div><div><dt>Space</dt><dd>${selected.space ?? 'Global'}</dd></div><div><dt>Status</dt><dd>${state.completedAttentionIds.has(selected.id) ? 'Handled' : 'Waiting for you'}</dd></div></dl></div>
         <div class="focus-actions"><button class="primary-button" type="button" data-action="attention-primary" data-id="${selected.id}">${state.completedAttentionIds.has(selected.id) ? icon('check') + 'Handled' : selected.primary}</button><button class="secondary-button" type="button" data-action="attention-secondary" data-id="${selected.id}">${selected.secondary}</button></div>
       </section>
       <aside class="focus-context" aria-label="Space and activity context">
