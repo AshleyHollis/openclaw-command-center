@@ -55,7 +55,8 @@ const state = {
   notesCompact: false,
   conversationPane: 'open',
   notePane: 'open',
-  selectedFolder: 'projects',
+  selectedFolder: 'projects/hallway/paint',
+  noteEditing: false,
 };
 
 function icon(name) {
@@ -78,6 +79,8 @@ function icon(name) {
     restore: '<path d="M8 8h11v11H8z"/><path d="M5 16H3V3h13v2"/>',
     panelLeft: '<path d="M3 4h18v16H3zM9 4v16"/>',
     panelRight: '<path d="M3 4h18v16H3zM15 4v16"/>',
+    edit: '<path d="m4 20 4.5-1 10-10-3.5-3.5-10 10zM13.5 6.5 17 10"/>',
+    eye: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/>',
   };
   return `<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name] ?? ''}</svg>`;
 }
@@ -267,17 +270,51 @@ function dNotePreview(focused = false) {
 
 function dNotesWorkspace() {
   const note = activeNote();
-  const folders = [
-    { id: 'projects', label: 'Projects', count: 6 },
-    { id: 'maintenance', label: 'Maintenance', count: 11 },
-    { id: 'reference', label: 'Reference', count: 18 },
-    { id: 'archive', label: 'Archive', count: 9 },
-  ];
+  const folderLabels = {
+    'projects': 'Projects',
+    'projects/hallway': 'Hallway',
+    'projects/hallway/paint': 'Paint',
+    'projects/hallway/measurements': 'Measurements',
+    'projects/kitchen': 'Kitchen refresh',
+    'maintenance': 'Maintenance',
+    'maintenance/seasonal': 'Seasonal',
+    'maintenance/seasonal/autumn': 'Autumn',
+    'reference': 'Reference',
+    'reference/suppliers': 'Suppliers',
+    'archive': 'Archive',
+  };
+  const selectedFolderLabel = folderLabels[state.selectedFolder] ?? 'Notes';
   return `<div class="notes-workspace">
-    <nav class="folder-tree" aria-label="Household Note folders"><div class="folder-root">${icon('folder')}<strong>Household Notes</strong></div>${folders.map(folder => `<button type="button" data-action="select-folder" data-id="${folder.id}" class="${folder.id === state.selectedFolder ? 'is-active' : ''}" aria-pressed="${folder.id === state.selectedFolder}">${icon('folder')}<span>${folder.label}</span><small>${folder.count}</small></button>`).join('')}</nav>
-    <section class="note-browser" aria-labelledby="note-browser-title"><header><h3 id="note-browser-title">${folders.find(folder => folder.id === state.selectedFolder)?.label ?? 'Notes'}</h3><button class="icon-button" type="button" aria-label="Create Note">${icon('plus')}</button></header><div class="note-list-search"><label class="sr-only" for="note-search-d">Search Notes</label>${icon('search')}<input id="note-search-d" type="search" placeholder="Search Notes"></div><div class="note-browser-list">${notes.map(item => `<button type="button" data-action="select-note" data-id="${item.id}" class="${item.id === state.selectedNote ? 'is-active' : ''}" aria-pressed="${item.id === state.selectedNote}"><strong>${item.title}</strong><span>${item.updated}</span><small>${item.id === 'hallway' ? 'Projects / Hallway' : item.id === 'maintenance' ? 'Maintenance / Seasonal' : 'Reference / Suppliers'}</small></button>`).join('')}</div></section>
-    <section class="note-canvas" aria-labelledby="note-canvas-title"><header><div><p class="eyebrow">Household Notes / Projects / Hallway</p><h3 id="note-canvas-title">${note.title}</h3></div><span class="saved-state">Saved</span></header><article class="note-document"><p class="note-updated">${note.updated}</p>${markdown(note.body)}<h3>Long document example</h3><p>This focused canvas is designed to keep reading and editing comfortable when a Note grows well beyond a short side preview. The document scrolls independently while folders and the Note list remain available.</p></article></section>
+    <nav class="folder-tree" aria-label="Household Note folders">
+      <div class="folder-root">${icon('folder')}<strong>Household Notes</strong></div>
+      <details open><summary>${icon('folder')}<span>Projects</span><small>6</small></summary><div class="folder-children">
+        <details open><summary>${icon('folder')}<span>Hallway</span><small>4</small></summary><div class="folder-children">
+          ${folderButton('projects/hallway/paint', 'Paint', 2)}
+          ${folderButton('projects/hallway/measurements', 'Measurements', 2)}
+        </div></details>
+        ${folderButton('projects/kitchen', 'Kitchen refresh', 2)}
+      </div></details>
+      <details open><summary>${icon('folder')}<span>Maintenance</span><small>11</small></summary><div class="folder-children">
+        <details open><summary>${icon('folder')}<span>Seasonal</span><small>7</small></summary><div class="folder-children">${folderButton('maintenance/seasonal/autumn', 'Autumn', 4)}</div></details>
+      </div></details>
+      <details><summary>${icon('folder')}<span>Reference</span><small>18</small></summary><div class="folder-children">${folderButton('reference/suppliers', 'Suppliers', 8)}</div></details>
+      ${folderButton('archive', 'Archive', 9)}
+    </nav>
+    <section class="note-browser" aria-labelledby="note-browser-title"><header><h3 id="note-browser-title">${selectedFolderLabel}</h3><button class="icon-button" type="button" aria-label="Create Note">${icon('plus')}</button></header><div class="note-list-search"><label class="sr-only" for="note-search-d">Search Notes</label>${icon('search')}<input id="note-search-d" type="search" placeholder="Search Notes"></div><div class="note-browser-list">${notes.map(item => `<button type="button" data-action="select-note" data-id="${item.id}" class="${item.id === state.selectedNote ? 'is-active' : ''}" aria-pressed="${item.id === state.selectedNote}"><strong>${item.title}</strong><span>${item.updated}</span><small>${item.id === 'hallway' ? 'Projects / Hallway / Paint' : item.id === 'maintenance' ? 'Maintenance / Seasonal / Autumn' : 'Reference / Suppliers / Paint'}</small></button>`).join('')}</div></section>
+    <section class="note-canvas ${state.noteEditing ? 'is-editing' : ''}" aria-labelledby="note-canvas-title"><header><div><p class="eyebrow">Household Notes / ${selectedFolderLabel}</p><h3 id="note-canvas-title">${note.title}</h3></div><div class="note-canvas-actions"><span class="saved-state">${state.noteEditing ? 'Editing' : 'Saved'}</span><button type="button" data-action="toggle-note-edit">${icon(state.noteEditing ? 'eye' : 'edit')}${state.noteEditing ? 'Preview' : 'Edit'}</button></div></header>${state.noteEditing ? noteEditor(note) : `<article class="note-document"><p class="note-updated">${note.updated}</p>${markdown(note.body)}<h3>Long document example</h3><p>This focused canvas is designed to keep reading and editing comfortable when a Note grows well beyond a short side preview. The document scrolls independently while folders and the Note list remain available.</p></article>`}</section>
   </div>`;
+}
+
+function folderButton(id, label, count) {
+  return `<button type="button" data-action="select-folder" data-id="${id}" class="${id === state.selectedFolder ? 'is-active' : ''}" aria-pressed="${id === state.selectedFolder}">${icon('folder')}<span>${label}</span><small>${count}</small></button>`;
+}
+
+function noteEditor(note) {
+  return `<form class="note-editor" data-action="save-note"><label for="note-body-d">Markdown content for ${note.title}</label><textarea id="note-body-d" name="body" spellcheck="true">${escapeMarkup(note.body)}</textarea><footer><button type="button" data-action="cancel-note-edit">Cancel</button><button class="primary-button" type="submit">Save changes</button></footer></form>`;
+}
+
+function escapeMarkup(value) {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
 function dMobileContent() {
@@ -351,6 +388,7 @@ function handleAction(event) {
   }
   if (action === 'select-note') {
     state.selectedNote = target.dataset.id;
+    state.noteEditing = false;
     render();
     return announce(`${activeNote().title} opened`);
   }
@@ -393,6 +431,25 @@ function handleAction(event) {
     state.selectedFolder = target.dataset.id;
     render();
     return announce(`${target.textContent.trim()} folder selected`);
+  }
+  if (action === 'toggle-note-edit') {
+    state.noteEditing = !state.noteEditing;
+    render();
+    return announce(state.noteEditing ? 'Note editor opened' : 'Note preview opened');
+  }
+  if (action === 'cancel-note-edit') {
+    state.noteEditing = false;
+    render();
+    return announce('Note edit cancelled');
+  }
+  if (action === 'save-note') {
+    event.preventDefault();
+    const noteToSave = activeNote();
+    noteToSave.body = target.querySelector('textarea').value;
+    noteToSave.updated = 'Updated just now';
+    state.noteEditing = false;
+    render();
+    return announce(`${noteToSave.title} saved in prototype memory`);
   }
   if (action === 'mobile-surface') {
     state.mobileSurface = target.dataset.surface;

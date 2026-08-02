@@ -7,7 +7,7 @@ Three original responsive Space Page layouts plus one feedback-driven synthesis,
 - `?variant=A` — **Conversation studio**: conversation history, Chat, and the current Note are three persistent desktop columns.
 - `?variant=B` — **Working notebook**: the Note is the main canvas; Chat is a companion panel and conversation history is tucked into a drawer.
 - `?variant=C` — **Conversation timeline**: chronological conversation history is the orienting surface; the selected Chat and current Note share a workbench.
-- `?variant=D` — **Flexible workspace**: C's visual language without the timeline, a searchable conversation browser, central Chat, structured Note references, and independently closed/open/focused conversation and Note panes. Focused Notes uses an Obsidian-like nested folder tree, searchable Note list, and large document canvas.
+- `?variant=D` — **Flexible workspace**: C's visual language without the timeline, a searchable conversation browser, central Chat, structured Note references, and independently closed/open/focused conversation and Note panes. Focused Notes uses a visibly multi-level Obsidian-like folder tree, searchable Note list, and large editable Markdown canvas with preview mode.
 
 Every mobile variant becomes a single-surface view with explicit Chat, Notes, conversation, and Search tabs. The tab order and default surface preserve each variant's hierarchy: Chat first in A and D, Notes first in B, and History first in C.
 

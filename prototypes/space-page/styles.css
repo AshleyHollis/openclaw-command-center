@@ -158,9 +158,18 @@ kbd { padding: .1rem .35rem; border: 1px solid var(--line); border-radius: .3rem
 .folder-tree, .note-browser, .note-canvas { min-inline-size: 0; background: white; }
 .folder-tree { padding: .65rem; }
 .folder-root { display: flex; align-items: center; gap: .45rem; min-block-size: 2.75rem; padding-inline: .55rem; margin-block-end: .35rem; }
-.folder-tree button { inline-size: 100%; min-block-size: 2.75rem; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .45rem; padding-inline: .55rem; border: 0; border-radius: .45rem; background: transparent; text-align: start; cursor: pointer; }
+.folder-tree details { margin: 0; }
+.folder-tree summary, .folder-tree button { inline-size: 100%; min-block-size: 2.75rem; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .45rem; padding-inline: .55rem; border: 0; border-radius: .45rem; background: transparent; text-align: start; cursor: pointer; list-style: none; }
+.folder-tree summary::-webkit-details-marker { display: none; }
+.folder-tree summary::before { content: '›'; grid-column: 1; grid-row: 1; color: var(--muted); transform: rotate(0deg); }
+.folder-tree details[open] > summary::before { transform: rotate(90deg); }
+.folder-tree summary > .icon { display: none; }
+.folder-tree summary > span { grid-column: 2; }
+.folder-tree summary > small { grid-column: 3; }
+.folder-children { margin-inline-start: .85rem; padding-inline-start: .45rem; border-inline-start: 1px solid #d5ddd7; }
+.folder-tree summary:hover, .folder-tree summary:focus-visible, .folder-tree button:hover, .folder-tree button:focus-visible { background: var(--soft); }
 .folder-tree button.is-active { background: #e8f0ea; color: var(--forest); font-weight: 800; }
-.folder-tree button small { color: var(--muted); }
+.folder-tree button small, .folder-tree summary small { color: var(--muted); }
 .note-browser { display: flex; flex-direction: column; }
 .note-browser > header, .note-canvas > header { min-block-size: 4.1rem; display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .65rem .8rem; border-block-end: 1px solid var(--line); }
 .note-browser h3, .note-canvas h3 { margin: 0; font-size: 1rem; }
@@ -171,12 +180,19 @@ kbd { padding: .1rem .35rem; border: 1px solid var(--line); border-radius: .3rem
 .note-canvas { display: flex; flex-direction: column; min-block-size: 0; }
 .note-canvas > .note-document { flex: 1; inline-size: min(100%, 54rem); overflow-y: auto; font-family: Georgia, serif; font-size: 1.02rem; }
 .note-canvas .note-updated, .note-canvas header { font-family: Inter, sans-serif; }
+.note-canvas-actions { display: flex; align-items: center; gap: .55rem; }
+.note-canvas-actions button { min-block-size: 2.6rem; display: inline-flex; align-items: center; gap: .4rem; padding-inline: .7rem; border: 1px solid var(--line); border-radius: .5rem; background: white; color: var(--forest); font-size: .75rem; font-weight: 800; cursor: pointer; }
+.note-editor { min-block-size: 0; flex: 1; display: flex; flex-direction: column; gap: .45rem; padding: .75rem; }
+.note-editor label { font-size: .75rem; font-weight: 800; color: var(--muted); }
+.note-editor textarea { min-block-size: 22rem; flex: 1; inline-size: 100%; resize: none; padding: 1rem; border: 1px solid #9eafa3; border-radius: .6rem; background: #fffefb; color: var(--ink); font-family: ui-monospace, "Cascadia Code", monospace; line-height: 1.65; }
+.note-editor footer { display: flex; justify-content: flex-end; gap: .5rem; }
+.note-editor footer button { min-block-size: 2.75rem; padding-inline: .85rem; border: 1px solid var(--line); border-radius: .55rem; background: white; cursor: pointer; font-weight: 800; }
+.note-editor footer .primary-button { border-color: var(--forest); background: var(--forest); color: white; }
 
 .d-mobile-notes .d-note { min-block-size: calc(100vh - 8.85rem); }
 .d-mobile-notes .notes-workspace { display: block; }
-.d-mobile-notes .folder-tree { display: flex; gap: .35rem; overflow-x: auto; border-block-end: 1px solid var(--line); }
-.d-mobile-notes .folder-root { flex: 0 0 auto; margin: 0; }
-.d-mobile-notes .folder-tree button { inline-size: auto; flex: 0 0 auto; grid-template-columns: auto auto auto; }
+.d-mobile-notes .folder-tree { display: block; max-block-size: 16rem; overflow: auto; border-block-end: 1px solid var(--line); }
+.d-mobile-notes .folder-root { margin: 0; }
 .d-mobile-notes .note-browser { border-block-end: 1px solid var(--line); }
 .d-mobile-notes .note-browser-list { display: flex; gap: .35rem; overflow-x: auto; padding: .4rem; }
 .d-mobile-notes .note-browser-list button { min-inline-size: 13rem; }
