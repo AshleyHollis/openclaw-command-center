@@ -5,12 +5,13 @@ const variants = {
   A: { name: 'Guided conversation', description: 'Name the Space, then answer the one required category question.' },
   B: { name: 'Quick form', description: 'Enter the two essentials and create immediately.' },
   C: { name: 'Compact proposal', description: 'Confirm the essentials while defaults stay inspectable.' },
+  D: { name: 'Resolved model', description: 'The agreed Spaces, initial migration, and weekly Space Review experience.' },
 };
 
 const scenarios = {
-  create: { label: 'Creation flow', eyebrow: 'New durable context' },
-  migrate: { label: 'Legacy import', eyebrow: 'One-time text migration' },
-  garden: { label: 'Gardening proposal', eyebrow: 'Gated Space Gardening' },
+  create: { label: 'Spaces & create', eyebrow: 'First-class destination' },
+  migrate: { label: 'Initial migration', eyebrow: 'Initial setup only' },
+  review: { label: 'Space Review card', eyebrow: 'Weekly Space Review' },
 };
 
 const state = {
@@ -19,9 +20,14 @@ const state = {
   createdSpace: null,
   openedSpace: null,
   createStatus: 'draft',
-  migrationStatus: 'ready',
+  migrationStatus: 'incomplete',
+  migrationFailuresVisible: false,
   gardenStatus: 'pending',
   gardenChoice: 'move',
+  reviewDecisions: { vehicle: null, technology: null, cooking: null },
+  reviewApplied: false,
+  reviewSnoozed: false,
+  reviewError: '',
   packetSections: new Set(['structure']),
 };
 
@@ -45,7 +51,8 @@ const icon = (name) => {
 function currentRoute() {
   const params = new URLSearchParams(location.search);
   const variant = variants[params.get('variant')] ? params.get('variant') : 'A';
-  const scenario = scenarios[params.get('scenario')] ? params.get('scenario') : 'create';
+  const requestedScenario = params.get('scenario') === 'garden' ? 'review' : params.get('scenario');
+  const scenario = scenarios[requestedScenario] ? requestedScenario : 'create';
   const view = scenario === 'create' && params.get('view') === 'new' ? 'new' : scenario === 'create' ? 'spaces' : 'flow';
   return { variant, scenario, view };
 }
@@ -60,13 +67,16 @@ function updateRoute(patch) {
 function shell(content, route) {
   const spacesLanding = route.scenario === 'create' && route.view === 'spaces';
   const newSpace = route.scenario === 'create' && route.view === 'new';
+  const review = route.scenario === 'review';
   const intro = spacesLanding
     ? 'Open a durable topic context or create a new one.'
     : newSpace
       ? 'Choose a Space name and one PARA Category. Command Center applies the standard Note Folder and Primary Session defaults.'
-    : 'Review a consequential structural change without hiding authoritative sources or approval boundaries.';
+      : review
+        ? 'One weekly Space Review needs your decisions. Quiet runs appear only in Activity.'
+        : 'Finish the one-time import. After verification, migration controls disappear.';
   const eyebrow = spacesLanding ? 'Spaces' : newSpace ? 'Spaces / New Space' : scenarios[route.scenario].eyebrow;
-  const heading = spacesLanding ? 'Your Spaces' : newSpace ? 'Create a Space' : 'Shape a Space';
+  const heading = spacesLanding ? 'Your Spaces' : newSpace ? 'Create a Space' : review ? 'Global Dashboard' : 'Initial migration';
   const headingAction = spacesLanding
     ? '<button class="primary-button heading-button" type="button" data-start-create>+ Create Space</button>'
     : newSpace
@@ -84,8 +94,8 @@ function shell(content, route) {
           <span class="brand-mark">OC</span><span class="brand-copy">Command<br>Center</span>
         </a>
         <nav class="main-nav" aria-label="Main navigation">
-          <a href="#">${icon('home')}<span>Home</span></a>
-          <a href="#" aria-current="page">${icon('space')}<span>Spaces</span></a>
+          <a href="#" ${review ? 'aria-current="page"' : ''}>${icon('home')}<span>Home</span></a>
+          <a href="#" ${review ? '' : 'aria-current="page"'}>${icon('space')}<span>Spaces</span></a>
           <a href="#">${icon('activity')}<span>Activity</span></a>
         </nav>
         <a class="settings-link" href="#">${icon('settings')}<span>Settings</span></a>
@@ -107,7 +117,7 @@ function shell(content, route) {
             </div>
             ${headingAction}
           </header>
-          <nav class="scenario-nav" aria-label="Prototype scenario">${scenarioNav}</nav>
+          <div class="scenario-picker"><span>Prototype views</span><nav class="scenario-nav" aria-label="Prototype scenario">${scenarioNav}</nav></div>
           ${content}
         </main>
       </div>
@@ -152,6 +162,80 @@ function spacesLanding() {
     </section>
     <section class="all-spaces"><div class="section-heading"><div><p class="eyebrow">Browse</p><h2 id="all-spaces-title">All Spaces</h2></div><span>${spaces.length} Spaces</span></div><ul class="space-grid">${cards}</ul></section>
   </section>`;
+}
+
+function resolvedMigration() {
+  if (state.migrationStatus === 'complete') {
+    return `<section class="setup-complete" aria-labelledby="migration-complete-title">
+      <div class="success-mark">${icon('check')}</div>
+      <p class="eyebrow">Verified once · 2 August 2026</p>
+      <h2 id="migration-complete-title">Initial migration is complete</h2>
+      <p>All 40 conversations were verified. Migration controls are now removed from the normal product experience.</p>
+      <div class="archive-remains">${icon('archive')}<div><strong>Legacy Conversation Archive remains available</strong><span>Read-only and searchable from Household. There is no ongoing sync or repeat import.</span></div></div>
+    </section>`;
+  }
+
+  return `<section class="setup-card" aria-labelledby="migration-title">
+    <header class="setup-card-header"><div><p class="eyebrow">Initial setup · incomplete</p><h2 id="migration-title">Resume the one-time migration</h2><p>This recovery view exists only until every imported conversation is verified.</p></div><span class="setup-progress-label">38 of 40 verified</span></header>
+    <div class="setup-progress" role="progressbar" aria-label="Migration verification" aria-valuemin="0" aria-valuemax="40" aria-valuenow="38"><span></span></div>
+    <div class="migration-summary"><div><strong>38</strong><span>verified conversations</span></div><div><strong>2</strong><span>items need attention</span></div><div><strong>0</strong><span>changes to source data</span></div></div>
+    ${state.migrationFailuresVisible ? `<section class="failure-list" aria-label="Migration failures"><h3>Items needing attention</h3><ul><li><div><strong>Household planning · 14 Mar 2021</strong><span>Malformed date metadata; text is intact.</span></div><span>Retryable</span></li><li><div><strong>Vehicle records · 02 Jun 2022</strong><span>Conversation title is missing; text is intact.</span></div><span>Retryable</span></li></ul></section>` : ''}
+    <div class="setup-actions"><button class="primary-button" type="button" data-resume-migration>Resume migration</button><button class="secondary-button" type="button" data-review-failures aria-expanded="${state.migrationFailuresVisible}">${state.migrationFailuresVisible ? 'Hide failures' : 'Review failures'}</button></div>
+    <p class="microcopy">After verified success, only the read-only, searchable Legacy Conversation Archive remains.</p>
+  </section>`;
+}
+
+const reviewProposals = [
+  { id: 'vehicle', space: 'Household', title: 'Separate recurring vehicle context', evidence: '7 Notes · 4 linked conversations', change: 'Create Vehicle as an Area and move the selected Notes.' },
+  { id: 'technology', space: 'Household', title: 'Move device upkeep to Technology', evidence: '5 Notes · repeated across 3 months', change: 'Move 5 selected Notes to the existing Technology Space.' },
+  { id: 'cooking', space: 'Cooking', title: 'Keep meal planning together', evidence: '3 planning Notes · low retrieval ambiguity', change: 'Keep these Notes in Cooking and refine its compact context.' },
+];
+
+function reviewDecisionButtons(proposal) {
+  const selected = state.reviewDecisions[proposal.id];
+  const options = [
+    ['approve', 'Approve'],
+    ['adjust', 'Adjust'],
+    ['keep', 'Keep as-is'],
+  ];
+  return `<div class="decision-actions" role="group" aria-label="Decision for ${proposal.title}">${options.map(([value, label]) => `<button type="button" data-review-decision="${proposal.id}" data-decision="${value}" aria-pressed="${selected === value}">${label}</button>`).join('')}</div>
+    ${selected === 'adjust' ? `<label class="adjust-field">Adjustment <input value="${proposal.id === 'vehicle' ? 'Create the Space, but move only the 4 maintenance Notes.' : proposal.id === 'technology' ? 'Move only device warranty Notes.' : 'Update context without moving Notes.'}"></label>` : ''}`;
+}
+
+function resolvedSpaceReview() {
+  const decisions = Object.values(state.reviewDecisions).filter(Boolean).length;
+  const approved = Object.values(state.reviewDecisions).filter((value) => value === 'approve' || value === 'adjust').length;
+
+  if (state.reviewApplied) {
+    return `<section class="dashboard-grid"><article class="review-complete" aria-labelledby="review-complete-title"><div class="success-mark">${icon('check')}</div><p class="eyebrow">Space Review resolved</p><h2 id="review-complete-title">Approved changes are being applied</h2><p>${approved} approved or adjusted proposal${approved === 1 ? '' : 's'} will be applied. Kept-as-is proposals make no structural change.</p><div class="archive-remains">${icon('activity')}<div><strong>The outcome moves to Activity</strong><span>The grouped Action Card is complete; source-level results remain auditable.</span></div></div></article>${dashboardAside()}</section>`;
+  }
+
+  if (state.reviewSnoozed) {
+    return `<section class="dashboard-grid"><article class="review-complete" aria-labelledby="review-snoozed-title"><p class="eyebrow">Grouped Action Card</p><h2 id="review-snoozed-title">Space Review snoozed</h2><p>All three proposals will return together next Sunday. Individual proposals were not split into separate tasks.</p><button class="secondary-button" type="button" data-resume-review>Review now</button></article>${dashboardAside()}</section>`;
+  }
+
+  const cards = reviewProposals.map((proposal, index) => {
+    const selected = state.reviewDecisions[proposal.id];
+    return `<li class="review-proposal ${selected ? 'is-decided' : ''}">
+      <div class="proposal-number">${index + 1}</div>
+      <div class="proposal-body"><div class="proposal-heading"><div><span>${proposal.space}</span><h3>${proposal.title}</h3></div><span class="decision-state">${selected ? selected === 'keep' ? 'Keep as-is' : selected[0].toUpperCase() + selected.slice(1) : 'Decision needed'}</span></div>
+      <p>${proposal.change}</p><button class="evidence-link" type="button">${proposal.evidence} · View evidence</button>${reviewDecisionButtons(proposal)}</div>
+    </li>`;
+  }).join('');
+
+  return `<section class="dashboard-grid">
+    <article class="review-card" aria-labelledby="review-title">
+      <header class="review-card-header"><div><p class="eyebrow">Action Card · weekly</p><h2 id="review-title">Space Review</h2><p>Three independently decidable suggestions from this week’s analysis.</p></div><div class="review-schedule"><strong>Next run</strong><span>Sunday · 6:00 am</span><button type="button">Change schedule</button></div></header>
+      <ul class="review-proposals">${cards}</ul>
+      ${state.reviewError ? `<p class="review-error" role="alert">${state.reviewError}</p>` : ''}
+      <footer class="review-footer"><div><strong>${decisions} of ${reviewProposals.length} decided</strong><span>This is one grouped Action Card, not three tasks or subtasks.</span></div><div class="action-row"><button class="secondary-button" type="button" data-snooze-review>Snooze card</button><button class="primary-button" type="button" data-apply-review>Apply approved changes</button></div></footer>
+    </article>
+    ${dashboardAside()}
+  </section>`;
+}
+
+function dashboardAside() {
+  return `<aside class="dashboard-aside" aria-label="Dashboard context"><section><p class="eyebrow">Coming up</p><h2>Sunday review</h2><p>Runs weekly by default. You can change the schedule or turn it off.</p></section><section><p class="eyebrow">Recent Activity</p><div class="quiet-run">${icon('check')}<div><strong>Last Space Review was quiet</strong><span>No suggestions · 27 July</span></div></div><div class="quiet-run">${icon('activity')}<div><strong>Cooking context refreshed</strong><span>Completed · 24 July</span></div></div></section></aside>`;
 }
 
 function sourceBoundary() {
@@ -228,7 +312,7 @@ function conversationMigrate() {
 function conversationGarden() {
   return `
     <div class="chat-thread">
-      <article class="message agent-message"><span class="agent-avatar">OC</span><div><p class="message-meta">Space Gardening · proposal</p><p>Vehicle maintenance appears in <strong>7 Household Notes</strong> and <strong>4 Space Conversations</strong>. A separate Vehicle Space may make both contexts clearer.</p></div></article>
+      <article class="message agent-message"><span class="agent-avatar">OC</span><div><p class="message-meta">Space Review · proposal</p><p>Vehicle maintenance appears in <strong>7 Household Notes</strong> and <strong>4 Space Conversations</strong>. A separate Vehicle Space may make both contexts clearer.</p></div></article>
       <article class="message agent-message"><span class="agent-avatar">OC</span><div><p class="message-meta">Nothing changes without approval</p><div class="proposal-compare"><div><span>Now</span><strong>Household</strong><p>Mixed home and vehicle context</p></div>${icon('arrow')}<div><span>Proposed</span><strong>Vehicle</strong><p>New Area with its own folder and Primary Session</p></div></div>
         <p>I can move 7 Notes after confirmation. Conversation transcripts remain authoritative and are linked to the new Space; they are not rewritten.</p>
         <div class="action-row"><button class="primary-button" type="button" data-garden="move">Approve proposal</button><button class="secondary-button" type="button" data-garden="keep">Keep as-is</button><button class="text-button" type="button">Adjust proposal</button></div>
@@ -270,7 +354,7 @@ function workbenchMigrate() {
 function workbenchGarden() {
   return `
     <section class="workbench-stage gardening-stage">
-      <header><p class="eyebrow">Space Gardening</p><h2>Shape the boundary before approving</h2><p>Inspect evidence, adjust the proposed structure, then make one explicit decision.</p></header>
+      <header><p class="eyebrow">Space Review</p><h2>Shape the boundary before approving</h2><p>Inspect evidence, adjust the proposed structure, then make one explicit decision.</p></header>
       <div class="garden-board">
         <article class="evidence-column"><h3>Evidence in Household</h3><div class="evidence-card"><span>Note</span><strong>Seasonal vehicle checks</strong><small>Vehicle topic · repeated 4 times</small></div><div class="evidence-card"><span>Conversation cluster</span><strong>Service and repair planning</strong><small>4 linked conversations</small></div><div class="evidence-card"><span>Note</span><strong>Registration checklist</strong><small>Vehicle topic · stable content</small></div><button class="text-button" type="button">View all 11 signals</button></article>
         <div class="decision-column"><h3>Proposed boundary</h3><label for="new-space-name">New Space</label><input id="new-space-name" value="Vehicle"><label for="garden-category">PARA Category</label><select id="garden-category"><option>Area</option><option>Project</option><option>Resource</option><option>Archive</option></select><fieldset><legend>Move now</legend><label class="check-row"><input type="checkbox" checked><span>7 relevant Notes</span></label><label class="check-row"><input type="checkbox" checked><span>Link 4 conversations</span></label></fieldset><p class="microcopy">Conversation transcripts are relinked, never rewritten.</p></div>
@@ -310,7 +394,7 @@ function proposalPacket(scenario) {
       <div class="packet-approval"><label class="acknowledge"><input type="checkbox"><span>I reviewed the 12 excluded attachments and the one-time import boundary.</span></label><button class="primary-button" type="button" data-import>Approve text import</button></div>`;
   }
   return `
-    <div class="packet-summary"><div><p class="eyebrow">Gardening proposal</p><h2>Separate Vehicle from Household</h2><p>Recurring context suggests a more durable boundary. This proposal cannot apply without approval.</p></div><span class="confidence-badge">11 signals</span></div>
+    <div class="packet-summary"><div><p class="eyebrow">Space Review proposal</p><h2>Separate Vehicle from Household</h2><p>Recurring context suggests a more durable boundary. This proposal cannot apply without approval.</p></div><span class="confidence-badge">11 signals</span></div>
     ${packetSection('structure', 'Proposed structural changes', '4 changes', '<ol class="change-list"><li>Create Vehicle as an Area.</li><li>Bind a new Vehicle Note Folder and Primary Session.</li><li>Move 7 Notes from Household.</li><li>Link 4 authoritative conversation transcripts to Vehicle.</li></ol>', true)}
     ${packetSection('evidence', 'Why this was suggested', '7 Notes and 4 conversations', '<p>Vehicle maintenance is recurring, independently useful context rather than a temporary Household topic. The suggestion is based on topic recurrence and retrieval ambiguity, not message volume alone.</p>')}
     ${packetSection('consequences', 'Consequences & rollback', 'What changes and what does not', '<p>Notes move between authoritative folders. Conversation transcripts are not rewritten. Compact Space context is regenerated. Existing backups remain the initial recovery path.</p>')}
@@ -322,11 +406,17 @@ function variantC(scenario) {
   return `<section class="variant variant-c" aria-label="${create ? 'Compact proposal' : 'Proposal packet'} variant"><div class="packet-layout"><aside class="packet-index"><p class="eyebrow">C · ${create ? 'Compact proposal' : 'Proposal packet'}</p><h2>${create ? 'Quick confirmation' : 'Decision brief'}</h2><p>${create ? 'Two essentials with optional detail.' : 'Prepared by OpenClaw for explicit review.'}</p><div class="packet-progress">${create ? `<span class="complete">${icon('check')}Defaults ready</span><span>${icon('arrow')}Name & category</span>` : `<span class="complete">${icon('check')}Evidence gathered</span><span class="complete">${icon('check')}Sources checked</span><span>${icon('arrow')}Your decision</span>`}</div><button class="secondary-button full" type="button">Ask OpenClaw</button></aside><article class="proposal-packet">${proposalPacket(scenario)}</article></div></section>`;
 }
 
+function variantD(scenario) {
+  if (scenario === 'migrate') return resolvedMigration();
+  if (scenario === 'review') return resolvedSpaceReview();
+  return workbenchCreate();
+}
+
 function statusBanner(scenario) {
   let message = '';
   if (scenario === 'create' && state.createStatus === 'created') message = 'Space plan accepted. Creation is represented only in this in-memory prototype.';
   if (scenario === 'migrate' && state.migrationStatus === 'running') message = 'Text import started. The prototype will keep the manifest visible until verification.';
-  if (scenario === 'garden' && state.gardenStatus !== 'pending') message = state.gardenStatus === 'approved' ? 'Gardening proposal approved. Structural work would now run and report to Activity.' : 'Gardening proposal declined. Household remains unchanged.';
+  if (scenario === 'review' && state.gardenStatus !== 'pending') message = state.gardenStatus === 'approved' ? 'Space Review proposal approved. Structural work would now run and report to Activity.' : 'Space Review proposal declined. Household remains unchanged.';
   return message ? `<div class="status-banner" role="status">${icon('check')}<span>${message}</span></div>` : '';
 }
 
@@ -334,7 +424,7 @@ function render() {
   const route = currentRoute();
   const content = route.scenario === 'create' && route.view === 'spaces'
     ? spacesLanding()
-    : route.variant === 'A' ? variantA(route.scenario) : route.variant === 'B' ? variantB(route.scenario) : variantC(route.scenario);
+    : route.variant === 'A' ? variantA(route.scenario) : route.variant === 'B' ? variantB(route.scenario) : route.variant === 'C' ? variantC(route.scenario) : variantD(route.scenario);
   document.querySelector('#app').innerHTML = shell(`${statusBanner(route.scenario)}${content}`, route);
   bindEvents(route);
 }
@@ -388,10 +478,50 @@ function bindEvents(route) {
     announce('Text import started in the prototype.');
     render();
   }));
+  document.querySelector('[data-review-failures]')?.addEventListener('click', () => {
+    state.migrationFailuresVisible = !state.migrationFailuresVisible;
+    render();
+    announce(state.migrationFailuresVisible ? 'Two migration failures shown.' : 'Migration failures hidden.');
+  });
+  document.querySelector('[data-resume-migration]')?.addEventListener('click', () => {
+    state.migrationStatus = 'complete';
+    state.migrationFailuresVisible = false;
+    render();
+    announce('Initial migration completed and verified. Migration controls removed.');
+  });
+  document.querySelectorAll('[data-review-decision]').forEach((button) => button.addEventListener('click', () => {
+    state.reviewDecisions[button.dataset.reviewDecision] = button.dataset.decision;
+    state.reviewError = '';
+    render();
+    announce(`${button.textContent.trim()} selected.`);
+  }));
+  document.querySelector('[data-apply-review]')?.addEventListener('click', () => {
+    const undecided = Object.values(state.reviewDecisions).filter((value) => !value).length;
+    if (undecided) {
+      state.reviewError = `Decide all ${reviewProposals.length} suggestions before applying changes. ${undecided} ${undecided === 1 ? 'is' : 'are'} still open.`;
+      render();
+      announce(state.reviewError);
+      return;
+    }
+    state.reviewApplied = true;
+    state.reviewError = '';
+    render();
+    announce('Approved Space Review changes are being applied.');
+  });
+  document.querySelector('[data-snooze-review]')?.addEventListener('click', () => {
+    state.reviewSnoozed = true;
+    render();
+    announce('The grouped Space Review card was snoozed.');
+  });
+  document.querySelector('[data-resume-review]')?.addEventListener('click', () => {
+    state.reviewSnoozed = false;
+    render();
+    announce('The grouped Space Review card is ready.');
+  });
   document.querySelectorAll('[data-garden]').forEach((button) => button.addEventListener('click', () => {
     const choice = button.dataset.garden === 'packet' ? state.gardenChoice : button.dataset.garden;
     state.gardenStatus = choice === 'move' ? 'approved' : 'declined';
-    announce(state.gardenStatus === 'approved' ? 'Gardening proposal approved.' : 'Gardening proposal declined.');
+    announce(state.gardenStatus === 'approved' ? 'Space Review proposal approved.' : 'Space Review proposal declined.');
     render();
   }));
   document.querySelectorAll('input[name="packet-decision"]').forEach((input) => input.addEventListener('change', () => { state.gardenChoice = input.value; }));
@@ -402,7 +532,7 @@ function bindEvents(route) {
   }));
   document.querySelectorAll('[data-cycle]').forEach((button) => button.addEventListener('click', () => cycleVariant(Number(button.dataset.cycle))));
   document.querySelector('[data-reset]')?.addEventListener('click', () => {
-    state.spaceName = 'Garden'; state.category = null; state.createdSpace = null; state.openedSpace = null; state.createStatus = 'draft'; state.migrationStatus = 'ready'; state.gardenStatus = 'pending'; state.gardenChoice = 'move'; state.packetSections = new Set(['structure']); render(); announce('Fictional prototype state reset.');
+    state.spaceName = 'Garden'; state.category = null; state.createdSpace = null; state.openedSpace = null; state.createStatus = 'draft'; state.migrationStatus = 'incomplete'; state.migrationFailuresVisible = false; state.gardenStatus = 'pending'; state.gardenChoice = 'move'; state.reviewDecisions = { vehicle: null, technology: null, cooking: null }; state.reviewApplied = false; state.reviewSnoozed = false; state.reviewError = ''; state.packetSections = new Set(['structure']); render(); announce('Fictional prototype state reset.');
   });
 }
 

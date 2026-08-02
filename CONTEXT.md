@@ -43,8 +43,9 @@ An isolated OpenClaw session associated with a Space. It shares compact Space-le
 **Space Search**:
 A search across a Space's Notes, Space Conversations, and Legacy Conversation Archive whose results identify their authoritative source.
 
-**Space Gardening**:
+**Space Review**:
 Periodic analysis that identifies when recurring topics or misplaced context suggest a better Space boundary. Structural changes are proposed through a gated Action Card rather than performed silently.
+_Avoid_: Space Gardening, gardening
 
 ## Attention and activity
 
