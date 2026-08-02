@@ -268,7 +268,7 @@ function attentionListRow(item) {
   return `<li class="inbox-row severity-${item.severity} ${handled ? 'is-done' : ''}">
     <button type="button" class="inbox-row-open" data-action="open-attention" data-id="${item.id}" aria-label="Open details for ${item.title}">
       <span class="inbox-row-icon">${icon(item.severity === 'high' ? 'alert' : item.kind === 'Reminder' ? 'clock' : 'spark')}</span>
-      <span class="inbox-row-main"><span class="inbox-row-meta"><strong>${item.kind}</strong><span>${handled ? 'Handled' : snoozedFor ? `Snoozed ${snoozedFor}` : item.time}</span></span><span class="inbox-row-title">${item.title}</span></span>
+      <span class="inbox-row-main"><span class="inbox-row-meta"><strong>${item.kind}</strong><span>${handled ? 'Handled' : snoozedFor ? `Snoozed ${snoozedFor}` : item.time}</span></span><span class="inbox-row-title">${item.title}</span><span class="inbox-row-summary">${handled ? 'Handled for this prototype session.' : item.summary}</span></span>
       ${icon('arrow')}
     </button>
     <div class="inbox-row-actions" aria-label="Quick actions for ${item.title}"><button class="small-button primary-small" type="button" data-action="attention-primary" data-id="${item.id}">${handled ? icon('check') + 'Done' : item.primary}</button>${handled ? '' : item.kind === 'Suggestion' ? `<button class="small-button" type="button" data-action="attention-secondary" data-id="${item.id}">Dismiss</button>` : quickSnooze}</div>
