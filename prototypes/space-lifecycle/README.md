@@ -2,7 +2,7 @@
 
 > PROTOTYPE — throwaway planning artifact. Do not promote this code directly to production.
 
-Three exploratory interaction models plus a resolved MVP model for Space creation, one-time legacy migration, and Space Review. Variants and scenarios are URL-stable and switchable from the fixed prototype bar.
+Three exploratory interaction models plus a resolved MVP model for Space creation and Space Review. Variants and scenarios are URL-stable and switchable from the fixed prototype bar.
 
 The creation scenario now begins on the first-class **Spaces** destination. It provides a compact existing-Space selector, a browsable Space list, and a prominent **Create Space** action. Creation opens with `view=new` and returns to the list after the in-memory Space is created.
 
@@ -13,12 +13,12 @@ The creation scenario now begins on the first-class **Spaces** destination. It p
 
 Routine creation follows the default convention: Command Center derives the Note Folder and Primary Session from the Space name. Exact-match adoption or naming conflicts appear only as exceptions; source binding is not a normal creation decision.
 
-Use `scenario=create`, `scenario=migrate`, or `scenario=review` to compare the same lifecycle moment across variants. Old `scenario=garden` links are redirected in memory to `scenario=review`.
+Use `scenario=create` or `scenario=review` to compare the same lifecycle moment across variants. Old `scenario=garden` links are redirected in memory to `scenario=review`; old `scenario=migrate` links now open the Spaces destination.
 
 ## Resolved MVP model (Variant D)
 
 - **Spaces and creation:** Spaces is a first-class destination for listing, selecting, opening, and creating Spaces. Routine creation asks only for the Space name and PARA Category; source conventions are automatic unless there is a conflict.
-- **Initial migration:** legacy importing happens exactly once during initial setup. An incomplete migration exposes only **Resume migration** and **Review failures**. After verified success, migration controls disappear; the read-only, searchable Legacy Conversation Archive remains.
+- **Initial migration:** legacy importing happens exactly once as startup bootstrap, before the normal app destinations appear. It is not a page or permanent navigation destination. After startup succeeds, the read-only, searchable Legacy Conversation Archive remains.
 - **Space Review:** a weekly run is the default and can be rescheduled or disabled. A quiet run produces Activity only. A run with findings creates one grouped Action Card whose proposals are decided independently with **Approve**, **Adjust**, or **Keep as-is**. Snooze applies to the whole card, and approved changes wait for the final **Apply approved changes** checkpoint. The proposals are not Tasks or subtasks.
 
 Run from the repository root:

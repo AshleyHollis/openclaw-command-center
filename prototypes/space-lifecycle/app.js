@@ -1,16 +1,15 @@
 // PROTOTYPE — throwaway planning artifact.
-// Three Space lifecycle variants, switchable by ?variant=, on a standalone prototype route.
+// Space creation and review variants, switchable by ?variant=, on a standalone prototype route.
 
 const variants = {
   A: { name: 'Guided conversation', description: 'Name the Space, then answer the one required category question.' },
   B: { name: 'Quick form', description: 'Enter the two essentials and create immediately.' },
   C: { name: 'Compact proposal', description: 'Confirm the essentials while defaults stay inspectable.' },
-  D: { name: 'Resolved model', description: 'The agreed Spaces, initial migration, and weekly Space Review experience.' },
+  D: { name: 'Resolved model', description: 'The agreed Spaces and weekly Space Review experience after startup.' },
 };
 
 const scenarios = {
   create: { label: 'Spaces & create', eyebrow: 'First-class destination' },
-  migrate: { label: 'Initial migration', eyebrow: 'Initial setup only' },
   review: { label: 'Space Review card', eyebrow: 'Weekly Space Review' },
 };
 
@@ -20,8 +19,6 @@ const state = {
   createdSpace: null,
   openedSpace: null,
   createStatus: 'draft',
-  migrationStatus: 'incomplete',
-  migrationFailuresVisible: false,
   gardenStatus: 'pending',
   gardenChoice: 'move',
   reviewDecisions: { vehicle: null, technology: null, cooking: null },
@@ -54,6 +51,11 @@ function currentRoute() {
   const requestedScenario = params.get('scenario') === 'garden' ? 'review' : params.get('scenario');
   const scenario = scenarios[requestedScenario] ? requestedScenario : 'create';
   const view = scenario === 'create' && params.get('view') === 'new' ? 'new' : scenario === 'create' ? 'spaces' : 'flow';
+  if (params.get('scenario') !== scenario || params.get('view') !== view) {
+    params.set('scenario', scenario);
+    params.set('view', view);
+    history.replaceState(null, '', `?${params}`);
+  }
   return { variant, scenario, view };
 }
 
@@ -72,11 +74,9 @@ function shell(content, route) {
     ? 'Open a durable topic context or create a new one.'
     : newSpace
       ? 'Choose a Space name and one PARA Category. Command Center applies the standard Note Folder and Primary Session defaults.'
-      : review
-        ? 'One weekly Space Review needs your decisions. Quiet runs appear only in Activity.'
-        : 'Finish the one-time import. After verification, migration controls disappear.';
+      : 'One weekly Space Review needs your decisions. Quiet runs appear only in Activity.';
   const eyebrow = spacesLanding ? 'Spaces' : newSpace ? 'Spaces / New Space' : scenarios[route.scenario].eyebrow;
-  const heading = spacesLanding ? 'Your Spaces' : newSpace ? 'Create a Space' : review ? 'Global Dashboard' : 'Initial migration';
+  const heading = spacesLanding ? 'Your Spaces' : newSpace ? 'Create a Space' : 'Global Dashboard';
   const headingAction = spacesLanding
     ? '<button class="primary-button heading-button" type="button" data-start-create>+ Create Space</button>'
     : newSpace
@@ -161,27 +161,6 @@ function spacesLanding() {
       <div class="launcher-controls"><label class="sr-only" for="existing-space">Existing Space</label><select id="existing-space" data-space-select>${options}</select><button class="primary-button" type="button" data-open-selected>Open Space</button></div>
     </section>
     <section class="all-spaces"><div class="section-heading"><div><p class="eyebrow">Browse</p><h2 id="all-spaces-title">All Spaces</h2></div><span>${spaces.length} Spaces</span></div><ul class="space-grid">${cards}</ul></section>
-  </section>`;
-}
-
-function resolvedMigration() {
-  if (state.migrationStatus === 'complete') {
-    return `<section class="setup-complete" aria-labelledby="migration-complete-title">
-      <div class="success-mark">${icon('check')}</div>
-      <p class="eyebrow">Verified once · 2 August 2026</p>
-      <h2 id="migration-complete-title">Initial migration is complete</h2>
-      <p>All 40 conversations were verified. Migration controls are now removed from the normal product experience.</p>
-      <div class="archive-remains">${icon('archive')}<div><strong>Legacy Conversation Archive remains available</strong><span>Read-only and searchable from Household. There is no ongoing sync or repeat import.</span></div></div>
-    </section>`;
-  }
-
-  return `<section class="setup-card" aria-labelledby="migration-title">
-    <header class="setup-card-header"><div><p class="eyebrow">Initial setup · incomplete</p><h2 id="migration-title">Resume the one-time migration</h2><p>This recovery view exists only until every imported conversation is verified.</p></div><span class="setup-progress-label">38 of 40 verified</span></header>
-    <div class="setup-progress" role="progressbar" aria-label="Migration verification" aria-valuemin="0" aria-valuemax="40" aria-valuenow="38"><span></span></div>
-    <div class="migration-summary"><div><strong>38</strong><span>verified conversations</span></div><div><strong>2</strong><span>items need attention</span></div><div><strong>0</strong><span>changes to source data</span></div></div>
-    ${state.migrationFailuresVisible ? `<section class="failure-list" aria-label="Migration failures"><h3>Items needing attention</h3><ul><li><div><strong>Household planning · 14 Mar 2021</strong><span>Malformed date metadata; text is intact.</span></div><span>Retryable</span></li><li><div><strong>Vehicle records · 02 Jun 2022</strong><span>Conversation title is missing; text is intact.</span></div><span>Retryable</span></li></ul></section>` : ''}
-    <div class="setup-actions"><button class="primary-button" type="button" data-resume-migration>Resume migration</button><button class="secondary-button" type="button" data-review-failures aria-expanded="${state.migrationFailuresVisible}">${state.migrationFailuresVisible ? 'Hide failures' : 'Review failures'}</button></div>
-    <p class="microcopy">After verified success, only the read-only, searchable Legacy Conversation Archive remains.</p>
   </section>`;
 }
 
@@ -296,19 +275,6 @@ function conversationCreate() {
     </div>`;
 }
 
-function conversationMigrate() {
-  return `
-    <div class="chat-thread">
-      <article class="message user-message"><div><p class="message-meta">You</p><p>Bring my old Household conversations into this Space.</p></div></article>
-      <article class="message agent-message"><span class="agent-avatar">OC</span><div><p class="message-meta">OpenClaw · import scan complete</p><p>I found a fictional export with <strong>38 text conversations</strong> and <strong>12 binary attachments</strong>. MVP can import the text once. Attachments stay in the source export and are listed as skipped.</p>
-        <ul class="plain-list"><li>The archive is read-only.</li><li>Nothing is replayed into the Primary Session.</li><li>No continuing connection to the legacy service remains.</li></ul>
-      </div></article>
-      <article class="message agent-message compact-message"><span class="agent-avatar">OC</span><div><p class="message-meta">Review before import</p><div class="import-summary"><span><strong>38</strong> conversations</span><span><strong>1,264</strong> messages</span><span><strong>12</strong> skipped files</span></div>
-        <div class="action-row"><button class="primary-button" type="button" data-import>Import text archive</button><button class="secondary-button" type="button">View manifest</button></div>
-      </div></article>
-    </div>`;
-}
-
 function conversationGarden() {
   return `
     <div class="chat-thread">
@@ -321,7 +287,7 @@ function conversationGarden() {
 }
 
 function variantA(scenario) {
-  const body = scenario === 'create' ? conversationCreate() : scenario === 'migrate' ? conversationMigrate() : conversationGarden();
+  const body = scenario === 'create' ? conversationCreate() : conversationGarden();
   return `<section class="variant variant-a" aria-label="Guided conversation variant"><div class="conversation-panel"><div class="panel-heading"><div><p class="eyebrow">A · Guided conversation</p><h2>Decide in context</h2></div><span class="step-badge">Agent-guided</span></div>${body}</div>${liveRecord()}</section>`;
 }
 
@@ -333,21 +299,6 @@ function workbenchCreate() {
         <section class="essentials-card"><h3>Space essentials</h3>${spaceNameField()}${categoryChoices()}<div class="action-row"><button class="primary-button" type="button" data-create>Create Space</button></div></section>
         <aside class="defaults-card"><div class="source-icon">${icon('check')}</div><div><p class="eyebrow">No decisions needed</p><h3>Defaults ready</h3><p>The conventional Note Folder and new Primary Session will use the Space name.</p>${defaultDetails()}</div></aside>
       </div>
-    </section>`;
-}
-
-function workbenchMigrate() {
-  return `
-    <section class="workbench-stage">
-      <header><p class="eyebrow">Legacy source</p><h2>Build the archive manifest</h2><p>Choose what enters the read-only Legacy Conversation Archive.</p></header>
-      <div class="manifest-layout">
-        <aside class="source-browser"><h3>Fictional export</h3><label class="check-row"><input type="checkbox" checked><span><strong>Text conversations</strong><small>38 conversations · 1,264 messages</small></span></label><label class="check-row muted"><input type="checkbox" disabled><span><strong>Binary attachments</strong><small>12 files · deferred beyond MVP</small></span></label><button class="secondary-button full" type="button">Replace export</button></aside>
-        <div class="manifest-preview"><div class="manifest-header"><div><p class="eyebrow">Destination preview</p><h3>Household · Legacy Conversation Archive</h3></div><span class="status-dot">One-time</span></div>
-          <div class="flow-diagram"><div>${icon('archive')}<strong>Legacy export</strong><span>Text snapshot</span></div><span>→</span><div>${icon('space')}<strong>Read-only archive</strong><span>Searchable in Household</span></div></div>
-          <div class="guardrail-grid"><div>${icon('check')}<span><strong>No transcript replay</strong>Primary Session starts clean.</span></div><div>${icon('check')}<span><strong>No ongoing sync</strong>Source can be disconnected.</span></div><div>${icon('check')}<span><strong>Failures are itemised</strong>Partial import never looks complete.</span></div></div>
-        </div>
-      </div>
-      <footer class="workbench-footer"><p class="footer-note">Estimated result: 38 archived conversations, 12 skipped attachments, 1 signed manifest.</p><div class="action-row"><button class="secondary-button" type="button">Download manifest</button><button class="primary-button" type="button" data-import>Start text import</button></div></footer>
     </section>`;
 }
 
@@ -365,7 +316,7 @@ function workbenchGarden() {
 }
 
 function variantB(scenario) {
-  const body = scenario === 'create' ? workbenchCreate() : scenario === 'migrate' ? workbenchMigrate() : workbenchGarden();
+  const body = scenario === 'create' ? workbenchCreate() : workbenchGarden();
   const banner = scenario === 'create'
     ? `<div class="variant-banner"><div><p class="eyebrow">B · Quick form</p><strong>Fastest path</strong></div><span class="step-badge">Defaults automatic</span></div>`
     : `<div class="variant-banner"><div><p class="eyebrow">B · Setup workbench</p><strong>Direct manipulation</strong></div><ol><li class="active">Configure</li><li>Review</li><li>Apply</li></ol></div>`;
@@ -385,14 +336,6 @@ function proposalPacket(scenario) {
       ${packetSection('defaults', 'Automatic defaults', 'No action required', `<p>Command Center uses the conventional “${state.spaceName}” Note Folder and creates “${state.spaceName} main” as the Primary Session. Only conflicts interrupt creation.</p>${sourceBoundary()}`)}
       <div class="packet-approval"><p class="approval-copy"><strong>Ready when the category is chosen.</strong><span>There is no separate source-binding step.</span></p><button class="primary-button" type="button" data-create>Create Space</button></div>`;
   }
-  if (scenario === 'migrate') {
-    return `
-      <div class="packet-summary"><div><p class="eyebrow">Import proposal</p><h2>Add a read-only legacy archive</h2><p>A one-time, text-first import into Household with an explicit record of omissions.</p></div><span class="confidence-badge">38 conversations</span></div>
-      ${packetSection('structure', 'Included content', '1,264 text messages', '<div class="metric-row"><div><strong>38</strong><span>conversations</span></div><div><strong>1,264</strong><span>messages</span></div><div><strong>6 years</strong><span>date range</span></div></div>', true)}
-      ${packetSection('omissions', 'Excluded content', '12 binary attachments', '<p>Binary attachments, previews, and content indexing are deferred. Each skipped file remains named in the import manifest so the result cannot be mistaken for complete.</p>')}
-      ${packetSection('isolation', 'Isolation guarantees', 'No replay and no ongoing dependency', '<ul class="plain-list"><li>Imported conversations are read-only.</li><li>Nothing enters the Primary Session transcript.</li><li>The legacy source can be disconnected after verification.</li></ul>')}
-      <div class="packet-approval"><label class="acknowledge"><input type="checkbox"><span>I reviewed the 12 excluded attachments and the one-time import boundary.</span></label><button class="primary-button" type="button" data-import>Approve text import</button></div>`;
-  }
   return `
     <div class="packet-summary"><div><p class="eyebrow">Space Review proposal</p><h2>Separate Vehicle from Household</h2><p>Recurring context suggests a more durable boundary. This proposal cannot apply without approval.</p></div><span class="confidence-badge">11 signals</span></div>
     ${packetSection('structure', 'Proposed structural changes', '4 changes', '<ol class="change-list"><li>Create Vehicle as an Area.</li><li>Bind a new Vehicle Note Folder and Primary Session.</li><li>Move 7 Notes from Household.</li><li>Link 4 authoritative conversation transcripts to Vehicle.</li></ol>', true)}
@@ -407,7 +350,6 @@ function variantC(scenario) {
 }
 
 function variantD(scenario) {
-  if (scenario === 'migrate') return resolvedMigration();
   if (scenario === 'review') return resolvedSpaceReview();
   return workbenchCreate();
 }
@@ -415,7 +357,6 @@ function variantD(scenario) {
 function statusBanner(scenario) {
   let message = '';
   if (scenario === 'create' && state.createStatus === 'created') message = 'Space plan accepted. Creation is represented only in this in-memory prototype.';
-  if (scenario === 'migrate' && state.migrationStatus === 'running') message = 'Text import started. The prototype will keep the manifest visible until verification.';
   if (scenario === 'review' && state.gardenStatus !== 'pending') message = state.gardenStatus === 'approved' ? 'Space Review proposal approved. Structural work would now run and report to Activity.' : 'Space Review proposal declined. Household remains unchanged.';
   return message ? `<div class="status-banner" role="status">${icon('check')}<span>${message}</span></div>` : '';
 }
@@ -473,22 +414,6 @@ function bindEvents(route) {
     announce('Space plan accepted in the prototype.');
     updateRoute({ view: 'spaces' });
   }));
-  document.querySelectorAll('[data-import]').forEach((button) => button.addEventListener('click', () => {
-    state.migrationStatus = 'running';
-    announce('Text import started in the prototype.');
-    render();
-  }));
-  document.querySelector('[data-review-failures]')?.addEventListener('click', () => {
-    state.migrationFailuresVisible = !state.migrationFailuresVisible;
-    render();
-    announce(state.migrationFailuresVisible ? 'Two migration failures shown.' : 'Migration failures hidden.');
-  });
-  document.querySelector('[data-resume-migration]')?.addEventListener('click', () => {
-    state.migrationStatus = 'complete';
-    state.migrationFailuresVisible = false;
-    render();
-    announce('Initial migration completed and verified. Migration controls removed.');
-  });
   document.querySelectorAll('[data-review-decision]').forEach((button) => button.addEventListener('click', () => {
     state.reviewDecisions[button.dataset.reviewDecision] = button.dataset.decision;
     state.reviewError = '';
@@ -532,7 +457,7 @@ function bindEvents(route) {
   }));
   document.querySelectorAll('[data-cycle]').forEach((button) => button.addEventListener('click', () => cycleVariant(Number(button.dataset.cycle))));
   document.querySelector('[data-reset]')?.addEventListener('click', () => {
-    state.spaceName = 'Garden'; state.category = null; state.createdSpace = null; state.openedSpace = null; state.createStatus = 'draft'; state.migrationStatus = 'incomplete'; state.migrationFailuresVisible = false; state.gardenStatus = 'pending'; state.gardenChoice = 'move'; state.reviewDecisions = { vehicle: null, technology: null, cooking: null }; state.reviewApplied = false; state.reviewSnoozed = false; state.reviewError = ''; state.packetSections = new Set(['structure']); render(); announce('Fictional prototype state reset.');
+    state.spaceName = 'Garden'; state.category = null; state.createdSpace = null; state.openedSpace = null; state.createStatus = 'draft'; state.gardenStatus = 'pending'; state.gardenChoice = 'move'; state.reviewDecisions = { vehicle: null, technology: null, cooking: null }; state.reviewApplied = false; state.reviewSnoozed = false; state.reviewError = ''; state.packetSections = new Set(['structure']); render(); announce('Fictional prototype state reset.');
   });
 }
 
