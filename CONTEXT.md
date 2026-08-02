@@ -26,22 +26,19 @@ _Avoid_: channel page
 ## Knowledge and conversation
 
 **Note**:
-A durable knowledge document whose authoritative content lives in the user's Obsidian vault. OpenClaw may create, update, or freely rewrite it without per-write approval.
+A durable, editable knowledge document whose authoritative content lives in the user's Obsidian vault. OpenClaw may create, update, or freely rewrite it without per-write approval.
 
 **Note Folder**:
-The single Obsidian folder that forms the authoritative boundary for a Space's Notes.
-
-**Legacy Conversation Archive**:
-Read-only historical conversation content imported during migration and associated with a Space for retrieval through Space Search. It is not replayed into the Space's Primary Session and creates no continuing dependency on its source service.
+The single Obsidian folder that forms the authoritative boundary for a Space's Notes. It may contain nested folders and large Notes.
 
 **Primary Session**:
-The default Space Conversation that receives messages sent through a Space's main Chat. Replaced Primary Sessions remain linked as conversation history.
+The default Space Conversation that receives messages sent through a Space's main Chat. During Discord migration, the corresponding channel's historical transcript is imported into this Session in displayed order, including merged thread messages with provenance. Replaced Primary Sessions remain linked as conversation history.
 
 **Space Conversation**:
 An isolated OpenClaw session associated with a Space. It shares compact Space-level context and relevant Notes without inheriting another Space Conversation's transcript.
 
 **Space Search**:
-A search across a Space's Notes, Space Conversations, and Legacy Conversation Archive whose results identify their authoritative source.
+A search across a Space's Notes and Space Conversations, including imported history in its Primary Session, whose results identify their authoritative source.
 
 **Space Gardening**:
 Periodic analysis that identifies when recurring topics or misplaced context suggest a better Space boundary. Structural changes are proposed through a gated Action Card rather than performed silently.
