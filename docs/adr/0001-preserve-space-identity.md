@@ -1,11 +1,11 @@
 ---
-status: proposed
+status: accepted
 ---
 
-# Preserve Space identity and create successors for topology changes
+# Preserve Space identity through lifecycle changes
 
-[Issue #9](https://github.com/AshleyHollis/openclaw-command-center/issues/9) is evaluating whether routine lifecycle changes should preserve a Space's stable identity and whether merge or split should create new successors. This proposal keeps source references, reminders, conversations, search history, and audit records attached through ordinary changes while using explicit lineage for topology changes.
+[Issue #9](https://github.com/AshleyHollis/openclaw-command-center/issues/9) established that renaming, recategorization, source relocation, Primary Session replacement, archive, and restore preserve a Space's stable identity. This keeps references, reminders, conversations, search history, and audit records attached predictably.
 
-Merging or splitting changes the topology instead. A merge creates one new successor Space; a split creates two or more new successor Spaces. Each successor receives a fresh Primary Session, predecessor Spaces are archived with explicit lineage, and Notes and Space Conversations move only as whole records. This avoids arbitrarily privileging one predecessor identity or dividing authoritative transcripts.
+A merge explicitly chooses an existing or newly provisioned continuing destination; absorbed Spaces become terminal Retired Spaces with lineage to it. A split preserves the original identity when a meaningful core remains, but retires it and creates all-new successors when the original concept is dissolved. Every resulting Space explicitly selects a Primary Session, and transcripts are never concatenated or divided.
 
-MVP supports archive and restore rather than permanent Space deletion. Partially completed creation remains a recoverable Provisioning Space until its conventional Note Folder and Primary Session are both bound.
+Notes and Space Conversations move only as whole records, while a nested folder subtree may batch multiple whole Notes. Merge and split must account explicitly for Reminders and schedules. Structural Changes use previewed, idempotent steps and truthful recovery because authoritative filesystem, Session, scheduler, and metadata effects cannot share a genuine transaction.
