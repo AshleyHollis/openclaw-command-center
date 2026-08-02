@@ -1,9 +1,10 @@
-// PROTOTYPE: Three Global Dashboard variants, switchable via ?variant=, on a throwaway page.
+// PROTOTYPE: Three original Global Dashboard variants plus one feedback-driven synthesis, switchable via ?variant=.
 
 const variants = [
   { key: 'A', name: 'Triage stack' },
   { key: 'B', name: 'Focus desk' },
   { key: 'C', name: 'Command canvas' },
+  { key: 'D', name: 'Refined inbox' },
 ];
 
 const state = {
@@ -11,6 +12,8 @@ const state = {
   selectedAttentionId: 'attn-backup',
   selectedSpaceId: 'garden-studio',
   completedAttentionIds: new Set(),
+  snoozedAttention: new Map(),
+  dialogAttentionId: null,
   activityExpanded: false,
 };
 
@@ -55,6 +58,42 @@ const attentionItems = [
     source: 'Space Gardening',
     time: 'Yesterday',
     space: 'Garden studio',
+    primary: 'Review proposal',
+    secondary: 'Dismiss',
+  },
+  {
+    id: 'attn-filter',
+    severity: 'normal',
+    kind: 'Operational',
+    title: 'Water filter is nearing its replacement date',
+    summary: 'The household maintenance schedule reaches its replacement window this week.',
+    source: 'Scheduled maintenance',
+    time: '2 hours ago',
+    space: 'Home care',
+    primary: 'Review schedule',
+    secondary: 'Dismiss',
+  },
+  {
+    id: 'attn-flour',
+    severity: 'due',
+    kind: 'Reminder',
+    title: 'Restock bread flour',
+    summary: 'Due tomorrow · Bread notes',
+    source: 'Reminder',
+    time: 'Due tomorrow',
+    space: 'Bread notes',
+    primary: 'Mark done',
+    secondary: 'Open Space',
+  },
+  {
+    id: 'attn-archive',
+    severity: 'normal',
+    kind: 'Suggestion',
+    title: 'Archive the inactive Camera kit Space?',
+    summary: 'No conversations, Notes, or Reminders have changed in this Space for several weeks.',
+    source: 'Space Gardening',
+    time: 'Friday',
+    space: 'Camera kit',
     primary: 'Review proposal',
     secondary: 'Dismiss',
   },
@@ -244,6 +283,57 @@ function VariantC() {
   return shell(content);
 }
 
+function attentionListRow(item) {
+  const snoozedFor = state.snoozedAttention.get(item.id);
+  const handled = state.completedAttentionIds.has(item.id);
+  return `<li class="inbox-row severity-${item.severity} ${handled ? 'is-done' : ''}">
+    <button type="button" class="inbox-row-open" data-action="open-attention" data-id="${item.id}" aria-label="Open details for ${item.title}">
+      <span class="inbox-row-icon">${icon(item.severity === 'high' ? 'alert' : item.kind === 'Reminder' ? 'clock' : 'spark')}</span>
+      <span class="inbox-row-main"><span class="inbox-row-meta"><strong>${item.kind}</strong><span>${snoozedFor ? `Snoozed ${snoozedFor}` : item.time}</span></span><span class="inbox-row-title">${item.title}</span><span class="inbox-row-summary">${handled ? 'Handled for this prototype session.' : item.summary}</span></span>
+      ${icon('arrow')}
+    </button>
+  </li>`;
+}
+
+function attentionDialog() {
+  const item = attentionItems.find(candidate => candidate.id === state.dialogAttentionId);
+  if (!item) return '';
+  const handled = state.completedAttentionIds.has(item.id);
+  const snoozedFor = state.snoozedAttention.get(item.id);
+  return `<dialog class="attention-dialog" aria-labelledby="attention-dialog-title">
+    <div class="dialog-shell">
+      <header class="dialog-heading"><div><span class="severity-pill severity-${item.severity}">${icon(item.severity === 'high' ? 'alert' : item.kind === 'Reminder' ? 'clock' : 'spark')}${item.kind}</span><h2 id="attention-dialog-title">${item.title}</h2></div><button type="button" class="dialog-close icon-button" data-action="close-attention" aria-label="Close Attention Item details">×</button></header>
+      <p class="dialog-summary">${item.summary}</p>
+      <section class="dialog-evidence" aria-labelledby="why-title"><p class="section-kicker" id="why-title">Why this needs you</p><p>${item.kind === 'Operational' ? 'The source crossed its action threshold. Repeated records were deduplicated into this single Attention Item.' : item.kind === 'Reminder' ? 'A lightweight commitment reached its due window and now requires a decision.' : 'This proposal would change structural context, so OpenClaw cannot apply it silently.'}</p></section>
+      <dl class="dialog-facts"><div><dt>Source</dt><dd>${item.source}</dd></div><div><dt>Space</dt><dd>${item.space ?? 'Global'}</dd></div><div><dt>Status</dt><dd>${handled ? 'Handled' : snoozedFor ? `Snoozed ${snoozedFor}` : 'Waiting for you'}</dd></div><div><dt>Raised</dt><dd>${item.time}</dd></div></dl>
+      <div class="dialog-actions"><button class="primary-button" type="button" data-action="attention-primary" data-id="${item.id}">${handled ? icon('check') + 'Handled' : item.primary}</button>${item.secondary.startsWith('Snooze') ? '' : `<button class="secondary-button" type="button" data-action="attention-secondary" data-id="${item.id}">${item.secondary}</button>`}</div>
+      <form class="snooze-form" data-id="${item.id}" method="dialog"><label for="snooze-duration">Snooze for</label><div><select id="snooze-duration" name="duration"><option value="15 minutes">15 minutes</option><option value="1 hour" selected>1 hour</option><option value="3 hours">3 hours</option><option value="until tomorrow morning">Until tomorrow morning</option><option value="1 week">1 week</option></select><button type="button" class="small-button" data-action="confirm-snooze" data-id="${item.id}">${icon('clock')}Snooze</button></div></form>
+    </div>
+  </dialog>`;
+}
+
+function VariantD() {
+  const visibleAttention = attentionItems.filter(item => state.attentionFilter === 'all' || item.kind.toLowerCase() === state.attentionFilter);
+  const selectedSpace = spaces.find(space => space.id === state.selectedSpaceId) ?? spaces[0];
+  const content = `<main id="main-content" class="page page-d">
+    ${pageHeading('Sunday, 2 August', 'Good afternoon, Alex', 'Handle what needs you, then move into a Space.', true)}
+    <div class="dashboard-grid-d">
+      <section class="refined-inbox" aria-labelledby="attention-d-title">
+        <header class="inbox-banner"><div><p class="section-kicker">Needs you</p><h2 id="attention-d-title">Attention inbox <span>${visibleAttention.length}</span></h2><p>Open an item for its evidence and actions.</p></div><div class="segmented segmented-dark" aria-label="Filter attention items">${['all', 'reminder', 'operational'].map(filter => `<button type="button" data-action="filter-attention" data-filter="${filter}" class="${state.attentionFilter === filter ? 'is-active' : ''}" aria-pressed="${state.attentionFilter === filter}">${filter[0].toUpperCase() + filter.slice(1)}</button>`).join('')}</div></header>
+        <ol class="inbox-rows">${visibleAttention.map(item => attentionListRow(item)).join('')}</ol>
+        <footer class="inbox-footer"><span>Showing ${visibleAttention.length} Attention Items</span><button class="small-button" type="button" data-action="load-more">Load more</button></footer>
+      </section>
+      <aside class="right-stack refined-right">
+        <section class="panel space-launcher" aria-labelledby="space-launcher-title"><div class="panel-heading"><div><p class="section-kicker">Go to a Space</p><h2 id="space-launcher-title">Space launcher</h2></div></div><label for="space-select">Space</label><select id="space-select" data-action="select-space-dropdown">${spaces.map(space => `<option value="${space.id}" ${space.id === selectedSpace.id ? 'selected' : ''}>${space.name}</option>`).join('')}</select><button class="primary-button" type="button" data-action="open-space">Open Space${icon('arrow')}</button></section>
+        <section class="panel" aria-labelledby="reminders-d-title"><div class="panel-heading"><h2 id="reminders-d-title">Coming up</h2><a href="#reminders">All Reminders</a></div>${reminderList(3)}</section>
+        <details class="panel quiet-activity" ${state.activityExpanded ? 'open' : ''}><summary><span>${icon('activity')}Recent OpenClaw Activity</span><span class="quiet-count">4 records</span></summary>${activityList(3)}</details>
+      </aside>
+    </div>
+    ${attentionDialog()}
+  </main>`;
+  return shell(content);
+}
+
 function currentVariant() {
   const candidate = new URLSearchParams(window.location.search).get('variant')?.toUpperCase();
   return variants.some(variant => variant.key === candidate) ? candidate : 'A';
@@ -272,15 +362,19 @@ function announce(message) {
 }
 
 function render() {
-  const renderers = { A: VariantA, B: VariantB, C: VariantC };
+  const renderers = { A: VariantA, B: VariantB, C: VariantC, D: VariantD };
   document.querySelector('#app').innerHTML = renderers[currentVariant()]();
   document.querySelector('#prototype-switcher').innerHTML = switcher();
   bindActions();
+  const dialog = document.querySelector('.attention-dialog');
+  if (dialog && !dialog.open) dialog.showModal();
 }
 
 function bindActions() {
-  document.querySelectorAll('[data-action]').forEach(element => element.addEventListener('click', handleAction));
+  document.querySelectorAll('button[data-action], a[data-action]').forEach(element => element.addEventListener('click', handleAction));
+  document.querySelectorAll('select[data-action="select-space-dropdown"]').forEach(element => element.addEventListener('change', handleAction));
   document.querySelectorAll('.quiet-activity').forEach(element => element.addEventListener('toggle', () => { state.activityExpanded = element.open; }));
+  document.querySelectorAll('.attention-dialog').forEach(element => element.addEventListener('close', () => { state.dialogAttentionId = null; render(); }));
 }
 
 function handleAction(event) {
@@ -298,6 +392,20 @@ function handleAction(event) {
     if (currentVariant() !== 'B') setVariant('B'); else render();
     return announce('Attention Item selected');
   }
+  if (action === 'open-attention') {
+    state.dialogAttentionId = target.dataset.id;
+    render();
+    return announce('Attention Item details opened');
+  }
+  if (action === 'close-attention') {
+    state.dialogAttentionId = null;
+    render();
+    return announce('Attention Item details closed');
+  }
+  if (action === 'select-space-dropdown') {
+    state.selectedSpaceId = target.value;
+    return announce(`${spaces.find(space => space.id === state.selectedSpaceId).name} selected`);
+  }
   if (action === 'select-space') {
     state.selectedSpaceId = target.dataset.id;
     render();
@@ -309,6 +417,16 @@ function handleAction(event) {
     return announce('Attention Item handled');
   }
   if (action === 'attention-secondary') return announce('Secondary action previewed; prototype data was not changed');
+  if (action === 'confirm-snooze') {
+    const form = target.closest('.snooze-form');
+    const duration = form.querySelector('select').value;
+    state.snoozedAttention.set(target.dataset.id, duration);
+    state.dialogAttentionId = null;
+    render();
+    return announce(`Attention Item snoozed for ${duration}`);
+  }
+  if (action === 'open-space') return announce(`${spaces.find(space => space.id === state.selectedSpaceId).name} would open`);
+  if (action === 'load-more') return announce('More Attention Items would load here');
   if (action === 'new-space') return announce('New Space flow belongs to a separate prototype ticket');
 }
 
