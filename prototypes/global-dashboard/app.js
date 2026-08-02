@@ -264,13 +264,14 @@ function VariantC() {
 function attentionListRow(item) {
   const snoozedFor = state.snoozedAttention.get(item.id);
   const handled = state.completedAttentionIds.has(item.id);
+  const quickSnooze = `<div class="quick-snooze-split"><button class="small-button" type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="1 hour">${icon('clock')}Snooze 1h</button><details class="quick-snooze-options"><summary aria-label="Choose snooze duration for ${item.title}">${icon('chevron')}</summary><div class="quick-snooze-menu" aria-label="Snooze duration"><button type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="15 minutes">15 minutes</button><button type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="1 hour">1 hour</button><button type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="3 hours">3 hours</button><button type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="until tomorrow morning">Tomorrow morning</button><button type="button" data-action="quick-snooze" data-id="${item.id}" data-duration="1 week">1 week</button></div></details></div>`;
   return `<li class="inbox-row severity-${item.severity} ${handled ? 'is-done' : ''}">
     <button type="button" class="inbox-row-open" data-action="open-attention" data-id="${item.id}" aria-label="Open details for ${item.title}">
       <span class="inbox-row-icon">${icon(item.severity === 'high' ? 'alert' : item.kind === 'Reminder' ? 'clock' : 'spark')}</span>
       <span class="inbox-row-main"><span class="inbox-row-meta"><strong>${item.kind}</strong><span>${handled ? 'Handled' : snoozedFor ? `Snoozed ${snoozedFor}` : item.time}</span></span><span class="inbox-row-title">${item.title}</span></span>
       ${icon('arrow')}
     </button>
-    <div class="inbox-row-actions" aria-label="Quick actions for ${item.title}"><button class="small-button primary-small" type="button" data-action="attention-primary" data-id="${item.id}">${handled ? icon('check') + 'Done' : item.primary}</button>${handled ? '' : item.kind === 'Suggestion' ? `<button class="small-button" type="button" data-action="attention-secondary" data-id="${item.id}">Dismiss</button>` : `<button class="small-button" type="button" data-action="quick-snooze" data-id="${item.id}">${icon('clock')}Snooze 1h</button>`}</div>
+    <div class="inbox-row-actions" aria-label="Quick actions for ${item.title}"><button class="small-button primary-small" type="button" data-action="attention-primary" data-id="${item.id}">${handled ? icon('check') + 'Done' : item.primary}</button>${handled ? '' : item.kind === 'Suggestion' ? `<button class="small-button" type="button" data-action="attention-secondary" data-id="${item.id}">Dismiss</button>` : quickSnooze}</div>
   </li>`;
 }
 
@@ -404,9 +405,10 @@ function handleAction(event) {
     return announce('Secondary action previewed; prototype data was not changed');
   }
   if (action === 'quick-snooze') {
-    state.snoozedAttention.set(target.dataset.id, '1 hour');
+    const duration = target.dataset.duration ?? '1 hour';
+    state.snoozedAttention.set(target.dataset.id, duration);
     render();
-    return announce('Attention Item snoozed for 1 hour');
+    return announce(`Attention Item snoozed for ${duration}`);
   }
   if (action === 'confirm-snooze') {
     const form = target.closest('.snooze-form');
