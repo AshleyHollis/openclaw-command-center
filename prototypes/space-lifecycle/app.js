@@ -2,9 +2,9 @@
 // Three Space lifecycle variants, switchable by ?variant=, on a standalone prototype route.
 
 const variants = {
-  A: { name: 'Guided conversation', description: 'One decision at a time, with a live Space record.' },
-  B: { name: 'Setup workbench', description: 'Configure sources directly and preview the result.' },
-  C: { name: 'Proposal packet', description: 'Inspect a complete plan, then approve once.' },
+  A: { name: 'Guided conversation', description: 'Name the Space, then answer the one required category question.' },
+  B: { name: 'Quick form', description: 'Enter the two essentials and create immediately.' },
+  C: { name: 'Compact proposal', description: 'Confirm the essentials while defaults stay inspectable.' },
 };
 
 const scenarios = {
@@ -14,6 +14,7 @@ const scenarios = {
 };
 
 const state = {
+  spaceName: 'Household',
   category: null,
   createStatus: 'draft',
   migrationStatus: 'ready',
@@ -54,6 +55,9 @@ function updateRoute(patch) {
 }
 
 function shell(content, route) {
+  const intro = route.scenario === 'create'
+    ? 'Choose a Space name and one PARA Category. Command Center applies the standard Note Folder and Primary Session defaults.'
+    : 'Review a consequential structural change without hiding authoritative sources or approval boundaries.';
   const scenarioNav = Object.entries(scenarios).map(([key, item]) => `
     <button class="scenario-tab" data-scenario="${key}" aria-pressed="${route.scenario === key}">
       <span>${item.label}</span>
@@ -85,7 +89,7 @@ function shell(content, route) {
             <div>
               <p class="eyebrow">${scenarios[route.scenario].eyebrow}</p>
               <h1>Shape a Space</h1>
-              <p>Compare how Command Center should ask for structural decisions without hiding authoritative sources or approval boundaries.</p>
+              <p>${intro}</p>
             </div>
             <button class="quiet-button" type="button" data-reset>Reset fixture</button>
           </header>
@@ -121,13 +125,20 @@ function liveRecord() {
     <aside class="live-record" aria-labelledby="live-record-title">
       <div class="record-header"><div><p class="eyebrow">Live preview</p><h2 id="live-record-title">Household</h2></div><span class="status-dot">Draft</span></div>
       <dl class="record-list">
+        <div><dt>Space name</dt><dd>${state.spaceName}</dd></div>
         <div><dt>PARA Category</dt><dd class="${state.category ? '' : 'needs-choice'}">${category}</dd></div>
-        <div><dt>Note Folder</dt><dd>${icon('folder')}Household notes <span>Existing</span></dd></div>
-        <div><dt>Primary Session</dt><dd>${icon('chat')}Household main <span>New</span></dd></div>
-        <div><dt>Legacy archive</dt><dd>${icon('archive')}Not attached</dd></div>
+        <div><dt>Source defaults</dt><dd>${icon('check')}Ready <span>Automatic</span></dd></div>
       </dl>
-      ${sourceBoundary()}
+      ${defaultDetails()}
     </aside>`;
+}
+
+function spaceNameField() {
+  return `<div class="name-field"><label for="space-name">Space name <span>(required)</span></label><input id="space-name" data-space-name value="${state.spaceName}" autocomplete="off"><p class="field-error" data-name-error hidden>Enter a Space name.</p></div>`;
+}
+
+function defaultDetails() {
+  return `<details class="defaults-disclosure"><summary>Review automatic defaults</summary><div class="defaults-content"><dl><div><dt>Note Folder</dt><dd>${icon('folder')}Use the conventional “${state.spaceName}” folder</dd></div><div><dt>Primary Session</dt><dd>${icon('chat')}Create “${state.spaceName} main”</dd></div></dl><p>An exact conventional match can be adopted automatically. Ambiguity or a naming conflict becomes an exception to resolve.</p>${sourceBoundary()}</div></details>`;
 }
 
 function categoryChoices(compact = false) {
@@ -147,19 +158,12 @@ function conversationCreate() {
     <div class="chat-thread">
       <article class="message agent-message">
         <span class="agent-avatar">OC</span>
-        <div><p class="message-meta">OpenClaw · now</p><p>I can make <strong>Household</strong> a durable Space. I found an existing fictional Note Folder with related Notes, and no matching Primary Session.</p></div>
+        <div><p class="message-meta">OpenClaw · now</p><p>What should this Space be called, and which PARA Category describes it?</p>${spaceNameField()}${categoryChoices()}</div>
       </article>
       <article class="message agent-message">
         <span class="agent-avatar">OC</span>
-        <div><p class="message-meta">One decision needed</p><p>Which PARA Category describes this Space? I suggest <strong>Area</strong> because it has no fixed end date. You must choose before I create anything.</p>${categoryChoices()}</div>
-      </article>
-      <article class="message user-message">
-        <div><p class="message-meta">You</p><p>Bind the existing Household notes folder and create a new Primary Session.</p></div>
-      </article>
-      <article class="message agent-message compact-message">
-        <span class="agent-avatar">OC</span>
-        <div><p class="message-meta">Ready to create</p><p>I’ll link, not copy, the existing Notes; create one isolated Primary Session; and keep later Space Conversations separate.</p>
-          <div class="action-row"><button class="primary-button" type="button" data-create>Create Space</button><button class="secondary-button" type="button">Change sources</button></div>
+        <div><p class="message-meta">Defaults are handled</p><p>I’ll apply the standard Note Folder and Primary Session convention. You only need to review those details if there’s a conflict.</p>${defaultDetails()}
+          <div class="action-row"><button class="primary-button" type="button" data-create>Create Space</button></div>
         </div>
       </article>
     </div>`;
@@ -197,13 +201,11 @@ function variantA(scenario) {
 function workbenchCreate() {
   return `
     <section class="workbench-stage">
-      <header><p class="eyebrow">Required structure</p><h2>Connect the Space</h2><p>Configure each authoritative source directly. Nothing is written until the review step.</p></header>
-      <div class="source-cards">
-        <article class="source-card"><div class="source-icon">${icon('space')}</div><div><h3>Identity</h3><label for="space-name">Space name</label><input id="space-name" value="Household"><div class="inline-field">${categoryChoices(true)}</div></div><span class="card-state">Needs choice</span></article>
-        <article class="source-card"><div class="source-icon">${icon('folder')}</div><div><h3>Note Folder</h3><p class="source-value">Household notes</p><p>Existing fictional folder · link only</p><button class="secondary-button" type="button">Choose another</button></div><span class="card-state ready">Ready</span></article>
-        <article class="source-card"><div class="source-icon">${icon('chat')}</div><div><h3>Primary Session</h3><p class="source-value">Household main</p><p>New isolated OpenClaw Session</p><button class="secondary-button" type="button">Bind existing</button></div><span class="card-state ready">Ready</span></article>
+      <header><p class="eyebrow">Quick create</p><h2>Two details, then done</h2><p>Source conventions are automatic unless Command Center detects a conflict.</p></header>
+      <div class="quick-create-layout">
+        <section class="essentials-card"><h3>Space essentials</h3>${spaceNameField()}${categoryChoices()}<div class="action-row"><button class="primary-button" type="button" data-create>Create Space</button></div></section>
+        <aside class="defaults-card"><div class="source-icon">${icon('check')}</div><div><p class="eyebrow">No decisions needed</p><h3>Defaults ready</h3><p>The conventional Note Folder and new Primary Session will use the Space name.</p>${defaultDetails()}</div></aside>
       </div>
-      <footer class="workbench-footer">${sourceBoundary()}<div class="action-row"><button class="secondary-button" type="button">Save draft</button><button class="primary-button" type="button" data-create>Review & create</button></div></footer>
     </section>`;
 }
 
@@ -237,7 +239,10 @@ function workbenchGarden() {
 
 function variantB(scenario) {
   const body = scenario === 'create' ? workbenchCreate() : scenario === 'migrate' ? workbenchMigrate() : workbenchGarden();
-  return `<section class="variant variant-b" aria-label="Setup workbench variant"><div class="variant-banner"><div><p class="eyebrow">B · Setup workbench</p><strong>Direct manipulation</strong></div><ol><li class="active">Configure</li><li>Review</li><li>Apply</li></ol></div>${body}</section>`;
+  const banner = scenario === 'create'
+    ? `<div class="variant-banner"><div><p class="eyebrow">B · Quick form</p><strong>Fastest path</strong></div><span class="step-badge">Defaults automatic</span></div>`
+    : `<div class="variant-banner"><div><p class="eyebrow">B · Setup workbench</p><strong>Direct manipulation</strong></div><ol><li class="active">Configure</li><li>Review</li><li>Apply</li></ol></div>`;
+  return `<section class="variant variant-b" aria-label="${scenario === 'create' ? 'Quick form' : 'Setup workbench'} variant">${banner}${body}</section>`;
 }
 
 function packetSection(id, title, meta, content, open = false) {
@@ -248,11 +253,10 @@ function packetSection(id, title, meta, content, open = false) {
 function proposalPacket(scenario) {
   if (scenario === 'create') {
     return `
-      <div class="packet-summary"><div><p class="eyebrow">Prepared proposal</p><h2>Create Household</h2><p>One required decision remains. Everything else is a reversible link or a new isolated source.</p></div><span class="confidence-badge">1 decision</span></div>
-      ${packetSection('structure', 'Space structure', 'Name, category, and source links', `${categoryChoices()}<dl class="packet-dl"><div><dt>Note Folder</dt><dd>Link existing “Household notes”</dd></div><div><dt>Primary Session</dt><dd>Create “Household main”</dd></div></dl>`, true)}
-      ${packetSection('behaviour', 'Conversation behaviour', 'How future context stays isolated', '<p>The Primary Session is the default conversation. New Space Conversations receive compact Space context and relevant Notes, but never another conversation transcript.</p>')}
-      ${packetSection('ownership', 'Ownership & recovery', 'Where authoritative data remains', sourceBoundary())}
-      <div class="packet-approval"><label class="acknowledge"><input type="checkbox"><span>I understand that PARA Category is required and source content remains authoritative outside Command Center.</span></label><button class="primary-button" type="button" data-create>Approve Space plan</button></div>`;
+      <div class="packet-summary"><div><p class="eyebrow">Compact proposal</p><h2>Create a Space</h2><p>Confirm the two essentials. Routine source setup stays out of the decision path.</p></div><span class="confidence-badge">2 fields</span></div>
+      <section class="packet-essentials">${spaceNameField()}${categoryChoices()}</section>
+      ${packetSection('defaults', 'Automatic defaults', 'No action required', `<p>Command Center uses the conventional “${state.spaceName}” Note Folder and creates “${state.spaceName} main” as the Primary Session. Only conflicts interrupt creation.</p>${sourceBoundary()}`)}
+      <div class="packet-approval"><p class="approval-copy"><strong>Ready when the category is chosen.</strong><span>There is no separate source-binding step.</span></p><button class="primary-button" type="button" data-create>Create Space</button></div>`;
   }
   if (scenario === 'migrate') {
     return `
@@ -271,7 +275,8 @@ function proposalPacket(scenario) {
 }
 
 function variantC(scenario) {
-  return `<section class="variant variant-c" aria-label="Proposal packet variant"><div class="packet-layout"><aside class="packet-index"><p class="eyebrow">C · Proposal packet</p><h2>Decision brief</h2><p>Prepared by OpenClaw for explicit review.</p><div class="packet-progress"><span class="complete">${icon('check')}Evidence gathered</span><span class="complete">${icon('check')}Sources checked</span><span>${icon('arrow')}Your decision</span></div><button class="secondary-button full" type="button">Ask OpenClaw</button></aside><article class="proposal-packet">${proposalPacket(scenario)}</article></div></section>`;
+  const create = scenario === 'create';
+  return `<section class="variant variant-c" aria-label="${create ? 'Compact proposal' : 'Proposal packet'} variant"><div class="packet-layout"><aside class="packet-index"><p class="eyebrow">C · ${create ? 'Compact proposal' : 'Proposal packet'}</p><h2>${create ? 'Quick confirmation' : 'Decision brief'}</h2><p>${create ? 'Two essentials with optional detail.' : 'Prepared by OpenClaw for explicit review.'}</p><div class="packet-progress">${create ? `<span class="complete">${icon('check')}Defaults ready</span><span>${icon('arrow')}Name & category</span>` : `<span class="complete">${icon('check')}Evidence gathered</span><span class="complete">${icon('check')}Sources checked</span><span>${icon('arrow')}Your decision</span>`}</div><button class="secondary-button full" type="button">Ask OpenClaw</button></aside><article class="proposal-packet">${proposalPacket(scenario)}</article></div></section>`;
 }
 
 function statusBanner(scenario) {
@@ -301,6 +306,15 @@ function bindEvents(route) {
     render();
   }));
   document.querySelectorAll('[data-create]').forEach((button) => button.addEventListener('click', () => {
+    const nameInput = document.querySelector('[data-space-name]');
+    const enteredName = nameInput?.value.trim();
+    if (!enteredName) {
+      const error = document.querySelector('[data-name-error]');
+      if (error) error.hidden = false;
+      announce('Enter a Space name before creating the Space.');
+      return;
+    }
+    state.spaceName = enteredName;
     if (!state.category) {
       const error = document.querySelector('[data-category-error]');
       if (error) { error.hidden = false; error.focus?.(); }
@@ -330,7 +344,7 @@ function bindEvents(route) {
   }));
   document.querySelectorAll('[data-cycle]').forEach((button) => button.addEventListener('click', () => cycleVariant(Number(button.dataset.cycle))));
   document.querySelector('[data-reset]')?.addEventListener('click', () => {
-    state.category = null; state.createStatus = 'draft'; state.migrationStatus = 'ready'; state.gardenStatus = 'pending'; state.gardenChoice = 'move'; state.packetSections = new Set(['structure']); render(); announce('Fictional prototype state reset.');
+    state.spaceName = 'Household'; state.category = null; state.createStatus = 'draft'; state.migrationStatus = 'ready'; state.gardenStatus = 'pending'; state.gardenChoice = 'move'; state.packetSections = new Set(['structure']); render(); announce('Fictional prototype state reset.');
   });
 }
 
