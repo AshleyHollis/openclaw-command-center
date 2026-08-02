@@ -225,11 +225,14 @@ button, a { min-block-size: 2.75rem; }
 .inbox-row-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inbox-row-title { color: var(--ink); font-size: .9rem; font-weight: 760; }
 .inbox-row-summary { color: var(--muted); font-size: .8rem; line-height: 1.45; }
-.inbox-agent-status { margin-block-start: .35rem; padding: .45rem .55rem; color: var(--brand-strong); background: var(--brand-soft); border-radius: .55rem; font-size: .75rem; line-height: 1.4; }
+.inbox-remediation { display: grid; gap: .18rem; margin: 0 1rem 1rem; padding: .55rem .65rem; color: var(--brand-strong); background: var(--brand-soft); border-radius: .65rem; line-height: 1.4; }
+.inbox-remediation > span { font-size: .67rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.inbox-remediation strong { font-size: .76rem; }
+.inbox-remediation small { color: #466858; font-size: .7rem; }
 .inbox-row-actions { display: flex; flex-wrap: wrap; gap: .5rem; padding: 0 1rem 1rem 3.95rem; }
 .inbox-row-actions .small-button { flex: 1; min-block-size: 2.75rem; padding: .5rem .65rem; white-space: nowrap; font-size: .75rem; }
 .inbox-row-actions .primary-small { color: white; background: var(--brand); border-color: var(--brand); }
-.agent-action.is-running { color: var(--brand-strong); background: var(--brand-soft); border-color: #95bba8; }
+.approval-action.is-running { color: var(--brand-strong); background: var(--brand-soft); border-color: #95bba8; }
 .quick-snooze-split { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 2.75rem; flex: 1; min-inline-size: 8.75rem; }
 .quick-snooze-split > .small-button { inline-size: 100%; border-start-end-radius: 0; border-end-end-radius: 0; }
 .quick-snooze-options { position: relative; min-inline-size: 2.75rem; }
@@ -272,6 +275,16 @@ button, a { min-block-size: 2.75rem; }
 .dialog-summary { color: var(--muted); }
 .dialog-evidence { padding: 1rem; background: var(--canvas); border: 1px solid var(--line); border-radius: var(--radius); }
 .dialog-evidence > p:last-child { color: var(--muted); font-size: .88rem; }
+.dialog-investigation, .dialog-remediation { padding: 1rem; border: 1px solid var(--line); border-radius: var(--radius); }
+.dialog-investigation { background: var(--canvas); }
+.dialog-investigation ul, .dialog-remediation ol { display: grid; gap: .55rem; margin: .7rem 0 0; padding: 0; list-style: none; }
+.dialog-investigation li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .5rem; color: var(--muted); font-size: .82rem; }
+.dialog-investigation li svg { inline-size: 1rem; block-size: 1rem; color: var(--brand); }
+.dialog-remediation { background: var(--brand-soft); border-color: #bfd8ca; }
+.dialog-remediation ol { counter-reset: remediation-step; }
+.dialog-remediation li { counter-increment: remediation-step; display: grid; grid-template-columns: 1.5rem minmax(0, 1fr); gap: .45rem; color: var(--brand-strong); font-size: .82rem; }
+.dialog-remediation li::before { content: counter(remediation-step); display: grid; place-items: center; inline-size: 1.35rem; block-size: 1.35rem; color: white; background: var(--brand); border-radius: 50%; font-size: .67rem; font-weight: 800; }
+.dialog-remediation > p:last-child { margin-block-start: .85rem; padding-block-start: .7rem; color: #466858; border-block-start: 1px solid #b7cfbf; font-size: .78rem; }
 .dialog-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; margin: 0; }
 .dialog-facts > div { min-inline-size: 0; padding-block-start: .55rem; border-block-start: 1px solid var(--line); }
 .dialog-facts dt { color: var(--muted); font-size: .68rem; font-weight: 720; text-transform: uppercase; }
@@ -299,7 +312,9 @@ button, a { min-block-size: 2.75rem; }
   .segmented-dark { justify-self: end; }
   .inbox-row-summary { display: block; }
   .inbox-row { grid-template-columns: minmax(0, 1fr) 9.75rem; }
-  .inbox-row-actions { display: grid; align-content: center; gap: .5rem; inline-size: 9.75rem; padding: 1rem 1rem 1rem 0; }
+  .inbox-row-open { grid-column: 1; grid-row: 1; }
+  .inbox-remediation { grid-column: 1; grid-row: 2; margin-inline-start: 3.95rem; }
+  .inbox-row-actions { grid-column: 2; grid-row: 1 / span 2; display: grid; align-content: center; gap: .5rem; inline-size: 9.75rem; padding: 1rem 1rem 1rem 0; }
   .inbox-row-actions .small-button, .inbox-row-actions > .quick-snooze-split { inline-size: 100%; }
   .inbox-row-actions .small-button { flex: 0 0 auto; }
   .quick-snooze-split { flex: 0 0 auto; }

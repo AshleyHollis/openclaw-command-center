@@ -55,6 +55,10 @@ _Avoid_: notification, activity
 **Action Card**:
 The Global Dashboard presentation of an Attention Item, exposing source-appropriate actions and navigation.
 
+**Approval Request**:
+An Attention Item raised after OpenClaw has completed the available investigation and prepared a proposed action whose side effects require explicit authorization. It states the diagnosis, proposed action, expected side effects, and decision being requested.
+_Avoid_: alert, investigation request, generic approval
+
 **OpenClaw Activity**:
 An execution or operational record produced by OpenClaw and presented globally. It becomes an Attention Item only when user action is required.
 _Avoid_: Space task, To-do
