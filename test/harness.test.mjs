@@ -1,0 +1,158 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputClassifier, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
+
+const sourceDigest = `sha256:${'a'.repeat(64)}`;
+const placeholderExecutableDigest = `sha256:${'b'.repeat(64)}`;
+const contractDigest = `sha256:${'c'.repeat(64)}`;
+
+function hostDescriptor({ checkout = '/fixture', executable = pinnedHost.executable, args = pinnedHost.args, commit = pinnedHost.commit, integrity = { sourceDigest, executableDigest: placeholderExecutableDigest, contractDigest }, ...rest } = {}) {
+  return JSON.stringify({ checkout, executable, args, commit, integrity, ...rest });
+}
+
+async function temporaryHost() {
+  const parent = await mkdtemp(path.join(os.tmpdir(), 'command-center-host-'));
+  const root = path.join(parent, 'openclaw-host');
+  await mkdir(root);
+  const wrapper = path.join(root, pinnedHost.executable);
+  const contents = '#!/usr/bin/env node\nconsole.log("fixture host");\n';
+  await Promise.all([
+    writeFile(wrapper, contents),
+    writeFile(path.join(root, 'package.json'), JSON.stringify({ version: pinnedHost.version }))
+  ]);
+  const blob = createHash('sha1').update(`blob ${Buffer.byteLength(contents)}\0`).update(contents).digest('hex');
+  const integrity = Object.freeze({ sourceDigest, executableDigest: `sha256:${createHash('sha256').update(contents).digest('hex')}`, contractDigest });
+  await writeFile(path.join(parent, 'receipt.json'), JSON.stringify({ schemaVersion: 1, commit: pinnedHost.commit, ...integrity }));
+  return { parent, root, blob, integrity };
+}
+
+function hostGit({ commit = pinnedHost.commit, status = '', blob } = {}) {
+  return async (_checkout, args) => {
+    if (args.join(' ') === 'rev-parse HEAD') return commit;
+    if (args[0] === 'cat-file' || args.join(' ') === 'fsck --full') return '';
+    if (args.join(' ') === 'status --porcelain --untracked-files=no') return status;
+    if (args[0] === 'ls-files') return `100644 ${blob} 0\t${pinnedHost.executable}`;
+    throw new Error(`Unexpected fixture git command: ${args.join(' ')}`);
+  };
+}
+
+test('categorizes absent and malformed host descriptors', () => {
+  // The acceptance test supplies the mandatory descriptor through the process
+  // environment, so make the absent-descriptor unit case independent of it.
+  assert.throws(() => parseHostDescriptor(''), (error) => error instanceof HarnessFailure && error.category === 'descriptor-absent');
+  assert.throws(() => parseHostDescriptor('{'), (error) => error.category === 'descriptor-invalid');
+  assert.throws(() => parseHostDescriptor(hostDescriptor({ executable: 'other.mjs', args: [] })), (error) => error.category === 'wrapper-mismatch');
+  assert.throws(() => parseHostDescriptor(JSON.stringify({ checkout: '/fixture', executable: pinnedHost.executable, args: pinnedHost.args, commit: pinnedHost.commit })), (error) => error.category === 'descriptor-invalid');
+  const descriptor = parseHostDescriptor(hostDescriptor());
+  assert.equal(descriptor.executable, pinnedHost.executable);
+  const nodeDescriptor = parseHostDescriptor(hostDescriptor({ executable: undefined, args: undefined, command: { executable: 'node', args: ['openclaw.mjs', ...pinnedHost.args] } }));
+  assert.equal(nodeDescriptor.executable, 'openclaw.mjs');
+  assert.throws(() => parseHostDescriptor(hostDescriptor({ executable: 'untrusted-wrapper', args: ['openclaw.mjs', ...pinnedHost.args] })), (error) => error.category === 'wrapper-mismatch');
+  assert.throws(() => parseHostDescriptor(hostDescriptor({ commit: 'different' })), (error) => error.category === 'invalid-commit');
+  assert.throws(
+    () => parseHostDescriptor(hostDescriptor({ integrity: { sourceDigest, executableDigest: placeholderExecutableDigest } })),
+    (error) => error.category === 'descriptor-invalid'
+  );
+});
+
+test('requires consecutive readiness and notices flapping', async () => {
+  const values = [true, false, true, true];
+  await waitForConsecutiveReadiness(() => values.shift(), new Promise(() => {}), { attempts: 4 });
+  await assert.rejects(waitForConsecutiveReadiness(() => false, new Promise(() => {}), { attempts: 2 }), (error) => error.category === 'readiness-flapping');
+});
+
+test('categorizes host integrity failures and early exit', async () => {
+  const fixture = await temporaryHost();
+  const descriptor = parseHostDescriptor(hostDescriptor({ checkout: fixture.root, integrity: fixture.integrity }));
+  try {
+    const verified = await verifyHost(descriptor, { gitCommand: hostGit({ blob: fixture.blob }) });
+    assert.equal(verified.commit, pinnedHost.commit);
+    await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ commit: 'different', blob: fixture.blob }) }), (error) => error.category === 'invalid-commit');
+    await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ status: ' M src/index.mjs', blob: fixture.blob }) }), (error) => error.category === 'dirty-host-source');
+    await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ blob: '0'.repeat(40) }) }), (error) => error.category === 'wrapper-mismatch');
+    await assert.rejects(
+      verifyHost(descriptor, {
+        gitCommand: hostGit({ blob: fixture.blob }),
+        read: async (filename) => filename.endsWith('receipt.json')
+          ? JSON.stringify({ schemaVersion: 1, commit: pinnedHost.commit, sourceDigest: `sha256:${'d'.repeat(64)}`, executableDigest: fixture.integrity.executableDigest, contractDigest })
+          : readFile(filename)
+      }),
+      (error) => error.category === 'host-integrity'
+    );
+    await assert.rejects(
+      verifyHost(descriptor, {
+        gitCommand: hostGit({ blob: fixture.blob }),
+        read: async (filename) => filename.endsWith('receipt.json')
+          ? JSON.stringify({ schemaVersion: 1, commit: pinnedHost.commit, sourceDigest, executableDigest: fixture.integrity.executableDigest, contractDigest: `sha256:${'d'.repeat(64)}` })
+          : readFile(filename)
+      }),
+      (error) => error.category === 'host-integrity'
+    );
+    await assert.rejects(
+      verifyHost(descriptor, {
+        gitCommand: hostGit({ blob: fixture.blob }),
+        read: async (filename) => filename.endsWith('receipt.json')
+          ? JSON.stringify({ schemaVersion: 1, commit: pinnedHost.commit, sourceDigest, executableDigest: `sha256:${'d'.repeat(64)}`, contractDigest })
+          : readFile(filename)
+      }),
+      (error) => error.category === 'host-integrity'
+    );
+    await assert.rejects(
+      waitForConsecutiveReadiness(() => true, Promise.resolve(new HarnessFailure('host-early-exit', 'fixture host exited'))),
+      (error) => error.category === 'host-early-exit'
+    );
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
+test('categorizes host bootstrap and plugin failures without retaining authentication material', () => {
+  assert.equal(classifyHostOutput('plugin not found: command-center'), 'plugin-not-found');
+  assert.equal(classifyHostOutput('bootstrap authentication failed'), 'bootstrap-authentication-failure');
+  assert.equal(classifyHostOutput('bootstrap authentication configuration loaded'), undefined);
+  assert.doesNotMatch(redact(['Bear', 'er fictional-token-123456'].join('')), /fictional-token/);
+});
+
+test('classifies a late plugin failure across bounded host-output chunks', () => {
+  const classify = createHostOutputClassifier();
+  assert.equal(classify('x'.repeat(4_097)), undefined);
+  assert.equal(classify('plugin not found: command-'), undefined);
+  assert.equal(classify('center'), 'plugin-not-found');
+});
+
+test('rejects a plugin failure reported after readiness', () => {
+  const diagnostics = { category: undefined };
+  assert.doesNotThrow(() => assertNoFatalHostOutput(diagnostics));
+  diagnostics.category = classifyHostOutput('plugin not found: command-center');
+  assert.throws(() => assertNoFatalHostOutput(diagnostics), (error) => error.category === 'plugin-not-found');
+});
+
+test('reports bounded source and destination evidence for prohibited child traffic', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-harness-'));
+  const trafficLog = path.join(root, 'traffic.jsonl');
+  try {
+    await writeFile(trafficLog, [
+      JSON.stringify({ source: 'dns', destination: 'catalog.example.invalid', permitted: false }),
+      JSON.stringify({ source: 'https', destination: 'catalog.example.invalid', permitted: false })
+    ].join('\n'));
+    let caught;
+    try {
+      await assertRecordedChildTraffic({ manifest: { trafficLog } });
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught instanceof HarnessFailure);
+    assert.equal(caught.category, 'isolation-violation');
+    assert.match(caught.message, /dns -> catalog\.example\.invalid/);
+    assert.deepEqual(caught.diagnostics.childTraffic, [
+      { source: 'dns', destination: 'catalog.example.invalid' },
+      { source: 'https', destination: 'catalog.example.invalid' }
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

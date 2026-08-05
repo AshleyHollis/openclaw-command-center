@@ -1,0 +1,18 @@
+{
+  "id": "command-center",
+  "name": "Command Center",
+  "version": "0.1.0",
+  "entry": "dist/plugin.mjs",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "controlUi": {
+    "routeId": "command-center",
+    "sandbox": "allow-scripts"
+  }
+}
