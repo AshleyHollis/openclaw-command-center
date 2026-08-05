@@ -42,4 +42,6 @@ Do not inspect or mutate live OpenClaw state without explicit task-specific auth
 
 ## Licensing
 
-License selection is unresolved. Do not copy OpenClaw source or assume license compatibility. Do not add a license until the corresponding planning decision is resolved.
+Issue #19 resolved licensing: this repository is MIT-licensed and contributions
+are accepted under the same MIT terms (inbound equals outbound). Do not copy
+OpenClaw source or assume license compatibility for code outside this repository.

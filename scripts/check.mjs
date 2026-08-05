@@ -1,0 +1,28 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { assertDeclarativeMirror } from '../src/compatibility.mjs';
+import { build, distRoot } from '../src/build.mjs';
+import { scanRepositorySafety } from '../src/safety.mjs';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+const packageLock = JSON.parse(await readFile(path.join(root, 'package-lock.json'), 'utf8'));
+assertDeclarativeMirror(packageJson.commandCenter?.compatibilityTuple);
+const runtimeSourceGraph = packageJson.commandCenter?.runtimeCapability?.sourceGraph;
+if (packageJson.commandCenter?.runtimeCapability?.id !== 'openclaw-control-ui-v1' || runtimeSourceGraph !== './runtime-capability.source-graph.json') throw new Error('Control UI runtime capability source graph drift');
+const graph = JSON.parse(await readFile(path.join(root, runtimeSourceGraph), 'utf8'));
+if (graph.formatVersion !== 1 || graph.contract !== './src/runtime-capability.json' || !Array.isArray(graph.sources)) throw new Error('Control UI runtime capability source graph is unreadable');
+for (const source of graph.sources) await readFile(path.join(root, source), 'utf8');
+if (!(await readFile(path.join(root, graph.contract), 'utf8')).includes('pluginFrameGrants')) throw new Error('Control UI runtime capability source graph is unreadable');
+if (JSON.stringify(packageLock.packages?.['']?.commandCenter) !== JSON.stringify(packageJson.commandCenter)) throw new Error('Lockfile Command Center metadata mirror drift');
+const pluginManifest = JSON.parse(await readFile(path.join(root, 'openclaw.plugin.json'), 'utf8'));
+if (pluginManifest.id !== 'command-center' || pluginManifest.controlUi?.routeId !== 'command-center') throw new Error('Plugin identity or route drift');
+if (pluginManifest.activation?.onStartup !== true) throw new Error('Route-registering plugin must activate at Gateway startup');
+if (pluginManifest.controlUi?.sandbox !== 'allow-scripts') throw new Error('Plugin must retain the scripts-only sandbox');
+if (!Array.isArray(packageJson.openclaw?.extensions) || !packageJson.openclaw.extensions.includes('./dist/plugin.mjs')) throw new Error('OpenClaw extension discovery must name the built plugin entry');
+if (packageJson.openclaw?.compat?.pluginApi !== packageJson.commandCenter.compatibilityTuple.pluginApi.range) throw new Error('OpenClaw plugin API compatibility mirror drift');
+if (!pluginManifest.configSchema || typeof pluginManifest.configSchema !== 'object' || Array.isArray(pluginManifest.configSchema)) throw new Error('Plugin configSchema must be an object');
+await build();
+await scanRepositorySafety(root, { generated: [distRoot] });
+process.stdout.write('Command Center checks passed\n');

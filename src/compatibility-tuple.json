@@ -1,0 +1,16 @@
+{
+  "formatVersion": 1,
+  "host": {
+    "range": "=2026.7.2-beta.6",
+    "commit": "4d6bdbdbf33fe3ece3c53853fab9931882ff3f3c"
+  },
+  "pluginApi": {
+    "package": "openclaw",
+    "range": "=2026.7.2-beta.6"
+  },
+  "commandCenterSchema": {
+    "readable": { "min": 1, "max": 1 },
+    "writable": { "min": 1, "max": 1 }
+  },
+  "capabilityBridgeProtocol": { "min": 1, "max": 1 }
+}

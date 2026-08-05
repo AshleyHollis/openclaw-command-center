@@ -1,0 +1,15 @@
+{
+  "formatVersion": 1,
+  "contract": "./src/runtime-capability.json",
+  "sources": [
+    "./src/runtime-capability.mjs",
+    "./src/fixtures.mjs",
+    "./src/host-harness.mjs",
+    "./src/child-traffic.mjs",
+    "./src/isolated-child-guard.mjs",
+    "./src/isolation.mjs",
+    "./src/browser-evidence.mjs",
+    "./src/plugin.mjs",
+    "./test/real-host.acceptance.test.mjs"
+  ]
+}
