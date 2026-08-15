@@ -15,7 +15,7 @@ for (const [name, mutate] of [
   ['host version', (value) => { value.host.range = '=2026.7.2-beta.7'; }],
   ['host commit', (value) => { value.host.commit = '0000000000000000000000000000000000000000'; }],
   ['plugin API range', (value) => { value.pluginApi.range = '=2026.7.2-beta.7'; }],
-  ['schema range', (value) => { value.commandCenterSchema.writable.max = 2; }],
+  ['schema range', (value) => { value.commandCenterSchema.writable.max = 3; }],
   ['Bridge range', (value) => { value.capabilityBridgeProtocol.max = 2; }],
   ['plugin build', (value) => { value.pluginBuild = '0.2.0'; }],
   ['policy version', (value) => { value.policyVersions['command-center-metadata'] = 2; }]

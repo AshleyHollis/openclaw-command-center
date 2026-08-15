@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { requireVerifiedSnapshot } from './archive-bridge.mjs';
-import { initialSchemaStatements, PLUGIN_BUILD, SCHEMA_VERSION } from './schema.mjs';
+import { INITIAL_SCHEMA_VERSION, initialSchemaStatements, PLUGIN_BUILD } from './schema.mjs';
 
 export class MigrationError extends Error {
   constructor(code, message) {
@@ -35,11 +35,22 @@ function freezeMigration(value) {
 
 export const migrationCatalog = Object.freeze([
   freezeMigration({
-    version: SCHEMA_VERSION,
+    version: INITIAL_SCHEMA_VERSION,
     id: 'command-center-metadata-initial-v1',
     destructive: false,
     compatiblePluginBuild: PLUGIN_BUILD,
     statements: initialSchemaStatements
+  }),
+  freezeMigration({
+    version: 2,
+    id: 'command-center-topic-identity-v2',
+    destructive: false,
+    compatiblePluginBuild: PLUGIN_BUILD,
+    statements: [`CREATE TRIGGER topic_id_immutable
+      BEFORE UPDATE OF topic_id ON topics
+      BEGIN
+        SELECT RAISE(ABORT, 'Topic identity is immutable');
+      END`]
   })
 ]);
 
@@ -122,7 +133,8 @@ export async function applyMigrations(database, {
   archiveBridge,
   stateDirectory,
   databasePath,
-  beforeCommit
+  beforeCommit,
+  commit = () => database.exec('COMMIT')
 } = {}) {
   verifyMigrationCatalog(catalog);
   const before = validateMigrationLedger(database, { catalog, pluginBuild });
@@ -154,7 +166,7 @@ export async function applyMigrations(database, {
       if (migration.version === 1) database.prepare('INSERT INTO database_identity (singleton, created_by_build) VALUES (1, ?)').run(pluginBuild);
       database.exec(`PRAGMA user_version = ${migration.version}`);
       await beforeCommit?.(migration);
-      database.exec('COMMIT');
+      await commit(migration, database);
       committed = true;
       current = validateMigrationLedger(database, { catalog, pluginBuild });
     } catch (error) {

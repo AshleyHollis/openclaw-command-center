@@ -1,5 +1,6 @@
 export const PLUGIN_BUILD = '0.1.0';
-export const SCHEMA_VERSION = 1;
+export const INITIAL_SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const SUPPORTED_POLICY_VERSIONS = Object.freeze({ 'command-center-metadata': 1 });
 
 export const requiredTables = Object.freeze([
@@ -34,6 +35,15 @@ export const requiredConstraintFragments = Object.freeze({
   topics: ["para_category IN ('Project', 'Area', 'Resource', 'Archive')", "lifecycle_state IN ('Provisioning', 'Active', 'Archived', 'Retired')"],
   source_references: ["source_kind IN ('note_folder', 'session')", "verification_state IN ('verified', 'unresolved', 'ambiguous')"],
   migration_ledger: ['version > 0', 'destructive IN (0, 1)']
+});
+
+export const requiredTriggers = Object.freeze({
+  topic_id_immutable: 'BEFORE UPDATE OF topic_id ON topics'
+});
+
+export const projectionConstraintFragments = Object.freeze({
+  projection_topic_summary: ['current_source_count INTEGER NOT NULL CHECK (current_source_count >= 0)'],
+  projection_metadata: ['generation INTEGER NOT NULL CHECK (generation >= 0)']
 });
 
 // This deliberately contains metadata and opaque external identifiers only.

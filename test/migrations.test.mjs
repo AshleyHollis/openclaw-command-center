@@ -15,15 +15,15 @@ function bridge(world, options) {
   return createFictionalBroadArchiveBridge({ stateDirectory: world.paths.state, archiveDirectory: world.paths.archive, ...options });
 }
 
-function schemaTwoCompatibility() {
+function schemaThreeCompatibility() {
   const value = structuredClone(compatibilityTuple);
-  value.commandCenterSchema.readable.max = 2;
-  value.commandCenterSchema.writable.max = 2;
+  value.commandCenterSchema.readable.max = 3;
+  value.commandCenterSchema.writable.max = 3;
   return value;
 }
 
-function migrationTwo({ destructive = false, statements = ['CREATE TABLE fictional_migration_two (id INTEGER PRIMARY KEY)'] } = {}) {
-  const migration = { version: 2, id: 'fictional-metadata-v2', destructive, compatiblePluginBuild: PLUGIN_BUILD, statements };
+function migrationThree({ destructive = false, statements = ['CREATE TABLE fictional_migration_three (id INTEGER PRIMARY KEY)'] } = {}) {
+  const migration = { version: 3, id: 'fictional-metadata-v3', destructive, compatiblePluginBuild: PLUGIN_BUILD, statements };
   return Object.freeze({ ...migration, checksum: migrationChecksum(migration) });
 }
 
@@ -36,13 +36,13 @@ async function establishVersionOne(world) {
 test('clean creation records the immutable initial migration and ordered public upgrade is durable', async () => {
   await withIsolatedWorld(async (world) => {
     await establishVersionOne(world);
-    const second = migrationTwo();
-    const upgraded = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaTwoCompatibility(), catalog: [...migrationCatalog, second] });
+    const second = migrationThree();
+    const upgraded = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaThreeCompatibility(), catalog: [...migrationCatalog, second] });
     assert.equal((await upgraded.initialize()).mode, 'Ready');
     const state = upgraded.getMigrationStatus();
-    assert.equal(state.schemaVersion, 2);
-    assert.deepEqual(state.ledger.map((entry) => entry.version), [1, 2]);
-    assert.deepEqual(state.ledger.map((entry) => entry.migration_id), ['command-center-metadata-initial-v1', 'fictional-metadata-v2']);
+    assert.equal(state.schemaVersion, 3);
+    assert.deepEqual(state.ledger.map((entry) => entry.version), [1, 2, 3]);
+    assert.deepEqual(state.ledger.map((entry) => entry.migration_id), ['command-center-metadata-initial-v1', 'command-center-topic-identity-v2', 'fictional-metadata-v3']);
     await upgraded.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
@@ -50,18 +50,18 @@ test('clean creation records the immutable initial migration and ordered public 
 test('transaction failure is restart-safe: prior migration remains, failed transition is absent, and retry commits once', async () => {
   await withIsolatedWorld(async (world) => {
     await establishVersionOne(world);
-    const failed = migrationTwo({ statements: ['CREATE TABLE fictional_rolled_back (id INTEGER PRIMARY KEY CHECK (id > 0))', 'INSERT INTO fictional_rolled_back (id) VALUES (-1)'] });
-    const unsuccessful = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaTwoCompatibility(), catalog: [...migrationCatalog, failed] });
+    const failed = migrationThree({ statements: ['CREATE TABLE fictional_rolled_back (id INTEGER PRIMARY KEY CHECK (id > 0))', 'INSERT INTO fictional_rolled_back (id) VALUES (-1)'] });
+    const unsuccessful = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaThreeCompatibility(), catalog: [...migrationCatalog, failed] });
     assert.equal((await unsuccessful.initialize()).mode, 'Recovery-only');
     await unsuccessful.close();
     // Restart through the public service sees exactly the committed v1 state.
     const prior = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
     assert.equal((await prior.initialize()).mode, 'Ready');
-    assert.equal(prior.getMigrationStatus().schemaVersion, 1);
+    assert.equal(prior.getMigrationStatus().schemaVersion, 2);
     await prior.close();
-    const retry = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaTwoCompatibility(), catalog: [...migrationCatalog, migrationTwo()] });
+    const retry = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaThreeCompatibility(), catalog: [...migrationCatalog, migrationThree()] });
     assert.equal((await retry.initialize()).mode, 'Ready');
-    assert.equal(retry.getMigrationStatus().schemaVersion, 2);
+    assert.equal(retry.getMigrationStatus().schemaVersion, 3);
     await retry.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
@@ -69,23 +69,23 @@ test('transaction failure is restart-safe: prior migration remains, failed trans
 test('a pre-commit interruption rolls back the whole transition and restart does not replay committed work', async () => {
   await withIsolatedWorld(async (world) => {
     await establishVersionOne(world);
-    const catalog = [...migrationCatalog, migrationTwo()];
+    const catalog = [...migrationCatalog, migrationThree()];
     const interrupted = createPersistenceService({
       stateDirectory: world.paths.state,
       archiveBridge: bridge(world),
-      compatibility: schemaTwoCompatibility(),
+      compatibility: schemaThreeCompatibility(),
       catalog,
-      beforeCommit: async (migration) => { if (migration.version === 2) throw new Error('fictional interruption before commit'); }
+      beforeCommit: async (migration) => { if (migration.version === 3) throw new Error('fictional interruption before commit'); }
     });
     assert.equal((await interrupted.initialize()).mode, 'Recovery-only');
     await interrupted.close();
-    const retry = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaTwoCompatibility(), catalog });
+    const retry = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaThreeCompatibility(), catalog });
     assert.equal((await retry.initialize()).mode, 'Ready');
-    assert.deepEqual(retry.getMigrationStatus().ledger.map((entry) => entry.version), [1, 2]);
+    assert.deepEqual(retry.getMigrationStatus().ledger.map((entry) => entry.version), [1, 2, 3]);
     await retry.close();
-    const reopened = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaTwoCompatibility(), catalog });
+    const reopened = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaThreeCompatibility(), catalog });
     assert.equal((await reopened.initialize()).mode, 'Ready');
-    assert.equal(reopened.getMigrationStatus().ledger.length, 2);
+    assert.equal(reopened.getMigrationStatus().ledger.length, 3);
     await reopened.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
@@ -93,14 +93,14 @@ test('a pre-commit interruption rolls back the whole transition and restart does
 test('concurrent initializers apply each transition once and an older catalog refuses a newer schema without mutation', async () => {
   await withIsolatedWorld(async (world) => {
     await establishVersionOne(world);
-    const catalog = [...migrationCatalog, migrationTwo()];
-    const options = { stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaTwoCompatibility(), catalog };
+    const catalog = [...migrationCatalog, migrationThree()];
+    const options = { stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaThreeCompatibility(), catalog };
     const left = createPersistenceService(options);
     const right = createPersistenceService(options);
     const states = await Promise.all([left.initialize(), right.initialize()]);
     assert.deepEqual(states.map((state) => state.mode), ['Ready', 'Ready']);
-    assert.equal(left.getMigrationStatus().ledger.length, 2);
-    assert.equal(right.getMigrationStatus().ledger.length, 2);
+    assert.equal(left.getMigrationStatus().ledger.length, 3);
+    assert.equal(right.getMigrationStatus().ledger.length, 3);
     await left.close();
     await right.close();
     const older = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
@@ -109,7 +109,7 @@ test('concurrent initializers apply each transition once and an older catalog re
     await older.close();
     const compatible = createPersistenceService(options);
     assert.equal((await compatible.initialize()).mode, 'Ready');
-    assert.equal(compatible.getMigrationStatus().schemaVersion, 2);
+    assert.equal(compatible.getMigrationStatus().schemaVersion, 3);
     await compatible.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
@@ -117,14 +117,14 @@ test('concurrent initializers apply each transition once and an older catalog re
 test('declared destructive migrations require a verified normal broad-archive receipt before statements or ledger changes', async () => {
   await withIsolatedWorld(async (world) => {
     await establishVersionOne(world);
-    const destructive = migrationTwo({ destructive: true });
-    const options = { stateDirectory: world.paths.state, compatibility: schemaTwoCompatibility(), catalog: [...migrationCatalog, destructive] };
+    const destructive = migrationThree({ destructive: true });
+    const options = { stateDirectory: world.paths.state, compatibility: schemaThreeCompatibility(), catalog: [...migrationCatalog, destructive] };
     const unavailable = createPersistenceService({ ...options, archiveBridge: { protocolVersion: 1 } });
     assert.equal((await unavailable.initialize()).mode, 'Recovery-only');
     await unavailable.close();
     const stillVersionOne = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
     assert.equal((await stillVersionOne.initialize()).mode, 'Ready');
-    assert.equal(stillVersionOne.getMigrationStatus().schemaVersion, 1);
+    assert.equal(stillVersionOne.getMigrationStatus().schemaVersion, 2);
     await stillVersionOne.close();
 
     const rejectedReceipt = createPersistenceService({ ...options, archiveBridge: bridge(world, { verify: () => false }) });
@@ -146,13 +146,13 @@ test('declared destructive migrations require a verified normal broad-archive re
     await partialReceipt.close();
     const afterRefusal = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
     assert.equal((await afterRefusal.initialize()).mode, 'Ready');
-    assert.equal(afterRefusal.getMigrationStatus().schemaVersion, 1);
+    assert.equal(afterRefusal.getMigrationStatus().schemaVersion, 2);
     await afterRefusal.close();
     const snapshotBridge = bridge(world);
     const upgraded = createPersistenceService({ ...options, archiveBridge: snapshotBridge });
     assert.equal((await upgraded.initialize()).mode, 'Ready');
     assert.equal(snapshotBridge.captures.length, 1);
-    assert.equal(upgraded.getMigrationStatus().schemaVersion, 2);
+    assert.equal(upgraded.getMigrationStatus().schemaVersion, 3);
     await upgraded.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });

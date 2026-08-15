@@ -2,7 +2,7 @@ import { bridgeProtocolResult } from './archive-bridge.mjs';
 import { diagnostic } from './diagnostics.mjs';
 import { MigrationError, readMigrationState, validateMigrationLedger } from './migrations.mjs';
 import { evaluateMode } from './mode.mjs';
-import { requiredConstraintFragments, requiredIndexFragments, requiredIndexes, requiredTables, SUPPORTED_POLICY_VERSIONS } from './schema.mjs';
+import { projectionConstraintFragments, requiredConstraintFragments, requiredIndexFragments, requiredIndexes, requiredTables, requiredTriggers, SUPPORTED_POLICY_VERSIONS } from './schema.mjs';
 
 function tableExists(database, table) {
   return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
@@ -10,6 +10,11 @@ function tableExists(database, table) {
 
 function indexExists(database, index) {
   return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index));
+}
+
+function schemaContains(database, type, name, fragment) {
+  const sql = database.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name)?.sql || '';
+  return sql.includes(fragment);
 }
 
 function checks(database, options) {
@@ -42,9 +47,10 @@ function checks(database, options) {
           const sql = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.sql || '';
           return fragments.every((fragment) => sql.includes(fragment)) ? [] : [table];
         });
-        return missing.length === 0 && altered.length === 0
+        const missingTriggers = Object.entries(requiredTriggers).flatMap(([trigger, fragment]) => schemaContains(database, 'trigger', trigger, fragment) ? [] : [trigger]);
+        return missing.length === 0 && altered.length === 0 && missingTriggers.length === 0
           ? diagnostic('durable-schema', true)
-          : diagnostic('durable-schema', false, { code: 'DURABLE_SCHEMA_MISSING', observed: [...missing, ...altered], critical: true, guidance: 'Install compatible code or restore a verified broad-archive snapshot.' });
+          : diagnostic('durable-schema', false, { code: 'DURABLE_SCHEMA_MISSING', observed: [...missing, ...altered, ...missingTriggers], critical: true, guidance: 'Install compatible code or restore a verified broad-archive snapshot.' });
       }
     },
     {
@@ -65,7 +71,8 @@ function checks(database, options) {
       run: () => {
         const duplicateOwners = database.prepare("SELECT opaque_identifier FROM source_references WHERE is_current = 1 GROUP BY opaque_identifier, source_kind HAVING COUNT(DISTINCT topic_id) > 1").all();
         const invalidPrimary = database.prepare("SELECT source_reference_id FROM source_references WHERE source_role = 'primary_session' AND source_kind != 'session'").all();
-        return duplicateOwners.length === 0 && invalidPrimary.length === 0
+        const orphanedReferences = database.prepare('SELECT s.source_reference_id FROM source_references s LEFT JOIN topics t ON t.topic_id = s.topic_id WHERE t.topic_id IS NULL').all();
+        return duplicateOwners.length === 0 && invalidPrimary.length === 0 && orphanedReferences.length === 0
           ? diagnostic('source-reference-invariants', true)
           : diagnostic('source-reference-invariants', false, { code: 'SOURCE_REFERENCE_INVARIANT_FAILED', critical: true, guidance: 'Resolve source ownership explicitly; Command Center will not rebind references automatically.' });
       }
@@ -118,7 +125,7 @@ function checks(database, options) {
     {
       name: 'projections',
       run: () => {
-        const available = tableExists(database, 'projection_topic_summary') && tableExists(database, 'projection_metadata');
+        const available = Object.entries(projectionConstraintFragments).every(([table, fragments]) => tableExists(database, table) && fragments.every((fragment) => schemaContains(database, 'table', table, fragment)));
         return diagnostic('projections', available, { code: 'PROJECTION_UNAVAILABLE', capability: 'projections', critical: false, guidance: 'Rebuild projections from durable Command Center metadata.' });
       }
     }

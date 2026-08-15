@@ -14,14 +14,14 @@ function reserveFixtureEndpoint() {
   return { endpoint: { host: '127.0.0.1', port: nextGatewayPort++, url: 'http://127.0.0.1' }, release: async () => {}, isReserved: () => true };
 }
 function bridge(world) { return createFictionalBroadArchiveBridge({ stateDirectory: world.paths.state, archiveDirectory: world.paths.archive }); }
-function schemaTwoCompatibility() {
+function schemaThreeCompatibility() {
   const tuple = structuredClone(compatibilityTuple);
-  tuple.commandCenterSchema.readable.max = 2;
-  tuple.commandCenterSchema.writable.max = 2;
+  tuple.commandCenterSchema.readable.max = 3;
+  tuple.commandCenterSchema.writable.max = 3;
   return tuple;
 }
 function failedMigration() {
-  const migration = { version: 2, id: 'fictional-boundary-failure-v2', destructive: false, compatiblePluginBuild: PLUGIN_BUILD, statements: ['CREATE TABLE fictional_boundary_probe (id INTEGER PRIMARY KEY)', 'INSERT INTO fictional_missing_table VALUES (1)'] };
+  const migration = { version: 3, id: 'fictional-boundary-failure-v3', destructive: false, compatiblePluginBuild: PLUGIN_BUILD, statements: ['CREATE TABLE fictional_boundary_probe (id INTEGER PRIMARY KEY)', 'INSERT INTO fictional_missing_table VALUES (1)'] };
   return Object.freeze({ ...migration, checksum: migrationChecksum(migration) });
 }
 
@@ -35,7 +35,7 @@ test('service success, failure, restart, migration, and projection rebuild leave
     assert.throws(() => initial.setPreference({ preferenceKey: 'density', preferenceValue: 'compact', transcript: 'forbidden' }), { code: 'AUTHORITATIVE_SOURCE_PAYLOAD_FORBIDDEN' });
     assert.doesNotMatch(JSON.stringify(initial.getMetadataSnapshot()), /Safe fixture content|fictional-session-cooking/);
     await initial.close();
-    const failed = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaTwoCompatibility(), catalog: [...migrationCatalog, failedMigration()] });
+    const failed = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaThreeCompatibility(), catalog: [...migrationCatalog, failedMigration()] });
     assert.equal((await failed.initialize()).mode, 'Recovery-only');
     await failed.close();
     const restarted = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });

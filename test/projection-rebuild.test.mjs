@@ -39,3 +39,23 @@ test('rebuilding lost projections preserves every durable metadata family and ex
     assert.deepEqual(externalAfter, externalBefore);
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
+
+test('a corrupt optional projection structure is Degraded and rebuildable, not a durable-schema repair', async () => {
+  await withIsolatedWorld(async (world) => {
+    const service = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
+    await service.initialize();
+    service.createTopic({ topicId: 'fictional-cooking', title: 'Cooking', paraCategory: 'Project' });
+    await service.close();
+    const database = new DatabaseSync(resolveDatabaseLocation(world.paths.state).databasePath);
+    database.exec('DROP TABLE projection_topic_summary; CREATE TABLE projection_topic_summary (topic_id TEXT PRIMARY KEY, invalid_value TEXT);');
+    database.close();
+    const degraded = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
+    const status = await degraded.initialize();
+    assert.equal(status.mode, 'Degraded');
+    assert.ok(status.checks.some((check) => check.code === 'PROJECTION_UNAVAILABLE'));
+    degraded.rebuildProjections();
+    assert.equal(degraded.getStatus().mode, 'Ready');
+    assert.equal(degraded.getTopicProjection('fictional-cooking').current_source_count, 0);
+    await degraded.close();
+  }, { reserveEndpoint: reserveFixtureEndpoint });
+});

@@ -54,9 +54,9 @@ test('schema below the readable range is refused without a compatibility repair'
     initial.createTopic({ topicId: 'fictional-resource', title: 'Resource', paraCategory: 'Resource' });
     await initial.close();
     const unsupported = structuredClone(compatibilityTuple);
-    unsupported.commandCenterSchema.readable.min = 2;
-    unsupported.commandCenterSchema.writable.min = 2;
-    unsupported.commandCenterSchema.writable.max = 2;
+    unsupported.commandCenterSchema.readable.min = 3;
+    unsupported.commandCenterSchema.writable.min = 3;
+    unsupported.commandCenterSchema.writable.max = 3;
     const refused = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: unsupported });
     assert.equal((await refused.initialize()).mode, 'Recovery-only');
     assert.equal(refused.getDiagnostics().checks[0].code, 'SCHEMA_RANGE_UNSUPPORTED');

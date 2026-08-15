@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { createFictionalBroadArchiveBridge, withIsolatedWorld } from '../src/fixtures.mjs';
+import { resolveDatabaseLocation } from '../src/persistence/location.mjs';
 import { createPersistenceService } from '../src/persistence/service.mjs';
 
 let nextGatewayPort = 27000;
@@ -30,5 +32,9 @@ test('Topic identity survives rename, PARA changes, Archive/restore, Source relo
     assert.equal(service.getSourceReference('vehicle-primary').source_role, 'topic_conversation');
     assert.equal(service.getSourceReference('vehicle-conversation').source_role, 'primary_session');
     await service.close();
+    // Fixture constraint probe: SQLite itself rejects any identity rewrite.
+    const database = new DatabaseSync(resolveDatabaseLocation(world.paths.state).databasePath);
+    assert.throws(() => database.prepare("UPDATE topics SET topic_id = 'different-topic' WHERE topic_id = ?").run(topicId), /Topic identity is immutable/);
+    database.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });

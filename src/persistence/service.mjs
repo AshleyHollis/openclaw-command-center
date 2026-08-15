@@ -71,7 +71,8 @@ export function createPersistenceService({
   pluginBuild = PLUGIN_BUILD,
   catalog = migrationCatalog,
   restored = false,
-  beforeCommit
+  beforeCommit,
+  commitMigration
 } = {}) {
   let database;
   let location;
@@ -114,7 +115,8 @@ export function createPersistenceService({
             archiveBridge,
             stateDirectory: location.stateDirectory,
             databasePath: location.databasePath,
-            beforeCommit
+            beforeCommit,
+            ...(commitMigration ? { commit: commitMigration } : {})
           });
           refreshValidation();
         });

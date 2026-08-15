@@ -43,7 +43,7 @@ test('public service durably stores only Command Center metadata and preserves T
     assert.equal((await reopened.initialize()).mode, 'Ready');
     assert.equal(reopened.getTopic('fictional-cooking').topic_id, 'fictional-cooking');
     assert.equal(reopened.getSourceReference('fictional-cooking-session-one').source_role, 'topic_conversation');
-    assert.equal(reopened.getMigrationStatus().schemaVersion, 1);
+    assert.equal(reopened.getMigrationStatus().schemaVersion, 2);
     await reopened.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
