@@ -50,7 +50,7 @@ test('clean creation records the immutable initial migration and ordered public 
 test('transaction failure is restart-safe: prior migration remains, failed transition is absent, and retry commits once', async () => {
   await withIsolatedWorld(async (world) => {
     await establishVersionOne(world);
-    const failed = migrationTwo({ statements: ['CREATE TABLE fictional_rolled_back (id INTEGER PRIMARY KEY)', 'INSERT INTO imaginary_table VALUES (1)'] });
+    const failed = migrationTwo({ statements: ['CREATE TABLE fictional_rolled_back (id INTEGER PRIMARY KEY CHECK (id > 0))', 'INSERT INTO fictional_rolled_back (id) VALUES (-1)'] });
     const unsuccessful = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world), compatibility: schemaTwoCompatibility(), catalog: [...migrationCatalog, failed] });
     assert.equal((await unsuccessful.initialize()).mode, 'Recovery-only');
     await unsuccessful.close();
@@ -137,6 +137,17 @@ test('declared destructive migrations require a verified normal broad-archive re
     } });
     assert.equal((await mismatchedReceipt.initialize()).mode, 'Recovery-only');
     await mismatchedReceipt.close();
+    const partialReceipt = createPersistenceService({ ...options, archiveBridge: {
+      protocolVersion: 1,
+      createSnapshot: async () => ({ complete: false, bindings: {} }),
+      verifySnapshot: async () => true
+    } });
+    assert.equal((await partialReceipt.initialize()).mode, 'Recovery-only');
+    await partialReceipt.close();
+    const afterRefusal = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
+    assert.equal((await afterRefusal.initialize()).mode, 'Ready');
+    assert.equal(afterRefusal.getMigrationStatus().schemaVersion, 1);
+    await afterRefusal.close();
     const snapshotBridge = bridge(world);
     const upgraded = createPersistenceService({ ...options, archiveBridge: snapshotBridge });
     assert.equal((await upgraded.initialize()).mode, 'Ready');

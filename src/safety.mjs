@@ -14,7 +14,11 @@ const prohibited = [
 
 function gitText(root, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', ['-C', root, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    // The scanner is intentionally usable in disposable evaluator checkouts
+    // whose owner differs from the running process. Scope this trust to the
+    // explicit candidate root instead of relying on ambient global Git state.
+    const candidateRoot = path.resolve(root);
+    const child = spawn('git', ['-c', `safe.directory=${candidateRoot}`, '-C', candidateRoot, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
     child.on('error', reject);

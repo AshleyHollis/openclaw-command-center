@@ -192,6 +192,22 @@ export function createPersistenceService({
     return getSourceReference(sourceReferenceId);
   }
 
+  /**
+   * A source can move while its Source Reference and owning Topic retain their
+   * identities. Recovery never guesses this change: only an already verified
+   * reference may be explicitly relocated, and uniqueness still prevents an
+   * ambiguous active ownership claim.
+   */
+  function relocateSourceReference({ sourceReferenceId, opaqueIdentifier }) {
+    assertMutation();
+    const source = getSourceReference(sourceReferenceId);
+    if (!source) throw new PersistenceError('SOURCE_REFERENCE_NOT_FOUND', 'Source Reference metadata does not exist');
+    if (source.verification_state !== 'verified') throw new PersistenceError('SOURCE_UNRESOLVED', 'An unresolved or ambiguous Source Reference cannot be relocated automatically');
+    database.prepare('UPDATE source_references SET opaque_identifier = ? WHERE source_reference_id = ?')
+      .run(requireText(opaqueIdentifier, 'Opaque source identifier', 1024), requireText(sourceReferenceId, 'Source Reference identifier', 160));
+    return getSourceReference(sourceReferenceId);
+  }
+
   function replacePrimarySession({ topicId, sourceReferenceId }) {
     assertMutation();
     const source = getSourceReference(sourceReferenceId);
@@ -260,6 +276,28 @@ export function createPersistenceService({
     return readTopicProjection(database, requireText(topicId, 'Topic identifier', 160));
   }
 
+  function getMigrationStatus() {
+    assertReadable();
+    const migration = readMigrationState(database);
+    return Object.freeze({ schemaVersion: migration.schemaVersion, ledger: Object.freeze(migration.ledger.map((entry) => Object.freeze({ ...entry }))), catalogHead: catalogHead(catalog) });
+  }
+
+  /** Read only the allowlisted Command Center metadata, never source content. */
+  function getMetadataSnapshot() {
+    assertReadable();
+    const query = (sql) => database.prepare(sql).all();
+    return Object.freeze({
+      topics: Object.freeze(query('SELECT topic_id, title, para_category, lifecycle_state FROM topics ORDER BY topic_id')),
+      sourceReferences: Object.freeze(query('SELECT source_reference_id, topic_id, source_kind, source_role, opaque_identifier, verification_state, is_current, originating_topic_id FROM source_references ORDER BY source_reference_id')),
+      conventionState: Object.freeze(query('SELECT convention_key, management_state FROM convention_state ORDER BY convention_key')),
+      preferences: Object.freeze(query('SELECT preference_key, preference_value FROM presentation_preferences ORDER BY preference_key')),
+      attentionActivityLinks: Object.freeze(query('SELECT link_id, topic_id, attention_identifier, activity_identifier FROM attention_activity_links ORDER BY link_id')),
+      proposals: Object.freeze(query('SELECT proposal_id, topic_id, change_kind, proposal_state FROM structural_change_proposals ORDER BY proposal_id')),
+      policyVersions: Object.freeze(query('SELECT policy_name, version FROM policy_versions ORDER BY policy_name')),
+      migration: getMigrationStatus()
+    });
+  }
+
   async function close() {
     if (closed) return;
     closed = true;
@@ -278,6 +316,7 @@ export function createPersistenceService({
     addSourceReference,
     getSourceReference,
     setSourceVerification,
+    relocateSourceReference,
     replacePrimarySession,
     setConvention,
     setPreference,
@@ -286,12 +325,9 @@ export function createPersistenceService({
     setPolicyVersion,
     rebuildProjections,
     getTopicProjection,
+    getMetadataSnapshot,
     close,
     // This read-only summary makes migration effects observable without test SQL.
-    getMigrationStatus: () => {
-      assertReadable();
-      const migration = readMigrationState(database);
-      return Object.freeze({ schemaVersion: migration.schemaVersion, ledger: Object.freeze(migration.ledger.map((entry) => Object.freeze({ ...entry }))), catalogHead: catalogHead(catalog) });
-    }
+    getMigrationStatus
   });
 }
