@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { migrationCatalog } from '../src/persistence/migrations.mjs';
-import { initialSchemaStatements, requiredTables, requiredTriggers, SCHEMA_VERSION } from '../src/persistence/schema.mjs';
+import { initialSchemaStatements, requiredTables, requiredTriggerDefinitions, requiredTriggers, SCHEMA_VERSION } from '../src/persistence/schema.mjs';
 
 test('durable schema is an allowlist of Command Center metadata and excludes authoritative source payloads', () => {
   const schema = initialSchemaStatements.join('\n').toLowerCase();
@@ -13,5 +13,6 @@ test('durable schema is an allowlist of Command Center metadata and excludes aut
   assert.match(schema, /lifecycle_state text not null check \(lifecycle_state in \('provisioning', 'active', 'archived', 'retired'\)\)/);
   assert.match(migrationCatalog.at(-1).statements.join('\n').toLowerCase(), /create trigger topic_id_immutable/);
   assert.equal(requiredTriggers.topic_id_immutable, 'BEFORE UPDATE OF topic_id ON topics');
+  assert.match(requiredTriggerDefinitions.topic_id_immutable, /RAISE\(ABORT, 'Topic identity is immutable'\)/);
   assert.equal(migrationCatalog.at(-1).version, SCHEMA_VERSION);
 });

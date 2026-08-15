@@ -78,3 +78,30 @@ test('a non-unique replacement index and duplicate current Primary Sessions cann
     await recovery.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
+
+test('an altered Topic identity trigger is Recovery-only and blocks public mutations', async () => {
+  await withIsolatedWorld(async (world) => {
+    const service = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
+    assert.equal((await service.initialize()).mode, 'Ready');
+    service.createTopic({ topicId: 'original-topic', title: 'Original', paraCategory: 'Project' });
+    await service.close();
+    const database = new DatabaseSync(resolveDatabaseLocation(world.paths.state).databasePath);
+    // Intentional fixture corruption: preserve the trigger name and event but
+    // remove the immutable-ID RAISE body to model a misleading no-op trigger.
+    database.exec(`DROP TRIGGER topic_id_immutable;
+      CREATE TRIGGER topic_id_immutable
+      BEFORE UPDATE OF topic_id ON topics
+      BEGIN
+        SELECT 1;
+      END`);
+    database.prepare("UPDATE topics SET topic_id = 'rewritten-topic' WHERE topic_id = 'original-topic'").run();
+    database.close();
+    const recovery = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
+    const status = await recovery.initialize();
+    assert.equal(status.mode, 'Recovery-only');
+    assert.ok(status.checks.some((check) => check.name === 'durable-schema' && check.code === 'DURABLE_SCHEMA_MISSING'));
+    assert.equal(recovery.getTopic('rewritten-topic').title, 'Original');
+    assert.throws(() => recovery.createTopic({ topicId: 'blocked-topic', title: 'Blocked', paraCategory: 'Project' }), { code: 'MUTATION_BLOCKED_RECOVERY_ONLY' });
+    await recovery.close();
+  }, { reserveEndpoint: reserveFixtureEndpoint });
+});

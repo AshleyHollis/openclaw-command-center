@@ -41,6 +41,17 @@ export const requiredTriggers = Object.freeze({
   topic_id_immutable: 'BEFORE UPDATE OF topic_id ON topics'
 });
 
+// This must remain byte-for-byte equivalent after SQL normalization to the
+// immutable v2 migration statement. It intentionally lives outside that
+// migration so validation improvements never rewrite the historic checksum.
+export const requiredTriggerDefinitions = Object.freeze({
+  topic_id_immutable: `CREATE TRIGGER topic_id_immutable
+      BEFORE UPDATE OF topic_id ON topics
+      BEGIN
+        SELECT RAISE(ABORT, 'Topic identity is immutable');
+      END`
+});
+
 export const projectionConstraintFragments = Object.freeze({
   projection_topic_summary: ['current_source_count INTEGER NOT NULL CHECK (current_source_count >= 0)'],
   projection_metadata: ['generation INTEGER NOT NULL CHECK (generation >= 0)']

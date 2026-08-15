@@ -2,7 +2,7 @@ import { bridgeProtocolResult } from './archive-bridge.mjs';
 import { diagnostic } from './diagnostics.mjs';
 import { MigrationError, catalogCompatiblePluginBuild, isPluginBuildCompatible, readMigrationState, validateInstalledPluginBuild, validateMigrationLedger } from './migrations.mjs';
 import { evaluateMode } from './mode.mjs';
-import { projectionConstraintFragments, requiredIndexDefinitions, requiredIndexes, requiredTableDefinitions, requiredTables, requiredTriggers, SUPPORTED_POLICY_VERSIONS } from './schema.mjs';
+import { projectionConstraintFragments, requiredIndexDefinitions, requiredIndexes, requiredTableDefinitions, requiredTables, requiredTriggerDefinitions, SUPPORTED_POLICY_VERSIONS } from './schema.mjs';
 
 function tableExists(database, table) {
   return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
@@ -53,10 +53,10 @@ function checks(database, options) {
       run: () => {
         const missing = requiredTables.filter((table) => !tableExists(database, table));
         const altered = Object.entries(requiredTableDefinitions).flatMap(([table, definition]) => schemaMatches(database, 'table', table, definition) ? [] : [table]);
-        const missingTriggers = Object.entries(requiredTriggers).flatMap(([trigger, fragment]) => schemaContains(database, 'trigger', trigger, fragment) ? [] : [trigger]);
-        return missing.length === 0 && altered.length === 0 && missingTriggers.length === 0
+        const alteredTriggers = Object.entries(requiredTriggerDefinitions).flatMap(([trigger, definition]) => schemaMatches(database, 'trigger', trigger, definition) ? [] : [trigger]);
+        return missing.length === 0 && altered.length === 0 && alteredTriggers.length === 0
           ? diagnostic('durable-schema', true)
-          : diagnostic('durable-schema', false, { code: 'DURABLE_SCHEMA_MISSING', observed: [...missing, ...altered, ...missingTriggers], critical: true, guidance: 'Install compatible code or restore a verified broad-archive snapshot.' });
+          : diagnostic('durable-schema', false, { code: 'DURABLE_SCHEMA_MISSING', observed: [...missing, ...altered, ...alteredTriggers], critical: true, guidance: 'Install compatible code or restore a verified broad-archive snapshot.' });
       }
     },
     {
