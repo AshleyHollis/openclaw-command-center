@@ -74,6 +74,49 @@ export function catalogHead(catalog = migrationCatalog) {
   return catalog.at(-1).version;
 }
 
+/**
+ * A migration records the immutable minimum build that introduced its
+ * transition. Historic entries therefore remain unchanged across later plugin
+ * releases. The installed build is compatible when it meets the catalog-head
+ * minimum; older ledger entries are verified against their own catalog records,
+ * never rewritten to the current build.
+ */
+export function catalogCompatiblePluginBuild(catalog = migrationCatalog) {
+  verifyMigrationCatalog(catalog);
+  return catalog.at(-1).compatiblePluginBuild;
+}
+
+function parseBuild(value) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value || '');
+  return match && { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), prerelease: match[4] };
+}
+
+function compareBuilds(left, right) {
+  for (const field of ['major', 'minor', 'patch']) {
+    if (left[field] !== right[field]) return left[field] - right[field];
+  }
+  if (left.prerelease === right.prerelease) return 0;
+  if (!left.prerelease) return 1;
+  if (!right.prerelease) return -1;
+  return left.prerelease.localeCompare(right.prerelease);
+}
+
+export function isPluginBuildCompatible(catalog = migrationCatalog, pluginBuild = PLUGIN_BUILD) {
+  const minimum = catalogCompatiblePluginBuild(catalog);
+  if (pluginBuild === minimum) return true;
+  const installed = parseBuild(pluginBuild);
+  const required = parseBuild(minimum);
+  return Boolean(installed && required && compareBuilds(installed, required) >= 0);
+}
+
+export function validateInstalledPluginBuild(catalog = migrationCatalog, pluginBuild = PLUGIN_BUILD) {
+  const expected = catalogCompatiblePluginBuild(catalog);
+  if (typeof pluginBuild !== 'string' || !isPluginBuildCompatible(catalog, pluginBuild)) {
+    throw new MigrationError('PLUGIN_BUILD_INCOMPATIBLE', 'Installed plugin build is not compatible with this migration catalog');
+  }
+  return expected;
+}
+
 function tableExists(database, table) {
   return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
 }
@@ -91,7 +134,7 @@ function ledgerDigest(ledger) {
   return digest(ledger.map(({ version, migration_id, checksum, destructive, compatible_plugin_build }) => ({ version, migration_id, checksum, destructive, compatible_plugin_build })));
 }
 
-export function validateMigrationLedger(database, { catalog = migrationCatalog, pluginBuild = PLUGIN_BUILD } = {}) {
+export function validateMigrationLedger(database, { catalog = migrationCatalog } = {}) {
   verifyMigrationCatalog(catalog);
   const state = readMigrationState(database);
   const head = catalogHead(catalog);
@@ -108,7 +151,6 @@ export function validateMigrationLedger(database, { catalog = migrationCatalog, 
       actual.destructive !== Number(expected.destructive) || actual.compatible_plugin_build !== expected.compatiblePluginBuild) {
       throw new MigrationError('MIGRATION_LEDGER_INVALID', 'Migration ledger contains an unknown, reordered, or altered transition');
     }
-    if (expected.compatiblePluginBuild !== pluginBuild) throw new MigrationError('PLUGIN_BUILD_INCOMPATIBLE', 'Installed plugin build is not compatible with an applied migration');
   }
   return { ...state, ledgerDigest: ledgerDigest(state.ledger) };
 }
@@ -137,15 +179,11 @@ export async function applyMigrations(database, {
   commit = () => database.exec('COMMIT')
 } = {}) {
   verifyMigrationCatalog(catalog);
-  const before = validateMigrationLedger(database, { catalog, pluginBuild });
+  validateInstalledPluginBuild(catalog, pluginBuild);
+  const before = validateMigrationLedger(database, { catalog });
   const head = catalogHead(catalog);
   assertSchemaRange(before.schemaVersion, head, schemaRange);
   let current = before;
-  for (let position = before.schemaVersion; position < head; position += 1) {
-    if (catalog[position].compatiblePluginBuild !== pluginBuild) {
-      throw new MigrationError('PLUGIN_BUILD_INCOMPATIBLE', 'Installed plugin build is not compatible with the pending migration');
-    }
-  }
   for (let position = before.schemaVersion; position < head; position += 1) {
     const migration = catalog[position];
     if (migration.destructive) {
@@ -168,7 +206,7 @@ export async function applyMigrations(database, {
       await beforeCommit?.(migration);
       await commit(migration, database);
       committed = true;
-      current = validateMigrationLedger(database, { catalog, pluginBuild });
+      current = validateMigrationLedger(database, { catalog });
     } catch (error) {
       if (!committed) {
         try { database.exec('ROLLBACK'); } catch { /* no transaction was opened */ }

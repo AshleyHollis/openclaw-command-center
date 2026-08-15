@@ -1,15 +1,18 @@
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import { serveShellAsset } from './asset-handler.mjs';
+import { createCommandCenterPersistenceRuntimeService } from './persistence/runtime-service.mjs';
 import { createPersistenceService } from './persistence/service.mjs';
 
 export const pluginId = 'command-center';
 export const routeId = 'command-center';
 export const pluginPath = '/plugins/command-center';
 
-// OpenClaw supplies the resolved state root and its normal broad-archive
-// bridge at the lifecycle seam. Keeping this explicit avoids any discovery of
-// live state and avoids inventing an unsupported host integration contract.
+// The public factory remains available for host integrations that supply a
+// verified broad-archive receipt bridge. The registered service uses OpenClaw's
+// documented stateDir lifecycle seam and leaves destructive migration closed
+// until the pinned SDK exposes that archive-receipt contract.
 export const createCommandCenterPersistenceService = createPersistenceService;
+export { createCommandCenterPersistenceRuntimeService };
 
 const assets = new Map([
   [`${pluginPath}`, ['index.html', 'text/html; charset=utf-8']],
@@ -29,6 +32,7 @@ export default definePluginEntry({
   description: 'A responsive Command Center control destination.',
   /** @param {OpenClawPluginApi} api */
   register(api) {
+    api.registerService(createCommandCenterPersistenceRuntimeService());
     // This public SDK seam asks Control UI to render the route in its default
     // scripts-only frame. Gateway auth makes the host mint a frame grant.
     api.session.controls.registerControlUiDescriptor({

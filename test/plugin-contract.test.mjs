@@ -11,6 +11,7 @@ test('plugin uses the pinned public external-tab and gateway-route seams', async
   assert.match(source, /surface:\s*'tab'/);
   assert.match(source, /path:\s*pluginPath/);
   assert.match(source, /api\.registerHttpRoute\(/);
+  assert.match(source, /api\.registerService\(createCommandCenterPersistenceRuntimeService\(\)\)/);
   assert.match(source, /auth:\s*'gateway'/);
   assert.match(source, /serveShellAsset\(req, res, \{ assets \}\)/);
   assert.doesNotMatch(source, /registerControlUiExternalTab/);

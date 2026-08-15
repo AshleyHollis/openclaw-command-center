@@ -33,12 +33,27 @@ async function assertDirectory(directory, label) {
   if (!stat?.isDirectory() || stat.isSymbolicLink()) throw new Error(`${label} is missing or unsafe`);
 }
 
+async function createSafeChild(parent, name, label) {
+  const child = path.join(parent, name);
+  const existing = await lstat(child).catch(() => undefined);
+  if (existing) {
+    if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error(`${label} is missing or unsafe`);
+    return child;
+  }
+  // Create one component at a time. Recursive mkdir would follow an existing
+  // intermediate symlink before the final directory could be inspected.
+  await mkdir(child);
+  await assertDirectory(child, label);
+  return child;
+}
+
 /** Create only the plugin-owned child directory below an existing state root. */
 export async function prepareDatabaseLocation(stateDirectory) {
   const location = resolveDatabaseLocation(stateDirectory);
   await assertDirectory(location.stateDirectory, 'Resolved state directory');
-  await mkdir(location.pluginDirectory, { recursive: true });
-  await assertDirectory(location.pluginDirectory, 'Command Center persistence directory');
+  const pluginsDirectory = await createSafeChild(location.stateDirectory, 'plugins', 'OpenClaw plugins directory');
+  const pluginDirectory = await createSafeChild(pluginsDirectory, persistenceDirectoryName, 'Command Center persistence directory');
+  if (pluginDirectory !== location.pluginDirectory) throw new Error('Command Center database location escapes the state directory');
   const database = await lstat(location.databasePath).catch(() => undefined);
   if (database && (!database.isFile() || database.isSymbolicLink())) throw new Error('Command Center database file is unsafe');
   return location;

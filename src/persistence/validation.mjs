@@ -1,8 +1,8 @@
 import { bridgeProtocolResult } from './archive-bridge.mjs';
 import { diagnostic } from './diagnostics.mjs';
-import { MigrationError, readMigrationState, validateMigrationLedger } from './migrations.mjs';
+import { MigrationError, catalogCompatiblePluginBuild, isPluginBuildCompatible, readMigrationState, validateInstalledPluginBuild, validateMigrationLedger } from './migrations.mjs';
 import { evaluateMode } from './mode.mjs';
-import { projectionConstraintFragments, requiredConstraintFragments, requiredIndexFragments, requiredIndexes, requiredTables, requiredTriggers, SUPPORTED_POLICY_VERSIONS } from './schema.mjs';
+import { projectionConstraintFragments, requiredIndexDefinitions, requiredIndexes, requiredTableDefinitions, requiredTables, requiredTriggers, SUPPORTED_POLICY_VERSIONS } from './schema.mjs';
 
 function tableExists(database, table) {
   return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
@@ -15,6 +15,15 @@ function indexExists(database, index) {
 function schemaContains(database, type, name, fragment) {
   const sql = database.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name)?.sql || '';
   return sql.includes(fragment);
+}
+
+function normalizedSchema(sql) {
+  return String(sql || '').replace(/\s+/g, ' ').trim().toUpperCase();
+}
+
+function schemaMatches(database, type, name, expected) {
+  const actual = database.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name)?.sql;
+  return normalizedSchema(actual) === normalizedSchema(expected);
 }
 
 function checks(database, options) {
@@ -43,10 +52,7 @@ function checks(database, options) {
       name: 'durable-schema',
       run: () => {
         const missing = requiredTables.filter((table) => !tableExists(database, table));
-        const altered = Object.entries(requiredConstraintFragments).flatMap(([table, fragments]) => {
-          const sql = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.sql || '';
-          return fragments.every((fragment) => sql.includes(fragment)) ? [] : [table];
-        });
+        const altered = Object.entries(requiredTableDefinitions).flatMap(([table, definition]) => schemaMatches(database, 'table', table, definition) ? [] : [table]);
         const missingTriggers = Object.entries(requiredTriggers).flatMap(([trigger, fragment]) => schemaContains(database, 'trigger', trigger, fragment) ? [] : [trigger]);
         return missing.length === 0 && altered.length === 0 && missingTriggers.length === 0
           ? diagnostic('durable-schema', true)
@@ -57,10 +63,7 @@ function checks(database, options) {
       name: 'required-indexes',
       run: () => {
         const missing = requiredIndexes.filter((index) => !indexExists(database, index));
-        const altered = Object.entries(requiredIndexFragments).flatMap(([index, fragment]) => {
-          const sql = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)?.sql || '';
-          return sql.includes(fragment) ? [] : [index];
-        });
+        const altered = Object.entries(requiredIndexDefinitions).flatMap(([index, definition]) => schemaMatches(database, 'index', index, definition) ? [] : [index]);
         return missing.length === 0 && altered.length === 0
           ? diagnostic('required-indexes', true)
           : diagnostic('required-indexes', false, { code: 'REQUIRED_INDEX_MISSING', observed: [...missing, ...altered], critical: true, guidance: 'Restore durable metadata; required constraints are not rebuilt automatically.' });
@@ -69,10 +72,12 @@ function checks(database, options) {
     {
       name: 'source-reference-invariants',
       run: () => {
-        const duplicateOwners = database.prepare("SELECT opaque_identifier FROM source_references WHERE is_current = 1 GROUP BY opaque_identifier, source_kind HAVING COUNT(DISTINCT topic_id) > 1").all();
+        const duplicateOwners = database.prepare("SELECT opaque_identifier FROM source_references WHERE is_current = 1 AND source_role IN ('note_folder', 'primary_session', 'topic_conversation') GROUP BY opaque_identifier, source_role HAVING COUNT(DISTINCT topic_id) > 1").all();
+        const duplicateNoteFolders = database.prepare("SELECT topic_id FROM source_references WHERE is_current = 1 AND source_role = 'note_folder' GROUP BY topic_id HAVING COUNT(*) > 1").all();
+        const duplicatePrimarySessions = database.prepare("SELECT topic_id FROM source_references WHERE is_current = 1 AND source_role = 'primary_session' GROUP BY topic_id HAVING COUNT(*) > 1").all();
         const invalidPrimary = database.prepare("SELECT source_reference_id FROM source_references WHERE source_role = 'primary_session' AND source_kind != 'session'").all();
         const orphanedReferences = database.prepare('SELECT s.source_reference_id FROM source_references s LEFT JOIN topics t ON t.topic_id = s.topic_id WHERE t.topic_id IS NULL').all();
-        return duplicateOwners.length === 0 && invalidPrimary.length === 0 && orphanedReferences.length === 0
+        return duplicateOwners.length === 0 && duplicateNoteFolders.length === 0 && duplicatePrimarySessions.length === 0 && invalidPrimary.length === 0 && orphanedReferences.length === 0
           ? diagnostic('source-reference-invariants', true)
           : diagnostic('source-reference-invariants', false, { code: 'SOURCE_REFERENCE_INVARIANT_FAILED', critical: true, guidance: 'Resolve source ownership explicitly; Command Center will not rebind references automatically.' });
       }
@@ -81,7 +86,8 @@ function checks(database, options) {
       name: 'migration-ledger',
       run: () => {
         try {
-          validateMigrationLedger(database, { catalog, pluginBuild });
+          validateMigrationLedger(database, { catalog });
+          validateInstalledPluginBuild(catalog, pluginBuild);
           return diagnostic('migration-ledger', true);
         } catch (error) {
           return diagnostic('migration-ledger', false, { code: error.code || 'MIGRATION_LEDGER_INVALID', critical: true, guidance: 'Use a verified broad-archive snapshot and a compatible plugin release.' });
@@ -110,9 +116,14 @@ function checks(database, options) {
       name: 'plugin-build',
       run: () => {
         const identity = database.prepare('SELECT created_by_build FROM database_identity WHERE singleton = 1').get();
-        const ledger = database.prepare('SELECT compatible_plugin_build FROM migration_ledger').all();
-        const ok = identity && ledger.every((row) => row.compatible_plugin_build === pluginBuild);
-        return diagnostic('plugin-build', ok, { code: 'PLUGIN_BUILD_INCOMPATIBLE', observed: identity?.created_by_build, supported: pluginBuild, critical: true, guidance: 'Install the compatible Command Center release before enabling mutations.' });
+        const historicBuilds = new Set(catalog.map((migration) => migration.compatiblePluginBuild));
+        let installedCompatible = false;
+        try {
+          validateInstalledPluginBuild(catalog, pluginBuild);
+          installedCompatible = true;
+        } catch { /* reported as a sanitized validation result below */ }
+        const ok = Boolean(identity && (historicBuilds.has(identity.created_by_build) || isPluginBuildCompatible(catalog, identity.created_by_build)) && installedCompatible);
+        return diagnostic('plugin-build', ok, { code: 'PLUGIN_BUILD_INCOMPATIBLE', observed: identity?.created_by_build, supported: catalogCompatiblePluginBuild(catalog), critical: true, guidance: 'Install the compatible Command Center release before enabling mutations.' });
       }
     },
     {

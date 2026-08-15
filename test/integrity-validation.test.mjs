@@ -31,3 +31,50 @@ test('foreign-key and durable-constraint corruption is diagnosed without exposin
     await recovery.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
+
+test('a changed durable metadata constraint is Recovery-only rather than a projection repair', async () => {
+  await withIsolatedWorld(async (world) => {
+    const service = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
+    assert.equal((await service.initialize()).mode, 'Ready');
+    await service.close();
+    const database = new DatabaseSync(resolveDatabaseLocation(world.paths.state).databasePath);
+    // Intentional fixture corruption: this table is durable, so the missing
+    // value-length constraint must never be treated as rebuildable.
+    database.exec(`DROP TABLE presentation_preferences;
+      CREATE TABLE presentation_preferences (
+        preference_key TEXT PRIMARY KEY CHECK (length(preference_key) BETWEEN 1 AND 160),
+        preference_value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+    database.close();
+    const recovery = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
+    const status = await recovery.initialize();
+    assert.equal(status.mode, 'Recovery-only');
+    assert.ok(status.checks.some((check) => check.name === 'durable-schema' && check.code === 'DURABLE_SCHEMA_MISSING'));
+    await recovery.close();
+  }, { reserveEndpoint: reserveFixtureEndpoint });
+});
+
+test('a non-unique replacement index and duplicate current Primary Sessions cannot unlock Ready', async () => {
+  await withIsolatedWorld(async (world) => {
+    const service = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
+    assert.equal((await service.initialize()).mode, 'Ready');
+    service.createTopic({ topicId: 'fixture-topic', title: 'Fixture', paraCategory: 'Project' });
+    await service.close();
+    const database = new DatabaseSync(resolveDatabaseLocation(world.paths.state).databasePath);
+    database.exec(`DROP INDEX one_current_primary_session_per_topic;
+      CREATE INDEX one_current_primary_session_per_topic ON source_references(topic_id)
+        WHERE is_current = 1 AND source_role = 'primary_session'`);
+    for (const sourceReferenceId of ['fixture-primary-one', 'fixture-primary-two']) {
+      database.prepare(`INSERT INTO source_references (source_reference_id, topic_id, source_kind, source_role, opaque_identifier, verification_state, is_current, originating_topic_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(sourceReferenceId, 'fixture-topic', 'session', 'primary_session', sourceReferenceId, 'verified', 1, null, '2026-01-01T00:00:00.000Z');
+    }
+    database.close();
+    const recovery = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge(world) });
+    const status = await recovery.initialize();
+    assert.equal(status.mode, 'Recovery-only');
+    assert.ok(status.checks.some((check) => check.name === 'required-indexes' && check.code === 'REQUIRED_INDEX_MISSING'));
+    assert.ok(status.checks.some((check) => check.name === 'source-reference-invariants' && check.code === 'SOURCE_REFERENCE_INVARIANT_FAILED'));
+    await recovery.close();
+  }, { reserveEndpoint: reserveFixtureEndpoint });
+});

@@ -37,6 +37,15 @@ export function createFictionalBroadArchiveBridge({ stateDirectory, archiveDirec
       if (!receipt || receipt.protocolVersion !== protocolVersion || !receipt.complete || !same(receipt.bindings, expected) || verify(receipt, expected) !== true) return false;
       await access(receipt.captureDirectory);
       return true;
+    },
+    // Test-only representation of the host-owned broad archive restore path.
+    // It verifies the capture before replacing only the disposable state tree.
+    async restoreSnapshot(receipt) {
+      const expected = receipt?.bindings;
+      if (await this.verifySnapshot(receipt, expected) !== true) throw new Error('Fictional broad-archive snapshot could not be verified for restore');
+      await rm(stateDirectory, { recursive: true, force: true });
+      await cp(receipt.captureDirectory, stateDirectory, { recursive: true, verbatimSymlinks: false });
+      return true;
     }
   });
 }

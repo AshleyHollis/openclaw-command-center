@@ -15,15 +15,16 @@ function bridge(world, options) {
   return createFictionalBroadArchiveBridge({ stateDirectory: world.paths.state, archiveDirectory: world.paths.archive, ...options });
 }
 
-function schemaThreeCompatibility() {
+function schemaThreeCompatibility(pluginBuild = PLUGIN_BUILD) {
   const value = structuredClone(compatibilityTuple);
   value.commandCenterSchema.readable.max = 3;
   value.commandCenterSchema.writable.max = 3;
+  value.pluginBuild = pluginBuild;
   return value;
 }
 
-function migrationThree({ destructive = false, statements = ['CREATE TABLE fictional_migration_three (id INTEGER PRIMARY KEY)'] } = {}) {
-  const migration = { version: 3, id: 'fictional-metadata-v3', destructive, compatiblePluginBuild: PLUGIN_BUILD, statements };
+function migrationThree({ destructive = false, compatiblePluginBuild = PLUGIN_BUILD, statements = ['CREATE TABLE fictional_migration_three (id INTEGER PRIMARY KEY)'] } = {}) {
+  const migration = { version: 3, id: 'fictional-metadata-v3', destructive, compatiblePluginBuild, statements };
   return Object.freeze({ ...migration, checksum: migrationChecksum(migration) });
 }
 
@@ -44,6 +45,36 @@ test('clean creation records the immutable initial migration and ordered public 
     assert.deepEqual(state.ledger.map((entry) => entry.version), [1, 2, 3]);
     assert.deepEqual(state.ledger.map((entry) => entry.migration_id), ['command-center-metadata-initial-v1', 'command-center-topic-identity-v2', 'fictional-metadata-v3']);
     await upgraded.close();
+  }, { reserveEndpoint: reserveFixtureEndpoint });
+});
+
+test('a newer plugin build upgrades an immutable historical ledger without rewriting it', async () => {
+  await withIsolatedWorld(async (world) => {
+    await establishVersionOne(world);
+    const newerBuild = '0.2.0';
+    const catalog = [...migrationCatalog, migrationThree({ compatiblePluginBuild: newerBuild })];
+    const options = {
+      stateDirectory: world.paths.state,
+      archiveBridge: bridge(world),
+      compatibility: schemaThreeCompatibility(newerBuild),
+      catalog,
+      pluginBuild: newerBuild
+    };
+    const upgraded = createPersistenceService(options);
+    assert.equal((await upgraded.initialize()).mode, 'Ready');
+    assert.deepEqual(upgraded.getMigrationStatus().ledger.map((entry) => entry.compatible_plugin_build), ['0.1.0', '0.1.0', '0.2.0']);
+    await upgraded.close();
+    const reopened = createPersistenceService(options);
+    assert.equal((await reopened.initialize()).mode, 'Ready');
+    assert.equal(reopened.getMigrationStatus().schemaVersion, 3);
+    await reopened.close();
+    const forwardCompatible = createPersistenceService({
+      ...options,
+      compatibility: schemaThreeCompatibility('0.2.1'),
+      pluginBuild: '0.2.1'
+    });
+    assert.equal((await forwardCompatible.initialize()).mode, 'Ready');
+    await forwardCompatible.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
 

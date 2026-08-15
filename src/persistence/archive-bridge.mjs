@@ -9,6 +9,23 @@ export function bridgeProtocolResult(bridge, supportedRange) {
 }
 
 /**
+ * The pinned plugin SDK supplies a resolved state directory to background
+ * services but no public broad-archive receipt capability. Keep destructive
+ * migrations closed until that host contract exists; this is not a backup
+ * implementation and cannot manufacture a receipt.
+ */
+export function createUnavailableArchiveBridge(protocolVersion = 1) {
+  return Object.freeze({
+    protocolVersion,
+    unavailable: true,
+    async createSnapshot() {
+      throw new Error('OpenClaw broad-archive receipt capability is unavailable for destructive Command Center migrations');
+    },
+    async verifySnapshot() { return false; }
+  });
+}
+
+/**
  * The host owns the archive. Command Center only asks its supplied broad
  * archive bridge for a receipt and verifies that receipt against the exact
  * pre-migration state. No Command Center archive format is created here.

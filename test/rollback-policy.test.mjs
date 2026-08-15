@@ -21,7 +21,7 @@ function destructiveMigration() {
   return Object.freeze({ ...migration, checksum: migrationChecksum(migration) });
 }
 
-test('rollback policy preserves newer schemas and directs operators to verified archive plus compatible prior code', async () => {
+test('rollback uses a verified broad-archive restore plus the prior compatible release, never a down-migration', async () => {
   await withIsolatedWorld(async (world) => {
     const bridge = createFictionalBroadArchiveBridge({ stateDirectory: world.paths.state, archiveDirectory: world.paths.archive });
     const initial = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge });
@@ -38,9 +38,18 @@ test('rollback policy preserves newer schemas and directs operators to verified 
     assert.match(older.getDiagnostics().rollbackGuidance, /verified broad-archive snapshot/);
     assert.match(older.getDiagnostics().rollbackGuidance, /prior compatible Command Center release/);
     await older.close();
-    const compatible = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge, compatibility: schemaThreeCompatibility(), catalog });
-    assert.equal((await compatible.initialize()).mode, 'Ready');
-    assert.equal(compatible.getMigrationStatus().schemaVersion, 3);
-    await compatible.close();
+    // This is the host-owned restore sequence represented by the isolated
+    // broad-archive fixture. The v3 database is replaced by its verified v2
+    // capture before the prior compatible code may resume mutation.
+    await bridge.restoreSnapshot(bridge.captures[0]);
+    const restoredPrior = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge });
+    assert.equal((await restoredPrior.initialize()).mode, 'Ready');
+    assert.equal(restoredPrior.getMigrationStatus().schemaVersion, 2);
+    restoredPrior.createTopic({ topicId: 'rollback-verified-topic', title: 'Restored', paraCategory: 'Project' });
+    await restoredPrior.close();
+    const reopenedPrior = createPersistenceService({ stateDirectory: world.paths.state, archiveBridge: bridge });
+    assert.equal((await reopenedPrior.initialize()).mode, 'Ready');
+    assert.equal(reopenedPrior.getTopic('rollback-verified-topic').title, 'Restored');
+    await reopenedPrior.close();
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });

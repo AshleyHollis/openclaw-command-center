@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, mkdir } from 'node:fs/promises';
+import { access, mkdir, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { createFictionalBroadArchiveBridge, withIsolatedWorld } from '../src/fixtures.mjs';
@@ -42,6 +42,22 @@ test('fails closed for missing, relative, escaping, and unsafe resolved-state in
     const service = createPersistenceService({ stateDirectory: missing, archiveBridge: { protocolVersion: 1 } });
     assert.equal((await service.initialize()).mode, 'Recovery-only');
     assert.throws(() => service.createTopic({ topicId: 'x', title: 'X', paraCategory: 'Project' }), { code: 'MUTATION_BLOCKED_RECOVERY_ONLY' });
+  }, { reserveEndpoint: reserveFixtureEndpoint });
+});
+
+test('fails closed when an intermediate state-directory component is a symlink', async () => {
+  await withIsolatedWorld(async (world) => {
+    const outside = path.join(world.root, 'outside-state');
+    await mkdir(outside);
+    await symlink(outside, path.join(world.paths.state, 'plugins'));
+    await assert.rejects(prepareDatabaseLocation(world.paths.state), /OpenClaw plugins directory is missing or unsafe/);
+    const service = createPersistenceService({
+      stateDirectory: world.paths.state,
+      archiveBridge: createFictionalBroadArchiveBridge({ stateDirectory: world.paths.state, archiveDirectory: world.paths.archive })
+    });
+    assert.equal((await service.initialize()).mode, 'Recovery-only');
+    await service.close();
+    await assert.rejects(access(path.join(outside, 'command-center', 'metadata.sqlite')));
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
 

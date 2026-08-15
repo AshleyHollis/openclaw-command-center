@@ -133,3 +133,16 @@ export const initialSchemaStatements = Object.freeze([
     rebuilt_at TEXT NOT NULL
   )`
 ]);
+
+function schemaStatementMap(kind) {
+  const pattern = new RegExp(`^CREATE (?:UNIQUE )?${kind} ([a-z_]+)`, 'i');
+  return new Map(initialSchemaStatements.map((statement) => [pattern.exec(statement.trim())?.[1], statement]).filter(([name]) => name));
+}
+
+// These are complete durable definitions, rather than a few representative
+// fragments. Changing a durable constraint is corruption until a forward
+// migration explicitly updates this schema contract.
+const tableStatements = schemaStatementMap('TABLE');
+const indexStatements = schemaStatementMap('INDEX');
+export const requiredTableDefinitions = Object.freeze(Object.fromEntries(requiredTables.map((table) => [table, tableStatements.get(table)])));
+export const requiredIndexDefinitions = Object.freeze(Object.fromEntries(requiredIndexes.map((index) => [index, indexStatements.get(index)])));
