@@ -32,6 +32,8 @@ Commit only `.env.example`, containing variable names and safe explanatory comme
 
 Tests and prototypes must use isolated synthetic state. They must never connect to or modify a live OpenClaw Gateway.
 
+Persistence tests use a disposable resolved-state directory and a fictional broad-archive bridge. The bridge captures the complete isolated state tree (including SQLite sidecars) only for test evidence; no database, archive, or source payload is committed.
+
 ## Review before publication
 
 Before every commit and push:

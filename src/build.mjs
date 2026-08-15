@@ -72,7 +72,9 @@ export async function build() {
   await mkdir(distRoot, { recursive: true });
   await cp(path.join(sourceRoot, 'src', 'plugin.mjs'), path.join(distRoot, 'plugin.mjs'));
   await cp(path.join(sourceRoot, 'src', 'asset-handler.mjs'), path.join(distRoot, 'asset-handler.mjs'));
+  await cp(path.join(sourceRoot, 'src', 'compatibility.mjs'), path.join(distRoot, 'compatibility.mjs'));
   await cp(path.join(sourceRoot, 'src', 'compatibility-tuple.json'), path.join(distRoot, 'compatibility-tuple.json'));
+  await cp(path.join(sourceRoot, 'src', 'persistence'), path.join(distRoot, 'persistence'), { recursive: true, verbatimSymlinks: true });
   await cp(path.join(sourceRoot, 'src', 'ui'), path.join(distRoot, 'ui'), { recursive: true, verbatimSymlinks: true });
   const receipt = freezeReceipt(await digestTree(distRoot));
   await writeFile(path.join(distRoot, digestFileName), `${JSON.stringify(receipt, null, 2)}\n`);

@@ -1,9 +1,15 @@
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import { serveShellAsset } from './asset-handler.mjs';
+import { createPersistenceService } from './persistence/service.mjs';
 
 export const pluginId = 'command-center';
 export const routeId = 'command-center';
 export const pluginPath = '/plugins/command-center';
+
+// OpenClaw supplies the resolved state root and its normal broad-archive
+// bridge at the lifecycle seam. Keeping this explicit avoids any discovery of
+// live state and avoids inventing an unsupported host integration contract.
+export const createCommandCenterPersistenceService = createPersistenceService;
 
 const assets = new Map([
   [`${pluginPath}`, ['index.html', 'text/html; charset=utf-8']],

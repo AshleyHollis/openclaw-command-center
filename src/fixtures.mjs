@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import os from 'node:os';
@@ -12,6 +12,34 @@ export const fixtureTemplates = cloneAndFreeze({
   database: Object.freeze({ records: [] }),
   notifications: Object.freeze({ events: [] })
 });
+
+function same(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
+
+/**
+ * Fictional test-only stand-in for OpenClaw's broad archive seam. It archives
+ * the entire isolated state root, so SQLite sidecars travel with the database.
+ * Production persistence receives the host bridge instead of this fixture.
+ */
+export function createFictionalBroadArchiveBridge({ stateDirectory, archiveDirectory, protocolVersion = 1, verify = () => true } = {}) {
+  let sequence = 0;
+  const captures = [];
+  return Object.freeze({
+    protocolVersion,
+    captures,
+    async createSnapshot(bindings) {
+      const captureDirectory = path.join(archiveDirectory, `broad-archive-${++sequence}`);
+      await cp(stateDirectory, captureDirectory, { recursive: true, verbatimSymlinks: false });
+      const receipt = Object.freeze({ protocolVersion, complete: true, captureDirectory, bindings: structuredClone(bindings) });
+      captures.push(receipt);
+      return receipt;
+    },
+    async verifySnapshot(receipt, expected) {
+      if (!receipt || receipt.protocolVersion !== protocolVersion || !receipt.complete || !same(receipt.bindings, expected) || verify(receipt, expected) !== true) return false;
+      await access(receipt.captureDirectory);
+      return true;
+    }
+  });
+}
 
 function cloneAndFreeze(value) {
   if (Array.isArray(value)) return Object.freeze(value.map(cloneAndFreeze));
@@ -61,7 +89,7 @@ export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot
   try {
     reservation = await reserveEndpoint();
     const gateway = reservation.endpoint;
-    const paths = Object.fromEntries(['session', 'scheduler', 'vault', 'database', 'notifications'].map((name) => [name, path.join(root, name)]));
+    const paths = Object.fromEntries(['session', 'scheduler', 'vault', 'database', 'notifications', 'state', 'archive'].map((name) => [name, path.join(root, name)]));
     const tempRoot = path.join(root, 'tmp');
     await Promise.all([...Object.values(paths), tempRoot].map((value) => mkdir(value, { recursive: true })));
     const state = cloneAndFreeze(fixtureTemplates);

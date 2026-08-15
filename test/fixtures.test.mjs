@@ -47,6 +47,8 @@ test('fixture manifest supplies the built candidate to the isolated host seam', 
     assert.equal(world.manifest.gateway.url, world.gateway.url);
     assert.notEqual(world.gateway.port, 18789);
     assert.equal(world.manifest.tempRoot, world.tempRoot);
+    assert.match(world.paths.state, /\/state$/);
+    assert.match(world.paths.archive, /\/archive$/);
     const config = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
     assert.equal(config.gateway.auth.mode, 'token');
     assert.equal(config.gateway.auth.token, world.gatewayCredential);
