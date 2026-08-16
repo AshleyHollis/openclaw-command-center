@@ -41,8 +41,14 @@ async function createSafeChild(parent, name, label) {
     return child;
   }
   // Create one component at a time. Recursive mkdir would follow an existing
-  // intermediate symlink before the final directory could be inspected.
-  await mkdir(child);
+  // intermediate symlink before the final directory could be inspected. An
+  // EEXIST collision is expected when independent public initializers create
+  // the same clean location; inspect the winner rather than failing it.
+  try {
+    await mkdir(child);
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+  }
   await assertDirectory(child, label);
   return child;
 }

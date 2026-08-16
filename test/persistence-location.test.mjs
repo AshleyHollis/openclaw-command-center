@@ -28,6 +28,26 @@ test('uses one deterministic plugin-owned database beneath an explicit resolved 
   }, { reserveEndpoint: reserveFixtureEndpoint });
 });
 
+test('concurrent clean public initializers share one database and apply each ledger transition once', async () => {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await withIsolatedWorld(async (world) => {
+      const options = {
+        stateDirectory: world.paths.state,
+        archiveBridge: createFictionalBroadArchiveBridge({ stateDirectory: world.paths.state, archiveDirectory: world.paths.archive })
+      };
+      const left = createPersistenceService(options);
+      const right = createPersistenceService(options);
+      const statuses = await Promise.all([left.initialize(), right.initialize()]);
+      assert.deepEqual(statuses.map((status) => status.mode), ['Ready', 'Ready']);
+      assert.equal(left.getMigrationStatus().schemaVersion, 2);
+      assert.deepEqual(left.getMigrationStatus().ledger.map((entry) => entry.version), [1, 2]);
+      assert.deepEqual(right.getMigrationStatus().ledger.map((entry) => entry.version), [1, 2]);
+      await left.close();
+      await right.close();
+    }, { reserveEndpoint: reserveFixtureEndpoint });
+  }
+});
+
 test('fails closed for missing, relative, escaping, and unsafe resolved-state inputs', async () => {
   assert.throws(() => resolveDatabaseLocation(), /resolved absolute state directory/);
   assert.throws(() => resolveDatabaseLocation('relative-state'), /resolved absolute state directory/);
