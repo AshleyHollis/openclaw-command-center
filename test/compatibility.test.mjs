@@ -3,12 +3,28 @@ import test from 'node:test';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
 import packageJson from '../package.json' with { type: 'json' };
 import { assertDeclarativeMirror, validateCompatibility } from '../src/compatibility.mjs';
+import { pinnedHost } from '../src/host-harness.mjs';
+
+const supportedOpenClaw = Object.freeze({
+  version: '2026.8.1-beta.2',
+  commit: '8f382a202ff1e15833394b481615dcdda99b04d7'
+});
 
 test('accepts the exact canonical compatibility tuple', () => {
   assert.deepEqual(validateCompatibility(structuredClone(canonical)), { ok: true });
   assertDeclarativeMirror(canonical);
   assert.equal(packageJson.openclaw.compat.pluginApi, canonical.pluginApi.range);
   assert.deepEqual(packageJson.openclaw.extensions, ['./dist/plugin.mjs']);
+});
+
+test('all runtime declarations target the supported OpenClaw release', () => {
+  assert.equal(packageJson.dependencies.openclaw, supportedOpenClaw.version);
+  assert.equal(packageJson.openclaw.compat.pluginApi, `=${supportedOpenClaw.version}`);
+  assert.equal(canonical.host.range, `=${supportedOpenClaw.version}`);
+  assert.equal(canonical.host.commit, supportedOpenClaw.commit);
+  assert.equal(canonical.pluginApi.range, `=${supportedOpenClaw.version}`);
+  assert.equal(pinnedHost.version, supportedOpenClaw.version);
+  assert.equal(pinnedHost.commit, supportedOpenClaw.commit);
 });
 
 for (const [name, mutate] of [
