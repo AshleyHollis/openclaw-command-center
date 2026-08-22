@@ -1,5 +1,5 @@
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,23 @@ export const fixtureTemplates = cloneAndFreeze({
   database: Object.freeze({ records: [] }),
   notifications: Object.freeze({ events: [] })
 });
+
+function fixtureDigest(value) {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+/** Stable, payload-free source identities for disposable projection tests. */
+export const fictionalProjectionSourceSnapshot = cloneAndFreeze({
+  sourceRevision: 'fictional-snapshot-v1',
+  noteFolders: [{ identity: 'folder-fictional', contentDigest: fixtureDigest('fictional note folder') }],
+  sessions: [{ identity: 'session-fictional', contentDigest: fixtureDigest('fictional session') }],
+  reminderSchedules: [{ identity: 'schedule-fictional', contentDigest: fixtureDigest('fictional schedule') }],
+  importedHistory: [{ identity: 'history-fictional', contentDigest: fixtureDigest('fictional imported history') }]
+});
+
+export function createFictionalAuthoritativeSources() {
+  return Object.freeze({ readSnapshot: () => fictionalProjectionSourceSnapshot });
+}
 
 function cloneAndFreeze(value) {
   if (Array.isArray(value)) return Object.freeze(value.map(cloneAndFreeze));

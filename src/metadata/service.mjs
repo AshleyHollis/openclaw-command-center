@@ -16,6 +16,7 @@ import {
 } from './schema.mjs';
 import { evaluateOperatingMode, normalizeCapabilities } from './modes.mjs';
 import { resolveCommandCenterDatabasePath } from './path.mjs';
+import { openCommandCenterProjectionService } from './projections.mjs';
 import {
   applyV1ToV2Migration,
   validateMigrationLedger
@@ -33,6 +34,8 @@ import {
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii');
 const diagnosticLimit = 300;
 const migrationTestHooksSymbol = Symbol.for('openclaw.command-center.test.migration-hooks');
+const commandCenterProjectionId = 'command-center-core-v1';
+const sha256DigestPattern = /^sha256:[0-9a-f]{64}$/u;
 
 export class CommandCenterMetadataError extends Error {
   constructor(code, message, details = {}) {
@@ -99,6 +102,12 @@ function timestamp(value, field, fallback = new Date().toISOString()) {
 
 function objectValue(value, field) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CommandCenterMetadataError('invalid-value', `${field} must be an object`);
+  return value;
+}
+
+function freezeSnapshot(value) {
+  if (Array.isArray(value)) return Object.freeze(value.map(freezeSnapshot));
+  if (value && typeof value === 'object') return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, item]) => [key, freezeSnapshot(item)])));
   return value;
 }
 
@@ -372,6 +381,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   const operating = evaluateOperatingMode({ core: opened.core, capabilities: normalizedCapabilities });
   let database = opened.database;
   let closed = false;
+  let projectionService;
 
   const service = {
     databasePath: opened.databasePath,
@@ -395,6 +405,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     close() {
       if (closed) return;
       closed = true;
+      projectionService?.close();
       closeQuietly(database);
       database = undefined;
     }
@@ -421,6 +432,29 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     assertOpen();
     return database.prepare(sql).all(...values).map(mapper);
   }
+
+  service.readProjectionSnapshot = () => {
+    assertOpen();
+    if (operating.mode !== 'ready') throw new CommandCenterMetadataError('metadata-not-ready', 'Command Center metadata is not ready for projection.', { mode: operating.mode });
+    database.exec('BEGIN');
+    try {
+      const snapshot = {
+        topics: database.prepare('SELECT topic_id AS topicId, para_category AS paraCategory, lifecycle, created_at AS createdAt, updated_at AS updatedAt FROM topics ORDER BY topic_id').all(),
+        sourceReferences: database.prepare('SELECT reference_id AS referenceId, topic_id AS topicId, source_system AS sourceSystem, source_kind AS sourceKind, external_source_id AS externalSourceId, created_at AS createdAt, updated_at AS updatedAt FROM source_references ORDER BY referenceId').all(),
+        sourceConventionState: database.prepare('SELECT reference_id AS referenceId, aspect, state, updated_at AS updatedAt FROM source_convention_state ORDER BY referenceId, aspect').all(),
+        presentationPreferences: database.prepare('SELECT topic_id AS topicId, display_label AS displayLabel, sort_order AS sortOrder, collapsed, updated_at AS updatedAt FROM presentation_preferences ORDER BY topicId').all().map((row) => ({ ...row, collapsed: row.collapsed === 1 })),
+        attentionActivityLinks: database.prepare('SELECT link_id AS linkId, attention_id AS attentionId, activity_id AS activityId, topic_id AS topicId, created_at AS createdAt FROM attention_activity_links ORDER BY linkId').all(),
+        proposalStates: database.prepare('SELECT proposal_id AS proposalId, topic_id AS topicId, state, revision, created_at AS createdAt, updated_at AS updatedAt FROM proposal_states ORDER BY proposalId').all(),
+        policyVersions: database.prepare('SELECT policy_id AS policyId, version, digest, updated_at AS updatedAt FROM policy_versions ORDER BY policyId').all()
+      };
+      database.exec('COMMIT');
+      return freezeSnapshot(snapshot);
+    } catch (error) {
+      try { database.exec('ROLLBACK'); } catch { /* preserve the original read failure */ }
+      throw error;
+    }
+  };
+  service.readCanonicalProjectionSnapshot = service.readProjectionSnapshot;
 
   function mutate(capability, operation) {
     assertMutation(capability);
@@ -655,6 +689,9 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     const projectionId = requiredString(value.projectionId, 'projectionId');
     const sourceRevision = requiredString(value.sourceRevision, 'sourceRevision');
     const inputDigest = requiredString(value.inputDigest, 'inputDigest');
+    if (projectionId === commandCenterProjectionId && !sha256DigestPattern.test(inputDigest)) {
+      throw new CommandCenterMetadataError('invalid-value', 'Command Center projection inputDigest must be sha256:<64 lowercase hex>.');
+    }
     const updatedAt = timestamp(value.updatedAt, 'updatedAt');
     return mutate(null, (db) => {
       db.prepare('INSERT INTO projection_bookkeeping (projection_id, source_revision, input_digest, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(projection_id) DO UPDATE SET source_revision = excluded.source_revision, input_digest = excluded.input_digest, updated_at = excluded.updated_at').run(projectionId, sourceRevision, inputDigest, updatedAt);
@@ -672,6 +709,19 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   service.createAttentionActivityLink = service.linkAttentionActivity;
   service.upsertPolicyVersion = service.setPolicyVersion;
   service.upsertProjectionBookkeeping = service.setProjectionBookkeeping;
+
+  function projections() {
+    assertOpen();
+    if (!projectionService) projectionService = openCommandCenterProjectionService({ stateDir: resolvedStateDir, metadataService: service });
+    return projectionService;
+  }
+
+  // Projection inputs are deliberately limited to authoritative sources.  The
+  // metadata snapshot is always read from this validated owned database.
+  service.deleteDerivedProjections = () => projections().delete();
+  service.rebuildProjections = ({ authoritativeSources, onProgress } = {}) => projections().rebuild({ authoritativeSources, onProgress });
+  service.getProjectionStatus = () => projections().getStatus();
+  service.queryProjections = () => projections().queryProjections();
 
   return Object.freeze(service);
 }
