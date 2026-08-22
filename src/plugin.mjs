@@ -1,5 +1,6 @@
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import { serveShellAsset } from './asset-handler.mjs';
+import { openCommandCenterMetadataService } from './metadata/service.mjs';
 
 export const pluginId = 'command-center';
 export const routeId = 'command-center';
@@ -15,6 +16,21 @@ const assets = new Map([
 
 async function serveShell(req, res) {
   return serveShellAsset(req, res, { assets });
+}
+
+function createMetadataService(api) {
+  let metadataService;
+  return {
+    id: 'command-center-metadata',
+    start() {
+      const stateDir = api.runtime.state.resolveStateDir(process.env);
+      metadataService = openCommandCenterMetadataService({ stateDir, capabilities: {} });
+    },
+    stop() {
+      metadataService?.close();
+      metadataService = undefined;
+    }
+  };
 }
 
 export default definePluginEntry({
@@ -38,5 +54,6 @@ export default definePluginEntry({
       match: 'prefix',
       handler: serveShell
     });
+    api.registerService(createMetadataService(api));
   }
 });
