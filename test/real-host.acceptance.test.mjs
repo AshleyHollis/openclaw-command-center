@@ -83,7 +83,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.deepEqual(await readdir(path.dirname(databasePath)), ['metadata.sqlite']);
       const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try {
-        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 1);
+        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 2);
         const sourceReferenceTopic = startupDatabase.prepare('PRAGMA foreign_key_list(source_references)').all()
           .find((foreignKey) => foreignKey.from === 'topic_id');
         assert.equal(sourceReferenceTopic?.on_delete, 'RESTRICT');
