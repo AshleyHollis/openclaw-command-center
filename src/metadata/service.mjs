@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
+  SOURCE_SCHEMA_VERSION,
   conventionAspects,
   conventionStates,
   inspectSchema,
@@ -15,9 +16,23 @@ import {
 } from './schema.mjs';
 import { evaluateOperatingMode, normalizeCapabilities } from './modes.mjs';
 import { resolveCommandCenterDatabasePath } from './path.mjs';
+import {
+  applyV1ToV2Migration,
+  validateMigrationLedger
+} from './migration-ledger.mjs';
+import {
+  RecoveryMaterialError,
+  ensureRecoverySnapshot,
+  inspectDatabaseAgainstRecoverySnapshot,
+  isRollbackSnapshot,
+  markRecoveryCommitted,
+  readRecoveryMaterial,
+  verifyRollbackMaterial
+} from './recovery.mjs';
 
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii');
 const diagnosticLimit = 300;
+const migrationTestHooksSymbol = Symbol.for('openclaw.command-center.test.migration-hooks');
 
 export class CommandCenterMetadataError extends Error {
   constructor(code, message, details = {}) {
@@ -161,7 +176,54 @@ function closeQuietly(database) {
   try { database?.close(); } catch { /* preflight cleanup must not write or mask its classification */ }
 }
 
-function inspectExistingDatabase(databasePath) {
+function recoveryFailure(error, schemaVersion = null) {
+  const code = error?.code || 'recovery-validation-failure';
+  const summary = error?.message || 'Recovery material could not be verified.';
+  return coreFailure(code, summary, 'Restore the retained recovery material or repair the storage through the external recovery workflow.', schemaVersion);
+}
+
+function inspectSchemaOneDatabase(database, schemaVersion) {
+  const integrity = database.prepare('PRAGMA integrity_check').get()?.integrity_check;
+  if (integrity !== 'ok') return coreFailure('integrity-failure', 'The Command Center database failed SQLite integrity checks.', 'Restore a verified database before allowing metadata mutations.', schemaVersion);
+  let shape;
+  try { shape = inspectSchema(database, schemaVersion); } catch {
+    return coreFailure('malformed-schema', 'The Command Center database does not match the supported schema shape.', 'Restore or migrate the database through the separate recovery workflow.', schemaVersion);
+  }
+  if (!shape.valid) return coreFailure('malformed-schema', 'The Command Center database does not match the supported schema shape.', 'Restore or migrate the database through the separate recovery workflow.', schemaVersion);
+  return null;
+}
+
+function validateCurrentV2(databasePath, stateDir) {
+  let database;
+  try {
+    database = new DatabaseSync(databasePath, { readOnly: true });
+    const baseFailure = inspectSchemaOneDatabase(database, COMMAND_CENTER_SCHEMA_VERSION);
+    if (baseFailure) return baseFailure;
+    const ledger = validateMigrationLedger(database);
+    let material;
+    try { material = readRecoveryMaterial(stateDir); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
+    if (ledger.rows.length === 0) {
+      if (material.exists) return coreFailure('unexpected-recovery-material', 'Recovery material exists without a committed migration ledger.', 'Repair storage through the external recovery workflow before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
+    } else {
+      if (!material.exists) return coreFailure('recovery-material-missing', 'The committed migration recovery material is missing.', 'Restore the retained recovery directory before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
+      if (material.manifest.snapshotId !== ledger.rows[0].snapshot_id) return coreFailure('recovery-ledger-mismatch', 'The migration ledger does not identify the retained recovery snapshot.', 'Restore matching recovery material before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
+      if (!ledger.valid) return coreFailure('migration-ledger-invalid', 'The migration ledger is not an exact record of the supported migration.', 'Restore a verified database and matching recovery material before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
+      if (material.manifest.state === 'prepared') {
+        try { material = markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
+      }
+      if (material.manifest.state !== 'committed') return coreFailure('recovery-manifest-invalid', 'The migration recovery manifest is not committed.', 'Complete recovery reconciliation before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
+    }
+    return Object.freeze({ mode: 'ready', schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, diagnostics: Object.freeze([]) });
+  } catch (error) {
+    return isStorageAccessError(error)
+      ? coreFailure('storage-access-failure', 'The Command Center database could not be opened for inspection.', 'Check storage access and retry Command Center startup.', COMMAND_CENTER_SCHEMA_VERSION)
+      : recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION);
+  } finally {
+    closeQuietly(database);
+  }
+}
+
+function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   const header = inspectSqliteHeader(databasePath);
   if (header.error) return coreFailure('storage-access-failure', 'The Command Center database could not be read for inspection.', 'Check storage access and retry Command Center startup.');
   if (header.bytesRead === 0) return coreFailure('unversioned-schema', 'The existing Command Center database is pristine schema version 0.', 'Initialize only a missing database; move this existing file through the separate recovery workflow.', null);
@@ -174,8 +236,8 @@ function inspectExistingDatabase(databasePath) {
       ? coreFailure('storage-access-failure', 'The Command Center database could not be opened for inspection.', 'Check storage access and retry Command Center startup.')
       : coreFailure('corrupt-storage', 'The Command Center database could not be read safely.', 'Restore or replace the database through the separate recovery workflow.');
   }
+  let schemaVersion;
   try {
-    let schemaVersion;
     try {
       schemaVersion = readSchemaVersion(database);
     } catch (error) {
@@ -184,29 +246,51 @@ function inspectExistingDatabase(databasePath) {
         : coreFailure('corrupt-storage', 'The Command Center database could not be read safely.', 'Restore or replace the database through the separate recovery workflow.');
     }
     if (schemaVersion > COMMAND_CENTER_SCHEMA_VERSION) return coreFailure('future-schema', 'The Command Center database uses a newer schema version.', 'Upgrade Command Center to a compatible version; no automatic migration is attempted.', null);
-    if (schemaVersion !== COMMAND_CENTER_SCHEMA_VERSION) return coreFailure('unversioned-schema', 'The existing Command Center database is not schema version 1.', 'Use the separate migration or recovery workflow before writing metadata.', null);
-    let integrity;
-    try {
-      integrity = database.prepare('PRAGMA integrity_check').get()?.integrity_check;
-    } catch (error) {
-      return isStorageAccessError(error)
-        ? coreFailure('storage-access-failure', 'The Command Center database could not be read for inspection.', 'Check storage access and retry Command Center startup.', schemaVersion)
-        : coreFailure('integrity-failure', 'The Command Center database failed SQLite integrity checks.', 'Restore a verified database before allowing metadata mutations.', schemaVersion);
+    if (schemaVersion !== COMMAND_CENTER_SCHEMA_VERSION) {
+      if (schemaVersion !== SOURCE_SCHEMA_VERSION) return coreFailure('unversioned-schema', 'The existing Command Center database is not a declared migratable schema.', 'Use the separate migration or recovery workflow before writing metadata.', null);
+      const sourceFailure = inspectSchemaOneDatabase(database, SOURCE_SCHEMA_VERSION);
+      if (sourceFailure) return sourceFailure;
     }
-    if (integrity !== 'ok') return coreFailure('integrity-failure', 'The Command Center database failed SQLite integrity checks.', 'Restore a verified database before allowing metadata mutations.', schemaVersion);
-    let shape;
-    try {
-      shape = inspectSchema(database);
-    } catch (error) {
-      return isStorageAccessError(error)
-        ? coreFailure('storage-access-failure', 'The Command Center database could not be read for inspection.', 'Check storage access and retry Command Center startup.', schemaVersion)
-        : coreFailure('malformed-schema', 'The Command Center database does not match the supported schema shape.', 'Restore or migrate the database through the separate recovery workflow.', schemaVersion);
-    }
-    if (!shape.valid) return coreFailure('malformed-schema', 'The Command Center database does not match the supported schema shape.', 'Restore or migrate the database through the separate recovery workflow.', schemaVersion);
-    return Object.freeze({ mode: 'ready', schemaVersion, diagnostics: Object.freeze([]) });
   } finally {
     closeQuietly(database);
   }
+
+  // Current-schema validation performs a full integrity check. Release the
+  // lightweight classification handle before opening that validation handle.
+  if (schemaVersion === COMMAND_CENTER_SCHEMA_VERSION) return validateCurrentV2(databasePath, stateDir);
+
+  let material;
+  try {
+    material = readRecoveryMaterial(stateDir);
+    if (material.exists && isRollbackSnapshot(databasePath, material)) {
+      return coreFailure('rollback-snapshot-detected', 'The database is the retained schema-1 rollback snapshot.', 'Install the exact prior openclaw-command-center@0.1.0 release before using this restored database.', SOURCE_SCHEMA_VERSION);
+    }
+    if (material.exists && !inspectDatabaseAgainstRecoverySnapshot(databasePath, material)) {
+      return coreFailure('recovery-snapshot-mismatch', 'The retained recovery snapshot does not match the current schema-1 database.', 'Do not overwrite recovery evidence; restore a matching database or complete recovery externally.', SOURCE_SCHEMA_VERSION);
+    }
+    if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath });
+  } catch (error) {
+    return recoveryFailure(error, SOURCE_SCHEMA_VERSION);
+  }
+
+  let migrationDatabase;
+  try {
+    migrationDatabase = new DatabaseSync(databasePath);
+    migrationDatabase.exec('PRAGMA foreign_keys = ON;');
+    applyV1ToV2Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+  } catch (error) {
+    closeQuietly(migrationDatabase);
+    return coreFailure('migration-failed', 'The schema-1 to schema-2 migration was rolled back and the store remains recovery-only.', 'Retry startup with the retained verified snapshot or restore the prior compatible release.', SOURCE_SCHEMA_VERSION);
+  } finally {
+    closeQuietly(migrationDatabase);
+  }
+  migrationHooks?.afterDatabaseCommit?.();
+  try {
+    markRecoveryCommitted(material);
+  } catch (error) {
+    return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION);
+  }
+  return validateCurrentV2(databasePath, stateDir);
 }
 
 function createNewDatabase(databasePath) {
@@ -243,7 +327,7 @@ function assertPluginDirectoryChain(databasePath) {
   }
 }
 
-function openCore(stateDir, explicitDatabasePath) {
+function openCore(stateDir, explicitDatabasePath, migrationHooks) {
   const databasePath = explicitDatabasePath ?? resolveCommandCenterDatabasePath(stateDir);
   let core;
   let phase = 'inspection';
@@ -257,7 +341,7 @@ function openCore(stateDir, explicitDatabasePath) {
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
     }
-    if (existing) core = inspectExistingDatabase(databasePath);
+    if (existing) core = inspectExistingDatabase(databasePath, stateDir, migrationHooks);
     else if (existsSync(databasePath)) core = coreFailure('storage-access-failure', 'The Command Center database path is not a regular file.', 'Check storage access and retry Command Center startup.');
     else {
       phase = 'creation';
@@ -281,9 +365,10 @@ function openCore(stateDir, explicitDatabasePath) {
   return Object.freeze({ databasePath, core, database });
 }
 
-function createService(stateDir, databasePath, capabilities) {
+function createService(stateDir, databasePath, capabilities, migrationHooks) {
   const normalizedCapabilities = normalizeCapabilities(capabilities);
-  const opened = openCore(stateDir, databasePath);
+  const resolvedStateDir = stateDir ?? path.resolve(databasePath, '..', '..', '..');
+  const opened = openCore(resolvedStateDir, databasePath, migrationHooks);
   const operating = evaluateOperatingMode({ core: opened.core, capabilities: normalizedCapabilities });
   let database = opened.database;
   let closed = false;
@@ -297,6 +382,15 @@ function createService(stateDir, databasePath, capabilities) {
         diagnostics: operating.diagnostics.map((item) => ({ ...item })),
         unavailableCapabilities: [...operating.unavailableCapabilities]
       };
+    },
+    verifyRollbackSnapshot(input) {
+      if (closed) throw new CommandCenterMetadataError('service-closed', 'The Command Center metadata service is closed.');
+      try {
+        return verifyRollbackMaterial(resolvedStateDir, input || {}, opened.databasePath);
+      } catch (error) {
+        if (error instanceof RecoveryMaterialError) throw new CommandCenterMetadataError(error.code, error.message, { mode: operating.mode, cause: error });
+        throw error;
+      }
     },
     close() {
       if (closed) return;
@@ -582,10 +676,12 @@ function createService(stateDir, databasePath, capabilities) {
   return Object.freeze(service);
 }
 
-export function openCommandCenterMetadataService({ stateDir, databasePath, capabilities } = {}) {
+export function openCommandCenterMetadataService(options = {}) {
+  const { stateDir, databasePath, capabilities } = options;
+  const migrationHooks = process.env.NODE_ENV === 'test' ? options[migrationTestHooksSymbol] : undefined;
   if (databasePath !== undefined && (typeof databasePath !== 'string' || databasePath.trim() === '')) throw new TypeError('databasePath must be a non-empty string');
   if (databasePath === undefined && (typeof stateDir !== 'string' || stateDir.trim() === '')) throw new TypeError('stateDir must be a non-empty string');
-  return createService(stateDir, databasePath, capabilities);
+  return createService(stateDir, databasePath, capabilities, migrationHooks);
 }
 
 export { metadataTableNames };

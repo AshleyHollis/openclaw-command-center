@@ -1,7 +1,7 @@
 {
   "id": "command-center",
   "name": "Command Center",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "entry": "dist/plugin.mjs",
   "activation": {
     "onStartup": true

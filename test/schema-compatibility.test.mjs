@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, truncate, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, truncate, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -106,15 +106,26 @@ test('integrity-failing and corrupt databases receive distinct diagnostics and r
 
 test('oversized sparse databases inspect only their fixed header before SQLite preflight', async () => {
   await withState(async (stateDir) => {
-    const { databasePath } = await createDatabase(stateDir, (database) => database.exec(metadataSchemaSql));
+    const corruptPrefix = Buffer.from('fictional-corrupt-input');
+    const databasePath = resolveCommandCenterDatabasePath(stateDir);
+    await mkdir(path.dirname(databasePath), { recursive: true });
+    await writeFile(databasePath, corruptPrefix);
     await truncate(databasePath, 5 * 1024 * 1024 * 1024);
     const beforeSize = (await stat(databasePath)).size;
     const service = openCommandCenterMetadataService({ stateDir });
     const status = service.getOperatingStatus();
-    assert.equal(status.mode, 'ready');
-    assert.deepEqual(status.diagnostics, []);
+    assert.equal(status.mode, 'recovery-only');
+    assert.equal(status.diagnostics[0].code, 'corrupt-storage');
     service.close();
     assert.equal((await stat(databasePath)).size, beforeSize);
+    const databaseFile = await open(databasePath, 'r');
+    try {
+      const header = Buffer.alloc(corruptPrefix.length);
+      const { bytesRead } = await databaseFile.read(header, 0, header.length, 0);
+      assert.deepEqual(header.subarray(0, bytesRead), corruptPrefix);
+    } finally {
+      await databaseFile.close();
+    }
   });
 });
 
