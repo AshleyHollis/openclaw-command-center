@@ -27,7 +27,8 @@ async function withState(run) {
 test('creates exactly one schema-2 database and preserves public metadata across reopen', async () => {
   await withState(async (stateDir) => {
     const service = openCommandCenterMetadataService({ stateDir });
-    assert.deepEqual(service.getOperatingStatus(), { mode: 'ready', schemaVersion: 2, diagnostics: [], unavailableCapabilities: [] });
+    assert.equal(service.getOperatingStatus().mode, 'degraded');
+    assert.deepEqual(service.getOperatingStatus().unavailableCapabilities, ['notes', 'sessions', 'scheduler', 'activity', 'analysis', 'attention', 'search']);
     const databasePath = resolveCommandCenterDatabasePath(stateDir);
     assert.equal(service.databasePath, databasePath);
     assert.deepEqual(await readdir(path.dirname(databasePath)), ['metadata.sqlite']);

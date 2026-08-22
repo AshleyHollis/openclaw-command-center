@@ -1,0 +1,211 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { randomUUID } from 'node:crypto';
+import { registerBridgeMethods } from '../src/bridge/register.mjs';
+import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
+
+const fsSafeRootFactory = async (rootDir) => ({ rootDir, rootReal: rootDir, resolve: async (relative) => path.join(rootDir, relative), open: async (relative) => ({ handle: await (await import('node:fs/promises')).open(path.join(rootDir, relative), 'r') }) });
+
+test('public source service writes durable authoritative Markdown and keeps metadata free of content', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-integration-'));
+  const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-vault-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, scheduler: true } });
+    metadata.createTopic({ topicId: 'topic-integration', paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'folder-integration', topicId: 'topic-integration', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    const service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true, sessions: true, scheduler: true, activity: true, search: true, analysis: false, attention: false } });
+    const logicalOperationId = randomUUID();
+    const created = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/note.md', text: 'authoritative text', logicalOperationId, requestId: 'frame-integration' });
+    assert.equal(created.status, 'applied');
+    assert.equal(await readFile(path.join(vault, 'nested/note.md'), 'utf8'), 'authoritative text');
+    const metadataRows = metadata.listOperations();
+    assert.equal(metadataRows.length, 1);
+    assert.equal(JSON.stringify(metadataRows).includes('authoritative text'), false);
+    assert.equal((await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/note.md' })).text, 'authoritative text');
+    assert.throws(() => service.analysisRead({ schemaVersion: 1, topicId: 'topic-integration' }), (error) => error.code === 'capability-unavailable');
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test('a moved Note receives a new immutable Source Reference across reopen and later edit', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-moved-note-'));
+  const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-moved-vault-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    metadata.createTopic({ topicId: 'topic-moved-note', paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'folder-moved-note', topicId: 'topic-moved-note', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    let service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
+    const created = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-moved-note', path: 'before.md', text: 'before', logicalOperationId: randomUUID(), requestId: 'frame-create' });
+    const moved = await service.notesMove({ schemaVersion: 1, topicId: 'topic-moved-note', path: 'before.md', destinationPath: 'after.md', expectedRevision: created.value.note.revision, logicalOperationId: randomUUID(), requestId: 'frame-move' });
+    const referenceId = moved.value.note.sourceReference.referenceId;
+    assert.notEqual(referenceId, created.value.note.sourceReference.referenceId);
+    metadata.close();
+
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
+    const reopened = await service.notesRead({ schemaVersion: 1, topicId: 'topic-moved-note', path: 'after.md' });
+    assert.equal(reopened.sourceReference.referenceId, referenceId);
+    const edited = await service.notesEdit({ schemaVersion: 1, topicId: 'topic-moved-note', path: 'after.md', expectedRevision: reopened.revision, text: 'after', logicalOperationId: randomUUID(), requestId: 'frame-edit' });
+    assert.equal(edited.value.note.sourceReference.referenceId, referenceId);
+    assert.equal(await readFile(path.join(vault, 'after.md'), 'utf8'), 'after');
+    assert.equal(metadata.listSourceReferences('topic-moved-note').filter((reference) => reference.sourceKind === 'note').length, 2);
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test('move then recreate uses distinct durable Note identities without partial metadata failure', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-recreate-note-'));
+  const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-recreate-vault-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    metadata.createTopic({ topicId: 'topic-recreate-note', paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'folder-recreate-note', topicId: 'topic-recreate-note', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    const service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
+    const created = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-recreate-note', path: 'before.md', text: 'first', logicalOperationId: randomUUID(), requestId: 'frame-first' });
+    const moved = await service.notesMove({ schemaVersion: 1, topicId: 'topic-recreate-note', path: 'before.md', destinationPath: 'after.md', expectedRevision: created.value.note.revision, logicalOperationId: randomUUID(), requestId: 'frame-move' });
+    const recreated = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-recreate-note', path: 'before.md', text: 'second', logicalOperationId: randomUUID(), requestId: 'frame-second' });
+    const movedReferenceId = moved.value.note.sourceReference.referenceId;
+    const recreatedReferenceId = recreated.value.note.sourceReference.referenceId;
+    assert.notEqual(recreatedReferenceId, movedReferenceId);
+    assert.equal(await readFile(path.join(vault, 'before.md'), 'utf8'), 'second');
+    assert.equal(await readFile(path.join(vault, 'after.md'), 'utf8'), 'first');
+    assert.equal(metadata.listSourceReferences('topic-recreate-note').filter((reference) => reference.sourceKind === 'note').length, 2);
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    const reopenedService = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
+    assert.equal((await reopenedService.notesRead({ schemaVersion: 1, topicId: 'topic-recreate-note', path: 'after.md' })).sourceReference.referenceId, movedReferenceId);
+    assert.equal((await reopenedService.notesRead({ schemaVersion: 1, topicId: 'topic-recreate-note', path: 'before.md' })).sourceReference.referenceId, recreatedReferenceId);
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test('external Note reads persist current observations across metadata restart', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-observed-note-'));
+  const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-observed-vault-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    metadata.createTopic({ topicId: 'topic-observed-note', paraCategory: 'resource', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'folder-observed-note', topicId: 'topic-observed-note', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    await writeFile(path.join(vault, 'external.md'), 'external revision one');
+    let service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
+    const observed = await service.notesRead({ schemaVersion: 1, topicId: 'topic-observed-note', path: 'external.md' });
+    await writeFile(path.join(vault, 'browsed.md'), 'browse observation');
+    const browsed = (await service.notesBrowse({ schemaVersion: 1, topicId: 'topic-observed-note' })).find((note) => note.path === 'browsed.md');
+    metadata.close();
+
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    assert.equal(metadata.getSourceReference(observed.sourceReference.referenceId).observedRevision, observed.revision);
+    assert.equal(metadata.getSourceReference(browsed.sourceReference.referenceId).observedRevision, browsed.revision);
+    await writeFile(path.join(vault, 'external.md'), 'external revision two');
+    service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
+    const updated = await service.notesRead({ schemaVersion: 1, topicId: 'topic-observed-note', path: 'external.md' });
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    assert.equal(metadata.getSourceReference(observed.sourceReference.referenceId).observedRevision, updated.revision);
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test('registered authenticated bridge persists request-bound Note effects across reopen without side effects', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-bridge-integration-'));
+  const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-bridge-vault-'));
+  let metadata;
+  const registrations = new Map();
+  const sideEffects = { attention: 0, push: 0 };
+  const api = { registerGatewayMethod: (method, handler, options) => registrations.set(method, { handler, options }) };
+  const invoke = async (method, params, requestId) => {
+    let response;
+    await registrations.get(method).handler({ req: { id: requestId }, params, context: { authenticated: true, operator: 'fictional' }, respond: (...args) => { response = args; } });
+    assert.equal(response[0], true);
+    return response[1];
+  };
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    metadata.createTopic({ topicId: 'topic-bridge-integration', paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'folder-bridge-integration', topicId: 'topic-bridge-integration', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    let service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true }, attentionDelivery: () => { sideEffects.attention += 1; }, push: () => { sideEffects.push += 1; } });
+    registerBridgeMethods(api, service);
+    const logicalOperationId = randomUUID();
+    const created = await invoke('command-center.v1.notes.create', { schemaVersion: 1, topicId: 'topic-bridge-integration', path: 'bridge.md', text: 'bridge authoritative text', logicalOperationId }, 'gateway-frame-create');
+    assert.equal(created.requestId, 'gateway-frame-create');
+    assert.equal(created.logicalOperationId, logicalOperationId);
+    assert.equal(await readFile(path.join(vault, 'bridge.md'), 'utf8'), 'bridge authoritative text');
+    assert.equal(JSON.stringify(metadata.listOperations()).includes('bridge authoritative text'), false);
+    metadata.close();
+
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true }, attentionDelivery: () => { sideEffects.attention += 1; }, push: () => { sideEffects.push += 1; } });
+    registrations.clear();
+    registerBridgeMethods(api, service);
+    const replayed = await invoke('command-center.v1.notes.create', { schemaVersion: 1, topicId: 'topic-bridge-integration', path: 'bridge.md', text: 'bridge authoritative text', logicalOperationId }, 'gateway-frame-replay');
+    assert.equal(replayed.requestId, 'gateway-frame-replay');
+    assert.equal(replayed.result.value.note.path, 'bridge.md');
+    assert.equal(replayed.result.value.note.text, 'bridge authoritative text');
+    assert.equal('intentDigest' in replayed.result, false);
+    const read = await invoke('command-center.v1.notes.read', { schemaVersion: 1, topicId: 'topic-bridge-integration', path: 'bridge.md' }, 'gateway-frame-read');
+    assert.equal(read.requestId, 'gateway-frame-read');
+    assert.equal(read.result.text, 'bridge authoritative text');
+    assert.equal(metadata.listOperations().length, 1);
+    assert.deepEqual(metadata.listActivity(), []);
+    assert.deepEqual(sideEffects, { attention: 0, push: 0 });
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test('derived search and Topic Analysis use only injected providers', async () => {
+  const metadata = { getTopic: (topicId) => topicId === 'topic-provider' ? { topicId } : null, getOperatingStatus: () => ({ mode: 'ready', schemaVersion: 2, diagnostics: [] }), listSourceReferences: () => [] };
+  const unavailable = createAuthoritativeSourceService({ metadata, capabilities: { notes: false, sessions: false, scheduler: false, activity: true, search: false, analysis: false, attention: false } });
+  await assert.rejects(() => unavailable.searchQuery({ topicId: 'topic-provider', query: 'fictional' }), (error) => error.code === 'capability-unavailable');
+  const service = createAuthoritativeSourceService({
+    metadata,
+    capabilities: { notes: false, sessions: false, scheduler: false, activity: true, search: true, analysis: true, attention: false },
+    searchProvider: { query: async () => ({ results: [{ kind: 'fictional-derived-result' }] }) },
+    analysisProvider: { status: async () => ({ status: 'idle' }), run: async () => ({ status: 'queued' }) }
+  });
+  assert.equal((await service.searchQuery({ topicId: 'topic-provider', query: 'fictional' })).results[0].kind, 'fictional-derived-result');
+  assert.equal((await service.analysisRead({ topicId: 'topic-provider' })).status, 'idle');
+  assert.equal((await service.analysisRun({ topicId: 'topic-provider', input: {}, logicalOperationId: randomUUID() })).value.status, 'queued');
+});
+
+test('authoritative creates reject a missing Topic before provider dispatch', async () => {
+  const metadata = {
+    getTopic: () => null,
+    getOperatingStatus: () => ({ mode: 'ready', schemaVersion: 2, diagnostics: [] }),
+    listSourceReferences: () => []
+  };
+  const calls = [];
+  const gateway = { request: async (...args) => { calls.push(args); return {}; } };
+  const service = createAuthoritativeSourceService({ metadata, gateway, capabilities: { sessions: true, scheduler: true } });
+  await assert.rejects(
+    () => service.sessionsCreate({ topicId: 'missing-topic', logicalOperationId: randomUUID() }),
+    (error) => error.code === 'source-recovery'
+  );
+  await assert.rejects(
+    () => service.schedulesCreate({ topicId: 'missing-topic', referenceId: 'schedule:missing', declaration: {}, logicalOperationId: randomUUID() }),
+    (error) => error.code === 'source-recovery'
+  );
+  assert.deepEqual(calls, []);
+});

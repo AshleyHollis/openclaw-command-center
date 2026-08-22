@@ -3,7 +3,8 @@ import {
   COMMAND_CENTER_SCHEMA_VERSION,
   SOURCE_SCHEMA_VERSION,
   inspectMigrationLedger,
-  inspectSchema
+  inspectSchema,
+  metadataSchemaV1ToV2Sql
 } from './schema.mjs';
 import canonical from '../compatibility-tuple.json' with { type: 'json' };
 import { recoveryMigrationId } from './path.mjs';
@@ -19,7 +20,7 @@ const migrationDefinition = Object.freeze({
   toVersion: MIGRATION_TO_VERSION,
   destructive: MIGRATION_IS_DESTRUCTIVE,
   statements: Object.freeze([
-    'CREATE TABLE schema_migrations ( sequence INTEGER PRIMARY KEY, migration_id TEXT NOT NULL UNIQUE, migration_digest TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, snapshot_id TEXT NOT NULL, applied_build TEXT NOT NULL, applied_at TEXT NOT NULL ) STRICT'
+    metadataSchemaV1ToV2Sql
   ])
 });
 

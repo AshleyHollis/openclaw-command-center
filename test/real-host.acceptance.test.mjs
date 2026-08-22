@@ -84,6 +84,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try {
         assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 2);
+        for (const table of ['operation_journal', 'session_state', 'activity_records']) {
+          assert.equal(startupDatabase.prepare("SELECT strict FROM pragma_table_list WHERE name = ?").get(table)?.strict, 1);
+        }
         const sourceReferenceTopic = startupDatabase.prepare('PRAGMA foreign_key_list(source_references)').all()
           .find((foreignKey) => foreignKey.from === 'topic_id');
         assert.equal(sourceReferenceTopic?.on_delete, 'RESTRICT');
