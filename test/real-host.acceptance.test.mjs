@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { access, readdir } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
+import path from 'node:path';
 import { chromium } from 'playwright';
 import 'playwright-core';
 import { finalizeAcceptanceJourney } from '../src/acceptance-finalization.mjs';
@@ -9,6 +12,7 @@ import { withIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { assertWebSocketDestination, boundedTrafficEvidence, TrafficGuard } from '../src/isolation.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
+import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
 
 function routeGrant(config) {
   const values = config?.[runtimeCapability.bootstrap.grantsField] || [];
@@ -69,6 +73,22 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         }, host.earlyExit, { attempts: 60, delayMs: 500 });
       } catch (error) {
         throw new HarnessFailure(error.category || 'readiness-flapping', `${error.message}; host stdout: ${host.diagnostics.stdout}; host stderr: ${host.diagnostics.stderr}`);
+      }
+      // The service receives the pinned host's resolved stateDir. Verify the
+      // startup-created store is beneath this disposable fixture and that no
+      // sibling Command Center storage was created.
+      const resolvedStateDir = path.join(world.root, '.openclaw');
+      const databasePath = resolveCommandCenterDatabasePath(resolvedStateDir);
+      await access(databasePath);
+      assert.deepEqual(await readdir(path.dirname(databasePath)), ['metadata.sqlite']);
+      const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 1);
+        const sourceReferenceTopic = startupDatabase.prepare('PRAGMA foreign_key_list(source_references)').all()
+          .find((foreignKey) => foreignKey.from === 'topic_id');
+        assert.equal(sourceReferenceTopic?.on_delete, 'RESTRICT');
+      } finally {
+        startupDatabase.close();
       }
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
