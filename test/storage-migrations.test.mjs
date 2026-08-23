@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { metadataSchemaV1Sql } from '../src/metadata/schema.mjs';
+import { metadataSchemaV1Sql, metadataSchemaV2Sql } from '../src/metadata/schema.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
-import { MIGRATION_DIGEST, MIGRATION_ID } from '../src/metadata/migration-ledger.mjs';
+import { MIGRATION_DIGEST, MIGRATION_ID, V1_TO_V2_MIGRATION_DIGEST, V1_TO_V2_MIGRATION_ID } from '../src/metadata/migration-ledger.mjs';
+import { applyV1ToV2Migration } from '../src/metadata/migration-ledger.mjs';
+import { ensureRecoverySnapshot, expectedRollbackRelease, verifyRollbackMaterial } from '../src/metadata/recovery.mjs';
 
 const openServices = new Set();
 const migrationTestHooks = Symbol.for('openclaw.command-center.test.migration-hooks');
@@ -41,11 +43,80 @@ async function seedV1(stateDir) {
   return databasePath;
 }
 
-test('ordered v1 to v2 migration preserves application data and records one durable ledger row', async () => {
+async function seedV2(stateDir) {
+  const databasePath = resolveCommandCenterDatabasePath(stateDir);
+  await mkdir(path.dirname(databasePath), { recursive: true });
+  const database = new DatabaseSync(databasePath);
+  try { database.exec(metadataSchemaV2Sql); } finally { database.close(); }
+  return databasePath;
+}
+
+async function seedBaselineMigratedV2(stateDir) {
+  const databasePath = await seedV1(stateDir);
+  const material = ensureRecoverySnapshot({ stateDir, databasePath });
+  const manifest = JSON.parse(await readFile(material.manifestPath, 'utf8'));
+  manifest.targetRelease.commandCenterSchema = { readable: { min: 1, max: 2 }, migratable: { min: 1, max: 1 }, writable: { min: 2, max: 2 } };
+  await writeFile(material.manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+  const database = new DatabaseSync(databasePath);
+  try { applyV1ToV2Migration(database, { snapshotId: material.manifest.snapshotId }); } finally { database.close(); }
+  return databasePath;
+}
+
+test('schema-2 stores retain and reuse baseline schema-1 recovery evidence during ordered upgrade', async () => {
+  await withState(async (stateDir) => {
+    const databasePath = await seedBaselineMigratedV2(stateDir);
+    const service = open({ stateDir });
+    assert.equal(service.getOperatingStatus().mode, 'ready');
+    service.close();
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try { assert.deepEqual(database.prepare('SELECT sequence, from_version, to_version FROM schema_migrations ORDER BY sequence').all().map((row) => ({ ...row })), [{ sequence: 1, from_version: 1, to_version: 2 }, { sequence: 2, from_version: 2, to_version: 3 }]); } finally { database.close(); }
+  });
+});
+
+test('direct schema-2 to schema-3 migration retains a verified snapshot and valid first ledger row', async () => {
+  await withState(async (stateDir) => {
+    const databasePath = await seedV2(stateDir);
+    const service = open({ stateDir });
+    assert.equal(service.getOperatingStatus().mode, 'ready');
+    service.close();
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      assert.deepEqual(database.prepare('SELECT sequence, from_version, to_version FROM schema_migrations').all().map((row) => ({ ...row })), [{ sequence: 1, from_version: 2, to_version: 3 }]);
+    } finally { database.close(); }
+    const manifest = JSON.parse(await readFile(path.join(resolveCommandCenterRecoveryMigrationPath(stateDir), 'manifest.json'), 'utf8'));
+    assert.equal(manifest.state, 'committed');
+    const priorRelease = expectedRollbackRelease(stateDir);
+    const verification = verifyRollbackMaterial(stateDir, { snapshotId: manifest.snapshotId, priorRelease }, databasePath);
+    assert.deepEqual(verification.priorRelease, priorRelease);
+    assert.equal(verification.sourceSchema, 2);
+  });
+});
+
+test('direct schema-2 migration reconciles prepared recovery material after transaction boundaries', async () => {
+  for (const boundary of ['after-commit', 'before-commit']) {
+    await withState(async (stateDir) => {
+      const databasePath = await seedV2(stateDir);
+      const args = [fileURLToPath(new URL('./fixtures/migration-crash.mjs', import.meta.url)), stateDir];
+      if (boundary === 'before-commit') args.push('before-commit');
+      const child = spawnSync(process.execPath, args, { env: { ...process.env, NODE_ENV: 'test' }, encoding: 'utf8' });
+      assert.notEqual(child.status, 0, child.stderr);
+      const manifestPath = path.join(resolveCommandCenterRecoveryMigrationPath(stateDir), 'manifest.json');
+      assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).state, 'prepared');
+      const restarted = open({ stateDir });
+      assert.equal(restarted.getOperatingStatus().mode, 'ready', `${boundary}: ${JSON.stringify(restarted.getOperatingStatus())}`);
+      restarted.close();
+      const database = new DatabaseSync(databasePath, { readOnly: true });
+      try { assert.equal(database.prepare('PRAGMA user_version').get().user_version, 3); } finally { database.close(); }
+      assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).state, 'committed');
+    });
+  }
+});
+
+test('ordered v1 to v3 migration preserves application data and records contiguous ledger rows', async () => {
   await withState(async (stateDir) => {
     const databasePath = await seedV1(stateDir);
     const service = open({ stateDir });
-    assert.deepEqual(service.getOperatingStatus(), { mode: 'ready', schemaVersion: 2, diagnostics: [], unavailableCapabilities: [] });
+    assert.deepEqual(service.getOperatingStatus(), { mode: 'ready', schemaVersion: 3, diagnostics: [], unavailableCapabilities: [] });
     assert.equal(service.getTopic('topic-migration').paraCategory, 'area');
     assert.equal(service.getPolicyVersion('policy-migration').digest, 'fictional-digest');
     service.close();
@@ -53,17 +124,26 @@ test('ordered v1 to v2 migration preserves application data and records one dura
     let ledgerSnapshotId;
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
-      assert.equal(database.prepare('PRAGMA user_version').get().user_version, 2);
+      assert.equal(database.prepare('PRAGMA user_version').get().user_version, 3);
       const ledgerRows = database.prepare('SELECT sequence, migration_id, migration_digest, from_version, to_version, snapshot_id, applied_build FROM schema_migrations').all().map((row) => ({ ...row }));
-      assert.equal(ledgerRows.length, 1);
+      assert.equal(ledgerRows.length, 2);
       ledgerSnapshotId = ledgerRows[0].snapshot_id;
       assert.match(ledgerSnapshotId, /^sha256:[a-f0-9]{64}$/u);
       assert.deepEqual({ ...ledgerRows[0], snapshot_id: undefined }, {
         sequence: 1,
-        migration_id: MIGRATION_ID,
-        migration_digest: MIGRATION_DIGEST,
+        migration_id: V1_TO_V2_MIGRATION_ID,
+        migration_digest: V1_TO_V2_MIGRATION_DIGEST,
         from_version: 1,
         to_version: 2,
+        snapshot_id: undefined,
+        applied_build: '0.2.0'
+      });
+      assert.deepEqual({ ...ledgerRows[1], snapshot_id: undefined }, {
+        sequence: 2,
+        migration_id: MIGRATION_ID,
+        migration_digest: MIGRATION_DIGEST,
+        from_version: 2,
+        to_version: 3,
         snapshot_id: undefined,
         applied_build: '0.2.0'
       });
@@ -82,7 +162,7 @@ test('ordered v1 to v2 migration preserves application data and records one dura
     const snapshotBytes = await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot'));
 
     const reopened = open({ stateDir });
-    assert.deepEqual(reopened.getOperatingStatus(), { mode: 'ready', schemaVersion: 2, diagnostics: [], unavailableCapabilities: [] });
+    assert.deepEqual(reopened.getOperatingStatus(), { mode: 'ready', schemaVersion: 3, diagnostics: [], unavailableCapabilities: [] });
     reopened.close();
     assert.deepEqual(await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot')), snapshotBytes);
     assert.deepEqual((await readdir(path.dirname(databasePath))).filter((name) => !name.startsWith('.')), ['metadata.sqlite', 'recovery']);
@@ -144,7 +224,7 @@ test('a process interruption after the SQLite commit reconciles the prepared sna
     assert.notEqual(child.status, 0, child.stderr);
 
     const committedDatabase = new DatabaseSync(databasePath, { readOnly: true });
-    try { assert.equal(committedDatabase.prepare('PRAGMA user_version').get().user_version, 2); } finally { committedDatabase.close(); }
+    try { assert.equal(committedDatabase.prepare('PRAGMA user_version').get().user_version, 3); } finally { committedDatabase.close(); }
     const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(stateDir);
     assert.equal(JSON.parse(await readFile(path.join(recoveryDirectory, 'manifest.json'), 'utf8')).state, 'prepared');
 
@@ -177,8 +257,8 @@ test('a process interruption inside the SQLite transaction rolls back cleanly an
     const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true });
     try {
       assert.equal(migratedDatabase.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
-      assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 2);
-      assert.equal(migratedDatabase.prepare('SELECT count(*) AS count FROM schema_migrations').get().count, 1);
+      assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 3);
+      assert.equal(migratedDatabase.prepare('SELECT count(*) AS count FROM schema_migrations').get().count, 2);
     } finally { migratedDatabase.close(); }
   });
 });
@@ -226,10 +306,10 @@ test('a linked recovery path cannot publish snapshot material outside the plugin
   });
 });
 
-test('fresh v2 storage does not invent a migration snapshot and can reopen after a successful commit', async () => {
+test('fresh schema-3 storage does not invent a migration snapshot and can reopen after a successful commit', async () => {
   await withState(async (stateDir) => {
     const service = open({ stateDir });
-    assert.equal(service.getOperatingStatus().schemaVersion, 2);
+    assert.equal(service.getOperatingStatus().schemaVersion, 3);
     service.close();
     assert.deepEqual(await readdir(path.dirname(resolveCommandCenterDatabasePath(stateDir))), ['metadata.sqlite']);
     const reopened = open({ stateDir });

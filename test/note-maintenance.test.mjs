@@ -28,7 +28,7 @@ test('automatic Note maintenance uses guarded CAS and one deduplicated Activity 
     const operations = new Map();
     const references = [];
     const metadata = {
-      getTopic: (topicId) => topicId === 'topic-maintenance' ? { topicId } : null,
+      getTopic: (topicId) => topicId === 'topic-maintenance' ? { topicId, lifecycle: 'active' } : null,
       listSourceReferences: () => references,
       getSourceReference: (referenceId) => references.find((reference) => reference.referenceId === referenceId) ?? null,
       createSourceReference: (reference) => { references.push(reference); return reference; },

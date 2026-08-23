@@ -4,6 +4,8 @@ import { validateScheduleDeclaration, validateScheduleUpdatePatch } from '../sou
 
 export const READ_METHODS = Object.freeze([
   'command-center.v1.sources.status',
+  'command-center.v1.migration.status',
+  'command-center.v1.migration.review-failures',
   'command-center.v1.notes.browse',
   'command-center.v1.notes.read',
   'command-center.v1.sessions.history',
@@ -17,6 +19,7 @@ export const READ_METHODS = Object.freeze([
 ]);
 
 export const WRITE_METHODS = Object.freeze([
+  'command-center.v1.migration.resume',
   'command-center.v1.notes.create',
   'command-center.v1.notes.edit',
   'command-center.v1.notes.rename',
@@ -47,6 +50,7 @@ function parameterSchema(field) {
   if (field === 'enabled' || field === 'isPrimary') return Object.freeze({ type: 'boolean' });
   if (field === 'limit') return Object.freeze({ type: 'integer', minimum: 1 });
   if (field === 'offset') return Object.freeze({ type: 'integer', minimum: 0 });
+  if (field === 'expectedMigrationRevision') return Object.freeze({ type: 'integer', minimum: 1 });
   return Object.freeze({ type: 'string' });
 }
 
@@ -101,10 +105,20 @@ function actionResultSchema(method) {
     verboseLevel: Object.freeze({ type: ['string', 'null'] }),
     inFlightRun: Object.freeze({ type: 'object' }),
     agentsList: Object.freeze({ type: 'array' }),
-    metadata: Object.freeze({ type: 'object' })
+    metadata: Object.freeze({ type: 'object' }),
+    enabled: Object.freeze({ type: 'boolean' }),
+    complete: Object.freeze({ type: 'boolean' }),
+    phase: Object.freeze({ type: 'string' }),
+    actions: Object.freeze({ type: 'array' }),
+    channels: Object.freeze({ type: 'array' }),
+    failures: Object.freeze({ type: 'array' }),
+    migrationRevision: Object.freeze({ type: 'integer' }),
+    completion: Object.freeze({ type: 'object' })
   };
   const arrayResult = method.endsWith('notes.browse') || method.endsWith('reminders.list') || method.endsWith('schedules.list');
-  const allowed = method.endsWith('sources.status')
+  const allowed = method.includes('.migration.')
+    ? ['schemaVersion', 'enabled', 'phase', 'complete', 'actions', 'channels', 'failures', 'completion', 'migrationRevision']
+    : method.endsWith('sources.status')
     ? ['schemaVersion', 'mode', 'metadataSchemaVersion', 'diagnostics', 'unavailableCapabilities']
     : method.endsWith('notes.read')
     ? ['schemaVersion', 'path', 'text', 'revision', 'sourceReference']
@@ -133,6 +147,9 @@ function actionResultSchema(method) {
   });
 }
 const required = Object.freeze({
+  'command-center.v1.migration.status': [],
+  'command-center.v1.migration.review-failures': [],
+  'command-center.v1.migration.resume': ['expectedMigrationRevision'],
   'command-center.v1.notes.browse': ['topicId'],
   'command-center.v1.notes.read': ['topicId'],
   'command-center.v1.notes.create': ['topicId'],
@@ -162,6 +179,9 @@ const required = Object.freeze({
 });
 const fields = Object.freeze({
   'command-center.v1.sources.status': [],
+  'command-center.v1.migration.status': [],
+  'command-center.v1.migration.review-failures': [],
+  'command-center.v1.migration.resume': ['expectedMigrationRevision'],
   'command-center.v1.notes.browse': ['topicId'],
   'command-center.v1.notes.read': ['topicId', 'path', 'notePath'],
   'command-center.v1.notes.create': ['topicId', 'path', 'notePath', 'text', 'content', 'logicalOperationId'],

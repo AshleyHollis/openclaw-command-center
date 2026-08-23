@@ -24,6 +24,7 @@ export class AuthoritativeSourceService {
     this.capabilities = normalizeSourceCapabilities(options.capabilities ?? {});
     this.searchProvider = options.searchProvider;
     this.analysisProvider = options.analysisProvider;
+    this.migration = options.migration;
     this.defaults = options;
     this.coordinator = options.coordinator ?? createMutationCoordinator({ metadata: this.metadata });
     this.topicServices = new Map();
@@ -66,8 +67,43 @@ export class AuthoritativeSourceService {
     const topicId = String(input?.topicId ?? '').trim();
     if (!topicId) throw sourceError('invalid-request', 'topicId must be a non-blank string.');
     if (typeof this.metadata.getTopic !== 'function') throw sourceError('recovery-only', 'Topic ownership metadata is unavailable.');
-    if (!this.metadata.getTopic(topicId)) throw sourceError('source-recovery', 'The requested Topic does not exist.');
+    const topic = this.metadata.getTopic(topicId);
+    if (!topic) throw sourceError('source-recovery', 'The requested Topic does not exist.');
+    if (topic.lifecycle !== 'active') throw sourceError('source-recovery', 'The requested Topic is still provisioning and is not available for normal use.');
+    this.assertTopicReadiness(topic);
     return this.forTopic(topicId);
+  }
+
+  assertTopicReadiness(topic) {
+    if (topic?.lifecycle !== 'active') throw sourceError('source-recovery', 'The requested Topic is still provisioning and is not available for normal use.');
+    if (!this.migration) return;
+    if (this.metadata.getMigrationCompletion?.()) return;
+    const durableRow = (this.metadata.listMigrationChannels?.() ?? []).find((channel) => channel.topicId === topic.topicId);
+    const durableOwner = Boolean(durableRow);
+    let configured = false;
+    try { configured = this.migration.normalizedConfig?.()?.channels?.some((channel) => channel.topicId === topic.topicId) === true; }
+    catch {
+      if (durableOwner) throw sourceError('source-recovery', 'The migration configuration requires review before Topic use.');
+      return;
+    }
+    if (!configured && !durableOwner) return;
+    const references = this.metadata.listSourceReferences?.(topic.topicId) ?? [];
+    const folders = references.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder');
+    const sessions = references.filter((reference) => reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session');
+    const primary = sessions.filter((reference) => {
+      const state = this.metadata.getSessionState?.(reference.referenceId);
+      return state?.status === 'open' && state.isPrimary === true && typeof state.sessionId === 'string' && state.sessionId.trim() !== '';
+    });
+    if (durableRow?.phase === 'complete') {
+      if (durableRow.failureCode) throw sourceError('source-recovery', 'The completed migration binding requires integrity review before Topic use.');
+      const importedFolder = references.find((reference) => reference.referenceId === durableRow.noteFolderReferenceId && reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder');
+      const importedSession = references.find((reference) => reference.referenceId === durableRow.sessionReferenceId && reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session');
+      const importedState = importedSession ? this.metadata.getSessionState?.(importedSession.referenceId) : null;
+      if (!importedFolder || !importedSession || importedState?.sessionId !== durableRow.sessionId || importedState.status !== 'open' || importedState.isPrimary !== true) throw sourceError('source-recovery', 'The verified migration bindings are unavailable or rebound.');
+      return;
+    }
+    if (folders.length !== 1 || sessions.length !== 1 || primary.length !== 1) throw sourceError('source-recovery', 'The Topic authoritative bindings are incomplete or ambiguous.');
+    if (configured && durableRow?.phase !== 'complete') throw sourceError('source-recovery', 'The migrated Topic has not completed destination verification.');
   }
 
   async notesBrowse(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'notes'); return service.notes.browse(adapterInput(input)); }
@@ -129,6 +165,12 @@ export class AuthoritativeSourceService {
   async sessionsSend(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); return service.sessions.send(adapterInput(input)); }
   async sessionsClose(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); return service.sessions.close(adapterInput(input)); }
   async sessionsReopen(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); return service.sessions.reopen(adapterInput(input)); }
+  async migrationStatus() { return this.migration ? this.migration.status() : { schemaVersion: 1, enabled: false, phase: 'disabled', complete: true, actions: [], channels: [], failures: [] }; }
+  async migrationReview() { return this.migration ? this.migration.review() : this.migrationStatus(); }
+  async migrationResume(input = {}) {
+    if (!this.migration) throw sourceError('source-recovery', 'Legacy Discord migration is not configured.');
+    return this.migration.resume(input);
+  }
   async remindersList(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'scheduler'); if (!service.reminders) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' }); return service.reminders.list(adapterInput(input)); }
   async remindersSnooze(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'scheduler'); if (!service.reminders) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' }); return service.reminders.snooze(adapterInput(input)); }
   async remindersComplete(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'scheduler'); if (!service.reminders) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' }); return service.reminders.complete(adapterInput(input)); }
@@ -142,18 +184,41 @@ export class AuthoritativeSourceService {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'requestId', 'topicId', 'referenceId'], 'metadata read request');
     if (input.referenceId) {
       const topicId = String(input.topicId ?? '').trim();
-      if (!topicId || !this.metadata.getTopic?.(topicId)) throw sourceError('source-recovery', 'The requested Topic does not exist.');
+      const topic = topicId ? this.metadata.getTopic?.(topicId) : null;
+      if (!topic) throw sourceError('source-recovery', 'The requested Topic does not exist.');
+      this.assertTopicReadiness(topic);
       const reference = this.metadata.getSourceReference(input.referenceId);
       if (!reference || reference.topicId !== topicId) throw sourceError('source-recovery', 'The exact Topic-owned Source Reference was not found.');
       return reference;
     }
-    return input.topicId ? { topic: this.metadata.getTopic(input.topicId), sourceReferences: this.metadata.listSourceReferences(input.topicId), preferences: this.metadata.getPresentationPreferences(input.topicId), activity: this.metadata.listActivity(input.topicId) } : { topics: this.metadata.listTopics(), sourceReferences: this.metadata.listSourceReferences(), activity: this.metadata.listActivity() };
+    if (input.topicId) {
+      const topic = this.metadata.getTopic(input.topicId);
+      if (topic) this.assertTopicReadiness(topic);
+      return { topic, sourceReferences: this.metadata.listSourceReferences(input.topicId), preferences: this.metadata.getPresentationPreferences(input.topicId), activity: this.metadata.listActivity(input.topicId) };
+    }
+    const activeTopics = this.metadata.listUsableTopics?.() ?? this.metadata.listTopics().filter((topic) => topic.lifecycle === 'active');
+    const topics = activeTopics.filter((topic) => {
+      try { this.assertTopicReadiness(topic); return true; }
+      catch (error) { if (error?.code === 'source-recovery') return false; throw error; }
+    });
+    const usableTopicIds = new Set(topics.map((topic) => topic.topicId));
+    return { topics, sourceReferences: this.metadata.listSourceReferences().filter((reference) => usableTopicIds.has(reference.topicId)), activity: this.metadata.listActivity().filter((activity) => activity.topicId === null || usableTopicIds.has(activity.topicId)) };
   }
   async metadataWrite(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'requestId', 'logicalOperationId', 'topicId', 'operation', 'value'], 'metadata write request');
     const operations = { topic: 'createTopic', preferences: 'setPresentationPreferences', convention: 'setSourceConventionState', policy: 'setPolicyVersion', proposal: 'setProposalState' };
     const method = operations[input.operation];
     if (!method || typeof this.metadata[method] !== 'function') throw sourceError('invalid-request', 'Unsupported metadata operation.');
+    const value = input.value ?? {};
+    const envelopeTopicId = String(input.topicId ?? '').trim();
+    const valueTopicId = String(value.topicId ?? '').trim();
+    if (envelopeTopicId && valueTopicId && envelopeTopicId !== valueTopicId) throw sourceError('invalid-request', 'Metadata request Topic identity does not match its value.');
+    let topicId = envelopeTopicId || valueTopicId;
+    if (!topicId && value.referenceId) topicId = this.metadata.getSourceReference?.(value.referenceId)?.topicId ?? '';
+    if (topicId) {
+      const topic = this.metadata.getTopic?.(topicId);
+      if (topic) this.assertTopicReadiness(topic);
+    }
     if (!input.logicalOperationId) return this.metadata[method](input.value);
     return this.coordinator.mutate({
       operationKind: `metadata.${input.operation}`,
@@ -162,7 +227,6 @@ export class AuthoritativeSourceService {
       intent: { operation: input.operation, value: input.value },
       execute: () => this.metadata[method](input.value),
       reconcile: async () => {
-        const value = input.value ?? {};
         let current = null;
         if (input.operation === 'topic') current = this.metadata.getTopic?.(value.topicId);
         if (input.operation === 'preferences') current = this.metadata.getPresentationPreferences?.(value.topicId);
@@ -177,21 +241,21 @@ export class AuthoritativeSourceService {
     });
   }
   async searchQuery(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'search'); if (!service.search) throw sourceError('capability-unavailable', 'Derived search capability is unavailable.', { capability: 'search' }); return service.search.query(input); }
-  analysisRead(input) { requireCapability(this.capabilities, 'analysis'); const analysis = this.forTopic(input.topicId).analysis; if (!analysis) throw sourceError('capability-unavailable', 'Topic Analysis capability is unavailable.', { capability: 'analysis' }); return analysis.status(adapterInput(input)); }
+  analysisRead(input) { requireCapability(this.capabilities, 'analysis'); const analysis = this.requireTopicService(input).analysis; if (!analysis) throw sourceError('capability-unavailable', 'Topic Analysis capability is unavailable.', { capability: 'analysis' }); return analysis.status(adapterInput(input)); }
   assertMutationAllowed() {
     if (this.metadata.getOperatingStatus?.().mode === 'recovery-only') throw sourceError('recovery-only', 'Authoritative-source mutations are blocked in Recovery-only mode.');
   }
   analysisRun(input) {
     requireCapability(this.capabilities, 'analysis');
     this.assertMutationAllowed();
-    const analysis = this.forTopic(input.topicId).analysis;
+    const analysis = this.requireTopicService(input).analysis;
     if (!analysis) throw sourceError('capability-unavailable', 'Topic Analysis capability is unavailable.', { capability: 'analysis' });
     return this.coordinator.mutate({ operationKind: 'analysis.run', requestId: input.requestId ?? input.logicalOperationId, logicalOperationId: input.logicalOperationId, topicId: input.topicId, intent: { input: input.input }, execute: () => analysis.run(input) });
   }
   attentionAct(input) {
     requireCapability(this.capabilities, 'attention');
     this.assertMutationAllowed();
-    const attention = this.forTopic(input.topicId).attention;
+    const attention = this.requireTopicService(input).attention;
     if (!attention) throw sourceError('capability-unavailable', 'Attention capability is unavailable.', { capability: 'attention' });
     return this.coordinator.mutate({ operationKind: 'attention.act', requestId: input.requestId ?? input.logicalOperationId, logicalOperationId: input.logicalOperationId, topicId: input.topicId, intent: { attentionId: input.attentionId, actionId: input.actionId }, execute: () => attention.act(input) });
   }

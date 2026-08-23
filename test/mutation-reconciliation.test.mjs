@@ -105,7 +105,7 @@ test('ambiguous Note move never adopts an identical unrelated destination', asyn
       async move() { this.moveCalls += 1; throw new Error('must not dispatch'); }
     };
     const metadata = {
-      getTopic: (topicId) => topicId === 'topic-move' ? { topicId } : null,
+      getTopic: (topicId) => topicId === 'topic-move' ? { topicId, lifecycle: 'active' } : null,
       getOperatingStatus: () => ({ mode: 'normal', schemaVersion: 2, diagnostics: [] }),
       listSourceReferences: () => []
     };
@@ -154,7 +154,7 @@ test('applied Note move replay proves the exact durable destination identity wit
     async move() { moveCalls += 1; moved = true; return { schemaVersion: 1, status: 'applied', note: destination }; }
   };
   const metadata = {
-    getTopic: (topicId) => topicId === 'topic-move' ? { topicId } : null,
+    getTopic: (topicId) => topicId === 'topic-move' ? { topicId, lifecycle: 'active' } : null,
     getOperatingStatus: () => ({ mode: 'normal', schemaVersion: 2, diagnostics: [] }),
     listSourceReferences: () => []
   };

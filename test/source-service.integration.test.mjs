@@ -7,8 +7,43 @@ import { randomUUID } from 'node:crypto';
 import { registerBridgeMethods } from '../src/bridge/register.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
+import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
 
 const fsSafeRootFactory = async (rootDir) => ({ rootDir, rootReal: rootDir, resolve: async (relative) => path.join(rootDir, relative), open: async (relative) => ({ handle: await (await import('node:fs/promises')).open(path.join(rootDir, relative), 'r') }) });
+
+test('normal metadata listings omit an active configured Topic whose authoritative bindings conflict', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-migration-readiness-list-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
+    metadata.createTopic({ topicId: 'fictional-topic-conflicting', paraCategory: 'project', lifecycle: 'active' });
+    const migration = createLegacyDiscordMigrationService({ metadata, config: { schemaVersion: 1, exportPath: new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url).pathname, channels: [{ channelId: 'fictional-channel-alpha', topicId: 'fictional-topic-conflicting', paraCategory: 'project', noteFolderPath: '/fictional/vault/conflicting' }] }, folderVerifier: async (value) => value });
+    assert.equal((await migration.start()).complete, false);
+    const service = createAuthoritativeSourceService({ metadata, migration, capabilities: { notes: true, sessions: true } });
+    assert.deepEqual(service.metadataRead({ schemaVersion: 1 }).topics, []);
+    assert.throws(() => service.metadataRead({ schemaVersion: 1, topicId: 'fictional-topic-conflicting' }), (error) => error.code === 'source-recovery');
+    metadata.createSourceReference({ version: 1, referenceId: 'fictional-conflicting-folder', topicId: 'fictional-topic-conflicting', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/vault/elsewhere', observedRevision: null });
+    assert.throws(() => service.metadataRead({ schemaVersion: 1, topicId: 'fictional-topic-conflicting', referenceId: 'fictional-conflicting-folder' }), (error) => error.code === 'source-recovery');
+    assert.throws(() => service.requireTopicService({ topicId: 'fictional-topic-conflicting' }), (error) => error.code === 'source-recovery');
+    assert.equal((await service.migrationReview()).actions.length, 2);
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('direct normal metadata reads reject a Provisioning Topic even without configured migration', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-provisioning-readiness-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
+    metadata.createTopic({ topicId: 'fictional-topic-provisioning-direct', paraCategory: 'project', lifecycle: 'provisioning' });
+    metadata.createSourceReference({ version: 1, referenceId: 'fictional-provisioning-folder', topicId: 'fictional-topic-provisioning-direct', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/vault/provisioning', observedRevision: null });
+    const service = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: true } });
+    assert.throws(() => service.metadataRead({ schemaVersion: 1, topicId: 'fictional-topic-provisioning-direct' }), (error) => error.code === 'source-recovery');
+    assert.throws(() => service.metadataRead({ schemaVersion: 1, topicId: 'fictional-topic-provisioning-direct', referenceId: 'fictional-provisioning-folder' }), (error) => error.code === 'source-recovery');
+    await assert.rejects(() => service.metadataWrite({ schemaVersion: 1, topicId: 'fictional-topic-provisioning-direct', operation: 'preferences', value: { topicId: 'fictional-topic-provisioning-direct', displayLabel: 'Must not write', sortOrder: 1, collapsed: false, updatedAt: '2026-08-23T00:00:00.000Z' } }), (error) => error.code === 'source-recovery');
+    await assert.rejects(() => service.metadataWrite({ schemaVersion: 1, topicId: 'fictional-topic-active-decoy', operation: 'preferences', value: { topicId: 'fictional-topic-provisioning-direct', displayLabel: 'Must not write', sortOrder: 1, collapsed: false, updatedAt: '2026-08-23T00:00:00.000Z' } }), (error) => error.code === 'invalid-request');
+    assert.equal(metadata.getPresentationPreferences('fictional-topic-provisioning-direct'), null);
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
 
 test('public source service writes durable authoritative Markdown and keeps metadata free of content', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-integration-'));
@@ -176,7 +211,7 @@ test('registered authenticated bridge persists request-bound Note effects across
 });
 
 test('derived search and Topic Analysis use only injected providers', async () => {
-  const metadata = { getTopic: (topicId) => topicId === 'topic-provider' ? { topicId } : null, getOperatingStatus: () => ({ mode: 'ready', schemaVersion: 2, diagnostics: [] }), listSourceReferences: () => [] };
+  const metadata = { getTopic: (topicId) => topicId === 'topic-provider' ? { topicId, lifecycle: 'active' } : null, getOperatingStatus: () => ({ mode: 'ready', schemaVersion: 3, diagnostics: [] }), listSourceReferences: () => [] };
   const unavailable = createAuthoritativeSourceService({ metadata, capabilities: { notes: false, sessions: false, scheduler: false, activity: true, search: false, analysis: false, attention: false } });
   await assert.rejects(() => unavailable.searchQuery({ topicId: 'topic-provider', query: 'fictional' }), (error) => error.code === 'capability-unavailable');
   const service = createAuthoritativeSourceService({
@@ -208,4 +243,43 @@ test('authoritative creates reject a missing Topic before provider dispatch', as
     (error) => error.code === 'source-recovery'
   );
   assert.deepEqual(calls, []);
+});
+
+test('migration-configured Topics require exact authoritative bindings and completion before normal admission', () => {
+  const metadata = {
+    getTopic: () => ({ topicId: 'topic-migrated', lifecycle: 'active' }),
+    listSourceReferences: () => [
+      { referenceId: 'folder', sourceSystem: 'obsidian', sourceKind: 'note_folder' },
+      { referenceId: 'primary', sourceSystem: 'openclaw', sourceKind: 'session' }
+    ],
+    getSessionState: (referenceId) => referenceId === 'primary' ? { sessionId: 'fictional-session', status: 'open', isPrimary: true } : null,
+    getOperatingStatus: () => ({ mode: 'ready', schemaVersion: 3, diagnostics: [] }),
+    getMigrationCompletion: () => null
+  };
+  const migration = { normalizedConfig: () => ({ channels: [{ topicId: 'topic-migrated' }] }) };
+  const service = createAuthoritativeSourceService({ metadata, migration, capabilities: { notes: false, sessions: false, scheduler: false, analysis: true } });
+  assert.throws(() => service.requireTopicService({ topicId: 'topic-migrated' }), (error) => error.code === 'source-recovery');
+  assert.throws(() => service.analysisRead({ topicId: 'topic-migrated' }), (error) => error.code === 'source-recovery');
+  metadata.getMigrationCompletion = () => ({ completionId: 'legacy-discord-v1' });
+  metadata.listSourceReferences = () => [
+    { referenceId: 'folder', sourceSystem: 'obsidian', sourceKind: 'note_folder' },
+    { referenceId: 'primary', sourceSystem: 'openclaw', sourceKind: 'session' },
+    { referenceId: 'ordinary-secondary', sourceSystem: 'openclaw', sourceKind: 'session' }
+  ];
+  assert.doesNotThrow(() => service.requireTopicService({ topicId: 'topic-migrated' }));
+});
+
+test('a disabled migration service leaves unrelated active Topics on normal capability gating', () => {
+  const metadata = {
+    getTopic: () => ({ topicId: 'fictional-unrelated-topic', paraCategory: 'resource', lifecycle: 'active' }),
+    getOperatingStatus: () => ({ mode: 'ready', schemaVersion: 3, diagnostics: [] }),
+    listSourceReferences: () => []
+  };
+  const service = createAuthoritativeSourceService({
+    metadata,
+    capabilities: { notes: true },
+    migration: { normalizedConfig: () => null }
+  });
+
+  assert.doesNotThrow(() => service.requireTopicService({ topicId: 'fictional-unrelated-topic' }));
 });

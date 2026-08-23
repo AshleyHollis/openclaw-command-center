@@ -1,15 +1,18 @@
 import { DatabaseSync } from 'node:sqlite';
 import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readSync, rmSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
+  LEGACY_METADATA_SCHEMA_VERSION,
   SOURCE_SCHEMA_VERSION,
   conventionAspects,
   conventionStates,
   inspectSchema,
   metadataSchemaSql,
   metadataSchemaV1ToV2Sql,
+  metadataSchemaV2Sql,
+  metadataSchemaV2ToV3Sql,
   metadataTableNames,
   paraCategories,
   proposalStates,
@@ -20,6 +23,7 @@ import { resolveCommandCenterDatabasePath } from './path.mjs';
 import { openCommandCenterProjectionService } from './projections.mjs';
 import {
   applyV1ToV2Migration,
+  applyV2ToV3Migration,
   validateMigrationLedger
 } from './migration-ledger.mjs';
 import {
@@ -191,6 +195,31 @@ function mapActivity(row) {
   };
 }
 
+function mapMigrationState(row) { return row && { stateId: row.state_id, schemaVersion: row.schema_version, configDigest: row.config_digest, sourceDigest: row.source_digest, revision: row.revision, phase: row.phase, failureCode: row.failure_code, failureSummary: row.failure_summary, failureCount: row.failure_count, updatedAt: row.updated_at }; }
+
+function mapMigrationChannel(row) {
+  return row && {
+    sourceChannelId: row.source_channel_id,
+    topicId: row.topic_id,
+    noteFolderReferenceId: row.note_folder_reference_id,
+    sessionReferenceId: row.session_reference_id,
+    sessionId: row.session_id,
+    phase: row.phase,
+    expectedCount: row.expected_count,
+    expectedDigest: row.expected_digest,
+    importedCount: row.imported_count,
+    importedDigest: row.imported_digest,
+    nextOrdinal: row.next_ordinal,
+    failureCode: row.failure_code,
+    failureSummary: row.failure_summary,
+    failureCount: row.failure_count,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapMigrationOccurrence(row) { return row && { sourceChannelId: row.source_channel_id, occurrenceId: row.occurrence_id, occurrenceDigest: row.occurrence_digest, displayOrder: row.display_order, destinationMessageId: row.destination_message_id, destinationAnchor: row.destination_anchor_json ? JSON.parse(row.destination_anchor_json) : null, destinationAnchorDigest: row.destination_anchor_digest }; }
+function mapMigrationCompletion(row) { return row && { completionId: row.completion_id, schemaVersion: row.schema_version, configDigest: row.config_digest, sourceDigest: row.source_digest, verifiedChannelCount: row.verified_channel_count, verifiedOccurrenceCount: row.verified_occurrence_count, completionRevision: row.completion_revision, verifiedAt: row.verified_at }; }
+
 function readSchemaVersion(database) {
   const row = database.prepare('PRAGMA user_version').get();
   return Number(row?.user_version ?? 0);
@@ -238,21 +267,22 @@ function inspectSchemaOneDatabase(database, schemaVersion) {
   return null;
 }
 
-function validateCurrentV2(databasePath, stateDir) {
+function validateCurrentV3(databasePath, stateDir) {
   let database;
   try {
     database = new DatabaseSync(databasePath, { readOnly: true });
     const baseFailure = inspectSchemaOneDatabase(database, COMMAND_CENTER_SCHEMA_VERSION);
     if (baseFailure) return baseFailure;
-    const ledger = validateMigrationLedger(database);
+    const ledger = validateMigrationLedger(database, { allowEmpty: true });
+    if (!ledger.valid) return coreFailure('migration-ledger-invalid', 'The migration ledger is not an exact record of the supported migrations.', 'Restore a verified database and matching recovery material before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
     let material;
     try { material = readRecoveryMaterial(stateDir); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
-    if (ledger.rows.length === 0) {
+    const hasMigrationRecovery = ledger.rows.length > 0;
+    if (!hasMigrationRecovery) {
       if (material.exists) return coreFailure('unexpected-recovery-material', 'Recovery material exists without a committed migration ledger.', 'Repair storage through the external recovery workflow before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
     } else {
       if (!material.exists) return coreFailure('recovery-material-missing', 'The committed migration recovery material is missing.', 'Restore the retained recovery directory before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
-      if (material.manifest.snapshotId !== ledger.rows[0].snapshot_id) return coreFailure('recovery-ledger-mismatch', 'The migration ledger does not identify the retained recovery snapshot.', 'Restore matching recovery material before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
-      if (!ledger.valid) return coreFailure('migration-ledger-invalid', 'The migration ledger is not an exact record of the supported migration.', 'Restore a verified database and matching recovery material before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
+      if (ledger.rows.some((row) => row.snapshot_id !== material.manifest.snapshotId)) return coreFailure('recovery-ledger-mismatch', 'The migration ledger does not identify the retained recovery snapshot.', 'Restore matching recovery material before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
       if (material.manifest.state === 'prepared') {
         try { material = markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
       }
@@ -291,18 +321,49 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
         : coreFailure('corrupt-storage', 'The Command Center database could not be read safely.', 'Restore or replace the database through the separate recovery workflow.');
     }
     if (schemaVersion > COMMAND_CENTER_SCHEMA_VERSION) return coreFailure('future-schema', 'The Command Center database uses a newer schema version.', 'Upgrade Command Center to a compatible version; no automatic migration is attempted.', null);
-    if (schemaVersion !== COMMAND_CENTER_SCHEMA_VERSION) {
-      if (schemaVersion !== SOURCE_SCHEMA_VERSION) return coreFailure('unversioned-schema', 'The existing Command Center database is not a declared migratable schema.', 'Use the separate migration or recovery workflow before writing metadata.', null);
+    if (schemaVersion === SOURCE_SCHEMA_VERSION) {
       const sourceFailure = inspectSchemaOneDatabase(database, SOURCE_SCHEMA_VERSION);
       if (sourceFailure) return sourceFailure;
-    }
+    } else if (schemaVersion === LEGACY_METADATA_SCHEMA_VERSION) {
+      const legacyFailure = inspectSchemaOneDatabase(database, LEGACY_METADATA_SCHEMA_VERSION);
+      if (legacyFailure) return legacyFailure;
+    } else if (schemaVersion !== COMMAND_CENTER_SCHEMA_VERSION) return coreFailure('unversioned-schema', 'The existing Command Center database is not a declared migratable schema.', 'Use the separate migration or recovery workflow before writing metadata.', null);
   } finally {
     closeQuietly(database);
   }
 
   // Current-schema validation performs a full integrity check. Release the
   // lightweight classification handle before opening that validation handle.
-  if (schemaVersion === COMMAND_CENTER_SCHEMA_VERSION) return validateCurrentV2(databasePath, stateDir);
+  if (schemaVersion === COMMAND_CENTER_SCHEMA_VERSION) return validateCurrentV3(databasePath, stateDir);
+
+  if (schemaVersion === LEGACY_METADATA_SCHEMA_VERSION) {
+    let material;
+    try {
+      material = readRecoveryMaterial(stateDir);
+      if (material.exists && isRollbackSnapshot(databasePath, material)) return coreFailure('rollback-snapshot-detected', 'The database is the retained source-schema rollback snapshot.', 'Install the exact prior compatible release before using this restored database.', LEGACY_METADATA_SCHEMA_VERSION);
+      if (material.exists && material.manifest.snapshot.schemaVersion === SOURCE_SCHEMA_VERSION) {
+        let sourceLedgerDatabase;
+        try {
+          sourceLedgerDatabase = new DatabaseSync(databasePath, { readOnly: true });
+          const ledger = validateMigrationLedger(sourceLedgerDatabase, { snapshotId: material.manifest.snapshotId });
+          if (!ledger.valid || ledger.rows.length !== 1 || ledger.rows[0].to_version !== LEGACY_METADATA_SCHEMA_VERSION) return coreFailure('recovery-snapshot-mismatch', 'The retained schema-1 recovery snapshot is not bound to this schema-2 database.', 'Restore matching recovery evidence before continuing the ordered upgrade.', LEGACY_METADATA_SCHEMA_VERSION);
+        } finally { closeQuietly(sourceLedgerDatabase); }
+      } else if (material.exists && !inspectDatabaseAgainstRecoverySnapshot(databasePath, material)) return coreFailure('recovery-snapshot-mismatch', 'The retained recovery snapshot does not match the current schema-2 database.', 'Do not overwrite recovery evidence; restore a matching database or complete recovery externally.', LEGACY_METADATA_SCHEMA_VERSION);
+      if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: LEGACY_METADATA_SCHEMA_VERSION });
+    } catch (error) { return recoveryFailure(error, LEGACY_METADATA_SCHEMA_VERSION); }
+    let migrationDatabase;
+    try {
+      migrationDatabase = new DatabaseSync(databasePath);
+      migrationDatabase.exec('PRAGMA foreign_keys = ON;');
+      applyV2ToV3Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    } catch {
+      closeQuietly(migrationDatabase);
+      return coreFailure('migration-failed', 'The schema-2 to schema-3 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_METADATA_SCHEMA_VERSION);
+    } finally { closeQuietly(migrationDatabase); }
+    migrationHooks?.afterDatabaseCommit?.();
+    try { markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
+    return validateCurrentV3(databasePath, stateDir);
+  }
 
   let material;
   try {
@@ -323,9 +384,10 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     migrationDatabase = new DatabaseSync(databasePath);
     migrationDatabase.exec('PRAGMA foreign_keys = ON;');
     applyV1ToV2Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    applyV2ToV3Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
   } catch (error) {
     closeQuietly(migrationDatabase);
-    return coreFailure('migration-failed', 'The schema-1 to schema-2 migration was rolled back and the store remains recovery-only.', 'Retry startup with the retained verified snapshot or restore the prior compatible release.', SOURCE_SCHEMA_VERSION);
+    return coreFailure('migration-failed', 'The schema-1 to schema-3 migration was rolled back and the store remains recovery-only.', 'Retry startup with the retained verified snapshot or restore the prior compatible release.', SOURCE_SCHEMA_VERSION);
   } finally {
     closeQuietly(migrationDatabase);
   }
@@ -335,7 +397,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   } catch (error) {
     return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION);
   }
-  return validateCurrentV2(databasePath, stateDir);
+  return validateCurrentV3(databasePath, stateDir);
 }
 
 function createNewDatabase(databasePath) {
@@ -498,15 +560,15 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     assertOpen();
     const unavailableProjectionCapability = ['notes', 'sessions', 'scheduler'].find((capability) => normalizedCapabilities[capability]?.available !== true);
     if (operating.mode === 'recovery-only' || unavailableProjectionCapability) throw new CommandCenterMetadataError('metadata-not-ready', 'Command Center metadata is not ready for projection.', { mode: operating.mode, capability: unavailableProjectionCapability ?? null });
-    database.exec('BEGIN');
-    try {
-      const snapshot = {
-        topics: database.prepare('SELECT topic_id AS topicId, para_category AS paraCategory, lifecycle, created_at AS createdAt, updated_at AS updatedAt FROM topics ORDER BY topic_id').all(),
-        sourceReferences: database.prepare('SELECT reference_id AS referenceId, topic_id AS topicId, source_system AS sourceSystem, source_kind AS sourceKind, external_source_id AS externalSourceId, created_at AS createdAt, updated_at AS updatedAt FROM source_references ORDER BY referenceId').all(),
-        sourceConventionState: database.prepare('SELECT reference_id AS referenceId, aspect, state, updated_at AS updatedAt FROM source_convention_state ORDER BY referenceId, aspect').all(),
-        presentationPreferences: database.prepare('SELECT topic_id AS topicId, display_label AS displayLabel, sort_order AS sortOrder, collapsed, updated_at AS updatedAt FROM presentation_preferences ORDER BY topicId').all().map((row) => ({ ...row, collapsed: row.collapsed === 1 })),
-        attentionActivityLinks: database.prepare('SELECT link_id AS linkId, attention_id AS attentionId, activity_id AS activityId, topic_id AS topicId, created_at AS createdAt FROM attention_activity_links ORDER BY linkId').all(),
-        proposalStates: database.prepare('SELECT proposal_id AS proposalId, topic_id AS topicId, state, revision, created_at AS createdAt, updated_at AS updatedAt FROM proposal_states ORDER BY proposalId').all(),
+      database.exec('BEGIN');
+      try {
+        const snapshot = {
+        topics: database.prepare("SELECT topic_id AS topicId, para_category AS paraCategory, lifecycle, created_at AS createdAt, updated_at AS updatedAt FROM topics WHERE lifecycle = 'active' ORDER BY topic_id").all(),
+        sourceReferences: database.prepare("SELECT reference_id AS referenceId, topic_id AS topicId, source_system AS sourceSystem, source_kind AS sourceKind, external_source_id AS externalSourceId, created_at AS createdAt, updated_at AS updatedAt FROM source_references WHERE topic_id IN (SELECT topic_id FROM topics WHERE lifecycle = 'active') ORDER BY referenceId").all(),
+        sourceConventionState: database.prepare("SELECT state.reference_id AS referenceId, state.aspect, state.state, state.updated_at AS updatedAt FROM source_convention_state AS state JOIN source_references AS reference ON reference.reference_id = state.reference_id JOIN topics ON topics.topic_id = reference.topic_id WHERE topics.lifecycle = 'active' ORDER BY state.reference_id, state.aspect").all(),
+        presentationPreferences: database.prepare("SELECT preferences.topic_id AS topicId, preferences.display_label AS displayLabel, preferences.sort_order AS sortOrder, preferences.collapsed, preferences.updated_at AS updatedAt FROM presentation_preferences AS preferences JOIN topics ON topics.topic_id = preferences.topic_id WHERE topics.lifecycle = 'active' ORDER BY preferences.topic_id").all().map((row) => ({ ...row, collapsed: row.collapsed === 1 })),
+        attentionActivityLinks: database.prepare("SELECT link_id AS linkId, attention_id AS attentionId, activity_id AS activityId, topic_id AS topicId, created_at AS createdAt FROM attention_activity_links WHERE topic_id IS NULL OR topic_id IN (SELECT topic_id FROM topics WHERE lifecycle = 'active') ORDER BY linkId").all(),
+        proposalStates: database.prepare("SELECT proposal_id AS proposalId, topic_id AS topicId, state, revision, created_at AS createdAt, updated_at AS updatedAt FROM proposal_states WHERE topic_id IN (SELECT topic_id FROM topics WHERE lifecycle = 'active') ORDER BY proposalId").all(),
         policyVersions: database.prepare('SELECT policy_id AS policyId, version, digest, updated_at AS updatedAt FROM policy_versions ORDER BY policyId').all()
       };
       database.exec('COMMIT');
@@ -567,6 +629,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
 
   service.getTopic = (topicId) => readOne('SELECT * FROM topics WHERE topic_id = ?', [requiredString(topicId, 'topicId')], mapTopic) || null;
   service.listTopics = () => readMany('SELECT * FROM topics ORDER BY topic_id', [], mapTopic);
+  service.listUsableTopics = () => readMany("SELECT * FROM topics WHERE lifecycle = 'active' ORDER BY topic_id", [], mapTopic);
   service.deleteTopic = (topicId) => {
     requiredString(topicId, 'topicId');
     return mutate(null, (db) => {
@@ -616,6 +679,17 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   service.createSourceReference = (input) => {
     const value = referenceInput(input);
     return mutate(capabilityForSourceSystem(value.sourceSystem), (db) => insertSourceReference(db, value, timestamp(undefined, 'createdAt')));
+  };
+
+  service.createMigrationTopicBinding = ({ topic: topicInputValue, reference: referenceInputValue } = {}) => {
+    const topic = topicInput(topicInputValue);
+    const reference = referenceInput(referenceInputValue);
+    if (topic.lifecycle !== 'provisioning' || reference.topicId !== topic.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder') throw new CommandCenterMetadataError('invalid-value', 'Migration Topic bootstrap requires its exact provisioning Note Folder binding.');
+    return mutate('notes', (db) => {
+      const now = topic.createdAt ?? timestamp(undefined, 'createdAt');
+      db.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(topic.topicId, topic.paraCategory, topic.lifecycle, now, topic.updatedAt ?? now);
+      return Object.freeze({ topic: mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(topic.topicId)), reference: insertSourceReference(db, reference, now) });
+    });
   };
 
   service.updateSourceReference = (input) => {
@@ -829,8 +903,181 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
       return mapSessionState(db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(referenceId));
     });
   };
+
+  service.createSessionBinding = ({ reference: referenceInputValue, state: stateInputValue } = {}) => {
+    const reference = referenceInput(referenceInputValue);
+    if (reference.sourceSystem !== 'openclaw' || reference.sourceKind !== 'session') throw new CommandCenterMetadataError('invalid-value', 'A Session binding requires an openclaw/session Source Reference.');
+    const stateValue = objectValue(stateInputValue, 'session state');
+    allowedKeys(stateValue, ['referenceId', 'sessionId', 'status', 'isPrimary', 'updatedAt'], 'session state');
+    const referenceId = requiredString(stateValue.referenceId, 'referenceId');
+    const sessionId = requiredString(stateValue.sessionId, 'sessionId');
+    const status = enumValue(stateValue.status, ['open', 'closed'], 'status');
+    const isPrimary = booleanValue(stateValue.isPrimary ?? false, 'isPrimary');
+    const updatedAt = timestamp(stateValue.updatedAt, 'updatedAt');
+    if (referenceId !== reference.referenceId) throw new CommandCenterMetadataError('invalid-value', 'Session state must identify the new Source Reference.');
+    if (status === 'closed' && isPrimary) throw new CommandCenterMetadataError('primary-session', 'The Primary Session cannot be created closed.');
+    return mutate('sessions', (db) => {
+      const created = insertSourceReference(db, reference, updatedAt);
+      if (isPrimary) {
+        db.prepare(`UPDATE session_state SET is_primary = 0, updated_at = ?
+          WHERE reference_id <> ? AND reference_id IN (
+            SELECT reference_id FROM source_references WHERE topic_id = ? AND source_system = 'openclaw' AND source_kind = 'session'
+          )`).run(updatedAt, referenceId, reference.topicId);
+      }
+      db.prepare('INSERT INTO session_state (reference_id, session_id, status, is_primary, updated_at) VALUES (?, ?, ?, ?, ?)').run(referenceId, sessionId, status, isPrimary ? 1 : 0, updatedAt);
+      return Object.freeze({ reference: created, state: mapSessionState(db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(referenceId)) });
+    });
+  };
   service.getSessionState = (referenceId) => readOne('SELECT * FROM session_state WHERE reference_id = ?', [requiredString(referenceId, 'referenceId')], mapSessionState) || null;
   service.listSessionStates = () => readMany('SELECT * FROM session_state ORDER BY reference_id', [], mapSessionState);
+
+  service.getMigrationState = () => readOne('SELECT * FROM migration_state WHERE state_id = ?', ['legacy-discord-v1'], mapMigrationState) || null;
+  service.getMigrationCompletion = () => readOne('SELECT * FROM migration_completion WHERE completion_id = ?', ['legacy-discord-v1'], mapMigrationCompletion) || null;
+  service.listMigrationChannels = () => readMany('SELECT * FROM migration_channels ORDER BY source_channel_id', [], mapMigrationChannel);
+  service.getMigrationChannel = (sourceChannelId) => readOne('SELECT * FROM migration_channels WHERE source_channel_id = ?', [requiredString(sourceChannelId, 'sourceChannelId')], mapMigrationChannel) || null;
+  service.listMigrationOccurrences = (sourceChannelId) => readMany('SELECT * FROM migration_occurrences WHERE source_channel_id = ? ORDER BY display_order', [requiredString(sourceChannelId, 'sourceChannelId')], mapMigrationOccurrence);
+
+  service.setMigrationState = (input) => {
+    const value = objectValue(input, 'migration state');
+    allowedKeys(value, ['stateId', 'schemaVersion', 'configDigest', 'sourceDigest', 'revision', 'phase', 'failureCode', 'failureSummary', 'failureCount', 'updatedAt'], 'migration state');
+    const stateId = value.stateId ?? 'legacy-discord-v1';
+    const schemaVersion = value.schemaVersion ?? 1;
+    const configDigest = requiredString(value.configDigest, 'configDigest');
+    const sourceDigest = requiredString(value.sourceDigest, 'sourceDigest');
+    const phase = enumValue(value.phase, ['pending', 'provisioning', 'importing', 'verifying', 'review'], 'phase');
+    const failureCode = value.failureCode === undefined || value.failureCode === null ? null : optionalString(value.failureCode, 'failureCode');
+    const failureSummary = value.failureSummary === undefined || value.failureSummary === null ? null : optionalString(value.failureSummary, 'failureSummary').slice(0, 300);
+    const failureCount = integerValue(value.failureCount ?? 0, 'failureCount', { minimum: 0 });
+    const updatedAt = timestamp(value.updatedAt, 'updatedAt');
+    if (stateId !== 'legacy-discord-v1' || schemaVersion !== 1) throw new CommandCenterMetadataError('invalid-value', 'Unsupported migration state identity.');
+    return mutate(null, (db) => {
+      const existing = db.prepare('SELECT revision FROM migration_state WHERE state_id = ?').get(stateId);
+      const revision = existing ? existing.revision + 1 : integerValue(value.revision ?? 1, 'revision', { minimum: 1 });
+      db.prepare(`INSERT INTO migration_state (state_id, schema_version, config_digest, source_digest, revision, phase, failure_code, failure_summary, failure_count, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(state_id) DO UPDATE SET config_digest = excluded.config_digest, source_digest = excluded.source_digest, revision = excluded.revision, phase = excluded.phase, failure_code = excluded.failure_code, failure_summary = excluded.failure_summary, failure_count = excluded.failure_count, updated_at = excluded.updated_at`).run(stateId, schemaVersion, configDigest, sourceDigest, revision, phase, failureCode, failureSummary, failureCount, updatedAt);
+      return mapMigrationState(db.prepare('SELECT * FROM migration_state WHERE state_id = ?').get(stateId));
+    });
+  };
+
+  service.setMigrationOccurrences = (sourceChannelId, occurrences) => {
+    const channelId = requiredString(sourceChannelId, 'sourceChannelId');
+    if (!Array.isArray(occurrences)) throw new CommandCenterMetadataError('invalid-value', 'migration occurrences must be an array');
+    return mutate(null, (db) => {
+      for (const occurrence of occurrences) {
+        const value = objectValue(occurrence, 'migration occurrence');
+        allowedKeys(value, ['occurrenceId', 'occurrenceDigest', 'displayOrder', 'destinationMessageId', 'destinationAnchor'], 'migration occurrence');
+        const occurrenceId = requiredString(value.occurrenceId, 'occurrenceId');
+        const occurrenceDigest = requiredString(value.occurrenceDigest, 'occurrenceDigest');
+        const displayOrder = integerValue(value.displayOrder, 'displayOrder', { minimum: 0 });
+        const destinationMessageId = value.destinationMessageId == null ? null : requiredString(value.destinationMessageId, 'destinationMessageId');
+        const destinationAnchorJson = value.destinationAnchor == null ? null : JSON.stringify(objectValue(value.destinationAnchor, 'destinationAnchor'));
+        const destinationAnchorDigest = destinationAnchorJson ? 'sha256:' + createHash('sha256').update(destinationAnchorJson).digest('hex') : null;
+        if (destinationAnchorJson && destinationAnchorJson.length > 2000) throw new CommandCenterMetadataError('invalid-value', 'destinationAnchor is too large.');
+        const existing = db.prepare('SELECT occurrence_digest, display_order, destination_message_id, destination_anchor_json, destination_anchor_digest FROM migration_occurrences WHERE source_channel_id = ? AND occurrence_id = ?').get(channelId, occurrenceId);
+        if (existing && (existing.occurrence_digest !== occurrenceDigest || existing.display_order !== displayOrder || (existing.destination_message_id && destinationMessageId && existing.destination_message_id !== destinationMessageId) || (existing.destination_anchor_json && destinationAnchorJson && existing.destination_anchor_json !== destinationAnchorJson))) throw new CommandCenterMetadataError('conflict', 'Migration occurrence identity cannot be rebound.');
+        db.prepare(`INSERT INTO migration_occurrences (source_channel_id, occurrence_id, occurrence_digest, display_order, destination_message_id, destination_anchor_json, destination_anchor_digest) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_channel_id, occurrence_id) DO UPDATE SET destination_message_id = COALESCE(migration_occurrences.destination_message_id, excluded.destination_message_id), destination_anchor_json = COALESCE(migration_occurrences.destination_anchor_json, excluded.destination_anchor_json), destination_anchor_digest = COALESCE(migration_occurrences.destination_anchor_digest, excluded.destination_anchor_digest)`).run(channelId, occurrenceId, occurrenceDigest, displayOrder, destinationMessageId, destinationAnchorJson, destinationAnchorDigest);
+      }
+      return service.listMigrationOccurrences(channelId);
+    });
+  };
+
+  service.setMigrationChannel = (input) => {
+    const value = objectValue(input, 'migration channel');
+    allowedKeys(value, ['sourceChannelId', 'topicId', 'noteFolderReferenceId', 'sessionReferenceId', 'sessionId', 'phase', 'expectedCount', 'expectedDigest', 'importedCount', 'importedDigest', 'nextOrdinal', 'failureCode', 'failureSummary', 'failureCount', 'updatedAt'], 'migration channel');
+    const sourceChannelId = requiredString(value.sourceChannelId, 'sourceChannelId');
+    const topicId = requiredString(value.topicId, 'topicId');
+    const noteFolderReferenceId = requiredString(value.noteFolderReferenceId, 'noteFolderReferenceId');
+    const sessionReferenceId = requiredString(value.sessionReferenceId, 'sessionReferenceId');
+    const sessionId = requiredString(value.sessionId, 'sessionId');
+    const phase = enumValue(value.phase, ['pending', 'provisioning', 'importing', 'verifying', 'review', 'complete'], 'phase');
+    const expectedCount = integerValue(value.expectedCount, 'expectedCount', { minimum: 0 });
+    const expectedDigest = requiredString(value.expectedDigest, 'expectedDigest');
+    const importedCount = integerValue(value.importedCount ?? 0, 'importedCount', { minimum: 0 });
+    const importedDigest = requiredString(value.importedDigest ?? 'sha256:' + '0'.repeat(64), 'importedDigest');
+    const nextOrdinal = integerValue(value.nextOrdinal ?? 0, 'nextOrdinal', { minimum: 0 });
+    const failureCount = integerValue(value.failureCount ?? 0, 'failureCount', { minimum: 0 });
+    const failureCode = value.failureCode === undefined || value.failureCode === null ? null : optionalString(value.failureCode, 'failureCode');
+    const failureSummary = value.failureSummary === undefined || value.failureSummary === null ? null : optionalString(value.failureSummary, 'failureSummary').slice(0, 300);
+    const updatedAt = timestamp(value.updatedAt, 'updatedAt');
+    return mutate(null, (db) => {
+      const existing = db.prepare('SELECT * FROM migration_channels WHERE source_channel_id = ?').get(sourceChannelId);
+      if (existing && (existing.topic_id !== topicId || existing.note_folder_reference_id !== noteFolderReferenceId || existing.session_reference_id !== sessionReferenceId || existing.session_id !== sessionId)) {
+        throw new CommandCenterMetadataError('conflict', 'Migration destination identity cannot be rebound.');
+      }
+      db.prepare(`INSERT INTO migration_channels
+        (source_channel_id, topic_id, note_folder_reference_id, session_reference_id, session_id, phase, expected_count, expected_digest, imported_count, imported_digest, next_ordinal, failure_code, failure_summary, failure_count, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_channel_id) DO UPDATE SET phase = excluded.phase, expected_count = excluded.expected_count, expected_digest = excluded.expected_digest, imported_count = excluded.imported_count, imported_digest = excluded.imported_digest, next_ordinal = excluded.next_ordinal, failure_code = excluded.failure_code, failure_summary = excluded.failure_summary, failure_count = excluded.failure_count, updated_at = excluded.updated_at`).run(
+        sourceChannelId, topicId, noteFolderReferenceId, sessionReferenceId, sessionId, phase, expectedCount, expectedDigest, importedCount, importedDigest, nextOrdinal, failureCode, failureSummary, failureCount, updatedAt
+      );
+      return mapMigrationChannel(db.prepare('SELECT * FROM migration_channels WHERE source_channel_id = ?').get(sourceChannelId));
+    });
+  };
+
+  service.removeMigrationTransientState = () => mutate(null, (db) => {
+    db.prepare('DELETE FROM migration_channels').run();
+    db.prepare('DELETE FROM migration_state').run();
+    return true;
+  });
+
+  service.completeLegacyDiscordMigrationChannel = (sourceChannelId, verifiedAt) => {
+    requiredString(sourceChannelId, 'sourceChannelId');
+    const completedAt = timestamp(verifiedAt, 'verifiedAt');
+    return mutate(null, (db) => {
+      const channel = db.prepare('SELECT * FROM migration_channels WHERE source_channel_id = ?').get(sourceChannelId);
+      if (!channel) throw new CommandCenterMetadataError('not-found', 'Migration channel was not found.');
+      const topic = db.prepare('SELECT lifecycle FROM topics WHERE topic_id = ?').get(channel.topic_id);
+      if (channel.phase === 'complete') {
+        if (!topic || topic.lifecycle !== 'active') throw new CommandCenterMetadataError('conflict', 'Completed migration Topic is not active.');
+        return mapMigrationChannel(channel);
+      }
+      if (channel.phase !== 'verifying' || !topic || topic.lifecycle !== 'provisioning') throw new CommandCenterMetadataError('conflict', 'Migration channel must pass verification before activation.');
+      const references = db.prepare('SELECT * FROM source_references WHERE topic_id = ? ORDER BY reference_id').all(channel.topic_id);
+      const folder = references.filter((reference) => reference.reference_id === channel.note_folder_reference_id && reference.source_system === 'obsidian' && reference.source_kind === 'note_folder');
+      const session = references.filter((reference) => reference.reference_id === channel.session_reference_id && reference.source_system === 'openclaw' && reference.source_kind === 'session');
+      const sessionState = db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(channel.session_reference_id);
+      if (references.length !== 2 || folder.length !== 1 || session.length !== 1 || session[0].external_source_id !== `agent:main:command-center:legacy-discord:${channel.source_channel_id}` || !sessionState || sessionState.session_id !== channel.session_id || sessionState.status !== 'open' || sessionState.is_primary !== 1) throw new CommandCenterMetadataError('conflict', 'Migration channel activation requires exact authoritative Topic bindings.');
+      db.prepare("UPDATE topics SET lifecycle = 'active', updated_at = ? WHERE topic_id = ?").run(completedAt, channel.topic_id);
+      db.prepare("UPDATE migration_channels SET phase = 'complete', failure_code = NULL, failure_summary = NULL, updated_at = ? WHERE source_channel_id = ?").run(completedAt, sourceChannelId);
+      return mapMigrationChannel(db.prepare('SELECT * FROM migration_channels WHERE source_channel_id = ?').get(sourceChannelId));
+    });
+  };
+
+  service.completeLegacyDiscordMigration = (input) => {
+    const value = objectValue(input, 'migration completion');
+    allowedKeys(value, ['configDigest', 'sourceDigest', 'verifiedChannelCount', 'verifiedOccurrenceCount', 'completionRevision', 'verifiedAt'], 'migration completion');
+    const configDigest = requiredString(value.configDigest, 'configDigest');
+    const sourceDigest = requiredString(value.sourceDigest, 'sourceDigest');
+    const verifiedChannelCount = integerValue(value.verifiedChannelCount, 'verifiedChannelCount', { minimum: 0 });
+    const verifiedOccurrenceCount = integerValue(value.verifiedOccurrenceCount, 'verifiedOccurrenceCount', { minimum: 0 });
+    const completionRevision = integerValue(value.completionRevision, 'completionRevision', { minimum: 1 });
+    const verifiedAt = timestamp(value.verifiedAt, 'verifiedAt');
+    return mutate(null, (db) => {
+      const existing = db.prepare('SELECT * FROM migration_completion WHERE completion_id = ?').get('legacy-discord-v1');
+      if (existing) {
+        if (existing.config_digest !== configDigest || existing.source_digest !== sourceDigest || existing.completion_revision !== completionRevision) throw new CommandCenterMetadataError('conflict', 'Migration completion identity cannot be changed.');
+        return mapMigrationCompletion(existing);
+      }
+      const channels = db.prepare('SELECT * FROM migration_channels').all();
+      if (channels.length === 0 || channels.some((row) => row.phase !== 'complete')) throw new CommandCenterMetadataError('conflict', 'Migration completion requires every channel to pass verification.');
+      if (channels.length !== verifiedChannelCount || channels.reduce((sum, row) => sum + row.expected_count, 0) !== verifiedOccurrenceCount) throw new CommandCenterMetadataError('conflict', 'Migration completion counts do not match verified channels.');
+      for (const row of channels) {
+        const topic = db.prepare('SELECT lifecycle FROM topics WHERE topic_id = ?').get(row.topic_id);
+        if (!topic || topic.lifecycle !== 'active') throw new CommandCenterMetadataError('conflict', 'Migration Topic binding is missing or already rebound.');
+        const references = db.prepare('SELECT * FROM source_references WHERE topic_id = ? ORDER BY reference_id').all(row.topic_id);
+        const folder = references.filter((reference) => reference.reference_id === row.note_folder_reference_id && reference.source_system === 'obsidian' && reference.source_kind === 'note_folder');
+        const session = references.filter((reference) => reference.reference_id === row.session_reference_id && reference.source_system === 'openclaw' && reference.source_kind === 'session');
+        const sessionState = db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(row.session_reference_id);
+        if (folder.length !== 1 || session.length !== 1 || session[0].external_source_id !== `agent:main:command-center:legacy-discord:${row.source_channel_id}` || !sessionState || sessionState.session_id !== row.session_id || sessionState.status !== 'open' || sessionState.is_primary !== 1) throw new CommandCenterMetadataError('conflict', 'Migration completion requires exact authoritative Topic bindings.');
+      }
+      db.prepare('INSERT INTO migration_completion (completion_id, schema_version, config_digest, source_digest, verified_channel_count, verified_occurrence_count, completion_revision, verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run('legacy-discord-v1', 1, configDigest, sourceDigest, verifiedChannelCount, verifiedOccurrenceCount, completionRevision, verifiedAt);
+      db.prepare('DELETE FROM migration_channels').run();
+      db.prepare('DELETE FROM migration_state').run();
+      return mapMigrationCompletion(db.prepare('SELECT * FROM migration_completion WHERE completion_id = ?').get('legacy-discord-v1'));
+    });
+  };
 
   service.recordActivity = (input) => {
     const value = objectValue(input, 'Activity record');

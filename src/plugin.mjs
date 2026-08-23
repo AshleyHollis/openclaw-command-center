@@ -4,6 +4,8 @@ import { openCommandCenterMetadataService } from './metadata/service.mjs';
 import { registerBridgeMethods } from './bridge/register.mjs';
 import { createAuthoritativeSourceService } from './sources/service.mjs';
 import { createNoteMaintenanceService } from './maintenance/notes.mjs';
+import { legacyDiscordMigrationConfigSchema } from './migration/config.mjs';
+import { createLegacyDiscordMigrationService } from './migration/service.mjs';
 
 export const pluginId = 'command-center';
 export const routeId = 'command-center';
@@ -16,6 +18,7 @@ const assets = new Map([
 ]);
 
 let activeMaintenanceService;
+let activeMigrationService;
 
 export function runNoteMaintenance(input) {
   if (!activeMaintenanceService) throw new Error('Command Center Note maintenance is not ready.');
@@ -37,18 +40,23 @@ function createMetadataService(api) {
     start() {
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
-      const capabilities = { notes: true, sessions: gatewayAvailable, scheduler: gatewayAvailable, activity: true, search: false, analysis: false, attention: false };
+      const sessionStoreAvailable = typeof api.runtime?.agent?.session?.patchSessionEntry === 'function';
+      const capabilities = { notes: true, sessions: sessionStoreAvailable, scheduler: gatewayAvailable, activity: true, search: false, analysis: false, attention: false };
       metadataService = openCommandCenterMetadataService({
         stateDir,
         capabilities
       });
+      const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: api.pluginConfig?.legacyDiscordMigration, logger: api.logger });
       sourceService = createAuthoritativeSourceService({
         metadata: metadataService,
         api,
-        capabilities
+        capabilities,
+        migration: migrationService
       });
       maintenanceService = createNoteMaintenanceService({ sourceService, metadata: metadataService });
       activeMaintenanceService = maintenanceService;
+      activeMigrationService = migrationService;
+      return migrationService.start();
     },
     stop() {
       sourceService?.close?.();
@@ -57,6 +65,7 @@ function createMetadataService(api) {
       sourceService = undefined;
       maintenanceService = undefined;
       activeMaintenanceService = undefined;
+      activeMigrationService = undefined;
     },
     get sourceService() {
       return sourceService;
@@ -71,6 +80,7 @@ export default definePluginEntry({
   id: pluginId,
   name: 'Command Center',
   description: 'A responsive Command Center control destination.',
+  configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema }, additionalProperties: false },
   /** @param {OpenClawPluginApi} api */
   register(api) {
     const service = createMetadataService(api);

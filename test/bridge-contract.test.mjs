@@ -5,6 +5,9 @@ import { registerBridgeMethods } from '../src/bridge/register.mjs';
 import { randomUUID } from 'node:crypto';
 
 test('registers the complete closed versioned bridge inventory with least-privilege scopes', () => {
+  assert.ok(READ_METHODS.includes('command-center.v1.migration.status'));
+  assert.ok(READ_METHODS.includes('command-center.v1.migration.review-failures'));
+  assert.ok(!READ_METHODS.includes('command-center.v1.migration.review'));
   const registrations = [];
   const api = { registerGatewayMethod: (...args) => registrations.push(args) };
   const service = Object.fromEntries([...READ_METHODS, ...WRITE_METHODS].map((method) => [method, async () => ({ status: 'applied' })]));
@@ -29,6 +32,8 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.read', { topicId: 'topic', path: 'a.md' }), /schemaVersion/);
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.read', { schemaVersion: 1, topicId: 'topic', path: 'a.md', extra: true }), /unsupported.*field/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.edit', { schemaVersion: 1, topicId: 'topic', path: 'a.md', expectedRevision: 'sha256:x', text: 'x', logicalOperationId: 'not-a-uuid' }), /canonical.*logical/i);
+  assert.throws(() => validateBridgeRequest('command-center.v1.migration.resume', { schemaVersion: 1, logicalOperationId: randomUUID() }), /expectedMigrationRevision/i);
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.migration.resume', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedMigrationRevision: 1 }));
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.notes.edit', { schemaVersion: 1, topicId: 'topic', path: 'a.md', expectedRevision: 'sha256:x', text: 'x', logicalOperationId: randomUUID() }));
   assert.throws(() => validateBridgeRequest('command-center.v1.reminders.complete', { schemaVersion: 1, topicId: 'topic', referenceId: 'reminder', expectedConfigRevision: 'revision', patch: { payload: {} }, logicalOperationId: randomUUID() }), /unsupported.*patch/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.schedules.set-enabled', { schemaVersion: 1, topicId: 'topic', referenceId: 'schedule', expectedConfigRevision: 'revision', enabled: false, patch: { schedule: {} }, logicalOperationId: randomUUID() }), /unsupported.*patch/i);
@@ -55,6 +60,18 @@ test('handlers preserve authenticated request context and echo request and logic
   await statusHandler({ req: { id: 'gateway-frame-1' }, params: { schemaVersion: 1 }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
   assert.deepEqual(response[1], { schemaVersion: 1, status: 'applied', requestId: 'gateway-frame-1', logicalOperationId: null, result: { mode: 'ready' } });
+});
+
+test('Resume retains only its bounded migration status projection', async () => {
+  const registrations = new Map();
+  registerBridgeMethods({ registerGatewayMethod: (method, handler) => registrations.set(method, handler) }, {
+    migrationResume: async () => ({ schemaVersion: 1, enabled: true, phase: 'review', complete: false, migrationRevision: 4, actions: [{ id: 'resume-migration' }], channels: [], failures: [], privateSourceText: 'must not cross bridge' })
+  });
+  let response;
+  await registrations.get('command-center.v1.migration.resume')({ req: { id: 'resume-request' }, params: { schemaVersion: 1, logicalOperationId: randomUUID(), expectedMigrationRevision: 4 }, context: { authenticated: true }, respond: (...args) => { response = args; } });
+  assert.equal(response[0], true);
+  assert.equal(response[1].result.migrationRevision, 4);
+  assert.equal('privateSourceText' in response[1].result, false);
 });
 
 test('handlers bound raw provider failures without exposing their messages', async () => {

@@ -27,12 +27,15 @@ import {
   MIGRATION_FROM_VERSION,
   MIGRATION_ID,
   MIGRATION_TO_VERSION,
+  V1_TO_V2_MIGRATION_DIGEST,
+  V1_TO_V2_MIGRATION_ID,
   validateMigrationLedger
 } from './migration-ledger.mjs';
 import { inspectSchema } from './schema.mjs';
 
 export const RECOVERY_FORMAT_VERSION = 1;
 export const RECOVERY_SNAPSHOT_SCHEMA_VERSION = 1;
+const recoverySnapshotSchemaVersions = new Set([1, 2]);
 
 const currentRelease = Object.freeze({
   package: canonical.package,
@@ -41,6 +44,13 @@ const currentRelease = Object.freeze({
   commandCenterSchema: canonical.commandCenterSchema,
   capabilityBridgeProtocol: canonical.capabilityBridgeProtocol
 });
+const schemaTwoRelease = Object.freeze({ ...currentRelease, commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 2 }), migratable: Object.freeze({ min: 1, max: 1 }), writable: Object.freeze({ min: 2, max: 2 }) }) });
+
+function recoveryContractForSchema(schemaVersion, { legacyTarget = false } = {}) {
+  return schemaVersion === 1
+    ? { migration: { id: V1_TO_V2_MIGRATION_ID, digest: V1_TO_V2_MIGRATION_DIGEST, fromVersion: 1, toVersion: 2 }, sourceRelease: canonical.priorRelease, targetRelease: legacyTarget ? schemaTwoRelease : currentRelease }
+    : { migration: { id: MIGRATION_ID, digest: MIGRATION_DIGEST, fromVersion: MIGRATION_FROM_VERSION, toVersion: MIGRATION_TO_VERSION }, sourceRelease: schemaTwoRelease, targetRelease: currentRelease };
+}
 
 export class RecoveryMaterialError extends Error {
   constructor(code, message, details = {}) {
@@ -104,7 +114,8 @@ function canonicalJson(value) {
 }
 
 function databaseFingerprint(database) {
-  const tables = ['topics', 'source_references', 'source_convention_state', 'presentation_preferences', 'attention_activity_links', 'proposal_states', 'policy_versions', 'projection_bookkeeping'];
+  const candidates = ['topics', 'source_references', 'source_convention_state', 'presentation_preferences', 'attention_activity_links', 'proposal_states', 'policy_versions', 'projection_bookkeeping', 'operation_journal', 'session_state', 'activity_records'];
+  const tables = candidates.filter((table) => database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(table));
   const hash = createHash('sha256');
   hash.update(canonicalJson({
     schemaVersion: Number(database.prepare('PRAGMA user_version').get().user_version),
@@ -119,17 +130,17 @@ function databaseFingerprint(database) {
   return 'sha256:' + hash.digest('hex');
 }
 
-function inspectClosedSnapshot(snapshotPath) {
+function inspectClosedSnapshot(snapshotPath, expectedSchemaVersion) {
   assertRegular(snapshotPath, 'Recovery snapshot');
   let database;
   try {
     database = new DatabaseSync(snapshotPath, { readOnly: true });
     const schemaVersion = Number(database.prepare('PRAGMA user_version').get().user_version);
     const integrity = database.prepare('PRAGMA integrity_check').get()?.integrity_check;
-    if (schemaVersion !== RECOVERY_SNAPSHOT_SCHEMA_VERSION) throw new RecoveryMaterialError('recovery-schema-mismatch', 'Recovery snapshot does not contain source schema 1.');
+    if (schemaVersion !== expectedSchemaVersion || !recoverySnapshotSchemaVersions.has(schemaVersion)) throw new RecoveryMaterialError('recovery-schema-mismatch', 'Recovery snapshot does not contain its declared source schema.');
     if (integrity !== 'ok') throw new RecoveryMaterialError('recovery-integrity-failure', 'Recovery snapshot failed SQLite integrity checking.');
-    const shape = inspectSchema(database, RECOVERY_SNAPSHOT_SCHEMA_VERSION);
-    if (!shape.valid) throw new RecoveryMaterialError('recovery-schema-mismatch', 'Recovery snapshot does not match source schema 1.', { problems: shape.problems });
+    const shape = inspectSchema(database, schemaVersion);
+    if (!shape.valid) throw new RecoveryMaterialError('recovery-schema-mismatch', 'Recovery snapshot does not match its declared source schema.', { problems: shape.problems });
     return Object.freeze({ schemaVersion, fingerprint: databaseFingerprint(database) });
   } catch (error) {
     if (error instanceof RecoveryMaterialError) throw error;
@@ -144,10 +155,14 @@ function validateManifestShape(manifest) {
   const allowed = ['formatVersion', 'snapshotId', 'snapshotFile', 'migration', 'snapshot', 'sourceRelease', 'targetRelease', 'state'];
   if (Object.keys(manifest).some((key) => !allowed.includes(key))) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest contains unsupported fields.');
   if (manifest.formatVersion !== RECOVERY_FORMAT_VERSION || !/^sha256:[a-f0-9]{64}$/u.test(manifest.snapshotId ?? '') || manifest.snapshotFile !== recoverySnapshotFileName) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest identity or format differs.');
-  if (!manifest.migration || canonicalJson(manifest.migration) !== canonicalJson({ id: MIGRATION_ID, digest: MIGRATION_DIGEST, fromVersion: MIGRATION_FROM_VERSION, toVersion: MIGRATION_TO_VERSION })) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest migration contract differs.');
-  if (!manifest.snapshot || !Number.isSafeInteger(manifest.snapshot.size) || manifest.snapshot.size <= 0 || typeof manifest.snapshot.sha256 !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(manifest.snapshot.sha256) || manifest.snapshot.schemaVersion !== RECOVERY_SNAPSHOT_SCHEMA_VERSION || typeof manifest.snapshot.sourceFingerprint !== 'string') throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest snapshot facts are invalid.');
+  if (!manifest.snapshot || !Number.isSafeInteger(manifest.snapshot.size) || manifest.snapshot.size <= 0 || typeof manifest.snapshot.sha256 !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(manifest.snapshot.sha256) || !recoverySnapshotSchemaVersions.has(manifest.snapshot.schemaVersion) || typeof manifest.snapshot.sourceFingerprint !== 'string') throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest snapshot facts are invalid.');
+  const currentContract = recoveryContractForSchema(manifest.snapshot.schemaVersion);
+  const legacyContract = recoveryContractForSchema(manifest.snapshot.schemaVersion, { legacyTarget: true });
+  if (!manifest.migration || canonicalJson(manifest.migration) !== canonicalJson(currentContract.migration)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest migration contract differs.');
   if (manifest.snapshotId !== manifest.snapshot.sha256) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery snapshot identity does not match its content digest.');
-  if (canonicalJson(manifest.sourceRelease) !== canonicalJson(canonical.priorRelease) || canonicalJson(manifest.targetRelease) !== canonicalJson(currentRelease)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest compatibility facts differ.');
+  const releaseMatches = canonicalJson(manifest.sourceRelease) === canonicalJson(currentContract.sourceRelease)
+    && [currentContract.targetRelease, legacyContract.targetRelease].some((target) => canonicalJson(manifest.targetRelease) === canonicalJson(target));
+  if (!releaseMatches) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest compatibility facts differ.');
   if (!['prepared', 'committed'].includes(manifest.state)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest state is invalid.');
   return manifest;
 }
@@ -170,20 +185,21 @@ export function readRecoveryMaterial(stateDir) {
   validateManifestShape(manifest);
   const snapshotStat = assertRegular(snapshotPath, 'Recovery snapshot');
   if (snapshotStat.size !== manifest.snapshot.size || hashFile(snapshotPath) !== manifest.snapshot.sha256) throw new RecoveryMaterialError('recovery-integrity-failure', 'Recovery snapshot hash or size differs from its manifest.');
-  const snapshot = inspectClosedSnapshot(snapshotPath);
+  const snapshot = inspectClosedSnapshot(snapshotPath, manifest.snapshot.schemaVersion);
   if (snapshot.fingerprint !== manifest.snapshot.sourceFingerprint) throw new RecoveryMaterialError('recovery-integrity-failure', 'Recovery snapshot application data differs from its manifest.');
   return Object.freeze({ exists: true, directory, manifest: Object.freeze(manifest), manifestPath, snapshotPath, snapshot });
 }
 
-function makeManifest({ state, size, sha256, sourceFingerprint }) {
+function makeManifest({ state, size, sha256, sourceFingerprint, schemaVersion }) {
+  const contract = recoveryContractForSchema(schemaVersion);
   return {
     formatVersion: RECOVERY_FORMAT_VERSION,
     snapshotId: sha256,
     snapshotFile: recoverySnapshotFileName,
-    migration: { id: MIGRATION_ID, digest: MIGRATION_DIGEST, fromVersion: MIGRATION_FROM_VERSION, toVersion: MIGRATION_TO_VERSION },
-    snapshot: { schemaVersion: RECOVERY_SNAPSHOT_SCHEMA_VERSION, size, sha256, sourceFingerprint },
-    sourceRelease: canonical.priorRelease,
-    targetRelease: currentRelease,
+    migration: contract.migration,
+    snapshot: { schemaVersion, size, sha256, sourceFingerprint },
+    sourceRelease: contract.sourceRelease,
+    targetRelease: contract.targetRelease,
     state
   };
 }
@@ -211,7 +227,7 @@ function assertMigrationParentChain(directory) {
   }
 }
 
-export function ensureRecoverySnapshot({ stateDir, databasePath }) {
+export function ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion = RECOVERY_SNAPSHOT_SCHEMA_VERSION }) {
   const directory = recoveryDirectoryPath(stateDir);
   assertMigrationParentChain(directory);
   const existing = readRecoveryMaterial(stateDir);
@@ -228,17 +244,17 @@ export function ensureRecoverySnapshot({ stateDir, databasePath }) {
       source = new DatabaseSync(databasePath, { readOnly: true });
       const sourceSchema = Number(source.prepare('PRAGMA user_version').get().user_version);
       const integrity = source.prepare('PRAGMA integrity_check').get()?.integrity_check;
-      const shape = inspectSchema(source, RECOVERY_SNAPSHOT_SCHEMA_VERSION);
-      if (sourceSchema !== RECOVERY_SNAPSHOT_SCHEMA_VERSION || integrity !== 'ok' || !shape.valid) throw new RecoveryMaterialError('recovery-source-invalid', 'The pre-migration database is not a verified schema-1 store.');
+      const shape = inspectSchema(source, sourceSchemaVersion);
+      if (!recoverySnapshotSchemaVersions.has(sourceSchemaVersion) || sourceSchema !== sourceSchemaVersion || integrity !== 'ok' || !shape.valid) throw new RecoveryMaterialError('recovery-source-invalid', 'The pre-migration database is not a verified source-schema store.');
       const sourceFingerprint = databaseFingerprint(source);
       const escaped = temporarySnapshot.replaceAll("'", "''");
       source.exec("VACUUM INTO '" + escaped + "'");
       const info = assertRegular(temporarySnapshot, 'Published recovery snapshot');
-      const snapshot = inspectClosedSnapshot(temporarySnapshot);
+      const snapshot = inspectClosedSnapshot(temporarySnapshot, sourceSchemaVersion);
       if (snapshot.fingerprint !== sourceFingerprint) throw new RecoveryMaterialError('recovery-integrity-failure', 'The published recovery snapshot does not match the source database.');
       chmodSync(temporarySnapshot, 0o444);
       const sha256 = hashFile(temporarySnapshot);
-      const manifest = makeManifest({ state: 'prepared', size: info.size, sha256, sourceFingerprint });
+      const manifest = makeManifest({ state: 'prepared', size: info.size, sha256, sourceFingerprint, schemaVersion: sourceSchemaVersion });
       const manifestPath = path.join(temporary, recoveryManifestFileName);
       writeManifest(manifestPath, manifest);
       chmodSync(manifestPath, 0o644);
@@ -269,7 +285,7 @@ export function inspectDatabaseAgainstRecoverySnapshot(databasePath, material) {
   let database;
   try {
     database = new DatabaseSync(databasePath, { readOnly: true });
-    return Number(database.prepare('PRAGMA user_version').get().user_version) === RECOVERY_SNAPSHOT_SCHEMA_VERSION
+    return Number(database.prepare('PRAGMA user_version').get().user_version) === material.manifest.snapshot.schemaVersion
       && databaseFingerprint(database) === material.manifest.snapshot.sourceFingerprint;
   } catch { return false; } finally {
     try { database?.close(); } catch { /* inspection cleanup */ }
@@ -280,8 +296,8 @@ export function isRollbackSnapshot(databasePath, material) {
   return Boolean(material?.exists && material.manifest.state === 'committed' && inspectDatabaseAgainstRecoverySnapshot(databasePath, material));
 }
 
-export function expectedRollbackRelease() {
-  return structuredClone(canonical.priorRelease);
+export function expectedRollbackRelease(stateDir) {
+  return structuredClone(stateDir ? readRecoveryMaterial(stateDir).manifest.sourceRelease : canonical.priorRelease);
 }
 
 export function currentReleaseContract() {
@@ -292,7 +308,7 @@ export function verifyRollbackMaterial(stateDir, { snapshotId, priorRelease }, d
   const material = readRecoveryMaterial(stateDir);
   if (!material.exists) throw new RecoveryMaterialError('rollback-snapshot-missing', 'The retained rollback snapshot is missing.');
   if (snapshotId !== material.manifest.snapshotId) throw new RecoveryMaterialError('rollback-snapshot-mismatch', 'The requested rollback snapshot is not the retained verified snapshot.');
-  if (canonicalJson(priorRelease) !== canonicalJson(canonical.priorRelease)) throw new RecoveryMaterialError('rollback-release-mismatch', 'The requested prior release is not the exact compatible release for this snapshot.');
+  if (canonicalJson(priorRelease) !== canonicalJson(material.manifest.sourceRelease)) throw new RecoveryMaterialError('rollback-release-mismatch', 'The requested prior release is not the exact compatible release for this snapshot.');
   let database;
   try {
     database = new DatabaseSync(databasePath, { readOnly: true });
@@ -310,7 +326,7 @@ export function verifyRollbackMaterial(stateDir, { snapshotId, priorRelease }, d
     migrationId: material.manifest.migration.id,
     migrationDigest: material.manifest.migration.digest,
     sourceSchema: material.manifest.snapshot.schemaVersion,
-    priorRelease: structuredClone(canonical.priorRelease),
+    priorRelease: structuredClone(material.manifest.sourceRelease),
     snapshotSha256: material.manifest.snapshot.sha256,
     snapshotSize: material.manifest.snapshot.size
   });

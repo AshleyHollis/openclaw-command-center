@@ -46,7 +46,7 @@ export function evaluateOperatingMode({ core, capabilities }) {
       unavailableCapabilities: Object.freeze([])
     });
   }
-  if (core.mode !== 'ready' || core.schemaVersion !== 2) {
+  if (core.mode !== 'ready' || core.schemaVersion !== 3) {
     const explanation = 'The core metadata state is not a declared compatible mode.';
     return Object.freeze({
       mode: 'recovery-only',
@@ -54,7 +54,7 @@ export function evaluateOperatingMode({ core, capabilities }) {
       diagnostics: Object.freeze([Object.freeze({
         code: 'unknown-core-state', mode: 'recovery-only', capability: null,
         summary: explanation, explanation,
-        remediation: 'Restart with a supported schema-2 core store before changing metadata.'
+        remediation: 'Restart with a supported schema-3 core store before changing metadata.'
       })]),
       unavailableCapabilities: Object.freeze([])
     });
