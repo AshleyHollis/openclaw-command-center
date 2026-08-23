@@ -13,8 +13,9 @@ import { MIGRATION_DIGEST, MIGRATION_ID } from '../src/metadata/migration-ledger
 
 const openServices = new Set();
 const migrationTestHooks = Symbol.for('openclaw.command-center.test.migration-hooks');
+const availableCapabilities = Object.freeze({ notes: true, sessions: true, scheduler: true, activity: true, analysis: true, attention: true, search: true });
 function open(options) {
-  const service = openCommandCenterMetadataService(options);
+  const service = openCommandCenterMetadataService({ ...options, capabilities: options.capabilities ?? availableCapabilities });
   openServices.add(service);
   return service;
 }

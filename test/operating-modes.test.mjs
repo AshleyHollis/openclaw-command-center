@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService as openMetadataService } from '../src/metadata/service.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
-import { evaluateOperatingMode } from '../src/metadata/modes.mjs';
+import { evaluateOperatingMode, optionalCapabilities } from '../src/metadata/modes.mjs';
 
 const openServices = new Set();
 function openCommandCenterMetadataService(options) {
@@ -45,7 +45,7 @@ test('Ready and every single or combined Degraded capability report gate only ma
   for (const unavailable of capabilitySets) {
     await withState(async (stateDir) => {
       seedSources(stateDir);
-      const capabilities = Object.fromEntries(unavailable.map((capability) => [capability, { available: false }]));
+      const capabilities = Object.fromEntries(optionalCapabilities.map((capability) => [capability, { available: !unavailable.includes(capability) }]));
       const service = openCommandCenterMetadataService({ stateDir, capabilities });
       const status = service.getOperatingStatus();
       assert.equal(status.mode, unavailable.length === 0 ? 'ready' : 'degraded');
@@ -62,7 +62,7 @@ test('Ready and every single or combined Degraded capability report gate only ma
 
       for (const sourceCase of sourceCases) {
         const { capability, ...reference } = sourceCase;
-        const create = () => service.createSourceReference({ ...reference, topicId: 'topic-modes' });
+        const create = () => service.createSourceReference({ version: 1, ...reference, topicId: 'topic-modes' });
         if (unavailable.includes(sourceCase.capability)) {
           assert.throws(create, (error) => error.code === 'capability-unavailable' && error.capability === capability);
         } else {
@@ -111,8 +111,8 @@ test('Recovery-only rejects every public mutation path and remains unchanged acr
       () => service.createTopic({ topicId: 'blocked-topic', paraCategory: 'area', lifecycle: 'active' }),
       () => service.updateTopic({ topicId: 'blocked-topic', paraCategory: 'archive' }),
       () => service.deleteTopic('blocked-topic'),
-      () => service.createSourceReference({ referenceId: 'blocked-ref', topicId: 'blocked-topic', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'blocked-source' }),
-      () => service.updateSourceReference({ referenceId: 'blocked-ref', updatedAt: '2026-08-22T00:00:00Z' }),
+      () => service.createSourceReference({ version: 1, referenceId: 'blocked-ref', topicId: 'blocked-topic', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'blocked-source' }),
+      () => service.updateSourceReference({ version: 1, referenceId: 'blocked-ref' }),
       () => service.deleteSourceReference('blocked-ref'),
       () => service.setSourceConventionState({ referenceId: 'blocked-ref', aspect: 'name', state: 'managed' }),
       () => service.setPresentationPreferences({ topicId: 'blocked-topic', displayLabel: 'Blocked', sortOrder: 0, collapsed: false }),

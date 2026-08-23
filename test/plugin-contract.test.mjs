@@ -15,7 +15,12 @@ test('plugin uses the pinned public external-tab and gateway-route seams', async
   assert.match(source, /api\.registerService\(/);
   assert.match(source, /id:\s*'command-center-metadata'/);
   assert.match(source, /api\.runtime\.state\.resolveStateDir\(process\.env\)/);
-  assert.match(source, /stateDir,\s*capabilities:\s*\{\}/);
+  assert.match(source, /gatewayAvailable = typeof api\.runtime\?\.gateway\?\.request === 'function'/);
+  assert.match(source, /sessions: gatewayAvailable, scheduler: gatewayAvailable/);
+  assert.match(source, /registerBridgeMethods\(api, serviceProxy\)/);
+  assert.match(source, /createNoteMaintenanceService\(/);
+  assert.match(source, /maintenanceService/);
+  assert.match(source, /export function runNoteMaintenance\(input\)/);
   assert.match(source, /serveShellAsset\(req, res, \{ assets \}\)/);
   assert.doesNotMatch(source, /registerControlUiExternalTab/);
 });

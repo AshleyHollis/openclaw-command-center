@@ -23,10 +23,10 @@ async function withState(run) {
 
 test('public typed operations cover convention, presentation, linkage, proposal, policy, and bookkeeping metadata', async () => {
   await withState(async (stateDir) => {
-    const service = openCommandCenterMetadataService({ stateDir });
+    const service = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     service.createTopic({ topicId: 'topic-model', paraCategory: 'resource', lifecycle: 'provisioning' });
     service.createTopic({ topicId: 'topic-other', paraCategory: 'area', lifecycle: 'active' });
-    service.createSourceReference({ referenceId: 'reference-model', topicId: 'topic-model', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: 'folder-model' });
+    service.createSourceReference({ version: 1, referenceId: 'reference-model', topicId: 'topic-model', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: 'folder-model' });
     service.setSourceConventionState({ referenceId: 'reference-model', aspect: 'location', state: 'managed' });
     service.setPresentationPreferences({ topicId: 'topic-model', displayLabel: 'Model Topic', sortOrder: 7, collapsed: true });
     service.linkAttentionActivity({ linkId: 'link-model', attentionId: 'attention-fictional', activityId: 'activity-fictional', topicId: 'topic-model' });

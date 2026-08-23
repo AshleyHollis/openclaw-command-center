@@ -10,8 +10,9 @@ import { metadataSchemaV1Sql } from '../src/metadata/schema.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
 
 const openServices = new Set();
+const availableCapabilities = Object.freeze({ notes: true, sessions: true, scheduler: true, activity: true, analysis: true, attention: true, search: true });
 function open(options) {
-  const service = openCommandCenterMetadataService(options);
+  const service = openCommandCenterMetadataService({ ...options, capabilities: options.capabilities ?? availableCapabilities });
   openServices.add(service);
   return service;
 }

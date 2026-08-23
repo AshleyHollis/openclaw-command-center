@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService as openMetadataService } from '../src/metadata/service.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
-import { metadataSchemaSql } from '../src/metadata/schema.mjs';
+import { metadataSchemaSql, metadataSchemaV1Sql } from '../src/metadata/schema.mjs';
 
 const openServices = new Set();
 function openCommandCenterMetadataService(options) {
@@ -79,6 +79,34 @@ test('future, version-0, zero-byte, and every malformed schema fixture fail clos
       await assertRecoveryPreservesFixture(stateDir, expectedCode);
     });
   }
+});
+
+test('an exact schema-1 database migrates atomically to schema 2 and preserves source identities', async () => {
+  await withState(async (stateDir) => {
+    const { databasePath } = await createDatabase(stateDir, (database) => {
+      database.exec(metadataSchemaV1Sql);
+      database.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run('schema-1-topic', 'resource', 'active', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+      database.prepare('INSERT INTO source_references (reference_id, topic_id, source_system, source_kind, external_source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run('schema-1-reference', 'schema-1-topic', 'openclaw', 'session', 'schema-1-session', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
+      database.prepare('INSERT INTO source_convention_state (reference_id, aspect, state, updated_at) VALUES (?, ?, ?, ?)').run('schema-1-reference', 'name', 'customized', '2026-08-22T00:00:00.000Z');
+    });
+    const service = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
+    assert.equal(service.getOperatingStatus().mode, 'degraded');
+    assert.equal(service.getOperatingStatus().schemaVersion, 2);
+    assert.equal(service.getSourceReference('schema-1-reference').externalSourceId, 'schema-1-session');
+    assert.equal(service.getSourceReference('schema-1-reference').observedRevision, null);
+    assert.equal(service.getSourceConventionState('schema-1-reference')[0].state, 'customized');
+    service.createTopic({ topicId: 'migrated-topic', paraCategory: 'resource', lifecycle: 'active' });
+    service.createSourceReference({ version: 1, referenceId: 'migrated-reference', topicId: 'migrated-topic', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'fictional-session', observedRevision: 'opaque-migrated-revision' });
+    const migratedReference = service.getSourceReference('migrated-reference');
+    assert.deepEqual(migratedReference, { version: 1, referenceId: 'migrated-reference', topicId: 'migrated-topic', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'fictional-session', observedRevision: 'opaque-migrated-revision', createdAt: migratedReference.createdAt, updatedAt: migratedReference.updatedAt });
+    service.close();
+    const reopened = openCommandCenterMetadataService({ stateDir });
+    assert.notEqual(reopened.getOperatingStatus().mode, 'recovery-only');
+    assert.equal(reopened.getOperatingStatus().schemaVersion, 2);
+    assert.equal(reopened.getSourceReference('migrated-reference').observedRevision, 'opaque-migrated-revision');
+    reopened.close();
+    assert.ok(databasePath.endsWith('metadata.sqlite'));
+  });
 });
 
 test('integrity-failing and corrupt databases receive distinct diagnostics and remain byte-for-byte unchanged', async () => {

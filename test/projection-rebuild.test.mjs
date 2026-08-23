@@ -11,6 +11,7 @@ import { projectionId } from '../src/metadata/projections.mjs';
 import { resolveCommandCenterProjectionRoot } from '../src/metadata/path.mjs';
 
 const services = new Set();
+const availableCapabilities = Object.freeze({ notes: true, sessions: true, scheduler: true, activity: true, analysis: true, attention: true, search: true });
 const digest = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 const sourceSnapshot = (revision = 'fictional-v1') => Object.freeze({
   sourceRevision: revision,
@@ -25,12 +26,12 @@ async function withState(run) {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-projection-'));
   try { return await run(stateDir); } finally { for (const service of services) service.close(); services.clear(); await rm(stateDir, { recursive: true, force: true }); }
 }
-function open(stateDir) { const service = openCommandCenterMetadataService({ stateDir }); services.add(service); return service; }
+function open(stateDir) { const service = openCommandCenterMetadataService({ stateDir, capabilities: availableCapabilities }); services.add(service); return service; }
 function seed(service) {
   const at = '2026-08-22T00:00:00.000Z';
   service.createTopic({ topicId: 'topic-fictional', paraCategory: 'project', lifecycle: 'active', createdAt: at, updatedAt: at });
   service.setPresentationPreferences({ topicId: 'topic-fictional', displayLabel: 'Fictional Topic', sortOrder: 1, collapsed: false, updatedAt: at });
-  for (const [referenceId, sourceSystem, sourceKind, externalSourceId] of [['folder', 'obsidian', 'note_folder', 'folder-fictional'], ['session', 'openclaw', 'session', 'session-fictional'], ['schedule', 'scheduler', 'reminder_schedule', 'schedule-fictional'], ['history', 'openclaw', 'imported_history', 'history-fictional']]) service.createSourceReference({ referenceId, topicId: 'topic-fictional', sourceSystem, sourceKind, externalSourceId, createdAt: at, updatedAt: at });
+  for (const [referenceId, sourceSystem, sourceKind, externalSourceId] of [['folder', 'obsidian', 'note_folder', 'folder-fictional'], ['session', 'openclaw', 'session', 'session-fictional'], ['schedule', 'scheduler', 'reminder_schedule', 'schedule-fictional'], ['history', 'openclaw', 'imported_history', 'history-fictional']]) service.createSourceReference({ version: 1, referenceId, topicId: 'topic-fictional', sourceSystem, sourceKind, externalSourceId, createdAt: at, updatedAt: at });
 }
 function authority(service, snapshot) { return { metadata: service.readProjectionSnapshot(), source: structuredClone(snapshot), bookkeeping: service.listProjectionBookkeeping() }; }
 
@@ -43,6 +44,28 @@ test('deleting projections preserves authority and rebuilding is equivalent', as
   await service.rebuildProjections({ authoritativeSources: provider(Object.freeze({ ...sources, noteFolders: [...sources.noteFolders].reverse(), sessions: [...sources.sessions].reverse() })) });
   assert.deepEqual(service.queryProjections(), before);
   assert.deepEqual(service.getProjectionBookkeeping(projectionId), checkpoint);
+}));
+
+test('unrelated optional capabilities do not block projection rebuilds', async () => withState(async (stateDir) => {
+  const service = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, scheduler: true, activity: true, analysis: false, attention: false, search: false } });
+  services.add(service);
+  seed(service);
+  assert.equal(service.getOperatingStatus().mode, 'degraded');
+  await service.rebuildProjections({ authoritativeSources: provider() });
+  assert.equal(service.queryProjections().index.length, 4);
+}));
+
+test('missing required authoritative capabilities block projection rebuilds', async () => withState(async (stateDir) => {
+  const bootstrap = open(stateDir);
+  seed(bootstrap);
+  bootstrap.close();
+  services.delete(bootstrap);
+  const service = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: false, scheduler: true, activity: true, analysis: true, attention: true, search: true } });
+  services.add(service);
+  await assert.rejects(
+    service.rebuildProjections({ authoritativeSources: provider() }),
+    (error) => error.code === 'metadata-inconsistent'
+  );
 }));
 
 test('commits one deterministic checkpoint and bounded progress', async () => withState(async (stateDir) => {
@@ -90,7 +113,7 @@ test('missing and inconsistent source inputs fail closed with bounded diagnostic
 test('the same opaque external ID is valid in distinct canonical source categories', async () => withState(async (stateDir) => {
   const service = open(stateDir); seed(service);
   service.deleteSourceReference('session');
-  service.createSourceReference({ referenceId: 'session', topicId: 'topic-fictional', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'folder-fictional', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
+  service.createSourceReference({ version: 1, referenceId: 'session', topicId: 'topic-fictional', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'folder-fictional', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
   const sources = { ...sourceSnapshot(), sessions: [{ identity: 'folder-fictional', contentDigest: digest('session') }] };
   await service.rebuildProjections({ authoritativeSources: provider(sources) });
   assert.deepEqual(service.queryProjections().index.filter((row) => row.externalSourceId === 'folder-fictional').map((row) => [row.sourceSystem, row.sourceKind]), [['obsidian', 'note_folder'], ['openclaw', 'session']]);

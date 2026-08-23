@@ -9,6 +9,7 @@ import {
   conventionStates,
   inspectSchema,
   metadataSchemaSql,
+  metadataSchemaV1ToV2Sql,
   metadataTableNames,
   paraCategories,
   proposalStates,
@@ -121,11 +122,13 @@ function mapTopic(row) {
 
 function mapSourceReference(row) {
   return row && {
+    version: 1,
     referenceId: row.reference_id,
     topicId: row.topic_id,
     sourceSystem: row.source_system,
     sourceKind: row.source_kind,
     externalSourceId: row.external_source_id,
+    observedRevision: row.last_observed_revision ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -153,6 +156,39 @@ function mapPolicy(row) {
 
 function mapProjection(row) {
   return row && { projectionId: row.projection_id, sourceRevision: row.source_revision, inputDigest: row.input_digest, updatedAt: row.updated_at };
+}
+
+function mapOperation(row) {
+  return row && {
+    logicalOperationId: row.logical_operation_id,
+    transportRequestId: row.transport_request_id,
+    intentDigest: row.intent_digest,
+    operationKind: row.operation_kind,
+    state: row.state,
+    resultStatus: row.result_status,
+    resultIdentity: row.result_identity,
+    observedRevision: row.observed_revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapSessionState(row) {
+  return row && { referenceId: row.reference_id, sessionId: row.session_id, status: row.status, isPrimary: row.is_primary === 1, updatedAt: row.updated_at };
+}
+
+function mapActivity(row) {
+  return row && {
+    activityId: row.activity_id,
+    topicId: row.topic_id,
+    logicalOperationId: row.logical_operation_id,
+    transportRequestId: row.transport_request_id,
+    operationKind: row.operation_kind,
+    outcome: row.outcome,
+    observedRevision: row.observed_revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 function readSchemaVersion(database) {
@@ -321,7 +357,26 @@ function createNewDatabase(databasePath) {
     try { rmSync(temporaryPath, { force: true }); } catch { /* best-effort cleanup of our named temporary */ }
     throw error;
   }
-  return Object.freeze({ mode: 'ready', schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, diagnostics: Object.freeze([]) });
+  return Object.freeze({ mode: 'ready', schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, migrationNeeded: false, diagnostics: Object.freeze([]) });
+}
+
+function migrateSchemaV1(databasePath) {
+  let database;
+  try {
+    database = new DatabaseSync(databasePath);
+    database.exec('PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON; BEGIN IMMEDIATE;');
+    database.exec(metadataSchemaV1ToV2Sql);
+    const version = readSchemaVersion(database);
+    if (version !== COMMAND_CENTER_SCHEMA_VERSION) throw new Error('schema migration did not reach the declared version');
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) throw new Error('schema migration violated foreign-key integrity');
+    database.exec('COMMIT;');
+    database.exec('PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;');
+  } catch (error) {
+    try { database?.exec('ROLLBACK;'); } catch { /* preserve migration failure */ }
+    throw error;
+  } finally {
+    closeQuietly(database);
+  }
 }
 
 function assertPluginDirectoryChain(databasePath) {
@@ -356,8 +411,14 @@ function openCore(stateDir, explicitDatabasePath, migrationHooks) {
       phase = 'creation';
       core = createNewDatabase(databasePath);
     }
+    if (core.mode === 'ready' && core.migrationNeeded === true) {
+      phase = 'migration';
+      migrateSchemaV1(databasePath);
+      core = inspectExistingDatabase(databasePath);
+    }
   } catch (error) {
-    core = phase === 'inspection' && isStorageAccessError(error)
+    if (phase === 'migration') core = coreFailure('migration-failure', 'The Command Center database migration could not be completed atomically.', 'Restore or retry the exact schema-1 database through the separate recovery workflow.');
+    else core = phase === 'inspection' && isStorageAccessError(error)
       ? coreFailure('storage-access-failure', 'The Command Center database path could not be inspected.', 'Check storage access and retry Command Center startup.')
       : coreFailure('storage-creation-failure', 'The Command Center database could not be created or opened.', 'Check the resolved state directory and storage access, then retry startup.');
   }
@@ -435,7 +496,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
 
   service.readProjectionSnapshot = () => {
     assertOpen();
-    if (operating.mode !== 'ready') throw new CommandCenterMetadataError('metadata-not-ready', 'Command Center metadata is not ready for projection.', { mode: operating.mode });
+    const unavailableProjectionCapability = ['notes', 'sessions', 'scheduler'].find((capability) => normalizedCapabilities[capability]?.available !== true);
+    if (operating.mode === 'recovery-only' || unavailableProjectionCapability) throw new CommandCenterMetadataError('metadata-not-ready', 'Command Center metadata is not ready for projection.', { mode: operating.mode, capability: unavailableProjectionCapability ?? null });
     database.exec('BEGIN');
     try {
       const snapshot = {
@@ -529,13 +591,16 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
 
   function referenceInput(input) {
     const value = objectValue(input, 'source reference');
-    allowedKeys(value, ['referenceId', 'topicId', 'sourceSystem', 'sourceKind', 'externalSourceId', 'createdAt', 'updatedAt'], 'source reference');
+    allowedKeys(value, ['version', 'referenceId', 'topicId', 'sourceSystem', 'sourceKind', 'externalSourceId', 'observedRevision', 'createdAt', 'updatedAt'], 'source reference');
+    if (value.version !== 1) throw new CommandCenterMetadataError('unsupported-version', 'Source Reference version must be 1.');
+    if (value.observedRevision !== undefined && value.observedRevision !== null && !isNonBlankString(value.observedRevision)) throw new CommandCenterMetadataError('invalid-value', 'observedRevision must be a non-blank string or null');
     return {
       referenceId: requiredString(value.referenceId, 'referenceId'),
       topicId: requiredString(value.topicId, 'topicId'),
       sourceSystem: requiredString(value.sourceSystem, 'sourceSystem'),
       sourceKind: requiredString(value.sourceKind, 'sourceKind'),
       externalSourceId: requiredString(value.externalSourceId, 'externalSourceId'),
+      observedRevision: value.observedRevision ?? null,
       createdAt: value.createdAt === undefined ? undefined : timestamp(value.createdAt, 'createdAt'),
       updatedAt: value.updatedAt === undefined ? undefined : timestamp(value.updatedAt, 'updatedAt')
     };
@@ -544,7 +609,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   function insertSourceReference(db, value, now) {
     const topic = db.prepare('SELECT 1 FROM topics WHERE topic_id = ?').get(value.topicId);
     if (!topic) throw new CommandCenterMetadataError('not-found', 'Topic was not found.');
-    db.prepare('INSERT INTO source_references (reference_id, topic_id, source_system, source_kind, external_source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(value.referenceId, value.topicId, value.sourceSystem, value.sourceKind, value.externalSourceId, value.createdAt ?? now, value.updatedAt ?? value.createdAt ?? now);
+    db.prepare('INSERT INTO source_references (reference_id, topic_id, source_system, source_kind, external_source_id, last_observed_revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(value.referenceId, value.topicId, value.sourceSystem, value.sourceKind, value.externalSourceId, value.observedRevision, value.createdAt ?? now, value.updatedAt ?? value.createdAt ?? now);
     return mapSourceReference(db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(value.referenceId));
   }
 
@@ -555,8 +620,10 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
 
   service.updateSourceReference = (input) => {
     const value = objectValue(input, 'source reference update');
-    allowedKeys(value, ['referenceId', 'topicId', 'sourceSystem', 'sourceKind', 'externalSourceId', 'updatedAt'], 'source reference update');
+    allowedKeys(value, ['version', 'referenceId', 'topicId', 'sourceSystem', 'sourceKind', 'externalSourceId', 'observedRevision', 'createdAt', 'updatedAt'], 'source reference update');
+    if (value.version !== 1) throw new CommandCenterMetadataError('unsupported-version', 'Source Reference version must be 1.');
     const referenceId = requiredString(value.referenceId, 'referenceId');
+    if (value.observedRevision !== undefined && value.observedRevision !== null && !isNonBlankString(value.observedRevision)) throw new CommandCenterMetadataError('invalid-value', 'observedRevision must be a non-blank string or null');
     return mutate(null, (db) => {
       const current = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId);
       if (!current) throw new CommandCenterMetadataError('not-found', 'Source Reference was not found.');
@@ -564,8 +631,19 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
         if (value[field] !== undefined && value[field] !== current[column]) throw new CommandCenterMetadataError('identity-change', 'Source Reference identity is immutable.');
       }
       mutateCapabilityInsideTransaction(current.source_system);
-      const updatedAt = timestamp(value.updatedAt, 'updatedAt');
-      db.prepare('UPDATE source_references SET updated_at = ? WHERE reference_id = ?').run(updatedAt, referenceId);
+      const updatedAt = timestamp(undefined, 'updatedAt');
+      db.prepare('UPDATE source_references SET last_observed_revision = ?, updated_at = ? WHERE reference_id = ?').run(value.observedRevision === undefined ? current.last_observed_revision : value.observedRevision, updatedAt, referenceId);
+      return mapSourceReference(db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId));
+    });
+  };
+
+  service.observeSourceReference = ({ referenceId, observedRevision, updatedAt } = {}) => {
+    requiredString(referenceId, 'referenceId');
+    if (observedRevision !== null && !isNonBlankString(observedRevision)) throw new CommandCenterMetadataError('invalid-value', 'observedRevision must be a non-blank string or null');
+    return mutate(null, (db) => {
+      const current = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId);
+      if (!current) throw new CommandCenterMetadataError('not-found', 'Source Reference was not found.');
+      db.prepare('UPDATE source_references SET last_observed_revision = ?, updated_at = ? WHERE reference_id = ?').run(observedRevision, timestamp(updatedAt, 'updatedAt'), referenceId);
       return mapSourceReference(db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId));
     });
   };
@@ -701,6 +779,89 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
 
   service.getProjectionBookkeeping = (projectionId) => readOne('SELECT * FROM projection_bookkeeping WHERE projection_id = ?', [requiredString(projectionId, 'projectionId')], mapProjection) || null;
   service.listProjectionBookkeeping = () => readMany('SELECT * FROM projection_bookkeeping ORDER BY projection_id', [], mapProjection);
+
+  service.recordOperation = (input) => {
+    const value = objectValue(input, 'operation journal record');
+    allowedKeys(value, ['logicalOperationId', 'transportRequestId', 'intentDigest', 'operationKind', 'state', 'resultStatus', 'resultIdentity', 'observedRevision', 'createdAt', 'updatedAt'], 'operation journal record');
+    const logicalOperationId = requiredString(value.logicalOperationId, 'logicalOperationId');
+    const transportRequestId = requiredString(value.transportRequestId, 'transportRequestId');
+    const intentDigest = requiredString(value.intentDigest, 'intentDigest');
+    const operationKind = requiredString(value.operationKind, 'operationKind');
+    const state = enumValue(value.state, ['pending', 'applied', 'not-applied', 'conflict', 'unknown'], 'state');
+    const now = timestamp(value.createdAt, 'createdAt');
+    const updatedAt = timestamp(value.updatedAt, 'updatedAt', now);
+    return mutate(null, (db) => {
+      const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
+      if (existing && existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
+      db.prepare(`INSERT INTO operation_journal
+        (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(logical_operation_id) DO UPDATE SET transport_request_id = excluded.transport_request_id, state = excluded.state,
+          result_status = excluded.result_status, result_identity = excluded.result_identity, observed_revision = excluded.observed_revision, updated_at = excluded.updated_at`).run(
+        logicalOperationId, transportRequestId, intentDigest, operationKind, state, value.resultStatus ?? null, value.resultIdentity ?? null,
+        value.observedRevision ?? null, existing?.created_at ?? now, updatedAt
+      );
+      return mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId));
+    });
+  };
+  service.getOperation = (logicalOperationId) => readOne('SELECT * FROM operation_journal WHERE logical_operation_id = ?', [requiredString(logicalOperationId, 'logicalOperationId')], mapOperation) || null;
+  service.listOperations = () => readMany('SELECT * FROM operation_journal ORDER BY created_at, logical_operation_id', [], mapOperation);
+
+  service.setSessionState = (input) => {
+    const value = objectValue(input, 'session state');
+    allowedKeys(value, ['referenceId', 'sessionId', 'status', 'isPrimary', 'updatedAt'], 'session state');
+    const referenceId = requiredString(value.referenceId, 'referenceId');
+    const status = enumValue(value.status, ['open', 'closed'], 'status');
+    const isPrimary = booleanValue(value.isPrimary ?? false, 'isPrimary');
+    const updatedAt = timestamp(value.updatedAt, 'updatedAt');
+    return mutate('sessions', (db) => {
+      const reference = db.prepare('SELECT topic_id FROM source_references WHERE reference_id = ? AND source_system = ? AND source_kind = ?').get(referenceId, 'openclaw', 'session');
+      if (!reference) throw new CommandCenterMetadataError('not-found', 'Session Source Reference was not found.');
+      if (status === 'closed' && isPrimary) throw new CommandCenterMetadataError('primary-session', 'The Primary Session cannot be closed until another Session is Primary.');
+      if (isPrimary) {
+        db.prepare(`UPDATE session_state SET is_primary = 0, updated_at = ?
+          WHERE reference_id <> ? AND reference_id IN (
+            SELECT reference_id FROM source_references WHERE topic_id = ? AND source_system = 'openclaw' AND source_kind = 'session'
+          )`).run(updatedAt, referenceId, reference.topic_id);
+      }
+      db.prepare(`INSERT INTO session_state (reference_id, session_id, status, is_primary, updated_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(reference_id) DO UPDATE SET session_id = excluded.session_id, status = excluded.status, is_primary = excluded.is_primary, updated_at = excluded.updated_at`).run(referenceId, value.sessionId ?? null, status, isPrimary ? 1 : 0, updatedAt);
+      return mapSessionState(db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(referenceId));
+    });
+  };
+  service.getSessionState = (referenceId) => readOne('SELECT * FROM session_state WHERE reference_id = ?', [requiredString(referenceId, 'referenceId')], mapSessionState) || null;
+  service.listSessionStates = () => readMany('SELECT * FROM session_state ORDER BY reference_id', [], mapSessionState);
+
+  service.recordActivity = (input) => {
+    const value = objectValue(input, 'Activity record');
+    allowedKeys(value, ['activityId', 'topicId', 'logicalOperationId', 'transportRequestId', 'operationKind', 'outcome', 'observedRevision', 'createdAt', 'updatedAt'], 'Activity record');
+    const activityId = requiredString(value.activityId, 'activityId');
+    const logicalOperationId = requiredString(value.logicalOperationId, 'logicalOperationId');
+    const transportRequestId = requiredString(value.transportRequestId, 'transportRequestId');
+    const operationKind = requiredString(value.operationKind, 'operationKind');
+    const outcome = enumValue(value.outcome, ['applied', 'not-applied', 'conflict', 'unknown'], 'outcome');
+    const topicId = value.topicId === undefined || value.topicId === null ? null : requiredString(value.topicId, 'topicId');
+    const createdAt = timestamp(value.createdAt, 'createdAt');
+    const updatedAt = timestamp(value.updatedAt, 'updatedAt', createdAt);
+    return mutate(null, (db) => {
+      if (topicId !== null && !db.prepare('SELECT 1 FROM topics WHERE topic_id = ?').get(topicId)) throw new CommandCenterMetadataError('not-found', 'Topic was not found.');
+      const existing = db.prepare('SELECT * FROM activity_records WHERE logical_operation_id = ?').get(logicalOperationId);
+      if (existing && (existing.topic_id !== topicId || existing.operation_kind !== operationKind)) throw new CommandCenterMetadataError('conflict', 'Activity logical operation identity cannot be rebound.');
+      db.prepare(`INSERT INTO activity_records
+        (activity_id, topic_id, logical_operation_id, transport_request_id, operation_kind, outcome, observed_revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(logical_operation_id) DO UPDATE SET
+          transport_request_id = excluded.transport_request_id,
+          outcome = CASE WHEN activity_records.outcome IN ('unknown', 'not-applied') THEN excluded.outcome ELSE activity_records.outcome END,
+          observed_revision = CASE WHEN activity_records.outcome IN ('unknown', 'not-applied') THEN excluded.observed_revision ELSE activity_records.observed_revision END,
+          updated_at = CASE WHEN activity_records.outcome IN ('unknown', 'not-applied') THEN excluded.updated_at ELSE activity_records.updated_at END`).run(activityId, topicId, logicalOperationId, transportRequestId, operationKind, outcome, value.observedRevision ?? null, createdAt, updatedAt);
+      return mapActivity(db.prepare('SELECT * FROM activity_records WHERE logical_operation_id = ?').get(logicalOperationId));
+    });
+  };
+  service.getActivity = (activityId) => readOne('SELECT * FROM activity_records WHERE activity_id = ?', [requiredString(activityId, 'activityId')], mapActivity) || null;
+  service.listActivity = (topicId = undefined) => topicId === undefined
+    ? readMany('SELECT * FROM activity_records ORDER BY created_at, activity_id', [], mapActivity)
+    : readMany('SELECT * FROM activity_records WHERE topic_id = ? ORDER BY created_at, activity_id', [requiredString(topicId, 'topicId')], mapActivity);
 
   // Small aliases keep the public operation vocabulary unsurprising without
   // adding a second storage path or an untyped generic update mechanism.

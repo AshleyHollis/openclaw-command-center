@@ -159,8 +159,10 @@ export function openCommandCenterProjectionService({ stateDir, metadataService, 
         try {
           root = resolveCommandCenterProjectionRoot(stateDir); cleanStaging();
           emit('validate', 0, onProgress, observations); crash('validation', hooks);
-          if (metadataService.getOperatingStatus?.().mode !== 'ready') throw projectionError('metadata-inconsistent', 'Owned metadata is unavailable for projection.');
-          const metadata = metadataFacts(metadataService.readProjectionSnapshot());
+          let metadataSnapshot;
+          try { metadataSnapshot = metadataService.readProjectionSnapshot(); }
+          catch { throw projectionError('metadata-inconsistent', 'Owned metadata is unavailable for projection.'); }
+          const metadata = metadataFacts(metadataSnapshot);
           if (!suppliedSources || typeof suppliedSources.readSnapshot !== 'function') throw sourceFailure('source-unavailable', 'The authoritative source provider is unavailable.');
           let snapshot; try { snapshot = await suppliedSources.readSnapshot(); } catch { throw sourceFailure('source-unavailable', 'The authoritative source provider is unavailable.'); }
           const sources = normalizeSources(snapshot);
