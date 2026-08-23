@@ -81,7 +81,7 @@ test('future, version-0, zero-byte, and every malformed schema fixture fail clos
   }
 });
 
-test('an exact schema-1 database migrates atomically to schema 2 and preserves source identities', async () => {
+test('an exact schema-1 database migrates atomically to schema 3 and preserves source identities', async () => {
   await withState(async (stateDir) => {
     const { databasePath } = await createDatabase(stateDir, (database) => {
       database.exec(metadataSchemaV1Sql);
@@ -91,7 +91,7 @@ test('an exact schema-1 database migrates atomically to schema 2 and preserves s
     });
     const service = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
     assert.equal(service.getOperatingStatus().mode, 'degraded');
-    assert.equal(service.getOperatingStatus().schemaVersion, 2);
+    assert.equal(service.getOperatingStatus().schemaVersion, 3);
     assert.equal(service.getSourceReference('schema-1-reference').externalSourceId, 'schema-1-session');
     assert.equal(service.getSourceReference('schema-1-reference').observedRevision, null);
     assert.equal(service.getSourceConventionState('schema-1-reference')[0].state, 'customized');
@@ -102,7 +102,7 @@ test('an exact schema-1 database migrates atomically to schema 2 and preserves s
     service.close();
     const reopened = openCommandCenterMetadataService({ stateDir });
     assert.notEqual(reopened.getOperatingStatus().mode, 'recovery-only');
-    assert.equal(reopened.getOperatingStatus().schemaVersion, 2);
+    assert.equal(reopened.getOperatingStatus().schemaVersion, 3);
     assert.equal(reopened.getSourceReference('migrated-reference').observedRevision, 'opaque-migrated-revision');
     reopened.close();
     assert.ok(databasePath.endsWith('metadata.sqlite'));

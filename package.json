@@ -41,7 +41,7 @@
       },
       "host": { "range": "=2026.8.1-beta.2", "commit": "8f382a202ff1e15833394b481615dcdda99b04d7" },
       "pluginApi": { "package": "openclaw", "range": "=2026.8.1-beta.2" },
-      "commandCenterSchema": { "readable": { "min": 1, "max": 2 }, "migratable": { "min": 1, "max": 1 }, "writable": { "min": 2, "max": 2 } },
+      "commandCenterSchema": { "readable": { "min": 1, "max": 3 }, "migratable": { "min": 1, "max": 2 }, "writable": { "min": 3, "max": 3 } },
       "capabilityBridgeProtocol": { "min": 1, "max": 1 }
     }
   },

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, readdir } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import path from 'node:path';
@@ -13,6 +13,7 @@ import { assertNoFatalHostOutput, assertRecordedChildTraffic, HarnessFailure, la
 import { assertWebSocketDestination, boundedTrafficEvidence, TrafficGuard } from '../src/isolation.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
+import { importedProvenance } from '../src/migration/transcript.mjs';
 
 function routeGrant(config) {
   const values = config?.[runtimeCapability.bootstrap.grantsField] || [];
@@ -43,11 +44,72 @@ async function mountedPluginFrame(page) {
   return { iframe, frame };
 }
 
+async function waitForMigrationCompletion(databasePath, { attempts = 100, delayMs = 100 } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const completion = database.prepare('SELECT * FROM migration_completion WHERE completion_id = ?').get('legacy-discord-v1');
+      const binding = completion ? database.prepare(`SELECT reference.external_source_id AS sessionKey, state.session_id AS sessionId
+        FROM source_references AS reference JOIN session_state AS state ON state.reference_id = reference.reference_id
+        WHERE reference.topic_id = ? AND reference.source_system = 'openclaw' AND reference.source_kind = 'session' AND state.is_primary = 1 AND state.status = 'open'`).get('fictional-topic-alpha') : null;
+      if (completion && binding) return { completion, binding };
+    } finally { database.close(); }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  throw new HarnessFailure('migration-incomplete', 'Pinned-host startup did not durably complete the configured legacy migration');
+}
+
+async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey }) {
+  const socket = new WebSocket(gatewayUrl.replace(/^http/u, 'ws'));
+  const frames = [];
+  const waitForFrame = (predicate, timeoutMs = 10_000) => new Promise((resolve, reject) => {
+    const inspect = (frame) => { if (predicate(frame)) { cleanup(); resolve(frame); return true; } return false; };
+    const onMessage = (event) => { let frame; try { frame = JSON.parse(String(event.data)); } catch { return; } frames.push(frame); inspect(frame); };
+    const timer = setTimeout(() => { cleanup(); reject(new Error('Authenticated Gateway response timed out.')); }, timeoutMs);
+    const cleanup = () => { clearTimeout(timer); socket.removeEventListener('message', onMessage); };
+    for (const frame of frames) if (inspect(frame)) return;
+    socket.addEventListener('message', onMessage);
+  });
+  try {
+    const challengePromise = waitForFrame((frame) => frame?.type === 'event' && frame.event === 'connect.challenge');
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Authenticated Gateway connection timed out.')), 10_000);
+      socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+      socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('Authenticated Gateway connection failed.')); }, { once: true });
+    });
+    const challenge = await challengePromise;
+    assert.equal(typeof challenge.payload?.nonce, 'string');
+    const connectId = 'command-center-acceptance-connect';
+    socket.send(JSON.stringify({ type: 'req', id: connectId, method: 'connect', params: { minProtocol: 4, maxProtocol: 4, client: { id: 'cli', version: '1', platform: 'test', mode: 'cli' }, caps: [], commands: [], role: 'operator', scopes: ['operator.read'], auth: { ['to' + 'ken']: credential } } }));
+    const connected = await waitForFrame((frame) => frame?.type === 'res' && frame.id === connectId);
+    if (!connected.ok) throw new Error(`Authenticated Gateway connect failed: ${connected.error?.code ?? 'unknown'}`);
+    const historyId = 'command-center-acceptance-history';
+    socket.send(JSON.stringify({ type: 'req', id: historyId, method: 'chat.history', params: { sessionKey } }));
+    const response = await waitForFrame((frame) => frame?.type === 'res' && frame.id === historyId);
+    if (!response.ok) throw new Error(`Authenticated chat.history failed: ${response.error?.code ?? 'unknown'}`);
+    return response.payload;
+  } finally { socket.close(); }
+}
+
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 110_000 }, async () => {
   const descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
   const buildReceipt = await build();
   await assertBuiltDigest(buildReceipt);
   await withIsolatedWorld(async (world) => {
+    const migrationExportPath = path.join(world.tempRoot, 'legacy-discord-export.v1.json');
+    const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
+    await mkdir(migrationFolderPath, { recursive: true });
+    const migrationExport = JSON.parse(await readFile(new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url), 'utf8'));
+    await writeFile(migrationExportPath, `${JSON.stringify(migrationExport)}\n`);
+    const configured = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
+    configured.plugins.entries[world.manifest.candidate.id].config = {
+      legacyDiscordMigration: {
+        schemaVersion: 1,
+        exportPath: migrationExportPath,
+        channels: [{ channelId: 'fictional-channel-alpha', topicId: 'fictional-topic-alpha', paraCategory: 'project', noteFolderPath: migrationFolderPath }]
+      }
+    };
+    await writeFile(world.manifest.configPath, `${JSON.stringify(configured)}\n`);
     const host = await launchPinnedHost({ descriptor, world, buildReceipt });
     const gatewayUrl = world.gateway.url;
     assert.deepEqual(host.endpoint, world.gateway);
@@ -80,10 +142,22 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const resolvedStateDir = path.join(world.root, '.openclaw');
       const databasePath = resolveCommandCenterDatabasePath(resolvedStateDir);
       await access(databasePath);
+      const { completion, binding } = await waitForMigrationCompletion(databasePath);
+      assert.equal(completion.verified_channel_count, 1);
+      assert.equal(completion.verified_occurrence_count, migrationExport.channels[0].messages.length);
+      host.diagnostics.guard.assert('127.0.0.1', 'authenticated chat.history verification');
+      const history = await readAuthenticatedHistory({ gatewayUrl, credential: world.gatewayCredential, sessionKey: binding.sessionKey });
+      assert.equal(history.sessionId ?? history.session?.sessionId ?? binding.sessionId, binding.sessionId);
+      const imported = (history.messages ?? []).filter((message) => message?.__openclaw?.legacyDiscordV1?.immutable === true);
+      assert.equal(imported.length, migrationExport.channels[0].messages.length);
+      for (const [index, occurrence] of migrationExport.channels[0].messages.entries()) {
+        assert.equal(imported[index].text, occurrence.text);
+        assert.deepEqual(imported[index].__openclaw.legacyDiscordV1, importedProvenance(migrationExport.channels[0].channelId, occurrence));
+      }
       assert.deepEqual(await readdir(path.dirname(databasePath)), ['metadata.sqlite']);
       const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try {
-        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 2);
+        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 3);
         for (const table of ['operation_journal', 'session_state', 'activity_records']) {
           assert.equal(startupDatabase.prepare("SELECT strict FROM pragma_table_list WHERE name = ?").get(table)?.strict, 1);
         }

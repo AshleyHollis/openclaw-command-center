@@ -3,6 +3,9 @@ import { errorResult, SourceServiceError } from '../sources/errors.mjs';
 
 const handlerMap = Object.freeze({
   'command-center.v1.sources.status': (service) => service.status(),
+  'command-center.v1.migration.status': (service) => service.migrationStatus(),
+  'command-center.v1.migration.review-failures': (service) => service.migrationReview(),
+  'command-center.v1.migration.resume': (service, params) => service.migrationResume(params),
   'command-center.v1.notes.browse': (service, params) => service.notesBrowse(params),
   'command-center.v1.notes.read': (service, params) => service.notesRead(params),
   'command-center.v1.notes.create': (service, params) => service.notesCreate(params),

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "source": "discord",
+  "channels": [
+    {
+      "channelId": "fictional-channel-alpha",
+      "displayName": "Fictional Alpha",
+      "messages": [
+        {
+          "messageId": "fictional-message-001",
+          "displayOrder": 0,
+          "author": { "id": "fictional-user-001", "displayName": "Fictional Ada" },
+          "timestamp": "2026-08-20T10:00:00.000Z",
+          "text": "Fictional opening message.",
+          "edits": [{ "editedAt": "2026-08-20T10:01:00.000Z", "text": "Fictional edited opening message." }],
+          "replyToMessageId": null,
+          "thread": { "id": "fictional-thread-001", "parentMessageId": null, "name": "Fictional thread" },
+          "reactions": [{ "emoji": "fictional-check", "count": 1, "authorIds": ["fictional-user-002"] }],
+          "attachments": [{ "id": "fictional-attachment-001", "filename": "fictional-link.txt", "url": "https://fictional.invalid/link.txt", "contentType": "text/plain", "sizeBytes": 42 }]
+        },
+        {
+          "messageId": "fictional-message-002",
+          "displayOrder": 1,
+          "author": { "id": "fictional-user-002", "displayName": "Fictional Bea" },
+          "timestamp": "2026-08-20T10:02:00.000Z",
+          "text": "Fictional reply message.",
+          "edits": [],
+          "replyToMessageId": "fictional-message-001",
+          "thread": null,
+          "reactions": [],
+          "attachments": []
+        }
+      ]
+    }
+  ]
+}

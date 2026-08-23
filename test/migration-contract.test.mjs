@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
+import { normalizeLegacyDiscordMigration } from '../src/migration/config.mjs';
+import { normalizeLegacyDiscordExport } from '../src/migration/export-v1.mjs';
+import { occurrenceIdentity, sourceOccurrenceId } from '../src/migration/occurrence.mjs';
+
+const fixture = JSON.parse(await readFile(new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url), 'utf8'));
+const config = { schemaVersion: 1, exportPath: '/fictional/export.json', channels: [{ channelId: 'fictional-channel-alpha', topicId: 'fictional-topic-alpha', paraCategory: 'project', noteFolderPath: '/fictional/vault/alpha' }] };
+
+test('legacy Discord config and export are closed, canonical, and explicitly mapped', () => {
+  assert.deepEqual(normalizeLegacyDiscordMigration(config), config);
+  const normalized = normalizeLegacyDiscordExport(fixture);
+  assert.equal(normalized.source, 'discord');
+  assert.equal(normalized.channels[0].occurrences[0].timestamp, '2026-08-20T10:00:00.000Z');
+  assert.equal(normalized.channels[0].occurrences[1].displayOrder, 1);
+  assert.equal(normalized.channels[0].occurrences[0].attachments[0].url, 'https://fictional.invalid/link.txt');
+  const expectedOccurrenceId = `command-center:legacy-discord:v1:${createHash('sha256').update(JSON.stringify(['fictional-channel-alpha', 'fictional-message-001'])).digest('hex')}`;
+  assert.equal(sourceOccurrenceId('fictional-channel-alpha', 'fictional-message-001'), expectedOccurrenceId);
+  assert.deepEqual(occurrenceIdentity('fictional-channel-alpha', normalized.channels[0].occurrences[0]).eventId, expectedOccurrenceId);
+  assert.throws(() => normalizeLegacyDiscordMigration({ ...config, unexpected: true }), /unsupported field/i);
+  assert.throws(() => normalizeLegacyDiscordMigration({ ...config, mappings: config.channels }), /unsupported field/i);
+  assert.throws(() => normalizeLegacyDiscordMigration({ ...config, channels: [{ ...config.channels[0], topicLabel: 'invented' }] }), /unsupported field/i);
+  assert.throws(() => normalizeLegacyDiscordMigration({ ...config, channels: [config.channels[0], { ...config.channels[0], channelId: 'fictional-channel-beta' }] }), /duplicate/i);
+  assert.throws(() => normalizeLegacyDiscordMigration({ ...config, channels: Array.from({ length: 101 }, (_, index) => ({ ...config.channels[0], channelId: `fictional-channel-${index}`, topicId: `fictional-topic-${index}`, noteFolderPath: `/fictional/vault/${index}` })) }), /at most 100/i);
+  assert.throws(() => normalizeLegacyDiscordExport({ ...fixture, channels: [{ ...fixture.channels[0], messages: [{ ...fixture.channels[0].messages[0], normalizedTimestamp: '2026-08-20T10:00:00.000Z' }] }] }), /unsupported field/i);
+  assert.throws(() => normalizeLegacyDiscordExport({ ...fixture, channels: [{ ...fixture.channels[0], messages: fixture.channels[0].messages.map((entry) => ({ ...entry, displayOrder: 0 })) }] }), /duplicate displayOrder/i);
+  assert.throws(() => normalizeLegacyDiscordExport({ ...fixture, channels: [{ ...fixture.channels[0], messages: [{ ...fixture.channels[0].messages[0], attachments: [{ ...fixture.channels[0].messages[0].attachments[0], data: 'binary' }] }] }] }), /unsupported field/i);
+  assert.throws(() => normalizeLegacyDiscordExport({ ...fixture, channels: [{ ...fixture.channels[0], messages: fixture.channels[0].messages.map((entry, index) => index === 1 ? { ...entry, replyToMessageId: 'fictional-message-missing' } : entry) }] }), /dangling reply/i);
+  assert.throws(() => normalizeLegacyDiscordExport({ ...fixture, channels: [{ ...fixture.channels[0], messages: fixture.channels[0].messages.map((entry, index) => index === 0 ? { ...entry, thread: { ...entry.thread, parentMessageId: 'fictional-message-missing' } } : entry) }] }), /dangling thread/i);
+  assert.throws(() => normalizeLegacyDiscordExport({ ...fixture, channels: [{ ...fixture.channels[0], messages: fixture.channels[0].messages.map((entry) => ({ ...entry, thread: { id: 'fictional-thread-shared', parentMessageId: 'fictional-message-001', name: entry.messageId } })) }] }), /conflicting thread provenance/i);
+  assert.throws(() => normalizeLegacyDiscordExport({ ...fixture, channels: [{ ...fixture.channels[0], messages: [{ ...fixture.channels[0].messages[0], attachments: [{ ...fixture.channels[0].messages[0].attachments[0], url: 'data:text/plain;base64,ZmFrZQ==' }] }] }] }), /HTTP\(S\)/i);
+  assert.throws(() => normalizeLegacyDiscordExport({ ...fixture, source: 'other' }), /source/i);
+  const optionalMessage = { messageId: 'fictional-optional-message', displayOrder: 2, author: { id: 'fictional-optional-author', displayName: 'Optional' }, timestamp: '2026-08-20T12:00:00.000Z', text: 'Optional facts omitted.' };
+  const optional = normalizeLegacyDiscordExport({ ...fixture, channels: [{ ...fixture.channels[0], messages: [optionalMessage] }] }).channels[0].occurrences[0];
+  assert.deepEqual({ edits: optional.edits, replyToMessageId: optional.replyToMessageId, reactions: optional.reactions, thread: optional.thread, attachments: optional.attachments }, { edits: [], replyToMessageId: null, reactions: [], thread: null, attachments: [] });
+  const unordered = normalizeLegacyDiscordExport({ ...fixture, channels: [{ ...fixture.channels[0], messages: [...fixture.channels[0].messages].reverse() }] });
+  assert.deepEqual(unordered.channels[0].occurrences.map((entry) => entry.displayOrder), [0, 1]);
+});

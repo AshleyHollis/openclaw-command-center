@@ -1,82 +1,69 @@
 import { createHash } from 'node:crypto';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
-  SOURCE_SCHEMA_VERSION,
+  LEGACY_METADATA_SCHEMA_VERSION,
   inspectMigrationLedger,
   inspectSchema,
-  metadataSchemaV1ToV2Sql
+  metadataSchemaV1ToV2Sql,
+  metadataSchemaV2ToV3Sql
 } from './schema.mjs';
 import canonical from '../compatibility-tuple.json' with { type: 'json' };
 import { recoveryMigrationId } from './path.mjs';
 
-export const MIGRATION_ID = recoveryMigrationId;
-export const MIGRATION_FROM_VERSION = SOURCE_SCHEMA_VERSION;
+export const V1_TO_V2_MIGRATION_ID = recoveryMigrationId;
+export const V2_TO_V3_MIGRATION_ID = 'command-center-schema-2-to-3';
+export const MIGRATION_ID = V2_TO_V3_MIGRATION_ID;
+export const MIGRATION_FROM_VERSION = LEGACY_METADATA_SCHEMA_VERSION;
 export const MIGRATION_TO_VERSION = COMMAND_CENTER_SCHEMA_VERSION;
 export const MIGRATION_IS_DESTRUCTIVE = true;
 
-const migrationDefinition = Object.freeze({
-  id: MIGRATION_ID,
-  fromVersion: MIGRATION_FROM_VERSION,
-  toVersion: MIGRATION_TO_VERSION,
-  destructive: MIGRATION_IS_DESTRUCTIVE,
-  statements: Object.freeze([
-    metadataSchemaV1ToV2Sql
-  ])
-});
-
-function digest(value) {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
-}
-
-export const MIGRATION_DIGEST = digest(migrationDefinition);
-export const migrationDescriptor = Object.freeze({ ...migrationDefinition, digest: MIGRATION_DIGEST });
+function digest(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
+const v1Definition = Object.freeze({ id: V1_TO_V2_MIGRATION_ID, fromVersion: 1, toVersion: 2, destructive: true, statements: Object.freeze([metadataSchemaV1ToV2Sql]) });
+const v2Definition = Object.freeze({ id: V2_TO_V3_MIGRATION_ID, fromVersion: 2, toVersion: 3, destructive: true, statements: Object.freeze([metadataSchemaV2ToV3Sql]) });
+export const V1_TO_V2_MIGRATION_DIGEST = digest(v1Definition);
+export const MIGRATION_DIGEST = digest(v2Definition);
+export const migrationDescriptor = Object.freeze({ ...v2Definition, digest: MIGRATION_DIGEST });
 export const CURRENT_BUILD = canonical.package.build;
 
-function invokeHook(hooks, name, context) {
-  const hook = hooks?.[name];
-  if (typeof hook === 'function') hook(context);
-}
+function invokeHook(hooks, name, context) { if (typeof hooks?.[name] === 'function') hooks[name](context); }
 
-export function validateMigrationLedger(database, { snapshotId } = {}) {
+export function validateMigrationLedger(database, { snapshotId, allowEmpty = false } = {}) {
   const rows = inspectMigrationLedger(database);
   const problems = [];
-  if (rows.length !== 1) problems.push('migration ledger must contain exactly one row');
-  const row = rows[0];
-  if (row) {
-    if (row.sequence !== 1) problems.push('migration ledger sequence is not contiguous');
-    if (row.migration_id !== MIGRATION_ID) problems.push('migration ledger migration ID is unknown');
-    if (row.migration_digest !== MIGRATION_DIGEST) problems.push('migration ledger digest differs');
-    if (row.from_version !== MIGRATION_FROM_VERSION || row.to_version !== MIGRATION_TO_VERSION) problems.push('migration ledger version range differs');
-    if (snapshotId !== undefined && row.snapshot_id !== snapshotId) problems.push('migration ledger snapshot identity differs');
+  const expected = rows.length === 1 && rows[0].to_version === 2
+    ? [{ id: V1_TO_V2_MIGRATION_ID, digest: V1_TO_V2_MIGRATION_DIGEST, from: 1, to: 2 }]
+    : rows.length === 1 && rows[0].from_version === 2
+      ? [{ id: V2_TO_V3_MIGRATION_ID, digest: MIGRATION_DIGEST, from: 2, to: 3 }]
+      : [{ id: V1_TO_V2_MIGRATION_ID, digest: V1_TO_V2_MIGRATION_DIGEST, from: 1, to: 2 }, { id: V2_TO_V3_MIGRATION_ID, digest: MIGRATION_DIGEST, from: 2, to: 3 }];
+  if (allowEmpty && rows.length === 0) return Object.freeze({ valid: true, problems: Object.freeze([]), rows });
+  if (rows.length !== expected.length) problems.push('migration ledger must contain the supported contiguous rows');
+  rows.forEach((row, index) => {
+    const wanted = expected[index];
+    if (!wanted) return;
+    if (row.sequence !== index + 1) problems.push('migration ledger sequence is not contiguous');
+    if (row.migration_id !== wanted.id) problems.push('migration ledger migration ID is unknown');
+    if (row.migration_digest !== wanted.digest) problems.push('migration ledger digest differs');
+    if (row.from_version !== wanted.from || row.to_version !== wanted.to) problems.push('migration ledger version range differs');
+    if (snapshotId !== undefined && index === expected.length - 1 && row.snapshot_id !== snapshotId) problems.push('migration ledger snapshot identity differs');
     if (row.applied_build !== CURRENT_BUILD) problems.push('migration ledger applied build differs');
     if (typeof row.applied_at !== 'string' || row.applied_at.trim() === '') problems.push('migration ledger timestamp is invalid');
-  }
-  return Object.freeze({ valid: problems.length === 0, problems: Object.freeze(problems), rows });
+  });
+  return Object.freeze({ valid: problems.length === 0, problems: Object.freeze([...new Set(problems)]), rows });
 }
 
-export function applyV1ToV2Migration(database, { snapshotId, appliedAt = new Date().toISOString(), hooks } = {}) {
-  if (typeof snapshotId !== 'string' || snapshotId.trim() === '') throw new TypeError('snapshotId must be a non-empty string');
-  invokeHook(hooks, 'beforeTransaction', { migration: migrationDescriptor, snapshotId });
+function applyDefinition(database, definition, { sequence, snapshotId, appliedAt, hooks } = {}) {
+  invokeHook(hooks, 'beforeTransaction', { migration: definition, snapshotId });
   database.exec('BEGIN IMMEDIATE');
   try {
-    invokeHook(hooks, 'insideTransaction', { migration: migrationDescriptor, snapshotId });
-    for (const statement of migrationDescriptor.statements) database.exec(statement);
+    invokeHook(hooks, 'insideTransaction', { migration: definition, snapshotId });
+    for (const statement of definition.statements) database.exec(statement);
     database.prepare('INSERT INTO schema_migrations (sequence, migration_id, migration_digest, from_version, to_version, snapshot_id, applied_build, applied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
-      1,
-      MIGRATION_ID,
-      MIGRATION_DIGEST,
-      MIGRATION_FROM_VERSION,
-      MIGRATION_TO_VERSION,
-      snapshotId,
-      CURRENT_BUILD,
-      appliedAt
+      sequence, definition.id, digest(definition), definition.fromVersion, definition.toVersion, snapshotId, CURRENT_BUILD, appliedAt
     );
-    database.exec('PRAGMA user_version = 2');
-    const shape = inspectSchema(database, COMMAND_CENTER_SCHEMA_VERSION);
+    database.exec(`PRAGMA user_version = ${definition.toVersion}`);
+    const shape = inspectSchema(database, definition.toVersion);
     if (!shape.valid) throw new Error('Target schema validation failed: ' + shape.problems.join('; '));
-    const ledger = validateMigrationLedger(database, { snapshotId });
-    if (!ledger.valid) throw new Error('Migration ledger validation failed: ' + ledger.problems.join('; '));
-    invokeHook(hooks, 'beforeCommit', { migration: migrationDescriptor, snapshotId });
+    invokeHook(hooks, 'beforeCommit', { migration: definition, snapshotId });
     database.exec('COMMIT');
   } catch (error) {
     try { database.exec('ROLLBACK'); } catch { /* preserve the migration failure */ }
@@ -84,4 +71,12 @@ export function applyV1ToV2Migration(database, { snapshotId, appliedAt = new Dat
   }
 }
 
+export function applyV1ToV2Migration(database, { snapshotId, appliedAt = new Date().toISOString(), hooks } = {}) {
+  if (typeof snapshotId !== 'string' || snapshotId.trim() === '') throw new TypeError('snapshotId must be a non-empty string');
+  applyDefinition(database, v1Definition, { sequence: 1, snapshotId, appliedAt, hooks });
+}
+export function applyV2ToV3Migration(database, { snapshotId, appliedAt = new Date().toISOString(), hooks } = {}) {
+  if (typeof snapshotId !== 'string' || snapshotId.trim() === '') throw new TypeError('snapshotId must be a non-empty string');
+  applyDefinition(database, v2Definition, { sequence: inspectMigrationLedger(database).length + 1, snapshotId, appliedAt, hooks });
+}
 export { digest };
