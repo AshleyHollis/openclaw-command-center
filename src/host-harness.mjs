@@ -8,8 +8,8 @@ import { boundedTrafficEvidence, describeTrafficEvidence, TrafficGuard } from '.
 
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 export const pinnedHost = Object.freeze({
-  version: '2026.8.1-beta.2',
-  commit: '8f382a202ff1e15833394b481615dcdda99b04d7',
+  version: '2026.8.1-beta.3',
+  commit: '30f2924e437857935f034ac349bae8cc22ef9fb0',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
