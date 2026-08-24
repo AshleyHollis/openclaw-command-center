@@ -17,12 +17,12 @@
     "capabilityBridgeProtocol": { "min": 1, "max": 1 }
   },
   "host": {
-    "range": "=2026.8.1-beta.2",
-    "commit": "8f382a202ff1e15833394b481615dcdda99b04d7"
+    "range": "=2026.8.1-beta.3",
+    "commit": "30f2924e437857935f034ac349bae8cc22ef9fb0"
   },
   "pluginApi": {
     "package": "openclaw",
-    "range": "=2026.8.1-beta.2"
+    "range": "=2026.8.1-beta.3"
   },
   "commandCenterSchema": {
     "readable": { "min": 1, "max": 3 },
