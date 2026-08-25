@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
   LEGACY_METADATA_SCHEMA_VERSION,
+  PRIOR_COMMAND_CENTER_SCHEMA_VERSION,
   SOURCE_SCHEMA_VERSION,
   conventionAspects,
   conventionStates,
@@ -24,6 +25,7 @@ import { openCommandCenterProjectionService } from './projections.mjs';
 import {
   applyV1ToV2Migration,
   applyV2ToV3Migration,
+  applyV3ToV4Migration,
   validateMigrationLedger
 } from './migration-ledger.mjs';
 import {
@@ -267,7 +269,7 @@ function inspectSchemaOneDatabase(database, schemaVersion) {
   return null;
 }
 
-function validateCurrentV3(databasePath, stateDir) {
+function validateCurrentSchema(databasePath, stateDir) {
   let database;
   try {
     database = new DatabaseSync(databasePath, { readOnly: true });
@@ -327,6 +329,9 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     } else if (schemaVersion === LEGACY_METADATA_SCHEMA_VERSION) {
       const legacyFailure = inspectSchemaOneDatabase(database, LEGACY_METADATA_SCHEMA_VERSION);
       if (legacyFailure) return legacyFailure;
+    } else if (schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION) {
+      const priorFailure = inspectSchemaOneDatabase(database, PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
+      if (priorFailure) return priorFailure;
     } else if (schemaVersion !== COMMAND_CENTER_SCHEMA_VERSION) return coreFailure('unversioned-schema', 'The existing Command Center database is not a declared migratable schema.', 'Use the separate migration or recovery workflow before writing metadata.', null);
   } finally {
     closeQuietly(database);
@@ -334,7 +339,27 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
 
   // Current-schema validation performs a full integrity check. Release the
   // lightweight classification handle before opening that validation handle.
-  if (schemaVersion === COMMAND_CENTER_SCHEMA_VERSION) return validateCurrentV3(databasePath, stateDir);
+  if (schemaVersion === COMMAND_CENTER_SCHEMA_VERSION) return validateCurrentSchema(databasePath, stateDir);
+
+  if (schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION) {
+    let material;
+    try {
+      material = readRecoveryMaterial(stateDir);
+      if (material.exists && isRollbackSnapshot(databasePath, material)) return coreFailure('rollback-snapshot-detected', 'The database is the retained schema-3 rollback snapshot.', 'Install the prior compatible release before using this restored database.', PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
+      if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: PRIOR_COMMAND_CENTER_SCHEMA_VERSION });
+    } catch (error) { return recoveryFailure(error, PRIOR_COMMAND_CENTER_SCHEMA_VERSION); }
+    let migrationDatabase;
+    try {
+      migrationDatabase = new DatabaseSync(databasePath);
+      migrationDatabase.exec('PRAGMA foreign_keys = ON;');
+      applyV3ToV4Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    } catch {
+      return coreFailure('migration-failed', 'The schema-3 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
+    } finally { closeQuietly(migrationDatabase); }
+    migrationHooks?.afterDatabaseCommit?.();
+    try { markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
+    return validateCurrentSchema(databasePath, stateDir);
+  }
 
   if (schemaVersion === LEGACY_METADATA_SCHEMA_VERSION) {
     let material;
@@ -356,13 +381,14 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       migrationDatabase = new DatabaseSync(databasePath);
       migrationDatabase.exec('PRAGMA foreign_keys = ON;');
       applyV2ToV3Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV3ToV4Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       closeQuietly(migrationDatabase);
-      return coreFailure('migration-failed', 'The schema-2 to schema-3 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_METADATA_SCHEMA_VERSION);
+      return coreFailure('migration-failed', 'The schema-2 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_METADATA_SCHEMA_VERSION);
     } finally { closeQuietly(migrationDatabase); }
     migrationHooks?.afterDatabaseCommit?.();
     try { markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
-    return validateCurrentV3(databasePath, stateDir);
+    return validateCurrentSchema(databasePath, stateDir);
   }
 
   let material;
@@ -385,9 +411,10 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     migrationDatabase.exec('PRAGMA foreign_keys = ON;');
     applyV1ToV2Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     applyV2ToV3Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    applyV3ToV4Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
   } catch (error) {
     closeQuietly(migrationDatabase);
-    return coreFailure('migration-failed', 'The schema-1 to schema-3 migration was rolled back and the store remains recovery-only.', 'Retry startup with the retained verified snapshot or restore the prior compatible release.', SOURCE_SCHEMA_VERSION);
+    return coreFailure('migration-failed', 'The schema-1 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the retained verified snapshot or restore the prior compatible release.', SOURCE_SCHEMA_VERSION);
   } finally {
     closeQuietly(migrationDatabase);
   }
@@ -397,7 +424,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   } catch (error) {
     return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION);
   }
-  return validateCurrentV3(databasePath, stateDir);
+  return validateCurrentSchema(databasePath, stateDir);
 }
 
 function createNewDatabase(databasePath) {

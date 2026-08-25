@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
 import { openCommandCenterMetadataService, CommandCenterMetadataError } from '../src/metadata/service.mjs';
+import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { metadataSchemaV1Sql } from '../src/metadata/schema.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
 
@@ -49,9 +50,10 @@ test('verified rollback snapshot is reusable, exact, and non-mutating', async ()
     const beforeManifest = await readFile(path.join(recoveryDirectory, 'manifest.json'));
     const beforeSnapshot = await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot'));
     const snapshotId = JSON.parse(beforeManifest).snapshotId;
+    const priorRelease = expectedRollbackRelease(stateDir);
     const verification = service.verifyRollbackSnapshot({
       snapshotId,
-      priorRelease: canonical.priorRelease
+      priorRelease
     });
     assert.equal(verification.verified, true);
     assert.equal(verification.sourceSchema, 1);
@@ -100,7 +102,7 @@ test('recovery material from a different database is rejected by startup and rol
       assert.equal(mixed.getOperatingStatus().diagnostics[0].code, 'recovery-ledger-mismatch');
       assert.throws(() => mixed.verifyRollbackSnapshot({
         snapshotId: swappedManifest.snapshotId,
-        priorRelease: canonical.priorRelease
+        priorRelease: expectedRollbackRelease(stateDir)
       }), (error) => error instanceof CommandCenterMetadataError && error.code === 'rollback-database-mismatch');
       mixed.close();
     } finally {
@@ -144,14 +146,15 @@ test('rollback verification rejects every compatibility mismatch without filesys
       snapshot: await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot'))
     };
     const snapshotId = JSON.parse(before.manifest).snapshotId;
+    const priorRelease = expectedRollbackRelease(stateDir);
     const mismatches = [
-      ['snapshot', { snapshotId: 'fictional-other-snapshot', priorRelease: canonical.priorRelease }],
-      ['package', { snapshotId, priorRelease: { ...canonical.priorRelease, package: { ...canonical.priorRelease.package, name: 'other-plugin' } } }],
-      ['build', { snapshotId, priorRelease: { ...canonical.priorRelease, package: { ...canonical.priorRelease.package, build: '0.1.1' } } }],
-      ['schema-range', { snapshotId, priorRelease: { ...canonical.priorRelease, commandCenterSchema: { readable: { min: 1, max: 2 }, writable: { min: 1, max: 1 } } } }],
-      ['host', { snapshotId, priorRelease: { ...canonical.priorRelease, host: { range: '=fictional-host' } } }],
-      ['plugin-api', { snapshotId, priorRelease: { ...canonical.priorRelease, pluginApi: { package: 'openclaw', range: '=fictional-api' } } }],
-      ['bridge', { snapshotId, priorRelease: { ...canonical.priorRelease, capabilityBridgeProtocol: { min: 1, max: 2 } } }]
+      ['snapshot', { snapshotId: 'fictional-other-snapshot', priorRelease }],
+      ['package', { snapshotId, priorRelease: { ...priorRelease, package: { ...priorRelease.package, name: 'other-plugin' } } }],
+      ['build', { snapshotId, priorRelease: { ...priorRelease, package: { ...priorRelease.package, build: '0.1.1' } } }],
+      ['schema-range', { snapshotId, priorRelease: { ...priorRelease, commandCenterSchema: { readable: { min: 1, max: 2 }, writable: { min: 1, max: 1 } } } }],
+      ['host', { snapshotId, priorRelease: { ...priorRelease, host: { range: '=fictional-host' } } }],
+      ['plugin-api', { snapshotId, priorRelease: { ...priorRelease, pluginApi: { package: 'openclaw', range: '=fictional-api' } } }],
+      ['bridge', { snapshotId, priorRelease: { ...priorRelease, capabilityBridgeProtocol: { min: 1, max: 2 } } }]
     ];
     for (const [label, input] of mismatches) {
       assert.throws(() => service.verifyRollbackSnapshot(input), (error) => error instanceof CommandCenterMetadataError && error.code.startsWith('rollback-'), label);

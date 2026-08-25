@@ -29,3 +29,22 @@ export function capabilityDiagnostics(capabilities = {}) {
     remediation: `Restore the ${capability} capability before using dependent operations.`
   })));
 }
+
+export function createSourceCapabilityRegistry({ attention } = {}) {
+  if (!attention || typeof attention.registerSourceCapability !== 'function' || typeof attention.ingest !== 'function') throw sourceError('invalid-capability', 'Attention service is required.');
+  const registered = new Set();
+  return Object.freeze({
+    register(capability) {
+      const id = String(capability?.sourceCapabilityId ?? '').trim();
+      if (!id) throw sourceError('invalid-capability', 'sourceCapabilityId must be a non-blank string.');
+      if (registered.has(id)) throw sourceError('invalid-capability', 'Source capability is already registered.');
+      attention.registerSourceCapability(capability);
+      registered.add(id);
+      return id;
+    },
+    ingest(occurrence) {
+      if (!registered.has(occurrence?.sourceCapabilityId)) throw sourceError('capability-unavailable', 'Source capability is not registered.', { capability: occurrence?.sourceCapabilityId });
+      return attention.ingest(occurrence);
+    }
+  });
+}

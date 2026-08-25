@@ -14,10 +14,11 @@ import { assertWebSocketDestination, boundedTrafficEvidence, TrafficGuard } from
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
+import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
 
 function routeGrant(config) {
   const values = config?.[runtimeCapability.bootstrap.grantsField] || [];
-  return Array.isArray(values) && values.some((value) => value?.pluginId === 'command-center' && value?.path === '/plugins/command-center');
+  return Array.isArray(values) && values.some((value) => value?.pluginId === 'command-center' && value?.path === '/plugins/command-center' && value?.match === 'exact');
 }
 
 function redactBrowserEvidence(value) {
@@ -91,7 +92,7 @@ async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey }) 
   } finally { socket.close(); }
 }
 
-test('mounts the built plugin through the isolated authenticated external tab', { timeout: 110_000 }, async () => {
+test('mounts the built plugin through the isolated authenticated external tab', { timeout: 110_000 }, async (testContext) => {
   const descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
   const buildReceipt = await build();
   await assertBuiltDigest(buildReceipt);
@@ -112,6 +113,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     await writeFile(world.manifest.configPath, `${JSON.stringify(configured)}\n`);
     const host = await launchPinnedHost({ descriptor, world, buildReceipt });
     const gatewayUrl = world.gateway.url;
+    const resolvedStateDir = path.join(world.root, '.openclaw');
+    const databasePath = resolveCommandCenterDatabasePath(resolvedStateDir);
     assert.deepEqual(host.endpoint, world.gateway);
     assert.notEqual(world.gateway.port, 18789);
     assert.ok(host.child.pid, 'spawned host must own the isolated endpoint before probing it');
@@ -130,7 +133,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
             const body = await response.json().catch(() => undefined);
             observation.bodyKeys = body && typeof body === 'object' ? Object.keys(body).slice(0, 30) : [];
             evidence.readinessAttempts.push(observation);
-            return response.ok;
+            return response.ok && isCommandCenterMetadataReady(databasePath);
           } catch (error) { observation.error = String(error).slice(0, 300); evidence.readinessAttempts.push(observation); return false; }
         }, host.earlyExit, { attempts: 60, delayMs: 500 });
       } catch (error) {
@@ -139,8 +142,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // The service receives the pinned host's resolved stateDir. Verify the
       // startup-created store is beneath this disposable fixture and that no
       // sibling Command Center storage was created.
-      const resolvedStateDir = path.join(world.root, '.openclaw');
-      const databasePath = resolveCommandCenterDatabasePath(resolvedStateDir);
       await access(databasePath);
       const { completion, binding } = await waitForMigrationCompletion(databasePath);
       assert.equal(completion.verified_channel_count, 1);
@@ -157,7 +158,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.deepEqual(await readdir(path.dirname(databasePath)), ['metadata.sqlite']);
       const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try {
-        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 3);
+        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 4);
         for (const table of ['operation_journal', 'session_state', 'activity_records']) {
           assert.equal(startupDatabase.prepare("SELECT strict FROM pragma_table_list WHERE name = ?").get(table)?.strict, 1);
         }
@@ -167,6 +168,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       } finally {
         startupDatabase.close();
       }
+      host.diagnostics.guard.assert('127.0.0.1', 'bounded attention action route verification');
+      const actionResponse = await fetch(`${gatewayUrl}/plugins/command-center/api/attention/actions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ schemaVersion: 1 })
+      });
+      assert.equal(actionResponse.status, 400);
+      assert.deepEqual(await actionResponse.json(), { schemaVersion: 1, status: 'unavailable' });
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       await page.route('**/*', async (route) => {
@@ -191,14 +200,23 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       page.on('pageerror', (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       page.on('response', (response) => recordBounded(evidence.responses, redactBrowserEvidence(`${response.status()} ${response.url()}`)));
       const parentBootstrap = observeBrowserResponse(
-        page.waitForResponse((response) => new URL(response.url()).pathname === runtimeCapability.bootstrap.path, { timeout: 10_000 }),
+        page.waitForResponse((response) => isControlUiBootstrapUrl(response.url(), {
+          gatewayUrl,
+          bootstrapPath: runtimeCapability.bootstrap.path
+        }), { timeout: 10_000 }),
         (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message))
       );
       const cookieProbe = observeBrowserResponse(
         page.waitForResponse((response) => new URL(response.url()).searchParams.has('__openclaw_plugin_frame_auth_probe'), { timeout: 10_000 }),
         (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message))
       );
-      await page.goto(`${gatewayUrl}/__openclaw__/plugin?plugin=command-center&id=command-center#${runtimeCapability.authentication.urlFragmentParameter}=${encodeURIComponent(world.gatewayCredential)}`, { waitUntil: 'domcontentloaded' });
+      await page.goto(controlUiPluginUrl({
+        gatewayUrl,
+        pluginId: 'command-center',
+        routeId: 'command-center',
+        fragmentParameter: runtimeCapability.authentication.urlFragmentParameter,
+        credential: world.gatewayCredential
+      }), { waitUntil: 'domcontentloaded' });
       const observedBootstrap = await parentBootstrap;
       evidence.parentBootstrap = observedBootstrap.observed;
       if (!evidence.parentBootstrap) throw new HarnessFailure('bootstrap-authentication-failure', 'Parent token-fragment authentication did not fetch the Control UI bootstrap response');
@@ -260,4 +278,17 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       throw failure;
     }
   }, { candidateRoot: process.cwd() });
+  testContext.diagnostic(`acceptance-result=${JSON.stringify({
+    schemaVersion: 1,
+    outcome: 'passed',
+    command: [
+      'node',
+      '--test',
+      '--test-isolation=none',
+      '--test-reporter=/opt/openclaw-control/src/ticket-test-reporter.js',
+      'test/real-host.acceptance.test.mjs'
+    ],
+    expectedTest: 'mounts the built plugin through the isolated authenticated external tab',
+    buildDigest: buildReceipt.digest
+  })}`);
 });

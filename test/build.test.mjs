@@ -57,6 +57,8 @@ test('mounted shell assets resolve beneath the external-tab plugin path', async 
   await withIsolatedBuild(async ({ build, distRoot }) => {
     await build();
     await access(path.join(distRoot, 'asset-handler.mjs'));
+    await access(path.join(distRoot, 'plugin-service.mjs'));
+    await import(`${pathToFileURL(path.join(distRoot, 'plugin-service.mjs')).href}?test=${Date.now()}-${Math.random()}`);
     await access(path.join(distRoot, 'metadata', 'service.mjs'));
     await access(path.join(distRoot, 'metadata', 'schema.mjs'));
     await access(path.join(distRoot, 'metadata', 'modes.mjs'));

@@ -1,12 +1,15 @@
 export const SOURCE_SCHEMA_VERSION = 1;
 export const LEGACY_METADATA_SCHEMA_VERSION = 2;
-export const COMMAND_CENTER_SCHEMA_VERSION = 3;
+export const PRIOR_COMMAND_CENTER_SCHEMA_VERSION = 3;
+export const COMMAND_CENTER_SCHEMA_VERSION = 4;
 
 export const metadataTableNames = Object.freeze([
   'topics', 'source_references', 'source_convention_state', 'presentation_preferences',
   'attention_activity_links', 'proposal_states', 'policy_versions', 'projection_bookkeeping',
   'operation_journal', 'session_state', 'activity_records', 'migration_state',
-  'migration_channels', 'migration_occurrences', 'migration_completion'
+  'migration_channels', 'migration_occurrences', 'migration_completion',
+  'attention_episodes', 'attention_occurrences', 'attention_attempts',
+  'attention_approvals', 'attention_activity_records'
 ]);
 export const paraCategories = Object.freeze(['project', 'area', 'resource', 'archive']);
 export const topicLifecycles = Object.freeze(['provisioning', 'active', 'retired']);
@@ -192,8 +195,114 @@ CREATE TABLE migration_completion (
 ) STRICT;
 `;
 
+const metadataSchemaV4AttentionTablesSql = `
+CREATE TABLE attention_episodes (
+  episode_id TEXT PRIMARY KEY,
+  identity_digest TEXT NOT NULL CHECK (length(trim(identity_digest)) > 0),
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  source_capability_id TEXT NOT NULL CHECK (length(trim(source_capability_id)) > 0),
+  stable_subject_id TEXT NOT NULL CHECK (length(trim(stable_subject_id)) > 0),
+  attention_reason TEXT NOT NULL CHECK (length(trim(attention_reason)) > 0),
+  state TEXT NOT NULL CHECK (state IN ('Active', 'Snoozed', 'Action running', 'Resolved', 'Withdrawn')),
+  severity TEXT NOT NULL CHECK (severity IN ('Routine', 'High', 'Critical')),
+  attention_since TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  terminal_at TEXT,
+  snoozed_until TEXT,
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  topic_id TEXT,
+  source_reference_id TEXT,
+  diagnosis_json TEXT NOT NULL CHECK (length(trim(diagnosis_json)) > 0),
+  evidence_json TEXT NOT NULL CHECK (length(trim(evidence_json)) > 0),
+  updated_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE attention_occurrences (
+  occurrence_row_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL REFERENCES attention_episodes(episode_id) ON DELETE CASCADE,
+  occurrence_key TEXT NOT NULL,
+  occurrence_version TEXT,
+  occurred_at TEXT NOT NULL,
+  derived_severity TEXT NOT NULL CHECK (derived_severity IN ('Routine', 'High', 'Critical')),
+  evidence_json TEXT NOT NULL CHECK (length(trim(evidence_json)) > 0),
+  transition_json TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (episode_id, occurrence_key)
+) STRICT;
+
+CREATE TABLE attention_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL REFERENCES attention_episodes(episode_id) ON DELETE CASCADE,
+  logical_operation_id TEXT NOT NULL UNIQUE,
+  action_id TEXT NOT NULL CHECK (length(trim(action_id)) > 0),
+  expected_episode_revision INTEGER NOT NULL CHECK (expected_episode_revision >= 1),
+  expected_source_revision TEXT,
+  target_json TEXT NOT NULL CHECK (length(trim(target_json)) > 0),
+  parameters_json TEXT NOT NULL CHECK (length(trim(parameters_json)) > 0),
+  disclosure_digest TEXT NOT NULL CHECK (length(trim(disclosure_digest)) > 0),
+  idempotent_retryable INTEGER NOT NULL CHECK (idempotent_retryable IN (0, 1)),
+  retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count BETWEEN 0 AND 1),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'applied', 'not-applied', 'partial', 'conflict', 'unknown', 'failed')),
+  outcome TEXT,
+  verification_revision TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE attention_approvals (
+  approval_id TEXT PRIMARY KEY,
+  attempt_id TEXT NOT NULL UNIQUE REFERENCES attention_attempts(attempt_id) ON DELETE CASCADE,
+  episode_id TEXT NOT NULL REFERENCES attention_episodes(episode_id) ON DELETE CASCADE,
+  episode_revision INTEGER NOT NULL CHECK (episode_revision >= 1),
+  diagnosis_json TEXT NOT NULL CHECK (length(trim(diagnosis_json)) > 0),
+  target_json TEXT NOT NULL CHECK (length(trim(target_json)) > 0),
+  parameters_json TEXT NOT NULL CHECK (length(trim(parameters_json)) > 0),
+  plan_revision TEXT NOT NULL CHECK (length(trim(plan_revision)) > 0),
+  side_effects_json TEXT NOT NULL CHECK (length(trim(side_effects_json)) > 0),
+  host TEXT NOT NULL CHECK (length(trim(host)) > 0),
+  operator_id TEXT NOT NULL CHECK (length(trim(operator_id)) > 0),
+  precondition_revision TEXT NOT NULL CHECK (length(trim(precondition_revision)) > 0),
+  policy_revision TEXT NOT NULL CHECK (length(trim(policy_revision)) > 0),
+  disclosure_digest TEXT NOT NULL CHECK (length(trim(disclosure_digest)) > 0),
+  expires_at TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'rejected', 'consumed', 'expired', 'superseded')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE attention_activity_records (
+  activity_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL REFERENCES attention_episodes(episode_id) ON DELETE RESTRICT,
+  logical_operation_id TEXT NOT NULL,
+  attempt_id TEXT,
+  topic_id TEXT,
+  source_reference_id TEXT,
+  actor_mode TEXT NOT NULL CHECK (actor_mode IN ('automatic', 'manual', 'system')),
+  action_id TEXT,
+  operation_kind TEXT NOT NULL CHECK (length(trim(operation_kind)) > 0),
+  outcome TEXT NOT NULL CHECK (outcome IN ('applied', 'failed', 'not-applied', 'partial', 'conflict', 'unknown', 'resolved', 'withdrawn')),
+  verification_revision TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TRIGGER attention_activity_records_no_update
+BEFORE UPDATE ON attention_activity_records
+BEGIN
+  SELECT RAISE(ABORT, 'attention Activity is append-only');
+END;
+
+CREATE TRIGGER attention_activity_records_no_delete
+BEFORE DELETE ON attention_activity_records
+BEGIN
+  SELECT RAISE(ABORT, 'attention Activity is append-only');
+END;
+`;
+
 export const metadataSchemaV2Sql = `${metadataSchemaV2CoreSql}${schemaLedgerSql}\nPRAGMA user_version = 2;\n`;
-export const metadataSchemaSql = `${metadataSchemaV2CoreSql.replace('PRAGMA user_version = 2;', 'PRAGMA user_version = 3;')}${metadataSchemaV3MigrationTablesSql}${schemaLedgerSql}\nPRAGMA user_version = 3;\n`;
+export const metadataSchemaV3Sql = `${metadataSchemaV2CoreSql.replace('PRAGMA user_version = 2;', 'PRAGMA user_version = 3;')}${metadataSchemaV3MigrationTablesSql}${schemaLedgerSql}\nPRAGMA user_version = 3;\n`;
+export const metadataSchemaSql = `${metadataSchemaV2CoreSql.replace('PRAGMA user_version = 2;', 'PRAGMA user_version = 4;')}${metadataSchemaV3MigrationTablesSql}${metadataSchemaV4AttentionTablesSql}${schemaLedgerSql}\nPRAGMA user_version = 4;\n`;
 
 const baseColumns = Object.freeze({
   topics: [['topic_id', 'TEXT', 1, 1], ['para_category', 'TEXT', 1, 0], ['lifecycle', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
@@ -210,7 +319,12 @@ const baseColumns = Object.freeze({
   migration_state: [['state_id', 'TEXT', 1, 1], ['schema_version', 'INTEGER', 1, 0], ['config_digest', 'TEXT', 1, 0], ['source_digest', 'TEXT', 1, 0], ['revision', 'INTEGER', 1, 0], ['phase', 'TEXT', 1, 0], ['failure_code', 'TEXT', 0, 0], ['failure_summary', 'TEXT', 0, 0], ['failure_count', 'INTEGER', 1, 0], ['updated_at', 'TEXT', 1, 0]],
   migration_channels: [['source_channel_id', 'TEXT', 1, 1], ['topic_id', 'TEXT', 1, 0], ['note_folder_reference_id', 'TEXT', 1, 0], ['session_reference_id', 'TEXT', 1, 0], ['session_id', 'TEXT', 1, 0], ['phase', 'TEXT', 1, 0], ['expected_count', 'INTEGER', 1, 0], ['expected_digest', 'TEXT', 1, 0], ['imported_count', 'INTEGER', 1, 0], ['imported_digest', 'TEXT', 1, 0], ['next_ordinal', 'INTEGER', 1, 0], ['failure_code', 'TEXT', 0, 0], ['failure_summary', 'TEXT', 0, 0], ['failure_count', 'INTEGER', 1, 0], ['updated_at', 'TEXT', 1, 0]],
   migration_occurrences: [['source_channel_id', 'TEXT', 1, 1], ['occurrence_id', 'TEXT', 1, 2], ['occurrence_digest', 'TEXT', 1, 0], ['display_order', 'INTEGER', 1, 0], ['destination_message_id', 'TEXT', 0, 0], ['destination_anchor_json', 'TEXT', 0, 0], ['destination_anchor_digest', 'TEXT', 0, 0]],
-  migration_completion: [['completion_id', 'TEXT', 1, 1], ['schema_version', 'INTEGER', 1, 0], ['config_digest', 'TEXT', 1, 0], ['source_digest', 'TEXT', 1, 0], ['verified_channel_count', 'INTEGER', 1, 0], ['verified_occurrence_count', 'INTEGER', 1, 0], ['completion_revision', 'INTEGER', 1, 0], ['verified_at', 'TEXT', 1, 0]]
+  migration_completion: [['completion_id', 'TEXT', 1, 1], ['schema_version', 'INTEGER', 1, 0], ['config_digest', 'TEXT', 1, 0], ['source_digest', 'TEXT', 1, 0], ['verified_channel_count', 'INTEGER', 1, 0], ['verified_occurrence_count', 'INTEGER', 1, 0], ['completion_revision', 'INTEGER', 1, 0], ['verified_at', 'TEXT', 1, 0]],
+  attention_episodes: [['episode_id', 'TEXT', 1, 1], ['identity_digest', 'TEXT', 1, 0], ['generation', 'INTEGER', 1, 0], ['source_capability_id', 'TEXT', 1, 0], ['stable_subject_id', 'TEXT', 1, 0], ['attention_reason', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0], ['severity', 'TEXT', 1, 0], ['attention_since', 'TEXT', 1, 0], ['occurred_at', 'TEXT', 1, 0], ['terminal_at', 'TEXT', 0, 0], ['snoozed_until', 'TEXT', 0, 0], ['revision', 'INTEGER', 1, 0], ['topic_id', 'TEXT', 0, 0], ['source_reference_id', 'TEXT', 0, 0], ['diagnosis_json', 'TEXT', 1, 0], ['evidence_json', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0]],
+  attention_occurrences: [['occurrence_row_id', 'TEXT', 1, 1], ['episode_id', 'TEXT', 1, 0], ['occurrence_key', 'TEXT', 1, 0], ['occurrence_version', 'TEXT', 0, 0], ['occurred_at', 'TEXT', 1, 0], ['derived_severity', 'TEXT', 1, 0], ['evidence_json', 'TEXT', 1, 0], ['transition_json', 'TEXT', 0, 0], ['created_at', 'TEXT', 1, 0]],
+  attention_attempts: [['attempt_id', 'TEXT', 1, 1], ['episode_id', 'TEXT', 1, 0], ['logical_operation_id', 'TEXT', 1, 0], ['action_id', 'TEXT', 1, 0], ['expected_episode_revision', 'INTEGER', 1, 0], ['expected_source_revision', 'TEXT', 0, 0], ['target_json', 'TEXT', 1, 0], ['parameters_json', 'TEXT', 1, 0], ['disclosure_digest', 'TEXT', 1, 0], ['idempotent_retryable', 'INTEGER', 1, 0], ['retry_count', 'INTEGER', 1, 0], ['state', 'TEXT', 1, 0], ['outcome', 'TEXT', 0, 0], ['verification_revision', 'TEXT', 0, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
+  attention_approvals: [['approval_id', 'TEXT', 1, 1], ['attempt_id', 'TEXT', 1, 0], ['episode_id', 'TEXT', 1, 0], ['episode_revision', 'INTEGER', 1, 0], ['diagnosis_json', 'TEXT', 1, 0], ['target_json', 'TEXT', 1, 0], ['parameters_json', 'TEXT', 1, 0], ['plan_revision', 'TEXT', 1, 0], ['side_effects_json', 'TEXT', 1, 0], ['host', 'TEXT', 1, 0], ['operator_id', 'TEXT', 1, 0], ['precondition_revision', 'TEXT', 1, 0], ['policy_revision', 'TEXT', 1, 0], ['disclosure_digest', 'TEXT', 1, 0], ['expires_at', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
+  attention_activity_records: [['activity_id', 'TEXT', 1, 1], ['episode_id', 'TEXT', 1, 0], ['logical_operation_id', 'TEXT', 1, 0], ['attempt_id', 'TEXT', 0, 0], ['topic_id', 'TEXT', 0, 0], ['source_reference_id', 'TEXT', 0, 0], ['actor_mode', 'TEXT', 1, 0], ['action_id', 'TEXT', 0, 0], ['operation_kind', 'TEXT', 1, 0], ['outcome', 'TEXT', 1, 0], ['verification_revision', 'TEXT', 0, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]]
 });
 
 const baseForeignKeys = Object.freeze({
@@ -222,7 +336,11 @@ const baseForeignKeys = Object.freeze({
   session_state: ['source_references|reference_id|reference_id|CASCADE'],
   activity_records: ['topics|topic_id|topic_id|CASCADE'],
   migration_channels: ['topics|topic_id|topic_id|RESTRICT', 'source_references|note_folder_reference_id|reference_id|RESTRICT', 'source_references|session_reference_id|reference_id|RESTRICT'],
-  migration_occurrences: ['migration_channels|source_channel_id|source_channel_id|CASCADE']
+  migration_occurrences: ['migration_channels|source_channel_id|source_channel_id|CASCADE'],
+  attention_occurrences: ['attention_episodes|episode_id|episode_id|CASCADE'],
+  attention_attempts: ['attention_episodes|episode_id|episode_id|CASCADE'],
+  attention_approvals: ['attention_attempts|attempt_id|attempt_id|CASCADE', 'attention_episodes|episode_id|episode_id|CASCADE'],
+  attention_activity_records: ['attention_episodes|episode_id|episode_id|RESTRICT']
 });
 const expectedLedgerColumns = Object.freeze([
   ['sequence', 'INTEGER', 0, 1], ['migration_id', 'TEXT', 1, 0], ['migration_digest', 'TEXT', 1, 0],
@@ -236,6 +354,7 @@ function definitions(sql) {
   ));
 }
 const expectedTableDefinitions = definitions(metadataSchemaSql);
+const expectedTableDefinitionsV3 = definitions(metadataSchemaV3Sql);
 const expectedTableDefinitionsV2 = definitions(metadataSchemaV2Sql);
 
 export const metadataSchemaV1Sql = metadataSchemaV2CoreSql
@@ -296,29 +415,38 @@ CREATE TABLE schema_migrations (
 PRAGMA user_version = 2;
 `;
 export const metadataSchemaV2ToV3Sql = `${metadataSchemaV3MigrationTablesSql}\nPRAGMA user_version = 3;\n`;
+export const metadataSchemaV3ToV4Sql = `${metadataSchemaV4AttentionTablesSql}\nPRAGMA user_version = 4;\n`;
 
-const v1Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !['operation_journal', 'session_state', 'activity_records', 'migration_state', 'migration_channels', 'migration_occurrences', 'migration_completion'].includes(table)));
-const v2Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !['migration_state', 'migration_channels', 'migration_occurrences', 'migration_completion'].includes(table)));
+const attentionTables = Object.freeze(['attention_episodes', 'attention_occurrences', 'attention_attempts', 'attention_approvals', 'attention_activity_records']);
+const attentionActivityTriggers = Object.freeze(['attention_activity_records_no_delete', 'attention_activity_records_no_update']);
+const migrationTables = Object.freeze(['migration_state', 'migration_channels', 'migration_occurrences', 'migration_completion']);
+const v1Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !['operation_journal', 'session_state', 'activity_records', ...migrationTables, ...attentionTables].includes(table)));
+const v2Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...migrationTables, ...attentionTables].includes(table)));
+const v3Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !attentionTables.includes(table)));
 const v1Columns = Object.freeze(Object.fromEntries(v1Tables.map((table) => [table, table === 'source_references' ? baseColumns[table].filter(([name]) => name !== 'last_observed_revision') : baseColumns[table]])));
 const v2Columns = Object.freeze(Object.fromEntries(v2Tables.map((table) => [table, baseColumns[table]])));
+const v3Columns = Object.freeze(Object.fromEntries(v3Tables.map((table) => [table, baseColumns[table]])));
 const v1Definitions = definitions(metadataSchemaV1Sql);
 const v2ForeignKeys = Object.freeze(Object.fromEntries(v2Tables.map((table) => [table, baseForeignKeys[table] ?? []])));
+const v3ForeignKeys = Object.freeze(Object.fromEntries(v3Tables.map((table) => [table, baseForeignKeys[table] ?? []])));
 const v1ForeignKeys = Object.freeze(Object.fromEntries(v1Tables.map((table) => [table, v2ForeignKeys[table] ?? []])));
 function sameArray(left, right) { return left.length === right.length && left.every((value, index) => value === right[index]); }
 
 export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VERSION) {
   const problems = [];
   const current = schemaVersion === COMMAND_CENTER_SCHEMA_VERSION;
-  const columnsForVersion = current ? baseColumns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
-  const definitionsForVersion = current ? expectedTableDefinitions : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
-  const foreignKeysForVersion = current ? baseForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
-  const applicationTables = current ? metadataTableNames : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
-  const expectedTables = current ? [...applicationTables, 'schema_migrations'] : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? [...applicationTables, 'schema_migrations'] : [...applicationTables];
+  const prior = schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION;
+  const columnsForVersion = current ? baseColumns : prior ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
+  const definitionsForVersion = current ? expectedTableDefinitions : prior ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
+  const foreignKeysForVersion = current ? baseForeignKeys : prior ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
+  const applicationTables = current ? metadataTableNames : prior ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
+  const expectedTables = schemaVersion >= LEGACY_METADATA_SCHEMA_VERSION ? [...applicationTables, 'schema_migrations'] : [...applicationTables];
   const objects = database.prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
   const tables = objects.filter((row) => row.type === 'table').map((row) => row.name);
   if (!sameArray(tables, expectedTables.slice().sort())) problems.push('application table set differs');
-  const allowedObjects = new Set(expectedTables);
+  const allowedObjects = new Set([...expectedTables, ...(current ? attentionActivityTriggers : [])]);
   if (objects.some((row) => !allowedObjects.has(row.name))) problems.push('unexpected application schema object');
+  if (current && !sameArray(objects.filter((row) => row.type === 'trigger').map((row) => row.name), [...attentionActivityTriggers])) problems.push('attention Activity trigger set differs');
   for (const table of applicationTables) {
     const columns = database.prepare(`PRAGMA table_info(${table})`).all().map((row) => [row.name, row.type, row.notnull, row.pk]);
     if (!sameArray(columns.map(JSON.stringify), (columnsForVersion[table] ?? []).map(JSON.stringify))) problems.push(`${table} columns differ`);
@@ -345,6 +473,7 @@ export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VE
 }
 export function inspectSchemaV1(database) { return inspectSchema(database, SOURCE_SCHEMA_VERSION); }
 export function inspectSchemaV2(database) { return inspectSchema(database, LEGACY_METADATA_SCHEMA_VERSION); }
+export function inspectSchemaV3(database) { return inspectSchema(database, PRIOR_COMMAND_CENTER_SCHEMA_VERSION); }
 export function inspectMigrationLedger(database) {
   const rows = database.prepare('SELECT sequence, migration_id, migration_digest, from_version, to_version, snapshot_id, applied_build, applied_at FROM schema_migrations ORDER BY sequence').all();
   return Object.freeze(rows.map((row) => Object.freeze({ ...row })));

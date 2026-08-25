@@ -25,6 +25,7 @@ export class AuthoritativeSourceService {
     this.searchProvider = options.searchProvider;
     this.analysisProvider = options.analysisProvider;
     this.migration = options.migration;
+    this.attentionService = options.attentionService ?? null;
     this.defaults = options;
     this.coordinator = options.coordinator ?? createMutationCoordinator({ metadata: this.metadata });
     this.topicServices = new Map();
@@ -55,7 +56,14 @@ export class AuthoritativeSourceService {
         search,
         activity: this.activity,
         analysis: this.capabilities.analysis?.available === false || !this.analysisProvider ? null : createAnalysisAdapter({ provider: this.analysisProvider, topicId: id }),
-        attention: this.capabilities.attention?.available === false ? null : createAttentionAdapter(options)
+        attention: this.capabilities.attention?.available === false ? null : createAttentionAdapter({
+          ...options,
+          act: this.attentionService?.act?.bind(this.attentionService),
+          ingest: this.attentionService?.ingest?.bind(this.attentionService),
+          list: this.attentionService?.list?.bind(this.attentionService),
+          get: (input) => this.attentionService?.get?.(input?.episodeId),
+          listActions: async (episodeId) => this.attentionService?.get?.(episodeId)?.episode?.actions?.map((action) => action.actionId) ?? []
+        })
       });
       if (Object.keys(extra).length === 0) this.topicServices.set(id, service);
       return service;
@@ -171,7 +179,67 @@ export class AuthoritativeSourceService {
     if (!this.migration) throw sourceError('source-recovery', 'Legacy Discord migration is not configured.');
     return this.migration.resume(input);
   }
-  async remindersList(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'scheduler'); if (!service.reminders) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' }); return service.reminders.list(adapterInput(input)); }
+  async ingestReminderRows(topicId, rows) {
+    if (!this.attentionService?.ingest) return rows;
+    const configuredNow = typeof this.defaults.now === 'function' ? this.defaults.now() : this.defaults.now;
+    const configuredNowMs = typeof configuredNow === 'number' ? configuredNow : Date.parse(configuredNow);
+    const observedNowMs = Number.isFinite(configuredNowMs) ? configuredNowMs : Date.now();
+    const observedAt = new Date(observedNowMs).toISOString();
+    const returnedIds = new Set();
+    for (const row of rows) {
+      const externalId = row.sourceReference.externalSourceId;
+      returnedIds.add(externalId);
+      const schedule = row?.job?.schedule;
+      const dueAt = schedule?.kind === 'at' ? Date.parse(schedule.at) : Number(row?.job?.state?.nextRunAtMs);
+      const due = row?.job?.enabled !== false && Number.isFinite(dueAt) && dueAt <= observedNowMs;
+      const occurrenceVersion = row.job.configRevision ?? row.sourceReference.observedRevision;
+      const context = this.attentionService.sourceOccurrenceContext?.({ sourceCapabilityId: 'reminders', stableSubjectId: externalId, attentionReason: 'reminder-due' });
+      if (due) {
+        const generation = context && ['Resolved', 'Withdrawn'].includes(context.state) ? context.generation + 1 : context?.generation ?? 1;
+        await this.attentionService.ingest({
+          schemaVersion: 1,
+          sourceCapabilityId: 'reminders',
+          stableSubjectId: externalId,
+          attentionReason: 'reminder-due',
+          occurrenceId: `reminder:${externalId}:generation:${generation}:revision:${occurrenceVersion ?? 'unversioned'}`,
+          ...(occurrenceVersion ? { occurrenceVersion: String(occurrenceVersion) } : {}),
+          occurredAt: observedAt,
+          topicId,
+          sourceReferenceId: row.sourceReference.referenceId,
+          evidenceFacts: { reminderDue: true, dueAt: Number.isFinite(dueAt) ? new Date(dueAt).toISOString() : observedAt },
+          ...(occurrenceVersion ? { transitionEvidence: { verifiedSource: 'scheduler-readback', version: String(occurrenceVersion), state: 'active' } } : {})
+        });
+      } else if (context && context.state !== 'Snoozed' && !['Resolved', 'Withdrawn'].includes(context.state)) {
+        await this.attentionService.ingest({
+          schemaVersion: 1,
+          sourceCapabilityId: 'reminders',
+          stableSubjectId: externalId,
+          attentionReason: 'reminder-due',
+          occurrenceId: `reminder:${externalId}:terminal:${occurrenceVersion ?? 'unversioned'}`,
+          ...(occurrenceVersion ? { occurrenceVersion: String(occurrenceVersion) } : {}),
+          occurredAt: observedAt,
+          topicId,
+          sourceReferenceId: row.sourceReference.referenceId,
+          evidenceFacts: { reminderDue: false },
+          transitionEvidence: { verifiedSource: 'scheduler-readback', ...(occurrenceVersion ? { version: String(occurrenceVersion) } : {}), state: row?.job?.enabled === false ? 'resolved' : 'withdrawn' }
+        });
+      }
+    }
+    for (const episode of this.attentionService.allEpisodes?.() ?? []) {
+      if (episode.topicId !== topicId || episode.sourceCapabilityId !== 'reminders' || ['Resolved', 'Withdrawn'].includes(episode.state) || returnedIds.has(episode.stableSubjectId)) continue;
+      await this.attentionService.ingest({ schemaVersion: 1, sourceCapabilityId: 'reminders', stableSubjectId: episode.stableSubjectId, attentionReason: episode.attentionReason, occurrenceId: `reminder:${episode.stableSubjectId}:missing:${observedAt}`, occurredAt: observedAt, topicId, sourceReferenceId: episode.sourceReferenceId, evidenceFacts: { reminderDue: false }, transitionEvidence: { verifiedSource: 'scheduler-readback', state: 'withdrawn' } });
+    }
+    return rows;
+  }
+  async remindersList(input = {}) {
+    const service = this.requireTopicService(input);
+    requireCapability(this.capabilities, 'scheduler');
+    if (!service.reminders) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' });
+    return this.ingestReminderRows(input.topicId, await service.reminders.list(adapterInput(input)));
+  }
+  async refreshReminderAttention() {
+    for (const topic of this.metadata.listUsableTopics?.() ?? []) await this.remindersList({ schemaVersion: 1, topicId: topic.topicId });
+  }
   async remindersSnooze(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'scheduler'); if (!service.reminders) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' }); return service.reminders.snooze(adapterInput(input)); }
   async remindersComplete(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'scheduler'); if (!service.reminders) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' }); return service.reminders.complete(adapterInput(input)); }
   async schedulesGet(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'scheduler'); if (!service.scheduler) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' }); return service.scheduler.read(adapterInput(input)); }
@@ -255,10 +323,14 @@ export class AuthoritativeSourceService {
   attentionAct(input) {
     requireCapability(this.capabilities, 'attention');
     this.assertMutationAllowed();
-    const attention = this.requireTopicService(input).attention;
-    if (!attention) throw sourceError('capability-unavailable', 'Attention capability is unavailable.', { capability: 'attention' });
-    return this.coordinator.mutate({ operationKind: 'attention.act', requestId: input.requestId ?? input.logicalOperationId, logicalOperationId: input.logicalOperationId, topicId: input.topicId, intent: { attentionId: input.attentionId, actionId: input.actionId }, execute: () => attention.act(input) });
+    this.requireTopicService(input);
+    if (!this.attentionService) throw sourceError('capability-unavailable', 'Attention capability is unavailable.', { capability: 'attention' });
+    return this.attentionService.act(input);
   }
+  async attentionList(input = {}) { requireCapability(this.capabilities, 'attention'); await this.attentionService?.refreshApprovals({ topicId: input.topicId, authenticatedOperatorId: input.authenticatedOperatorId }); const request = { ...input }; delete request.authenticatedOperatorId; delete request.requestId; return this.attentionService?.list(request) ?? { schemaVersion: 1, revision: 0, buckets: [[], [], [], []], episodes: [], inProgress: [] }; }
+  async attentionGet(input = {}) { requireCapability(this.capabilities, 'attention'); await this.attentionService?.refreshApprovals({ episodeId: input.episodeId, authenticatedOperatorId: input.authenticatedOperatorId }); return this.attentionService?.get(input.episodeId) ?? { schemaVersion: 1, revision: 0, episode: null }; }
+  activityList(input = {}) { requireCapability(this.capabilities, 'activity'); const request = { ...input }; delete request.requestId; return this.attentionService?.listActivity(request) ?? { schemaVersion: 1, records: [], nextOffset: null, hasMore: false }; }
+  activityGet(input = {}) { requireCapability(this.capabilities, 'activity'); return { schemaVersion: 1, record: this.attentionService?.getActivity(input.activityId) ?? null }; }
   close() {
     for (const service of this.topicServices.values()) service.notes?.close?.();
     this.topicServices.clear();

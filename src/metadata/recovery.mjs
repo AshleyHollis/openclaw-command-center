@@ -29,13 +29,15 @@ import {
   MIGRATION_TO_VERSION,
   V1_TO_V2_MIGRATION_DIGEST,
   V1_TO_V2_MIGRATION_ID,
+  V2_TO_V3_MIGRATION_DIGEST,
+  V2_TO_V3_MIGRATION_ID,
   validateMigrationLedger
 } from './migration-ledger.mjs';
 import { inspectSchema } from './schema.mjs';
 
 export const RECOVERY_FORMAT_VERSION = 1;
 export const RECOVERY_SNAPSHOT_SCHEMA_VERSION = 1;
-const recoverySnapshotSchemaVersions = new Set([1, 2]);
+const recoverySnapshotSchemaVersions = new Set([1, 2, 3]);
 
 const currentRelease = Object.freeze({
   package: canonical.package,
@@ -44,12 +46,20 @@ const currentRelease = Object.freeze({
   commandCenterSchema: canonical.commandCenterSchema,
   capabilityBridgeProtocol: canonical.capabilityBridgeProtocol
 });
-const schemaTwoRelease = Object.freeze({ ...currentRelease, commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 2 }), migratable: Object.freeze({ min: 1, max: 1 }), writable: Object.freeze({ min: 2, max: 2 }) }) });
+const schemaThreeRelease = Object.freeze(canonical.priorRelease);
+const schemaTwoRelease = Object.freeze({ ...schemaThreeRelease, commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 2 }), migratable: Object.freeze({ min: 1, max: 1 }), writable: Object.freeze({ min: 2, max: 2 }) }) });
+const schemaOneRelease = Object.freeze({
+  package: Object.freeze({ name: canonical.package.name, version: '0.1.0', build: '0.1.0' }),
+  host: Object.freeze({ range: '=2026.8.1-beta.2' }),
+  pluginApi: Object.freeze({ package: 'openclaw', range: '=2026.8.1-beta.2' }),
+  commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 1 }), writable: Object.freeze({ min: 1, max: 1 }) }),
+  capabilityBridgeProtocol: Object.freeze({ min: 1, max: 1 })
+});
 
 function recoveryContractForSchema(schemaVersion, { legacyTarget = false } = {}) {
-  return schemaVersion === 1
-    ? { migration: { id: V1_TO_V2_MIGRATION_ID, digest: V1_TO_V2_MIGRATION_DIGEST, fromVersion: 1, toVersion: 2 }, sourceRelease: canonical.priorRelease, targetRelease: legacyTarget ? schemaTwoRelease : currentRelease }
-    : { migration: { id: MIGRATION_ID, digest: MIGRATION_DIGEST, fromVersion: MIGRATION_FROM_VERSION, toVersion: MIGRATION_TO_VERSION }, sourceRelease: schemaTwoRelease, targetRelease: currentRelease };
+  if (schemaVersion === 1) return { migration: { id: V1_TO_V2_MIGRATION_ID, digest: V1_TO_V2_MIGRATION_DIGEST, fromVersion: 1, toVersion: 2 }, sourceRelease: schemaOneRelease, targetRelease: legacyTarget ? schemaThreeRelease : currentRelease };
+  if (schemaVersion === 2) return { migration: { id: V2_TO_V3_MIGRATION_ID, digest: V2_TO_V3_MIGRATION_DIGEST, fromVersion: 2, toVersion: 3 }, sourceRelease: schemaTwoRelease, targetRelease: legacyTarget ? schemaThreeRelease : currentRelease };
+  return { migration: { id: MIGRATION_ID, digest: MIGRATION_DIGEST, fromVersion: MIGRATION_FROM_VERSION, toVersion: MIGRATION_TO_VERSION }, sourceRelease: schemaThreeRelease, targetRelease: currentRelease };
 }
 
 export class RecoveryMaterialError extends Error {
@@ -161,7 +171,7 @@ function validateManifestShape(manifest) {
   if (!manifest.migration || canonicalJson(manifest.migration) !== canonicalJson(currentContract.migration)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest migration contract differs.');
   if (manifest.snapshotId !== manifest.snapshot.sha256) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery snapshot identity does not match its content digest.');
   const releaseMatches = canonicalJson(manifest.sourceRelease) === canonicalJson(currentContract.sourceRelease)
-    && [currentContract.targetRelease, legacyContract.targetRelease].some((target) => canonicalJson(manifest.targetRelease) === canonicalJson(target));
+    && [currentContract.targetRelease, legacyContract.targetRelease, ...(manifest.snapshot.schemaVersion === 1 ? [schemaTwoRelease] : [])].some((target) => canonicalJson(manifest.targetRelease) === canonicalJson(target));
   if (!releaseMatches) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest compatibility facts differ.');
   if (!['prepared', 'committed'].includes(manifest.state)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest state is invalid.');
   return manifest;
