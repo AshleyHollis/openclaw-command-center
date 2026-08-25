@@ -32,6 +32,10 @@ const handlerMap = Object.freeze({
   'command-center.v1.analysis.read': (service, params) => service.analysisRead(params),
   'command-center.v1.analysis.run': (service, params) => service.analysisRun(params),
   'command-center.v1.attention.act': (service, params) => service.attentionAct(params),
+  'command-center.v1.attention.list': (service, params) => service.attentionList(params),
+  'command-center.v1.attention.get': (service, params) => service.attentionGet(params),
+  'command-center.v1.activity.list': (service, params) => service.activityList(params),
+  'command-center.v1.activity.get': (service, params) => service.activityGet(params),
   'command-center.v1.search.query': (service, params) => service.searchQuery(params)
 });
 
@@ -42,12 +46,14 @@ export function registerBridgeMethods(api, service) {
   for (const method of [...READ_METHODS, ...WRITE_METHODS]) {
     const contract = BRIDGE_CONTRACTS[method];
     const handler = handlerMap[method];
-    api.registerGatewayMethod(method, async ({ req, params, context, respond }) => {
+    api.registerGatewayMethod(method, async ({ req, params, client, context, respond }) => {
       const requestId = req?.id ?? null;
       try {
-        if (!context) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
+        if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
+        if (method === 'command-center.v1.attention.act' && (typeof client?.authenticatedUserId !== 'string' || client.authenticatedUserId.trim() === '')) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
         validateBridgeRequest(method, params, { mutation: WRITE_METHODS.includes(method) });
-        const result = await handler(service, { ...params, requestId });
+        const attentionMethod = method.startsWith('command-center.v1.attention.');
+        const result = await handler(service, { ...params, requestId, ...(attentionMethod && typeof client?.authenticatedUserId === 'string' ? { authenticatedOperatorId: client.authenticatedUserId } : {}) });
         const logicalOperationId = params.logicalOperationId ?? null;
         respond(true, { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId, result: sanitizeBridgeResult(method, result) });
       } catch (error) {

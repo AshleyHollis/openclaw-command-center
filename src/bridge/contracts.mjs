@@ -15,7 +15,11 @@ export const READ_METHODS = Object.freeze([
   'command-center.v1.schedules.get',
   'command-center.v1.metadata.read',
   'command-center.v1.analysis.read',
-  'command-center.v1.search.query'
+  'command-center.v1.search.query',
+  'command-center.v1.attention.list',
+  'command-center.v1.attention.get',
+  'command-center.v1.activity.list',
+  'command-center.v1.activity.get'
 ]);
 
 export const WRITE_METHODS = Object.freeze([
@@ -40,7 +44,7 @@ export const WRITE_METHODS = Object.freeze([
 ]);
 
 const common = ['schemaVersion'];
-const stringFields = new Set(['topicId', 'referenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedRevision', 'expectedConfigRevision', 'logicalOperationId', 'message', 'attentionId', 'actionId', 'query', 'operation']);
+const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedRevision', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId']);
 const objectFields = new Set(['patch', 'declaration', 'input', 'value']);
 
 function parameterSchema(field) {
@@ -48,7 +52,8 @@ function parameterSchema(field) {
   if (stringFields.has(field)) return Object.freeze({ type: 'string', minLength: 1 });
   if (objectFields.has(field)) return Object.freeze({ type: 'object' });
   if (field === 'enabled' || field === 'isPrimary') return Object.freeze({ type: 'boolean' });
-  if (field === 'limit') return Object.freeze({ type: 'integer', minimum: 1 });
+  if (field === 'limit') return Object.freeze({ type: 'integer', minimum: 1, maximum: 100 });
+  if (field === 'expectedEpisodeRevision') return Object.freeze({ type: 'integer', minimum: 1 });
   if (field === 'offset') return Object.freeze({ type: 'integer', minimum: 0 });
   if (field === 'expectedMigrationRevision') return Object.freeze({ type: 'integer', minimum: 1 });
   return Object.freeze({ type: 'string' });
@@ -67,13 +72,13 @@ function actionResultSchema(method) {
     sessionKey: Object.freeze({ type: 'string' }),
     job: Object.freeze({ type: 'object' }),
     results: Object.freeze({ type: 'array' }),
-    activity: Object.freeze({ type: 'array' }),
+    activity: Object.freeze({ type: method === 'command-center.v1.attention.act' ? ['object', 'null'] : 'array' }),
     diagnostics: Object.freeze({ type: 'array' }),
     unavailableCapabilities: Object.freeze({ type: 'array' }),
     metadataSchemaVersion: Object.freeze({ type: ['integer', 'null'] }),
     path: Object.freeze({ type: 'string' }),
     text: Object.freeze({ type: 'string' }),
-    revision: Object.freeze({ type: 'string' }),
+    revision: Object.freeze({ type: ['string', 'integer', 'null'] }),
     messages: Object.freeze({ type: 'array' }),
     topics: Object.freeze({ type: 'array' }),
     topic: Object.freeze({ type: ['object', 'null'] }),
@@ -93,7 +98,7 @@ function actionResultSchema(method) {
     updatedAt: Object.freeze({ type: 'string' }),
     sessionId: Object.freeze({ type: 'string' }),
     offset: Object.freeze({ type: 'integer' }),
-    nextOffset: Object.freeze({ type: 'integer' }),
+    nextOffset: Object.freeze({ type: ['integer', 'null'] }),
     hasMore: Object.freeze({ type: 'boolean' }),
     totalMessages: Object.freeze({ type: 'integer' }),
     completeSnapshot: Object.freeze({ type: 'boolean' }),
@@ -113,7 +118,17 @@ function actionResultSchema(method) {
     channels: Object.freeze({ type: 'array' }),
     failures: Object.freeze({ type: 'array' }),
     migrationRevision: Object.freeze({ type: 'integer' }),
-    completion: Object.freeze({ type: 'object' })
+    completion: Object.freeze({ type: 'object' }),
+    episode: Object.freeze({ type: method === 'command-center.v1.attention.get' ? ['object', 'null'] : 'object' }),
+    buckets: Object.freeze({ type: 'array' }),
+    episodes: Object.freeze({ type: 'array' }),
+    inProgress: Object.freeze({ type: 'array' }),
+    records: Object.freeze({ type: 'array' }),
+    record: Object.freeze({ type: ['object', 'null'] }),
+    cursor: Object.freeze({ type: ['string', 'null'] }),
+    attempt: Object.freeze({ type: ['object', 'null'] }),
+    navigation: Object.freeze({ type: ['object', 'null'] }),
+    approval: Object.freeze({ type: ['object', 'null'] })
   };
   const arrayResult = method.endsWith('notes.browse') || method.endsWith('reminders.list') || method.endsWith('schedules.list');
   const allowed = method.includes('.migration.')
@@ -132,9 +147,17 @@ function actionResultSchema(method) {
     ? ['schemaVersion', 'topic', 'topics', 'sourceReferences', 'preferences', 'activity', 'version', 'referenceId', 'topicId', 'sourceSystem', 'sourceKind', 'externalSourceId', 'observedRevision', 'createdAt', 'updatedAt']
     : method.endsWith('search.query')
     ? ['schemaVersion', 'query', 'limit', 'results']
+    : method.endsWith('attention.list')
+    ? ['schemaVersion', 'revision', 'buckets', 'episodes', 'inProgress']
+    : method.endsWith('attention.get')
+    ? ['schemaVersion', 'revision', 'episode']
+    : method.endsWith('activity.list')
+    ? ['schemaVersion', 'records', 'nextOffset', 'hasMore']
+    : method.endsWith('activity.get')
+    ? ['schemaVersion', 'record']
     : method.endsWith('analysis.read')
     ? ['status', 'analysisId', 'observedRevision']
-    : ['schemaVersion', 'status', 'requestId', 'logicalOperationId', 'value', 'note', 'sourceReference', 'job', 'results', 'activity'];
+    : ['schemaVersion', 'status', 'requestId', 'logicalOperationId', 'value', 'note', 'sourceReference', 'job', 'results', 'activity', 'episode', 'attempt', 'navigation', 'approval'];
   const itemProperties = Object.freeze(Object.fromEntries([
     'schemaVersion', 'path', 'revision', 'sourceReference', 'job'
   ].map((key) => [key, properties[key]])));
@@ -173,9 +196,13 @@ const required = Object.freeze({
   'command-center.v1.schedules.run': ['topicId'],
   'command-center.v1.analysis.read': ['topicId'],
   'command-center.v1.analysis.run': ['topicId', 'input'],
-  'command-center.v1.attention.act': ['topicId', 'attentionId', 'actionId'],
+  'command-center.v1.attention.act': ['topicId', 'sourceReferenceId', 'episodeId', 'expectedEpisodeRevision', 'expectedSourceRevision', 'actionId'],
   'command-center.v1.search.query': ['topicId', 'query'],
-  'command-center.v1.metadata.write': ['operation', 'value']
+  'command-center.v1.metadata.write': ['operation', 'value'],
+  'command-center.v1.attention.list': [],
+  'command-center.v1.attention.get': ['episodeId'],
+  'command-center.v1.activity.list': [],
+  'command-center.v1.activity.get': ['activityId']
 });
 const fields = Object.freeze({
   'command-center.v1.sources.status': [],
@@ -207,8 +234,12 @@ const fields = Object.freeze({
   'command-center.v1.metadata.write': ['operation', 'value', 'logicalOperationId'],
   'command-center.v1.analysis.read': ['topicId'],
   'command-center.v1.analysis.run': ['topicId', 'input', 'logicalOperationId'],
-  'command-center.v1.attention.act': ['topicId', 'attentionId', 'actionId', 'logicalOperationId'],
-  'command-center.v1.search.query': ['topicId', 'query', 'limit']
+  'command-center.v1.attention.act': ['topicId', 'sourceCapabilityId', 'stableSubjectId', 'episodeId', 'expectedEpisodeRevision', 'expectedSourceRevision', 'sourceReferenceId', 'actionId', 'input', 'approvalId', 'logicalOperationId'],
+  'command-center.v1.search.query': ['topicId', 'query', 'limit'],
+  'command-center.v1.attention.list': ['topicId', 'limit'],
+  'command-center.v1.attention.get': ['episodeId'],
+  'command-center.v1.activity.list': ['topicId', 'episodeId', 'offset', 'limit'],
+  'command-center.v1.activity.get': ['activityId']
 });
 
 export const BRIDGE_CONTRACTS = Object.freeze(Object.fromEntries([...READ_METHODS, ...WRITE_METHODS].map((method) => {
@@ -253,6 +284,7 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
     if (!valid) throw sourceError('invalid-request', `${key} must be a ${expected}.`);
     if (schema.minLength !== undefined && params[key].trim().length < schema.minLength) throw sourceError('invalid-request', `${key} must be a non-blank string.`);
     if (schema.minimum !== undefined && params[key] < schema.minimum) throw sourceError('invalid-request', `${key} must be at least ${schema.minimum}.`);
+    if (schema.maximum !== undefined && params[key] > schema.maximum) throw sourceError('invalid-request', `${key} must be at most ${schema.maximum}.`);
   }
   for (const key of required[method] ?? []) if (params[key] === undefined || params[key] === null || params[key] === '') throw sourceError('invalid-request', `Bridge request requires ${key}.`);
   const requiresPath = method.startsWith('command-center.v1.notes.') && !method.endsWith('.browse');
@@ -270,6 +302,7 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
   if (method.endsWith('.schedules.create')) validateScheduleDeclaration(params.declaration);
   if (method.endsWith('.schedules.update')) validateScheduleUpdatePatch(params.patch);
   if (method.endsWith('.analysis.run') && Object.keys(params.input).length !== 0) throw sourceError('invalid-request', 'Topic Analysis input does not support caller-defined fields.');
+  if (method.endsWith('.attention.act') && ['approval.approve', 'approval.reject'].includes(params.actionId) && (typeof params.approvalId !== 'string' || params.approvalId.trim() === '')) throw sourceError('invalid-request', 'Approval decisions require the exact approvalId.');
   if (mutation && !isCanonicalUuid(params.logicalOperationId)) throw sourceError('invalid-request', 'Mutations require a canonical logicalOperationId.');
   return contract;
 }
@@ -340,6 +373,32 @@ function sanitizeMutationValue(method, value) {
   return result;
 }
 
+function sanitizeAttentionEpisode(value) {
+  const result = copyClosed(value, ['episodeId', 'generation', 'sourceCapabilityId', 'stableSubjectId', 'attentionReason', 'state', 'severity', 'attentionSince', 'occurredAt', 'terminalAt', 'snoozedUntil', 'revision', 'sourceRevision', 'topicId', 'sourceReferenceId', 'diagnosis', 'evidenceFacts', 'updatedAt', 'createdAt', 'sourceKind', 'due', 'actions', 'eligibleSnoozeChoices', 'notificationEligible'], 'Attention episode');
+  if (result.diagnosis !== undefined) result.diagnosis = copyClosed(result.diagnosis, ['reason'], 'Attention diagnosis');
+  if (result.evidenceFacts !== undefined) result.evidenceFacts = copyClosed(result.evidenceFacts, ['facts', 'due', 'dueAt', 'reminderDue', 'actionOutcome'], 'Attention evidence');
+  if (result.actions !== undefined) result.actions = result.actions.slice(0, 3).map((action) => copyClosed(action, ['actionId', 'label', 'kind', 'target', 'parameterSchema', 'sideEffects', 'approvalMode', 'idempotency'], 'Attention action'));
+  return result;
+}
+
+const activityKeys = ['activityId', 'episodeId', 'logicalOperationId', 'attemptId', 'topicId', 'sourceReferenceId', 'actorMode', 'actionId', 'operationKind', 'outcome', 'verificationRevision', 'occurredAt'];
+
+function sanitizeAttentionValue(method, value) {
+  if (method.endsWith('attention.act')) {
+    const result = copyClosed(value, ['schemaVersion', 'status', 'episode', 'attempt', 'activity', 'navigation', 'approval'], 'Attention action result');
+    if (result.episode != null) result.episode = sanitizeAttentionEpisode(result.episode);
+    if (result.attempt != null) result.attempt = copyClosed(result.attempt, ['attemptId', 'episodeId', 'logicalOperationId', 'actionId', 'expectedEpisodeRevision', 'expectedSourceRevision', 'retryCount', 'state', 'outcome', 'verificationRevision', 'createdAt', 'updatedAt'], 'Attention attempt');
+    if (result.activity != null) result.activity = copyClosed(result.activity, activityKeys, 'Activity record');
+    if (result.approval != null) result.approval = copyClosed(result.approval, ['approvalId', 'actionId', 'attemptId', 'episodeId', 'episodeRevision', 'diagnosis', 'target', 'parameters', 'planRevision', 'sideEffects', 'host', 'operatorId', 'preconditionRevision', 'policyRevision', 'disclosureDigest', 'expiresAt', 'state', 'createdAt', 'updatedAt'], 'Approval record');
+    return result;
+  }
+  if (method.endsWith('attention.get')) return { ...copyClosed(value, ['schemaVersion', 'revision', 'episode'], 'Attention get result'), episode: value.episode === null ? null : sanitizeAttentionEpisode(value.episode) };
+  if (method.endsWith('attention.list')) return { ...copyClosed(value, ['schemaVersion', 'revision', 'buckets', 'episodes', 'inProgress'], 'Attention list result'), buckets: value.buckets.map((bucket) => bucket.map(sanitizeAttentionEpisode)), episodes: value.episodes.map(sanitizeAttentionEpisode), inProgress: (value.inProgress ?? []).map(sanitizeAttentionEpisode) };
+  if (method.endsWith('activity.get')) return { ...copyClosed(value, ['schemaVersion', 'record'], 'Activity get result'), record: value.record === null ? null : copyClosed(value.record, activityKeys, 'Activity record') };
+  if (method.endsWith('activity.list')) return { ...copyClosed(value, ['schemaVersion', 'records', 'nextOffset', 'hasMore'], 'Activity list result'), records: value.records.map((record) => copyClosed(record, activityKeys, 'Activity record')) };
+  return value;
+}
+
 export function sanitizeBridgeResult(method, result) {
   const contract = BRIDGE_CONTRACTS[method];
   if (!contract) throw sourceError('invalid-request', 'Unsupported Command Center bridge method.');
@@ -348,6 +407,7 @@ export function sanitizeBridgeResult(method, result) {
   if (sanitized?.note !== undefined) sanitized.note = sanitizeNote(sanitized.note);
   if (sanitized?.job !== undefined) sanitized.job = sanitizeJob(sanitized.job);
   if (sanitized?.value !== undefined) sanitized.value = sanitizeMutationValue(method, sanitized.value);
+  if (method.includes('.attention.') || method.includes('.activity.')) return sanitizeAttentionValue(method, sanitized);
   if (Array.isArray(sanitized)) return sanitized.map((item) => ({ ...item, ...(item.sourceReference === undefined ? {} : { sourceReference: sanitizeSourceReference(item.sourceReference) }), ...(item.job === undefined ? {} : { job: sanitizeJob(item.job) }) }));
   return sanitized;
 }

@@ -1,11 +1,11 @@
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import { serveShellAsset } from './asset-handler.mjs';
-import { openCommandCenterMetadataService } from './metadata/service.mjs';
 import { registerBridgeMethods } from './bridge/register.mjs';
-import { createAuthoritativeSourceService } from './sources/service.mjs';
-import { createNoteMaintenanceService } from './maintenance/notes.mjs';
 import { legacyDiscordMigrationConfigSchema } from './migration/config.mjs';
-import { createLegacyDiscordMigrationService } from './migration/service.mjs';
+import { createAttentionActionHandler } from './attention/http-route.mjs';
+import { createMetadataService } from './plugin-service.mjs';
+
+export { runNoteMaintenance } from './plugin-service.mjs';
 
 export const pluginId = 'command-center';
 export const routeId = 'command-center';
@@ -13,67 +13,13 @@ export const pluginPath = '/plugins/command-center';
 
 const assets = new Map([
   [`${pluginPath}`, ['index.html', 'text/html; charset=utf-8']],
-  [`${pluginPath}/`, ['index.html', 'text/html; charset=utf-8']],
   [`${pluginPath}/styles.css`, ['styles.css', 'text/css; charset=utf-8']]
 ]);
-
-let activeMaintenanceService;
-let activeMigrationService;
-
-export function runNoteMaintenance(input) {
-  if (!activeMaintenanceService) throw new Error('Command Center Note maintenance is not ready.');
-  return activeMaintenanceService.run(input);
-}
 
 /** @typedef {import('openclaw/plugin-sdk/plugin-entry').OpenClawPluginApi} OpenClawPluginApi */
 
 async function serveShell(req, res) {
   return serveShellAsset(req, res, { assets });
-}
-
-function createMetadataService(api) {
-  let metadataService;
-  let sourceService;
-  let maintenanceService;
-  return {
-    id: 'command-center-metadata',
-    start() {
-      const stateDir = api.runtime.state.resolveStateDir(process.env);
-      const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
-      const sessionStoreAvailable = typeof api.runtime?.agent?.session?.patchSessionEntry === 'function';
-      const capabilities = { notes: true, sessions: sessionStoreAvailable, scheduler: gatewayAvailable, activity: true, search: false, analysis: false, attention: false };
-      metadataService = openCommandCenterMetadataService({
-        stateDir,
-        capabilities
-      });
-      const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: api.pluginConfig?.legacyDiscordMigration, logger: api.logger });
-      sourceService = createAuthoritativeSourceService({
-        metadata: metadataService,
-        api,
-        capabilities,
-        migration: migrationService
-      });
-      maintenanceService = createNoteMaintenanceService({ sourceService, metadata: metadataService });
-      activeMaintenanceService = maintenanceService;
-      activeMigrationService = migrationService;
-      return migrationService.start();
-    },
-    stop() {
-      sourceService?.close?.();
-      metadataService?.close();
-      metadataService = undefined;
-      sourceService = undefined;
-      maintenanceService = undefined;
-      activeMaintenanceService = undefined;
-      activeMigrationService = undefined;
-    },
-    get sourceService() {
-      return sourceService;
-    },
-    get maintenanceService() {
-      return maintenanceService;
-    }
-  };
 }
 
 export default definePluginEntry({
@@ -102,11 +48,19 @@ export default definePluginEntry({
       group: 'control',
       path: pluginPath
     });
+    for (const path of assets.keys()) {
+      api.registerHttpRoute({
+        path,
+        auth: 'gateway',
+        match: 'exact',
+        handler: serveShell
+      });
+    }
     api.registerHttpRoute({
-      path: pluginPath,
-      auth: 'gateway',
-      match: 'prefix',
-      handler: serveShell
+      path: '/plugins/command-center/api/attention/actions',
+      auth: 'plugin',
+      match: 'exact',
+      handler: createAttentionActionHandler(serviceProxy)
     });
     registerBridgeMethods(api, serviceProxy);
     api.registerService(service);
