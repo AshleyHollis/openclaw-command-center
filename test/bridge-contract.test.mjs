@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, validateBridgeRequest } from '../src/bridge/contracts.mjs';
-import { registerBridgeMethods } from '../src/bridge/register.mjs';
+import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/register.mjs';
 import { randomUUID } from 'node:crypto';
+import { AuthoritativeSourceService } from '../src/sources/service.mjs';
 
 test('registers the complete closed versioned bridge inventory with least-privilege scopes', () => {
-  assert.ok(READ_METHODS.includes('command-center.v1.migration.status'));
-  assert.ok(READ_METHODS.includes('command-center.v1.migration.review-failures'));
-  assert.ok(!READ_METHODS.includes('command-center.v1.migration.review'));
   const registrations = [];
   const api = { registerGatewayMethod: (...args) => registrations.push(args) };
   const service = Object.fromEntries([...READ_METHODS, ...WRITE_METHODS].map((method) => [method, async () => ({ status: 'applied' })]));
@@ -32,8 +30,6 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.read', { topicId: 'topic', path: 'a.md' }), /schemaVersion/);
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.read', { schemaVersion: 1, topicId: 'topic', path: 'a.md', extra: true }), /unsupported.*field/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.edit', { schemaVersion: 1, topicId: 'topic', path: 'a.md', expectedRevision: 'sha256:x', text: 'x', logicalOperationId: 'not-a-uuid' }), /canonical.*logical/i);
-  assert.throws(() => validateBridgeRequest('command-center.v1.migration.resume', { schemaVersion: 1, logicalOperationId: randomUUID() }), /expectedMigrationRevision/i);
-  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.migration.resume', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedMigrationRevision: 1 }));
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.notes.edit', { schemaVersion: 1, topicId: 'topic', path: 'a.md', expectedRevision: 'sha256:x', text: 'x', logicalOperationId: randomUUID() }));
   assert.throws(() => validateBridgeRequest('command-center.v1.reminders.complete', { schemaVersion: 1, topicId: 'topic', referenceId: 'reminder', expectedConfigRevision: 'revision', patch: { payload: {} }, logicalOperationId: randomUUID() }), /unsupported.*patch/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.schedules.set-enabled', { schemaVersion: 1, topicId: 'topic', referenceId: 'schedule', expectedConfigRevision: 'revision', enabled: false, patch: { schedule: {} }, logicalOperationId: randomUUID() }), /unsupported.*patch/i);
@@ -45,6 +41,9 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.throws(() => validateBridgeRequest('command-center.v1.search.query', { schemaVersion: 1, topicId: 'topic', query: 'fictional', limit: 0 }), /limit/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.metadata.read', { schemaVersion: 1, referenceId: 'foreign-reference' }), /topicId/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.history', { schemaVersion: 1, topicId: 'topic', referenceId: 'session', sessionId: 'foreign-session' }), /unsupported.*sessionId/i);
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.structural-change.confirm', { schemaVersion: 1, topicId: randomUUID(), structuralChangeId: randomUUID(), paraCategory: 'area', previewDigest: 'sha256:preview', expectedRevision: 4, expectedRevisions: [], logicalOperationId: randomUUID() }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.topics.rename', { schemaVersion: 1, topicId: randomUUID(), name: 'Fictional rename', logicalOperationId: randomUUID() }), /expectedRevision/i);
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.recovery.verify', { schemaVersion: 1, topicId: randomUUID(), referenceId: 'note-folder:fictional', expectedRevision: 4, expectedSourceRevision: 'fs:1:2:3', logicalOperationId: randomUUID() }));
   for (const attachment of [{ path: '/fictional/private.md' }, { url: 'https://fictional.invalid/private' }]) {
     assert.throws(() => validateBridgeRequest('command-center.v1.sessions.send', { schemaVersion: 1, topicId: 'topic', referenceId: 'session', message: 'fictional', attachments: [attachment], logicalOperationId: randomUUID() }), /unsupported.*attachments/i);
   }
@@ -62,16 +61,42 @@ test('handlers preserve authenticated request context and echo request and logic
   assert.deepEqual(response[1], { schemaVersion: 1, status: 'applied', requestId: 'gateway-frame-1', logicalOperationId: null, result: { mode: 'ready' } });
 });
 
-test('Resume retains only its bounded migration status projection', async () => {
-  const registrations = new Map();
-  registerBridgeMethods({ registerGatewayMethod: (method, handler) => registrations.set(method, handler) }, {
-    migrationResume: async () => ({ schemaVersion: 1, enabled: true, phase: 'review', complete: false, migrationRevision: 4, actions: [{ id: 'resume-migration' }], channels: [], failures: [], privateSourceText: 'must not cross bridge' })
+test('Topic mutation handlers await the public service and return sanitized durable results', async () => {
+  const registrations = [];
+  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
+    topics: {
+      create: async () => ({ status: 'applied', logicalOperationId: 'logical-topic-create', topic: { topicId: 'topic-fictional', name: 'Fictional Topic', sourceReferences: [{ version: 1, referenceId: 'session:fictional', topicId: 'topic-fictional', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:private-session' }], locators: [{ referenceId: 'note-folder:fictional', locatorVersion: 1, locator: '/fictional/private/Topics/Fictional Topic', observedRevision: 'fs:1:2:3' }], privateField: 'withheld' } })
+    }
   });
+  const handler = registrations.find(([method]) => method === 'command-center.v1.topics.create')[1];
   let response;
-  await registrations.get('command-center.v1.migration.resume')({ req: { id: 'resume-request' }, params: { schemaVersion: 1, logicalOperationId: randomUUID(), expectedMigrationRevision: 4 }, context: { authenticated: true }, respond: (...args) => { response = args; } });
+  const logicalOperationId = randomUUID();
+  await handler({ req: { id: 'gateway-frame-topic' }, params: { schemaVersion: 1, name: 'Fictional Topic', paraCategory: 'project', logicalOperationId }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
-  assert.equal(response[1].result.migrationRevision, 4);
-  assert.equal('privateSourceText' in response[1].result, false);
+  assert.equal(response[1].result.value.status, 'applied');
+  assert.equal(response[1].result.value.topic.topicId, 'topic-fictional');
+  assert.equal(response[1].result.value.topic.privateField, undefined);
+  assert.equal(response[1].result.value.topic.sourceReferences[0].externalSourceId, undefined);
+  assert.equal(response[1].result.value.topic.locators[0].locator, undefined);
+  assert.doesNotMatch(JSON.stringify(response), /private-session|fictional\/private/);
+});
+
+test('Topic get withholds raw locators and external source identities', async () => {
+  const topicId = randomUUID();
+  const topic = {
+    topicId,
+    name: 'Fictional Topic',
+    revision: 4,
+    paraCategory: 'project',
+    lifecycle: 'active',
+    sourceReferences: [{ version: 1, referenceId: 'note-folder:fictional', topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/private/Topics/Fictional Topic', observedRevision: 'fs:1:2:3' }],
+    locators: [{ referenceId: 'note-folder:fictional', locatorVersion: 2, locator: '/fictional/private/Topics/Fictional Topic', ownership: 'managed', observedRevision: 'fs:1:2:3' }]
+  };
+  const result = await invokeBridgeMethod({ topics: { getVerified: async () => topic } }, 'command-center.v1.topics.get', { schemaVersion: 1, topicId });
+  assert.equal(result.topic.sourceReferences[0].externalSourceId, undefined);
+  assert.equal(result.topic.locators[0].locator, undefined);
+  assert.equal(result.topic.locators[0].observedRevision, 'fs:1:2:3');
+  assert.doesNotMatch(JSON.stringify(result), /fictional\/private/);
 });
 
 test('handlers bound raw provider failures without exposing their messages', async () => {
@@ -115,4 +140,74 @@ test('bridge rejects path, URL, and unsupported nested scheduler provider inputs
   ]) assert.throws(() => validateBridgeRequest('command-center.v1.schedules.create', { ...base, declaration }), /unsupported/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.schedules.update', { ...base, expectedConfigRevision: 'revision', patch: { delivery: { mode: 'webhook', to: 'https://fictional.invalid' } } }), /unsupported/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.analysis.run', { schemaVersion: 1, topicId: 'topic', logicalOperationId: randomUUID(), input: { url: 'https://fictional.invalid' } }), /does not support/i);
+});
+
+test('generic metadata writes cannot bypass Topic provisioning', async () => {
+  const service = new AuthoritativeSourceService({ metadata: { createTopic() { throw new Error('must not dispatch'); } }, capabilities: {} });
+  await assert.rejects(service.metadataWrite({ schemaVersion: 1, operation: 'topic', value: { topicId: 'corrupt', lifecycle: 'active' }, logicalOperationId: randomUUID() }), /Unsupported metadata operation/);
+});
+
+test('generic Topic-owned metadata writes honor archived read-only policy', async () => {
+  let dispatched = false;
+  const service = new AuthoritativeSourceService({
+    metadata: {
+      getTopic() { return { topicId: 'archived-topic', lifecycle: 'active', paraCategory: 'archive' }; },
+      setPresentationPreferences() { dispatched = true; }
+    },
+    capabilities: {}
+  });
+  await assert.rejects(service.metadataWrite({ schemaVersion: 1, operation: 'preferences', value: { topicId: 'archived-topic', displayLabel: 'Forbidden' }, logicalOperationId: randomUUID() }), /read-only/i);
+  assert.equal(dispatched, false);
+});
+
+test('Topics list sanitizes active, provisioning, recovery, archived, and retired collections', async () => {
+  const topic = { topicId: 'topic-list', name: 'Fictional', revision: 'r1', paraCategory: 'project', lifecycle: 'active', usable: true, recovery: [], sourceReferences: [], locators: [], privateField: 'withheld' };
+  const result = await invokeBridgeMethod({ topics: { listDestination: () => ({ activeGroups: { project: [topic], area: [], resource: [] }, provisioning: [topic], recovery: [topic], archived: [topic], retired: [topic] }) } }, 'command-center.v1.topics.list', { schemaVersion: 1 });
+  assert.deepEqual(Object.keys(result).sort(), ['activeGroups', 'archived', 'provisioning', 'recovery', 'retired']);
+  assert.equal(result.archived[0].privateField, undefined);
+  assert.equal(result.retired[0].privateField, undefined);
+});
+
+test('Source Recovery status is bounded and omits authoritative identities', async () => {
+  const registrations = [];
+  const topicId = randomUUID();
+  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, { topics: {
+    async inspectSourceRecovery() {
+      return { recoveryId: 'recovery:fictional', topicId, referenceId: 'note-folder:fictional', sourceKind: 'note_folder', state: 'required', lastLocator: '/fictional/private', lastIdentity: 'private-identity', failure: 'private failure', diagnostics: [{ check: 'exact-folder-resolution', lastLocator: '/fictional/private' }] };
+    }
+  } });
+  const handler = registrations.find(([method]) => method === 'command-center.v1.topics.recovery.status')[1];
+  let response;
+  await handler({ req: { id: 'gateway-recovery-status' }, params: { schemaVersion: 1, topicId, referenceId: 'note-folder:fictional' }, context: { authenticated: true }, respond: (...args) => { response = args; } });
+  assert.equal(response[0], true);
+  const serialized = JSON.stringify(response[1]);
+  assert.doesNotMatch(serialized, /fictional\/private|private-identity|private failure/);
+  assert.deepEqual(response[1].result.recovery.diagnostics[0], { topicId, referenceId: 'note-folder:fictional', sourceKind: 'note_folder', expectedIdentity: 'exact Note Folder identity', check: 'exact-folder-resolution', status: 'recovery-required', retryable: true });
+});
+
+test('Structural Change bridge previews omit private Note Folder locators', async () => {
+  const topicId = randomUUID();
+  const preview = (kind, from, to) => ({
+        kind, topicId, structuralChangeId: randomUUID(), from, to, digest: `sha256:fictional-${kind}-preview`,
+        expectedRevisions: [{ source: 'topic', id: topicId, revision: 1 }],
+        changes: [
+          { aspect: 'category', from, to },
+          { aspect: 'note-folder-location', from: `/fictional/private/${from}/Topic`, to: `/fictional/private/${to}/Topic`, managed: true }
+        ]
+      });
+  const service = { topics: {
+    recategorizationPreview: () => preview('recategorization', 'project', 'area'),
+    archivePreview: async () => preview('archive', 'area', 'archive'),
+    restorePreview: () => preview('restore', 'archive', 'resource')
+  } };
+  for (const [method, params] of [
+    ['command-center.v1.topics.structural-change.preview', { paraCategory: 'area' }],
+    ['command-center.v1.topics.archive.preview', {}],
+    ['command-center.v1.topics.restore.preview', { paraCategory: 'resource' }]
+  ]) {
+    const result = await invokeBridgeMethod(service, method, { schemaVersion: 1, topicId, expectedRevision: 1, logicalOperationId: randomUUID(), ...params });
+    const serialized = JSON.stringify(result);
+    assert.doesNotMatch(serialized, /fictional\/private|\/(?:project|area|archive|resource)\/Topic/);
+    assert.deepEqual(result.preview.changes[1], { aspect: 'note-folder-location', managed: true, fromConvention: 'current-managed', toConvention: 'target-conventional' });
+  }
 });

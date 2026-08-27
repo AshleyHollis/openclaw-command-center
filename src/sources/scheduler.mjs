@@ -230,6 +230,11 @@ export class SchedulerAdapter {
     return this.update({ ...input, patch: { enabled: false } }, 'reminders.complete', 'reminder_schedule');
   }
 
+  async retain(input = {}) {
+    assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'scheduleReferenceId', 'requestId', 'logicalOperationId', 'expectedConfigRevision'], 'reminders.retain request');
+    return this.update({ ...input, patch: { enabled: false } }, 'reminders.retain', 'reminder_schedule');
+  }
+
   async reschedule(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'scheduleReferenceId', 'requestId', 'logicalOperationId', 'expectedConfigRevision', 'patch'], 'schedules.reschedule request');
     return this.update({ ...input, patch: closedSchedulePatch(input.patch, 'schedules.reschedule') }, 'schedules.reschedule', 'schedule');
@@ -244,7 +249,10 @@ export class SchedulerAdapter {
   async setEnabled(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'scheduleReferenceId', 'requestId', 'logicalOperationId', 'expectedConfigRevision', 'enabled'], 'schedules.set-enabled request');
     if (typeof input.enabled !== 'boolean') throw sourceError('invalid-request', 'enabled must be a boolean');
-    return this.update({ ...input, patch: { enabled: input.enabled } }, 'schedules.set-enabled', 'schedule');
+    const reference = this.resolveReference(input);
+    const sourceKind = reference.sourceKind;
+    const operationKind = sourceKind === 'reminder_schedule' ? 'reminders.set-enabled' : 'schedules.set-enabled';
+    return this.update({ ...input, patch: { enabled: input.enabled } }, operationKind, sourceKind);
   }
 
   async run(input = {}) {
@@ -281,11 +289,13 @@ export class SchedulerAdapter {
     if (reference.sourceKind !== expectedSourceKind) throw sourceError('invalid-request', `${operationKind} requires an exact ${expectedSourceKind} Source Reference`);
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     validateScheduleUpdatePatch(input.patch);
-    const current = await this.read({ referenceId: reference.referenceId });
-    const expectedConfigRevision = nonBlank(input.expectedConfigRevision ?? current.job.configRevision, 'expectedConfigRevision');
-    if (current.job.configRevision !== expectedConfigRevision) throw sourceError('conflict', 'The scheduler configuration revision is stale.', { currentRevision: current.job.configRevision, expectedRevision: expectedConfigRevision });
+    let initial = null;
+    if (input.expectedConfigRevision === undefined) initial = await this.read({ referenceId: reference.referenceId });
+    const expectedConfigRevision = nonBlank(input.expectedConfigRevision ?? initial?.job.configRevision, 'expectedConfigRevision');
     const requestParams = { id: reference.externalSourceId, expectedConfigRevision, patch: input.patch };
     const execute = async ({ requestId }) => {
+      const current = await this.read({ referenceId: reference.referenceId });
+      if (current.job.configRevision !== expectedConfigRevision) throw sourceError('conflict', 'The scheduler configuration revision is stale.', { currentRevision: current.job.configRevision, expectedRevision: expectedConfigRevision });
       let response;
       try { response = await this.request('cron.update', requestParams, { requestId }); } catch (error) {
         if (error?.code === 'CRON_JOB_CHANGED' || error?.details?.code === 'CRON_JOB_CHANGED') throw sourceError('conflict', 'The scheduler configuration revision is stale.', { currentRevision: error?.actualConfigRevision ?? error?.details?.actualConfigRevision ?? null, expectedRevision });
@@ -302,9 +312,8 @@ export class SchedulerAdapter {
     };
     const reconcile = async () => {
       const after = await this.read({ referenceId: reference.referenceId });
-      const expected = { ...current.job, ...input.patch };
       const matched = Object.entries(input.patch).every(([key, value]) => stable(after.job[key]) === stable(value));
-      return matched ? { matched: true, value: after } : { matched: false, expected, actual: after.job };
+      return matched ? { matched: true, value: after } : { matched: false, expected: input.patch, actual: after.job };
     };
     if (this.coordinator) return this.coordinator.mutate({ operationKind, requestId: input.requestId ?? logicalOperationId, logicalOperationId, intent: { jobId: reference.externalSourceId, expectedConfigRevision, patch: input.patch }, reconcile, execute });
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };

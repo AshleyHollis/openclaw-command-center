@@ -64,7 +64,7 @@ test('schema-2 operation, Session, and Activity state remains durable and dedupl
     const intent = { operation: 'fictional durable replay' };
     const coordinator = createMutationCoordinator({ metadata: service });
     await coordinator.mutate({ operationKind: 'metadata.fictional', requestId: 'frame-durable', logicalOperationId, intent, execute: async () => ({ id: 'durable-result' }) });
-    service.setSessionState({ referenceId: 'session-durable-state', sessionId: 'fictional-session-id', status: 'closed', isPrimary: false, wasPrimary: true, displayName: 'Fictional Durable Conversation' });
+    service.setSessionState({ referenceId: 'session-durable-state', sessionId: 'fictional-session-id', status: 'closed', isPrimary: false });
     service.recordActivity({ activityId: 'activity-durable-state', topicId: 'topic-durable-state', logicalOperationId: '78c27e72-8c8e-4144-b24c-4a845764b61e', transportRequestId: 'activity-frame', operationKind: 'notes.maintenance', outcome: 'conflict', observedRevision: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
     service.close();
 
@@ -79,8 +79,6 @@ test('schema-2 operation, Session, and Activity state remains durable and dedupl
     assert.equal(durableSessionState.sessionId, 'fictional-session-id');
     assert.equal(durableSessionState.status, 'closed');
     assert.equal(durableSessionState.isPrimary, false);
-    assert.equal(durableSessionState.wasPrimary, true);
-    assert.equal(durableSessionState.displayName, 'Fictional Durable Conversation');
     assert.match(durableSessionState.updatedAt, /^\d{4}-\d{2}-\d{2}T/u);
     assert.equal(service.getSourceReference('session-durable-state').observedRevision, 'opaque-session-revision');
     assert.equal(service.listActivity('topic-durable-state').length, 1);
@@ -90,7 +88,7 @@ test('schema-2 operation, Session, and Activity state remains durable and dedupl
   });
 });
 
-test('Source References reject missing metadata, duplicate identity, rekeying, and dependent Topic deletion without partial effects', async () => {
+test('Source References reject missing metadata, duplicate identity, rekeying, and activated Topic deletion without partial effects', async () => {
   await withState(async (stateDir) => {
     const service = openCommandCenterMetadataService({ stateDir });
     service.createTopic({ topicId: 'topic-fictional', paraCategory: 'project', lifecycle: 'active' });
@@ -104,7 +102,10 @@ test('Source References reject missing metadata, duplicate identity, rekeying, a
     assert.throws(() => service.createSourceReference({ ...fictionalReference, referenceId: 'duplicate-source', topicId: 'topic-other' }), /UNIQUE|constraint/i);
     assert.throws(() => service.createSourceReference({ ...fictionalReference }), /UNIQUE|constraint/i);
     assert.throws(() => service.updateSourceReference({ version: 1, referenceId: 'reference-fictional', externalSourceId: 'session-rekeyed' }), /immutable/);
-    assert.throws(() => service.deleteTopic('topic-fictional'), /still referenced/);
+    assert.throws(
+      () => service.deleteTopic('topic-fictional'),
+      (error) => error?.code === 'unsupported-operation' && /activated Topic cannot be permanently deleted/i.test(error.message)
+    );
     service.close();
 
     const reopened = openCommandCenterMetadataService({ stateDir });
@@ -115,7 +116,7 @@ test('Source References reject missing metadata, duplicate identity, rekeying, a
   });
 });
 
-test('deleting a Source Reference exercises the public connection foreign-key cascade durably', async () => {
+test('an activated Topic Source Reference cannot be deleted or forgotten', async () => {
   await withState(async (stateDir) => {
     const service = openCommandCenterMetadataService({ stateDir });
     service.createTopic({ topicId: 'topic-fictional', paraCategory: 'project', lifecycle: 'active' });
@@ -126,13 +127,35 @@ test('deleting a Source Reference exercises the public connection foreign-key ca
 
     const reopened = openCommandCenterMetadataService({ stateDir });
     assert.equal(reopened.getSourceConventionState('reference-fictional').length, 1);
-    assert.equal(reopened.deleteSourceReference('reference-fictional'), true);
+    assert.throws(
+      () => reopened.deleteSourceReference('reference-fictional'),
+      (error) => error?.code === 'unsupported-operation' && /Source Reference.*cannot be deleted/i.test(error.message)
+    );
     reopened.close();
 
     const verified = openCommandCenterMetadataService({ stateDir });
-    assert.equal(verified.getSourceReference('reference-fictional'), null);
-    assert.deepEqual(verified.getSourceConventionState('reference-fictional'), []);
+    assert.equal(verified.getSourceReference('reference-fictional').externalSourceId, 'session-fictional');
+    assert.equal(verified.getSourceConventionState('reference-fictional').length, 1);
     assert.ok(verified.getTopic('topic-fictional'));
     verified.close();
+  });
+});
+
+test('only an exact unactivated Provisioning operation may delete its Source Reference', async () => {
+  await withState(async (stateDir) => {
+    const service = openCommandCenterMetadataService({ stateDir });
+    const topicId = 'topic-provisioning-cleanup';
+    const referenceId = 'reference-provisioning-cleanup';
+    const provisioningOperationId = '12345678-1234-4234-8234-123456789abc';
+    const topic = service.createTopic({ topicId, paraCategory: 'project', lifecycle: 'provisioning' });
+    service.recordTopicOperation({ logicalOperationId: provisioningOperationId, topicId, operationKind: 'topics.create', state: 'pending', intent: { topicId } });
+    service.createSourceReference({ ...fictionalReference, referenceId, topicId });
+    assert.throws(() => service.deleteSourceReference(referenceId), /Provisioning rollback/i);
+    assert.throws(
+      () => service.deleteProvisioningSourceReference({ referenceId, topicId, expectedTopicRevision: topic.revision + 1, provisioningOperationId }),
+      (error) => error?.code === 'conflict'
+    );
+    assert.equal(service.deleteProvisioningSourceReference({ referenceId, topicId, expectedTopicRevision: topic.revision, provisioningOperationId }), true);
+    assert.equal(service.getSourceReference(referenceId), null);
   });
 });

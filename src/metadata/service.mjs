@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
+  ATTENTION_METADATA_SCHEMA_VERSION,
   LEGACY_MIGRATION_SCHEMA_VERSION,
   LEGACY_METADATA_SCHEMA_VERSION,
   PRIOR_COMMAND_CENTER_SCHEMA_VERSION,
@@ -28,6 +29,7 @@ import {
   applyV2ToV3Migration,
   applyV3ToV4Migration,
   applyV4ToV5Migration,
+  applyV5ToV6Migration,
   validateMigrationLedger
 } from './migration-ledger.mjs';
 import {
@@ -125,7 +127,7 @@ function allowedKeys(value, keys, field = 'value') {
 }
 
 function mapTopic(row) {
-  return row && { topicId: row.topic_id, paraCategory: row.para_category, lifecycle: row.lifecycle, createdAt: row.created_at, updatedAt: row.updated_at };
+  return row && { topicId: row.topic_id, paraCategory: row.para_category, lifecycle: row.lifecycle, revision: row.revision, name: row.name, activatedAt: row.activated_at, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
 function mapSourceReference(row) {
@@ -143,8 +145,13 @@ function mapSourceReference(row) {
 }
 
 function mapConvention(row) {
-  return row && { referenceId: row.reference_id, aspect: row.aspect, state: row.state, updatedAt: row.updated_at };
+  return row && { referenceId: row.reference_id, aspect: row.aspect, state: row.state, expectedValue: row.expected_value, updatedAt: row.updated_at };
 }
+
+function jsonValue(value, fallback = null) { try { return value === null || value === undefined ? fallback : JSON.parse(value); } catch { return fallback; } }
+function mapLocator(row) { return row && { referenceId: row.reference_id, locator: row.locator, locatorVersion: row.locator_version, ownership: row.ownership, observedRevision: row.observed_revision, updatedAt: row.updated_at }; }
+function mapTopicOperation(row) { return row && { logicalOperationId: row.logical_operation_id, topicId: row.topic_id, operationKind: row.operation_kind, state: row.state, currentStep: row.current_step, intent: jsonValue(row.intent_json, {}), result: jsonValue(row.result_json), createdAt: row.created_at, updatedAt: row.updated_at }; }
+function mapRecovery(row) { return row && { recoveryId: row.recovery_id, topicId: row.topic_id, referenceId: row.reference_id, sourceKind: row.source_kind, state: row.state, revision: row.revision, lastLocator: row.last_locator, lastIdentity: row.last_identity, failure: row.failure, diagnostics: jsonValue(row.diagnostics_json, []), createdAt: row.created_at, updatedAt: row.updated_at }; }
 
 function mapPreferences(row) {
   return row && { topicId: row.topic_id, displayLabel: row.display_label, sortOrder: row.sort_order, collapsed: row.collapsed === 1, updatedAt: row.updated_at };
@@ -334,6 +341,9 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     } else if (schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION) {
       const priorFailure = inspectSchemaOneDatabase(database, LEGACY_MIGRATION_SCHEMA_VERSION);
       if (priorFailure) return priorFailure;
+    } else if (schemaVersion === ATTENTION_METADATA_SCHEMA_VERSION) {
+      const priorFailure = inspectSchemaOneDatabase(database, ATTENTION_METADATA_SCHEMA_VERSION);
+      if (priorFailure) return priorFailure;
     } else if (schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION) {
       const priorFailure = inspectSchemaOneDatabase(database, PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
       if (priorFailure) return priorFailure;
@@ -357,9 +367,29 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     try {
       migrationDatabase = new DatabaseSync(databasePath);
       migrationDatabase.exec('PRAGMA foreign_keys = ON;');
-      applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV5ToV6Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-4 to schema-5 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
+    } finally { closeQuietly(migrationDatabase); }
+    migrationHooks?.afterDatabaseCommit?.();
+    try { markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
+    return validateCurrentSchema(databasePath, stateDir);
+  }
+
+  if (schemaVersion === ATTENTION_METADATA_SCHEMA_VERSION) {
+    let material;
+    try {
+      material = readRecoveryMaterial(stateDir);
+      if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: ATTENTION_METADATA_SCHEMA_VERSION });
+    } catch (error) { return recoveryFailure(error, ATTENTION_METADATA_SCHEMA_VERSION); }
+    let migrationDatabase;
+    try {
+      migrationDatabase = new DatabaseSync(databasePath);
+      migrationDatabase.exec('PRAGMA foreign_keys = ON;');
+      applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV5ToV6Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    } catch {
+      return coreFailure('migration-failed', 'The schema-4 to schema-6 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', ATTENTION_METADATA_SCHEMA_VERSION);
     } finally { closeQuietly(migrationDatabase); }
     migrationHooks?.afterDatabaseCommit?.();
     try { markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
@@ -378,6 +408,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       migrationDatabase.exec('PRAGMA foreign_keys = ON;');
       applyV3ToV4Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV5ToV6Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-3 to schema-5 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_MIGRATION_SCHEMA_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -408,6 +439,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       applyV2ToV3Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV3ToV4Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV5ToV6Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       closeQuietly(migrationDatabase);
       return coreFailure('migration-failed', 'The schema-2 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_METADATA_SCHEMA_VERSION);
@@ -439,6 +471,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     applyV2ToV3Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     applyV3ToV4Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    applyV5ToV6Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
   } catch (error) {
     closeQuietly(migrationDatabase);
     return coreFailure('migration-failed', 'The schema-1 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the retained verified snapshot or restore the prior compatible release.', SOURCE_SCHEMA_VERSION);
@@ -649,11 +682,15 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
 
   function topicInput(input, { partial = false } = {}) {
     const value = objectValue(input, 'topic');
-    allowedKeys(value, ['topicId', 'paraCategory', 'lifecycle', 'createdAt', 'updatedAt'], 'topic');
+    allowedKeys(value, ['topicId', 'name', 'paraCategory', 'lifecycle', 'revision', 'expectedRevision', 'activatedAt', 'createdAt', 'updatedAt'], 'topic');
     const result = {};
     if (!partial || value.topicId !== undefined) result.topicId = requiredString(value.topicId, 'topicId');
     if (!partial || value.paraCategory !== undefined) result.paraCategory = enumValue(value.paraCategory, paraCategories, 'paraCategory');
     if (!partial || value.lifecycle !== undefined) result.lifecycle = enumValue(value.lifecycle, topicLifecycles, 'lifecycle');
+    if (!partial || value.name !== undefined) result.name = requiredString(value.name ?? value.topicId, 'name');
+    if (value.revision !== undefined) result.revision = integerValue(value.revision, 'revision', { minimum: 0 });
+    if (value.expectedRevision !== undefined) result.expectedRevision = integerValue(value.expectedRevision, 'expectedRevision', { minimum: 0 });
+    if (value.activatedAt !== undefined) result.activatedAt = value.activatedAt === null ? null : timestamp(value.activatedAt, 'activatedAt');
     if (value.createdAt !== undefined) result.createdAt = timestamp(value.createdAt, 'createdAt');
     if (value.updatedAt !== undefined) result.updatedAt = timestamp(value.updatedAt, 'updatedAt');
     return result;
@@ -663,7 +700,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     const value = topicInput(input);
     const now = timestamp(undefined, 'createdAt');
     return mutate(null, (db) => {
-      db.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(value.topicId, value.paraCategory, value.lifecycle, value.createdAt ?? now, value.updatedAt ?? value.createdAt ?? now);
+      const createdAt = value.createdAt ?? now;
+      db.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, revision, name, activated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(value.topicId, value.paraCategory, value.lifecycle, value.revision ?? 0, value.name, value.activatedAt ?? (value.lifecycle === 'active' ? createdAt : null), createdAt, value.updatedAt ?? createdAt);
       return mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(value.topicId));
     });
   };
@@ -671,12 +709,14 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   service.updateTopic = (input) => {
     const value = topicInput(input, { partial: true });
     if (!value.topicId) throw new CommandCenterMetadataError('invalid-value', 'topicId is required');
-    if (!value.paraCategory && !value.lifecycle) throw new CommandCenterMetadataError('invalid-value', 'topic classification update is empty');
+    if (!value.paraCategory && !value.lifecycle && value.activatedAt === undefined) throw new CommandCenterMetadataError('invalid-value', 'topic classification update is empty');
     const updatedAt = value.updatedAt ?? timestamp(undefined, 'updatedAt');
     return mutate(null, (db) => {
       const current = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(value.topicId);
       if (!current) throw new CommandCenterMetadataError('not-found', 'Topic was not found.');
-      db.prepare('UPDATE topics SET para_category = ?, lifecycle = ?, updated_at = ? WHERE topic_id = ?').run(value.paraCategory ?? current.para_category, value.lifecycle ?? current.lifecycle, updatedAt, value.topicId);
+      if (value.expectedRevision !== undefined && value.expectedRevision !== current.revision) throw new CommandCenterMetadataError('conflict', 'Topic revision is stale.');
+      const activatedAt = current.activated_at ?? value.activatedAt ?? (value.lifecycle === 'active' ? updatedAt : null);
+      db.prepare('UPDATE topics SET para_category = ?, lifecycle = ?, activated_at = ?, revision = revision + 1, updated_at = ? WHERE topic_id = ?').run(value.paraCategory ?? current.para_category, value.lifecycle ?? current.lifecycle, activatedAt, updatedAt, value.topicId);
       return mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(value.topicId));
     });
   };
@@ -684,9 +724,19 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   service.getTopic = (topicId) => readOne('SELECT * FROM topics WHERE topic_id = ?', [requiredString(topicId, 'topicId')], mapTopic) || null;
   service.listTopics = () => readMany('SELECT * FROM topics ORDER BY topic_id', [], mapTopic);
   service.listUsableTopics = () => readMany("SELECT * FROM topics WHERE lifecycle = 'active' ORDER BY topic_id", [], mapTopic);
+  service.getTopicName = (topicId) => service.getTopic(topicId)?.name ?? null;
+  service.setTopicName = ({ topicId, name, expectedRevision, updatedAt } = {}) => mutate(null, (db) => {
+    const current = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(requiredString(topicId, 'topicId'));
+    if (!current) throw new CommandCenterMetadataError('not-found', 'Topic was not found.');
+    if (current.revision !== integerValue(expectedRevision, 'expectedRevision', { minimum: 0 })) throw new CommandCenterMetadataError('conflict', 'Topic revision is stale.');
+    db.prepare('UPDATE topics SET name = ?, revision = revision + 1, updated_at = ? WHERE topic_id = ?').run(requiredString(name, 'name'), timestamp(updatedAt, 'updatedAt'), topicId);
+    return mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(topicId));
+  });
   service.deleteTopic = (topicId) => {
     requiredString(topicId, 'topicId');
     return mutate(null, (db) => {
+      const topic = db.prepare('SELECT activated_at FROM topics WHERE topic_id = ?').get(topicId);
+      if (topic?.activated_at) throw new CommandCenterMetadataError('unsupported-operation', 'An activated Topic cannot be permanently deleted.');
       if (db.prepare('SELECT 1 FROM source_references WHERE topic_id = ? LIMIT 1').get(topicId)) {
         throw new CommandCenterMetadataError('dependent-record', 'Topic is still referenced by a Source Reference.');
       }
@@ -726,6 +776,11 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   function insertSourceReference(db, value, now) {
     const topic = db.prepare('SELECT 1 FROM topics WHERE topic_id = ?').get(value.topicId);
     if (!topic) throw new CommandCenterMetadataError('not-found', 'Topic was not found.');
+    if (value.sourceSystem === 'openclaw' && value.sourceKind === 'session') {
+      const owner = db.prepare(`SELECT reference.reference_id FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+        WHERE reference.source_system = 'openclaw' AND reference.source_kind = 'session' AND locator.locator = ? LIMIT 1`).get(value.externalSourceId);
+      if (owner) throw new CommandCenterMetadataError('conflict', 'Session identity is already owned by another Source Reference locator.');
+    }
     db.prepare('INSERT INTO source_references (reference_id, topic_id, source_system, source_kind, external_source_id, last_observed_revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(value.referenceId, value.topicId, value.sourceSystem, value.sourceKind, value.externalSourceId, value.observedRevision, value.createdAt ?? now, value.updatedAt ?? value.createdAt ?? now);
     return mapSourceReference(db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(value.referenceId));
   }
@@ -741,7 +796,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     if (topic.lifecycle !== 'provisioning' || reference.topicId !== topic.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder') throw new CommandCenterMetadataError('invalid-value', 'Migration Topic bootstrap requires its exact provisioning Note Folder binding.');
     return mutate('notes', (db) => {
       const now = topic.createdAt ?? timestamp(undefined, 'createdAt');
-      db.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(topic.topicId, topic.paraCategory, topic.lifecycle, now, topic.updatedAt ?? now);
+      db.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, revision, name, activated_at, created_at, updated_at) VALUES (?, ?, ?, 0, ?, NULL, ?, ?)').run(topic.topicId, topic.paraCategory, topic.lifecycle, topic.name, now, topic.updatedAt ?? now);
       return Object.freeze({ topic: mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(topic.topicId)), reference: insertSourceReference(db, reference, now) });
     });
   };
@@ -781,6 +836,26 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     return mutate(null, (db) => {
       const current = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId);
       if (!current) throw new CommandCenterMetadataError('not-found', 'Source Reference was not found.');
+      throw new CommandCenterMetadataError('unsupported-operation', 'A durable Source Reference cannot be deleted directly; only an exact unactivated Provisioning rollback may remove it.');
+    });
+  };
+
+  service.deleteProvisioningSourceReference = (input = {}) => {
+    const value = objectValue(input, 'Provisioning Source Reference deletion');
+    allowedKeys(value, ['referenceId', 'topicId', 'expectedTopicRevision', 'provisioningOperationId'], 'Provisioning Source Reference deletion');
+    const referenceId = requiredString(value.referenceId, 'referenceId');
+    const topicId = requiredString(value.topicId, 'topicId');
+    const expectedTopicRevision = integerValue(value.expectedTopicRevision, 'expectedTopicRevision', { minimum: 0 });
+    const provisioningOperationId = requiredString(value.provisioningOperationId, 'provisioningOperationId');
+    return mutate(null, (db) => {
+      const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(topicId);
+      if (!topic) throw new CommandCenterMetadataError('not-found', 'Topic was not found.');
+      if (topic.lifecycle !== 'provisioning' || topic.activated_at !== null) throw new CommandCenterMetadataError('unsupported-operation', 'Only an unactivated Provisioning Topic may remove a Source Reference.');
+      if (topic.revision !== expectedTopicRevision) throw new CommandCenterMetadataError('conflict', 'Topic revision is stale.');
+      const operation = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(provisioningOperationId);
+      if (!operation || operation.topic_id !== topicId || operation.operation_kind !== 'topics.create' || operation.state === 'applied') throw new CommandCenterMetadataError('conflict', 'The exact durable Provisioning operation does not authorize Source Reference cleanup.');
+      const current = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId);
+      if (!current || current.topic_id !== topicId) throw new CommandCenterMetadataError('conflict', 'The Source Reference is not owned by the exact Provisioning Topic.');
       mutateCapabilityInsideTransaction(current.source_system);
       db.prepare('DELETE FROM source_references WHERE reference_id = ?').run(referenceId);
       return true;
@@ -794,7 +869,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
 
   service.setSourceConventionState = (input) => {
     const value = objectValue(input, 'convention state');
-    allowedKeys(value, ['referenceId', 'aspect', 'state', 'updatedAt'], 'convention state');
+    allowedKeys(value, ['referenceId', 'aspect', 'state', 'expectedValue', 'updatedAt'], 'convention state');
     const referenceId = requiredString(value.referenceId, 'referenceId');
     const aspect = enumValue(value.aspect, conventionAspects, 'aspect');
     const state = enumValue(value.state, conventionStates, 'state');
@@ -803,7 +878,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
       if (!reference) throw new CommandCenterMetadataError('not-found', 'Source Reference was not found.');
       mutateCapabilityInsideTransaction(reference.source_system);
       const updatedAt = timestamp(value.updatedAt, 'updatedAt');
-      db.prepare('INSERT INTO source_convention_state (reference_id, aspect, state, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(reference_id, aspect) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at').run(referenceId, aspect, state, updatedAt);
+      db.prepare('INSERT INTO source_convention_state (reference_id, aspect, state, expected_value, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(reference_id, aspect) DO UPDATE SET state = excluded.state, expected_value = excluded.expected_value, updated_at = excluded.updated_at').run(referenceId, aspect, state, value.expectedValue ?? null, updatedAt);
       return mapConvention(db.prepare('SELECT * FROM source_convention_state WHERE reference_id = ? AND aspect = ?').get(referenceId, aspect));
     });
   };
@@ -1190,6 +1265,93 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   service.listActivity = (topicId = undefined) => topicId === undefined
     ? readMany('SELECT * FROM activity_records ORDER BY created_at, activity_id', [], mapActivity)
     : readMany('SELECT * FROM activity_records WHERE topic_id = ? ORDER BY created_at, activity_id', [requiredString(topicId, 'topicId')], mapActivity);
+
+  service.setSourceLocator = (input = {}) => mutate(null, (db) => {
+    const referenceId = requiredString(input.referenceId, 'referenceId');
+    if (!db.prepare('SELECT 1 FROM source_references WHERE reference_id = ?').get(referenceId)) throw new CommandCenterMetadataError('not-found', 'Source Reference was not found.');
+    const existing = db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId);
+    const locatorVersion = input.locatorVersion ?? (existing ? existing.locator_version + (existing.locator === input.locator && existing.observed_revision === (input.observedRevision ?? null) ? 0 : 1) : 1);
+    if (existing && input.locatorVersion !== undefined && input.locatorVersion < existing.locator_version) throw new CommandCenterMetadataError('conflict', 'Source locator revision is stale.');
+    db.prepare(`INSERT INTO source_locators (reference_id, locator, locator_version, ownership, observed_revision, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(reference_id) DO UPDATE SET locator = excluded.locator, locator_version = excluded.locator_version, ownership = excluded.ownership, observed_revision = excluded.observed_revision, updated_at = excluded.updated_at`).run(referenceId, requiredString(input.locator, 'locator'), integerValue(locatorVersion, 'locatorVersion', { minimum: 1 }), input.ownership ?? existing?.ownership ?? 'external', input.observedRevision ?? null, timestamp(input.updatedAt, 'updatedAt'));
+    return mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId));
+  });
+  service.getSourceLocator = (referenceId) => readOne('SELECT * FROM source_locators WHERE reference_id = ?', [requiredString(referenceId, 'referenceId')], mapLocator) || null;
+  service.listSourceLocators = (topicId = undefined) => topicId === undefined
+    ? readMany('SELECT * FROM source_locators ORDER BY reference_id', [], mapLocator)
+    : readMany('SELECT locator.* FROM source_locators AS locator JOIN source_references AS reference ON reference.reference_id = locator.reference_id WHERE reference.topic_id = ? ORDER BY locator.reference_id', [requiredString(topicId, 'topicId')], mapLocator);
+
+  service.recordTopicOperation = (input = {}) => mutate(null, (db) => {
+    const logicalOperationId = requiredString(input.logicalOperationId, 'logicalOperationId');
+    const existing = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId);
+    const intentJson = JSON.stringify(input.intent ?? {});
+    if (existing && (existing.operation_kind !== input.operationKind || existing.intent_json !== intentJson)) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
+    const createdAt = existing?.created_at ?? timestamp(input.createdAt, 'createdAt');
+    const updatedAt = timestamp(input.updatedAt, 'updatedAt');
+    db.prepare(`INSERT INTO topic_operations (logical_operation_id, topic_id, operation_kind, state, current_step, intent_json, result_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(logical_operation_id) DO UPDATE SET topic_id = excluded.topic_id, state = excluded.state, current_step = excluded.current_step, result_json = excluded.result_json, updated_at = excluded.updated_at`).run(logicalOperationId, input.topicId ?? existing?.topic_id ?? null, requiredString(input.operationKind, 'operationKind'), input.state ?? 'pending', input.currentStep ?? 'pending', intentJson, input.result === undefined ? existing?.result_json ?? null : JSON.stringify(input.result), createdAt, updatedAt);
+    return mapTopicOperation(db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId));
+  });
+  service.getTopicOperation = (logicalOperationId) => readOne('SELECT * FROM topic_operations WHERE logical_operation_id = ?', [requiredString(logicalOperationId, 'logicalOperationId')], mapTopicOperation) || null;
+  service.listTopicOperations = (topicId = undefined) => topicId === undefined ? readMany('SELECT * FROM topic_operations ORDER BY created_at, logical_operation_id', [], mapTopicOperation) : readMany('SELECT * FROM topic_operations WHERE topic_id = ? ORDER BY created_at, logical_operation_id', [requiredString(topicId, 'topicId')], mapTopicOperation);
+
+  service.recordSourceRecovery = (input = {}) => mutate(null, (db) => {
+    const recoveryId = requiredString(input.recoveryId, 'recoveryId');
+    const existing = db.prepare('SELECT * FROM source_recovery WHERE recovery_id = ?').get(recoveryId);
+    const revision = existing ? existing.revision + (existing.state === input.state && existing.last_locator === (input.lastLocator ?? null) && existing.last_identity === (input.lastIdentity ?? null) ? 0 : 1) : 1;
+    const now = timestamp(input.updatedAt, 'updatedAt');
+    db.prepare(`INSERT INTO source_recovery (recovery_id, topic_id, reference_id, source_kind, state, revision, last_locator, last_identity, failure, diagnostics_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(recovery_id) DO UPDATE SET state = excluded.state, revision = excluded.revision, last_locator = excluded.last_locator, last_identity = excluded.last_identity, failure = excluded.failure, diagnostics_json = excluded.diagnostics_json, updated_at = excluded.updated_at`).run(recoveryId, requiredString(input.topicId, 'topicId'), requiredString(input.referenceId, 'referenceId'), input.sourceKind, input.state ?? 'required', revision, input.lastLocator ?? null, input.lastIdentity ?? null, String(input.failure ?? 'source verification failed').slice(0, 300), JSON.stringify(input.diagnostics ?? []), existing?.created_at ?? now, now);
+    return mapRecovery(db.prepare('SELECT * FROM source_recovery WHERE recovery_id = ?').get(recoveryId));
+  });
+  service.listSourceRecovery = (topicId = undefined) => topicId === undefined ? readMany('SELECT * FROM source_recovery ORDER BY recovery_id', [], mapRecovery) : readMany('SELECT * FROM source_recovery WHERE topic_id = ? ORDER BY recovery_id', [requiredString(topicId, 'topicId')], mapRecovery);
+
+  service.completeTopicProvisioning = (input = {}) => mutate(null, (db) => {
+    const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.topicId);
+    if (topic?.lifecycle === 'active' && topic.activated_at) {
+      db.prepare("UPDATE topic_operations SET state = 'applied', current_step = 'complete', result_json = ?, updated_at = ? WHERE logical_operation_id = ?").run(JSON.stringify(input.result ?? {}), timestamp(input.updatedAt, 'updatedAt'), input.logicalOperationId);
+      return { topic: mapTopic(topic), operation: mapTopicOperation(db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(input.logicalOperationId)) };
+    }
+    if (!topic || topic.lifecycle !== 'provisioning' || topic.revision !== input.expectedRevision) throw new CommandCenterMetadataError('conflict', 'Topic activation revision is stale.');
+    const updatedAt = timestamp(input.updatedAt, 'updatedAt');
+    db.prepare("UPDATE topics SET lifecycle = 'active', activated_at = COALESCE(activated_at, ?), revision = revision + 1, updated_at = ? WHERE topic_id = ?").run(updatedAt, updatedAt, input.topicId);
+    const operation = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(input.logicalOperationId);
+    db.prepare("UPDATE topic_operations SET state = 'applied', current_step = 'complete', result_json = ?, updated_at = ? WHERE logical_operation_id = ?").run(JSON.stringify(input.result ?? {}), updatedAt, input.logicalOperationId);
+    return Object.freeze({ topic: mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.topicId)), operation: mapTopicOperation(operation) });
+  });
+
+  service.applyFolderRecoveryBinding = ({ referenceId, locator, observedRevision, expectedSourceRevision, updatedAt } = {}) => {
+    const current = service.getSourceLocator(referenceId);
+    const recovery = service.listSourceRecovery().find((item) => item.referenceId === referenceId && item.state === 'required');
+    if (!current || current.observedRevision !== expectedSourceRevision && recovery?.lastIdentity !== expectedSourceRevision) throw new CommandCenterMetadataError('conflict', 'Source locator revision is stale.');
+    return service.setSourceLocator({ referenceId, locator, observedRevision, locatorVersion: current.locatorVersion + 1, ownership: 'external', updatedAt });
+  };
+  service.applySessionRecoveryRelink = ({ referenceId, sessionKey, sessionId, expectedSourceRevision, updatedAt } = {}) => mutate(null, (db) => {
+    const current = db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId);
+    const state = db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(referenceId);
+    if (!current || current.observed_revision !== expectedSourceRevision && state?.session_id !== expectedSourceRevision) throw new CommandCenterMetadataError('conflict', 'Session locator revision is stale.');
+    const owner = db.prepare(`SELECT reference.reference_id FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+      WHERE reference.source_system = 'openclaw' AND reference.source_kind = 'session' AND reference.reference_id <> ? AND (reference.external_source_id = ? OR locator.locator = ?) LIMIT 1`).get(referenceId, sessionKey, sessionKey);
+    if (owner) throw new CommandCenterMetadataError('conflict', 'Session authority is already owned by another Source Reference.');
+    db.prepare('UPDATE source_locators SET locator = ?, locator_version = locator_version + 1, observed_revision = ?, ownership = ?, updated_at = ? WHERE reference_id = ?').run(sessionKey, sessionId, 'external', timestamp(updatedAt, 'updatedAt'), referenceId);
+    db.prepare('UPDATE session_state SET session_id = ?, updated_at = ? WHERE reference_id = ?').run(sessionId, timestamp(updatedAt, 'updatedAt'), referenceId);
+    return mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId));
+  });
+  service.completeTopicRecoveryMutation = (input = {}) => mutate(null, (db) => {
+    const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.intent.topicId);
+    if (!topic || topic.revision !== input.expectedRevision) throw new CommandCenterMetadataError('conflict', 'Topic revision is stale.');
+    const recovery = input.recovery;
+    const existing = db.prepare('SELECT * FROM source_recovery WHERE recovery_id = ?').get(recovery.recoveryId);
+    const now = timestamp(input.updatedAt, 'updatedAt');
+    db.prepare(`INSERT INTO source_recovery (recovery_id, topic_id, reference_id, source_kind, state, revision, last_locator, last_identity, failure, diagnostics_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(recovery_id) DO UPDATE SET state=excluded.state, revision=excluded.revision, last_locator=excluded.last_locator, last_identity=excluded.last_identity, failure=excluded.failure, diagnostics_json=excluded.diagnostics_json, updated_at=excluded.updated_at`).run(recovery.recoveryId, recovery.topicId, recovery.referenceId, recovery.sourceKind, recovery.state, (existing?.revision ?? 0) + 1, recovery.lastLocator ?? null, recovery.lastIdentity ?? null, recovery.failure, JSON.stringify(recovery.diagnostics ?? []), existing?.created_at ?? now, now);
+    db.prepare('UPDATE topics SET revision = revision + 1, updated_at = ? WHERE topic_id = ?').run(now, input.intent.topicId);
+    const updatedTopic = mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.intent.topicId));
+    const updatedRecovery = mapRecovery(db.prepare('SELECT * FROM source_recovery WHERE recovery_id = ?').get(recovery.recoveryId));
+    const persistedResult = { ...(input.result ?? {}), recovery: updatedRecovery, topicRevision: updatedTopic.revision };
+    db.prepare("UPDATE topic_operations SET state='applied', current_step='complete', result_json=?, updated_at=? WHERE logical_operation_id=?").run(JSON.stringify(persistedResult), now, input.logicalOperationId);
+    return { topic: updatedTopic, recovery: updatedRecovery };
+  });
 
   // Small aliases keep the public operation vocabulary unsurprising without
   // adding a second storage path or an untyped generic update mechanism.

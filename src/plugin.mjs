@@ -5,6 +5,7 @@ import { legacyDiscordMigrationConfigSchema } from './migration/config.mjs';
 import { createAttentionActionHandler } from './attention/http-route.mjs';
 import { createMetadataService } from './plugin-service.mjs';
 import { topicContextToolFactory } from './search/tool.mjs';
+import { createTopicsHttpHandler } from './topics/http.mjs';
 
 export { runNoteMaintenance } from './plugin-service.mjs';
 
@@ -28,17 +29,23 @@ export default definePluginEntry({
   id: pluginId,
   name: 'Command Center',
   description: 'A responsive Command Center control destination.',
-  configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema }, additionalProperties: false },
+  configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema, topics: { type: 'object', properties: { noteRoot: { type: 'string', minLength: 1, pattern: '\\S' } }, required: ['noteRoot'], additionalProperties: false } }, additionalProperties: false },
   /** @param {OpenClawPluginApi} api */
   register(api) {
     const service = createMetadataService(api);
-    const serviceProxy = new Proxy({}, {
+    const sourceProxy = new Proxy({}, {
       get(_target, property) {
         return (...args) => {
           const implementation = service.sourceService?.[property];
           if (typeof implementation !== 'function') throw new Error('Command Center source service is not ready.');
           return implementation.apply(service.sourceService, args);
         };
+      }
+    });
+    const serviceProxy = new Proxy({}, {
+      get(_target, property) {
+        if (property === 'topics') return service.topicService;
+        return sourceProxy[property];
       }
     });
     // This public SDK seam asks Control UI to render the route in its default
@@ -63,6 +70,12 @@ export default definePluginEntry({
       auth: 'plugin',
       match: 'exact',
       handler: createAttentionActionHandler(serviceProxy)
+    });
+    api.registerHttpRoute({
+      path: '/plugins/command-center/api/topics/actions',
+      auth: 'plugin',
+      match: 'exact',
+      handler: createTopicsHttpHandler(serviceProxy)
     });
     registerBridgeMethods(api, serviceProxy);
     api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });

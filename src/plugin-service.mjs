@@ -7,6 +7,7 @@ import { createAuthoritativeSourceService } from './sources/service.mjs';
 import { createSearchRebuildService, reconcileTopicSearchBookkeeping } from './search/rebuild.mjs';
 import { createTopicSearchService } from './search/service.mjs';
 import { createTopicContextPolicy } from './search/context.mjs';
+import { createTopicService } from './topics/service.mjs';
 
 let activeMaintenanceService;
 
@@ -29,6 +30,7 @@ export function createMetadataService(api) {
   let searchService;
   let searchRebuildService;
   let contextPolicy;
+  let topicService;
   return {
     id: 'command-center-metadata',
     async start() {
@@ -66,6 +68,7 @@ export function createMetadataService(api) {
         invalidate: (input) => searchService.invalidate(input)
       };
       sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider });
+      topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
       searchRebuildService = createSearchRebuildService({
         stateDir,
         metadata: metadataService,
@@ -104,6 +107,7 @@ export function createMetadataService(api) {
       searchService = undefined;
       searchRebuildService = undefined;
       contextPolicy = undefined;
+      topicService = undefined;
       attentionService = undefined;
       maintenanceService = undefined;
       activeMaintenanceService = undefined;
@@ -112,6 +116,7 @@ export function createMetadataService(api) {
     get attentionService() { return attentionService; },
     get maintenanceService() { return maintenanceService; },
     get searchService() { return searchService; },
+    get topicService() { return topicService; },
     topicContextRetrieve(input) {
       if (!contextPolicy) throw new Error('Command Center Topic context is not ready.');
       return contextPolicy.retrieve(input);

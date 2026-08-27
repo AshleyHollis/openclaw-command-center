@@ -20,6 +20,10 @@ function sameIdentity(left, right) {
   return left?.dev === right?.dev && left?.ino === right?.ino;
 }
 
+function directoryRevision(stat) {
+  return `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+}
+
 function mutationResult(status, note, extra = {}) {
   return Object.freeze({ schemaVersion: 1, status, note: Object.freeze(note), ...extra });
 }
@@ -46,23 +50,41 @@ export class NoteAdapter {
       const matches = this.metadata.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder' && reference.externalSourceId === this.root) ?? [];
       if (matches.length === 1) this.noteFolderReferenceId = matches[0].referenceId;
     }
+    if (this.metadata && this.noteFolderReferenceId) {
+      const selected = this.metadata.getSourceReference?.(this.noteFolderReferenceId);
+      if (!selected || selected.topicId !== this.topicId) throw sourceError('source-recovery', 'The Note Folder Source Reference is missing or ambiguous.');
+      const locator = this.metadata.getSourceLocator?.(this.noteFolderReferenceId);
+      this.root = locator?.locator ?? selected.externalSourceId;
+      this.rootObservedRevision = locator?.observedRevision ?? null;
+    }
     if (!this.root && this.metadata) {
       const references = this.metadata.listSourceReferences(this.topicId).filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder');
       if (this.noteFolderReferenceId) {
         const selected = references.filter((reference) => reference.referenceId === this.noteFolderReferenceId);
         if (selected.length !== 1) throw sourceError('source-recovery', 'The Note Folder Source Reference is missing or ambiguous.');
-        this.root = selected[0].externalSourceId;
+        const locator = this.metadata.getSourceLocator?.(selected[0].referenceId);
+        this.root = locator?.locator ?? selected[0].externalSourceId;
+        this.rootObservedRevision = locator?.observedRevision ?? null;
       } else {
         if (references.length !== 1) throw sourceError('source-recovery', 'Exactly one Note Folder Source Reference is required.');
         this.noteFolderReferenceId = references[0].referenceId;
-        this.root = references[0].externalSourceId;
+        const locator = this.metadata.getSourceLocator?.(references[0].referenceId);
+        this.root = locator?.locator ?? references[0].externalSourceId;
+        this.rootObservedRevision = locator?.observedRevision ?? null;
       }
     }
     if (!this.root) throw sourceError('source-recovery', 'A Note Folder Source Reference is required.');
     const checked = await assertSafeDirectory(this.root);
-    if (!this.fsSafeRoot || this.fsSafeRoot.rootDir !== checked) {
+    const before = await lstat(checked);
+    if (this.metadata && this.noteFolderReferenceId && !this.rootObservedRevision) {
+      this.rootObservedRevision = directoryRevision(before);
+      this.metadata.setSourceLocator?.({ referenceId: this.noteFolderReferenceId, locator: checked, ownership: 'external', observedRevision: this.rootObservedRevision });
+    }
+    if (this.rootObservedRevision && directoryRevision(before) !== this.rootObservedRevision) {
+      throw sourceError('source-recovery', 'The Note Folder filesystem identity no longer matches its Source Reference. Explicit recovery is required.');
+    }
+    if (!this.fsSafeRoot || this.fsSafeRoot.rootDir !== checked || (this.rootObservedRevision && !sameIdentity(this.rootStat, before))) {
       const factory = this.fsSafeRootFactory ?? (await import('openclaw/plugin-sdk/security-runtime')).root;
-      const before = await lstat(checked);
       const fsSafeRoot = await factory(checked);
       const rootDescriptor = openSync(checked, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       const held = fstatSync(rootDescriptor);

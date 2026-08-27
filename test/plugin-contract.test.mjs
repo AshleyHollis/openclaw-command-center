@@ -52,13 +52,14 @@ test('Conversation ingestion uses the pinned host identity and history gateway m
   assert.doesNotMatch(source, /session-transcript-runtime|transcriptPath|storePath/);
 });
 
-test('scripts-only Topic Search UI uses only the required capability bridge methods', async () => {
+test('Topics UI preserves Topic Search capability navigation and uses the dedicated POST mutation route', async () => {
   const source = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
   assert.match(source, /bridgeRequest\('command-center\.v1\.search\.query'/);
   assert.match(source, /bridgeRequest\('command-center\.v1\.notes\.read'/);
   assert.match(source, /bridgeRequest\('command-center\.v1\.sessions\.navigate'/);
   assert.match(source, /bridgeRequest\('ui\.session\.navigate', \{ sessionKey: target\.sessionKey \}\)/);
-  assert.doesNotMatch(source, /fetch\(|window\.location\.(?:assign|replace)|parent\.location/);
+  assert.match(source, /fetch\(HTTP_ROUTE, \{ method: 'POST'/);
+  assert.doesNotMatch(source, /window\.location\.(?:assign|replace)|parent\.location/);
 });
 
 test('plugin startup preserves migration wiring and binds approvals to a stable non-secret host identity', async () => {

@@ -23,7 +23,7 @@ function metadataFixture() {
 test('Session create/history/send use exact linked keys without transcript inheritance', async () => {
   const metadata = metadataFixture();
   const calls = [];
-  const gateway = { request: async (method, params) => { calls.push({ method, params }); if (method === 'sessions.create') return { ['k' + 'ey']: params['k' + 'ey'], sessionId: 'fictional-session-id' }; if (method === 'chat.history') return { messages: ['authoritative'] }; return { runId: params.idempotencyKey }; } };
+  const gateway = { request: async (method, params) => { calls.push({ method, params }); if (method === 'sessions.create') return { ['k' + 'ey']: params['k' + 'ey'], sessionId: 'fictional-session-id' }; if (method === 'sessions.list') return { sessions: metadata.refs.map((reference) => ({ ['k' + 'ey']: reference.externalSourceId, sessionId: metadata.getSessionState(reference.referenceId).sessionId })) }; if (method === 'chat.history') return { messages: ['authoritative'] }; return { runId: params.idempotencyKey }; } };
   const adapter = createSessionAdapter({ topicId: 'topic-session', metadata, gateway });
   const logicalOperationId = randomUUID();
   const created = await adapter.create({ logicalOperationId, isPrimary: true });
@@ -45,6 +45,183 @@ test('Session create/history/send use exact linked keys without transcript inher
   await assert.rejects(() => adapter.send({ referenceId: created.value.sourceReference.referenceId, message: 'unsafe', attachments: [{ path: '/fictional/private.md' }], logicalOperationId: randomUUID() }), /unsupported.*attachments/i);
   assert.equal(calls.length, callsBeforeAttachment);
   await assert.rejects(() => adapter.history({ referenceId: 'missing' }), /exact linked Session/i);
+});
+
+test('Session create reads the pinned host entry identity and revision shape', async () => {
+  const metadata = metadataFixture();
+  const gateway = {
+    async request(method, params) {
+      if (method !== 'sessions.create') throw new Error(`Unexpected ${method}`);
+      return { ok: true, ['k' + 'ey']: params['k' + 'ey'], entry: { sessionId: 'entry-session-id', updatedAt: 42 } };
+    }
+  };
+  const adapter = createSessionAdapter({ metadata, gateway, topicId: 'topic-entry-shape' });
+  const created = await adapter.create({ logicalOperationId: randomUUID(), label: 'Entry Shape', isPrimary: true });
+  assert.equal(created.value.sessionId, 'entry-session-id');
+  assert.equal(created.value.creationRevision, '42');
+  assert.equal(metadata.getSessionState(created.value.sourceReference.referenceId).sessionId, 'entry-session-id');
+});
+
+test('Session create and exact verification use the pinned host session-store runtime without trusted Gateway authority', async () => {
+  const metadata = metadataFixture();
+  const entries = new Map();
+  const sessionStore = {
+    listSessionEntries() {
+      return [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry }));
+    },
+    async createSessionEntry({ cfg, key, label, initialEntry }) {
+      assert.deepEqual(cfg, { fictional: true });
+      assert.equal(initialEntry.agentHarnessId, 'command-center');
+      assert.equal(initialEntry.modelSelectionLocked, true);
+      const entry = {
+        sessionId: randomUUID(),
+        updatedAt: Date.now(),
+        label,
+        ...initialEntry
+      };
+      entries.set(key, entry);
+      return { key, agentId: 'main', sessionId: entry.sessionId, entry };
+    }
+  };
+  const transcriptReader = async ({ sessionKey, sessionId, maxMessages }) => ({
+    kind: 'page',
+    cursor: 'fictional-cursor',
+    hasMore: false,
+    serializedBytes: 20,
+    entries: [{ entryId: 'message-1', parentId: null, seq: 1, role: 'user', message: { role: 'user', content: 'Fictional history' } }],
+    sessionKey,
+    sessionId,
+    maxMessages
+  });
+  const logicalOperationId = randomUUID();
+  const adapter = createSessionAdapter({ api: { config: { fictional: true } }, metadata, sessionStore, transcriptReader, topicId: 'topic-runtime-store' });
+  const beforeCreate = Date.now();
+  const created = await adapter.create({ logicalOperationId, label: 'Runtime Store', isPrimary: true });
+  const afterCreate = Date.now();
+  const sessionKey = `agent:main:command-center:${logicalOperationId}`;
+
+  assert.equal(created.value.sourceReference.externalSourceId, sessionKey);
+  assert.equal(entries.get(sessionKey).label, 'Runtime Store');
+  assert.equal(entries.get(sessionKey).pluginExtensions.commandCenter.logicalOperationId, logicalOperationId);
+  assert.equal(entries.get(sessionKey).updatedAt >= beforeCreate && entries.get(sessionKey).updatedAt <= afterCreate, true);
+  assert.match(created.value.sessionId, /^[0-9a-f-]{36}$/u);
+  assert.equal(created.value.creationRevision, String(entries.get(sessionKey).updatedAt));
+  const replay = await adapter.create({ logicalOperationId, label: 'Runtime Store', isPrimary: true });
+  assert.equal(replay.value.creationRevision, created.value.creationRevision);
+  await adapter.resolveExact({ referenceId: created.value.sourceReference.referenceId });
+  const history = await adapter.history({ referenceId: created.value.sourceReference.referenceId, limit: 10 });
+  assert.deepEqual(history.messages, [{ role: 'user', content: 'Fictional history' }]);
+});
+
+test('Session-store reads and lifecycle writes refuse a missing exact authoritative row', async () => {
+  const metadata = metadataFixture();
+  const reference = {
+    version: 1,
+    referenceId: 'session:missing-runtime-row',
+    topicId: 'topic-missing-runtime-row',
+    sourceSystem: 'openclaw',
+    sourceKind: 'session',
+    externalSourceId: 'agent:main:command-center:missing-runtime-row',
+    observedRevision: null
+  };
+  metadata.refs.push(reference);
+  metadata.setSessionState({ referenceId: reference.referenceId, sessionId: 'missing-runtime-session-id', status: 'open', isPrimary: false });
+  let transcriptReads = 0;
+  const adapter = createSessionAdapter({
+    topicId: reference.topicId,
+    metadata,
+    sessionStore: { listSessionEntries: () => [], async patchSessionEntry() {} },
+    transcriptReader: async () => { transcriptReads += 1; return { kind: 'missing' }; }
+  });
+
+  for (const action of [
+    () => adapter.history({ referenceId: reference.referenceId }),
+    () => adapter.send({ referenceId: reference.referenceId, message: 'must not dispatch', logicalOperationId: randomUUID() }),
+    () => adapter.close({ referenceId: reference.referenceId, logicalOperationId: randomUUID() }),
+    () => adapter.reopen({ referenceId: reference.referenceId, logicalOperationId: randomUUID() })
+  ]) await assert.rejects(action, (error) => error.code === 'source-recovery');
+  assert.equal(transcriptReads, 0);
+  assert.equal(metadata.getSessionState(reference.referenceId).status, 'open');
+});
+
+test('Session-store creation refuses an occupied deterministic key without overwriting its identity', async () => {
+  const metadata = metadataFixture();
+  const logicalOperationId = randomUUID();
+  const sessionKey = `agent:main:command-center:${logicalOperationId}`;
+  const foreign = { sessionId: randomUUID(), updatedAt: 10, label: 'Foreign Session' };
+  const entries = new Map([[sessionKey, foreign]]);
+  const sessionStore = {
+    listSessionEntries: () => [...entries].map(([key, entry]) => ({ sessionKey: key, entry })),
+    async upsertSessionEntry({ sessionKey: key, entry }) { entries.set(key, entry); }
+  };
+  const adapter = createSessionAdapter({ metadata, sessionStore, topicId: 'topic-collision' });
+
+  await assert.rejects(
+    adapter.create({ logicalOperationId, label: 'Must Not Overwrite', isPrimary: true }),
+    (error) => error.code === 'conflict' && /already exists/i.test(error.message)
+  );
+  assert.deepEqual(entries.get(sessionKey), foreign);
+  assert.deepEqual(metadata.refs, []);
+});
+
+test('pinned Session store creation uses atomic patch fallback', async () => {
+  const metadata = metadataFixture();
+  const entries = new Map();
+  let patchInput;
+  const sessionStore = {
+    listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })),
+    async patchSessionEntry(input) {
+      patchInput = input;
+      const existingEntry = entries.get(input.sessionKey);
+      const current = existingEntry ?? input.fallbackEntry;
+      const patch = await input.update(current, { existingEntry });
+      if (!patch) return null;
+      const next = input.replaceEntry ? patch : { ...current, ...patch };
+      entries.set(input.sessionKey, next);
+      return next;
+    }
+  };
+  const logicalOperationId = randomUUID();
+  const adapter = createSessionAdapter({ metadata, sessionStore, topicId: 'topic-atomic-runtime' });
+  const created = await adapter.create({ logicalOperationId, label: 'Atomic Runtime', isPrimary: true });
+
+  assert.equal(created.value.sessionId, logicalOperationId);
+  assert.equal(patchInput.replaceEntry, true);
+  assert.equal(patchInput.fallbackEntry.sessionId, logicalOperationId);
+});
+
+test('pending Session-store replay conflicts with a foreign row at the deterministic key', async () => {
+  const metadata = metadataFixture();
+  const operations = new Map();
+  metadata.getOperation = (id) => operations.get(id) ?? null;
+  metadata.recordOperation = (value) => {
+    const row = { ...operations.get(value.logicalOperationId), ...value };
+    operations.set(value.logicalOperationId, row);
+    return row;
+  };
+  const entries = new Map();
+  let interrupt = true;
+  const sessionStore = {
+    listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })),
+    async upsertSessionEntry({ sessionKey, entry }) {
+      if (interrupt) {
+        interrupt = false;
+        const error = new Error('fictional delivery interruption');
+        error.code = 'timeout';
+        error.ambiguous = true;
+        throw error;
+      }
+      entries.set(sessionKey, entry);
+    }
+  };
+  const logicalOperationId = randomUUID();
+  const sessionKey = `agent:main:command-center:${logicalOperationId}`;
+  const adapter = createSessionAdapter({ metadata, sessionStore, topicId: 'topic-pending-collision' });
+
+  await assert.rejects(adapter.create({ logicalOperationId, label: 'Planned Session', isPrimary: true }), (error) => error.code === 'unknown');
+  entries.set(sessionKey, { sessionId: randomUUID(), updatedAt: 99, label: 'Foreign Session' });
+  await assert.rejects(adapter.create({ logicalOperationId, label: 'Planned Session', isPrimary: true }), (error) => error.code === 'conflict');
+  assert.deepEqual(metadata.refs, []);
 });
 
 test('Session history withholds an explicitly mismatched authoritative identity', async () => {
@@ -98,31 +275,22 @@ test('creating a replacement Primary atomically demotes and permits closing the 
   try {
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
     metadata.createTopic({ topicId: 'topic-primary-transfer', paraCategory: 'project', lifecycle: 'active' });
-    const gateway = { request: async (_method, params) => ({ ['k' + 'ey']: params['k' + 'ey'], sessionId: `id:${params['k' + 'ey']}` }) };
+    const gateway = { request: async (method, params) => method === 'sessions.list' ? { sessions: metadata.listSourceReferences('topic-primary-transfer').map((reference) => ({ ['k' + 'ey']: reference.externalSourceId, sessionId: metadata.getSessionState(reference.referenceId).sessionId })) } : ({ ['k' + 'ey']: params['k' + 'ey'], sessionId: `id:${params['k' + 'ey']}` }) };
     const adapter = createSessionAdapter({ topicId: 'topic-primary-transfer', metadata, gateway });
-    const first = await adapter.create({ logicalOperationId: randomUUID(), label: 'Fictional First Primary', isPrimary: true });
-    const second = await adapter.create({ logicalOperationId: randomUUID(), label: 'Fictional Replacement Primary', isPrimary: true });
+    const first = await adapter.create({ logicalOperationId: randomUUID(), isPrimary: true });
+    const second = await adapter.create({ logicalOperationId: randomUUID(), isPrimary: true });
     assert.equal(metadata.getSessionState(first.value.sourceReference.referenceId).isPrimary, false);
-    assert.equal(metadata.getSessionState(first.value.sourceReference.referenceId).wasPrimary, true);
-    assert.equal(metadata.getSessionState(first.value.sourceReference.referenceId).displayName, 'Fictional First Primary');
     assert.equal(metadata.getSessionState(second.value.sourceReference.referenceId).isPrimary, true);
-    assert.equal(metadata.getSessionState(second.value.sourceReference.referenceId).displayName, 'Fictional Replacement Primary');
     assert.equal(metadata.listSessionStates().filter((state) => state.isPrimary).length, 1);
     const closed = await adapter.close({ referenceId: first.value.sourceReference.referenceId, logicalOperationId: randomUUID() });
     assert.equal(closed.value.status, 'closed');
     let dispatched = false;
-    gateway.request = async () => { dispatched = true; return {}; };
+    gateway.request = async (method) => { if (method === 'chat.send') dispatched = true; if (method === 'sessions.list') return { sessions: [{ ['k' + 'ey']: first.value.sourceReference.externalSourceId, sessionId: metadata.getSessionState(first.value.sourceReference.referenceId).sessionId }] }; return {}; };
     await assert.rejects(
       () => adapter.send({ referenceId: first.value.sourceReference.referenceId, message: 'must not dispatch', logicalOperationId: randomUUID() }),
       (error) => error.code === 'conflict' && /Closed Conversation/i.test(error.message)
     );
     assert.equal(dispatched, false);
-    metadata.close();
-    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
-    assert.deepEqual(
-      { wasPrimary: metadata.getSessionState(first.value.sourceReference.referenceId).wasPrimary, displayName: metadata.getSessionState(first.value.sourceReference.referenceId).displayName },
-      { wasPrimary: true, displayName: 'Fictional First Primary' }
-    );
   } finally {
     metadata?.close();
     await rm(stateDir, { recursive: true, force: true });
@@ -151,7 +319,7 @@ test('close and reopen are journaled and replay without repeating metadata effec
   metadata.recordOperation = (value) => { const row = { ...operations.get(value.logicalOperationId), ...value }; operations.set(value.logicalOperationId, row); return row; };
   metadata.setSessionState({ referenceId: reference.referenceId, sessionId: 'fictional-session', status: 'open', isPrimary: false, updatedAt: new Date().toISOString() });
   writes = 0;
-  const adapter = createSessionAdapter({ topicId: 'topic-session', metadata, gateway: { request: async () => ({}) } });
+  const adapter = createSessionAdapter({ topicId: 'topic-session', metadata, gateway: { request: async (method) => method === 'sessions.list' ? { sessions: [{ ['k' + 'ey']: reference.externalSourceId, sessionId: 'fictional-session' }] } : ({}) } });
   const closeId = randomUUID();
   const first = await adapter.close({ referenceId: reference.referenceId, logicalOperationId: closeId, requestId: 'transport-close-1' });
   assert.equal(first.value.status, 'closed');
@@ -173,6 +341,7 @@ test('applied Session send replay reconciles history without redispatch', async 
   const gateway = { request: async (method, params) => {
     calls.push({ method, params });
     if (method === 'chat.send') return { runId: params.idempotencyKey, status: 'started' };
+    if (method === 'sessions.list') return { sessions: [{ ['k' + 'ey']: reference.externalSourceId, sessionId: 'send-replay-id' }] };
     if (method === 'chat.history') return { sessionId: 'send-replay-id', messages: [{ role: 'user', __openclaw: { idempotencyKey: `${operationId}:user` } }] };
     throw new Error(`Unexpected method ${method}`);
   } };

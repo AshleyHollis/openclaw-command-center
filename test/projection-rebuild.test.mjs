@@ -30,11 +30,11 @@ async function withState(run) {
   try { return await run(stateDir); } finally { for (const service of services) service.close(); services.clear(); await rm(stateDir, { recursive: true, force: true }); }
 }
 function open(stateDir) { const service = openCommandCenterMetadataService({ stateDir, capabilities: availableCapabilities }); services.add(service); return service; }
-function seed(service) {
+function seed(service, { sessionExternalId = 'session-fictional' } = {}) {
   const at = '2026-08-22T00:00:00.000Z';
   service.createTopic({ topicId: 'topic-fictional', paraCategory: 'project', lifecycle: 'active', createdAt: at, updatedAt: at });
   service.setPresentationPreferences({ topicId: 'topic-fictional', displayLabel: 'Fictional Topic', sortOrder: 1, collapsed: false, updatedAt: at });
-  for (const [referenceId, sourceSystem, sourceKind, externalSourceId] of [['folder', 'obsidian', 'note_folder', 'folder-fictional'], ['session', 'openclaw', 'session', 'session-fictional'], ['schedule', 'scheduler', 'reminder_schedule', 'schedule-fictional'], ['history', 'openclaw', 'imported_history', 'history-fictional']]) service.createSourceReference({ version: 1, referenceId, topicId: 'topic-fictional', sourceSystem, sourceKind, externalSourceId, createdAt: at, updatedAt: at });
+  for (const [referenceId, sourceSystem, sourceKind, externalSourceId] of [['folder', 'obsidian', 'note_folder', 'folder-fictional'], ['session', 'openclaw', 'session', sessionExternalId], ['schedule', 'scheduler', 'reminder_schedule', 'schedule-fictional'], ['history', 'openclaw', 'imported_history', 'history-fictional']]) service.createSourceReference({ version: 1, referenceId, topicId: 'topic-fictional', sourceSystem, sourceKind, externalSourceId, createdAt: at, updatedAt: at });
 }
 function authority(service, snapshot) { return { metadata: service.readProjectionSnapshot(), source: structuredClone(snapshot), bookkeeping: service.listProjectionBookkeeping() }; }
 
@@ -114,9 +114,7 @@ test('missing and inconsistent source inputs fail closed with bounded diagnostic
 }));
 
 test('the same opaque external ID is valid in distinct canonical source categories', async () => withState(async (stateDir) => {
-  const service = open(stateDir); seed(service);
-  service.deleteSourceReference('session');
-  service.createSourceReference({ version: 1, referenceId: 'session', topicId: 'topic-fictional', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'folder-fictional', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
+  const service = open(stateDir); seed(service, { sessionExternalId: 'folder-fictional' });
   const sources = { ...sourceSnapshot(), sessions: [{ identity: 'folder-fictional', contentDigest: digest('session') }] };
   await service.rebuildProjections({ authoritativeSources: provider(sources) });
   assert.deepEqual(service.queryProjections().index.filter((row) => row.externalSourceId === 'folder-fictional').map((row) => [row.sourceSystem, row.sourceKind]), [['obsidian', 'note_folder'], ['openclaw', 'session']]);

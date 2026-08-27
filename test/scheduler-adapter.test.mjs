@@ -46,6 +46,38 @@ test('scheduler exposes exact-reference list, create, update, enable, and run wi
   assert.equal(adapter.delete, undefined);
 });
 
+test('scheduler update replay reconciles an unknown applied outcome before stale-revision fencing', async () => {
+  const metadata = metadataFixture();
+  metadata.refs.push({ version: 1, referenceId: 'schedule-unknown-ref', topicId: 'topic-scheduler', sourceSystem: 'scheduler', sourceKind: 'schedule', externalSourceId: 'job-unknown', observedRevision: 'revision-1' });
+  let job = { id: 'job-unknown', configRevision: 'revision-1', enabled: true };
+  let failReconciliationRead = false;
+  let updateCalls = 0;
+  const gateway = { request: async (method, params) => {
+    if (method === 'cron.get') {
+      if (failReconciliationRead) { failReconciliationRead = false; throw new Error('fictional reconciliation interruption'); }
+      return job;
+    }
+    if (method === 'cron.update') {
+      updateCalls += 1;
+      job = { ...job, ...params.patch, configRevision: 'revision-2' };
+      failReconciliationRead = true;
+      const error = new Error('fictional unknown transport outcome');
+      error.code = 'timeout';
+      error.ambiguous = true;
+      throw error;
+    }
+    throw new Error(`Unexpected method ${method}`);
+  } };
+  const adapter = createSchedulerAdapter({ topicId: 'topic-scheduler', metadata, gateway });
+  const logicalOperationId = randomUUID();
+  const input = { referenceId: 'schedule-unknown-ref', enabled: false, expectedConfigRevision: 'revision-1', logicalOperationId };
+  await assert.rejects(adapter.setEnabled(input), /fictional reconciliation interruption/);
+  const replay = await adapter.setEnabled(input);
+  assert.equal(replay.status, 'applied');
+  assert.equal(replay.value.job.configRevision, 'revision-2');
+  assert.equal(updateCalls, 1);
+});
+
 test('scheduled-operation create, general update, and run dispatch exact authoritative jobs', async () => {
   const metadata = metadataFixture();
   const calls = [];
@@ -102,6 +134,9 @@ test('scheduler actions construct closed conservative patches and reject unrelat
   await adapter.complete({ ...common, referenceId: 'reminder-ref' });
   assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
   await adapter.setEnabled({ ...common, logicalOperationId: randomUUID(), referenceId: 'schedule-ref', enabled: false });
+  assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
+  await adapter.setEnabled({ ...common, logicalOperationId: randomUUID(), referenceId: 'reminder-ref', enabled: false });
+  assert.equal(calls.at(-1).params.id, 'reminder-job');
   assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
   const schedule = { kind: 'at', at: '2026-08-24T00:00:00Z' };
   await adapter.snooze({ ...common, logicalOperationId: randomUUID(), referenceId: 'reminder-ref', patch: { schedule } });
