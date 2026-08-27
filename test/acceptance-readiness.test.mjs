@@ -39,7 +39,7 @@ test('browser bootstrap matching accepts only the pinned same-origin canonical p
   assert.equal(isControlUiBootstrapUrl('not a URL', { gatewayUrl, bootstrapPath }), false);
 });
 
-test('metadata readiness requires the durable schema-4 service store', async () => {
+test('metadata readiness requires the durable schema-5 service store', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-readiness-'));
   const databasePath = path.join(root, 'metadata.sqlite');
   try {
@@ -49,7 +49,7 @@ test('metadata readiness requires the durable schema-4 service store', async () 
     database.close();
     assert.equal(isCommandCenterMetadataReady(databasePath), false);
     const upgraded = new DatabaseSync(databasePath);
-    upgraded.exec('PRAGMA user_version = 4');
+    upgraded.exec('PRAGMA user_version = 5');
     upgraded.close();
     assert.equal(isCommandCenterMetadataReady(databasePath), true);
   } finally {

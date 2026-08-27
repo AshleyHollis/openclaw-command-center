@@ -100,10 +100,13 @@ test('creating a replacement Primary atomically demotes and permits closing the 
     metadata.createTopic({ topicId: 'topic-primary-transfer', paraCategory: 'project', lifecycle: 'active' });
     const gateway = { request: async (_method, params) => ({ ['k' + 'ey']: params['k' + 'ey'], sessionId: `id:${params['k' + 'ey']}` }) };
     const adapter = createSessionAdapter({ topicId: 'topic-primary-transfer', metadata, gateway });
-    const first = await adapter.create({ logicalOperationId: randomUUID(), isPrimary: true });
-    const second = await adapter.create({ logicalOperationId: randomUUID(), isPrimary: true });
+    const first = await adapter.create({ logicalOperationId: randomUUID(), label: 'Fictional First Primary', isPrimary: true });
+    const second = await adapter.create({ logicalOperationId: randomUUID(), label: 'Fictional Replacement Primary', isPrimary: true });
     assert.equal(metadata.getSessionState(first.value.sourceReference.referenceId).isPrimary, false);
+    assert.equal(metadata.getSessionState(first.value.sourceReference.referenceId).wasPrimary, true);
+    assert.equal(metadata.getSessionState(first.value.sourceReference.referenceId).displayName, 'Fictional First Primary');
     assert.equal(metadata.getSessionState(second.value.sourceReference.referenceId).isPrimary, true);
+    assert.equal(metadata.getSessionState(second.value.sourceReference.referenceId).displayName, 'Fictional Replacement Primary');
     assert.equal(metadata.listSessionStates().filter((state) => state.isPrimary).length, 1);
     const closed = await adapter.close({ referenceId: first.value.sourceReference.referenceId, logicalOperationId: randomUUID() });
     assert.equal(closed.value.status, 'closed');
@@ -114,6 +117,12 @@ test('creating a replacement Primary atomically demotes and permits closing the 
       (error) => error.code === 'conflict' && /Closed Conversation/i.test(error.message)
     );
     assert.equal(dispatched, false);
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
+    assert.deepEqual(
+      { wasPrimary: metadata.getSessionState(first.value.sourceReference.referenceId).wasPrimary, displayName: metadata.getSessionState(first.value.sourceReference.referenceId).displayName },
+      { wasPrimary: true, displayName: 'Fictional First Primary' }
+    );
   } finally {
     metadata?.close();
     await rm(stateDir, { recursive: true, force: true });

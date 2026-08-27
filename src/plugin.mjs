@@ -4,6 +4,7 @@ import { registerBridgeMethods } from './bridge/register.mjs';
 import { legacyDiscordMigrationConfigSchema } from './migration/config.mjs';
 import { createAttentionActionHandler } from './attention/http-route.mjs';
 import { createMetadataService } from './plugin-service.mjs';
+import { topicContextToolFactory } from './search/tool.mjs';
 
 export { runNoteMaintenance } from './plugin-service.mjs';
 
@@ -13,7 +14,8 @@ export const pluginPath = '/plugins/command-center';
 
 const assets = new Map([
   [`${pluginPath}`, ['index.html', 'text/html; charset=utf-8']],
-  [`${pluginPath}/styles.css`, ['styles.css', 'text/css; charset=utf-8']]
+  [`${pluginPath}/styles.css`, ['styles.css', 'text/css; charset=utf-8']],
+  [`${pluginPath}/app.js`, ['app.js', 'text/javascript; charset=utf-8']]
 ]);
 
 /** @typedef {import('openclaw/plugin-sdk/plugin-entry').OpenClawPluginApi} OpenClawPluginApi */
@@ -63,6 +65,7 @@ export default definePluginEntry({
       handler: createAttentionActionHandler(serviceProxy)
     });
     registerBridgeMethods(api, serviceProxy);
+    api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });
     api.registerService(service);
   }
 });

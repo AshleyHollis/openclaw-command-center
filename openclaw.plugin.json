@@ -36,6 +36,10 @@
     },
     "additionalProperties": false
   },
+  "contracts": {
+    "tools": ["command_center_topic_context"],
+    "gatewayMethodDispatch": ["authenticated-request"]
+  },
   "controlUi": {
     "routeId": "command-center",
     "sandbox": "allow-scripts"

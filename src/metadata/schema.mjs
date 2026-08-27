@@ -1,7 +1,8 @@
 export const SOURCE_SCHEMA_VERSION = 1;
 export const LEGACY_METADATA_SCHEMA_VERSION = 2;
-export const PRIOR_COMMAND_CENTER_SCHEMA_VERSION = 3;
-export const COMMAND_CENTER_SCHEMA_VERSION = 4;
+export const LEGACY_MIGRATION_SCHEMA_VERSION = 3;
+export const PRIOR_COMMAND_CENTER_SCHEMA_VERSION = 4;
+export const COMMAND_CENTER_SCHEMA_VERSION = 5;
 
 export const metadataTableNames = Object.freeze([
   'topics', 'source_references', 'source_convention_state', 'presentation_preferences',
@@ -302,7 +303,10 @@ END;
 
 export const metadataSchemaV2Sql = `${metadataSchemaV2CoreSql}${schemaLedgerSql}\nPRAGMA user_version = 2;\n`;
 export const metadataSchemaV3Sql = `${metadataSchemaV2CoreSql.replace('PRAGMA user_version = 2;', 'PRAGMA user_version = 3;')}${metadataSchemaV3MigrationTablesSql}${schemaLedgerSql}\nPRAGMA user_version = 3;\n`;
-export const metadataSchemaSql = `${metadataSchemaV2CoreSql.replace('PRAGMA user_version = 2;', 'PRAGMA user_version = 4;')}${metadataSchemaV3MigrationTablesSql}${metadataSchemaV4AttentionTablesSql}${schemaLedgerSql}\nPRAGMA user_version = 4;\n`;
+export const metadataSchemaV4Sql = `${metadataSchemaV2CoreSql.replace('PRAGMA user_version = 2;', 'PRAGMA user_version = 4;')}${metadataSchemaV3MigrationTablesSql}${metadataSchemaV4AttentionTablesSql}${schemaLedgerSql}\nPRAGMA user_version = 4;\n`;
+export const metadataSchemaSql = metadataSchemaV4Sql
+  .replace('  is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),\n  updated_at TEXT NOT NULL\n) STRICT;', '  is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),\n  updated_at TEXT NOT NULL,\n  was_primary INTEGER NOT NULL DEFAULT 0 CHECK (was_primary IN (0, 1)),\n  display_name TEXT NOT NULL DEFAULT \'\' CHECK (length(display_name) <= 300)\n) STRICT;')
+  .replaceAll('PRAGMA user_version = 4;', 'PRAGMA user_version = 5;');
 
 const baseColumns = Object.freeze({
   topics: [['topic_id', 'TEXT', 1, 1], ['para_category', 'TEXT', 1, 0], ['lifecycle', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
@@ -314,7 +318,7 @@ const baseColumns = Object.freeze({
   policy_versions: [['policy_id', 'TEXT', 1, 1], ['version', 'TEXT', 1, 0], ['digest', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
   projection_bookkeeping: [['projection_id', 'TEXT', 1, 1], ['source_revision', 'TEXT', 1, 0], ['input_digest', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
   operation_journal: [['logical_operation_id', 'TEXT', 1, 1], ['transport_request_id', 'TEXT', 1, 0], ['intent_digest', 'TEXT', 1, 0], ['operation_kind', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0], ['result_status', 'TEXT', 0, 0], ['result_identity', 'TEXT', 0, 0], ['observed_revision', 'TEXT', 0, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
-  session_state: [['reference_id', 'TEXT', 1, 1], ['session_id', 'TEXT', 0, 0], ['status', 'TEXT', 1, 0], ['is_primary', 'INTEGER', 1, 0], ['updated_at', 'TEXT', 1, 0]],
+  session_state: [['reference_id', 'TEXT', 1, 1], ['session_id', 'TEXT', 0, 0], ['status', 'TEXT', 1, 0], ['is_primary', 'INTEGER', 1, 0], ['updated_at', 'TEXT', 1, 0], ['was_primary', 'INTEGER', 1, 0], ['display_name', 'TEXT', 1, 0]],
   activity_records: [['activity_id', 'TEXT', 1, 1], ['topic_id', 'TEXT', 0, 0], ['logical_operation_id', 'TEXT', 1, 0], ['transport_request_id', 'TEXT', 1, 0], ['operation_kind', 'TEXT', 1, 0], ['outcome', 'TEXT', 1, 0], ['observed_revision', 'TEXT', 0, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
   migration_state: [['state_id', 'TEXT', 1, 1], ['schema_version', 'INTEGER', 1, 0], ['config_digest', 'TEXT', 1, 0], ['source_digest', 'TEXT', 1, 0], ['revision', 'INTEGER', 1, 0], ['phase', 'TEXT', 1, 0], ['failure_code', 'TEXT', 0, 0], ['failure_summary', 'TEXT', 0, 0], ['failure_count', 'INTEGER', 1, 0], ['updated_at', 'TEXT', 1, 0]],
   migration_channels: [['source_channel_id', 'TEXT', 1, 1], ['topic_id', 'TEXT', 1, 0], ['note_folder_reference_id', 'TEXT', 1, 0], ['session_reference_id', 'TEXT', 1, 0], ['session_id', 'TEXT', 1, 0], ['phase', 'TEXT', 1, 0], ['expected_count', 'INTEGER', 1, 0], ['expected_digest', 'TEXT', 1, 0], ['imported_count', 'INTEGER', 1, 0], ['imported_digest', 'TEXT', 1, 0], ['next_ordinal', 'INTEGER', 1, 0], ['failure_code', 'TEXT', 0, 0], ['failure_summary', 'TEXT', 0, 0], ['failure_count', 'INTEGER', 1, 0], ['updated_at', 'TEXT', 1, 0]],
@@ -347,13 +351,14 @@ const expectedLedgerColumns = Object.freeze([
   ['from_version', 'INTEGER', 1, 0], ['to_version', 'INTEGER', 1, 0], ['snapshot_id', 'TEXT', 1, 0],
   ['applied_build', 'TEXT', 1, 0], ['applied_at', 'TEXT', 1, 0]
 ]);
-function normalizedSql(value) { return String(value ?? '').replace(/\s+/gu, ' ').trim().replace(/;$/u, ''); }
+function normalizedSql(value) { return String(value ?? '').replace(/\s+/gu, ' ').replace(/\s+,/gu, ',').replace(/\)\s+\)/gu, '))').trim().replace(/;$/u, ''); }
 function definitions(sql) {
   return Object.freeze(Object.fromEntries(
     [...sql.matchAll(/CREATE TABLE ([a-z_]+) \([\s\S]*?\n\) STRICT;/gu)].map((match) => [match[1], normalizedSql(match[0])])
   ));
 }
 const expectedTableDefinitions = definitions(metadataSchemaSql);
+const expectedTableDefinitionsV4 = definitions(metadataSchemaV4Sql);
 const expectedTableDefinitionsV3 = definitions(metadataSchemaV3Sql);
 const expectedTableDefinitionsV2 = definitions(metadataSchemaV2Sql);
 
@@ -416,6 +421,11 @@ PRAGMA user_version = 2;
 `;
 export const metadataSchemaV2ToV3Sql = `${metadataSchemaV3MigrationTablesSql}\nPRAGMA user_version = 3;\n`;
 export const metadataSchemaV3ToV4Sql = `${metadataSchemaV4AttentionTablesSql}\nPRAGMA user_version = 4;\n`;
+export const metadataSchemaV4ToV5Sql = `
+ALTER TABLE session_state ADD COLUMN was_primary INTEGER NOT NULL DEFAULT 0 CHECK (was_primary IN (0, 1));
+ALTER TABLE session_state ADD COLUMN display_name TEXT NOT NULL DEFAULT '' CHECK (length(display_name) <= 300);
+PRAGMA user_version = 5;
+`;
 
 const attentionTables = Object.freeze(['attention_episodes', 'attention_occurrences', 'attention_attempts', 'attention_approvals', 'attention_activity_records']);
 const attentionActivityTriggers = Object.freeze(['attention_activity_records_no_delete', 'attention_activity_records_no_update']);
@@ -423,9 +433,11 @@ const migrationTables = Object.freeze(['migration_state', 'migration_channels', 
 const v1Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !['operation_journal', 'session_state', 'activity_records', ...migrationTables, ...attentionTables].includes(table)));
 const v2Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...migrationTables, ...attentionTables].includes(table)));
 const v3Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !attentionTables.includes(table)));
+const columnsBeforeV5 = (table) => table === 'session_state' ? baseColumns[table].filter(([name]) => !['was_primary', 'display_name'].includes(name)) : baseColumns[table];
+const v4Columns = Object.freeze(Object.fromEntries(Object.keys(baseColumns).map((table) => [table, columnsBeforeV5(table)])));
 const v1Columns = Object.freeze(Object.fromEntries(v1Tables.map((table) => [table, table === 'source_references' ? baseColumns[table].filter(([name]) => name !== 'last_observed_revision') : baseColumns[table]])));
-const v2Columns = Object.freeze(Object.fromEntries(v2Tables.map((table) => [table, baseColumns[table]])));
-const v3Columns = Object.freeze(Object.fromEntries(v3Tables.map((table) => [table, baseColumns[table]])));
+const v2Columns = Object.freeze(Object.fromEntries(v2Tables.map((table) => [table, columnsBeforeV5(table)])));
+const v3Columns = Object.freeze(Object.fromEntries(v3Tables.map((table) => [table, columnsBeforeV5(table)])));
 const v1Definitions = definitions(metadataSchemaV1Sql);
 const v2ForeignKeys = Object.freeze(Object.fromEntries(v2Tables.map((table) => [table, baseForeignKeys[table] ?? []])));
 const v3ForeignKeys = Object.freeze(Object.fromEntries(v3Tables.map((table) => [table, baseForeignKeys[table] ?? []])));
@@ -436,17 +448,18 @@ export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VE
   const problems = [];
   const current = schemaVersion === COMMAND_CENTER_SCHEMA_VERSION;
   const prior = schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION;
-  const columnsForVersion = current ? baseColumns : prior ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
-  const definitionsForVersion = current ? expectedTableDefinitions : prior ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
-  const foreignKeysForVersion = current ? baseForeignKeys : prior ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
-  const applicationTables = current ? metadataTableNames : prior ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
+  const columnsForVersion = current ? baseColumns : prior ? v4Columns : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
+  const definitionsForVersion = current ? expectedTableDefinitions : prior ? expectedTableDefinitionsV4 : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
+  const foreignKeysForVersion = current || prior ? baseForeignKeys : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
+  const applicationTables = current || prior ? metadataTableNames : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
   const expectedTables = schemaVersion >= LEGACY_METADATA_SCHEMA_VERSION ? [...applicationTables, 'schema_migrations'] : [...applicationTables];
   const objects = database.prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
   const tables = objects.filter((row) => row.type === 'table').map((row) => row.name);
   if (!sameArray(tables, expectedTables.slice().sort())) problems.push('application table set differs');
-  const allowedObjects = new Set([...expectedTables, ...(current ? attentionActivityTriggers : [])]);
+  const hasAttention = current || prior;
+  const allowedObjects = new Set([...expectedTables, ...(hasAttention ? attentionActivityTriggers : [])]);
   if (objects.some((row) => !allowedObjects.has(row.name))) problems.push('unexpected application schema object');
-  if (current && !sameArray(objects.filter((row) => row.type === 'trigger').map((row) => row.name), [...attentionActivityTriggers])) problems.push('attention Activity trigger set differs');
+  if (hasAttention && !sameArray(objects.filter((row) => row.type === 'trigger').map((row) => row.name), [...attentionActivityTriggers])) problems.push('attention Activity trigger set differs');
   for (const table of applicationTables) {
     const columns = database.prepare(`PRAGMA table_info(${table})`).all().map((row) => [row.name, row.type, row.notnull, row.pk]);
     if (!sameArray(columns.map(JSON.stringify), (columnsForVersion[table] ?? []).map(JSON.stringify))) problems.push(`${table} columns differ`);
@@ -473,7 +486,7 @@ export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VE
 }
 export function inspectSchemaV1(database) { return inspectSchema(database, SOURCE_SCHEMA_VERSION); }
 export function inspectSchemaV2(database) { return inspectSchema(database, LEGACY_METADATA_SCHEMA_VERSION); }
-export function inspectSchemaV3(database) { return inspectSchema(database, PRIOR_COMMAND_CENTER_SCHEMA_VERSION); }
+export function inspectSchemaV3(database) { return inspectSchema(database, LEGACY_MIGRATION_SCHEMA_VERSION); }
 export function inspectMigrationLedger(database) {
   const rows = database.prepare('SELECT sequence, migration_id, migration_digest, from_version, to_version, snapshot_id, applied_build, applied_at FROM schema_migrations ORDER BY sequence').all();
   return Object.freeze(rows.map((row) => Object.freeze({ ...row })));

@@ -9,6 +9,9 @@ import { fileURLToPath } from 'node:url';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { projectionId } from '../src/metadata/projections.mjs';
 import { resolveCommandCenterProjectionRoot } from '../src/metadata/path.mjs';
+import { publishTopicSearchSnapshot, reconcileTopicSearchBookkeeping } from '../src/search/rebuild.mjs';
+import { createTopicSearchService } from '../src/search/service.mjs';
+import { SEARCH_PROJECTION_VERSIONS } from '../src/search/projection-store.mjs';
 
 const services = new Set();
 const availableCapabilities = Object.freeze({ notes: true, sessions: true, scheduler: true, activity: true, analysis: true, attention: true, search: true });
@@ -199,3 +202,66 @@ test('crash boundaries never expose a partial query and restart converges', asyn
     assert.equal(digest(await readFile(sourcePath)), before);
   });
 });
+
+test('Topic Search publishes independent v1 projections atomically and preserves the prior generation on one-sided failure', async () => withState(async (stateDir) => {
+  const metadata = open(stateDir);
+  metadata.createTopic({ topicId: 'topic-search', paraCategory: 'project', lifecycle: 'active' });
+  const folder = metadata.createSourceReference({ version: 1, referenceId: 'folder:search', topicId: 'topic-search', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/search', observedRevision: null });
+  const session = metadata.createSourceReference({ version: 1, referenceId: 'session:search', topicId: 'topic-search', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:search', observedRevision: null });
+  metadata.setSessionState({ referenceId: session.referenceId, sessionId: 'session-search', status: 'closed', isPrimary: false });
+  const prepared = {
+    topicId: 'topic-search', topicIds: ['topic-search'], sourceRevision: 'fixture-v1', noteSourceRevision: 'fixture-notes-v1', conversationSourceRevision: 'fixture-conversations-v1',
+    notes: [{ topicId: 'topic-search', sourceReference: folder, folderReferenceId: folder.referenceId, path: 'one.md', heading: 'One', revision: 'sha256:one', text: 'atomic lexical fixture', provenance: 'native' }],
+    conversations: [{ topicId: 'topic-search', sourceReference: session, sessionKey: session.externalSourceId, sessionId: 'session-search', messageId: 'message-search', name: 'Closed search fixture', date: '2026-08-26T00:00:00.000Z', closed: true, primaryState: 'ordinary', role: 'user', provenance: 'native', text: 'atomic lexical fixture' }]
+  };
+  await publishTopicSearchSnapshot({ stateDir, prepared, metadata });
+  const search = createTopicSearchService({ stateDir, metadata });
+  const before = await search.query({ schemaVersion: 1, topicId: 'topic-search', query: 'atomic' });
+  assert.deepEqual(await search.projectionVersions(), SEARCH_PROJECTION_VERSIONS);
+  await assert.rejects(() => publishTopicSearchSnapshot({ stateDir, metadata, prepared: { ...prepared, conversationSourceRevision: 'fixture-conversations-v2', conversations: [{ ...prepared.conversations[0], date: null }] } }), /authoritative ISO date/u);
+  assert.deepEqual(await search.query({ schemaVersion: 1, topicId: 'topic-search', query: 'atomic' }), before);
+  assert.deepEqual(metadata.listProjectionBookkeeping().filter(({ projectionId }) => projectionId.includes('topic-')).map(({ projectionId }) => projectionId).sort(), [
+    'topic-search-conversations', 'topic-search-notes'
+  ]);
+}));
+
+test('restart preserves fail-closed search invalidation when bookkeeping and rebuild fail', async () => withState(async (stateDir) => {
+  const metadata = open(stateDir);
+  metadata.createTopic({ topicId: 'topic-search', paraCategory: 'project', lifecycle: 'active' });
+  const folder = metadata.createSourceReference({ version: 1, referenceId: 'folder:search', topicId: 'topic-search', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/search', observedRevision: null });
+  const session = metadata.createSourceReference({ version: 1, referenceId: 'session:search', topicId: 'topic-search', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:search', observedRevision: null });
+  metadata.setSessionState({ referenceId: session.referenceId, sessionId: 'session-search', status: 'closed', isPrimary: false });
+  const prepared = {
+    topicId: 'topic-search', topicIds: ['topic-search'], sourceRevision: 'fixture-v1', noteSourceRevision: 'fixture-notes-v1', conversationSourceRevision: 'fixture-conversations-v1',
+    notes: [{ topicId: 'topic-search', sourceReference: folder, folderReferenceId: folder.referenceId, path: 'one.md', heading: 'One', revision: 'sha256:one', text: 'stale lexical fixture', provenance: 'native' }],
+    conversations: [{ topicId: 'topic-search', sourceReference: session, sessionKey: session.externalSourceId, sessionId: 'session-search', messageId: 'message-search', name: 'Closed search fixture', date: '2026-08-26T00:00:00.000Z', closed: true, primaryState: 'ordinary', role: 'user', provenance: 'native', text: 'stale lexical fixture' }]
+  };
+  await publishTopicSearchSnapshot({ stateDir, prepared, metadata });
+  const oldCheckpoints = metadata.listProjectionBookkeeping().filter(({ projectionId }) => projectionId.includes('topic-'));
+  const corruptedStore = { delete() { throw new Error('corrupt disposable projection'); } };
+  const failingMetadata = new Proxy(metadata, {
+    get(target, property) {
+      if (property === 'setProjectionBookkeepingBatch') return () => { throw new Error('bookkeeping unavailable'); };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    }
+  });
+  const interrupted = createTopicSearchService({
+    stateDir,
+    metadata: failingMetadata,
+    noteStore: corruptedStore,
+    conversationStore: corruptedStore,
+    rebuild: async () => { throw new Error('authoritative source unavailable'); }
+  });
+
+  assert.deepEqual(await interrupted.invalidate(), { notes: false, conversations: false });
+  await assert.rejects(interrupted.rebuild({}), /authoritative source unavailable/u);
+  assert.equal(await reconcileTopicSearchBookkeeping({ stateDir, metadata }), false);
+  assert.deepEqual(metadata.listProjectionBookkeeping().filter(({ projectionId }) => projectionId.includes('topic-')), oldCheckpoints);
+
+  const restarted = createTopicSearchService({ stateDir, metadata });
+  await assert.rejects(
+    restarted.query({ schemaVersion: 1, topicId: 'topic-search', query: 'stale' }),
+    (error) => error.code === 'capability-unavailable'
+  );
+}));

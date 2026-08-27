@@ -229,10 +229,21 @@ export class NoteAdapter {
   }
 
   async read(input = {}) {
+    const allowed = new Set(['schemaVersion', 'path', 'notePath', 'referenceId', 'observedRevision', 'observe', 'requestId']);
+    for (const key of Object.keys(input)) if (!allowed.has(key)) throw sourceError('invalid-request', `Note read contains unsupported field: ${key}`);
     const root = await this.resolveRoot();
     const state = await this.readState(root, input.path ?? input.notePath, 'read');
+    if (input.referenceId !== undefined && input.referenceId !== this.noteFolderReferenceId) {
+      const reference = this.metadata?.getSourceReference?.(input.referenceId);
+      const expectedExternalId = `${root}/${state.relativePath}`;
+      if (!reference || reference.topicId !== this.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || reference.externalSourceId !== expectedExternalId) {
+        throw sourceError('source-recovery', 'The Note read does not match the exact Topic-owned Note Source Reference.');
+      }
+    }
     const revision = revisionForBytes(state.bytes);
-    const sourceReference = await this.observe(this.noteReference(root, state.relativePath, revision));
+    if (input.observedRevision !== undefined && input.observedRevision !== revision) throw sourceError('conflict', 'The authoritative Note changed after the search result was produced.');
+    const candidateReference = this.noteReference(root, state.relativePath, revision);
+    const sourceReference = input.observe === false ? candidateReference : await this.observe(candidateReference);
     return Object.freeze({
       schemaVersion: 1,
       path: state.relativePath,
@@ -242,7 +253,7 @@ export class NoteAdapter {
     });
   }
 
-  async browse() {
+  async browse(input = {}) {
     const root = await this.resolveRoot();
     const notes = [];
     const rootStat = this.rootStat;
@@ -278,7 +289,8 @@ export class NoteAdapter {
           } finally { await file.close(); }
           await this.assertChainStable(chain);
           const revision = revisionForBytes(bytes);
-          const sourceReference = await this.observe(this.noteReference(root, childRelative, revision));
+          const candidateReference = this.noteReference(root, childRelative, revision);
+          const sourceReference = input.observe === false ? candidateReference : await this.observe(candidateReference);
           notes.push(Object.freeze({ schemaVersion: 1, path: childRelative, revision, sourceReference }));
         } else if (!stat.isFile()) {
           throw sourceError('unsafe-path', 'The Note Folder contains a non-regular entry.');
