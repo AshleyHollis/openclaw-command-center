@@ -44,6 +44,8 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.structural-change.confirm', { schemaVersion: 1, topicId: randomUUID(), structuralChangeId: randomUUID(), paraCategory: 'area', previewDigest: 'sha256:preview', expectedRevision: 4, expectedRevisions: [], logicalOperationId: randomUUID() }));
   assert.throws(() => validateBridgeRequest('command-center.v1.topics.rename', { schemaVersion: 1, topicId: randomUUID(), name: 'Fictional rename', logicalOperationId: randomUUID() }), /expectedRevision/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.recovery.verify', { schemaVersion: 1, topicId: randomUUID(), referenceId: 'note-folder:fictional', expectedRevision: 4, expectedSourceRevision: 'fs:1:2:3', logicalOperationId: randomUUID() }));
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 51 }), /at most/i);
   for (const attachment of [{ path: '/fictional/private.md' }, { url: 'https://fictional.invalid/private' }]) {
     assert.throws(() => validateBridgeRequest('command-center.v1.sessions.send', { schemaVersion: 1, topicId: 'topic', referenceId: 'session', message: 'fictional', attachments: [attachment], logicalOperationId: randomUUID() }), /unsupported.*attachments/i);
   }
@@ -59,6 +61,24 @@ test('handlers preserve authenticated request context and echo request and logic
   await statusHandler({ req: { id: 'gateway-frame-1' }, params: { schemaVersion: 1 }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
   assert.deepEqual(response[1], { schemaVersion: 1, status: 'applied', requestId: 'gateway-frame-1', logicalOperationId: null, result: { mode: 'ready' } });
+});
+
+test('Dashboard bridge preserves the bounded Activity object and Attention projection', async () => {
+  const result = await invokeBridgeMethod({ dashboardGet: async () => ({
+    schemaVersion: 1,
+    serverTime: '2026-08-27T12:00:00.000Z',
+    attention: [{ episodeId: 'episode-fictional', severity: 'High' }],
+    attentionBadgeCount: 1,
+    inProgress: [],
+    comingUp: [],
+    topics: [],
+    activity: { records: [], nextOffset: null, hasMore: false },
+    activityOffset: 0,
+    activityLimit: 50,
+    notificationSettings: { revision: 1 }
+  }) }, 'command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 50 });
+  assert.equal(result.attention[0].episodeId, 'episode-fictional');
+  assert.deepEqual(result.activity, { records: [], nextOffset: null, hasMore: false });
 });
 
 test('Topic mutation handlers await the public service and return sanitized durable results', async () => {

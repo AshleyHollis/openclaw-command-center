@@ -3,7 +3,8 @@ export const LEGACY_METADATA_SCHEMA_VERSION = 2;
 export const LEGACY_MIGRATION_SCHEMA_VERSION = 3;
 export const ATTENTION_METADATA_SCHEMA_VERSION = 4;
 export const PRIOR_COMMAND_CENTER_SCHEMA_VERSION = 5;
-export const COMMAND_CENTER_SCHEMA_VERSION = 6;
+export const SCHEMA_SIX_COMMAND_CENTER_VERSION = 6;
+export const COMMAND_CENTER_SCHEMA_VERSION = 7;
 
 export const metadataTableNames = Object.freeze([
   'topics', 'source_references', 'source_convention_state', 'presentation_preferences',
@@ -13,6 +14,8 @@ export const metadataTableNames = Object.freeze([
   'attention_episodes', 'attention_occurrences', 'attention_attempts',
   'attention_approvals', 'attention_activity_records'
   , 'source_locators', 'topic_operations', 'source_recovery'
+  , 'notification_settings', 'notification_policy_epochs', 'notification_slots',
+  'notification_emissions', 'notification_clear_operations'
 ]);
 export const paraCategories = Object.freeze(['project', 'area', 'resource', 'archive']);
 export const topicLifecycles = Object.freeze(['provisioning', 'active', 'retired']);
@@ -348,9 +351,77 @@ CREATE TABLE source_recovery (
 ) STRICT;
 `;
 
-export const metadataSchemaSql = `${metadataSchemaV5Sql.replace('PRAGMA user_version = 5;', 'PRAGMA user_version = 6;')
+export const metadataSchemaV6Sql = `${metadataSchemaV5Sql.replace('PRAGMA user_version = 5;', 'PRAGMA user_version = 6;')
   .replace('  updated_at TEXT NOT NULL\n) STRICT;\n\nCREATE TABLE source_references', "  updated_at TEXT NOT NULL,\n  revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),\n  name TEXT NOT NULL DEFAULT '' CHECK (length(name) <= 300),\n  activated_at TEXT\n) STRICT;\n\nCREATE TABLE source_references")
   .replace("  state TEXT NOT NULL CHECK (state IN ('managed', 'customized')),\n  updated_at TEXT NOT NULL,", "  state TEXT NOT NULL CHECK (state IN ('managed', 'customized')),\n  updated_at TEXT NOT NULL,\n  expected_value TEXT,")}${metadataSchemaV6TopicTablesSql}\nPRAGMA user_version = 6;\n`;
+
+const metadataSchemaV7NotificationTablesSql = `
+CREATE TABLE notification_settings (
+  settings_id TEXT PRIMARY KEY CHECK (settings_id = 'global'),
+  due_reminders INTEGER NOT NULL CHECK (due_reminders IN (0, 1)),
+  important_items INTEGER NOT NULL CHECK (important_items IN (0, 1)),
+  critical_realerts INTEGER NOT NULL CHECK (critical_realerts IN (0, 1)),
+  quiet_hours_enabled INTEGER NOT NULL CHECK (quiet_hours_enabled IN (0, 1)),
+  quiet_hours_start TEXT NOT NULL CHECK (quiet_hours_start GLOB '[0-2][0-9]:[0-5][0-9]'),
+  quiet_hours_end TEXT NOT NULL CHECK (quiet_hours_end GLOB '[0-2][0-9]:[0-5][0-9]'),
+  time_zone TEXT NOT NULL CHECK (length(trim(time_zone)) > 0),
+  generic_preview INTEGER NOT NULL CHECK (generic_preview IN (0, 1)),
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE notification_policy_epochs (
+  epoch_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL CHECK (length(trim(episode_id)) > 0),
+  severity TEXT NOT NULL CHECK (severity IN ('Reminder', 'High', 'Critical')),
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  activation_at_ms INTEGER NOT NULL,
+  active_accumulated_ms INTEGER NOT NULL DEFAULT 0 CHECK (active_accumulated_ms >= 0),
+  state TEXT NOT NULL CHECK (state IN ('active', 'paused', 'terminal', 'cleared')),
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  UNIQUE (episode_id, generation)
+) STRICT;
+
+CREATE TABLE notification_slots (
+  slot_id TEXT PRIMARY KEY,
+  epoch_id TEXT NOT NULL,
+  episode_id TEXT NOT NULL,
+  slot_kind TEXT NOT NULL CHECK (length(trim(slot_kind)) > 0),
+  due_at_ms INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('scheduled', 'queued', 'emitted', 'cancelled')),
+  logical_operation_id TEXT,
+  emission_id TEXT,
+  queued_at_ms INTEGER,
+  emitted_at_ms INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  UNIQUE (epoch_id, slot_kind)
+) STRICT;
+
+CREATE TABLE notification_emissions (
+  emission_id TEXT PRIMARY KEY,
+  epoch_id TEXT NOT NULL,
+  episode_id TEXT NOT NULL,
+  logical_operation_id TEXT NOT NULL,
+  emitted_at_ms INTEGER NOT NULL,
+  expires_at_ms INTEGER NOT NULL,
+  generic_preview INTEGER NOT NULL CHECK (generic_preview IN (0, 1)),
+  summary_count INTEGER NOT NULL DEFAULT 0 CHECK (summary_count >= 0),
+  status TEXT NOT NULL CHECK (status IN ('sent', 'partial', 'failed', 'ambiguous', 'suppressed', 'expired', 'cleared')),
+  updated_at_ms INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE notification_clear_operations (
+  logical_operation_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'cleared', 'partial', 'ambiguous')),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  updated_at_ms INTEGER NOT NULL
+) STRICT;
+`;
+
+export const metadataSchemaSql = `${metadataSchemaV6Sql.replace('PRAGMA user_version = 6;', 'PRAGMA user_version = 7;')}${metadataSchemaV7NotificationTablesSql}\nPRAGMA user_version = 7;\n`;
 
 const baseColumns = Object.freeze({
   topics: [['topic_id', 'TEXT', 1, 1], ['para_category', 'TEXT', 1, 0], ['lifecycle', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0], ['revision', 'INTEGER', 1, 0], ['name', 'TEXT', 1, 0], ['activated_at', 'TEXT', 0, 0]],
@@ -376,6 +447,11 @@ const baseColumns = Object.freeze({
   source_locators: [['reference_id', 'TEXT', 1, 1], ['locator', 'TEXT', 1, 0], ['locator_version', 'INTEGER', 1, 0], ['ownership', 'TEXT', 1, 0], ['observed_revision', 'TEXT', 0, 0], ['updated_at', 'TEXT', 1, 0]],
   topic_operations: [['logical_operation_id', 'TEXT', 1, 1], ['topic_id', 'TEXT', 0, 0], ['operation_kind', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0], ['current_step', 'TEXT', 1, 0], ['intent_json', 'TEXT', 1, 0], ['result_json', 'TEXT', 0, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
   source_recovery: [['recovery_id', 'TEXT', 1, 1], ['topic_id', 'TEXT', 1, 0], ['reference_id', 'TEXT', 1, 0], ['source_kind', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0], ['revision', 'INTEGER', 1, 0], ['last_locator', 'TEXT', 0, 0], ['last_identity', 'TEXT', 0, 0], ['failure', 'TEXT', 1, 0], ['diagnostics_json', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]]
+  , notification_settings: [['settings_id', 'TEXT', 1, 1], ['due_reminders', 'INTEGER', 1, 0], ['important_items', 'INTEGER', 1, 0], ['critical_realerts', 'INTEGER', 1, 0], ['quiet_hours_enabled', 'INTEGER', 1, 0], ['quiet_hours_start', 'TEXT', 1, 0], ['quiet_hours_end', 'TEXT', 1, 0], ['time_zone', 'TEXT', 1, 0], ['generic_preview', 'INTEGER', 1, 0], ['revision', 'INTEGER', 1, 0], ['updated_at', 'TEXT', 1, 0]],
+  notification_policy_epochs: [['epoch_id', 'TEXT', 1, 1], ['episode_id', 'TEXT', 1, 0], ['severity', 'TEXT', 1, 0], ['generation', 'INTEGER', 1, 0], ['activation_at_ms', 'INTEGER', 1, 0], ['active_accumulated_ms', 'INTEGER', 1, 0], ['state', 'TEXT', 1, 0], ['created_at_ms', 'INTEGER', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]],
+  notification_slots: [['slot_id', 'TEXT', 1, 1], ['epoch_id', 'TEXT', 1, 0], ['episode_id', 'TEXT', 1, 0], ['slot_kind', 'TEXT', 1, 0], ['due_at_ms', 'INTEGER', 1, 0], ['status', 'TEXT', 1, 0], ['logical_operation_id', 'TEXT', 0, 0], ['emission_id', 'TEXT', 0, 0], ['queued_at_ms', 'INTEGER', 0, 0], ['emitted_at_ms', 'INTEGER', 0, 0], ['created_at_ms', 'INTEGER', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]],
+  notification_emissions: [['emission_id', 'TEXT', 1, 1], ['epoch_id', 'TEXT', 1, 0], ['episode_id', 'TEXT', 1, 0], ['logical_operation_id', 'TEXT', 1, 0], ['emitted_at_ms', 'INTEGER', 1, 0], ['expires_at_ms', 'INTEGER', 1, 0], ['generic_preview', 'INTEGER', 1, 0], ['summary_count', 'INTEGER', 1, 0], ['status', 'TEXT', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]],
+  notification_clear_operations: [['logical_operation_id', 'TEXT', 1, 1], ['episode_id', 'TEXT', 1, 0], ['status', 'TEXT', 1, 0], ['attempt_count', 'INTEGER', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]]
 });
 
 const baseForeignKeys = Object.freeze({
@@ -408,6 +484,7 @@ function definitions(sql) {
   ));
 }
 const expectedTableDefinitions = definitions(metadataSchemaSql);
+const expectedTableDefinitionsV6 = definitions(metadataSchemaV6Sql);
 const expectedTableDefinitionsV4 = definitions(metadataSchemaV4Sql);
 const expectedTableDefinitionsV3 = definitions(metadataSchemaV3Sql);
 const expectedTableDefinitionsV2 = definitions(metadataSchemaV2Sql);
@@ -489,21 +566,26 @@ SELECT reference_id, external_source_id, 1, 'external', last_observed_revision, 
 PRAGMA user_version = 6;
 `;
 
+export const metadataSchemaV6ToV7Sql = `${metadataSchemaV7NotificationTablesSql}\nPRAGMA user_version = 7;\n`;
+
 const attentionTables = Object.freeze(['attention_episodes', 'attention_occurrences', 'attention_attempts', 'attention_approvals', 'attention_activity_records']);
 const attentionActivityTriggers = Object.freeze(['attention_activity_records_no_delete', 'attention_activity_records_no_update']);
 const migrationTables = Object.freeze(['migration_state', 'migration_channels', 'migration_occurrences', 'migration_completion']);
 const topicLifecycleTables = Object.freeze(['source_locators', 'topic_operations', 'source_recovery']);
-const v1Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !['operation_journal', 'session_state', 'activity_records', ...migrationTables, ...attentionTables, ...topicLifecycleTables].includes(table)));
-const v2Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...migrationTables, ...attentionTables, ...topicLifecycleTables].includes(table)));
-const v3Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...attentionTables, ...topicLifecycleTables].includes(table)));
+const notificationTables = Object.freeze(['notification_settings', 'notification_policy_epochs', 'notification_slots', 'notification_emissions', 'notification_clear_operations']);
+const v1Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !['operation_journal', 'session_state', 'activity_records', ...migrationTables, ...attentionTables, ...topicLifecycleTables, ...notificationTables].includes(table)));
+const v2Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...migrationTables, ...attentionTables, ...topicLifecycleTables, ...notificationTables].includes(table)));
+const v3Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...attentionTables, ...topicLifecycleTables, ...notificationTables].includes(table)));
 const columnsBeforeV5 = (table) => table === 'session_state' ? baseColumns[table].filter(([name]) => !['was_primary', 'display_name'].includes(name)) : baseColumns[table];
-const v5Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !topicLifecycleTables.includes(table)));
+const v5Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !topicLifecycleTables.includes(table) && !notificationTables.includes(table)));
+const v6Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !notificationTables.includes(table)));
 const columnsForV5 = (table) => {
   if (table === 'topics') return baseColumns[table].filter(([name]) => !['revision', 'name', 'activated_at'].includes(name));
   if (table === 'source_convention_state') return baseColumns[table].filter(([name]) => name !== 'expected_value');
   return baseColumns[table];
 };
 const v5Columns = Object.freeze(Object.fromEntries(v5Tables.map((table) => [table, columnsForV5(table)])));
+const v6Columns = Object.freeze(Object.fromEntries(v6Tables.map((table) => [table, baseColumns[table]])));
 const v4Columns = Object.freeze(Object.fromEntries(v5Tables.map((table) => [table, columnsBeforeV5(table).filter(([name]) => table !== 'source_convention_state' || name !== 'expected_value').filter(([name]) => table !== 'topics' || !['revision', 'name', 'activated_at'].includes(name))])));
 const v1Columns = Object.freeze(Object.fromEntries(v1Tables.map((table) => [table, table === 'source_references' ? v4Columns[table].filter(([name]) => name !== 'last_observed_revision') : v4Columns[table]])));
 const v2Columns = Object.freeze(Object.fromEntries(v2Tables.map((table) => [table, v4Columns[table]])));
@@ -517,12 +599,13 @@ function sameArray(left, right) { return left.length === right.length && left.ev
 export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VERSION) {
   const problems = [];
   const current = schemaVersion === COMMAND_CENTER_SCHEMA_VERSION;
+  const schemaSix = schemaVersion === SCHEMA_SIX_COMMAND_CENTER_VERSION;
   const prior = schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION;
   const schemaFour = schemaVersion === ATTENTION_METADATA_SCHEMA_VERSION;
-  const columnsForVersion = current ? baseColumns : prior ? v5Columns : schemaFour ? v4Columns : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
-  const definitionsForVersion = current ? expectedTableDefinitions : prior ? definitions(metadataSchemaV5Sql) : schemaFour ? expectedTableDefinitionsV4 : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
-  const foreignKeysForVersion = current ? baseForeignKeys : prior || schemaFour ? Object.fromEntries(v5Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
-  const applicationTables = current ? metadataTableNames : prior || schemaFour ? v5Tables : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
+  const columnsForVersion = current ? baseColumns : schemaSix ? v6Columns : prior ? v5Columns : schemaFour ? v4Columns : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
+  const definitionsForVersion = current ? expectedTableDefinitions : schemaSix ? expectedTableDefinitionsV6 : prior ? definitions(metadataSchemaV5Sql) : schemaFour ? expectedTableDefinitionsV4 : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
+  const foreignKeysForVersion = current ? baseForeignKeys : schemaSix || prior || schemaFour ? Object.fromEntries(v6Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
+  const applicationTables = current ? metadataTableNames : schemaSix ? v6Tables : prior || schemaFour ? v5Tables : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
   const expectedTables = schemaVersion >= LEGACY_METADATA_SCHEMA_VERSION ? [...applicationTables, 'schema_migrations'] : [...applicationTables];
   const objects = database.prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
   const tables = objects.filter((row) => row.type === 'table').map((row) => row.name);
@@ -537,7 +620,7 @@ export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VE
     const tableShape = database.prepare('SELECT strict FROM pragma_table_list WHERE name = ?').get(table);
     if (!tableShape || tableShape.strict !== 1) problems.push(`${table} is not STRICT`);
     const ddl = normalizedSql(database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.sql);
-    const alterCompatible = current && (table === 'topics' || table === 'source_convention_state');
+    const alterCompatible = (current || schemaSix) && (table === 'topics' || table === 'source_convention_state');
     if (!alterCompatible && ddl !== definitionsForVersion[table]) problems.push(`${table} definition differs`);
     if (current && table === 'topics') {
       for (const requiredConstraint of [

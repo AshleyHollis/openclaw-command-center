@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
+  SCHEMA_SIX_COMMAND_CENTER_VERSION,
   ATTENTION_METADATA_SCHEMA_VERSION,
   LEGACY_METADATA_SCHEMA_VERSION,
   LEGACY_MIGRATION_SCHEMA_VERSION,
@@ -11,7 +12,8 @@ import {
   metadataSchemaV2ToV3Sql,
   metadataSchemaV3ToV4Sql,
   metadataSchemaV4ToV5Sql,
-  metadataSchemaV5ToV6Sql
+  metadataSchemaV5ToV6Sql,
+  metadataSchemaV6ToV7Sql
 } from './schema.mjs';
 import canonical from '../compatibility-tuple.json' with { type: 'json' };
 import { recoveryMigrationId } from './path.mjs';
@@ -21,7 +23,8 @@ export const V2_TO_V3_MIGRATION_ID = 'command-center-schema-2-to-3';
 export const V3_TO_V4_MIGRATION_ID = 'command-center-schema-3-to-4';
 export const V4_TO_V5_MIGRATION_ID = 'command-center-schema-4-to-5';
 export const V5_TO_V6_MIGRATION_ID = 'command-center-schema-5-to-6';
-export const MIGRATION_ID = V5_TO_V6_MIGRATION_ID;
+export const V6_TO_V7_MIGRATION_ID = 'command-center-schema-6-to-7';
+export const MIGRATION_ID = V6_TO_V7_MIGRATION_ID;
 export const MIGRATION_FROM_VERSION = PRIOR_COMMAND_CENTER_SCHEMA_VERSION;
 export const MIGRATION_TO_VERSION = COMMAND_CENTER_SCHEMA_VERSION;
 export const MIGRATION_IS_DESTRUCTIVE = false;
@@ -32,12 +35,14 @@ const v2Definition = Object.freeze({ id: V2_TO_V3_MIGRATION_ID, fromVersion: 2, 
 const v3Definition = Object.freeze({ id: V3_TO_V4_MIGRATION_ID, fromVersion: 3, toVersion: 4, destructive: false, statements: Object.freeze([metadataSchemaV3ToV4Sql]) });
 const v4Definition = Object.freeze({ id: V4_TO_V5_MIGRATION_ID, fromVersion: 4, toVersion: 5, destructive: false, statements: Object.freeze([metadataSchemaV4ToV5Sql]) });
 const v5Definition = Object.freeze({ id: V5_TO_V6_MIGRATION_ID, fromVersion: 5, toVersion: 6, destructive: false, statements: Object.freeze([metadataSchemaV5ToV6Sql]) });
+const v6Definition = Object.freeze({ id: V6_TO_V7_MIGRATION_ID, fromVersion: 6, toVersion: 7, destructive: false, statements: Object.freeze([metadataSchemaV6ToV7Sql]) });
 export const V1_TO_V2_MIGRATION_DIGEST = digest(v1Definition);
 export const V2_TO_V3_MIGRATION_DIGEST = digest(v2Definition);
 export const V3_TO_V4_MIGRATION_DIGEST = digest(v3Definition);
 export const V4_TO_V5_MIGRATION_DIGEST = digest(v4Definition);
 export const MIGRATION_DIGEST = digest(v5Definition);
-export const migrationDescriptor = Object.freeze({ ...v5Definition, digest: MIGRATION_DIGEST });
+export const V6_TO_V7_MIGRATION_DIGEST = digest(v6Definition);
+export const migrationDescriptor = Object.freeze({ ...v6Definition, digest: V6_TO_V7_MIGRATION_DIGEST });
 export const CURRENT_BUILD = canonical.package.build;
 
 function invokeHook(hooks, name, context) { if (typeof hooks?.[name] === 'function') hooks[name](context); }
@@ -50,7 +55,8 @@ export function validateMigrationLedger(database, { snapshotId, allowEmpty = fal
     { id: V2_TO_V3_MIGRATION_ID, digest: V2_TO_V3_MIGRATION_DIGEST, from: 2, to: 3, builds: ['0.2.0', '0.3.0', CURRENT_BUILD] },
     { id: V3_TO_V4_MIGRATION_ID, digest: V3_TO_V4_MIGRATION_DIGEST, from: 3, to: 4, builds: ['0.3.0', CURRENT_BUILD] },
     { id: V4_TO_V5_MIGRATION_ID, digest: V4_TO_V5_MIGRATION_DIGEST, from: 4, to: 5, builds: ['0.3.0', CURRENT_BUILD] },
-    { id: V5_TO_V6_MIGRATION_ID, digest: MIGRATION_DIGEST, from: 5, to: 6, builds: [CURRENT_BUILD] }
+    { id: V5_TO_V6_MIGRATION_ID, digest: MIGRATION_DIGEST, from: 5, to: 6, builds: [CURRENT_BUILD] },
+    { id: V6_TO_V7_MIGRATION_ID, digest: V6_TO_V7_MIGRATION_DIGEST, from: 6, to: 7, builds: [CURRENT_BUILD] }
   ];
   const targetVersion = Number(database.prepare('PRAGMA user_version').get().user_version);
   const firstFrom = rows[0]?.from_version;
@@ -112,5 +118,9 @@ export function applyV4ToV5Migration(database, { snapshotId, appliedAt = new Dat
 export function applyV5ToV6Migration(database, { snapshotId, appliedAt = new Date().toISOString(), hooks } = {}) {
   if (typeof snapshotId !== 'string' || snapshotId.trim() === '') throw new TypeError('snapshotId must be a non-empty string');
   applyDefinition(database, v5Definition, { sequence: inspectMigrationLedger(database).length + 1, snapshotId, appliedAt, hooks });
+}
+export function applyV6ToV7Migration(database, { snapshotId, appliedAt = new Date().toISOString(), hooks } = {}) {
+  if (typeof snapshotId !== 'string' || snapshotId.trim() === '') throw new TypeError('snapshotId must be a non-empty string');
+  applyDefinition(database, v6Definition, { sequence: inspectMigrationLedger(database).length + 1, snapshotId, appliedAt, hooks });
 }
 export { digest };

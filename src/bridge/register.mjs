@@ -46,8 +46,8 @@ const handlerMap = Object.freeze({
   'command-center.v1.sessions.close': (service, params) => service.sessionsClose(params),
   'command-center.v1.sessions.reopen': (service, params) => service.sessionsReopen(params),
   'command-center.v1.reminders.list': (service, params) => service.remindersList(params),
-  'command-center.v1.reminders.snooze': (service, params) => service.remindersSnooze(params),
-  'command-center.v1.reminders.complete': (service, params) => service.remindersComplete(params),
+  'command-center.v1.reminders.snooze': async (service, params) => { const result = await service.remindersSnooze(params); await service.notificationReconcile?.(); return result; },
+  'command-center.v1.reminders.complete': async (service, params) => { const result = await service.remindersComplete(params); await service.notificationReconcile?.(); return result; },
   'command-center.v1.schedules.get': (service, params) => service.schedulesGet(params),
   'command-center.v1.schedules.list': (service, params) => service.schedulesList(params),
   'command-center.v1.schedules.create': (service, params) => service.schedulesCreate(params),
@@ -58,11 +58,12 @@ const handlerMap = Object.freeze({
   'command-center.v1.metadata.write': (service, params) => service.metadataWrite(params),
   'command-center.v1.analysis.read': (service, params) => service.analysisRead(params),
   'command-center.v1.analysis.run': (service, params) => service.analysisRun(params),
-  'command-center.v1.attention.act': (service, params) => service.attentionAct(params),
+  'command-center.v1.attention.act': async (service, params) => { const result = await service.attentionAct(params); await service.notificationReconcile?.(); return result; },
   'command-center.v1.attention.list': (service, params) => service.attentionList(params),
   'command-center.v1.attention.get': (service, params) => service.attentionGet(params),
   'command-center.v1.activity.list': (service, params) => service.activityList(params),
   'command-center.v1.activity.get': (service, params) => service.activityGet(params),
+  'command-center.v1.dashboard.get': (service, params) => service.dashboardGet(params),
   'command-center.v1.search.query': (service, params) => service.searchQuery(params)
 });
 
@@ -87,6 +88,7 @@ export function registerBridgeMethods(api, service) {
       const requestId = req?.id ?? null;
       try {
         if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
+        service.notificationCaptureBinding?.();
         if (method === 'command-center.v1.attention.act' && (typeof client?.authenticatedUserId !== 'string' || client.authenticatedUserId.trim() === '')) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
         const operatorId = method.startsWith('command-center.v1.attention.') && typeof client?.authenticatedUserId === 'string' ? client.authenticatedUserId : null;
         const result = await invokeBridgeMethod(handlerService, method, params, requestId, operatorId);

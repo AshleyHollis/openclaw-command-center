@@ -6,6 +6,7 @@ import { createAttentionActionHandler } from './attention/http-route.mjs';
 import { createMetadataService } from './plugin-service.mjs';
 import { topicContextToolFactory } from './search/tool.mjs';
 import { createTopicsHttpHandler } from './topics/http.mjs';
+import { createDashboardReadHttpHandler, createDashboardActionsHttpHandler } from './dashboard/http-route.mjs';
 
 export { runNoteMaintenance } from './plugin-service.mjs';
 
@@ -32,7 +33,16 @@ export default definePluginEntry({
   configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema, topics: { type: 'object', properties: { noteRoot: { type: 'string', minLength: 1, pattern: '\\S' } }, required: ['noteRoot'], additionalProperties: false } }, additionalProperties: false },
   /** @param {OpenClawPluginApi} api */
   register(api) {
-    const service = createMetadataService(api);
+    if (typeof api.notifications?.registerEmitter !== 'function') throw new Error('Command Center requires the published notification emitter API.');
+    const notificationEmitter = api.notifications.registerEmitter({
+      version: 1,
+      id: 'command-center-attention-v1',
+      requiredScopes: ['operator.read'],
+      destinations: [{ id: 'attention-card', tabId: routeId }]
+    });
+    if (!notificationEmitter || typeof notificationEmitter.bindCurrentOperator !== 'function') throw new Error('Command Center notification emitter registration was refused.');
+    const service = createMetadataService(api, { notificationEmitter });
+    api.lifecycle?.registerRuntimeLifecycle?.({ id: 'command-center-notifications', cleanup: () => service.stop() });
     const sourceProxy = new Proxy({}, {
       get(_target, property) {
         return (...args) => {
@@ -45,6 +55,11 @@ export default definePluginEntry({
     const serviceProxy = new Proxy({}, {
       get(_target, property) {
         if (property === 'topics') return service.topicService;
+        if (property === 'dashboard') return { get: (input) => service.dashboardGet(input) };
+        if (property === 'dashboardGet') return (input) => service.dashboardGet(input);
+        if (property === 'dashboardUpdateSettings') return (input) => service.dashboardUpdateSettings(input);
+        if (property === 'notificationReconcile') return () => service.notificationReconcile();
+        if (property === 'notificationCaptureBinding') return () => service.notificationCaptureBinding();
         return sourceProxy[property];
       }
     });
@@ -70,6 +85,18 @@ export default definePluginEntry({
       auth: 'plugin',
       match: 'exact',
       handler: createAttentionActionHandler(serviceProxy)
+    });
+    api.registerHttpRoute({
+      path: '/plugins/command-center/api/dashboard',
+      auth: 'plugin',
+      match: 'exact',
+      handler: createDashboardReadHttpHandler(serviceProxy)
+    });
+    api.registerHttpRoute({
+      path: '/plugins/command-center/api/dashboard/actions',
+      auth: 'plugin',
+      match: 'exact',
+      handler: createDashboardActionsHttpHandler(serviceProxy)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topics/actions',

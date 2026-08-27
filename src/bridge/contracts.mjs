@@ -27,7 +27,8 @@ export const READ_METHODS = Object.freeze([
   'command-center.v1.attention.list',
   'command-center.v1.attention.get',
   'command-center.v1.activity.list',
-  'command-center.v1.activity.get'
+  'command-center.v1.activity.get',
+  'command-center.v1.dashboard.get'
 ]);
 
 export const WRITE_METHODS = Object.freeze([
@@ -84,6 +85,8 @@ function parameterSchema(field, method) {
   if (field === 'enabled' || field === 'isPrimary') return Object.freeze({ type: 'boolean' });
   if (field === 'limit') return Object.freeze({ type: 'integer', minimum: 1, maximum: 100 });
   if (field === 'offset') return Object.freeze({ type: 'integer', minimum: 0 });
+  if (field === 'activityLimit') return Object.freeze({ type: 'integer', minimum: 1, maximum: 50 });
+  if (field === 'activityOffset') return Object.freeze({ type: 'integer', minimum: 0 });
   if (field === 'expectedEpisodeRevision' || field === 'expectedMigrationRevision') return Object.freeze({ type: 'integer', minimum: 1 });
   return Object.freeze({ type: 'string' });
 }
@@ -115,7 +118,7 @@ function actionResultSchema(method) {
     sessionKey: Object.freeze({ type: 'string' }),
     job: Object.freeze({ type: 'object' }),
     results: Object.freeze({ type: 'array' }),
-    activity: Object.freeze({ type: method === 'command-center.v1.attention.act' ? ['object', 'null'] : 'array' }),
+    activity: Object.freeze({ type: method === 'command-center.v1.attention.act' ? ['object', 'null'] : method === 'command-center.v1.dashboard.get' ? 'object' : 'array' }),
     diagnostics: Object.freeze({ type: 'array' }),
     unavailableCapabilities: Object.freeze({ type: 'array' }),
     metadataSchemaVersion: Object.freeze({ type: ['integer', 'null'] }),
@@ -177,7 +180,14 @@ function actionResultSchema(method) {
     cursor: Object.freeze({ type: ['string', 'null'] }),
     attempt: Object.freeze({ type: ['object', 'null'] }),
     navigation: Object.freeze({ type: ['object', 'null'] }),
-    approval: Object.freeze({ type: ['object', 'null'] })
+    approval: Object.freeze({ type: ['object', 'null'] }),
+    serverTime: Object.freeze({ type: 'string' }),
+    attention: Object.freeze({ type: 'array' }),
+    attentionBadgeCount: Object.freeze({ type: 'integer' }),
+    comingUp: Object.freeze({ type: 'array' }),
+    activityOffset: Object.freeze({ type: 'integer' }),
+    activityLimit: Object.freeze({ type: 'integer' }),
+    notificationSettings: Object.freeze({ type: 'object' })
   };
   const arrayResult = method.endsWith('notes.browse') || method.endsWith('reminders.list') || method.endsWith('schedules.list');
   const allowed = method.includes('.migration.')
@@ -214,6 +224,8 @@ function actionResultSchema(method) {
     ? ['schemaVersion', 'records', 'nextOffset', 'hasMore']
     : method.endsWith('activity.get')
     ? ['schemaVersion', 'record']
+    : method.endsWith('dashboard.get')
+    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'topics', 'activity', 'activityOffset', 'activityLimit', 'notificationSettings']
     : method.endsWith('analysis.read')
     ? ['status', 'analysisId', 'observedRevision']
     : ['schemaVersion', 'status', 'requestId', 'logicalOperationId', 'value', 'note', 'sourceReference', 'job', 'results', 'activity', 'episode', 'attempt', 'navigation', 'approval'];
@@ -287,7 +299,8 @@ const required = Object.freeze({
   'command-center.v1.attention.list': [],
   'command-center.v1.attention.get': ['episodeId'],
   'command-center.v1.activity.list': [],
-  'command-center.v1.activity.get': ['activityId']
+  'command-center.v1.activity.get': ['activityId'],
+  'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit']
 });
 const fields = Object.freeze({
   'command-center.v1.migration.status': [],
@@ -351,7 +364,8 @@ const fields = Object.freeze({
   'command-center.v1.attention.list': ['topicId', 'limit'],
   'command-center.v1.attention.get': ['episodeId'],
   'command-center.v1.activity.list': ['topicId', 'episodeId', 'offset', 'limit'],
-  'command-center.v1.activity.get': ['activityId']
+  'command-center.v1.activity.get': ['activityId'],
+  'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit']
 });
 
 export const BRIDGE_CONTRACTS = Object.freeze(Object.fromEntries([...READ_METHODS, ...WRITE_METHODS].map((method) => {

@@ -8,6 +8,8 @@ import { createSearchRebuildService, reconcileTopicSearchBookkeeping } from './s
 import { createTopicSearchService } from './search/service.mjs';
 import { createTopicContextPolicy } from './search/context.mjs';
 import { createTopicService } from './topics/service.mjs';
+import { createDashboardService } from './dashboard/service.mjs';
+import { createNotificationService } from './notifications/service.mjs';
 
 let activeMaintenanceService;
 
@@ -22,7 +24,7 @@ export function runNoteMaintenance(input) {
   return activeMaintenanceService.run(input);
 }
 
-export function createMetadataService(api) {
+export function createMetadataService(api, { notificationEmitter } = {}) {
   let metadataService;
   let sourceService;
   let attentionService;
@@ -31,6 +33,9 @@ export function createMetadataService(api) {
   let searchRebuildService;
   let contextPolicy;
   let topicService;
+  let dashboardService;
+  let notificationService;
+  let notificationTimer;
   return {
     id: 'command-center-metadata',
     async start() {
@@ -94,11 +99,54 @@ export function createMetadataService(api) {
         try { await sourceService.refreshReminderAttention(); }
         catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
       }
+      dashboardService = createDashboardService({
+        sourceService,
+        attentionService,
+        metadata: metadataService,
+        now: () => new Date().toISOString(),
+        timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC',
+        notificationSettings: () => notificationService?.getSettings?.(),
+        navigationResolver: async (record) => {
+          const referenceId = record?.sourceReferenceId;
+          const topicId = record?.topicId;
+          if (typeof referenceId !== 'string' || typeof topicId !== 'string') return undefined;
+          const reference = metadataService.getSourceReference?.(referenceId);
+          if (!reference || reference.topicId !== topicId) return undefined;
+          if (reference.sourceKind === 'session') {
+            try {
+              const navigation = await sourceService.sessionsNavigate({ schemaVersion: 1, topicId, referenceId });
+              if (navigation?.sessionKey && navigation?.sessionId) return Object.freeze({ kind: 'session', topicId, referenceId, sessionKey: navigation.sessionKey, sessionId: navigation.sessionId, verified: true });
+            } catch { return undefined; }
+          }
+          return Object.freeze({ kind: 'source', topicId, referenceId, sourceKind: reference.sourceKind, verified: true });
+        }
+      });
+      notificationService = createNotificationService({
+        metadata: metadataService,
+        attentionService,
+        sourceService,
+        emitter: notificationEmitter,
+        timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC',
+        now: () => Date.now(),
+        logger: api.logger
+      });
+      try { await notificationService.reconcile(); }
+      catch { api.logger?.warn?.('Command Center notification reconciliation remains pending until an authenticated operator binding is available.'); }
+      notificationTimer = setInterval(() => {
+        Promise.resolve(sourceService?.refreshReminderAttention?.())
+          .then(() => notificationService?.reconcile?.())
+          .catch(() => notificationService?.reconcile?.())
+          .catch(() => {});
+      }, 60_000);
+      notificationTimer.unref?.();
       maintenanceService = createNoteMaintenanceService({ sourceService, metadata: metadataService });
       activeMaintenanceService = maintenanceService;
       return migrationResult;
     },
     stop() {
+      if (notificationTimer) clearInterval(notificationTimer);
+      notificationTimer = undefined;
+      notificationService?.close?.();
       sourceService?.close?.();
       attentionService?.close?.();
       metadataService?.close();
@@ -109,6 +157,8 @@ export function createMetadataService(api) {
       contextPolicy = undefined;
       topicService = undefined;
       attentionService = undefined;
+      dashboardService = undefined;
+      notificationService = undefined;
       maintenanceService = undefined;
       activeMaintenanceService = undefined;
     },
@@ -117,6 +167,24 @@ export function createMetadataService(api) {
     get maintenanceService() { return maintenanceService; },
     get searchService() { return searchService; },
     get topicService() { return topicService; },
+    get dashboardService() { return dashboardService; },
+    get notificationService() { return notificationService; },
+    async dashboardGet(input) {
+      if (!dashboardService) throw new Error('Command Center Dashboard is not ready.');
+      try { await sourceService?.refreshReminderAttention?.(); } catch { /* the projection omits unavailable scheduler rows */ }
+      await notificationService?.reconcile?.();
+      return dashboardService.get(input);
+    },
+    dashboardUpdateSettings(input) {
+      if (!notificationService) throw new Error('Command Center notification settings are not ready.');
+      return notificationService.updateSettings(input);
+    },
+    notificationReconcile() {
+      return Promise.resolve(sourceService?.refreshReminderAttention?.()).catch(() => undefined).then(() => notificationService?.reconcile?.());
+    },
+    notificationCaptureBinding() {
+      return notificationService?.captureCurrentOperatorBinding?.() ?? false;
+    },
     topicContextRetrieve(input) {
       if (!contextPolicy) throw new Error('Command Center Topic context is not ready.');
       return contextPolicy.retrieve(input);

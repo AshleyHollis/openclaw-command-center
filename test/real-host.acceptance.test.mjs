@@ -13,6 +13,7 @@ import { assertNoFatalHostOutput, assertRecordedChildTraffic, HarnessFailure, la
 import { assertWebSocketDestination, boundedTrafficEvidence, TrafficGuard } from '../src/isolation.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
+import { COMMAND_CENTER_SCHEMA_VERSION } from '../src/metadata/schema.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
 
@@ -158,7 +159,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.deepEqual(await readdir(path.dirname(databasePath)), ['metadata.sqlite']);
       const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try {
-        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 6);
+        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, COMMAND_CENTER_SCHEMA_VERSION);
         for (const table of ['operation_journal', 'session_state', 'activity_records']) {
           assert.equal(startupDatabase.prepare("SELECT strict FROM pragma_table_list WHERE name = ?").get(table)?.strict, 1);
         }

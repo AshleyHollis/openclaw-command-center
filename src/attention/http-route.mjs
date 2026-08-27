@@ -33,6 +33,7 @@ export function createAttentionActionHandler(service) {
       if (!current?.episode || current.episode.sourceCapabilityId !== body.sourceCapabilityId || current.episode.stableSubjectId !== body.stableSubjectId) throw new Error('source identity does not match the episode');
       const { sourceCapabilityId: _sourceCapabilityId, stableSubjectId: _stableSubjectId, ...action } = body;
       const result = await service.attentionAct(action);
+      await service.notificationReconcile?.();
       const bounded = sanitizeBridgeResult('command-center.v1.attention.act', result);
       const payload = JSON.stringify({ schemaVersion: 1, status: result?.status ?? 'applied', result: bounded });
       if (payload.length > 32768) throw new Error('response is too large');

@@ -920,8 +920,9 @@ test('accepted snooze presets use fixed durations and timezone-aware next 07:00'
   assert.deepEqual(SNOOZE_PRESETS, ['NEXT_0700', 'PT72H', 'PT168H']);
   assert.equal(resolveSnoozeUntil('PT72H', '2026-08-23T00:00:00.000Z', 'UTC'), '2026-08-26T00:00:00.000Z');
   assert.equal(resolveSnoozeUntil('PT168H', '2026-08-23T00:00:00.000Z', 'UTC'), '2026-08-30T00:00:00.000Z');
-  assert.equal(resolveSnoozeUntil('NEXT_0700', '2026-03-08T05:30:00.000Z', 'America/New_York'), '2026-03-08T11:00:00.000Z');
-  assert.equal(resolveSnoozeUntil('NEXT_0700', '2026-11-01T04:30:00.000Z', 'America/New_York'), '2026-11-01T12:00:00.000Z');
+  assert.equal(resolveSnoozeUntil('NEXT_0700', '2026-03-08T05:30:00.000Z', 'America/New_York'), '2026-03-09T11:00:00.000Z');
+  assert.equal(resolveSnoozeUntil('NEXT_0700', '2026-11-01T04:30:00.000Z', 'America/New_York'), '2026-11-02T12:00:00.000Z');
+  assert.equal(resolveSnoozeUntil('NEXT_0700', '2026-08-27T05:30:00.000Z', 'UTC'), '2026-08-28T07:00:00.000Z');
 });
 
 test('occurrence identity is condition-scoped while out-of-order evidence fails closed and severity remains monotonic', async () => {
