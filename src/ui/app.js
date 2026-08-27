@@ -7,6 +7,193 @@ const statusNode = document.querySelector('#topic-status');
 const hasTopicsDestination = Boolean(topicCreateForm && statusNode);
 let currentDestination = { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] };
 let topicCreatePending = false;
+const DASHBOARD_ROUTE = '/plugins/command-center/api/dashboard';
+const ATTENTION_ROUTE = '/plugins/command-center/api/attention/actions';
+const DASHBOARD_ACTIONS_ROUTE = '/plugins/command-center/api/dashboard/actions';
+const hasDashboardDestination = Boolean(document.querySelector('#dashboard'));
+let dashboardState = null;
+let evidenceReturnFocus = null;
+let activityRecords = [];
+let notificationSettingsRevision = null;
+
+async function dashboardRead(offset = 0) {
+  const response = await fetch(`${DASHBOARD_ROUTE}?activityOffset=${encodeURIComponent(offset)}&activityLimit=50`, { credentials: 'include', headers: { accept: 'application/json' } });
+  const value = await response.json();
+  if (!response.ok || value.status === 'error') throw new Error(value.message || 'Dashboard is unavailable.');
+  return value.result ?? value;
+}
+function dashboardButton(label, action) { const node = button(label, action); node.className = 'dashboard-action'; return node; }
+function displayEvidence(value) {
+  const target = document.querySelector('#evidence-content');
+  target.replaceChildren();
+  const entries = Object.entries(value ?? {});
+  if (!entries.length) { target.append(Object.assign(document.createElement('p'), { textContent: 'No additional evidence was recorded.' })); return; }
+  for (const [key, item] of entries) {
+    const row = document.createElement('p'); const label = document.createElement('strong'); label.textContent = `${key}: `; const text = document.createElement('span'); text.textContent = typeof item === 'string' ? item : JSON.stringify(item); row.append(label, text); target.append(row);
+  }
+}
+function showEvidence(episode, trigger) {
+  const dialog = document.querySelector('#evidence-dialog');
+  evidenceReturnFocus = trigger;
+  document.querySelector('#evidence-heading').textContent = `${episode.context || 'Attention item'} evidence`;
+  displayEvidence(episode.evidence ?? episode.evidenceFacts);
+  if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '');
+  document.querySelector('.evidence-scroll')?.focus();
+}
+document.querySelector('#evidence-dialog')?.addEventListener('close', () => { evidenceReturnFocus?.focus?.(); evidenceReturnFocus = null; });
+document.querySelector('#evidence-close')?.addEventListener('click', () => document.querySelector('#evidence-dialog')?.close?.());
+function renderNotificationSettings(settings) {
+  if (!settings) return;
+  notificationSettingsRevision = settings.revision;
+  for (const [id, value] of [['settings-due-reminders', settings.dueReminders], ['settings-important-items', settings.importantItems], ['settings-critical-realerts', settings.criticalRealerts], ['settings-quiet-enabled', settings.quietHoursEnabled], ['settings-generic-preview', settings.genericPreview]]) {
+    const control = document.querySelector(`#${id}`); if (control) control.checked = value === true;
+  }
+  for (const [id, value] of [['settings-quiet-start', settings.quietHoursStart], ['settings-quiet-end', settings.quietHoursEnd], ['settings-time-zone', settings.timeZone]]) {
+    const control = document.querySelector(`#${id}`); if (control && document.activeElement !== control) control.value = value ?? '';
+  }
+}
+async function saveNotificationSettings(event) {
+  event.preventDefault();
+  const feedback = document.querySelector('#settings-feedback');
+  const settings = {
+    dueReminders: document.querySelector('#settings-due-reminders').checked,
+    importantItems: document.querySelector('#settings-important-items').checked,
+    criticalRealerts: document.querySelector('#settings-critical-realerts').checked,
+    quietHoursEnabled: document.querySelector('#settings-quiet-enabled').checked,
+    quietHoursStart: document.querySelector('#settings-quiet-start').value,
+    quietHoursEnd: document.querySelector('#settings-quiet-end').value,
+    timeZone: document.querySelector('#settings-time-zone').value.trim(),
+    genericPreview: document.querySelector('#settings-generic-preview').checked
+  };
+  if (!event.currentTarget.reportValidity()) return;
+  try {
+    const response = await fetch(DASHBOARD_ACTIONS_ROUTE, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'settings.update', logicalOperationId: operationId(), expectedRevision: notificationSettingsRevision, settings }) });
+    const value = await response.json();
+    if (!response.ok || value.status === 'error') throw new Error(value.message || 'Notification settings were refused.');
+    feedback.textContent = 'Notification settings saved.';
+    await loadDashboard();
+  } catch (error) { feedback.textContent = error.message || 'Notification settings were refused.'; }
+}
+document.querySelector('#notification-settings-form')?.addEventListener('submit', saveNotificationSettings);
+async function dashboardMutate(episode, action, input = {}) {
+  const response = await fetch(ATTENTION_ROUTE, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+    schemaVersion: 1, logicalOperationId: operationId(), sourceCapabilityId: episode.sourceCapabilityId, stableSubjectId: episode.stableSubjectId, episodeId: episode.episodeId,
+    expectedEpisodeRevision: episode.revision, expectedSourceRevision: episode.sourceRevision ?? undefined, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actionId: action, input
+  }) });
+  const value = await response.json();
+  if (!response.ok || value.status === 'unavailable' || value.status === 'error') throw new Error(value.message || 'Action was refused.');
+  return value;
+}
+async function openTopic(topicId) {
+  const feedback = document.querySelector('#dashboard-feedback') ?? statusNode;
+  try {
+    const value = unwrap(await bridgeRequest('command-center.v1.topics.get', { schemaVersion: 1, topicId }));
+    const topic = value?.topic;
+    if (!topic || topic.topicId !== topicId) throw new Error('The authoritative Topic changed before it could be opened.');
+    const searchSelect = document.querySelector('#topic-search-topic-id');
+    if (searchSelect) searchSelect.value = topicId;
+    if (hasTopicsDestination) await loadTopics();
+    const target = document.querySelector(`[data-topic-id="${CSS.escape(topicId)}"]`) ?? document.querySelector('#topics-heading');
+    if (!target) throw new Error('The selected Topic is unavailable in this view.');
+    target.setAttribute('tabindex', '-1');
+    target.scrollIntoView?.({ block: 'start' });
+    target.focus?.();
+    if (feedback) feedback.textContent = `${topic.name || 'Topic'} opened.`;
+    return topic;
+  } catch (error) {
+    if (feedback) feedback.textContent = error.message || 'The authoritative Topic could not be opened.';
+    throw error;
+  }
+}
+async function runDashboardAction(episode, action, input, label) {
+  const feedback = document.querySelector('#dashboard-feedback');
+  try {
+    const result = await dashboardMutate(episode, action, input);
+    const navigation = result?.result?.navigation ?? result?.navigation;
+    if (navigation?.topicId) { await openTopic(navigation.topicId); return; }
+    feedback.textContent = label;
+    await loadDashboard();
+  }
+  catch (error) { feedback.textContent = error.message || 'Action was refused by the authoritative source.'; }
+}
+function snoozeControl(episode) {
+  const choices = Array.isArray(episode.eligibleSnoozeChoices) ? episode.eligibleSnoozeChoices : [];
+  if (!choices.length) return null;
+  const wrapper = document.createElement('div'); wrapper.className = 'snooze-control';
+  const select = document.createElement('select'); select.setAttribute('aria-label', 'Snooze duration');
+  const labels = { NEXT_0700: 'Tomorrow morning', PT72H: 'Three days', PT168H: 'One week', custom: 'Custom time' };
+  for (const choice of choices) { const option = document.createElement('option'); option.value = choice; option.textContent = labels[choice] ?? choice; select.append(option); }
+  const custom = document.createElement('input'); custom.type = 'datetime-local'; custom.setAttribute('aria-label', 'Custom snooze time'); custom.hidden = true;
+  select.addEventListener('change', () => { custom.hidden = select.value !== 'custom'; if (!custom.hidden) custom.focus(); });
+  wrapper.append(select, custom, dashboardButton('Snooze', () => {
+    const value = select.value;
+    if (value === 'custom' && !custom.value) { document.querySelector('#dashboard-feedback').textContent = 'Choose a future custom time.'; custom.focus(); return; }
+    let input;
+    try { input = value === 'custom' ? { until: new Date(custom.value).toISOString() } : { preset: value }; }
+    catch { document.querySelector('#dashboard-feedback').textContent = 'Choose a valid future custom time.'; custom.focus(); return; }
+    if (episode.sourceCapabilityId === 'reminders') input.expectedConfigRevision = episode.sourceRevision;
+    return runDashboardAction(episode, episode.sourceCapabilityId === 'reminders' ? 'reminder.snooze' : 'attention.snooze', input, 'Item snoozed.');
+  }));
+  return wrapper;
+}
+function renderAttentionCard(episode) {
+  const card = document.createElement('article'); card.className = 'attention-card'; card.dataset.notificationRecord = episode.notificationRecordId ?? '';
+  const heading = document.createElement('h4'); heading.textContent = episode.context || 'Attention item';
+  const meta = document.createElement('p'); meta.className = 'card-meta'; meta.textContent = `${episode.severity || 'Attention'} · ${episode.sourceKind || 'Source'}`;
+  const actions = document.createElement('div'); actions.className = 'card-actions';
+  for (const action of (episode.actions ?? []).filter((item) => !['attention.snooze', 'reminder.snooze'].includes(item.actionId)).slice(0, 3)) actions.append(dashboardButton(action.label || 'Open', () => runDashboardAction(episode, action.actionId, action.actionId === 'reminder.complete' ? { expectedConfigRevision: episode.sourceRevision } : {}, `${action.label || 'Action'} accepted.`)));
+  const snooze = snoozeControl(episode); if (snooze) actions.append(snooze);
+  const evidence = dashboardButton('View evidence', () => showEvidence(episode, evidence)); actions.append(evidence);
+  card.append(heading, meta, actions); return card;
+}
+function fillTopicLaunchers(topics) {
+  for (const id of ['header-topic-selector', 'flow-topic-launcher']) {
+    const select = document.querySelector(`#${id}`); if (!select) continue;
+    const first = select.firstElementChild; select.replaceChildren(first);
+    for (const topic of topics ?? []) { const option = document.createElement('option'); option.value = topic.topicId; option.textContent = topic.name; select.append(option); }
+    select.onchange = () => { const value = select.value; if (value) void openTopic(value).catch(() => {}); };
+  }
+}
+function renderActivity(records, append = false) {
+  const target = document.querySelector('#activity'); if (!append) activityRecords = [];
+  activityRecords = [...activityRecords, ...(records ?? [])]; target.replaceChildren(...activityRecords.map((record) => {
+    const row = document.createElement('article'); row.className = 'activity-row'; const text = document.createElement('span'); text.textContent = `${record.operationKind || 'Activity'} · ${record.outcome || 'recorded'}`; row.append(text);
+    if (record.navigation?.verified === true && record.navigation.kind === 'session') row.append(dashboardButton('Open source', () => openActivity(record)));
+    return row;
+  }));
+  if (!activityRecords.length) target.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No routine history.' }));
+}
+async function openActivity(record) {
+  const feedback = document.querySelector('#dashboard-feedback');
+  try {
+    const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: record.navigation.topicId, referenceId: record.navigation.referenceId }));
+    if (!target?.sessionKey || target.sessionKey !== record.navigation.sessionKey || target.sessionId !== record.navigation.sessionId) throw new Error('The authoritative source changed after this record was created.');
+    await bridgeRequest('ui.session.navigate', { sessionKey: target.sessionKey });
+  } catch (error) { feedback.textContent = error.message || 'Authoritative navigation was refused.'; }
+}
+function focusNotificationTarget() {
+  const params = new URLSearchParams(window.location.search);
+  const record = params.get('record');
+  const notification = params.get('openclawNotification') ?? params.get('notification');
+  const hasNotificationRequest = ['record', 'destination', 'notification', 'openclawNotification'].some((name) => params.has(name));
+  if (!hasNotificationRequest) return;
+  if (notification !== 'plugin-detail' || params.get('destination') !== 'attention-card' || !/^record-[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(record ?? '')) { document.querySelector('#dashboard-feedback').textContent = 'This notification link is unavailable.'; return; }
+  const card = document.querySelector(`[data-notification-record="${CSS.escape(record)}"]`);
+  if (card) { card.setAttribute('tabindex', '-1'); card.focus(); document.querySelector('#dashboard-feedback').textContent = 'Notification opened. No changes were made.'; }
+  else document.querySelector('#dashboard-feedback').textContent = 'This notification is no longer available.';
+}
+async function loadDashboard() {
+  try {
+    dashboardState = await dashboardRead(0); renderNotificationSettings(dashboardState.notificationSettings); const attention = document.querySelector('#attention-cards');
+    attention.replaceChildren(...(dashboardState.attention ?? []).map(renderAttentionCard));
+    if (!attention.childElementCount) attention.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nothing needs attention.' }));
+    document.querySelector('#attention-badge').textContent = String(dashboardState.attentionBadgeCount ?? 0);
+    const progress = document.querySelector('#in-progress'); progress.replaceChildren(...(dashboardState.inProgress ?? []).map((episode) => { const item = document.createElement('p'); item.textContent = episode.context || 'Action in progress'; return item; })); if (!progress.childElementCount) progress.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nothing in progress.' }));
+    const coming = document.querySelector('#coming-up'); coming.replaceChildren(...(dashboardState.comingUp ?? []).map((item) => { const row = document.createElement('p'); row.textContent = `${item.day} · ${item.time} · ${item.context} · ${item.label}`; return row; })); if (!coming.childElementCount) coming.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No future Reminders.' }));
+    fillTopicLaunchers(dashboardState.topics); renderActivity(dashboardState.activity?.records); const more = document.querySelector('#activity-load-more'); more.textContent = 'Load more Activity'; more.hidden = dashboardState.activity?.hasMore !== true; more.onclick = async () => { const next = await dashboardRead(dashboardState.activity.nextOffset); dashboardState.activity = next.activity; renderActivity(next.activity.records, true); more.hidden = next.activity.hasMore !== true; };
+    focusNotificationTarget();
+  } catch (error) { document.querySelector('#dashboard-feedback').textContent = error.message || 'Dashboard is unavailable.'; }
+}
 
 function operationId() { return crypto.randomUUID(); }
 function unwrap(value) { while (value?.result !== undefined || value?.value !== undefined) value = value.result ?? value.value; return value; }
@@ -22,7 +209,7 @@ window.addEventListener('message', (event) => {
   if (message?.type === 'openclaw:capability-bridge-ready') {
     clearTimeout(bridgeTimer);
     const methods = new Set(Array.isArray(message.methods) ? message.methods : []);
-    const required = [...(hasTopicsDestination ? ['command-center.v1.topics.list'] : []), 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigate'];
+    const required = [...(hasTopicsDestination ? ['command-center.v1.topics.list'] : []), ...(hasDashboardDestination ? ['command-center.v1.topics.get'] : []), 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigate'];
     if (message.upgradeRequired === true || !required.every((method) => methods.has(method))) rejectBridgeReady(new Error('Command Center requires unavailable host capabilities.'));
     else resolveBridgeReady();
     return;
@@ -77,7 +264,7 @@ async function runAction(action, input, message) {
   catch (error) { if (error.destination) currentDestination = error.destination; renderDestination(currentDestination); statusNode.textContent = `Topic action failed: ${error.message}`; await loadTopics(error.message); }
 }
 function topicRow(topic, kind) {
-  const row = document.createElement('div'); row.className = 'topic-row'; const name = document.createElement('strong'); name.textContent = topic.name; row.append(name);
+  const row = document.createElement('div'); row.className = 'topic-row'; row.dataset.topicId = topic.topicId; const name = document.createElement('strong'); name.textContent = topic.name; row.append(name);
   if (kind === 'provisioning') {
     row.append(button('Retry', () => runAction('provisioning.retry', { topicId: topic.topicId, expectedRevision: topic.revision, logicalOperationId: topic.provisioningOperationId }, 'Provisioning record retried.')));
     row.append(button('Roll back', () => runAction('provisioning.rollback', { topicId: topic.topicId, expectedRevision: topic.revision, logicalOperationId: topic.provisioningOperationId }, 'Provisioning record rolled back.')));
@@ -142,4 +329,5 @@ window.CommandCenterSearch = Object.freeze({
   get ready() { return bridgeReady; }
 });
 sendBridge({ type: 'openclaw:capability-bridge-hello', protocolVersion: 1 });
+if (hasDashboardDestination) loadDashboard();
 if (hasTopicsDestination) loadTopics();

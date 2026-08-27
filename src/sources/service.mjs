@@ -247,7 +247,7 @@ export class AuthoritativeSourceService {
           occurredAt: observedAt,
           topicId,
           sourceReferenceId: row.sourceReference.referenceId,
-          evidenceFacts: { reminderDue: true, dueAt: Number.isFinite(dueAt) ? new Date(dueAt).toISOString() : observedAt },
+          evidenceFacts: { reminderDue: true, explicitTimed: schedule?.kind === 'at', dueAt: Number.isFinite(dueAt) ? new Date(dueAt).toISOString() : observedAt },
           ...(occurrenceVersion ? { transitionEvidence: { verifiedSource: 'scheduler-readback', version: String(occurrenceVersion), state: 'active' } } : {})
         });
       } else if (context && context.state !== 'Snoozed' && !['Resolved', 'Withdrawn'].includes(context.state)) {

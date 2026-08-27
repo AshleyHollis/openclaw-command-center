@@ -15,7 +15,9 @@ function zonedParts(instant, timeZone) {
 function nextLocalSeven(now, timeZone) {
   let local;
   try { local = zonedParts(new Date(now), timeZone); } catch { throw new TypeError('snooze timezone must be a valid IANA timezone'); }
-  const calendar = new Date(Date.UTC(local.year, local.month - 1, local.day + (local.hour >= 7 ? 1 : 0), 7));
+  // "Tomorrow morning" is always the next local calendar day. It is not the
+  // next occurrence of 07:00, which would incorrectly select today before 07:00.
+  const calendar = new Date(Date.UTC(local.year, local.month - 1, local.day + 1, 7));
   const desired = { year: calendar.getUTCFullYear(), month: calendar.getUTCMonth() + 1, day: calendar.getUTCDate(), hour: 7 };
   const desiredUtcShape = Date.UTC(desired.year, desired.month - 1, desired.day, desired.hour);
   let candidate = desiredUtcShape;
