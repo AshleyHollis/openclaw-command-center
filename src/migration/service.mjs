@@ -357,7 +357,7 @@ export class LegacyDiscordMigrationService {
             if (!sessionId || (readSessionKey(result) !== null && readSessionKey(result) !== expectedSessionKey)) throw Object.assign(new Error('The Sessions capability returned an unexpected identity.'), { code: 'session-conflict', channelId: channel.channelId });
             phaseHook(this.hooks, 'afterSessionCreate', { channelId: channel.channelId, sessionId });
           }
-          this.metadata.setSessionState({ referenceId: sessionReference.referenceId, sessionId, status: 'open', isPrimary: true, updatedAt: this.now() });
+          this.metadata.setSessionState({ referenceId: sessionReference.referenceId, sessionId, status: 'open', isPrimary: true, displayName: `Primary Session — ${channel.displayName}`, updatedAt: this.now() });
         }
       }
       phaseHook(this.hooks, 'afterProvisioningBinding', { channelId: channel.channelId, topicId: mapping.topicId, sessionId });

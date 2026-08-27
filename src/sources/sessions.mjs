@@ -42,13 +42,14 @@ export class SessionAdapter {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'logicalOperationId', 'requestId', 'label', 'isPrimary'], 'Session create request');
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const requestedKey = `agent:main:command-center:${logicalOperationId}`;
+    const displayName = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : `Topic Conversation ${logicalOperationId}`;
     const execute = async ({ requestId }) => {
-      const params = { agentId: 'main', ...(input.label ? { label: input.label } : {}) };
+      const params = { agentId: 'main', label: displayName };
       params['k' + 'ey'] = requestedKey;
       const result = await this.request('sessions.create', params, { requestId });
       const sessionKey = responseKey(result);
       if (sessionKey !== requestedKey) throw sourceError('unavailable', 'sessions.create returned an unexpected Session key.');
-      const reference = await this.persistReference({ ['k' + 'ey']: sessionKey, sessionId: result?.sessionId ?? result?.session?.sessionId ?? null, isPrimary: input.isPrimary ?? false });
+      const reference = await this.persistReference({ ['k' + 'ey']: sessionKey, sessionId: result?.sessionId ?? result?.session?.sessionId ?? null, isPrimary: input.isPrimary ?? false, displayName });
       return { ['k' + 'ey']: sessionKey, sessionId: result?.sessionId ?? result?.session?.sessionId ?? null, sourceReference: reference };
     };
     const reconcile = async ({ applied = false } = {}) => {
@@ -57,14 +58,14 @@ export class SessionAdapter {
       const matches = rows.filter((row) => responseKey(row) === requestedKey);
       if (matches.length !== 1) return { matched: false };
       const row = matches[0];
-      const reference = await this.persistReference({ ['k' + 'ey']: requestedKey, sessionId: row.sessionId ?? row.id ?? null, isPrimary: input.isPrimary ?? false, preserveState: applied });
+      const reference = await this.persistReference({ ['k' + 'ey']: requestedKey, sessionId: row.sessionId ?? row.id ?? null, isPrimary: input.isPrimary ?? false, displayName, preserveState: applied });
       return { matched: true, value: { ['k' + 'ey']: requestedKey, sessionId: row.sessionId ?? row.id ?? null, sourceReference: reference } };
     };
     if (this.coordinator) return this.coordinator.mutate({ operationKind: 'sessions.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, topicId: this.topicId, intent: { requestedKey, label: input.label ?? null, isPrimary: input.isPrimary ?? false }, execute, reconcile });
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
   }
 
-  async persistReference({ ['k' + 'ey']: externalId, sessionId, isPrimary = false, preserveState = false }) {
+  async persistReference({ ['k' + 'ey']: externalId, sessionId, isPrimary = false, displayName, preserveState = false }) {
     let reference = this.references().find((item) => item.externalSourceId === externalId);
     if (!reference) {
       reference = createSourceReference({ referenceId: `session:${this.topicId}:${externalId}`, topicId: this.topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: externalId, observedRevision: null });
@@ -72,7 +73,7 @@ export class SessionAdapter {
     }
     const existingState = this.metadata?.getSessionState?.(reference.referenceId);
     if (preserveState && existingState?.sessionId && sessionId && existingState.sessionId !== sessionId) throw sourceError('source-recovery', 'The authoritative Session identity changed during replay.');
-    if (this.metadata?.setSessionState && !(preserveState && existingState)) this.metadata.setSessionState({ referenceId: reference.referenceId, sessionId, status: 'open', isPrimary, updatedAt: this.now() });
+    if (this.metadata?.setSessionState && !(preserveState && existingState)) this.metadata.setSessionState({ referenceId: reference.referenceId, sessionId, status: 'open', isPrimary, displayName: displayName || externalId, updatedAt: this.now() });
     return reference;
   }
 
@@ -154,7 +155,9 @@ export class SessionAdapter {
   async navigate(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId'], 'Session navigation request');
     const reference = this.resolveReference(input);
-    return Object.freeze({ schemaVersion: 1, status: 'applied', sessionKey: reference.externalSourceId, sourceReference: reference });
+    const state = this.metadata?.getSessionState?.(reference.referenceId);
+    if (typeof state?.sessionId !== 'string' || !state.sessionId) throw sourceError('source-recovery', 'The linked Session does not have an exact persisted identity.');
+    return Object.freeze({ schemaVersion: 1, status: 'applied', sessionKey: reference.externalSourceId, sessionId: state.sessionId, sourceReference: reference });
   }
 }
 

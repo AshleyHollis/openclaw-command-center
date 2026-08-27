@@ -10,7 +10,16 @@
     <main class="shell" aria-labelledby="command-center-heading">
       <p class="eyebrow">OpenClaw</p>
       <h1 id="command-center-heading">Command Center</h1>
-      <p>Command Center is ready for its first Control UI journey.</p>
+      <form id="topic-search-form" class="search-form">
+        <label>Topic ID <input id="topic-search-topic-id" name="topicId" required autocomplete="off"></label>
+        <label>Search <input id="topic-search-query" name="query" required maxlength="256" autocomplete="off"></label>
+        <button type="submit">Search Topic</button>
+      </form>
+      <p id="topic-search-status" role="status">Ready to search authoritative Topic sources.</p>
+      <section aria-labelledby="notes-heading"><h2 id="notes-heading">Notes</h2><div id="notes-results"></div></section>
+      <section aria-labelledby="conversations-heading"><h2 id="conversations-heading">Conversations</h2><div id="conversations-results"></div></section>
+      <section aria-labelledby="detail-heading"><h2 id="detail-heading">Authoritative Note</h2><pre id="topic-search-detail"></pre></section>
     </main>
+    <script src="/plugins/command-center/app.js"></script>
   </body>
 </html>

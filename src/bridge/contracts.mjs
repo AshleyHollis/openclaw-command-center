@@ -60,6 +60,20 @@ function parameterSchema(field) {
 }
 
 function actionResultSchema(method) {
+  if (method === 'command-center.v1.search.query') {
+    const sourceReference = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({
+      version: { const: 1 }, referenceId: { type: 'string' }, topicId: { type: 'string' }, sourceSystem: { type: 'string' }, sourceKind: { type: 'string' }, externalSourceId: { type: 'string' }, observedRevision: { type: ['string', 'null'] }, createdAt: { type: ['string', 'null'] }, updatedAt: { type: ['string', 'null'] }
+    }), required: ['version', 'referenceId', 'topicId', 'sourceSystem', 'sourceKind', 'observedRevision', 'createdAt', 'updatedAt'] });
+    const highlights = Object.freeze({ type: 'array', items: Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ start: { type: 'integer' }, end: { type: 'integer' } }), required: ['start', 'end'] }) });
+    const noteNavigation = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ kind: { const: 'note' }, topicId: { type: 'string' }, referenceId: { type: 'string' }, path: { type: 'string' }, heading: { type: ['string', 'null'] }, observedRevision: { type: ['string', 'null'] } }), required: ['kind', 'topicId', 'referenceId', 'path', 'heading', 'observedRevision'] });
+    const conversationNavigation = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ kind: { const: 'conversation' }, topicId: { type: 'string' }, referenceId: { type: 'string' }, sessionKey: { type: 'string' }, sessionId: { type: 'string' }, messageId: { type: 'string' } }), required: ['kind', 'topicId', 'referenceId', 'sessionKey', 'sessionId', 'messageId'] });
+    const common = { topicId: { type: 'string' }, sourceReference, snippet: { type: 'string' }, highlights, contextBefore: { type: 'string' }, contextAfter: { type: 'string' } };
+    const note = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ kind: { const: 'note' }, ...common, path: { type: 'string' }, heading: { type: ['string', 'null'] }, navigation: noteNavigation }), required: ['kind', 'topicId', 'sourceReference', 'path', 'heading', 'snippet', 'highlights', 'contextBefore', 'contextAfter', 'navigation'] });
+    const provenance = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ role: { enum: ['primary', 'former-primary', 'topic-conversation'] }, status: { enum: ['open', 'closed'] }, importedPrimaryHistory: { type: 'boolean' } }), required: ['role', 'status', 'importedPrimaryHistory'] });
+    const conversation = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ kind: { const: 'conversation' }, ...common, sessionKey: { type: 'string' }, messageId: { type: 'string' }, conversationName: { type: 'string' }, date: { type: 'string' }, originatingTopicId: { type: ['string', 'null'] }, provenance, navigation: conversationNavigation }), required: ['kind', 'topicId', 'sourceReference', 'sessionKey', 'messageId', 'conversationName', 'date', 'originatingTopicId', 'snippet', 'highlights', 'contextBefore', 'contextAfter', 'provenance', 'navigation'] });
+    const group = (items) => Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ results: { type: 'array', items } }), required: ['results'] });
+    return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, topicId: { type: 'string' }, query: { type: 'string' }, notes: group(note), conversations: group(conversation) }), required: ['schemaVersion', 'topicId', 'query', 'notes', 'conversations'] });
+  }
   const properties = {
     schemaVersion: Object.freeze({ const: 1 }),
     status: Object.freeze({ type: 'string' }),
@@ -140,7 +154,7 @@ function actionResultSchema(method) {
     : method.endsWith('sessions.history')
     ? ['sessionKey', 'sessionId', 'messages', 'offset', 'nextOffset', 'hasMore', 'totalMessages', 'completeSnapshot', 'defaults', 'sessionInfo', 'thinkingLevel', 'fastMode', 'toolOverrides', 'verboseLevel', 'inFlightRun', 'agentsList', 'metadata']
     : method.endsWith('sessions.navigate')
-    ? ['schemaVersion', 'status', 'sessionKey', 'sourceReference']
+    ? ['schemaVersion', 'status', 'sessionKey', 'sessionId', 'sourceReference']
     : method.endsWith('schedules.get')
     ? ['schemaVersion', 'sourceReference', 'job']
     : method.endsWith('metadata.read')
@@ -210,7 +224,7 @@ const fields = Object.freeze({
   'command-center.v1.migration.review-failures': [],
   'command-center.v1.migration.resume': ['expectedMigrationRevision'],
   'command-center.v1.notes.browse': ['topicId'],
-  'command-center.v1.notes.read': ['topicId', 'path', 'notePath'],
+  'command-center.v1.notes.read': ['topicId', 'referenceId', 'path', 'notePath', 'observedRevision'],
   'command-center.v1.notes.create': ['topicId', 'path', 'notePath', 'text', 'content', 'logicalOperationId'],
   'command-center.v1.notes.edit': ['topicId', 'path', 'notePath', 'text', 'content', 'expectedRevision', 'logicalOperationId'],
   'command-center.v1.notes.rename': ['topicId', 'path', 'newPath', 'destinationPath', 'expectedRevision', 'logicalOperationId'],

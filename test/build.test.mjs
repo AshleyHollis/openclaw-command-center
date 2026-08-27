@@ -63,8 +63,12 @@ test('mounted shell assets resolve beneath the external-tab plugin path', async 
     await access(path.join(distRoot, 'metadata', 'schema.mjs'));
     await access(path.join(distRoot, 'metadata', 'modes.mjs'));
     await access(path.join(distRoot, 'metadata', 'path.mjs'));
+    await access(path.join(distRoot, 'search', 'service.mjs'));
+    await access(path.join(distRoot, 'search', 'source-snapshot.mjs'));
+    await access(path.join(distRoot, 'ui', 'app.js'));
     const shell = await readFile(path.join(distRoot, 'ui', 'index.html'), 'utf8');
     assert.match(shell, /href="\/plugins\/command-center\/styles\.css"/);
+    assert.match(shell, /src="\/plugins\/command-center\/app\.js"/);
   });
 });
 

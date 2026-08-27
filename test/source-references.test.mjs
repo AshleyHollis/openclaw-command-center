@@ -64,7 +64,7 @@ test('schema-2 operation, Session, and Activity state remains durable and dedupl
     const intent = { operation: 'fictional durable replay' };
     const coordinator = createMutationCoordinator({ metadata: service });
     await coordinator.mutate({ operationKind: 'metadata.fictional', requestId: 'frame-durable', logicalOperationId, intent, execute: async () => ({ id: 'durable-result' }) });
-    service.setSessionState({ referenceId: 'session-durable-state', sessionId: 'fictional-session-id', status: 'closed', isPrimary: false });
+    service.setSessionState({ referenceId: 'session-durable-state', sessionId: 'fictional-session-id', status: 'closed', isPrimary: false, wasPrimary: true, displayName: 'Fictional Durable Conversation' });
     service.recordActivity({ activityId: 'activity-durable-state', topicId: 'topic-durable-state', logicalOperationId: '78c27e72-8c8e-4144-b24c-4a845764b61e', transportRequestId: 'activity-frame', operationKind: 'notes.maintenance', outcome: 'conflict', observedRevision: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
     service.close();
 
@@ -79,6 +79,8 @@ test('schema-2 operation, Session, and Activity state remains durable and dedupl
     assert.equal(durableSessionState.sessionId, 'fictional-session-id');
     assert.equal(durableSessionState.status, 'closed');
     assert.equal(durableSessionState.isPrimary, false);
+    assert.equal(durableSessionState.wasPrimary, true);
+    assert.equal(durableSessionState.displayName, 'Fictional Durable Conversation');
     assert.match(durableSessionState.updatedAt, /^\d{4}-\d{2}-\d{2}T/u);
     assert.equal(service.getSourceReference('session-durable-state').observedRevision, 'opaque-session-revision');
     assert.equal(service.listActivity('topic-durable-state').length, 1);

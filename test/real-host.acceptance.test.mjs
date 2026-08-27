@@ -158,7 +158,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.deepEqual(await readdir(path.dirname(databasePath)), ['metadata.sqlite']);
       const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try {
-        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 4);
+        assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, 5);
         for (const table of ['operation_journal', 'session_state', 'activity_records']) {
           assert.equal(startupDatabase.prepare("SELECT strict FROM pragma_table_list WHERE name = ?").get(table)?.strict, 1);
         }

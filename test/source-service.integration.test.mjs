@@ -213,14 +213,24 @@ test('registered authenticated bridge persists request-bound Note effects across
 test('derived search and Topic Analysis use only injected providers', async () => {
   const metadata = { getTopic: (topicId) => topicId === 'topic-provider' ? { topicId, lifecycle: 'active' } : null, getOperatingStatus: () => ({ mode: 'ready', schemaVersion: 3, diagnostics: [] }), listSourceReferences: () => [] };
   const unavailable = createAuthoritativeSourceService({ metadata, capabilities: { notes: false, sessions: false, scheduler: false, activity: true, search: false, analysis: false, attention: false } });
-  await assert.rejects(() => unavailable.searchQuery({ topicId: 'topic-provider', query: 'fictional' }), (error) => error.code === 'capability-unavailable');
+  await assert.rejects(() => unavailable.searchQuery({ schemaVersion: 1, topicId: 'topic-provider', query: 'fictional' }), (error) => error.code === 'capability-unavailable');
+  const noteFolderReference = { version: 1, referenceId: 'note-folder:provider', topicId: 'topic-provider', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/topic-provider', observedRevision: 'revision-provider' };
+  const groupedSearch = {
+    schemaVersion: 1,
+    topicId: 'topic-provider',
+    query: 'fictional',
+    notes: { results: [{ kind: 'note', topicId: 'topic-provider', sourceReference: noteFolderReference, path: 'provider.md', heading: 'Provider', snippet: 'fictional', highlights: [{ start: 0, end: 9 }], contextBefore: '', contextAfter: '', navigation: { kind: 'note', topicId: 'topic-provider', referenceId: noteFolderReference.referenceId, path: 'provider.md', heading: 'Provider', observedRevision: 'revision-provider' } }] },
+    conversations: { results: [] }
+  };
   const service = createAuthoritativeSourceService({
     metadata,
     capabilities: { notes: false, sessions: false, scheduler: false, activity: true, search: true, analysis: true, attention: false },
-    searchProvider: { query: async () => ({ results: [{ kind: 'fictional-derived-result' }] }) },
+    searchProvider: { query: async () => groupedSearch },
     analysisProvider: { status: async () => ({ status: 'idle' }), run: async () => ({ status: 'queued' }) }
   });
-  assert.equal((await service.searchQuery({ topicId: 'topic-provider', query: 'fictional' })).results[0].kind, 'fictional-derived-result');
+  const search = await service.searchQuery({ schemaVersion: 1, topicId: 'topic-provider', query: 'fictional' });
+  assert.equal(search.notes.results[0].path, 'provider.md');
+  assert.deepEqual(search.conversations.results, []);
   assert.equal((await service.analysisRead({ topicId: 'topic-provider' })).status, 'idle');
   assert.equal((await service.analysisRun({ topicId: 'topic-provider', input: {}, logicalOperationId: randomUUID() })).value.status, 'queued');
 });

@@ -24,9 +24,12 @@ test('plugin uses the pinned public external-tab and gateway-route seams', async
   assert.match(source, /id:\s*'command-center-metadata'/);
   assert.match(source, /api\.runtime\.state\.resolveStateDir\(process\.env\)/);
   assert.match(source, /gatewayAvailable = typeof api\.runtime\?\.gateway\?\.request === 'function'/);
-  assert.match(source, /sessions: sessionStoreAvailable, scheduler: gatewayAvailable/);
-  assert.match(source, /api\.runtime\?\.agent\?\.session\?\.patchSessionEntry/);
+  assert.match(source, /sessions: gatewayAvailable, scheduler: gatewayAvailable/);
   assert.match(source, /registerBridgeMethods\(api, serviceProxy\)/);
+  assert.match(source, /api\.registerTool\(topicContextToolFactory/);
+  assert.match(source, /name:\s*'command_center_topic_context',\s*optional:\s*true/);
+  assert.match(source, /createSearchRebuildService\(/);
+  assert.match(source, /await searchService\.rebuild\(\{\}\)/);
   assert.match(source, /createNoteMaintenanceService\(/);
   assert.match(source, /maintenanceService/);
   assert.match(source, /export function runNoteMaintenance\(input\)/);
@@ -37,6 +40,25 @@ test('plugin uses the pinned public external-tab and gateway-route seams', async
 test('manifest activates the route-registering plugin at Gateway startup', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
   assert.equal(manifest.activation?.onStartup, true);
+  assert.deepEqual(manifest.contracts?.tools, ['command_center_topic_context']);
+});
+
+test('Conversation ingestion uses the pinned host identity and history gateway methods', async () => {
+  const source = await readFile(new URL('../src/search/source-snapshot.mjs', import.meta.url), 'utf8');
+  assert.match(source, /request\('sessions\.describe'/);
+  assert.match(source, /includeDerivedTitles:\s*true/);
+  assert.match(source, /request\('chat\.history', \{ sessionKey: reference\.externalSourceId, limit, offset \}\)/);
+  assert.match(source, /assertSessionIdentity\(page, reference, expectedSessionId/);
+  assert.doesNotMatch(source, /session-transcript-runtime|transcriptPath|storePath/);
+});
+
+test('scripts-only Topic Search UI uses only the required capability bridge methods', async () => {
+  const source = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
+  assert.match(source, /bridgeRequest\('command-center\.v1\.search\.query'/);
+  assert.match(source, /bridgeRequest\('command-center\.v1\.notes\.read'/);
+  assert.match(source, /bridgeRequest\('command-center\.v1\.sessions\.navigate'/);
+  assert.match(source, /bridgeRequest\('ui\.session\.navigate', \{ sessionKey: target\.sessionKey \}\)/);
+  assert.doesNotMatch(source, /fetch\(|window\.location\.(?:assign|replace)|parent\.location/);
 });
 
 test('plugin startup preserves migration wiring and binds approvals to a stable non-secret host identity', async () => {

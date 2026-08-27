@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { lstatSync, mkdirSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync } from 'node:fs';
 
 export const metadataDatabaseFileName = 'metadata.sqlite';
 export const projectionDatabaseFileName = 'projections.sqlite';
@@ -42,10 +42,11 @@ export function resolveCommandCenterProjectionRoot(stateDir) {
   if (typeof stateDir !== 'string' || stateDir.trim() === '') throw new TypeError('stateDir must be a non-empty string');
   const root = path.resolve(stateDir);
   const parts = [root, path.join(root, 'plugins'), path.join(root, 'plugins', 'command-center'), path.join(root, 'plugins', 'command-center', projectionRootDirectoryName)];
-  for (const part of parts) {
-    mkdirSync(part, { recursive: true });
+  for (const [index, part] of parts.entries()) {
+    mkdirSync(part, { recursive: true, mode: 0o700 });
     const stat = lstatSync(part);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new TypeError('projection root must be an owned in-tree directory');
+    if (index > 0) chmodSync(part, 0o700);
   }
   return parts.at(-1);
 }

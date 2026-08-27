@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { COMMAND_CENTER_SCHEMA_VERSION } from './metadata/schema.mjs';
 
 /** Build the pinned Control UI route for one authenticated plugin tab. */
 export function controlUiPluginUrl({ gatewayUrl, pluginId, routeId, fragmentParameter, credential }) {
@@ -30,12 +31,12 @@ export function isControlUiBootstrapUrl(value, { gatewayUrl, bootstrapPath }) {
   }
 }
 
-/** True only after the plugin service has opened its durable schema-4 store. */
+/** True only after the plugin service has opened its current durable store. */
 export function isCommandCenterMetadataReady(databasePath, Database = DatabaseSync) {
   let database;
   try {
     database = new Database(databasePath, { readOnly: true });
-    return database.prepare('PRAGMA user_version').get().user_version === 4;
+    return database.prepare('PRAGMA user_version').get().user_version === COMMAND_CENTER_SCHEMA_VERSION;
   } catch {
     return false;
   } finally {

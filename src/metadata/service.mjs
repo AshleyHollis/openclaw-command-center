@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
+  LEGACY_MIGRATION_SCHEMA_VERSION,
   LEGACY_METADATA_SCHEMA_VERSION,
   PRIOR_COMMAND_CENTER_SCHEMA_VERSION,
   SOURCE_SCHEMA_VERSION,
@@ -26,6 +27,7 @@ import {
   applyV1ToV2Migration,
   applyV2ToV3Migration,
   applyV3ToV4Migration,
+  applyV4ToV5Migration,
   validateMigrationLedger
 } from './migration-ledger.mjs';
 import {
@@ -180,7 +182,7 @@ function mapOperation(row) {
 }
 
 function mapSessionState(row) {
-  return row && { referenceId: row.reference_id, sessionId: row.session_id, status: row.status, isPrimary: row.is_primary === 1, updatedAt: row.updated_at };
+  return row && { referenceId: row.reference_id, sessionId: row.session_id, status: row.status, isPrimary: row.is_primary === 1, wasPrimary: row.was_primary === 1, displayName: row.display_name, updatedAt: row.updated_at };
 }
 
 function mapActivity(row) {
@@ -329,6 +331,9 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     } else if (schemaVersion === LEGACY_METADATA_SCHEMA_VERSION) {
       const legacyFailure = inspectSchemaOneDatabase(database, LEGACY_METADATA_SCHEMA_VERSION);
       if (legacyFailure) return legacyFailure;
+    } else if (schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION) {
+      const priorFailure = inspectSchemaOneDatabase(database, LEGACY_MIGRATION_SCHEMA_VERSION);
+      if (priorFailure) return priorFailure;
     } else if (schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION) {
       const priorFailure = inspectSchemaOneDatabase(database, PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
       if (priorFailure) return priorFailure;
@@ -352,9 +357,29 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     try {
       migrationDatabase = new DatabaseSync(databasePath);
       migrationDatabase.exec('PRAGMA foreign_keys = ON;');
-      applyV3ToV4Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
-      return coreFailure('migration-failed', 'The schema-3 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
+      return coreFailure('migration-failed', 'The schema-4 to schema-5 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
+    } finally { closeQuietly(migrationDatabase); }
+    migrationHooks?.afterDatabaseCommit?.();
+    try { markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
+    return validateCurrentSchema(databasePath, stateDir);
+  }
+
+  if (schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION) {
+    let material;
+    try {
+      material = readRecoveryMaterial(stateDir);
+      if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: LEGACY_MIGRATION_SCHEMA_VERSION });
+    } catch (error) { return recoveryFailure(error, LEGACY_MIGRATION_SCHEMA_VERSION); }
+    let migrationDatabase;
+    try {
+      migrationDatabase = new DatabaseSync(databasePath);
+      migrationDatabase.exec('PRAGMA foreign_keys = ON;');
+      applyV3ToV4Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    } catch {
+      return coreFailure('migration-failed', 'The schema-3 to schema-5 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_MIGRATION_SCHEMA_VERSION);
     } finally { closeQuietly(migrationDatabase); }
     migrationHooks?.afterDatabaseCommit?.();
     try { markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
@@ -382,6 +407,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       migrationDatabase.exec('PRAGMA foreign_keys = ON;');
       applyV2ToV3Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV3ToV4Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       closeQuietly(migrationDatabase);
       return coreFailure('migration-failed', 'The schema-2 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_METADATA_SCHEMA_VERSION);
@@ -412,6 +438,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     applyV1ToV2Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     applyV2ToV3Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     applyV3ToV4Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
   } catch (error) {
     closeQuietly(migrationDatabase);
     return coreFailure('migration-failed', 'The schema-1 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the retained verified snapshot or restore the prior compatible release.', SOURCE_SCHEMA_VERSION);
@@ -878,6 +905,26 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     });
   };
 
+  service.setProjectionBookkeepingBatch = (inputs) => {
+    if (!Array.isArray(inputs) || inputs.length === 0) throw new CommandCenterMetadataError('invalid-value', 'Projection bookkeeping batch must be a non-empty array.');
+    const rows = inputs.map((input) => {
+      const value = objectValue(input, 'projection bookkeeping');
+      allowedKeys(value, ['projectionId', 'sourceRevision', 'inputDigest', 'updatedAt'], 'projection bookkeeping');
+      return {
+        projectionId: requiredString(value.projectionId, 'projectionId'),
+        sourceRevision: requiredString(value.sourceRevision, 'sourceRevision'),
+        inputDigest: requiredString(value.inputDigest, 'inputDigest'),
+        updatedAt: timestamp(value.updatedAt, 'updatedAt')
+      };
+    });
+    if (new Set(rows.map(({ projectionId }) => projectionId)).size !== rows.length) throw new CommandCenterMetadataError('invalid-value', 'Projection bookkeeping batch contains duplicate projection IDs.');
+    return mutate(null, (db) => {
+      const statement = db.prepare('INSERT INTO projection_bookkeeping (projection_id, source_revision, input_digest, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(projection_id) DO UPDATE SET source_revision = excluded.source_revision, input_digest = excluded.input_digest, updated_at = excluded.updated_at');
+      for (const row of rows) statement.run(row.projectionId, row.sourceRevision, row.inputDigest, row.updatedAt);
+      return rows.map(({ projectionId }) => mapProjection(db.prepare('SELECT * FROM projection_bookkeeping WHERE projection_id = ?').get(projectionId)));
+    });
+  };
+
   service.getProjectionBookkeeping = (projectionId) => readOne('SELECT * FROM projection_bookkeeping WHERE projection_id = ?', [requiredString(projectionId, 'projectionId')], mapProjection) || null;
   service.listProjectionBookkeeping = () => readMany('SELECT * FROM projection_bookkeeping ORDER BY projection_id', [], mapProjection);
 
@@ -910,23 +957,27 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
 
   service.setSessionState = (input) => {
     const value = objectValue(input, 'session state');
-    allowedKeys(value, ['referenceId', 'sessionId', 'status', 'isPrimary', 'updatedAt'], 'session state');
+    allowedKeys(value, ['referenceId', 'sessionId', 'status', 'isPrimary', 'wasPrimary', 'displayName', 'updatedAt'], 'session state');
     const referenceId = requiredString(value.referenceId, 'referenceId');
     const status = enumValue(value.status, ['open', 'closed'], 'status');
     const isPrimary = booleanValue(value.isPrimary ?? false, 'isPrimary');
     const updatedAt = timestamp(value.updatedAt, 'updatedAt');
     return mutate('sessions', (db) => {
-      const reference = db.prepare('SELECT topic_id FROM source_references WHERE reference_id = ? AND source_system = ? AND source_kind = ?').get(referenceId, 'openclaw', 'session');
+      const reference = db.prepare('SELECT topic_id, external_source_id FROM source_references WHERE reference_id = ? AND source_system = ? AND source_kind = ?').get(referenceId, 'openclaw', 'session');
       if (!reference) throw new CommandCenterMetadataError('not-found', 'Session Source Reference was not found.');
+      const current = db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(referenceId);
+      const displayName = optionalString(value.displayName, 'displayName', current?.display_name || reference.external_source_id).trim();
+      if (!displayName || displayName.length > 300) throw new CommandCenterMetadataError('invalid-value', 'displayName must be 1–300 characters');
+      const wasPrimary = value.wasPrimary === undefined ? current?.was_primary === 1 || current?.is_primary === 1 && !isPrimary : booleanValue(value.wasPrimary, 'wasPrimary');
       if (status === 'closed' && isPrimary) throw new CommandCenterMetadataError('primary-session', 'The Primary Session cannot be closed until another Session is Primary.');
       if (isPrimary) {
-        db.prepare(`UPDATE session_state SET is_primary = 0, updated_at = ?
+        db.prepare(`UPDATE session_state SET is_primary = 0, was_primary = 1, updated_at = ?
           WHERE reference_id <> ? AND reference_id IN (
             SELECT reference_id FROM source_references WHERE topic_id = ? AND source_system = 'openclaw' AND source_kind = 'session'
           )`).run(updatedAt, referenceId, reference.topic_id);
       }
-      db.prepare(`INSERT INTO session_state (reference_id, session_id, status, is_primary, updated_at) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(reference_id) DO UPDATE SET session_id = excluded.session_id, status = excluded.status, is_primary = excluded.is_primary, updated_at = excluded.updated_at`).run(referenceId, value.sessionId ?? null, status, isPrimary ? 1 : 0, updatedAt);
+      db.prepare(`INSERT INTO session_state (reference_id, session_id, status, is_primary, was_primary, display_name, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(reference_id) DO UPDATE SET session_id = excluded.session_id, status = excluded.status, is_primary = excluded.is_primary, was_primary = excluded.was_primary, display_name = excluded.display_name, updated_at = excluded.updated_at`).run(referenceId, value.sessionId ?? null, status, isPrimary ? 1 : 0, wasPrimary ? 1 : 0, displayName, updatedAt);
       return mapSessionState(db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(referenceId));
     });
   };
@@ -935,23 +986,26 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     const reference = referenceInput(referenceInputValue);
     if (reference.sourceSystem !== 'openclaw' || reference.sourceKind !== 'session') throw new CommandCenterMetadataError('invalid-value', 'A Session binding requires an openclaw/session Source Reference.');
     const stateValue = objectValue(stateInputValue, 'session state');
-    allowedKeys(stateValue, ['referenceId', 'sessionId', 'status', 'isPrimary', 'updatedAt'], 'session state');
+    allowedKeys(stateValue, ['referenceId', 'sessionId', 'status', 'isPrimary', 'wasPrimary', 'displayName', 'updatedAt'], 'session state');
     const referenceId = requiredString(stateValue.referenceId, 'referenceId');
     const sessionId = requiredString(stateValue.sessionId, 'sessionId');
     const status = enumValue(stateValue.status, ['open', 'closed'], 'status');
     const isPrimary = booleanValue(stateValue.isPrimary ?? false, 'isPrimary');
+    const wasPrimary = booleanValue(stateValue.wasPrimary ?? false, 'wasPrimary');
+    const displayName = optionalString(stateValue.displayName, 'displayName', reference.externalSourceId).trim();
+    if (!displayName || displayName.length > 300) throw new CommandCenterMetadataError('invalid-value', 'displayName must be 1–300 characters');
     const updatedAt = timestamp(stateValue.updatedAt, 'updatedAt');
     if (referenceId !== reference.referenceId) throw new CommandCenterMetadataError('invalid-value', 'Session state must identify the new Source Reference.');
     if (status === 'closed' && isPrimary) throw new CommandCenterMetadataError('primary-session', 'The Primary Session cannot be created closed.');
     return mutate('sessions', (db) => {
       const created = insertSourceReference(db, reference, updatedAt);
       if (isPrimary) {
-        db.prepare(`UPDATE session_state SET is_primary = 0, updated_at = ?
+        db.prepare(`UPDATE session_state SET is_primary = 0, was_primary = 1, updated_at = ?
           WHERE reference_id <> ? AND reference_id IN (
             SELECT reference_id FROM source_references WHERE topic_id = ? AND source_system = 'openclaw' AND source_kind = 'session'
           )`).run(updatedAt, referenceId, reference.topicId);
       }
-      db.prepare('INSERT INTO session_state (reference_id, session_id, status, is_primary, updated_at) VALUES (?, ?, ?, ?, ?)').run(referenceId, sessionId, status, isPrimary ? 1 : 0, updatedAt);
+      db.prepare('INSERT INTO session_state (reference_id, session_id, status, is_primary, was_primary, display_name, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(referenceId, sessionId, status, isPrimary ? 1 : 0, wasPrimary ? 1 : 0, displayName, updatedAt);
       return Object.freeze({ reference: created, state: mapSessionState(db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(referenceId)) });
     });
   };

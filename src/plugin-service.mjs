@@ -4,6 +4,9 @@ import { createNoteMaintenanceService } from './maintenance/notes.mjs';
 import { openCommandCenterMetadataService } from './metadata/service.mjs';
 import { createLegacyDiscordMigrationService } from './migration/service.mjs';
 import { createAuthoritativeSourceService } from './sources/service.mjs';
+import { createSearchRebuildService, reconcileTopicSearchBookkeeping } from './search/rebuild.mjs';
+import { createTopicSearchService } from './search/service.mjs';
+import { createTopicContextPolicy } from './search/context.mjs';
 
 let activeMaintenanceService;
 
@@ -23,13 +26,15 @@ export function createMetadataService(api) {
   let sourceService;
   let attentionService;
   let maintenanceService;
+  let searchService;
+  let searchRebuildService;
+  let contextPolicy;
   return {
     id: 'command-center-metadata',
     async start() {
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
-      const sessionStoreAvailable = typeof api.runtime?.agent?.session?.patchSessionEntry === 'function';
-      const capabilities = { notes: true, sessions: sessionStoreAvailable, scheduler: gatewayAvailable, activity: true, search: false, analysis: false, attention: true };
+      const capabilities = { notes: true, sessions: gatewayAvailable, scheduler: gatewayAvailable, activity: true, search: true, analysis: false, attention: true };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
       const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: api.pluginConfig?.legacyDiscordMigration, logger: api.logger });
       attentionService = createAttentionService({
@@ -55,14 +60,40 @@ export function createMetadataService(api) {
         verifyTransition: (occurrence) => occurrence.transitionEvidence?.verifiedSource === 'scheduler-readback' && occurrence.transitionEvidence?.version === occurrence.occurrenceVersion,
         actions: []
       });
-      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService });
+      const searchProvider = {
+        query: (input) => searchService.query(input),
+        rebuild: (input) => searchService.rebuild(input),
+        invalidate: (input) => searchService.invalidate(input)
+      };
+      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider });
+      searchRebuildService = createSearchRebuildService({
+        stateDir,
+        metadata: metadataService,
+        api,
+        gateway: api.runtime?.gateway,
+        noteAdapterFactory: (topicId) => sourceService.forTopic(topicId).notes
+      });
+      searchService = createTopicSearchService({
+        stateDir,
+        metadata: metadataService,
+        sourceService,
+        rebuild: (input) => searchRebuildService.rebuild(input)
+      });
+      contextPolicy = createTopicContextPolicy({ metadata: metadataService, searchService });
+      const migrationResult = await migrationService.start();
+      await reconcileTopicSearchBookkeeping({ stateDir, metadata: metadataService });
+      try {
+        await searchService.invalidate({});
+        await searchService.rebuild({});
+      }
+      catch { api.logger?.warn?.('Command Center Topic Search remains unavailable until its authoritative sources can be rebuilt.'); }
       if (gatewayAvailable) {
         try { await sourceService.refreshReminderAttention(); }
         catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
       }
       maintenanceService = createNoteMaintenanceService({ sourceService, metadata: metadataService });
       activeMaintenanceService = maintenanceService;
-      return migrationService.start();
+      return migrationResult;
     },
     stop() {
       sourceService?.close?.();
@@ -70,12 +101,20 @@ export function createMetadataService(api) {
       metadataService?.close();
       metadataService = undefined;
       sourceService = undefined;
+      searchService = undefined;
+      searchRebuildService = undefined;
+      contextPolicy = undefined;
       attentionService = undefined;
       maintenanceService = undefined;
       activeMaintenanceService = undefined;
     },
     get sourceService() { return sourceService; },
     get attentionService() { return attentionService; },
-    get maintenanceService() { return maintenanceService; }
+    get maintenanceService() { return maintenanceService; },
+    get searchService() { return searchService; },
+    topicContextRetrieve(input) {
+      if (!contextPolicy) throw new Error('Command Center Topic context is not ready.');
+      return contextPolicy.retrieve(input);
+    }
   };
 }
