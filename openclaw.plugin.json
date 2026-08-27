@@ -1,7 +1,7 @@
 {
   "id": "command-center",
   "name": "Command Center",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "entry": "dist/plugin.mjs",
   "activation": {
     "onStartup": true
@@ -32,6 +32,12 @@
             }
           }
         }
+      },
+      "topics": {
+        "type": "object",
+        "properties": { "noteRoot": { "type": "string", "minLength": 1, "pattern": "\\S" } },
+        "required": ["noteRoot"],
+        "additionalProperties": false
       }
     },
     "additionalProperties": false

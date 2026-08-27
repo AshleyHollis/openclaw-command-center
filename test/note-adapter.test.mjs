@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rename, symlink, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, readdir, rename, symlink, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -28,6 +28,75 @@ test('nested Note browse/create/read/edit/rename/move stays within one Topic roo
     assert.deepEqual((await adapter.browse()).map((entry) => entry.path), ['renamed.md']);
     assert.equal(await readFile(path.join(root, 'renamed.md'), 'utf8'), 'edited');
     assert.equal(await readFile(path.join(root, 'nested/folder/note.md'), 'utf8').catch(() => null), null);
+  });
+});
+
+test('a bound Note adapter refreshes its versioned folder locator after explicit replacement', async () => {
+  const first = await mkdtemp(path.join(os.tmpdir(), 'command-center-note-locator-first-'));
+  const second = await mkdtemp(path.join(os.tmpdir(), 'command-center-note-locator-second-'));
+  try {
+    await writeFile(path.join(first, 'note.md'), 'first');
+    await writeFile(path.join(second, 'note.md'), 'second');
+    let locator = first;
+    const revisions = new Map(await Promise.all([first, second].map(async (directory) => {
+      const stat = await lstat(directory);
+      return [directory, `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`];
+    })));
+    const folder = { version: 1, referenceId: 'folder:refresh', topicId: 'topic-refresh', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: 'stable-folder-id' };
+    const metadata = { listSourceReferences: () => [folder], getSourceReference: (id) => id === folder.referenceId ? folder : null, getSourceLocator: () => ({ referenceId: folder.referenceId, locator, locatorVersion: locator === first ? 1 : 2, observedRevision: revisions.get(locator) }), createSourceReference: (value) => value };
+    const adapter = new NoteAdapter({ fsSafeRootFactory, metadata, topicId: folder.topicId, noteFolderReferenceId: folder.referenceId });
+    assert.equal((await adapter.read({ path: 'note.md' })).text, 'first');
+    locator = second;
+    assert.equal((await adapter.read({ path: 'note.md' })).text, 'second');
+    adapter.close();
+  } finally { await rm(first, { recursive: true, force: true }); await rm(second, { recursive: true, force: true }); }
+});
+
+test('a Note adapter refuses a different directory recreated at the exact stored path', async () => {
+  await withRoot(async (container) => {
+    const root = path.join(container, 'topic-root');
+    await mkdir(root);
+    const original = await lstat(root);
+    const observedRevision = `fs:${original.dev}:${original.ino}:${original.birthtimeMs}`;
+    const folder = { referenceId: 'folder:identity', topicId: 'topic-identity', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: root };
+    const metadata = {
+      listSourceReferences: () => [folder],
+      getSourceReference: (id) => id === folder.referenceId ? folder : null,
+      getSourceLocator: () => ({ referenceId: folder.referenceId, locator: root, locatorVersion: 1, observedRevision })
+    };
+    await rm(root, { recursive: true });
+    await mkdir(root);
+    await writeFile(path.join(root, 'replacement.md'), 'foreign');
+    const adapter = new NoteAdapter({ fsSafeRootFactory, metadata, topicId: folder.topicId, noteFolderReferenceId: folder.referenceId });
+    await assert.rejects(() => adapter.browse(), (error) => error.code === 'source-recovery' && /identity/i.test(error.message));
+  });
+});
+
+test('a cached Note adapter rebinds after an explicit same-path identity replacement', async () => {
+  await withRoot(async (container) => {
+    const root = path.join(container, 'topic-root');
+    const detached = path.join(container, 'detached-root');
+    await mkdir(root);
+    await writeFile(path.join(root, 'original.md'), 'original');
+    let stat = await lstat(root);
+    let observedRevision = `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+    const folder = { referenceId: 'folder:authorized-rebind', topicId: 'topic-authorized-rebind', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: root };
+    const metadata = {
+      listSourceReferences: () => [folder],
+      getSourceReference: (id) => id === folder.referenceId ? folder : null,
+      getSourceLocator: () => ({ referenceId: folder.referenceId, locator: root, locatorVersion: 2, observedRevision }),
+      createSourceReference: (value) => value
+    };
+    const adapter = new NoteAdapter({ fsSafeRootFactory, metadata, topicId: folder.topicId, noteFolderReferenceId: folder.referenceId });
+    assert.equal((await adapter.read({ path: 'original.md' })).text, 'original');
+    await rename(root, detached);
+    await mkdir(root);
+    stat = await lstat(root);
+    observedRevision = `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+    await adapter.create({ path: 'authorized.md', text: 'replacement' });
+    assert.equal(await readFile(path.join(root, 'authorized.md'), 'utf8'), 'replacement');
+    assert.equal(await readFile(path.join(detached, 'authorized.md'), 'utf8').catch(() => null), null);
+    adapter.close();
   });
 });
 test('path and symlink traversal fails closed, while large Markdown bytes round-trip exactly', async () => {

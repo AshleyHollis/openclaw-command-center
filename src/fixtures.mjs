@@ -115,7 +115,7 @@ export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot
           enabled: true,
           allow: [candidate.id],
           load: { paths: [candidate.root] },
-          entries: { [candidate.id]: { enabled: true } }
+          entries: { [candidate.id]: { enabled: true, config: { topics: { noteRoot: paths.vault } } } }
         }
       })}\n`);
     }

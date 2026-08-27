@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,6 +8,9 @@ import { sanitizeBridgeResult } from '../src/bridge/contracts.mjs';
 import { createTopicSearchService } from '../src/search/service.mjs';
 import { createSearchRebuildService } from '../src/search/rebuild.mjs';
 import { createSearchAdapter } from '../src/sources/search.mjs';
+import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { createSourceReference } from '../src/sources/reference.mjs';
+import { createTopicService } from '../src/topics/service.mjs';
 
 const topic = { topicId: 'topic-fictional', paraCategory: 'project', lifecycle: 'active' };
 const folder = { version: 1, referenceId: 'folder:fictional', topicId: topic.topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/topic', observedRevision: null };
@@ -100,6 +103,70 @@ test('temporary authoritative fixtures rebuild equivalent grouped Topic Search r
     assert.doesNotMatch(await readFile(path.join(stateDir, 'plugins', 'command-center', 'projections', 'topic-search-notes.json'), 'utf8'), /authoritative/);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('an archived lifecycle Topic remains searchable and restore preserves projection provenance', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-archive-'));
+  const stateDir = path.join(root, 'state');
+  const noteRoot = path.join(root, 'notes');
+  await mkdir(noteRoot, { recursive: true });
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, scheduler: true, search: true } });
+  try {
+    const sessionAdapterFactory = ({ metadata: store, topicId }) => ({
+      async create({ label, isPrimary }) {
+        const sessionKey = `agent:main:command-center:${topicId}`;
+        const reference = createSourceReference({ referenceId: `session:${topicId}`, topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey });
+        store.createSourceReference(reference);
+        store.setSessionState({ referenceId: reference.referenceId, sessionId: `session-id:${topicId}`, status: 'open', isPrimary, displayName: label });
+        return { sessionKey, sessionId: `session-id:${topicId}`, sourceReference: reference };
+      },
+      async resolveExact({ referenceId }) {
+        const reference = store.getSourceReference(referenceId);
+        const state = store.getSessionState(referenceId);
+        if (!reference || !state?.sessionId) throw new Error('fictional exact Session missing');
+        return { sessionKey: reference.externalSourceId, sessionId: state.sessionId };
+      }
+    });
+    const schedulerFactory = () => ({ list: async () => [] });
+    const topics = createTopicService({ metadata, noteVaultRoot: noteRoot, sessionAdapterFactory, schedulerFactory });
+    const created = await topics.create({ name: 'Archived Search Context', paraCategory: 'project', logicalOperationId: randomUUID() });
+    const topicId = created.topic.topicId;
+    const folderReference = metadata.listSourceReferences(topicId).find((reference) => reference.sourceKind === 'note_folder');
+    const sessionReference = metadata.listSourceReferences(topicId).find((reference) => reference.sourceKind === 'session' && metadata.getSessionState(reference.referenceId)?.isPrimary);
+    const originalReferenceIds = metadata.listSourceReferences(topicId).map((reference) => reference.referenceId).sort();
+    await writeFile(path.join(metadata.getSourceLocator(folderReference.referenceId).locator, 'readme.md'), '# Archived Search\n\narchived lifecycle phrase');
+    const authoritativeSources = { readTopicSnapshot: async ({ topicId: requestedTopicId }) => {
+      assert.equal(requestedTopicId, topicId);
+      const sessionState = metadata.getSessionState(sessionReference.referenceId);
+      return {
+        sourceRevision: `lifecycle:${metadata.getTopic(topicId).revision}`,
+        notes: [{ topicId, sourceReference: folderReference, folderReferenceId: folderReference.referenceId, path: 'readme.md', heading: 'Archived Search', revision: 'sha256:archived-note', text: 'archived lifecycle phrase', contextBefore: '', contextAfter: '', provenance: 'native' }],
+        conversations: [{ topicId, sourceReference: sessionReference, sessionKey: sessionReference.externalSourceId, sessionId: sessionState.sessionId, messageId: 'message-archived-search', name: 'Archived Search Context', date: '2026-08-27T00:00:00.000Z', role: 'user', historyProvenance: 'primary', closed: false, primaryState: 'primary', provenance: 'native', text: 'archived lifecycle phrase', contextBefore: '', contextAfter: '' }]
+      };
+    } };
+    const archive = await topics.archivePreview({ topicId });
+    await topics.archiveConfirm({ topicId, structuralChangeId: archive.structuralChangeId, previewDigest: archive.digest, expectedRevisions: archive.expectedRevisions, logicalOperationId: randomUUID() });
+    assert.equal(metadata.getTopic(topicId).paraCategory, 'archive');
+    const rebuild = createSearchRebuildService({ stateDir, metadata, authoritativeSources });
+    const search = createTopicSearchService({ stateDir, metadata });
+    await rebuild.rebuild();
+    const archived = await search.query({ schemaVersion: 1, topicId, query: 'archived lifecycle phrase', limit: 20 });
+    assert.equal(archived.notes.results.length, 1);
+    assert.equal(archived.conversations.results.length, 1);
+    assert.equal(archived.notes.results[0].sourceReference.referenceId, folderReference.referenceId);
+    assert.equal(archived.conversations.results[0].sourceReference.referenceId, sessionReference.referenceId);
+    assert.equal(archived.conversations.results[0].provenance.role, 'primary');
+    const restore = topics.restorePreview({ topicId, paraCategory: 'resource' });
+    await topics.restoreConfirm({ topicId, paraCategory: 'resource', structuralChangeId: restore.structuralChangeId, previewDigest: restore.digest, expectedRevisions: restore.expectedRevisions, logicalOperationId: randomUUID() });
+    await rebuild.rebuild();
+    const restored = await search.query({ schemaVersion: 1, topicId, query: 'archived lifecycle phrase', limit: 20 });
+    assert.deepEqual(restored, archived);
+    assert.deepEqual(metadata.listSourceReferences(topicId).map((reference) => reference.referenceId).sort(), originalReferenceIds);
+    assert.equal(metadata.getTopic(topicId).paraCategory, 'resource');
+  } finally {
+    metadata.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
 

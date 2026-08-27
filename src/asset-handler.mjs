@@ -57,7 +57,11 @@ async function readValidatedAsset(assetRoot, relative) {
   }
 }
 
-export async function serveShellAsset(req, res, { assetRoot = defaultAssetRoot, assets } = {}) {
+export function readBuiltAsset(relative, { assetRoot = defaultAssetRoot } = {}) {
+  return readValidatedAsset(assetRoot, relative);
+}
+
+export async function serveShellAsset(req, res, { assetRoot = defaultAssetRoot, assets, transformHtml } = {}) {
   const pathname = new URL(req.url || '/', 'http://127.0.0.1').pathname;
   const asset = assets?.get(pathname);
   if (!asset) return false;
@@ -69,7 +73,10 @@ export async function serveShellAsset(req, res, { assetRoot = defaultAssetRoot, 
   if (!Array.isArray(asset) || typeof asset[0] !== 'string' || typeof asset[1] !== 'string') {
     throw new Error('Built asset declaration is invalid');
   }
-  const body = await readValidatedAsset(assetRoot, asset[0]);
+  let body = await readValidatedAsset(assetRoot, asset[0]);
+  if (req.method === 'GET' && asset[1].startsWith('text/html') && typeof transformHtml === 'function') {
+    body = Buffer.from(await transformHtml(body.toString('utf8')));
+  }
   res.statusCode = 200;
   res.setHeader('content-type', asset[1]);
   res.setHeader('cache-control', 'no-store');

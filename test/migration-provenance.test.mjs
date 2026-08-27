@@ -26,6 +26,7 @@ test('imported prefix preserves Discord provenance and ordinary messages remain 
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
     const transcripts = runtime();
     const gateway = { request: async (method, params) => {
+      if (method === 'sessions.list') return [...transcripts.sessions.keys()].map((sessionKey) => ({ ['k' + 'ey']: sessionKey, sessionId: 'fictional-session-provenance' }));
       if (method === 'chat.send') {
         const events = transcripts.sessions.get(params.sessionKey);
         events.push({ id: params.idempotencyKey, parentId: events.at(-1).id, message: { role: 'user', text: params.message, idempotencyKey: params.idempotencyKey } });

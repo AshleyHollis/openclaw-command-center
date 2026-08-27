@@ -45,6 +45,87 @@ test('direct normal metadata reads reject a Provisioning Topic even without conf
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('Archived Topics deny every public mutation while retaining public read eligibility', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-archived-guards-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, scheduler: true, analysis: true, attention: true } });
+    const topicId = 'fictional-topic-archived-guards';
+    metadata.createTopic({ topicId, paraCategory: 'archive', lifecycle: 'active' });
+    const dispatched = [];
+    const service = createAuthoritativeSourceService({
+      metadata,
+      capabilities: { notes: true, sessions: true, scheduler: true, analysis: true, attention: true },
+      gateway: { request: async (method) => { dispatched.push(method); throw new Error('Archived write reached the Gateway.'); } },
+      analysisProvider: { status: () => ({}), run: () => { dispatched.push('analysis.run'); } },
+      attentionService: { act: () => { dispatched.push('attention.act'); } }
+    });
+    const mutationId = () => randomUUID();
+    const mutations = [
+      () => service.notesCreate({ topicId, path: 'blocked.md', text: 'blocked', logicalOperationId: mutationId() }),
+      () => service.notesEdit({ topicId, path: 'blocked.md', text: 'blocked', expectedRevision: 'blocked', logicalOperationId: mutationId() }),
+      () => service.notesRename({ topicId, path: 'blocked.md', newPath: 'still-blocked.md', expectedRevision: 'blocked', logicalOperationId: mutationId() }),
+      () => service.notesMove({ topicId, path: 'blocked.md', destinationPath: 'still-blocked.md', expectedRevision: 'blocked', logicalOperationId: mutationId() }),
+      () => service.sessionsCreate({ topicId, label: 'Blocked', logicalOperationId: mutationId() }),
+      () => service.sessionsSend({ topicId, referenceId: 'session:blocked', message: 'blocked', logicalOperationId: mutationId() }),
+      () => service.sessionsClose({ topicId, referenceId: 'session:blocked', logicalOperationId: mutationId() }),
+      () => service.sessionsReopen({ topicId, referenceId: 'session:blocked', logicalOperationId: mutationId() }),
+      () => service.remindersSnooze({ topicId, referenceId: 'reminder:blocked', expectedConfigRevision: 'blocked', patch: {}, logicalOperationId: mutationId() }),
+      () => service.remindersComplete({ topicId, referenceId: 'reminder:blocked', expectedConfigRevision: 'blocked', logicalOperationId: mutationId() }),
+      () => service.schedulesCreate({ topicId, referenceId: 'schedule:blocked', declaration: {}, logicalOperationId: mutationId() }),
+      () => service.schedulesUpdate({ topicId, referenceId: 'schedule:blocked', expectedConfigRevision: 'blocked', patch: {}, logicalOperationId: mutationId() }),
+      () => service.schedulesSetEnabled({ topicId, referenceId: 'schedule:blocked', expectedConfigRevision: 'blocked', enabled: false, logicalOperationId: mutationId() }),
+      () => service.schedulesRun({ topicId, referenceId: 'schedule:blocked', logicalOperationId: mutationId() }),
+      () => service.analysisRun({ topicId, input: {}, logicalOperationId: mutationId() }),
+      () => service.attentionAct({ topicId, logicalOperationId: mutationId() })
+    ];
+    for (const mutate of mutations) await assert.rejects(Promise.resolve().then(mutate), (error) => error.code === 'read-only');
+    await assert.rejects(service.metadataWrite({ topicId, operation: 'preferences', value: { topicId, displayLabel: 'Blocked' }, logicalOperationId: mutationId() }), (error) => error.code === 'read-only');
+    assert.deepEqual(dispatched, []);
+    assert.equal(service.metadataRead({ topicId }).topic.paraCategory, 'archive');
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('conversation creation verifies the exact Primary Session and records recovery before dispatch', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-missing-primary-create-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
+    const topicId = 'fictional-topic-missing-primary-create';
+    const referenceId = 'session:fictional-primary-create';
+    const sessionKey = 'agent:main:command-center:fictional-primary-create';
+    metadata.createTopic({ topicId, paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey, observedRevision: null });
+    metadata.setSessionState({ referenceId, sessionId: 'fictional-primary-session-id', status: 'open', isPrimary: true });
+    const entries = new Map([[sessionKey, { sessionId: 'fictional-primary-session-id', updatedAt: 1 }]]);
+    let creations = 0;
+    const sessionStore = {
+      listSessionEntries: () => [...entries].map(([storedKey, entry]) => ({ sessionKey: storedKey, entry })),
+      async createSessionEntry() { creations += 1; throw new Error('Missing Primary allowed a new Session creation.'); }
+    };
+    const gatewayCalls = [];
+    const service = createAuthoritativeSourceService({
+      metadata, sessionStore, capabilities: { sessions: true },
+      gateway: { request: async (...args) => { gatewayCalls.push(args); return {}; } }
+    });
+    entries.delete(sessionKey);
+    await assert.rejects(
+      service.sessionsCreate({ topicId, label: 'Must not be created', logicalOperationId: randomUUID() }),
+      (error) => error.code === 'source-recovery'
+    );
+    assert.equal(creations, 0);
+    assert.deepEqual(gatewayCalls, []);
+    assert.deepEqual(metadata.listSourceReferences(topicId).map((reference) => reference.referenceId), [referenceId]);
+    const recovery = metadata.listSourceRecovery(topicId);
+    assert.equal(recovery.length, 1);
+    assert.equal(recovery[0].referenceId, referenceId);
+    assert.equal(recovery[0].sourceKind, 'session');
+    assert.equal(recovery[0].state, 'required');
+    assert.equal(recovery[0].lastLocator, null);
+    assert.equal(recovery[0].lastIdentity, null);
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('public source service writes durable authoritative Markdown and keeps metadata free of content', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-integration-'));
   const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-vault-'));

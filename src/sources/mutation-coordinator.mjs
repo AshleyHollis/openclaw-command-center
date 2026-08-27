@@ -42,7 +42,8 @@ export class MutationCoordinator {
           retry: true,
           applied: true,
           resultIdentity: existing.resultIdentity ?? null,
-          observedRevision: existing.observedRevision ?? null
+          observedRevision: existing.observedRevision ?? null,
+          operationCreatedAt: existing.createdAt
         });
         const outcome = reconciliationOutcome(appliedReconciliation);
         if (outcome === 'applied') {
@@ -58,7 +59,7 @@ export class MutationCoordinator {
       }
       if (terminal(existing.state)) return Object.freeze({ ...existing, status: existing.state });
       if (['pending', 'unknown', 'not-applied'].includes(existing.state) && typeof reconcile === 'function') {
-        const pendingReconciliation = await reconcile({ requestId, logicalOperationId: logicalId, intentDigest: digest, pending: existing.state === 'pending', retry: true });
+        const pendingReconciliation = await reconcile({ requestId, logicalOperationId: logicalId, intentDigest: digest, pending: existing.state === 'pending', retry: true, operationCreatedAt: existing.createdAt });
         const outcome = reconciliationOutcome(pendingReconciliation);
         if (outcome === 'applied') {
           const value = pendingReconciliation.value ?? pendingReconciliation.result ?? pendingReconciliation;
@@ -76,19 +77,19 @@ export class MutationCoordinator {
       }
       if (['pending', 'unknown'].includes(existing.state) && typeof reconcile !== 'function') throw sourceError('unknown', 'A pending mutation requires authoritative reconciliation.', { logicalOperationId: logicalId, requestId });
     }
-    this.journal.record({ logicalOperationId: logicalId, transportRequestId: requestId, intentDigest: digest, operationKind, state: 'pending', createdAt: existing?.createdAt ?? this.now(), updatedAt: this.now() });
+    const pendingOperation = this.journal.record({ logicalOperationId: logicalId, transportRequestId: requestId, intentDigest: digest, operationKind, state: 'pending', createdAt: existing?.createdAt ?? this.now(), updatedAt: this.now() });
     let attempt = 0;
     while (true) {
       const transportRequestId = requestId;
       try {
-        const value = await execute({ requestId: transportRequestId, logicalOperationId: logicalId, intentDigest: digest, attempt });
+        const value = await execute({ requestId: transportRequestId, logicalOperationId: logicalId, intentDigest: digest, attempt, operationCreatedAt: pendingOperation.createdAt });
         const result = this.wrapResult('applied', value, { logicalOperationId: logicalId, transportRequestId });
-        this.journal.record({ logicalOperationId: logicalId, transportRequestId, intentDigest: digest, operationKind, state: 'applied', resultStatus: 'applied', resultIdentity: identityOf(value), observedRevision: revisionOf(value), updatedAt: this.now(), createdAt: existing?.createdAt ?? this.now() });
+        this.journal.record({ logicalOperationId: logicalId, transportRequestId, intentDigest: digest, operationKind, state: 'applied', resultStatus: 'applied', resultIdentity: identityOf(value), observedRevision: revisionOf(value), updatedAt: this.now(), createdAt: pendingOperation.createdAt });
         return result;
       } catch (error) {
         if (!isAmbiguousMutationError(error)) {
           const status = error?.code === 'conflict' ? 'conflict' : null;
-          if (status) this.journal.record({ logicalOperationId: logicalId, transportRequestId, intentDigest: digest, operationKind, state: status, resultStatus: status, observedRevision: error.currentRevision ?? null, updatedAt: this.now(), createdAt: existing?.createdAt ?? this.now() });
+          if (status) this.journal.record({ logicalOperationId: logicalId, transportRequestId, intentDigest: digest, operationKind, state: status, resultStatus: status, observedRevision: error.currentRevision ?? null, updatedAt: this.now(), createdAt: pendingOperation.createdAt });
           throw error;
         }
         if (idempotent && attempt === 0) {
@@ -96,18 +97,18 @@ export class MutationCoordinator {
           continue;
         }
         if (typeof reconcile !== 'function') {
-          this.journal.record({ logicalOperationId: logicalId, transportRequestId, intentDigest: digest, operationKind, state: 'unknown', resultStatus: 'unknown', updatedAt: this.now(), createdAt: existing?.createdAt ?? this.now() });
+          this.journal.record({ logicalOperationId: logicalId, transportRequestId, intentDigest: digest, operationKind, state: 'unknown', resultStatus: 'unknown', updatedAt: this.now(), createdAt: pendingOperation.createdAt });
           throw sourceError('unknown', 'Mutation delivery was ambiguous and authoritative reconciliation is unavailable.', { cause: error, logicalOperationId: logicalId, requestId: transportRequestId });
         }
-        const reconciliation = await reconcile({ requestId, logicalOperationId: logicalId, intentDigest: digest, error, attempt });
+        const reconciliation = await reconcile({ requestId, logicalOperationId: logicalId, intentDigest: digest, error, attempt, operationCreatedAt: pendingOperation.createdAt });
         const outcome = reconciliationOutcome(reconciliation);
         if (outcome === 'applied') {
           const value = reconciliation.value ?? reconciliation.result ?? reconciliation;
           const result = this.wrapResult('applied', value, { logicalOperationId: logicalId, transportRequestId });
-          this.journal.record({ logicalOperationId: logicalId, transportRequestId, intentDigest: digest, operationKind, state: 'applied', resultStatus: 'applied', resultIdentity: identityOf(value), observedRevision: revisionOf(value), updatedAt: this.now(), createdAt: existing?.createdAt ?? this.now() });
+          this.journal.record({ logicalOperationId: logicalId, transportRequestId, intentDigest: digest, operationKind, state: 'applied', resultStatus: 'applied', resultIdentity: identityOf(value), observedRevision: revisionOf(value), updatedAt: this.now(), createdAt: pendingOperation.createdAt });
           return result;
         }
-        this.journal.record({ logicalOperationId: logicalId, transportRequestId, intentDigest: digest, operationKind, state: outcome, resultStatus: outcome, updatedAt: this.now(), createdAt: existing?.createdAt ?? this.now() });
+        this.journal.record({ logicalOperationId: logicalId, transportRequestId, intentDigest: digest, operationKind, state: outcome, resultStatus: outcome, updatedAt: this.now(), createdAt: pendingOperation.createdAt });
         throw sourceError(outcome, outcome === 'unknown' ? 'Mutation delivery remains ambiguous after authoritative reconciliation.' : `Mutation reconciliation reported ${outcome}.`, { cause: error, logicalOperationId: logicalId, requestId: transportRequestId });
       }
     }

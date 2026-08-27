@@ -33,14 +33,14 @@ async function createDatabase(stateDir, setup) {
   return { databasePath, result };
 }
 
-async function assertRecoveryPreservesFixture(stateDir, expectedCode) {
+async function assertRecoveryPreservesFixture(stateDir, expectedCode, fixtureLabel = expectedCode) {
   const databasePath = resolveCommandCenterDatabasePath(stateDir);
   const beforeBytes = await readFile(databasePath);
   const beforeMtime = (await stat(databasePath)).mtimeMs;
   const beforeSiblings = (await readdir(path.dirname(databasePath))).sort();
   const service = openCommandCenterMetadataService({ stateDir });
   const firstStatus = service.getOperatingStatus();
-  assert.equal(firstStatus.mode, 'recovery-only');
+  assert.equal(firstStatus.mode, 'recovery-only', fixtureLabel);
   assert.equal(firstStatus.diagnostics[0].code, expectedCode);
   assert.deepEqual(service.getOperatingStatus(), firstStatus);
   assert.throws(() => service.createTopic({ topicId: 'blocked-topic', paraCategory: 'area', lifecycle: 'active' }), (error) => error.code === 'recovery-only');
@@ -64,24 +64,24 @@ const malformedFixtures = [
 
 test('future, version-0, zero-byte, and every malformed schema fixture fail closed without mutation', async () => {
   const fixtures = [
-    ['future-schema', async (stateDir) => createDatabase(stateDir, (db) => db.exec('CREATE TABLE fictional_future (id TEXT) STRICT; PRAGMA user_version = 99;'))],
-    ['unversioned-schema', async (stateDir) => createDatabase(stateDir, (db) => db.exec('CREATE TABLE fictional_unversioned (id TEXT) STRICT;'))],
-    ['unversioned-schema', async (stateDir) => {
+    ['future-schema', 'future schema', async (stateDir) => createDatabase(stateDir, (db) => db.exec('CREATE TABLE fictional_future (id TEXT) STRICT; PRAGMA user_version = 99;'))],
+    ['unversioned-schema', 'unversioned schema', async (stateDir) => createDatabase(stateDir, (db) => db.exec('CREATE TABLE fictional_unversioned (id TEXT) STRICT;'))],
+    ['unversioned-schema', 'zero-byte schema', async (stateDir) => {
       const databasePath = resolveCommandCenterDatabasePath(stateDir);
       await mkdir(path.dirname(databasePath), { recursive: true });
       await writeFile(databasePath, Buffer.alloc(0));
     }],
-    ...malformedFixtures.map(([, setup]) => ['malformed-schema', async (stateDir) => createDatabase(stateDir, setup)])
+    ...malformedFixtures.map(([label, setup]) => ['malformed-schema', label, async (stateDir) => createDatabase(stateDir, setup)])
   ];
-  for (const [expectedCode, setup] of fixtures) {
+  for (const [expectedCode, label, setup] of fixtures) {
     await withState(async (stateDir) => {
       await setup(stateDir);
-      await assertRecoveryPreservesFixture(stateDir, expectedCode);
+      await assertRecoveryPreservesFixture(stateDir, expectedCode, label);
     });
   }
 });
 
-test('an exact schema-1 database migrates atomically to schema 5 and preserves source identities', async () => {
+test('an exact schema-1 database migrates atomically to schema 6 and preserves source identities', async () => {
   await withState(async (stateDir) => {
     const { databasePath } = await createDatabase(stateDir, (database) => {
       database.exec(metadataSchemaV1Sql);
@@ -91,7 +91,7 @@ test('an exact schema-1 database migrates atomically to schema 5 and preserves s
     });
     const service = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
     assert.equal(service.getOperatingStatus().mode, 'degraded');
-    assert.equal(service.getOperatingStatus().schemaVersion, 5);
+    assert.equal(service.getOperatingStatus().schemaVersion, 6);
     assert.equal(service.getSourceReference('schema-1-reference').externalSourceId, 'schema-1-session');
     assert.equal(service.getSourceReference('schema-1-reference').observedRevision, null);
     assert.equal(service.getSourceConventionState('schema-1-reference')[0].state, 'customized');
@@ -102,7 +102,7 @@ test('an exact schema-1 database migrates atomically to schema 5 and preserves s
     service.close();
     const reopened = openCommandCenterMetadataService({ stateDir });
     assert.notEqual(reopened.getOperatingStatus().mode, 'recovery-only');
-    assert.equal(reopened.getOperatingStatus().schemaVersion, 5);
+    assert.equal(reopened.getOperatingStatus().schemaVersion, 6);
     assert.equal(reopened.getSourceReference('migrated-reference').observedRevision, 'opaque-migrated-revision');
     reopened.close();
     assert.ok(databasePath.endsWith('metadata.sqlite'));

@@ -24,7 +24,7 @@ async function withState(run) {
   }
 }
 
-test('creates exactly one schema-5 database and preserves public metadata across reopen', async () => {
+test('creates exactly one schema-6 database and preserves public metadata across reopen', async () => {
   await withState(async (stateDir) => {
     const service = openCommandCenterMetadataService({ stateDir });
     assert.equal(service.getOperatingStatus().mode, 'degraded');
@@ -39,7 +39,8 @@ test('creates exactly one schema-5 database and preserves public metadata across
 
     const reopened = openCommandCenterMetadataService({ stateDir });
     assert.deepEqual(reopened.getTopic('topic-fictional'), {
-      topicId: 'topic-fictional', paraCategory: 'area', lifecycle: 'active',
+      topicId: 'topic-fictional', name: 'topic-fictional', paraCategory: 'area', lifecycle: 'active', revision: 0,
+      activatedAt: '2026-08-22T00:00:00Z',
       createdAt: '2026-08-22T00:00:00Z', updatedAt: '2026-08-22T00:00:00Z'
     });
     assert.equal(reopened.getPresentationPreferences('topic-fictional').displayLabel, 'Fictional Area');
@@ -54,7 +55,7 @@ test('schema inspection exposes only the permitted strict application tables', a
     try {
       const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((row) => row.name);
       assert.deepEqual(tables, [...metadataTableNames, 'schema_migrations'].sort());
-      assert.equal(database.prepare('PRAGMA user_version').get().user_version, 5);
+      assert.equal(database.prepare('PRAGMA user_version').get().user_version, 6);
       assert.ok(database.prepare('SELECT name FROM pragma_table_list WHERE name = ? AND strict = 1').get('topics'));
       assert.equal(database.prepare("SELECT name FROM sqlite_master WHERE sql LIKE '%blob%' OR sql LIKE '%payload%' OR sql LIKE '%transcript%' OR sql LIKE '%schedule_definition%'").get(), undefined);
     } finally {

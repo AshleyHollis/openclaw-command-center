@@ -92,6 +92,30 @@ test('terminal applied replay reconstructs the authoritative result without redi
   assert.equal('intentDigest' in replay, false);
 });
 
+test('memory-journal terminal writes preserve the durable pending creation timestamp', async () => {
+  const ticks = [
+    '2026-08-23T15:00:00.000Z',
+    '2026-08-23T15:00:01.000Z',
+    '2026-08-23T15:00:02.000Z',
+    '2026-08-23T15:00:03.000Z'
+  ];
+  const coordinator = createMutationCoordinator({ now: () => ticks.shift() ?? '2026-08-23T15:00:04.000Z' });
+  const logicalOperationId = randomUUID();
+  let createdAtDuringEffect;
+  await coordinator.mutate({
+    operationKind: 'sessions.create',
+    requestId: 'frame-created-at',
+    logicalOperationId,
+    intent: { sessionKey: 'agent:main:command-center:fictional' },
+    execute: async ({ operationCreatedAt }) => {
+      createdAtDuringEffect = operationCreatedAt;
+      return { id: 'fictional-session' };
+    },
+    reconcile: async () => ({ outcome: 'applied', value: { id: 'fictional-session' } })
+  });
+  assert.equal(coordinator.journal.get(logicalOperationId).createdAt, createdAtDuringEffect);
+});
+
 test('ambiguous Note move never adopts an identical unrelated destination', async () => {
   for (const sourcePresent of [true, false]) {
     const logicalOperationId = randomUUID();
@@ -105,7 +129,7 @@ test('ambiguous Note move never adopts an identical unrelated destination', asyn
       async move() { this.moveCalls += 1; throw new Error('must not dispatch'); }
     };
     const metadata = {
-      getTopic: (topicId) => topicId === 'topic-move' ? { topicId, lifecycle: 'active' } : null,
+      getTopic: (topicId) => topicId === 'topic-move' ? { topicId, lifecycle: 'active', paraCategory: 'project', activatedAt: '2026-08-27T00:00:00.000Z' } : null,
       getOperatingStatus: () => ({ mode: 'normal', schemaVersion: 2, diagnostics: [] }),
       listSourceReferences: () => []
     };
@@ -154,7 +178,7 @@ test('applied Note move replay proves the exact durable destination identity wit
     async move() { moveCalls += 1; moved = true; return { schemaVersion: 1, status: 'applied', note: destination }; }
   };
   const metadata = {
-    getTopic: (topicId) => topicId === 'topic-move' ? { topicId, lifecycle: 'active' } : null,
+    getTopic: (topicId) => topicId === 'topic-move' ? { topicId, lifecycle: 'active', paraCategory: 'project', activatedAt: '2026-08-27T00:00:00.000Z' } : null,
     getOperatingStatus: () => ({ mode: 'normal', schemaVersion: 2, diagnostics: [] }),
     listSourceReferences: () => []
   };

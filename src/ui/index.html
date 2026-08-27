@@ -1,25 +1,12 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Command Center</title>
-    <link rel="stylesheet" href="/plugins/command-center/styles.css">
-  </head>
-  <body>
-    <main class="shell" aria-labelledby="command-center-heading">
-      <p class="eyebrow">OpenClaw</p>
-      <h1 id="command-center-heading">Command Center</h1>
-      <form id="topic-search-form" class="search-form">
-        <label>Topic ID <input id="topic-search-topic-id" name="topicId" required autocomplete="off"></label>
-        <label>Search <input id="topic-search-query" name="query" required maxlength="256" autocomplete="off"></label>
-        <button type="submit">Search Topic</button>
-      </form>
-      <p id="topic-search-status" role="status">Ready to search authoritative Topic sources.</p>
-      <section aria-labelledby="notes-heading"><h2 id="notes-heading">Notes</h2><div id="notes-results"></div></section>
-      <section aria-labelledby="conversations-heading"><h2 id="conversations-heading">Conversations</h2><div id="conversations-results"></div></section>
-      <section aria-labelledby="detail-heading"><h2 id="detail-heading">Authoritative Note</h2><pre id="topic-search-detail"></pre></section>
-    </main>
-    <script src="/plugins/command-center/app.js"></script>
-  </body>
-</html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Command Center</title><link rel="stylesheet" href="/plugins/command-center/styles.css"><script defer src="/plugins/command-center/app.js"></script></head>
+<body><main>
+  <header><p class="eyebrow">Command Center</p><h1>Contexts, without the guesswork.</h1><p id="topic-status" aria-live="polite">Loading Topics…</p></header>
+  <section aria-labelledby="topics-heading"><h2 id="topics-heading">Topics</h2>
+    <form id="topic-create" class="topic-create"><label>Name <input name="name" required autocomplete="off"></label><label>PARA category <select name="paraCategory" required><option value="project">Project</option><option value="area">Area</option><option value="resource">Resource</option></select></label><button id="topic-create-submit" type="submit">Create Topic</button></form>
+    <div id="topic-groups" class="topic-grid"><section class="topic-group"><h3>Projects</h3><div id="topics-project"></div></section><section class="topic-group"><h3>Areas</h3><div id="topics-area"></div></section><section class="topic-group"><h3>Resources</h3><div id="topics-resource"></div></section></div>
+    <section id="topic-exceptions"><h3>Provisioning &amp; Source Recovery</h3><div id="topics-provisioning"></div><div id="topics-recovery"></div></section>
+    <section><h3>Archived Topics</h3><div id="topics-archived"></div></section>
+  </section>
+  <section aria-labelledby="search-heading"><h2 id="search-heading">Topic Search</h2><form id="topic-search-form"><label>Topic <select id="topic-search-topic-id"></select></label><label>Search <input id="topic-search-query" required></label><button type="submit">Search</button></form><p id="topic-search-status"></p><div class="search-grid"><section><h3>Notes</h3><div id="notes-results"></div></section><section><h3>Conversations</h3><div id="conversations-results"></div></section></div><pre id="topic-search-detail"></pre></section>
+</main></body></html>
