@@ -10,11 +10,15 @@ let topicCreatePending = false;
 const DASHBOARD_ROUTE = '/plugins/command-center/api/dashboard';
 const ATTENTION_ROUTE = '/plugins/command-center/api/attention/actions';
 const DASHBOARD_ACTIONS_ROUTE = '/plugins/command-center/api/dashboard/actions';
+const TOPIC_ANALYSIS_ROUTE = '/plugins/command-center/api/topic-analysis';
+const TOPIC_ANALYSIS_ACTIONS_ROUTE = '/plugins/command-center/api/topic-analysis/actions';
 const hasDashboardDestination = Boolean(document.querySelector('#dashboard'));
 let dashboardState = null;
 let evidenceReturnFocus = null;
 let activityRecords = [];
 let notificationSettingsRevision = null;
+let topicAnalysisScheduleRevision = null;
+let topicReviewState = null;
 
 async function dashboardRead(offset = 0) {
   const response = await fetch(`${DASHBOARD_ROUTE}?activityOffset=${encodeURIComponent(offset)}&activityLimit=50`, { credentials: 'include', headers: { accept: 'application/json' } });
@@ -52,6 +56,48 @@ function renderNotificationSettings(settings) {
     const control = document.querySelector(`#${id}`); if (control && document.activeElement !== control) control.value = value ?? '';
   }
 }
+async function topicAnalysisRead() {
+  const response = await fetch(TOPIC_ANALYSIS_ROUTE, { credentials: 'include', headers: { accept: 'application/json' } });
+  const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis is unavailable.'); return value.result ?? value;
+}
+function renderTopicReview(review) {
+  topicReviewState = review; const target = document.querySelector('#topic-review-groups'); const checkpoint = document.querySelector('#topic-review-checkpoint'); if (!target) return;
+  target.replaceChildren();
+  for (const group of review?.groups ?? []) {
+    const section = document.createElement('section'); section.className = 'topic-review-group'; const heading = document.createElement('h5'); heading.textContent = `${group.topicId} · ${group.operation}`; section.append(heading);
+    for (const proposal of group.proposals ?? []) {
+      const card = document.createElement('article'); card.className = 'topic-review-proposal'; const summary = document.createElement('p'); summary.textContent = `${proposal.operation} · ${proposal.evidenceFacts?.length ?? 0} inspectable facts · ${proposal.state}`; const evidence = document.createElement('ul'); for (const fact of proposal.evidenceFacts ?? []) { const item = document.createElement('li'); item.textContent = `${fact.sourceId} @ ${fact.sourceRevision}: ${fact.fact}`; evidence.append(item); }
+      const disclosures = [
+        ['Rationale', proposal.rationale],
+        ['Exact before state', proposal.before],
+        ['Exact after state', proposal.after],
+        ['Affected Topic identities', proposal.affectedTopicIds],
+        ['Affected Source identities', proposal.affectedSourceIds],
+        ['Planned Source identities', proposal.plannedSourceIds],
+        ['Provenance', proposal.provenance],
+        ['Search and retrieval consequences', proposal.searchRetrievalConsequences],
+        ['Blocked outcomes', proposal.blockers],
+        ['Reversibility and irreversible outcomes', proposal.reversibility]
+      ];
+      card.append(summary, evidence);
+      for (const [label, value] of disclosures) { const row = document.createElement('p'); const strong = document.createElement('strong'); strong.textContent = `${label}: `; const content = document.createElement('span'); content.textContent = typeof value === 'string' ? value : JSON.stringify(value ?? null); row.append(strong, content); card.append(row); }
+      const inspectable = typeof proposal.rationale === 'string' && proposal.rationale.trim() && proposal.before && proposal.after && Array.isArray(proposal.affectedTopicIds) && Array.isArray(proposal.affectedSourceIds) && proposal.provenance && proposal.searchRetrievalConsequences && Array.isArray(proposal.blockers) && proposal.reversibility;
+      const actions = document.createElement('div'); const approve = dashboardButton('Approve', () => topicReviewDecision('proposal.approve', proposal)); const adjust = dashboardButton('Adjust', () => topicReviewAdjust(proposal)); const keep = dashboardButton('Keep as-is', () => topicReviewDecision('proposal.keep-as-is', proposal)); for (const control of [approve, adjust, keep]) control.disabled = !inspectable || proposal.state !== 'pending'; if (proposal.operation === 'archive') adjust.disabled = true; actions.append(approve, adjust, keep); card.append(actions); section.append(card);
+    }
+    target.append(section);
+  }
+  if (!target.childElementCount) target.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No Topic Review proposals.' }));
+  if (checkpoint) { const proposals = review?.proposals ?? []; checkpoint.hidden = proposals.length === 0 || !proposals.some((proposal) => proposal.state === 'approved') || proposals.some((proposal) => proposal.state !== 'approved'); }
+  const snooze = document.querySelector('#topic-review-snooze'); if (snooze) snooze.hidden = !review || review.state === 'Resolved';
+}
+async function topicAnalysisAction(action, input = {}) { const response = await fetch(TOPIC_ANALYSIS_ACTIONS_ROUTE, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: operationId(), ...input }) }); const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis action was refused.'); return value.result ?? value; }
+async function topicReviewDecision(action, proposal) { const feedback = document.querySelector('#analysis-feedback'); try { await topicAnalysisAction(action, { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision }); feedback.textContent = 'Proposal decision saved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
+async function topicReviewAdjust(proposal) { const feedback = document.querySelector('#analysis-feedback'); if (proposal.operation === 'archive') { feedback.textContent = 'Archive proposals support Approve or Keep as-is.'; return; } const target = proposal.after?.topic ?? proposal.after ?? {}; const initial = proposal.operation === 'create' ? { name: target.name, paraCategory: target.paraCategory } : { paraCategory: target.paraCategory }; const adjustmentJson = window.prompt('Enter the adjusted name/category fields as JSON.', JSON.stringify(initial)); if (!adjustmentJson) return; try { await topicAnalysisAction('proposal.adjust', { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision, adjustment: JSON.parse(adjustmentJson) }); feedback.textContent = 'Proposal adjustment approved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
+async function loadTopicAnalysis() { try { const value = await topicAnalysisRead(); const settings = value.schedule; if (settings) { topicAnalysisScheduleRevision = settings.revision; for (const [id, item] of [['analysis-enabled', settings.enabled], ['analysis-weekday', String(settings.weekday)]]) { const control = document.querySelector(`#${id}`); if (control) id === 'analysis-enabled' ? control.checked = item : control.value = item; } for (const [id, item] of [['analysis-local-time', settings.localTime], ['analysis-time-zone', settings.timeZone]]) { const control = document.querySelector(`#${id}`); if (control && document.activeElement !== control) control.value = item; } } renderTopicReview(value.review); } catch (error) { const feedback = document.querySelector('#analysis-feedback'); if (feedback) feedback.textContent = error.message || 'Topic Analysis is unavailable.'; } }
+document.querySelector('#topic-analysis-schedule')?.addEventListener('submit', async (event) => { event.preventDefault(); try { await topicAnalysisAction('schedule.update', { expectedRevision: topicAnalysisScheduleRevision, settings: { enabled: document.querySelector('#analysis-enabled').checked, weekday: Number(document.querySelector('#analysis-weekday').value), localTime: document.querySelector('#analysis-local-time').value, timeZone: document.querySelector('#analysis-time-zone').value.trim() } }); document.querySelector('#analysis-feedback').textContent = 'Analysis schedule saved.'; await loadTopicAnalysis(); } catch (error) { document.querySelector('#analysis-feedback').textContent = error.message; } });
+document.querySelector('#analysis-run')?.addEventListener('click', async () => { try { await topicAnalysisAction('analysis.run', { trigger: 'manual' }); document.querySelector('#analysis-feedback').textContent = 'Analysis completed.'; await loadTopicAnalysis(); } catch (error) { document.querySelector('#analysis-feedback').textContent = error.message; } });
+document.querySelector('#topic-review-checkpoint')?.addEventListener('click', async () => { const feedback = document.querySelector('#topic-review-plan'); try { const proposals = topicReviewState?.proposals ?? []; const plan = await topicAnalysisAction('review.apply', { reviewId: 'topic-review:global', expectedReviewRevision: topicReviewState?.episodeRevision, approvedProposalRevisions: proposals.filter((proposal) => proposal.state === 'approved').map((proposal) => ({ proposalId: proposal.proposalId, revision: proposal.revision })), applicationId: operationId(), confirm: false }); const checkpoint = plan?.result ?? plan; if (!checkpoint) throw new Error('The final checkpoint was unavailable.'); const visiblePlan = { planRevision: checkpoint.planRevision, reviewRevision: checkpoint.reviewRevision, proposalRevisions: checkpoint.currentProposalRevisions, dependencies: checkpoint.dependencies, exactEffects: checkpoint.effects, preconditions: checkpoint.steps?.map((step) => ({ proposalId: step.proposalId, preconditions: step.preconditions })), compensationDisclosures: checkpoint.steps?.map((step) => ({ proposalId: step.proposalId, compensation: step.compensation })), blockedAndIrreversibleOutcomes: { blockers: checkpoint.blockers, reversibility: checkpoint.steps?.map((step) => ({ proposalId: step.proposalId, reversibility: step.intent?.authoritativePreview?.reversibility ?? step.compensation })) } }; feedback.textContent = `Frozen application plan (inspect before confirming):\n${JSON.stringify(visiblePlan, null, 2)}`; if (!confirm(`Apply only frozen plan ${checkpoint.planRevision}?`)) return; const applied = await topicAnalysisAction('review.apply', { reviewId: 'topic-review:global', applicationId: checkpoint.applicationId, planRevision: checkpoint.planRevision, confirm: true }); const outcomes = Object.values(applied?.outcomes ?? {}).map((item) => item?.status).filter(Boolean); feedback.textContent = outcomes.length ? `Application outcomes: ${outcomes.join(', ')}.` : 'Approved changes applied.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } });
+document.querySelector('#topic-review-snooze')?.addEventListener('click', async () => { const feedback = document.querySelector('#analysis-feedback'); const until = window.prompt('Snooze Topic Review until (RFC3339).', new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()); if (!until || !topicReviewState) return; try { await topicAnalysisAction('review.snooze', { reviewId: 'topic-review:global', expectedReviewRevision: topicReviewState.episodeRevision, snoozedUntil: until }); feedback.textContent = 'Topic Review snoozed.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } });
 async function saveNotificationSettings(event) {
   event.preventDefault();
   const feedback = document.querySelector('#settings-feedback');
@@ -192,6 +238,7 @@ async function loadDashboard() {
     const coming = document.querySelector('#coming-up'); coming.replaceChildren(...(dashboardState.comingUp ?? []).map((item) => { const row = document.createElement('p'); row.textContent = `${item.day} · ${item.time} · ${item.context} · ${item.label}`; return row; })); if (!coming.childElementCount) coming.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No future Reminders.' }));
     fillTopicLaunchers(dashboardState.topics); renderActivity(dashboardState.activity?.records); const more = document.querySelector('#activity-load-more'); more.textContent = 'Load more Activity'; more.hidden = dashboardState.activity?.hasMore !== true; more.onclick = async () => { const next = await dashboardRead(dashboardState.activity.nextOffset); dashboardState.activity = next.activity; renderActivity(next.activity.records, true); more.hidden = next.activity.hasMore !== true; };
     focusNotificationTarget();
+    await loadTopicAnalysis();
   } catch (error) { document.querySelector('#dashboard-feedback').textContent = error.message || 'Dashboard is unavailable.'; }
 }
 

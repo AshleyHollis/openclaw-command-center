@@ -43,7 +43,7 @@
     "additionalProperties": false
   },
   "contracts": {
-    "tools": ["command_center_topic_context"],
+    "tools": ["command_center_topic_context", "command_center_topic_analysis"],
     "gatewayMethodDispatch": ["authenticated-request"]
   },
   "controlUi": {

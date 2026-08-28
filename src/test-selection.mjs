@@ -12,3 +12,13 @@ export function selectOrdinaryTestFiles(entries) {
     .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
     .map((entry) => `test/${entry}`);
 }
+
+/**
+ * Keep ordinary qualification within the medium evaluator's resource budget.
+ * Process isolation lets independent files overlap, while the explicit bound
+ * prevents the browser and SQLite fixtures from exhausting the worker.
+ */
+export function ordinaryTestArgv(files) {
+  if (!Array.isArray(files) || files.some((file) => typeof file !== 'string')) throw new TypeError('test files must be an array of strings');
+  return ['--test', '--test-concurrency=4', ...files];
+}

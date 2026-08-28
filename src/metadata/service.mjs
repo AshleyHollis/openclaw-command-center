@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
+  SCHEMA_SEVEN_COMMAND_CENTER_VERSION,
   SCHEMA_SIX_COMMAND_CENTER_VERSION,
   ATTENTION_METADATA_SCHEMA_VERSION,
   LEGACY_MIGRATION_SCHEMA_VERSION,
@@ -32,6 +33,7 @@ import {
   applyV4ToV5Migration,
   applyV5ToV6Migration,
   applyV6ToV7Migration,
+  applyV7ToV8Migration,
   validateMigrationLedger
 } from './migration-ledger.mjs';
 import {
@@ -43,6 +45,7 @@ import {
   readRecoveryMaterial,
   verifyRollbackMaterial
 } from './recovery.mjs';
+import { proposalIdentity, sanitizedPublicValue } from '../topics/analysis-evidence.mjs';
 
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii');
 const diagnosticLimit = 300;
@@ -115,6 +118,11 @@ function timestamp(value, field, fallback = new Date().toISOString()) {
 
 function objectValue(value, field) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CommandCenterMetadataError('invalid-value', `${field} must be an object`);
+  return value;
+}
+
+function strictInstant(value, field) {
+  if (typeof value !== 'string' || !value.trim() || !Number.isFinite(Date.parse(value))) throw new CommandCenterMetadataError('invalid-value', `${field} must be an RFC 3339 instant`);
   return value;
 }
 
@@ -207,6 +215,23 @@ function mapActivity(row) {
     updatedAt: row.updated_at
   };
 }
+
+function mapAnalysisSettings(row) {
+  return row && { schemaVersion: row.schema_version, enabled: row.enabled === 1, weekday: row.weekday, localTime: row.local_time, timeZone: row.time_zone, revision: row.revision, nextDueAt: row.next_due_at };
+}
+function mapAnalysisRun(row) {
+  return row && { runId: row.run_id, schemaVersion: row.schema_version, trigger: row.trigger, outcome: row.outcome, baselineCursor: jsonValue(row.baseline_cursor_json, {}), successCursor: jsonValue(row.success_cursor_json), changedCount: row.changed_count, evaluatedCount: row.evaluated_count, proposalCount: row.proposal_count, retainedOverflowCount: row.retained_overflow_count, startedAt: row.started_at, finishedAt: row.finished_at, error: row.error };
+}
+function mapWatermark(row) { return row && { subjectId: row.subject_id, subjectType: row.subject_type, topicId: row.topic_id, observedRevision: row.observed_revision, lastSuccessRunId: row.last_success_run_id, updatedAt: row.updated_at }; }
+function mapEvidence(row) { return row && { evidenceId: row.evidence_id, proposalId: row.proposal_id, sourceId: row.source_id, sourceRevision: row.source_revision, fact: row.fact, material: row.material === 1, ...(row.kind ? { kind: row.kind } : {}), observedAt: row.observed_at }; }
+function mapTopicProposal(row) {
+  return row && { schemaVersion: row.schema_version, proposalId: row.proposal_id, revision: row.revision, predecessorId: row.predecessor_id, successorId: row.successor_id, operation: row.operation,
+    affectedTopicIds: jsonValue(row.affected_topic_ids_json, []), affectedSourceIds: jsonValue(row.affected_source_ids_json, []), plannedSourceIds: jsonValue(row.planned_source_ids_json, []), before: jsonValue(row.before_json, {}), after: jsonValue(row.after_json, {}), rationale: row.rationale,
+    provenance: jsonValue(row.provenance_json, {}), searchRetrievalConsequences: jsonValue(row.consequences_json, {}), dependencies: jsonValue(row.dependencies_json, []), blockers: jsonValue(row.blockers_json, []), reversibility: jsonValue(row.reversibility_json, {}), materialEvidenceDigest: row.material_digest, state: row.state, decisionRevision: row.decision_revision, suppressedDigest: row.suppressed_digest, createdAt: row.created_at, updatedAt: row.updated_at };
+}
+function mapTopicReview(row) { return row && { reviewId: row.review_id, subject: row.review_id, schemaVersion: row.schema_version, episodeRevision: row.episode_revision, state: row.state, snoozedUntil: row.snoozed_until, groups: jsonValue(row.groups_json, []), retainedBlockers: jsonValue(row.retained_blockers_json, []), applicationSummary: jsonValue(row.application_summary_json, {}), updatedAt: row.updated_at }; }
+function mapApplicationPlan(row) { return row && { applicationId: row.application_id, schemaVersion: row.schema_version, planRevision: row.plan_revision, reviewRevision: row.review_revision, currentProposalRevisions: jsonValue(row.current_proposals_json, []), approvedProposalRevisions: jsonValue(row.approved_proposals_json, []), dependencies: jsonValue(row.dependencies_json, {}), status: row.status, outcomes: jsonValue(row.outcomes_json, {}), createdAt: row.created_at, updatedAt: row.updated_at }; }
+function mapApplicationStep(row) { return row && { applicationId: row.application_id, stepId: row.step_id, proposalId: row.proposal_id, logicalOperationId: row.logical_operation_id, operationKind: row.operation_kind, intent: jsonValue(row.intent_json, {}), preconditions: jsonValue(row.preconditions_json, {}), compensation: jsonValue(row.compensation_json, {}), state: row.state, outcome: jsonValue(row.outcome_json), updatedAt: row.updated_at }; }
 
 function mapMigrationState(row) { return row && { stateId: row.state_id, schemaVersion: row.schema_version, configDigest: row.config_digest, sourceDigest: row.source_digest, revision: row.revision, phase: row.phase, failureCode: row.failure_code, failureSummary: row.failure_summary, failureCount: row.failure_count, updatedAt: row.updated_at }; }
 
@@ -352,6 +377,9 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     } else if (schemaVersion === SCHEMA_SIX_COMMAND_CENTER_VERSION) {
       const currentFailure = inspectSchemaOneDatabase(database, SCHEMA_SIX_COMMAND_CENTER_VERSION);
       if (currentFailure) return currentFailure;
+    } else if (schemaVersion === SCHEMA_SEVEN_COMMAND_CENTER_VERSION) {
+      const priorFailure = inspectSchemaOneDatabase(database, SCHEMA_SEVEN_COMMAND_CENTER_VERSION);
+      if (priorFailure) return priorFailure;
     } else if (schemaVersion !== COMMAND_CENTER_SCHEMA_VERSION) return coreFailure('unversioned-schema', 'The existing Command Center database is not a declared migratable schema.', 'Use the separate migration or recovery workflow before writing metadata.', null);
   } finally {
     closeQuietly(database);
@@ -360,6 +388,25 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   // Current-schema validation performs a full integrity check. Release the
   // lightweight classification handle before opening that validation handle.
   if (schemaVersion === COMMAND_CENTER_SCHEMA_VERSION) return validateCurrentSchema(databasePath, stateDir);
+
+  if (schemaVersion === SCHEMA_SEVEN_COMMAND_CENTER_VERSION) {
+    let material;
+    try {
+      material = readRecoveryMaterial(stateDir);
+      if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: SCHEMA_SEVEN_COMMAND_CENTER_VERSION });
+    } catch (error) { return recoveryFailure(error, SCHEMA_SEVEN_COMMAND_CENTER_VERSION); }
+    let migrationDatabase;
+    try {
+      migrationDatabase = new DatabaseSync(databasePath);
+      migrationDatabase.exec('PRAGMA foreign_keys = ON;');
+      applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    } catch {
+      return coreFailure('migration-failed', 'The schema-7 to schema-8 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', SCHEMA_SEVEN_COMMAND_CENTER_VERSION);
+    } finally { closeQuietly(migrationDatabase); }
+    migrationHooks?.afterDatabaseCommit?.();
+    try { markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
+    return validateCurrentSchema(databasePath, stateDir);
+  }
 
   if (schemaVersion === SCHEMA_SIX_COMMAND_CENTER_VERSION) {
     let material;
@@ -372,6 +419,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       migrationDatabase = new DatabaseSync(databasePath);
       migrationDatabase.exec('PRAGMA foreign_keys = ON;');
       applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-6 to schema-7 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', SCHEMA_SIX_COMMAND_CENTER_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -393,6 +441,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       migrationDatabase.exec('PRAGMA foreign_keys = ON;');
       applyV5ToV6Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-4 to schema-5 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -414,6 +463,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV5ToV6Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-4 to schema-6 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', ATTENTION_METADATA_SCHEMA_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -436,6 +486,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV5ToV6Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-3 to schema-5 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_MIGRATION_SCHEMA_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -468,6 +519,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV5ToV6Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       closeQuietly(migrationDatabase);
       return coreFailure('migration-failed', 'The schema-2 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_METADATA_SCHEMA_VERSION);
@@ -501,6 +553,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     applyV4ToV5Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     applyV5ToV6Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
   } catch (error) {
     closeQuietly(migrationDatabase);
     return coreFailure('migration-failed', 'The schema-1 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the retained verified snapshot or restore the prior compatible release.', SOURCE_SCHEMA_VERSION);
@@ -1271,7 +1324,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     const logicalOperationId = requiredString(value.logicalOperationId, 'logicalOperationId');
     const transportRequestId = requiredString(value.transportRequestId, 'transportRequestId');
     const operationKind = requiredString(value.operationKind, 'operationKind');
-    const outcome = enumValue(value.outcome, ['applied', 'not-applied', 'conflict', 'unknown'], 'outcome');
+    const outcome = enumValue(value.outcome, ['applied', 'failed', 'not-applied', 'conflict', 'unknown'], 'outcome');
     const topicId = value.topicId === undefined || value.topicId === null ? null : requiredString(value.topicId, 'topicId');
     const createdAt = timestamp(value.createdAt, 'createdAt');
     const updatedAt = timestamp(value.updatedAt, 'updatedAt', createdAt);
@@ -1294,6 +1347,137 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   service.listActivity = (topicId = undefined) => topicId === undefined
     ? readMany('SELECT * FROM activity_records ORDER BY created_at, activity_id', [], mapActivity)
     : readMany('SELECT * FROM activity_records WHERE topic_id = ? ORDER BY created_at, activity_id', [requiredString(topicId, 'topicId')], mapActivity);
+
+  // Topic Analysis and Review use their own closed, JSON-at-the-edge records.
+  // The JSON columns are deliberately not a generic metadata escape hatch:
+  // each public writer below has an explicit field allowlist and bounded data.
+  service.getTopicAnalysisSettings = () => readOne('SELECT * FROM topic_analysis_settings WHERE settings_id = ?', ['global'], mapAnalysisSettings) || null;
+  service.setTopicAnalysisSettings = (input = {}) => mutate(null, (db) => {
+    allowedKeys(input, ['schemaVersion', 'settingsId', 'enabled', 'weekday', 'localTime', 'timeZone', 'revision', 'expectedRevision', 'nextDueAt', 'initialized', 'updatedAt'], 'Topic Analysis settings');
+    if (input.schemaVersion !== 1 || (input.settingsId !== undefined && input.settingsId !== 'global')) throw new CommandCenterMetadataError('unsupported-version', 'Topic Analysis settings schemaVersion or identity is invalid.');
+    const current = db.prepare('SELECT * FROM topic_analysis_settings WHERE settings_id = ?').get('global');
+    if (current && input.expectedRevision !== undefined && input.expectedRevision !== current.revision) throw new CommandCenterMetadataError('conflict', 'Topic Analysis settings revision is stale.');
+    const now = timestamp(input.updatedAt, 'updatedAt');
+    const revision = input.revision ?? (current?.revision ?? 0) + 1;
+    const values = ['global', 1, input.enabled ?? (current ? current.enabled === 1 : true), input.weekday ?? (current?.weekday ?? 1), input.localTime ?? (current?.local_time ?? '07:00'), input.timeZone ?? (current?.time_zone ?? 'UTC'), revision, input.nextDueAt ?? current?.next_due_at ?? null, input.initialized ?? (current?.initialized === 1 ? true : false), now];
+    if (!Number.isInteger(values[3]) || values[3] < 1 || values[3] > 7 || typeof values[4] !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/u.test(values[4]) || typeof values[5] !== 'string' || !values[5].trim() || typeof values[2] !== 'boolean' || !Number.isInteger(values[6]) || values[6] < 1 || typeof values[8] !== 'boolean' || (values[7] !== null && (typeof values[7] !== 'string' || !Number.isFinite(Date.parse(values[7])))) ) throw new CommandCenterMetadataError('invalid-value', 'Topic Analysis settings are invalid.');
+    try { new Intl.DateTimeFormat('en-US', { timeZone: values[5] }).format(); } catch { throw new CommandCenterMetadataError('invalid-value', 'Topic Analysis timeZone must be a valid IANA timezone.'); }
+    db.prepare(`INSERT INTO topic_analysis_settings (settings_id, schema_version, enabled, weekday, local_time, time_zone, revision, next_due_at, initialized, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(settings_id) DO UPDATE SET enabled=excluded.enabled, weekday=excluded.weekday, local_time=excluded.local_time, time_zone=excluded.time_zone, revision=excluded.revision, next_due_at=excluded.next_due_at, initialized=excluded.initialized, updated_at=excluded.updated_at`).run(values[0], values[1], values[2] ? 1 : 0, values[3], values[4], values[5], values[6], values[7], values[8] ? 1 : 0, values[9]);
+    return mapAnalysisSettings(db.prepare('SELECT * FROM topic_analysis_settings WHERE settings_id = ?').get('global'));
+  });
+  service.getTopicAnalysisRun = (runId) => readOne('SELECT * FROM topic_analysis_runs WHERE run_id = ?', [requiredString(runId, 'runId')], mapAnalysisRun) || null;
+  service.listTopicAnalysisRuns = () => readMany('SELECT * FROM topic_analysis_runs ORDER BY started_at, run_id', [], mapAnalysisRun);
+  service.recordTopicAnalysisRun = (input = {}) => mutate(null, (db) => {
+    allowedKeys(input, ['runId', 'schemaVersion', 'trigger', 'outcome', 'baselineCursor', 'successCursor', 'changedCount', 'evaluatedCount', 'proposalCount', 'retainedOverflowCount', 'startedAt', 'finishedAt', 'error'], 'Topic Analysis run');
+    if (input.schemaVersion !== 1 || !['weekly', 'manual', 'catch-up'].includes(input.trigger) || !['running', 'success', 'failed'].includes(input.outcome)) throw new CommandCenterMetadataError('invalid-value', 'Topic Analysis run contract is invalid.');
+    const runId = requiredString(input.runId, 'runId');
+    const current = db.prepare('SELECT * FROM topic_analysis_runs WHERE run_id = ?').get(runId);
+    const counts = [input.changedCount ?? 0, input.evaluatedCount ?? 0, input.proposalCount ?? 0, input.retainedOverflowCount ?? 0];
+    if (counts.some((value) => !Number.isInteger(value) || value < 0) || (input.error !== undefined && (typeof input.error !== 'string' || input.error.length > 300))) throw new CommandCenterMetadataError('invalid-value', 'Topic Analysis run counts or error are invalid.');
+    const values = [runId, 1, input.trigger, input.outcome, JSON.stringify(input.baselineCursor ?? {}), input.successCursor === undefined || input.successCursor === null ? null : JSON.stringify(input.successCursor), ...counts, strictInstant(input.startedAt, 'startedAt'), input.finishedAt === undefined || input.finishedAt === null ? null : strictInstant(input.finishedAt, 'finishedAt'), input.error ?? null];
+    if (current && current.trigger !== input.trigger) throw new CommandCenterMetadataError('intent-mismatch', 'Analysis run identity cannot be rebound.');
+    db.prepare(`INSERT INTO topic_analysis_runs (run_id, schema_version, trigger, outcome, baseline_cursor_json, success_cursor_json, changed_count, evaluated_count, proposal_count, retained_overflow_count, started_at, finished_at, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET outcome=excluded.outcome, success_cursor_json=excluded.success_cursor_json, changed_count=excluded.changed_count, evaluated_count=excluded.evaluated_count, proposal_count=excluded.proposal_count, retained_overflow_count=excluded.retained_overflow_count, finished_at=excluded.finished_at, error=excluded.error`).run(...values);
+    return mapAnalysisRun(db.prepare('SELECT * FROM topic_analysis_runs WHERE run_id = ?').get(runId));
+  });
+  service.getTopicAnalysisWatermark = (subjectId) => readOne('SELECT * FROM topic_analysis_watermarks WHERE subject_id = ?', [requiredString(subjectId, 'subjectId')], mapWatermark) || null;
+  service.listTopicAnalysisWatermarks = () => readMany('SELECT * FROM topic_analysis_watermarks ORDER BY subject_type, subject_id', [], mapWatermark);
+  service.setTopicAnalysisWatermarks = (items = []) => mutate(null, (db) => {
+    if (!Array.isArray(items) || items.length > 5000) throw new CommandCenterMetadataError('invalid-value', 'Watermarks must be a bounded array.');
+    for (const item of items) {
+      allowedKeys(item, ['subjectId', 'subjectType', 'topicId', 'observedRevision', 'lastSuccessRunId', 'updatedAt'], 'watermark');
+      if (!['topic', 'source'].includes(item.subjectType)) throw new CommandCenterMetadataError('invalid-value', 'Watermark subjectType is invalid.');
+      if (typeof item.subjectId !== 'string' || !item.subjectId.trim() || (item.subjectType === 'topic' && item.subjectId !== `topic:${item.topicId}`) || (item.subjectType === 'source' && !item.subjectId.startsWith('source:'))) throw new CommandCenterMetadataError('invalid-value', 'Watermark subject identity is invalid.');
+      if (item.lastSuccessRunId !== undefined && item.lastSuccessRunId !== null && !isNonBlankString(item.lastSuccessRunId)) throw new CommandCenterMetadataError('invalid-value', 'Watermark run identity is invalid.');
+      db.prepare(`INSERT INTO topic_analysis_watermarks (subject_id, subject_type, topic_id, observed_revision, last_success_run_id, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(subject_id) DO UPDATE SET subject_type=excluded.subject_type, topic_id=excluded.topic_id, observed_revision=excluded.observed_revision, last_success_run_id=excluded.last_success_run_id, updated_at=excluded.updated_at`).run(requiredString(item.subjectId, 'subjectId'), item.subjectType, requiredString(item.topicId, 'topicId'), requiredString(item.observedRevision, 'observedRevision'), item.lastSuccessRunId ?? null, timestamp(item.updatedAt, 'updatedAt'));
+    }
+    return service.listTopicAnalysisWatermarks();
+  });
+  service.getTopicAnalysisCursor = () => readOne('SELECT * FROM topic_analysis_cursors WHERE cursor_id = ?', ['global'], (row) => row && { cursorId: row.cursor_id, nextTopicId: row.next_topic_id, nextSourceId: row.next_source_id, updatedAt: row.updated_at }) || null;
+  service.setTopicAnalysisCursor = (input = {}) => mutate(null, (db) => {
+    allowedKeys(input, ['nextTopicId', 'nextSourceId', 'updatedAt'], 'analysis cursor');
+    const now = timestamp(input.updatedAt, 'updatedAt');
+    db.prepare(`INSERT INTO topic_analysis_cursors (cursor_id, next_topic_id, next_source_id, updated_at) VALUES ('global', ?, ?, ?)
+      ON CONFLICT(cursor_id) DO UPDATE SET next_topic_id=excluded.next_topic_id, next_source_id=excluded.next_source_id, updated_at=excluded.updated_at`).run(input.nextTopicId ?? null, input.nextSourceId ?? null, now);
+    return service.getTopicAnalysisCursor();
+  });
+  service.listTopicAnalysisEvidence = (proposalId, { currentOnly = false } = {}) => {
+    const where = currentOnly ? ' AND current = 1' : '';
+    return proposalId === undefined ? readMany(`SELECT * FROM topic_analysis_evidence WHERE 1 = 1${where} ORDER BY proposal_id, evidence_id`, [], mapEvidence) : readMany(`SELECT * FROM topic_analysis_evidence WHERE proposal_id = ?${where} ORDER BY evidence_id`, [requiredString(proposalId, 'proposalId')], mapEvidence);
+  };
+  service.setTopicAnalysisEvidence = (proposalId, items = []) => mutate(null, (db) => {
+    const id = requiredString(proposalId, 'proposalId');
+    if (!Array.isArray(items) || items.length > 8) throw new CommandCenterMetadataError('invalid-value', 'A proposal may retain at most eight evidence facts.');
+    if (!db.prepare('SELECT 1 FROM topic_proposals WHERE proposal_id = ?').get(id)) throw new CommandCenterMetadataError('not-found', 'Topic proposal was not found.');
+    if (new Set(items.map((item) => item?.evidenceId)).size !== items.length) throw new CommandCenterMetadataError('invalid-value', 'Evidence identities must be distinct.');
+    db.prepare('UPDATE topic_analysis_evidence SET current = 0 WHERE proposal_id = ?').run(id);
+    for (const item of items) {
+      allowedKeys(item, ['evidenceId', 'sourceId', 'sourceRevision', 'fact', 'material', 'kind', 'observedAt'], 'evidence');
+      const fact = requiredString(item.fact, 'fact').trim().replace(/\s+/gu, ' '); const sourceId = requiredString(item.sourceId, 'sourceId'); const sourceRevision = requiredString(item.sourceRevision, 'sourceRevision');
+      if (!item.material || fact.length > 320 || (item.kind !== undefined && (typeof item.kind !== 'string' || !item.kind.trim() || item.kind.length > 80))) throw new CommandCenterMetadataError('invalid-value', 'Evidence must be material and bounded.');
+      const reference = db.prepare('SELECT last_observed_revision FROM source_references WHERE reference_id = ?').get(sourceId);
+      const locator = db.prepare('SELECT observed_revision FROM source_locators WHERE reference_id = ?').get(sourceId);
+      if (!reference) throw new CommandCenterMetadataError('source-recovery', 'Evidence Source identity was not found.');
+      const observed = locator?.observed_revision ?? reference.last_observed_revision ?? `unobserved:${sourceId}`;
+      if (sourceRevision !== observed) throw new CommandCenterMetadataError('conflict', 'Evidence Source revision is stale.');
+      const evidenceId = requiredString(item.evidenceId, 'evidenceId'); const existing = db.prepare('SELECT proposal_id, source_id, source_revision, fact, material, kind FROM topic_analysis_evidence WHERE evidence_id = ?').get(evidenceId);
+      if (existing && (existing.proposal_id !== id || existing.source_id !== sourceId || existing.source_revision !== sourceRevision || existing.fact !== fact || existing.material !== 1 || existing.kind !== (item.kind ?? null))) throw new CommandCenterMetadataError('intent-mismatch', 'Evidence identity cannot be rebound.');
+      db.prepare(`INSERT INTO topic_analysis_evidence (evidence_id, proposal_id, source_id, source_revision, fact, material, kind, observed_at, current) VALUES (?, ?, ?, ?, ?, 1, ?, ?, 1)
+        ON CONFLICT(evidence_id) DO UPDATE SET proposal_id=excluded.proposal_id, source_id=excluded.source_id, source_revision=excluded.source_revision, fact=excluded.fact, material=excluded.material, kind=excluded.kind, observed_at=excluded.observed_at, current=1`).run(requiredString(item.evidenceId, 'evidenceId'), id, sourceId, sourceRevision, fact, item.kind ?? null, strictInstant(item.observedAt, 'observedAt'));
+    }
+    return service.listTopicAnalysisEvidence(id);
+  });
+  service.getTopicProposal = (proposalId) => readOne('SELECT * FROM topic_proposals WHERE proposal_id = ?', [requiredString(proposalId, 'proposalId')], mapTopicProposal) || null;
+  service.listTopicProposals = () => readMany('SELECT * FROM topic_proposals ORDER BY proposal_id', [], mapTopicProposal);
+  service.saveTopicProposal = (input = {}) => mutate(null, (db) => {
+    const allowed = ['schemaVersion', 'proposalId', 'revision', 'predecessorId', 'successorId', 'operation', 'affectedTopicIds', 'affectedSourceIds', 'plannedSourceIds', 'before', 'after', 'rationale', 'provenance', 'searchRetrievalConsequences', 'dependencies', 'blockers', 'reversibility', 'materialEvidenceDigest', 'state', 'decisionRevision', 'suppressedDigest', 'createdAt', 'updatedAt'];
+    allowedKeys(input, allowed, 'Topic proposal');
+    if (input.schemaVersion !== 1 || !['create', 'archive', 'restore', 'recategorize'].includes(input.operation) || !['pending', 'approved', 'adjusted', 'kept', 'suppressed', 'superseded', 'applied', 'failed', 'blocked'].includes(input.state)) throw new CommandCenterMetadataError('invalid-value', 'Topic proposal contract is invalid.');
+    const id = requiredString(input.proposalId, 'proposalId');
+    const affectedTopicIds = sanitizedPublicValue(input.affectedTopicIds ?? [], 'affectedTopicIds', { maxString: 160 }); const affectedSourceIds = sanitizedPublicValue(input.affectedSourceIds ?? [], 'affectedSourceIds', { maxString: 160 }); const plannedSourceIds = sanitizedPublicValue(input.plannedSourceIds ?? [], 'plannedSourceIds', { maxString: 160 });
+    const before = sanitizedPublicValue(input.before ?? {}, 'before'); const after = sanitizedPublicValue(input.after ?? {}, 'after'); const rationale = sanitizedPublicValue(input.rationale, 'rationale', { maxString: 2000 }); const provenance = sanitizedPublicValue(input.provenance ?? {}, 'provenance'); const consequences = sanitizedPublicValue(input.searchRetrievalConsequences ?? {}, 'searchRetrievalConsequences'); const dependencies = sanitizedPublicValue(input.dependencies ?? [], 'dependencies', { maxString: 160 }); const blockers = sanitizedPublicValue(input.blockers ?? [], 'blockers'); const reversibility = sanitizedPublicValue(input.reversibility ?? {}, 'reversibility');
+    const identity = proposalIdentity({ operation: input.operation, affectedTopicIds, affectedSourceIds, plannedSourceIds, before, after });
+    if (id !== identity) throw new CommandCenterMetadataError('identity-change', 'Topic proposal identity is not canonical.');
+    const current = db.prepare('SELECT * FROM topic_proposals WHERE proposal_id = ?').get(id);
+    if (current && input.revision < current.revision) throw new CommandCenterMetadataError('conflict', 'Topic proposal revision is stale.');
+    const createdAt = current?.created_at ?? timestamp(input.createdAt, 'createdAt'); const updatedAt = timestamp(input.updatedAt, 'updatedAt', createdAt);
+    db.prepare(`INSERT INTO topic_proposals (proposal_id, schema_version, revision, predecessor_id, successor_id, operation, affected_topic_ids_json, affected_source_ids_json, planned_source_ids_json, before_json, after_json, rationale, provenance_json, consequences_json, dependencies_json, blockers_json, reversibility_json, material_digest, state, decision_revision, suppressed_digest, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(proposal_id) DO UPDATE SET revision=excluded.revision, predecessor_id=excluded.predecessor_id, successor_id=excluded.successor_id, operation=excluded.operation, affected_topic_ids_json=excluded.affected_topic_ids_json, affected_source_ids_json=excluded.affected_source_ids_json, planned_source_ids_json=excluded.planned_source_ids_json, before_json=excluded.before_json, after_json=excluded.after_json, rationale=excluded.rationale, provenance_json=excluded.provenance_json, consequences_json=excluded.consequences_json, dependencies_json=excluded.dependencies_json, blockers_json=excluded.blockers_json, reversibility_json=excluded.reversibility_json, material_digest=excluded.material_digest, state=excluded.state, decision_revision=excluded.decision_revision, suppressed_digest=excluded.suppressed_digest, updated_at=excluded.updated_at`).run(id, input.revision ?? (current?.revision ?? 0) + 1, input.predecessorId ?? current?.predecessor_id ?? null, input.successorId ?? current?.successor_id ?? null, input.operation, JSON.stringify(affectedTopicIds), JSON.stringify(affectedSourceIds), JSON.stringify(plannedSourceIds), JSON.stringify(before), JSON.stringify(after), rationale, JSON.stringify(provenance), JSON.stringify(consequences), JSON.stringify(dependencies), JSON.stringify(blockers), JSON.stringify(reversibility), requiredString(input.materialEvidenceDigest, 'materialEvidenceDigest'), input.state, input.decisionRevision ?? null, input.suppressedDigest ?? null, createdAt, updatedAt);
+    return mapTopicProposal(db.prepare('SELECT * FROM topic_proposals WHERE proposal_id = ?').get(id));
+  });
+  service.getTopicReview = () => readOne('SELECT * FROM topic_reviews WHERE review_id = ?', ['topic-review:global'], mapTopicReview) || null;
+  service.saveTopicReview = (input = {}) => mutate(null, (db) => {
+    allowedKeys(input, ['schemaVersion', 'episodeRevision', 'state', 'snoozedUntil', 'groups', 'retainedBlockers', 'applicationSummary', 'updatedAt'], 'Topic Review');
+    if (input.schemaVersion !== 1 || !['Active', 'Snoozed', 'Resolved'].includes(input.state)) throw new CommandCenterMetadataError('invalid-value', 'Topic Review contract is invalid.');
+    const current = db.prepare('SELECT * FROM topic_reviews WHERE review_id = ?').get('topic-review:global');
+    const revision = input.episodeRevision ?? (current?.episode_revision ?? 0) + 1; const now = timestamp(input.updatedAt, 'updatedAt');
+    db.prepare(`INSERT INTO topic_reviews (review_id, schema_version, episode_revision, state, snoozed_until, groups_json, retained_blockers_json, application_summary_json, updated_at) VALUES ('topic-review:global', 1, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(review_id) DO UPDATE SET episode_revision=excluded.episode_revision, state=excluded.state, snoozed_until=excluded.snoozed_until, groups_json=excluded.groups_json, retained_blockers_json=excluded.retained_blockers_json, application_summary_json=excluded.application_summary_json, updated_at=excluded.updated_at`).run(revision, input.state, input.snoozedUntil ?? current?.snoozed_until ?? null, JSON.stringify(input.groups ?? []), JSON.stringify(input.retainedBlockers ?? []), JSON.stringify(input.applicationSummary ?? {}), now);
+    return mapTopicReview(db.prepare('SELECT * FROM topic_reviews WHERE review_id = ?').get('topic-review:global'));
+  });
+  service.getTopicApplicationPlan = (applicationId) => readOne('SELECT * FROM topic_application_plans WHERE application_id = ?', [requiredString(applicationId, 'applicationId')], mapApplicationPlan) || null;
+  service.listTopicApplicationPlans = () => readMany('SELECT * FROM topic_application_plans ORDER BY created_at, application_id', [], mapApplicationPlan);
+  service.saveTopicApplicationPlan = (input = {}) => mutate(null, (db) => {
+    allowedKeys(input, ['applicationId', 'schemaVersion', 'planRevision', 'reviewRevision', 'currentProposalRevisions', 'approvedProposalRevisions', 'dependencies', 'status', 'outcomes', 'createdAt', 'updatedAt'], 'Application plan');
+    if (input.schemaVersion !== 1 || !Number.isInteger(input.reviewRevision) || input.reviewRevision < 0 || !Array.isArray(input.currentProposalRevisions) || !['preview', 'running', 'complete', 'failed'].includes(input.status)) throw new CommandCenterMetadataError('invalid-value', 'Application plan contract is invalid.');
+    const id = requiredString(input.applicationId, 'applicationId'); const current = db.prepare('SELECT * FROM topic_application_plans WHERE application_id = ?').get(id); const now = timestamp(input.updatedAt, 'updatedAt');
+    if (current && (current.plan_revision !== input.planRevision || current.review_revision !== input.reviewRevision || current.current_proposals_json !== JSON.stringify(input.currentProposalRevisions) || current.approved_proposals_json !== JSON.stringify(input.approvedProposalRevisions ?? []) || current.dependencies_json !== JSON.stringify(input.dependencies ?? {}))) throw new CommandCenterMetadataError('conflict', 'Application plans are immutable once created.');
+    db.prepare(`INSERT INTO topic_application_plans (application_id, schema_version, plan_revision, review_revision, current_proposals_json, approved_proposals_json, dependencies_json, status, outcomes_json, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(application_id) DO UPDATE SET plan_revision=excluded.plan_revision, review_revision=excluded.review_revision, current_proposals_json=excluded.current_proposals_json, approved_proposals_json=excluded.approved_proposals_json, dependencies_json=excluded.dependencies_json, status=excluded.status, outcomes_json=excluded.outcomes_json, updated_at=excluded.updated_at`).run(id, requiredString(input.planRevision, 'planRevision'), input.reviewRevision, JSON.stringify(input.currentProposalRevisions), JSON.stringify(input.approvedProposalRevisions ?? []), JSON.stringify(input.dependencies ?? {}), input.status, JSON.stringify(input.outcomes ?? {}), current?.created_at ?? now, now);
+    return mapApplicationPlan(db.prepare('SELECT * FROM topic_application_plans WHERE application_id = ?').get(id));
+  });
+  service.listTopicApplicationSteps = (applicationId) => readMany('SELECT * FROM topic_application_steps WHERE application_id = ? ORDER BY step_id', [requiredString(applicationId, 'applicationId')], mapApplicationStep);
+  service.saveTopicApplicationStep = (input = {}) => mutate(null, (db) => {
+    allowedKeys(input, ['applicationId', 'stepId', 'proposalId', 'logicalOperationId', 'operationKind', 'intent', 'preconditions', 'compensation', 'state', 'outcome', 'updatedAt'], 'Application step');
+    if (!['pending', 'running', 'applied', 'failed', 'blocked', 'compensated', 'source-recovery', 'ambiguous'].includes(input.state)) throw new CommandCenterMetadataError('invalid-value', 'Application step state is invalid.');
+    const existing = db.prepare('SELECT * FROM topic_application_steps WHERE application_id = ? AND step_id = ?').get(requiredString(input.applicationId, 'applicationId'), requiredString(input.stepId, 'stepId'));
+    if (existing && (existing.proposal_id !== input.proposalId || existing.logical_operation_id !== input.logicalOperationId || existing.intent_json !== JSON.stringify(input.intent ?? {}) || existing.preconditions_json !== JSON.stringify(input.preconditions ?? {}) || existing.compensation_json !== JSON.stringify(input.compensation ?? {}))) throw new CommandCenterMetadataError('intent-mismatch', 'Application step intent is immutable.');
+    db.prepare(`INSERT INTO topic_application_steps (application_id, step_id, proposal_id, logical_operation_id, operation_kind, intent_json, preconditions_json, compensation_json, state, outcome_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(application_id, step_id) DO UPDATE SET state=excluded.state, outcome_json=excluded.outcome_json, updated_at=excluded.updated_at`).run(requiredString(input.applicationId, 'applicationId'), requiredString(input.stepId, 'stepId'), requiredString(input.proposalId, 'proposalId'), requiredString(input.logicalOperationId, 'logicalOperationId'), requiredString(input.operationKind, 'operationKind'), JSON.stringify(input.intent ?? {}), JSON.stringify(input.preconditions ?? {}), JSON.stringify(input.compensation ?? {}), input.state, input.outcome === undefined ? null : JSON.stringify(input.outcome), timestamp(input.updatedAt, 'updatedAt'));
+    return mapApplicationStep(db.prepare('SELECT * FROM topic_application_steps WHERE application_id = ? AND step_id = ?').get(input.applicationId, input.stepId));
+  });
 
   service.setSourceLocator = (input = {}) => mutate(null, (db) => {
     const referenceId = requiredString(input.referenceId, 'referenceId');

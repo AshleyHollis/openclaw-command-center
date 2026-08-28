@@ -10,6 +10,10 @@ import { createTopicContextPolicy } from './search/context.mjs';
 import { createTopicService } from './topics/service.mjs';
 import { createDashboardService } from './dashboard/service.mjs';
 import { createNotificationService } from './notifications/service.mjs';
+import { createTopicAnalysisRunner } from './topics/analysis-runner.mjs';
+import { createProductionTopicAnalyzer } from './topics/production-analyzer.mjs';
+import { createTopicAnalysisScheduleService } from './topics/analysis-schedule.mjs';
+import { createTopicReviewService } from './topics/review.mjs';
 
 let activeMaintenanceService;
 
@@ -36,6 +40,9 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
   let dashboardService;
   let notificationService;
   let notificationTimer;
+  let topicAnalysisRunner;
+  let topicAnalysisSchedule;
+  let topicReview;
   return {
     id: 'command-center-metadata',
     async start() {
@@ -65,6 +72,14 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
         monitoring: true,
         deriveEvidence: (occurrence) => occurrence.evidenceFacts,
         verifyTransition: (occurrence) => occurrence.transitionEvidence?.verifiedSource === 'scheduler-readback' && occurrence.transitionEvidence?.version === occurrence.occurrenceVersion,
+        actions: []
+      });
+      attentionService.registerSourceCapability({
+        sourceCapabilityId: 'topic-review',
+        sourceKind: 'topic-review',
+        monitoring: true,
+        deriveEvidence: (occurrence) => occurrence.evidenceFacts,
+        verifyTransition: () => true,
         actions: []
       });
       const searchProvider = {
@@ -130,6 +145,26 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
         now: () => Date.now(),
         logger: api.logger
       });
+      topicAnalysisRunner = createTopicAnalysisRunner({
+        metadata: metadataService,
+        topicService,
+        analyzer: createProductionTopicAnalyzer(),
+        now: () => Date.now()
+      });
+      topicReview = createTopicReviewService({ metadata: metadataService, topicService, attentionService, logger: api.logger, now: () => Date.now() });
+      const runAndRefreshTopicReview = async (input) => {
+        const result = await topicAnalysisRunner.run(input);
+        topicReview.refresh();
+        return result;
+      };
+      topicAnalysisSchedule = createTopicAnalysisScheduleService({ metadata: metadataService, notificationService, gateway: api.runtime?.gateway, now: () => Date.now(), runAnalysis: runAndRefreshTopicReview });
+      topicAnalysisSchedule.getSettings();
+      if (gatewayAvailable) {
+        try { await topicAnalysisSchedule.reconcile(); }
+        catch { api.logger?.warn?.('Command Center Topic Analysis scheduling remains pending until its exact Cron declaration can be reconciled.'); }
+      }
+      try { await topicAnalysisSchedule.startupCatchUp(); }
+      catch { api.logger?.warn?.('Command Center Topic Analysis catch-up remains pending after a bounded startup attempt.'); }
       try { await notificationService.reconcile(); }
       catch { api.logger?.warn?.('Command Center notification reconciliation remains pending until an authenticated operator binding is available.'); }
       notificationTimer = setInterval(() => {
@@ -159,6 +194,9 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
       attentionService = undefined;
       dashboardService = undefined;
       notificationService = undefined;
+      topicAnalysisRunner = undefined;
+      topicAnalysisSchedule = undefined;
+      topicReview = undefined;
       maintenanceService = undefined;
       activeMaintenanceService = undefined;
     },
@@ -169,6 +207,26 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
     get topicService() { return topicService; },
     get dashboardService() { return dashboardService; },
     get notificationService() { return notificationService; },
+    get topicAnalysisRunner() { return topicAnalysisRunner; },
+    get topicAnalysisSchedule() { return topicAnalysisSchedule; },
+    get topicReview() { return topicReview; },
+    topicAnalysisRead() {
+      return { schemaVersion: 1, schedule: topicAnalysisSchedule?.peekSettings?.() ?? metadataService?.getTopicAnalysisSettings?.() ?? null, runs: metadataService?.listTopicAnalysisRuns?.() ?? [], review: topicReview?.get?.() ?? null };
+    },
+    topicAnalysisRun(input) {
+      if (!topicAnalysisRunner) throw new Error('Command Center Topic Analysis is not ready.');
+      const trigger = input?.trigger ?? 'manual';
+      const execution = ['weekly', 'catch-up'].includes(trigger) && topicAnalysisSchedule
+        ? topicAnalysisSchedule.weekly({ ...input, trigger })
+        : topicAnalysisRunner.run({ ...input, trigger }).then((result) => { topicReview?.refresh?.(); return result; });
+      return Promise.resolve(execution);
+    },
+    topicAnalysisScheduleUpdate(input) { if (!topicAnalysisSchedule) throw new Error('Command Center Topic Analysis scheduling is not ready.'); return topicAnalysisSchedule.update(input); },
+    topicReviewGet() { return topicReview?.get?.() ?? null; },
+    topicReviewDecide(input) { return topicReview.decide(input); },
+    topicReviewSnooze(input) { return topicReview.snooze(input); },
+    topicReviewCheckpoint(input) { return topicReview.checkpoint(input); },
+    topicReviewApply(input) { return topicReview.apply(input); },
     async dashboardGet(input) {
       if (!dashboardService) throw new Error('Command Center Dashboard is not ready.');
       try { await sourceService?.refreshReminderAttention?.(); } catch { /* the projection omits unavailable scheduler rows */ }

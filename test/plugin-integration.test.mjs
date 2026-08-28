@@ -68,6 +68,12 @@ test('real plugin registers one required emitter and reconciles in the backgroun
     assert.equal(host.routes.some((route) => route.path === '/plugins/command-center' && route.auth === 'gateway'), true);
     const service = host.services[0];
     await service.start();
+    service.notificationService.updateSettings({
+      schemaVersion: 1,
+      logicalOperationId: '8f111111-1111-4111-8111-111111111111',
+      expectedRevision: 1,
+      settings: { quietHoursEnabled: false }
+    });
     service.attentionService.registerSourceCapability({ sourceCapabilityId: 'integration-monitor', sourceKind: 'operational', monitoring: true, deriveEvidence: (occurrence) => occurrence.evidenceFacts, actions: [] });
     await service.attentionService.ingest({ schemaVersion: 1, sourceCapabilityId: 'integration-monitor', stableSubjectId: 'fictional-high', attentionReason: 'fictional-failure', occurrenceId: 'fictional-high-occurrence', occurredAt: new Date().toISOString(), evidenceFacts: { 'failed-operation': true } });
     await service.notificationReconcile();
