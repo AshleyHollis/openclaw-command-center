@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createMetadataService, runtimeHostIdentity } from '../src/plugin-service.mjs';
+import { createProductionTopicAnalyzer } from '../src/topics/production-analyzer.mjs';
+import { candidateToProposal } from '../src/topics/analysis-policy.mjs';
 
 test('plugin uses the pinned public external-tab and gateway-route seams', async () => {
   const source = `${await readFile(new URL('../src/plugin.mjs', import.meta.url), 'utf8')}\n${await readFile(new URL('../src/plugin-service.mjs', import.meta.url), 'utf8')}`;
@@ -40,7 +42,18 @@ test('plugin uses the pinned public external-tab and gateway-route seams', async
 test('manifest activates the route-registering plugin at Gateway startup', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
   assert.equal(manifest.activation?.onStartup, true);
-  assert.deepEqual(manifest.contracts?.tools, ['command_center_topic_context']);
+  assert.deepEqual(manifest.contracts?.tools, ['command_center_topic_context', 'command_center_topic_analysis']);
+});
+
+test('the production plugin analyzer turns an explicit fictional Topic directive into a gated proposal', async () => {
+  const analyze = createProductionTopicAnalyzer();
+  const candidates = await analyze({ topic: { topicId: 'topic-explicit', name: 'Area: Fictional Field Notes', lifecycle: 'active', paraCategory: 'project', revision: 3 }, sources: [{ referenceId: 'source-explicit', observedRevision: 'source-r3' }] });
+  assert.equal(candidates.length, 1); assert.equal(candidates[0].operation, 'recategorize'); assert.equal(candidates[0].after.paraCategory, 'area'); assert.ok(candidateToProposal(candidates[0]));
+  const source = await readFile(new URL('../src/plugin-service.mjs', import.meta.url), 'utf8');
+  assert.match(source, /analyzer:\s*createProductionTopicAnalyzer\(\)/); assert.doesNotMatch(source, /api\.topicAnalysis\?\.analyze|api\.runtime\?\.topicAnalysis\?\.analyze/);
+  assert.match(source, /const runAndRefreshTopicReview = async \(input\) =>[\s\S]*?topicAnalysisRunner\.run\(input\)[\s\S]*?topicReview\.refresh\(\)/);
+  assert.match(source, /runAnalysis:\s*runAndRefreshTopicReview/);
+  assert.match(source, /await topicAnalysisSchedule\.startupCatchUp\(\)/);
 });
 
 test('Conversation ingestion uses the pinned host identity and history gateway methods', async () => {

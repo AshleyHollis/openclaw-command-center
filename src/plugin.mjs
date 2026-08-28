@@ -7,6 +7,8 @@ import { createMetadataService } from './plugin-service.mjs';
 import { topicContextToolFactory } from './search/tool.mjs';
 import { createTopicsHttpHandler } from './topics/http.mjs';
 import { createDashboardReadHttpHandler, createDashboardActionsHttpHandler } from './dashboard/http-route.mjs';
+import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandler } from './topics/analysis-http.mjs';
+import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
 
 export { runNoteMaintenance } from './plugin-service.mjs';
 
@@ -60,6 +62,14 @@ export default definePluginEntry({
         if (property === 'dashboardUpdateSettings') return (input) => service.dashboardUpdateSettings(input);
         if (property === 'notificationReconcile') return () => service.notificationReconcile();
         if (property === 'notificationCaptureBinding') return () => service.notificationCaptureBinding();
+        if (property === 'topicAnalysis') return { get: () => service.topicAnalysisRead() };
+        if (property === 'topicAnalysisRun') return (input) => service.topicAnalysisRun(input);
+        if (property === 'analysisSchedule') return service.topicAnalysisSchedule;
+        if (property === 'topicAnalysisSchedule') return service.topicAnalysisSchedule;
+        if (property === 'analysisRunner') return service.topicAnalysisRunner;
+        if (property === 'topicAnalysisRunner') return service.topicAnalysisRunner;
+        if (property === 'review') return service.topicReview;
+        if (property === 'topicReview') return service.topicReview;
         return sourceProxy[property];
       }
     });
@@ -104,8 +114,21 @@ export default definePluginEntry({
       match: 'exact',
       handler: createTopicsHttpHandler(serviceProxy)
     });
+    api.registerHttpRoute({
+      path: '/plugins/command-center/api/topic-analysis',
+      auth: 'plugin',
+      match: 'exact',
+      handler: createTopicAnalysisReadHttpHandler(serviceProxy)
+    });
+    api.registerHttpRoute({
+      path: '/plugins/command-center/api/topic-analysis/actions',
+      auth: 'plugin',
+      match: 'exact',
+      handler: createTopicAnalysisActionsHttpHandler(serviceProxy)
+    });
     registerBridgeMethods(api, serviceProxy);
     api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });
+    api.registerTool(topicAnalysisToolFactory({ run: (input) => service.topicAnalysisRun(input) }), { name: 'command_center_topic_analysis', optional: true });
     api.registerService(service);
   }
 });

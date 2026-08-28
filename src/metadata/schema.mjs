@@ -4,7 +4,8 @@ export const LEGACY_MIGRATION_SCHEMA_VERSION = 3;
 export const ATTENTION_METADATA_SCHEMA_VERSION = 4;
 export const PRIOR_COMMAND_CENTER_SCHEMA_VERSION = 5;
 export const SCHEMA_SIX_COMMAND_CENTER_VERSION = 6;
-export const COMMAND_CENTER_SCHEMA_VERSION = 7;
+export const SCHEMA_SEVEN_COMMAND_CENTER_VERSION = 7;
+export const COMMAND_CENTER_SCHEMA_VERSION = 8;
 
 export const metadataTableNames = Object.freeze([
   'topics', 'source_references', 'source_convention_state', 'presentation_preferences',
@@ -16,6 +17,9 @@ export const metadataTableNames = Object.freeze([
   , 'source_locators', 'topic_operations', 'source_recovery'
   , 'notification_settings', 'notification_policy_epochs', 'notification_slots',
   'notification_emissions', 'notification_clear_operations'
+  , 'topic_analysis_settings', 'topic_analysis_runs', 'topic_analysis_watermarks',
+  'topic_analysis_cursors', 'topic_analysis_evidence', 'topic_proposals', 'topic_reviews',
+  'topic_application_plans', 'topic_application_steps'
 ]);
 export const paraCategories = Object.freeze(['project', 'area', 'resource', 'archive']);
 export const topicLifecycles = Object.freeze(['provisioning', 'active', 'retired']);
@@ -421,7 +425,135 @@ CREATE TABLE notification_clear_operations (
 ) STRICT;
 `;
 
-export const metadataSchemaSql = `${metadataSchemaV6Sql.replace('PRAGMA user_version = 6;', 'PRAGMA user_version = 7;')}${metadataSchemaV7NotificationTablesSql}\nPRAGMA user_version = 7;\n`;
+const metadataSchemaV8TopicAnalysisTablesSql = `
+CREATE TABLE topic_analysis_settings (
+  settings_id TEXT PRIMARY KEY CHECK (settings_id = 'global'),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  weekday INTEGER NOT NULL CHECK (weekday BETWEEN 1 AND 7),
+  local_time TEXT NOT NULL CHECK (local_time GLOB '[0-2][0-9]:[0-5][0-9]'),
+  time_zone TEXT NOT NULL CHECK (length(trim(time_zone)) > 0),
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  next_due_at TEXT,
+  initialized INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1)),
+  updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE topic_analysis_runs (
+  run_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  trigger TEXT NOT NULL CHECK (trigger IN ('weekly', 'manual', 'catch-up')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('running', 'success', 'failed')),
+  baseline_cursor_json TEXT NOT NULL,
+  success_cursor_json TEXT,
+  changed_count INTEGER NOT NULL DEFAULT 0 CHECK (changed_count >= 0),
+  evaluated_count INTEGER NOT NULL DEFAULT 0 CHECK (evaluated_count >= 0),
+  proposal_count INTEGER NOT NULL DEFAULT 0 CHECK (proposal_count >= 0),
+  retained_overflow_count INTEGER NOT NULL DEFAULT 0 CHECK (retained_overflow_count >= 0),
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  error TEXT
+) STRICT;
+
+CREATE TABLE topic_analysis_watermarks (
+  subject_id TEXT PRIMARY KEY,
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('topic', 'source')),
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id) ON DELETE CASCADE,
+  observed_revision TEXT NOT NULL,
+  last_success_run_id TEXT,
+  updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE topic_analysis_cursors (
+  cursor_id TEXT PRIMARY KEY CHECK (cursor_id = 'global'),
+  next_topic_id TEXT,
+  next_source_id TEXT,
+  updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE topic_analysis_evidence (
+  evidence_id TEXT PRIMARY KEY,
+  proposal_id TEXT NOT NULL REFERENCES topic_proposals(proposal_id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL,
+  source_revision TEXT NOT NULL,
+  fact TEXT NOT NULL CHECK (length(trim(fact)) BETWEEN 1 AND 320),
+  material INTEGER NOT NULL CHECK (material IN (0, 1)),
+  kind TEXT CHECK (kind IS NULL OR length(kind) BETWEEN 1 AND 80),
+  observed_at TEXT NOT NULL,
+  current INTEGER NOT NULL DEFAULT 1 CHECK (current IN (0, 1))
+) STRICT;
+
+CREATE TABLE topic_proposals (
+  proposal_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  predecessor_id TEXT,
+  successor_id TEXT,
+  operation TEXT NOT NULL,
+  affected_topic_ids_json TEXT NOT NULL,
+  affected_source_ids_json TEXT NOT NULL,
+  planned_source_ids_json TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  after_json TEXT NOT NULL,
+  rationale TEXT NOT NULL CHECK (length(trim(rationale)) BETWEEN 1 AND 2000),
+  provenance_json TEXT NOT NULL,
+  consequences_json TEXT NOT NULL,
+  dependencies_json TEXT NOT NULL,
+  blockers_json TEXT NOT NULL,
+  reversibility_json TEXT NOT NULL,
+  material_digest TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'adjusted', 'kept', 'suppressed', 'superseded', 'applied', 'failed', 'blocked')),
+  decision_revision INTEGER,
+  suppressed_digest TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE topic_reviews (
+  review_id TEXT PRIMARY KEY CHECK (review_id = 'topic-review:global'),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  episode_revision INTEGER NOT NULL CHECK (episode_revision >= 1),
+  state TEXT NOT NULL CHECK (state IN ('Active', 'Snoozed', 'Resolved')),
+  snoozed_until TEXT,
+  groups_json TEXT NOT NULL,
+  retained_blockers_json TEXT NOT NULL,
+  application_summary_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE topic_application_plans (
+  application_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  plan_revision TEXT NOT NULL,
+  review_revision INTEGER NOT NULL CHECK (review_revision >= 0),
+  current_proposals_json TEXT NOT NULL,
+  approved_proposals_json TEXT NOT NULL,
+  dependencies_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('preview', 'running', 'complete', 'failed')),
+  outcomes_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE topic_application_steps (
+  application_id TEXT NOT NULL REFERENCES topic_application_plans(application_id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL,
+  proposal_id TEXT NOT NULL REFERENCES topic_proposals(proposal_id) ON DELETE RESTRICT,
+  logical_operation_id TEXT NOT NULL,
+  operation_kind TEXT NOT NULL,
+  intent_json TEXT NOT NULL,
+  preconditions_json TEXT NOT NULL,
+  compensation_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'applied', 'failed', 'blocked', 'compensated', 'source-recovery', 'ambiguous')),
+  outcome_json TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (application_id, step_id),
+  UNIQUE (logical_operation_id)
+) STRICT;
+`;
+
+export const metadataSchemaV7Sql = `${metadataSchemaV6Sql.replace('PRAGMA user_version = 6;', 'PRAGMA user_version = 7;').replaceAll("outcome IN ('applied', 'failed', 'not-applied', 'conflict', 'unknown')", "outcome IN ('applied', 'not-applied', 'conflict', 'unknown')")}${metadataSchemaV7NotificationTablesSql}\nPRAGMA user_version = 7;\n`;
+export const metadataSchemaSql = `${metadataSchemaV7Sql.replace("outcome IN ('applied', 'not-applied', 'conflict', 'unknown')", "outcome IN ('applied', 'failed', 'not-applied', 'conflict', 'unknown')").replace('PRAGMA user_version = 7;', 'PRAGMA user_version = 8;')}${metadataSchemaV8TopicAnalysisTablesSql}\nPRAGMA user_version = 8;\n`;
 
 const baseColumns = Object.freeze({
   topics: [['topic_id', 'TEXT', 1, 1], ['para_category', 'TEXT', 1, 0], ['lifecycle', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0], ['revision', 'INTEGER', 1, 0], ['name', 'TEXT', 1, 0], ['activated_at', 'TEXT', 0, 0]],
@@ -447,7 +579,16 @@ const baseColumns = Object.freeze({
   source_locators: [['reference_id', 'TEXT', 1, 1], ['locator', 'TEXT', 1, 0], ['locator_version', 'INTEGER', 1, 0], ['ownership', 'TEXT', 1, 0], ['observed_revision', 'TEXT', 0, 0], ['updated_at', 'TEXT', 1, 0]],
   topic_operations: [['logical_operation_id', 'TEXT', 1, 1], ['topic_id', 'TEXT', 0, 0], ['operation_kind', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0], ['current_step', 'TEXT', 1, 0], ['intent_json', 'TEXT', 1, 0], ['result_json', 'TEXT', 0, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
   source_recovery: [['recovery_id', 'TEXT', 1, 1], ['topic_id', 'TEXT', 1, 0], ['reference_id', 'TEXT', 1, 0], ['source_kind', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0], ['revision', 'INTEGER', 1, 0], ['last_locator', 'TEXT', 0, 0], ['last_identity', 'TEXT', 0, 0], ['failure', 'TEXT', 1, 0], ['diagnostics_json', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]]
-  , notification_settings: [['settings_id', 'TEXT', 1, 1], ['due_reminders', 'INTEGER', 1, 0], ['important_items', 'INTEGER', 1, 0], ['critical_realerts', 'INTEGER', 1, 0], ['quiet_hours_enabled', 'INTEGER', 1, 0], ['quiet_hours_start', 'TEXT', 1, 0], ['quiet_hours_end', 'TEXT', 1, 0], ['time_zone', 'TEXT', 1, 0], ['generic_preview', 'INTEGER', 1, 0], ['revision', 'INTEGER', 1, 0], ['updated_at', 'TEXT', 1, 0]],
+  , topic_analysis_settings: [['settings_id', 'TEXT', 1, 1], ['schema_version', 'INTEGER', 1, 0], ['enabled', 'INTEGER', 1, 0], ['weekday', 'INTEGER', 1, 0], ['local_time', 'TEXT', 1, 0], ['time_zone', 'TEXT', 1, 0], ['revision', 'INTEGER', 1, 0], ['next_due_at', 'TEXT', 0, 0], ['initialized', 'INTEGER', 1, 0], ['updated_at', 'TEXT', 1, 0]],
+  topic_analysis_runs: [['run_id', 'TEXT', 1, 1], ['schema_version', 'INTEGER', 1, 0], ['trigger', 'TEXT', 1, 0], ['outcome', 'TEXT', 1, 0], ['baseline_cursor_json', 'TEXT', 1, 0], ['success_cursor_json', 'TEXT', 0, 0], ['changed_count', 'INTEGER', 1, 0], ['evaluated_count', 'INTEGER', 1, 0], ['proposal_count', 'INTEGER', 1, 0], ['retained_overflow_count', 'INTEGER', 1, 0], ['started_at', 'TEXT', 1, 0], ['finished_at', 'TEXT', 0, 0], ['error', 'TEXT', 0, 0]],
+  topic_analysis_watermarks: [['subject_id', 'TEXT', 1, 1], ['subject_type', 'TEXT', 1, 0], ['topic_id', 'TEXT', 1, 0], ['observed_revision', 'TEXT', 1, 0], ['last_success_run_id', 'TEXT', 0, 0], ['updated_at', 'TEXT', 1, 0]],
+  topic_analysis_cursors: [['cursor_id', 'TEXT', 1, 1], ['next_topic_id', 'TEXT', 0, 0], ['next_source_id', 'TEXT', 0, 0], ['updated_at', 'TEXT', 1, 0]],
+  topic_analysis_evidence: [['evidence_id', 'TEXT', 1, 1], ['proposal_id', 'TEXT', 1, 0], ['source_id', 'TEXT', 1, 0], ['source_revision', 'TEXT', 1, 0], ['fact', 'TEXT', 1, 0], ['material', 'INTEGER', 1, 0], ['kind', 'TEXT', 0, 0], ['observed_at', 'TEXT', 1, 0], ['current', 'INTEGER', 1, 0]],
+  topic_proposals: [['proposal_id', 'TEXT', 1, 1], ['schema_version', 'INTEGER', 1, 0], ['revision', 'INTEGER', 1, 0], ['predecessor_id', 'TEXT', 0, 0], ['successor_id', 'TEXT', 0, 0], ['operation', 'TEXT', 1, 0], ['affected_topic_ids_json', 'TEXT', 1, 0], ['affected_source_ids_json', 'TEXT', 1, 0], ['planned_source_ids_json', 'TEXT', 1, 0], ['before_json', 'TEXT', 1, 0], ['after_json', 'TEXT', 1, 0], ['rationale', 'TEXT', 1, 0], ['provenance_json', 'TEXT', 1, 0], ['consequences_json', 'TEXT', 1, 0], ['dependencies_json', 'TEXT', 1, 0], ['blockers_json', 'TEXT', 1, 0], ['reversibility_json', 'TEXT', 1, 0], ['material_digest', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0], ['decision_revision', 'INTEGER', 0, 0], ['suppressed_digest', 'TEXT', 0, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
+  topic_reviews: [['review_id', 'TEXT', 1, 1], ['schema_version', 'INTEGER', 1, 0], ['episode_revision', 'INTEGER', 1, 0], ['state', 'TEXT', 1, 0], ['snoozed_until', 'TEXT', 0, 0], ['groups_json', 'TEXT', 1, 0], ['retained_blockers_json', 'TEXT', 1, 0], ['application_summary_json', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
+  topic_application_plans: [['application_id', 'TEXT', 1, 1], ['schema_version', 'INTEGER', 1, 0], ['plan_revision', 'TEXT', 1, 0], ['review_revision', 'INTEGER', 1, 0], ['current_proposals_json', 'TEXT', 1, 0], ['approved_proposals_json', 'TEXT', 1, 0], ['dependencies_json', 'TEXT', 1, 0], ['status', 'TEXT', 1, 0], ['outcomes_json', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
+  topic_application_steps: [['application_id', 'TEXT', 1, 1], ['step_id', 'TEXT', 1, 2], ['proposal_id', 'TEXT', 1, 0], ['logical_operation_id', 'TEXT', 1, 0], ['operation_kind', 'TEXT', 1, 0], ['intent_json', 'TEXT', 1, 0], ['preconditions_json', 'TEXT', 1, 0], ['compensation_json', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0], ['outcome_json', 'TEXT', 0, 0], ['updated_at', 'TEXT', 1, 0]],
+  notification_settings: [['settings_id', 'TEXT', 1, 1], ['due_reminders', 'INTEGER', 1, 0], ['important_items', 'INTEGER', 1, 0], ['critical_realerts', 'INTEGER', 1, 0], ['quiet_hours_enabled', 'INTEGER', 1, 0], ['quiet_hours_start', 'TEXT', 1, 0], ['quiet_hours_end', 'TEXT', 1, 0], ['time_zone', 'TEXT', 1, 0], ['generic_preview', 'INTEGER', 1, 0], ['revision', 'INTEGER', 1, 0], ['updated_at', 'TEXT', 1, 0]],
   notification_policy_epochs: [['epoch_id', 'TEXT', 1, 1], ['episode_id', 'TEXT', 1, 0], ['severity', 'TEXT', 1, 0], ['generation', 'INTEGER', 1, 0], ['activation_at_ms', 'INTEGER', 1, 0], ['active_accumulated_ms', 'INTEGER', 1, 0], ['state', 'TEXT', 1, 0], ['created_at_ms', 'INTEGER', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]],
   notification_slots: [['slot_id', 'TEXT', 1, 1], ['epoch_id', 'TEXT', 1, 0], ['episode_id', 'TEXT', 1, 0], ['slot_kind', 'TEXT', 1, 0], ['due_at_ms', 'INTEGER', 1, 0], ['status', 'TEXT', 1, 0], ['logical_operation_id', 'TEXT', 0, 0], ['emission_id', 'TEXT', 0, 0], ['queued_at_ms', 'INTEGER', 0, 0], ['emitted_at_ms', 'INTEGER', 0, 0], ['created_at_ms', 'INTEGER', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]],
   notification_emissions: [['emission_id', 'TEXT', 1, 1], ['epoch_id', 'TEXT', 1, 0], ['episode_id', 'TEXT', 1, 0], ['logical_operation_id', 'TEXT', 1, 0], ['emitted_at_ms', 'INTEGER', 1, 0], ['expires_at_ms', 'INTEGER', 1, 0], ['generic_preview', 'INTEGER', 1, 0], ['summary_count', 'INTEGER', 1, 0], ['status', 'TEXT', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]],
@@ -471,6 +612,9 @@ const baseForeignKeys = Object.freeze({
   , source_locators: ['source_references|reference_id|reference_id|CASCADE']
   , topic_operations: ['topics|topic_id|topic_id|SET NULL']
   , source_recovery: ['topics|topic_id|topic_id|CASCADE', 'source_references|reference_id|reference_id|CASCADE']
+  , topic_analysis_watermarks: ['topics|topic_id|topic_id|CASCADE']
+  , topic_analysis_evidence: ['topic_proposals|proposal_id|proposal_id|CASCADE']
+  , topic_application_steps: ['topic_application_plans|application_id|application_id|CASCADE', 'topic_proposals|proposal_id|proposal_id|RESTRICT']
 });
 const expectedLedgerColumns = Object.freeze([
   ['sequence', 'INTEGER', 0, 1], ['migration_id', 'TEXT', 1, 0], ['migration_digest', 'TEXT', 1, 0],
@@ -484,6 +628,7 @@ function definitions(sql) {
   ));
 }
 const expectedTableDefinitions = definitions(metadataSchemaSql);
+const expectedTableDefinitionsV7 = definitions(metadataSchemaV7Sql);
 const expectedTableDefinitionsV6 = definitions(metadataSchemaV6Sql);
 const expectedTableDefinitionsV4 = definitions(metadataSchemaV4Sql);
 const expectedTableDefinitionsV3 = definitions(metadataSchemaV3Sql);
@@ -567,18 +712,40 @@ PRAGMA user_version = 6;
 `;
 
 export const metadataSchemaV6ToV7Sql = `${metadataSchemaV7NotificationTablesSql}\nPRAGMA user_version = 7;\n`;
+export const metadataSchemaV7ToV8Sql = `
+ALTER TABLE activity_records RENAME TO activity_records_legacy;
+CREATE TABLE activity_records (
+  activity_id TEXT PRIMARY KEY,
+  topic_id TEXT REFERENCES topics(topic_id) ON DELETE CASCADE,
+  logical_operation_id TEXT NOT NULL,
+  transport_request_id TEXT NOT NULL,
+  operation_kind TEXT NOT NULL CHECK (length(trim(operation_kind)) > 0),
+  outcome TEXT NOT NULL CHECK (outcome IN ('applied', 'failed', 'not-applied', 'conflict', 'unknown')),
+  observed_revision TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (logical_operation_id)
+) STRICT;
+INSERT INTO activity_records (activity_id, topic_id, logical_operation_id, transport_request_id, operation_kind, outcome, observed_revision, created_at, updated_at)
+SELECT activity_id, topic_id, logical_operation_id, transport_request_id, operation_kind, outcome, observed_revision, created_at, updated_at FROM activity_records_legacy;
+DROP TABLE activity_records_legacy;
+${metadataSchemaV8TopicAnalysisTablesSql}
+PRAGMA user_version = 8;
+`;
 
 const attentionTables = Object.freeze(['attention_episodes', 'attention_occurrences', 'attention_attempts', 'attention_approvals', 'attention_activity_records']);
 const attentionActivityTriggers = Object.freeze(['attention_activity_records_no_delete', 'attention_activity_records_no_update']);
 const migrationTables = Object.freeze(['migration_state', 'migration_channels', 'migration_occurrences', 'migration_completion']);
 const topicLifecycleTables = Object.freeze(['source_locators', 'topic_operations', 'source_recovery']);
 const notificationTables = Object.freeze(['notification_settings', 'notification_policy_epochs', 'notification_slots', 'notification_emissions', 'notification_clear_operations']);
-const v1Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !['operation_journal', 'session_state', 'activity_records', ...migrationTables, ...attentionTables, ...topicLifecycleTables, ...notificationTables].includes(table)));
-const v2Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...migrationTables, ...attentionTables, ...topicLifecycleTables, ...notificationTables].includes(table)));
-const v3Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...attentionTables, ...topicLifecycleTables, ...notificationTables].includes(table)));
+const topicAnalysisTables = Object.freeze(['topic_analysis_settings', 'topic_analysis_runs', 'topic_analysis_watermarks', 'topic_analysis_cursors', 'topic_analysis_evidence', 'topic_proposals', 'topic_reviews', 'topic_application_plans', 'topic_application_steps']);
+const v7Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !topicAnalysisTables.includes(table)));
+const v1Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !['operation_journal', 'session_state', 'activity_records', ...migrationTables, ...attentionTables, ...topicLifecycleTables, ...notificationTables, ...topicAnalysisTables].includes(table)));
+const v2Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...migrationTables, ...attentionTables, ...topicLifecycleTables, ...notificationTables, ...topicAnalysisTables].includes(table)));
+const v3Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...attentionTables, ...topicLifecycleTables, ...notificationTables, ...topicAnalysisTables].includes(table)));
 const columnsBeforeV5 = (table) => table === 'session_state' ? baseColumns[table].filter(([name]) => !['was_primary', 'display_name'].includes(name)) : baseColumns[table];
-const v5Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !topicLifecycleTables.includes(table) && !notificationTables.includes(table)));
-const v6Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !notificationTables.includes(table)));
+const v5Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !topicLifecycleTables.includes(table) && !notificationTables.includes(table) && !topicAnalysisTables.includes(table)));
+const v6Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !notificationTables.includes(table) && !topicAnalysisTables.includes(table)));
 const columnsForV5 = (table) => {
   if (table === 'topics') return baseColumns[table].filter(([name]) => !['revision', 'name', 'activated_at'].includes(name));
   if (table === 'source_convention_state') return baseColumns[table].filter(([name]) => name !== 'expected_value');
@@ -599,13 +766,14 @@ function sameArray(left, right) { return left.length === right.length && left.ev
 export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VERSION) {
   const problems = [];
   const current = schemaVersion === COMMAND_CENTER_SCHEMA_VERSION;
+  const schemaSeven = schemaVersion === SCHEMA_SEVEN_COMMAND_CENTER_VERSION;
   const schemaSix = schemaVersion === SCHEMA_SIX_COMMAND_CENTER_VERSION;
   const prior = schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION;
   const schemaFour = schemaVersion === ATTENTION_METADATA_SCHEMA_VERSION;
-  const columnsForVersion = current ? baseColumns : schemaSix ? v6Columns : prior ? v5Columns : schemaFour ? v4Columns : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
-  const definitionsForVersion = current ? expectedTableDefinitions : schemaSix ? expectedTableDefinitionsV6 : prior ? definitions(metadataSchemaV5Sql) : schemaFour ? expectedTableDefinitionsV4 : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
-  const foreignKeysForVersion = current ? baseForeignKeys : schemaSix || prior || schemaFour ? Object.fromEntries(v6Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
-  const applicationTables = current ? metadataTableNames : schemaSix ? v6Tables : prior || schemaFour ? v5Tables : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
+  const columnsForVersion = current ? baseColumns : schemaSeven ? Object.fromEntries(Object.entries(baseColumns).filter(([table]) => v7Tables.includes(table))) : schemaSix ? v6Columns : prior ? v5Columns : schemaFour ? v4Columns : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
+  const definitionsForVersion = current ? expectedTableDefinitions : schemaSeven ? expectedTableDefinitionsV7 : schemaSix ? expectedTableDefinitionsV6 : prior ? definitions(metadataSchemaV5Sql) : schemaFour ? expectedTableDefinitionsV4 : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
+  const foreignKeysForVersion = current ? baseForeignKeys : schemaSeven ? Object.fromEntries(v7Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaSix || prior || schemaFour ? Object.fromEntries(v6Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
+  const applicationTables = current ? metadataTableNames : schemaSeven ? v7Tables : schemaSix ? v6Tables : prior || schemaFour ? v5Tables : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
   const expectedTables = schemaVersion >= LEGACY_METADATA_SCHEMA_VERSION ? [...applicationTables, 'schema_migrations'] : [...applicationTables];
   const objects = database.prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
   const tables = objects.filter((row) => row.type === 'table').map((row) => row.name);
@@ -620,7 +788,7 @@ export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VE
     const tableShape = database.prepare('SELECT strict FROM pragma_table_list WHERE name = ?').get(table);
     if (!tableShape || tableShape.strict !== 1) problems.push(`${table} is not STRICT`);
     const ddl = normalizedSql(database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.sql);
-    const alterCompatible = (current || schemaSix) && (table === 'topics' || table === 'source_convention_state');
+    const alterCompatible = (current || schemaSeven || schemaSix) && (table === 'topics' || table === 'source_convention_state');
     if (!alterCompatible && ddl !== definitionsForVersion[table]) problems.push(`${table} definition differs`);
     if (current && table === 'topics') {
       for (const requiredConstraint of [

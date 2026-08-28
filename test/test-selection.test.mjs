@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { selectOrdinaryTestFiles } from '../src/test-selection.mjs';
+import { ordinaryTestArgv, selectOrdinaryTestFiles } from '../src/test-selection.mjs';
 
 test('ordinary suite excludes only the separately invoked real-host receipt test', () => {
   assert.deepEqual(selectOrdinaryTestFiles([
@@ -10,6 +10,18 @@ test('ordinary suite excludes only the separately invoked real-host receipt test
     'attention-service.integration.test.mjs',
     'fixtures'
   ]), [
+    'test/attention-service.integration.test.mjs',
+    'test/storage-recovery.test.mjs'
+  ]);
+});
+
+test('ordinary suite uses bounded isolated workers on the medium evaluator', () => {
+  assert.deepEqual(ordinaryTestArgv([
+    'test/attention-service.integration.test.mjs',
+    'test/storage-recovery.test.mjs'
+  ]), [
+    '--test',
+    '--test-concurrency=4',
     'test/attention-service.integration.test.mjs',
     'test/storage-recovery.test.mjs'
   ]);
