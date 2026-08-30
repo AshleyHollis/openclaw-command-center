@@ -55,27 +55,29 @@ export async function readNoteSourceSnapshot({ topicId, metadata, noteAdapter, q
   if (!noteAdapter?.browse || !noteAdapter?.read) throw sourceError('source-unavailable', 'The authoritative Note adapter is unavailable.');
   const folders = exactTopicReferences(metadata, topicId, 'obsidian', 'note_folder');
   if (folders.length !== 1) throw sourceError('source-recovery', 'Exactly one Topic-owned Note Folder Source Reference is required.');
-  const entries = await noteAdapter.browse({ observe: false });
+  const folderRoot = metadata?.getSourceLocator?.(folders[0].referenceId)?.locator ?? folders[0].externalSourceId;
+  const entries = await noteAdapter.browse({ observe: true });
   if (!Array.isArray(entries)) throw sourceError('source-inconsistent', 'The Note adapter returned an invalid browse result.');
   const notes = [];
   for (const entry of entries) {
     if (!entry || typeof entry.path !== 'string' || entry.sourceReference?.topicId !== topicId || entry.sourceReference?.sourceSystem !== 'obsidian' || entry.sourceReference?.sourceKind !== 'note') throw sourceError('source-recovery', 'The Note adapter returned a foreign or identity-mismatched Note.');
     const relativePath = normalizeNotePath(entry.path);
-    const expectedExternalId = `${folders[0].externalSourceId.replace(/\/+$/u, '')}/${relativePath}`;
+    const expectedExternalId = `${folderRoot.replace(/\/+$/u, '')}/${relativePath}`;
     if (entry.sourceReference.externalSourceId !== expectedExternalId) throw sourceError('source-recovery', 'The Note adapter returned a Note outside the exact Topic Folder.');
-    const read = await noteAdapter.read({ path: relativePath, observe: false });
+    const read = await noteAdapter.read({ path: relativePath, referenceId: entry.sourceReference.referenceId, observe: true });
     if (read.path !== relativePath || read.sourceReference?.topicId !== topicId || read.sourceReference?.sourceSystem !== 'obsidian' || read.sourceReference?.sourceKind !== 'note' || read.sourceReference.externalSourceId !== expectedExternalId) throw sourceError('source-recovery', 'The Note adapter returned a foreign or identity-mismatched Note.');
+    if (read.sourceReference.referenceId !== entry.sourceReference.referenceId || read.sourceReference.observedRevision !== read.revision) throw sourceError('source-recovery', 'The Note adapter returned a changed Note identity.');
     const sections = noteSections(read.text);
     for (const section of sections) {
       const context = paragraphContext(section.text, query);
       notes.push({
-        topicId, sourceReference: folders[0], folderReferenceId: folders[0].referenceId, path: read.path, heading: section.heading, revision: read.revision,
+        topicId, sourceReference: read.sourceReference, folderReferenceId: folders[0].referenceId, path: read.path, heading: section.heading, revision: read.revision,
         text: section.text, contextBefore: context.before, contextAfter: context.after, provenance: 'native'
       });
     }
   }
   const verifiedEntries = await noteAdapter.browse({ observe: false });
-  const identityList = (value) => value.map((entry) => [entry.path, entry.revision, entry.sourceReference?.externalSourceId]).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const identityList = (value) => value.map((entry) => [entry.path, entry.revision, entry.sourceReference?.referenceId, entry.sourceReference?.externalSourceId]).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   if (!Array.isArray(verifiedEntries) || JSON.stringify(identityList(verifiedEntries)) !== JSON.stringify(identityList(entries))) throw sourceError('source-incomplete', 'The Note Folder changed during snapshotting.');
   notes.sort((left, right) => left.path.localeCompare(right.path));
   return Object.freeze({ topicId, noteFolder: folders[0], notes: Object.freeze(notes), sourceRevision: digest(notes.map(({ path, revision }) => ({ path, revision }))) });

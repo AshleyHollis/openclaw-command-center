@@ -17,6 +17,7 @@ test('large repeated Topic queries use the FTS virtual-table index without autho
   let authoritativeReads = 0;
   let projectionDigestReads = 0;
   try {
+    const noteReferences = Array.from({ length: 5_000 }, (_, index) => ({ version: 1, referenceId: `note:large:${index}`, topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `/fictional/large/${index}.md`, observedRevision: `fictional-${index}` }));
     const digestFile = (file) => {
       projectionDigestReads += 1;
       return `sha256:${createHash('sha256').update(readFileSync(file)).digest('hex')}`;
@@ -24,7 +25,7 @@ test('large repeated Topic queries use the FTS virtual-table index without autho
     const store = await openProjectionStore({ stateDir, kind: 'note', digestFile });
     const conversationStore = await openProjectionStore({ stateDir, kind: 'conversation', digestFile });
     await store.rebuild({ rows: Array.from({ length: 5_000 }, (_, index) => ({
-      topicId, sourceReference: folderReference, folderReferenceId: 'folder:large', path: `${index}.md`, heading: `Fictional ${index}`, revision: `fictional-${index}`,
+      topicId, sourceReference: noteReferences[index], folderReferenceId: 'folder:large', path: `${index}.md`, heading: `Fictional ${index}`, revision: `fictional-${index}`,
       text: index % 100 === 0 ? `indexed needle ${index}` : `ordinary fictional record ${index}`, provenance: 'native'
     })) });
     await conversationStore.rebuild({ rows: Array.from({ length: 5_000 }, (_, index) => ({
@@ -40,7 +41,7 @@ test('large repeated Topic queries use the FTS virtual-table index without autho
     assert.match(conversationPlan, /conversation_documents_topic_idx/iu);
     assert.ok(projectionDigestReads > 0, 'opening a committed projection performs one full integrity validation');
     projectionDigestReads = 0;
-    const references = new Map([[folderReference.referenceId, folderReference], [sessionReference.referenceId, sessionReference]]);
+    const references = new Map([[folderReference.referenceId, folderReference], [sessionReference.referenceId, sessionReference], ...noteReferences.map((reference) => [reference.referenceId, reference])]);
     const search = createTopicSearchService({
       metadata: { getTopic: (id) => id === topicId ? { topicId } : null, getSourceReference: (id) => references.get(id), listSourceReferences: () => [...references.values()], getSessionState: () => ({ sessionId: 'session-large', status: 'open', isPrimary: false, wasPrimary: false }) },
       noteStore: store,

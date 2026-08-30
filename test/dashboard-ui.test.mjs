@@ -38,7 +38,7 @@ test('wide and narrow Topic launchers and topic.open actions open the exact veri
         window.__topicRequests = [];
         window.addEventListener('message', (event) => {
           const payload = event.data?.payload;
-          if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigate'] } }, '*');
+          if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
           if (payload?.type !== 'openclaw:capability-bridge-request') return;
           window.__topicRequests.push(payload.method);
           const result = payload.method === 'command-center.v1.topics.get'
@@ -76,7 +76,7 @@ test('Dashboard is keyboard-usable at 320px and opens a scrollable evidence dial
       };
       window.addEventListener('message', (event) => {
         const payload = event.data?.payload;
-        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigate'] } }, '*');
+        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
         if (payload?.type === 'openclaw:capability-bridge-request') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result: { result: { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] } } } }, '*');
       });
     });

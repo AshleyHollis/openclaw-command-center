@@ -13,7 +13,7 @@ const metadata = {
   getPresentationPreferences: (id) => ({ displayLabel: id === 'topic-one' ? 'Current Topic' : 'Other Topic' })
 };
 const searchService = { query: async ({ topicId }) => ({
-  notes: { results: [{ topicId, provenance: 'native', sourceReference: { referenceId: `note:${topicId}`, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/private/topic-folder' }, heading: 'Heading', path: 'one.md', snippet: 'note excerpt' }] },
+  notes: { results: [{ topicId, provenance: 'native', sourceReference: { referenceId: `note:${topicId}`, topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/private/topic-folder/one.md' }, heading: 'Heading', path: 'one.md', snippet: 'note excerpt', navigation: { kind: 'note', topicId, referenceId: `note:${topicId}`, path: 'one.md', heading: 'Heading', observedRevision: 'sha256:one' } }] },
   conversations: { results: [{ topicId, provenance: 'imported', sourceReference: { referenceId: `session:${topicId}` }, conversationName: 'Chat', sessionKey: 'agent:main:one', snippet: 'conversation excerpt' }] }
 }) };
 
@@ -29,6 +29,7 @@ test('on-demand context binds only the trusted current Session Topic and stays b
   });
   assert.equal('query' in result, false);
   assert.equal(result.groups.notes.length + result.groups.conversations.length, 2);
+  assert.deepEqual(result.groups.notes[0].navigation, { kind: 'note', topicId: 'topic-one', referenceId: 'note:topic-one', path: 'one.md', heading: 'Heading', observedRevision: 'sha256:one' });
   assert.doesNotMatch(JSON.stringify(result), /\/fictional\/private\/topic-folder/u);
   assert.ok(result.groups.notes.length + result.groups.conversations.length <= 8);
   assert.ok([...result.groups.notes, ...result.groups.conversations].every((item) => Array.from(item.excerpt).length <= 320));

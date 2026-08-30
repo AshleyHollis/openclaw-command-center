@@ -63,7 +63,10 @@ test('real plugin registers one required emitter and reconciles in the backgroun
   try {
     plugin.register(host.api);
     assert.deepEqual(host.declarations, [{ version: 1, id: 'command-center-attention-v1', requiredScopes: ['operator.read'], destinations: [{ id: 'attention-card', tabId: 'command-center' }] }]);
-    assert.deepEqual(host.descriptors, [{ surface: 'tab', id: 'command-center', label: 'Command Center', group: 'control', path: '/plugins/command-center' }]);
+    assert.equal(host.descriptors.length, 1);
+    assert.deepEqual({ ...host.descriptors[0], capabilityBridge: undefined }, { surface: 'tab', id: 'command-center', label: 'Command Center', group: 'control', path: '/plugins/command-center', capabilityBridge: undefined });
+    assert.equal(host.descriptors[0].capabilityBridge.protocolVersion, 1);
+    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sessions.browse'));
     assert.equal(host.services.length, 1);
     assert.equal(host.routes.some((route) => route.path === '/plugins/command-center' && route.auth === 'gateway'), true);
     const service = host.services[0];

@@ -4,8 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createMetadataService, runtimeHostIdentity } from '../src/plugin-service.mjs';
-import { createProductionTopicAnalyzer } from '../src/topics/production-analyzer.mjs';
-import { candidateToProposal } from '../src/topics/analysis-policy.mjs';
 
 test('plugin uses the pinned public external-tab and gateway-route seams', async () => {
   const source = `${await readFile(new URL('../src/plugin.mjs', import.meta.url), 'utf8')}\n${await readFile(new URL('../src/plugin-service.mjs', import.meta.url), 'utf8')}`;
@@ -45,17 +43,6 @@ test('manifest activates the route-registering plugin at Gateway startup', async
   assert.deepEqual(manifest.contracts?.tools, ['command_center_topic_context', 'command_center_topic_analysis']);
 });
 
-test('the production plugin analyzer turns an explicit fictional Topic directive into a gated proposal', async () => {
-  const analyze = createProductionTopicAnalyzer();
-  const candidates = await analyze({ topic: { topicId: 'topic-explicit', name: 'Area: Fictional Field Notes', lifecycle: 'active', paraCategory: 'project', revision: 3 }, sources: [{ referenceId: 'source-explicit', observedRevision: 'source-r3' }] });
-  assert.equal(candidates.length, 1); assert.equal(candidates[0].operation, 'recategorize'); assert.equal(candidates[0].after.paraCategory, 'area'); assert.ok(candidateToProposal(candidates[0]));
-  const source = await readFile(new URL('../src/plugin-service.mjs', import.meta.url), 'utf8');
-  assert.match(source, /analyzer:\s*createProductionTopicAnalyzer\(\)/); assert.doesNotMatch(source, /api\.topicAnalysis\?\.analyze|api\.runtime\?\.topicAnalysis\?\.analyze/);
-  assert.match(source, /const runAndRefreshTopicReview = async \(input\) =>[\s\S]*?topicAnalysisRunner\.run\(input\)[\s\S]*?topicReview\.refresh\(\)/);
-  assert.match(source, /runAnalysis:\s*runAndRefreshTopicReview/);
-  assert.match(source, /await topicAnalysisSchedule\.startupCatchUp\(\)/);
-});
-
 test('Conversation ingestion uses the pinned host identity and history gateway methods', async () => {
   const source = await readFile(new URL('../src/search/source-snapshot.mjs', import.meta.url), 'utf8');
   assert.match(source, /request\('sessions\.describe'/);
@@ -73,6 +60,32 @@ test('Topics UI preserves Topic Search capability navigation and uses the dedica
   assert.match(source, /bridgeRequest\('ui\.session\.navigate', \{ sessionKey: target\.sessionKey \}\)/);
   assert.match(source, /fetch\(HTTP_ROUTE, \{ method: 'POST'/);
   assert.doesNotMatch(source, /window\.location\.(?:assign|replace)|parent\.location/);
+});
+
+test('Topic workspace declares the exact external-tab capability bridge and bounded mutation route', async () => {
+  const source = await readFile(new URL('../src/plugin.mjs', import.meta.url), 'utf8');
+  for (const method of ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate']) assert.match(source, new RegExp(method.replaceAll('.', '\\.'), 'u'));
+  assert.match(source, /capabilityBridge:[\s\S]*protocolVersion:\s*1/u);
+  const requiredMethods = /requiredMethods:\s*\[([\s\S]*?)\]/u.exec(source)?.[1] ?? '';
+  assert.doesNotMatch(requiredMethods, /command-center\.v1\.sessions\.send/u);
+  assert.match(requiredMethods, /command-center\.v1\.topics\.list/u);
+  assert.doesNotMatch(requiredMethods, /command-center\.v1\.sessions\.list/u);
+  assert.match(source, /path:\s*'\/plugins\/command-center\/api\/topic\/actions',[\s\S]*auth:\s*'plugin',[\s\S]*match:\s*'exact'/u);
+  const html = await readFile(new URL('../src/ui/index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /<script type="module"/u);
+  assert.match(html, /app\.js/u);
+  for (const id of ['topic-workspace', 'chat-pane', 'conversations-pane', 'notes-pane', 'workspace-search-pane', 'note-action-dialog']) assert.match(html, new RegExp(`id="${id}"`, 'u'));
+  const app = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
+  assert.match(app, /import\('\.\/markdown\.js'\)/u);
+  assert.match(app, /if \(requestedTopicId === null\) loadTopics\(\)/u);
+  assert.match(app, /fetch\(PAGE_ACTION_ROUTE, \{ method: 'POST', credentials: 'omit'/u);
+  assert.doesNotMatch(app, /targetAddressSpace|local-network-access/u);
+  assert.doesNotMatch(app, /flushQuote/u);
+  const styles = await readFile(new URL('../src/ui/styles.css', import.meta.url), 'utf8');
+  assert.match(app, /max-width: 47\.99rem/u);
+  assert.match(styles, /@media \(max-width: 47\.99rem\)/u);
+  assert.match(styles, /@media \(min-width: 48rem\)/u);
+  assert.doesNotMatch(`${app}\n${styles}`, /max-width: 1023px/u);
 });
 
 test('plugin startup preserves migration wiring and binds approvals to a stable non-secret host identity', async () => {

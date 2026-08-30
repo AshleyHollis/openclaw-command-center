@@ -14,6 +14,7 @@ import { createTopicAnalysisRunner } from './topics/analysis-runner.mjs';
 import { createProductionTopicAnalyzer } from './topics/production-analyzer.mjs';
 import { createTopicAnalysisScheduleService } from './topics/analysis-schedule.mjs';
 import { createTopicReviewService } from './topics/review.mjs';
+import { readVisibleSessionTranscriptMessageEntries } from 'openclaw/plugin-sdk/session-transcript-runtime';
 
 let activeMaintenanceService;
 
@@ -87,7 +88,7 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
         rebuild: (input) => searchService.rebuild(input),
         invalidate: (input) => searchService.invalidate(input)
       };
-      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider });
+      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
       searchRebuildService = createSearchRebuildService({
         stateDir,

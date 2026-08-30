@@ -144,6 +144,61 @@ test('Session-store reads and lifecycle writes refuse a missing exact authoritat
   assert.equal(metadata.getSessionState(reference.referenceId).status, 'open');
 });
 
+test('Session-store history refuses transcript and post-read catalog identity mismatches without disclosure', async () => {
+  const metadata = metadataFixture();
+  const reference = {
+    version: 1,
+    referenceId: 'session:stable-history',
+    topicId: 'topic-stable-history',
+    sourceSystem: 'openclaw',
+    sourceKind: 'session',
+    externalSourceId: 'agent:main:command-center:stable-history',
+    observedRevision: null
+  };
+  metadata.refs.push(reference);
+  metadata.setSessionState({ referenceId: reference.referenceId, sessionId: 'stable-session-id', status: 'open', isPrimary: false });
+  let rows = [{ sessionKey: reference.externalSourceId, entry: { sessionId: 'stable-session-id' } }];
+  let transcriptPage;
+  let holdRead = false;
+  let releaseRead;
+  let markReadStarted;
+  const adapter = createSessionAdapter({
+    topicId: reference.topicId,
+    metadata,
+    sessionStore: { listSessionEntries: () => rows },
+    transcriptReader: async () => {
+      if (holdRead) {
+        markReadStarted();
+        await new Promise((resolve) => { releaseRead = resolve; });
+      }
+      return transcriptPage;
+    }
+  });
+
+  for (const page of [
+    { kind: 'page', sessionKey: 'agent:main:command-center:foreign', sessionId: 'stable-session-id', entries: [{ message: 'private mismatched key transcript' }] },
+    { kind: 'page', sessionKey: reference.externalSourceId, sessionId: 'foreign-session-id', entries: [{ message: 'private mismatched ID transcript' }] }
+  ]) {
+    transcriptPage = page;
+    let caught;
+    try { await adapter.history({ referenceId: reference.referenceId }); } catch (error) { caught = error; }
+    assert.equal(caught?.code, 'source-recovery');
+    assert.equal(String(caught?.message).includes('private'), false);
+  }
+
+  transcriptPage = { kind: 'page', sessionKey: reference.externalSourceId, sessionId: 'stable-session-id', entries: [{ message: 'private replaced transcript' }] };
+  holdRead = true;
+  const readStarted = new Promise((resolve) => { markReadStarted = resolve; });
+  const pending = adapter.history({ referenceId: reference.referenceId });
+  await readStarted;
+  rows = [{ sessionKey: reference.externalSourceId, entry: { sessionId: 'replacement-session-id' } }];
+  releaseRead();
+  let caught;
+  try { await pending; } catch (error) { caught = error; }
+  assert.equal(caught?.code, 'source-recovery');
+  assert.equal(String(caught?.message).includes('private'), false);
+});
+
 test('Session-store creation refuses an occupied deterministic key without overwriting its identity', async () => {
   const metadata = metadataFixture();
   const logicalOperationId = randomUUID();
@@ -253,6 +308,81 @@ test('Session history withholds an explicitly mismatched authoritative identity'
   }
 });
 
+test('Session list returns exact Topic-linked records with open default and explicit Closed filters', async () => {
+  const metadata = metadataFixture();
+  const primary = { version: 1, referenceId: 'session:list-primary', topicId: 'topic-list', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:primary', observedRevision: null };
+  const secondary = { version: 1, referenceId: 'session:list-secondary', topicId: 'topic-list', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:secondary', observedRevision: null };
+  const closed = { version: 1, referenceId: 'session:list-closed', topicId: 'topic-list', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:closed', observedRevision: null };
+  const foreign = { ...closed, referenceId: 'session:list-foreign', topicId: 'other-topic', externalSourceId: 'agent:main:foreign' };
+  metadata.refs.push(primary, secondary, closed, foreign);
+  metadata.setSessionState({ referenceId: primary.referenceId, sessionId: 'primary-id', status: 'open', isPrimary: true, displayName: 'Primary', updatedAt: '2026-08-27T00:00:00.000Z' });
+  metadata.setSessionState({ referenceId: secondary.referenceId, sessionId: 'secondary-id', status: 'open', isPrimary: false, displayName: 'Secondary', updatedAt: '2026-08-27T00:00:00.000Z' });
+  metadata.setSessionState({ referenceId: closed.referenceId, sessionId: 'closed-id', status: 'closed', isPrimary: false, wasPrimary: false, displayName: 'Closed', updatedAt: '2026-08-27T00:00:00.000Z' });
+  metadata.setSessionState({ referenceId: foreign.referenceId, sessionId: 'foreign-id', status: 'open', isPrimary: false, displayName: 'Foreign', updatedAt: '2026-08-27T00:00:00.000Z' });
+  const entries = [
+    { sessionKey: primary.externalSourceId, entry: { sessionId: 'primary-id' } },
+    { sessionKey: secondary.externalSourceId, entry: { sessionId: 'secondary-id' } },
+    { sessionKey: closed.externalSourceId, entry: { sessionId: 'closed-id' } },
+    { sessionKey: foreign.externalSourceId, entry: { sessionId: 'foreign-id' } }
+  ];
+  const adapter = createSessionAdapter({ topicId: 'topic-list', metadata, sessionStore: { listSessionEntries: () => entries } });
+  const open = await adapter.list({ schemaVersion: 1 });
+  assert.deepEqual(open.conversations.map((item) => item.referenceId), [primary.referenceId, secondary.referenceId]);
+  const closedView = await adapter.list({ schemaVersion: 1, status: 'closed' });
+  assert.deepEqual(closedView.conversations.map((item) => item.referenceId), [closed.referenceId]);
+  const all = await adapter.list({ schemaVersion: 1, status: 'all' });
+  assert.deepEqual(all.conversations.map((item) => item.referenceId), [primary.referenceId, closed.referenceId, secondary.referenceId]);
+  assert.deepEqual(all.conversations.map((item) => item.displayName), ['Primary', 'Closed', 'Secondary']);
+  assert.equal(all.conversations.every((item) => !('name' in item)), true);
+  assert.deepEqual(all.conversations.map((item) => item.sessionId), ['primary-id', 'closed-id', 'secondary-id']);
+  assert.equal(all.conversations.every((item) => !('topicId' in item) && !('sessionKey' in item)), true);
+  metadata.setSessionState({ referenceId: closed.referenceId, sessionId: 'closed-id', status: 'invalid', isPrimary: false, displayName: 'Closed', updatedAt: '2026-08-27T00:00:00.000Z' });
+  await assert.rejects(() => adapter.list({ schemaVersion: 1, status: 'all' }), (error) => error.code === 'source-recovery');
+});
+
+test('Session send, list, and lifecycle mutations revalidate state after authoritative resolution', async () => {
+  const metadata = metadataFixture();
+  const reference = { version: 1, referenceId: 'session:resolution-race', topicId: 'topic-resolution-race', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:resolution-race', observedRevision: null };
+  metadata.refs.push(reference);
+  const openState = { referenceId: reference.referenceId, sessionId: 'stable-session-id', status: 'open', isPrimary: false, displayName: 'Resolution Race', updatedAt: '2026-08-27T00:00:00.000Z' };
+  metadata.setSessionState(openState);
+  let race = 'close';
+  let sends = 0;
+  const gateway = {
+    async request(method, params) {
+      if (method === 'sessions.list') {
+        if (race === 'close') metadata.setSessionState({ ...openState, status: 'closed' });
+        if (race === 'replace') metadata.setSessionState({ ...openState, sessionId: 'replacement-session-id' });
+        return { sessions: [{ sessionKey: reference.externalSourceId, sessionId: 'stable-session-id' }] };
+      }
+      if (method === 'chat.send') { sends += 1; return { runId: params.idempotencyKey }; }
+      throw new Error(`Unexpected ${method}`);
+    }
+  };
+  const adapter = createSessionAdapter({ topicId: reference.topicId, metadata, gateway });
+  await assert.rejects(() => adapter.send({ referenceId: reference.referenceId, message: 'must remain isolated', logicalOperationId: randomUUID() }), (error) => error.code === 'conflict');
+  assert.equal(sends, 0);
+
+  metadata.setSessionState(openState); race = 'replace';
+  await assert.rejects(() => adapter.list({ schemaVersion: 1, status: 'all' }), (error) => error.code === 'source-recovery');
+  assert.equal(metadata.getSessionState(reference.referenceId).sessionId, 'replacement-session-id');
+
+  metadata.setSessionState(openState);
+  await assert.rejects(() => adapter.close({ referenceId: reference.referenceId, logicalOperationId: randomUUID() }), (error) => error.code === 'source-recovery');
+  assert.equal(metadata.getSessionState(reference.referenceId).sessionId, 'replacement-session-id');
+});
+
+test('Gateway close and reopen refuse a missing persisted Session state before mutation', async () => {
+  const metadata = metadataFixture();
+  const reference = { version: 1, referenceId: 'session:missing-state', topicId: 'topic-missing-state', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:missing-state', observedRevision: null };
+  metadata.refs.push(reference);
+  let gatewayCalls = 0;
+  const adapter = createSessionAdapter({ topicId: reference.topicId, metadata, gateway: { request: async () => { gatewayCalls += 1; return { sessions: [{ sessionKey: reference.externalSourceId, sessionId: 'missing-state-id' }] }; } } });
+  await assert.rejects(() => adapter.close({ referenceId: reference.referenceId, logicalOperationId: randomUUID() }), (error) => error.code === 'source-recovery');
+  await assert.rejects(() => adapter.reopen({ referenceId: reference.referenceId, logicalOperationId: randomUUID() }), (error) => error.code === 'source-recovery');
+  assert.equal(gatewayCalls, 0);
+});
+
 test('Primary close is rejected and ambiguous create reconciles by exact key lookup', async () => {
   const metadata = metadataFixture();
   let createCalls = 0;
@@ -286,6 +416,10 @@ test('creating a replacement Primary atomically demotes and permits closing the 
     assert.equal(closed.value.status, 'closed');
     let dispatched = false;
     gateway.request = async (method) => { if (method === 'chat.send') dispatched = true; if (method === 'sessions.list') return { sessions: [{ ['k' + 'ey']: first.value.sourceReference.externalSourceId, sessionId: metadata.getSessionState(first.value.sourceReference.referenceId).sessionId }] }; return {}; };
+    await assert.rejects(
+      () => adapter.send({ referenceId: first.value.sourceReference.referenceId, message: '   ', logicalOperationId: randomUUID() }),
+      (error) => error.code === 'invalid-request' && /non-blank/i.test(error.message)
+    );
     await assert.rejects(
       () => adapter.send({ referenceId: first.value.sourceReference.referenceId, message: 'must not dispatch', logicalOperationId: randomUUID() }),
       (error) => error.code === 'conflict' && /Closed Conversation/i.test(error.message)
@@ -353,6 +487,10 @@ test('applied Session send replay reconciles history without redispatch', async 
   assert.equal(replay.value.runId, operationId);
   assert.equal(calls.filter((call) => call.method === 'chat.send').length, 1);
   assert.equal(calls.filter((call) => call.method === 'chat.history').length, 1);
+  await assert.rejects(
+    () => adapter.send({ referenceId: reference.referenceId, message: 'changed intent', logicalOperationId: operationId, requestId: 'send-changed-intent' }),
+    (error) => error.code === 'intent-mismatch'
+  );
 });
 
 test('applied Session create replay preserves a later Closed state', async () => {
