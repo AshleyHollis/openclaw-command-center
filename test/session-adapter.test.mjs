@@ -80,7 +80,11 @@ test('Session create and exact verification use the pinned host session-store ru
         ...initialEntry
       };
       entries.set(key, entry);
-      return { key, agentId: 'main', sessionId: entry.sessionId, entry };
+      return undefined;
+    },
+    getSessionEntry({ sessionKey, readConsistency }) {
+      assert.equal(readConsistency, 'latest');
+      return entries.get(sessionKey);
     }
   };
   const transcriptReader = async ({ sessionKey, sessionId, maxMessages }) => ({
@@ -111,6 +115,35 @@ test('Session create and exact verification use the pinned host session-store ru
   await adapter.resolveExact({ referenceId: created.value.sourceReference.referenceId });
   const history = await adapter.history({ referenceId: created.value.sourceReference.referenceId, limit: 10 });
   assert.deepEqual(history.messages, [{ role: 'user', content: 'Fictional history' }]);
+});
+
+test('overlapping Session creates preserve every distinct deterministic key regardless of completion order', async () => {
+  const metadata = metadataFixture();
+  const entries = new Map();
+  const completions = [];
+  const sessionStore = {
+    listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })),
+    getSessionEntry: ({ sessionKey }) => entries.get(sessionKey),
+    async createSessionEntry({ key, label, initialEntry }) {
+      await new Promise((resolve) => completions.push(() => {
+        entries.set(key, { sessionId: `id-${key.slice(-8)}`, updatedAt: Date.now(), label, ...initialEntry });
+        resolve();
+      }));
+      return { unavailableShape: true };
+    }
+  };
+  const adapter = createSessionAdapter({ api: { config: {} }, metadata, sessionStore, topicId: 'topic-overlap' });
+  const operations = [randomUUID(), randomUUID(), randomUUID()];
+  const pending = operations.map((logicalOperationId, index) => adapter.create({ logicalOperationId, label: `Overlap ${index}`, isPrimary: false }));
+  while (completions.length < operations.length) await new Promise((resolve) => setImmediate(resolve));
+  for (const complete of completions.reverse()) complete();
+  const created = await Promise.all(pending);
+  assert.deepEqual(created.map((item) => item.value.sourceReference.externalSourceId).sort(), operations.map((id) => `agent:main:command-center:${id}`).sort());
+  for (const item of created) {
+    const key = item.value.sourceReference.externalSourceId;
+    assert.equal(metadata.getSessionState(item.value.sourceReference.referenceId).sessionId, entries.get(key).sessionId);
+    assert.equal(item.value.creationRevision, String(entries.get(key).updatedAt));
+  }
 });
 
 test('Session-store reads and lifecycle writes refuse a missing exact authoritative row', async () => {

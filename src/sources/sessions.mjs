@@ -65,20 +65,38 @@ export class SessionAdapter {
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const requestedKey = `agent:main:command-center:${logicalOperationId}`;
     const displayName = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : `Topic Conversation ${logicalOperationId}`;
+    const readCreatedStoreEntry = () => {
+      const matches = this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true }).filter((row) => row?.sessionKey === requestedKey);
+      if (matches.length !== 1) throw sourceError('unavailable', 'The created Session was not returned by authoritative catalog readback.');
+      const listed = matches[0]?.entry;
+      const latest = this.sessionStore.getSessionEntry?.({ agentId: 'main', sessionKey: requestedKey, readConsistency: 'latest' }) ?? listed;
+      if (!listed || !latest || responseSessionId(matches[0]) !== responseSessionId({ entry: latest })) throw sourceError('unavailable', 'The created Session identity did not survive authoritative readback.');
+      const marker = latest?.pluginExtensions?.commandCenter;
+      if (marker?.logicalOperationId !== logicalOperationId || marker?.topicId !== this.topicId) throw sourceError('conflict', 'The deterministic Session key is owned by another operation.');
+      const sessionId = responseSessionId({ entry: latest });
+      const revision = responseRevision({ entry: latest });
+      if (typeof sessionId !== 'string' || sessionId.trim() === '' || revision === null) throw sourceError('unavailable', 'The created Session readback omitted its exact identity or revision.');
+      return { sessionKey: requestedKey, sessionId, revision };
+    };
     const execute = async ({ requestId }) => {
       let result;
       if (this.sessionStore?.listSessionEntries) {
         const existing = this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true }).find((row) => row.sessionKey === requestedKey);
         if (existing) throw sourceError('conflict', 'The deterministic Session key already exists.');
-        const initialEntry = { sessionId: logicalOperationId, updatedAt: Date.now(), label: displayName, agentHarnessId: 'command-center', modelSelectionLocked: true, pluginExtensions: { commandCenter: { logicalOperationId, topicId: this.topicId } } };
-        if (this.sessionStore.createSessionEntry) result = await this.sessionStore.createSessionEntry({ cfg: this.api?.config, agentId: 'main', ['key']: requestedKey, label: displayName, initialEntry });
+        const trustedInitialEntry = { agentHarnessId: 'command-center', modelSelectionLocked: true, pluginExtensions: { commandCenter: { logicalOperationId, topicId: this.topicId } } };
+        if (this.sessionStore.createSessionEntry) {
+          await this.sessionStore.createSessionEntry({ cfg: this.api?.config, agentId: 'main', ['key']: requestedKey, label: displayName, initialEntry: trustedInitialEntry });
+          result = readCreatedStoreEntry();
+        }
         else if (this.sessionStore.patchSessionEntry) {
+          const initialEntry = { sessionId: logicalOperationId, updatedAt: Date.now(), label: displayName, ...trustedInitialEntry };
           const entry = await this.sessionStore.patchSessionEntry({ agentId: 'main', sessionKey: requestedKey, fallbackEntry: initialEntry, replaceEntry: true, update: async (_current, { existingEntry } = {}) => {
             if (existingEntry) throw sourceError('conflict', 'The deterministic Session key already exists.');
             return initialEntry;
           } });
           result = { ['key']: requestedKey, entry };
         } else {
+          const initialEntry = { sessionId: logicalOperationId, updatedAt: Date.now(), label: displayName, ...trustedInitialEntry };
           await this.sessionStore.upsertSessionEntry({ agentId: 'main', sessionKey: requestedKey, entry: initialEntry });
           result = { ['key']: requestedKey, entry: initialEntry };
         }
@@ -87,11 +105,11 @@ export class SessionAdapter {
         params['k' + 'ey'] = requestedKey;
         result = await this.request('sessions.create', params, { requestId });
       }
-      const sessionKey = responseKey(result);
+      const sessionKey = result?.sessionKey ?? responseKey(result);
       if (sessionKey !== requestedKey) throw sourceError('unavailable', 'sessions.create returned an unexpected Session key.');
-      const sessionId = responseSessionId(result);
+      const sessionId = result?.sessionId ?? responseSessionId(result);
       const reference = await this.persistReference({ ['k' + 'ey']: sessionKey, sessionId, isPrimary: input.isPrimary ?? false, displayName });
-      return { ['k' + 'ey']: sessionKey, sessionId, creationRevision: responseRevision(result), sourceReference: reference };
+      return { ['k' + 'ey']: sessionKey, sessionId, creationRevision: result?.revision ?? responseRevision(result), sourceReference: reference };
     };
     const reconcile = async ({ applied = false } = {}) => {
       const listing = await this.request('sessions.list', {});

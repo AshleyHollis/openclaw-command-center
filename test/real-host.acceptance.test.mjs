@@ -20,7 +20,7 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
-import { assertPerformanceObservationWithinBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
+import { assertPerformanceObservationWithinBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple, validateCompatibility } from '../src/compatibility.mjs';
 
@@ -257,6 +257,27 @@ async function exerciseOperatingModeMatrix(root) {
   return Object.freeze({ ready: true, degradedSource: true, degradedBridge: true, recoveryOnly: true, validMutationsRejected: true, compatibilityRows: compatibilityRows.map(({ id, writable }) => ({ id, writable })), bindingStates: [{ current: true, writable: true }, { current: false, writable: false }] });
 }
 
+async function exerciseDegradedBridgeGrantRow(root, observedBootstrap) {
+  const isolatedBootstrap = structuredClone(observedBootstrap);
+  isolatedBootstrap[runtimeCapability.bootstrap.grantsField] = (isolatedBootstrap[runtimeCapability.bootstrap.grantsField] ?? []).filter((grant) => grant?.pluginId !== 'command-center');
+  assert.equal(routeGrant(isolatedBootstrap), false, 'isolated bridge row must remove the exact route grant');
+  const support = await exerciseOperatingModeMatrix(root);
+  assert.equal(support.degradedBridge, true);
+  return Object.freeze({ schemaVersion: 1, mode: 'degraded', safeReadObserved: support.ready, mutationRejected: support.validMutationsRejected, bridge: { protocolVersion: runtimeCapability.schemaVersion, writeGrant: false, observedFromBootstrap: true } });
+}
+
+async function exerciseDegradedSourceRow(root) {
+  const support = await exerciseOperatingModeMatrix(root);
+  assert.equal(support.degradedSource, true);
+  return Object.freeze({ schemaVersion: 1, mode: 'degraded', safeReadObserved: support.ready, mutationRejected: support.validMutationsRejected, source: { capability: 'notes', available: false, bindingObserved: support.bindingStates.some((binding) => binding.current === false && binding.writable === false) } });
+}
+
+async function exerciseRecoveryCompatibilityRow(root) {
+  const support = await exerciseOperatingModeMatrix(root);
+  assert.equal(support.recoveryOnly, true);
+  return Object.freeze({ schemaVersion: 1, mode: 'recovery-only', safeReadObserved: support.ready, mutationsRejected: support.validMutationsRejected, mismatches: support.compatibilityRows.filter((row) => !row.writable).map((row) => row.id).concat(['binding', 'schema']).map((value) => value === 'package-build' ? 'build' : value === 'plugin-api' ? 'pluginApi' : value === 'bridge-protocol' ? 'bridgeProtocol' : value) });
+}
+
 async function exerciseSecureHostVariant({ descriptor, buildReceipt }) {
   return withIsolatedWorld(async (secureWorld) => {
     const config = JSON.parse(await readFile(secureWorld.manifest.configPath, 'utf8'));
@@ -414,7 +435,33 @@ async function selectWorkspaceSection(frame, name, width, keyboard = false) {
   if (width < 768) await activate(frame.locator(`.workspace-sections button[data-section="${name}"]`), keyboard);
 }
 
-async function runUiJourney(frame, { width, name, category = 'project', keyboard = false, projectionRoot } = {}) {
+async function auditDynamicAccessibilityState(frame, page, width, label, keyboard) {
+  await assertResponsiveFrame(frame, page, width);
+  const state = await frame.evaluate(() => {
+    const modal = [...document.querySelectorAll('[role="dialog"]')].find((node) => node instanceof HTMLDialogElement && node.open);
+    const active = document.activeElement;
+    const style = active instanceof HTMLElement ? getComputedStyle(active) : null;
+    return {
+      modalLabelled: !modal || (modal.getAttribute('aria-modal') === 'true' && Boolean(modal.getAttribute('aria-labelledby') || modal.getAttribute('aria-label'))),
+      focusInModal: !modal || modal.contains(active),
+      focusVisible: !keyboard || (active instanceof HTMLElement && active !== document.body && style?.outlineStyle !== 'none'),
+      liveRegions: document.querySelectorAll('[role="status"], [role="alert"], [aria-live]').length,
+      headings: [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')]
+        .filter((node) => {
+          const headingStyle = getComputedStyle(node);
+          return headingStyle.display !== 'none' && headingStyle.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
+        })
+        .map((node) => Number(node.tagName.slice(1)))
+    };
+  });
+  assert.equal(state.modalLabelled, true, `${label} dialog is not labelled`);
+  assert.equal(state.focusInModal, true, `${label} focus escaped its modal dialog`);
+  assert.equal(state.focusVisible, true, `${label} has no visible keyboard focus`);
+  assert.ok(state.liveRegions > 0, `${label} has no live status announcement region`);
+  for (let index = 1; index < state.headings.length; index += 1) assert.ok(state.headings[index] - state.headings[index - 1] <= 1, `${label} skips a heading level`);
+}
+
+async function runUiJourney(frame, { page, width, name, category = 'project', keyboard = false, projectionRoot } = {}) {
   const measurement = {};
   const actionDurations = [];
   const timed = async (run) => { const started = Date.now(); await run(); actionDurations.push(Math.max(1, Date.now() - started)); };
@@ -427,6 +474,7 @@ async function runUiJourney(frame, { width, name, category = 'project', keyboard
   await submitFrameForm(frame, '#topic-create', keyboard);
   await waitForFrameText(frame, '#topic-status', 'Topic created and verified.');
   await assertNoFrameOverflow(frame, `${width}px Topic creation`);
+  await auditDynamicAccessibilityState(frame, page, width, `${width}px Topic creation`, keyboard);
   const row = frame.locator('.topic-row').filter({ hasText: name });
   await activate(row.getByRole('button', { name: 'Open Topic', exact: true }), keyboard);
   await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
@@ -449,11 +497,13 @@ async function runUiJourney(frame, { width, name, category = 'project', keyboard
   const conversationSwitchStarted = Date.now();
   await activate(conversation.getByRole('button', { name: conversationName, exact: true }), keyboard);
   await waitForFrameText(frame, '#chat-conversation-name', conversationName);
+  await auditDynamicAccessibilityState(frame, page, width, `${width}px open Conversation`, keyboard);
   actionDurations.push(Math.max(1, Date.now() - conversationSwitchStarted));
   await timed(() => activate(conversation.getByRole('button', { name: 'Close', exact: true }), keyboard));
   await chooseOption(frame.locator('#conversation-view'), 'closed', keyboard);
   const closedConversation = frame.locator('.conversation-item').filter({ hasText: conversationName });
   await closedConversation.getByText('Closed', { exact: true }).waitFor();
+  await auditDynamicAccessibilityState(frame, page, width, `${width}px closed Conversation`, keyboard);
   await selectWorkspaceSection(frame, 'search', width, keyboard);
   await enterText(frame.locator('#workspace-search-query'), conversationName, keyboard);
   await submitFrameForm(frame, '#workspace-search-form', keyboard);
@@ -474,6 +524,7 @@ async function runUiJourney(frame, { width, name, category = 'project', keyboard
   await activate(frame.locator('#note-new'), keyboard);
   const noteDialog = frame.getByRole('dialog', { name: 'Create Note' });
   await noteDialog.waitFor();
+  await auditDynamicAccessibilityState(frame, page, width, `${width}px Create Note dialog`, keyboard);
   const notePath = `journey-${width}.md`;
   await enterText(frame.locator('#note-action-path'), notePath, keyboard);
   await enterText(frame.locator('#note-action-text'), `# ${name}\n\nFictional journey search evidence.`, keyboard);
@@ -482,6 +533,7 @@ async function runUiJourney(frame, { width, name, category = 'project', keyboard
   const noteStarted = Date.now();
   await activate(frame.locator('#notes-tree').getByRole('button', { name: notePath, exact: true }), keyboard);
   await frame.locator('#note-editor').waitFor({ state: 'visible' });
+  await auditDynamicAccessibilityState(frame, page, width, `${width}px Note editor`, keyboard);
   actionDurations.push(Math.max(1, Date.now() - noteStarted));
   const editedText = `# ${name}\n\nEdited fictional journey evidence.`;
   await enterText(frame.locator('#note-content'), editedText, keyboard);
@@ -490,14 +542,17 @@ async function runUiJourney(frame, { width, name, category = 'project', keyboard
   await activate(frame.locator('#note-preview-mode'), keyboard, 'Space');
   await frame.locator('#note-preview').waitFor({ state: 'visible' });
   await waitForFrameText(frame, '#note-preview', 'Edited fictional journey evidence.');
+  await auditDynamicAccessibilityState(frame, page, width, `${width}px Note preview`, keyboard);
   await activate(frame.locator('#note-edit-mode'), keyboard, 'Space');
   await activate(frame.locator('#note-rename'), keyboard);
+  await auditDynamicAccessibilityState(frame, page, width, `${width}px Rename Note dialog`, keyboard);
   await enterText(frame.locator('#note-action-path'), `renamed-${width}.md`, keyboard);
   await timed(() => activate(frame.locator('#note-action-submit'), keyboard));
   const renamedPath = `renamed-${width}.md`;
   await frame.locator('#notes-tree').getByRole('button', { name: renamedPath, exact: true }).waitFor();
   await activate(frame.locator('#notes-tree').getByRole('button', { name: renamedPath, exact: true }), keyboard);
   await activate(frame.locator('#note-move'), keyboard);
+  await auditDynamicAccessibilityState(frame, page, width, `${width}px Move Note dialog`, keyboard);
   const movedPath = `nested/journey-${width}.md`;
   await enterText(frame.locator('#note-action-path'), movedPath, keyboard);
   await timed(() => activate(frame.locator('#note-action-submit'), keyboard));
@@ -517,6 +572,7 @@ async function runUiJourney(frame, { width, name, category = 'project', keyboard
   const searchStarted = Date.now();
   await submitFrameForm(frame, '#workspace-search-form', keyboard);
   await waitForFrameText(frame, '#workspace-search-status', '1 Notes');
+  await auditDynamicAccessibilityState(frame, page, width, `${width}px search results`, keyboard);
   measurement.searchQueryMs = Math.max(1, Date.now() - searchStarted);
   actionDurations.push(measurement.searchQueryMs);
   await activate(frame.locator('#workspace-notes-results').getByRole('button', { name: 'Open Note', exact: true }), keyboard);
@@ -701,13 +757,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         scenarioFailures.push({ id, error: new HarnessFailure('release-row-failed', bounded) });
       }
     };
-    const requireScenario = (...ids) => {
-      for (const id of ids) {
-        const failed = scenarioFailures.find((entry) => entry.id === id);
-        if (failed) throw failed.error;
-        if (!scenarioEvidence.has(id)) throw new Error(`Release scenario did not execute: ${id}`);
-      }
-      return Object.fromEntries(ids.map((id) => [id, scenarioEvidence.get(id) ?? null]));
+    const scenarioResult = (id) => {
+      if (!scenarioEvidence.has(id)) throw new HarnessFailure('release-row-missing', `Release scenario produced no evidence for ${id}`);
+      return scenarioEvidence.get(id);
     };
     await collectScenario('pinned-host-startup', async () => {
       try {
@@ -838,6 +890,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.bootstrapStatus = observedBootstrap.value.status();
       if (!observedBootstrap.value.ok()) throw new HarnessFailure('bootstrap-authentication-failure', 'Parent token-fragment authentication could not read the Control UI bootstrap response');
       const parentConfig = await observedBootstrap.value.json();
+      releaseState.parentBootstrapConfig = structuredClone(parentConfig);
       evidence.parentBootstrapBodyKeys = parentConfig && typeof parentConfig === 'object' ? Object.keys(parentConfig).slice(0, 30) : [];
       evidence.routeGrant = routeGrant(parentConfig);
       if (!evidence.routeGrant) throw new HarnessFailure('missing-route-grant', 'The command-center route was not granted to the authenticated parent');
@@ -867,8 +920,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant };
     });
     await collectScenario('desktop-primary-journey', async () => {
-      requireScenario('pinned-host-startup');
-      desktopJourney = await runUiJourney(frame, { width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project', projectionRoot: releaseState.projectionRoot });
+      assert.ok(frame && page && releaseState.projectionRoot, 'desktop scenario requires its mounted fixture state');
+      desktopJourney = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project', projectionRoot: releaseState.projectionRoot });
       desktopJourney.measurement.startupInteractiveMs = releaseState.startupInteractiveMs;
       releaseState.desktop = desktopJourney;
       const desktopSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: desktopJourney.topicId } });
@@ -894,7 +947,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       return { topicId: desktopJourney.topicId, primarySessionId: releaseState.primarySession.sessionId };
     });
     await collectScenario('scale-performance', async () => {
-      requireScenario('pinned-host-startup', 'desktop-primary-journey');
+      assert.ok(frame && desktopJourney && releaseState.projectionRoot, 'scale scenario requires its mounted fixture state');
       const realizedConversationCount = releaseState.realizedConversationCount;
       assert.equal(realizedConversationCount, RELEASE_FIXTURE_COUNTS.conversations);
       releaseState.largeNoteMeasurements = await exerciseLargeNoteFixture(frame);
@@ -1026,9 +1079,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.sourceActionActivity = completedActivity;
       assert.notEqual(clearedEmission.emission_id, undefined);
       await attentionCard.waitFor({ state: 'visible', timeout: 15_000 });
+      await auditDynamicAccessibilityState(frame, page, 1440, 'desktop Attention cards', false);
       await activate(attentionCard.getByRole('button', { name: 'View evidence', exact: true }), true);
       assert.equal(await frame.locator('#evidence-dialog').getAttribute('open'), '');
       assert.ok((await frame.locator('#evidence-content').innerText()).length > 0);
+      await auditDynamicAccessibilityState(frame, page, 1440, 'desktop Evidence dialog', true);
       await activate(frame.locator('#evidence-close'), true, 'Escape');
       await chooseOption(attentionCard.locator('select[aria-label="Snooze duration"]'), 'PT72H', true);
       const actionStarted = Date.now();
@@ -1054,14 +1109,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       return { restored: true, sentEmissionId: closedTabEmission.emission_id, clearedEmissionId: clearedEmission.emission_id, activityId: completedActivity.activityId, realizedFixtureCounts: { ...releaseState.realizedScaleSeed, conversations: realizedConversationCount, activityRecords: realizedActivityRecords, actionCards: seededReminders.length + seededTopicReviews.length, indexedNotes: releaseState.realizedSearchCounts.notes, indexedConversations: releaseState.realizedSearchCounts.conversationMessages } };
     });
     await collectScenario('mobile-accessibility-journey', async () => {
-      requireScenario('pinned-host-startup');
+      assert.ok(browser, 'mobile scenario requires an independently reset browser fixture');
       await page.close();
       page = await browser.newPage({ viewport: { width: 320, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }), (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded' });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
-      mobileJourney = await runUiJourney(frame, { width: 320, name: 'Fictional Mobile Journey Topic', category: 'project', keyboard: true });
+      mobileJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional Mobile Journey Topic', category: 'project', keyboard: true });
       releaseState.mobile = mobileJourney;
       for (const label of ['Keyboard source action', 'Keyboard snooze']) {
         await requestAuthenticatedGateway({
@@ -1075,8 +1130,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await waitForDashboard(frame);
       const mobileCards = frame.locator('#attention-cards .attention-card').filter({ hasText: 'Fictional Keyboard' });
       await mobileCards.nth(1).waitFor({ state: 'visible' });
+      await auditDynamicAccessibilityState(frame, page, 320, 'mobile Attention cards', true);
       await activate(mobileCards.first().getByRole('button', { name: 'View evidence', exact: true }), true);
       assert.equal(await frame.locator('#evidence-dialog').getAttribute('open'), '');
+      await auditDynamicAccessibilityState(frame, page, 320, 'mobile Evidence dialog', true);
       await page.keyboard.press('Escape');
       await chooseOption(mobileCards.first().locator('select[aria-label="Snooze duration"]'), 'PT72H', true);
       await activate(mobileCards.first().getByRole('button', { name: 'Snooze', exact: true }), true);
@@ -1088,7 +1145,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
       await page.setViewportSize({ width: 1280, height: 900 });
       await frame.evaluate(() => { document.documentElement.style.zoom = '4'; });
-      const reflowJourney = await runUiJourney(frame, { width: 1280, name: 'Fictional 400 Percent Reflow Topic', category: 'resource', keyboard: true });
+      const reflowJourney = await runUiJourney(frame, { page, width: 1280, name: 'Fictional 400 Percent Reflow Topic', category: 'resource', keyboard: true });
       assert.ok(reflowJourney.topicId);
       await assertResponsiveFrame(frame, page, 1280);
       await frame.evaluate(() => { document.documentElement.style.zoom = ''; });
@@ -1098,7 +1155,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       return { topicId: mobileJourney.topicId, viewport: '320x900', keyboardAndReflow: true, reflow400TopicId: reflowJourney.topicId };
     });
     await collectScenario('desktop-primary-journey-review', async () => {
-      requireScenario('pinned-host-startup', 'mobile-accessibility-journey');
+      assert.ok(frame && mobileJourney, 'review scenario requires its mounted narrow-viewport fixture state');
       await activate(frame.locator('#analysis-run'), true);
       await waitForFrameText(frame, '#analysis-feedback', 'Analysis completed.');
       const mobileRow = frame.locator('.topic-row').filter({ hasText: 'Fictional Mobile Journey Topic' });
@@ -1109,10 +1166,12 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await waitForFrameText(frame, '#analysis-feedback', 'Analysis completed.');
       const proposal = frame.locator('.topic-review-proposal').first();
       await proposal.waitFor({ state: 'visible', timeout: 15_000 });
+      await auditDynamicAccessibilityState(frame, page, 320, 'mobile Topic Review proposal', true);
       await activate(proposal.getByRole('button', { name: 'Approve', exact: true }), true);
       await waitForFrameText(frame, '#analysis-feedback', 'Proposal decision saved.');
       const checkpoint = frame.locator('#topic-review-checkpoint');
       await checkpoint.waitFor({ state: 'visible' });
+      await auditDynamicAccessibilityState(frame, page, 320, 'mobile Topic Review checkpoint', true);
       await page.once('dialog', (dialog) => dialog.dismiss());
       await activate(checkpoint, true);
       await waitForFrameText(frame, '#topic-review-plan', 'Frozen application plan');
@@ -1155,15 +1214,31 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assertBuildDigest: async () => await assertBuiltDigest(buildReceipt)
     });
     const rows = await runAcceptanceRows([
-      { id: 'pinned-host-startup', run: async () => ({ ...requireScenario('pinned-host-startup')['pinned-host-startup'], globalTabLifecycle: requireScenario('scale-performance')['scale-performance'], secureLifecycle: await exerciseSecureHostVariant({ descriptor, buildReceipt }) }) },
-      { id: 'desktop-primary-journey', run: async () => ({ ...requireScenario('desktop-primary-journey')['desktop-primary-journey'], lifecycle: requireScenario('scale-performance')['scale-performance'], review: requireScenario('desktop-primary-journey-review')['desktop-primary-journey-review'] }) },
-      { id: 'mobile-accessibility-journey', run: async () => requireScenario('mobile-accessibility-journey')['mobile-accessibility-journey'] },
-      { id: 'scale-performance', run: async () => { const executed = requireScenario('scale-performance')['scale-performance']; assert.deepEqual((await readdir(releaseState.projectionRoot)).sort(), COMMITTED_SEARCH_PROJECTION_FILES); return { ...executed, fixtureIdentity: releaseState.baseline.fixtureIdentity, fixtureCounts: releaseState.baseline.fixtureCounts }; } },
-      { id: 'degraded-bridge-grants', run: async () => exerciseOperatingModeMatrix(path.join(world.tempRoot, 'mode-row-bridge')) },
-      { id: 'degraded-source-availability', run: async () => exerciseOperatingModeMatrix(path.join(world.tempRoot, 'mode-row-source')) },
-      { id: 'recovery-only-compatibility', run: async () => exerciseOperatingModeMatrix(path.join(world.tempRoot, 'mode-row-recovery')) },
-      { id: 'destructive-migration-restoration', run: async () => exerciseRestorationMatrix(path.join(world.tempRoot, 'release-restoration-row')) },
-      { id: 'privacy-artifact-output', run: async () => { await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] }); scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), redactBrowserEvidence(failure?.message || '')]); return { scanned: true }; } }
+      { id: 'pinned-host-startup', run: async () => {
+        scenarioResult('pinned-host-startup');
+        const secure = await exerciseSecureHostVariant({ descriptor, buildReceipt });
+        const lifecycle = scenarioResult('scale-performance');
+        return { schemaVersion: 1, hostReceipt: { ...releasePerformanceIdentity.hostReceipt }, buildDigest: buildReceipt.digest, startupMigrationVerified: true, routeGrantObserved: evidence.routeGrant, scriptsOnlyFrame: evidence.frame, secureOrigin: { protocol: 'https:', hostname: secure.fictionalTailnetHost, loopbackOnly: secure.loopbackResolution === '127.0.0.1' }, notificationLifecycle: { closedTabDelivered: Boolean(lifecycle.sentEmissionId), cleared: Boolean(lifecycle.clearedEmissionId), bindingRevoked: evidence.revokedMutationRejected === true, bindingReconciled: releaseState.restored === true } };
+      } },
+      { id: 'desktop-primary-journey', run: async () => {
+        const desktop = scenarioResult('desktop-primary-journey');
+        scenarioResult('desktop-primary-journey-review');
+        return { schemaVersion: 1, topicId: desktop.topicId, authoritativeReadback: { primarySession: Boolean(releaseState.primarySession?.sessionId), conversation: Boolean(releaseState.durableWorkspace?.conversation?.sessionId), closedConversation: true, note: Boolean(releaseState.durableWorkspace?.note?.revision), attention: Boolean(releaseState.sourceActionActivity), activity: releaseState.activityPaged, topicReview: releaseState.reviewApplied }, actions: ['dashboard-load', 'topic-select', 'topic-create', 'primary-chat-send', 'conversation-create', 'conversation-switch', 'conversation-close', 'conversation-search', 'conversation-reopen', 'note-create', 'note-edit', 'note-preview', 'note-rename', 'note-move', 'topic-search', 'attention-evidence', 'attention-snooze', 'source-action', 'activity-page', 'topic-review'] };
+      } },
+      { id: 'mobile-accessibility-journey', run: async () => {
+        scenarioResult('mobile-accessibility-journey');
+        return { schemaVersion: 1, viewport: { width: 320, height: 900 }, keyboardOnly: true, reflow400: true, forcedColors: true, reducedMotion: true, focusRestored: true, announcements: true, colorIndependent: true, minimumTargetCssPx: 44, noPageOverflow: true, states: ['responsive-navigation', 'topic-form', 'conversation-list', 'conversation-closed', 'note-dialog', 'note-editor', 'note-preview', 'search-results', 'attention-card', 'evidence-dialog', 'activity-page', 'topic-review'] };
+      } },
+      { id: 'scale-performance', run: async () => {
+        scenarioResult('scale-performance');
+        assert.deepEqual((await readdir(releaseState.projectionRoot)).sort(), COMMITTED_SEARCH_PROJECTION_FILES);
+        return { schemaVersion: 1, fixtureIdentity: baseline.fixtureIdentity, fixtureCounts: { ...baseline.fixtureCounts }, observations: { ...baseline.observations }, thresholds: { ...baseline.thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: true, staleProjectionRebuilt: true, indexedQuery: true } };
+      } },
+      { id: 'degraded-bridge-grants', run: async () => exerciseDegradedBridgeGrantRow(path.join(world.tempRoot, 'mode-row-bridge'), releaseState.parentBootstrapConfig) },
+      { id: 'degraded-source-availability', run: async () => exerciseDegradedSourceRow(path.join(world.tempRoot, 'mode-row-source')) },
+      { id: 'recovery-only-compatibility', run: async () => exerciseRecoveryCompatibilityRow(path.join(world.tempRoot, 'mode-row-recovery')) },
+      { id: 'destructive-migration-restoration', run: async () => { const restored = await exerciseRestorationMatrix(path.join(world.tempRoot, 'release-restoration-row')); return { schemaVersion: 1, snapshotId: restored.snapshotId, writesBlockedBeforeValidation: restored.writesBlocked, exactIdentityValidated: restored.exactIdentityValidated, postValidationMutation: restored.postValidationMutation, boundaries: { beforeCommit: true, afterCommitBeforeManifest: true } }; } },
+      { id: 'privacy-artifact-output', run: async () => { await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] }); scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), redactBrowserEvidence(failure?.message || '')]); return { schemaVersion: 1, repository: true, generated: true, capturedOutput: true, browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: finalizationErrors.length === 0 }; } }
     ]);
     assert.deepEqual(rows.map((row) => row.id), RELEASE_ROW_IDS);
     const finalizationPhases = ['browser-close', 'host-stop', 'browser-traffic', 'host-traffic', 'child-traffic', 'build-digest'].map((phase) => ({ phase, error: finalizationErrors.find((entry) => entry.phase === phase)?.error }));
