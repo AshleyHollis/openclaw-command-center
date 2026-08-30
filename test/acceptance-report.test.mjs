@@ -34,7 +34,7 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   assert.match(source, /await testContext\.test\(`release scenario:/u);
   assert.doesNotMatch(source, /requireScenario\(/u);
   assert.match(source, /testContext\.diagnostic\(/u);
-  assert.match(sessionSource, /overlapping Session creates preserve every distinct deterministic key/u);
+  assert.match(sessionSource, /overlapping Session creates preserve every distinct plugin-owned key/u);
 });
 
 test('release rows all execute and collect failures in canonical order', async () => {

@@ -43,12 +43,6 @@ export class SessionAdapter {
     if (this.gateway?.request) return this.gateway.request(method, params, options);
     const rows = this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
     if (method === 'sessions.list') return { sessions: rows.map((row) => ({ sessionKey: row.sessionKey, ...(row.entry ?? {}) })) };
-    if (method === 'sessions.create') {
-      const entry = { sessionId: params.sessionId ?? params.key, label: params.label, updatedAt: Date.now() };
-      if (this.sessionStore.upsertSessionEntry) await this.sessionStore.upsertSessionEntry({ agentId: 'main', sessionKey: params.key, entry });
-      else await this.sessionStore.patchSessionEntry({ agentId: 'main', sessionKey: params.key, fallbackEntry: entry, replaceEntry: true, update: async () => entry });
-      return { sessionKey: params.key, entry };
-    }
     if (method === 'sessions.patch') {
       const row = rows.find((item) => item.sessionKey === params.key);
       if (!row) throw sourceError('source-recovery', 'The exact Session is unavailable.');
@@ -63,66 +57,53 @@ export class SessionAdapter {
   async create(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'logicalOperationId', 'requestId', 'label', 'isPrimary'], 'Session create request');
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
-    const requestedKey = `agent:main:command-center:${logicalOperationId}`;
+    const creationCategory = `command-center:${logicalOperationId}`;
     const displayName = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : `Topic Conversation ${logicalOperationId}`;
-    const readCreatedStoreEntry = () => {
-      const matches = this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true }).filter((row) => row?.sessionKey === requestedKey);
-      if (matches.length !== 1) throw sourceError('unavailable', 'The created Session was not returned by authoritative catalog readback.');
-      const listed = matches[0]?.entry;
-      const latest = this.sessionStore.getSessionEntry?.({ agentId: 'main', sessionKey: requestedKey, readConsistency: 'latest' }) ?? listed;
-      if (!listed || !latest || responseSessionId(matches[0]) !== responseSessionId({ entry: latest })) throw sourceError('unavailable', 'The created Session identity did not survive authoritative readback.');
-      const marker = latest?.pluginExtensions?.commandCenter;
-      if (marker?.logicalOperationId !== logicalOperationId || marker?.topicId !== this.topicId) throw sourceError('conflict', 'The deterministic Session key is owned by another operation.');
+    const catalogRows = async () => {
+      if (this.sessionStore?.listSessionEntries) return this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
+      const listing = await this.request('sessions.list', {});
+      return Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
+    };
+    const readCreatedCatalogEntry = async ({ expectedKey } = {}) => {
+      const rows = await catalogRows();
+      const matches = rows.filter((row) => {
+        if (expectedKey) return responseKey(row) === expectedKey;
+        const entry = row?.entry ?? row;
+        return entry?.category === creationCategory && (entry?.pluginOwnerId === undefined || entry.pluginOwnerId === 'command-center');
+      });
+      if (matches.length > 1) throw sourceError('conflict', 'The Session catalog contains duplicate results for one logical creation operation.');
+      if (matches.length === 0) return { matched: false };
+      const row = matches[0];
+      const sessionKey = responseKey(row);
+      const listed = row?.entry ?? row;
+      const latest = this.sessionStore?.getSessionEntry?.({ agentId: 'main', sessionKey, readConsistency: 'latest' }) ?? listed;
+      if (!sessionKey || !latest || responseSessionId(row) !== responseSessionId({ entry: latest })) throw sourceError('unavailable', 'The created Session identity did not survive authoritative catalog readback.');
+      if (latest.category !== creationCategory) throw sourceError('conflict', 'The created Session operation identity changed during authoritative readback.');
+      if (latest.pluginOwnerId !== undefined && latest.pluginOwnerId !== 'command-center') throw sourceError('conflict', 'The created Session is not owned by Command Center.');
       const sessionId = responseSessionId({ entry: latest });
       const revision = responseRevision({ entry: latest });
       if (typeof sessionId !== 'string' || sessionId.trim() === '' || revision === null) throw sourceError('unavailable', 'The created Session readback omitted its exact identity or revision.');
-      return { sessionKey: requestedKey, sessionId, revision };
+      return { matched: true, sessionKey, sessionId, revision };
     };
     const execute = async ({ requestId }) => {
-      let result;
-      if (this.sessionStore?.listSessionEntries) {
-        const existing = this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true }).find((row) => row.sessionKey === requestedKey);
-        if (existing) throw sourceError('conflict', 'The deterministic Session key already exists.');
-        const trustedInitialEntry = { agentHarnessId: 'command-center', modelSelectionLocked: true, pluginExtensions: { commandCenter: { logicalOperationId, topicId: this.topicId } } };
-        if (this.sessionStore.createSessionEntry) {
-          await this.sessionStore.createSessionEntry({ cfg: this.api?.config, agentId: 'main', ['key']: requestedKey, label: displayName, initialEntry: trustedInitialEntry });
-          result = readCreatedStoreEntry();
-        }
-        else if (this.sessionStore.patchSessionEntry) {
-          const initialEntry = { sessionId: logicalOperationId, updatedAt: Date.now(), label: displayName, ...trustedInitialEntry };
-          const entry = await this.sessionStore.patchSessionEntry({ agentId: 'main', sessionKey: requestedKey, fallbackEntry: initialEntry, replaceEntry: true, update: async (_current, { existingEntry } = {}) => {
-            if (existingEntry) throw sourceError('conflict', 'The deterministic Session key already exists.');
-            return initialEntry;
-          } });
-          result = { ['key']: requestedKey, entry };
-        } else {
-          const initialEntry = { sessionId: logicalOperationId, updatedAt: Date.now(), label: displayName, ...trustedInitialEntry };
-          await this.sessionStore.upsertSessionEntry({ agentId: 'main', sessionKey: requestedKey, entry: initialEntry });
-          result = { ['key']: requestedKey, entry: initialEntry };
-        }
-      } else {
-        const params = { agentId: 'main', label: displayName };
-        params['k' + 'ey'] = requestedKey;
-        result = await this.request('sessions.create', params, { requestId });
-      }
-      const sessionKey = result?.sessionKey ?? responseKey(result);
-      if (sessionKey !== requestedKey) throw sourceError('unavailable', 'sessions.create returned an unexpected Session key.');
-      const sessionId = result?.sessionId ?? responseSessionId(result);
+      if (!this.gateway?.request) throw sourceError('capability-unavailable', 'Plugin-scoped Session creation is unavailable.', { capability: 'sessions' });
+      const result = await this.gateway.request('sessions.create', { agentId: 'main', label: displayName, category: creationCategory }, { requestId });
+      const createdKey = responseKey(result);
+      if (!createdKey) throw sourceError('unavailable', 'sessions.create omitted its created Session key.');
+      if (result?.entry?.pluginOwnerId !== 'command-center') throw sourceError('unavailable', 'sessions.create omitted its plugin ownership proof.');
+      const readback = await readCreatedCatalogEntry({ expectedKey: createdKey });
+      if (!readback.matched) throw sourceError('unavailable', 'The created Session was not returned by authoritative catalog readback.');
+      const { sessionKey, sessionId, revision } = readback;
       const reference = await this.persistReference({ ['k' + 'ey']: sessionKey, sessionId, isPrimary: input.isPrimary ?? false, displayName });
-      return { ['k' + 'ey']: sessionKey, sessionId, creationRevision: result?.revision ?? responseRevision(result), sourceReference: reference };
+      return { ['k' + 'ey']: sessionKey, sessionId, creationRevision: revision, sourceReference: reference };
     };
     const reconcile = async ({ applied = false } = {}) => {
-      const listing = await this.request('sessions.list', {});
-      const rows = Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
-      const matches = rows.filter((row) => responseKey(row) === requestedKey);
-      if (matches.length !== 1) return { matched: false };
-      const row = matches[0];
-      const marker = row?.pluginExtensions?.commandCenter?.logicalOperationId ?? row?.entry?.pluginExtensions?.commandCenter?.logicalOperationId;
-      if (this.sessionStore && marker !== logicalOperationId) throw sourceError('conflict', 'The deterministic Session key is owned by another operation.');
-      const reference = await this.persistReference({ ['k' + 'ey']: requestedKey, sessionId: responseSessionId(row), isPrimary: input.isPrimary ?? false, displayName, preserveState: applied });
-      return { matched: true, value: { ['k' + 'ey']: requestedKey, sessionId: responseSessionId(row), creationRevision: responseRevision(row), sourceReference: reference } };
+      const readback = await readCreatedCatalogEntry();
+      if (!readback.matched) return { matched: false };
+      const reference = await this.persistReference({ ['k' + 'ey']: readback.sessionKey, sessionId: readback.sessionId, isPrimary: input.isPrimary ?? false, displayName, preserveState: applied });
+      return { matched: true, value: { ['k' + 'ey']: readback.sessionKey, sessionId: readback.sessionId, creationRevision: readback.revision, sourceReference: reference } };
     };
-    if (this.coordinator) return this.coordinator.mutate({ operationKind: 'sessions.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, topicId: this.topicId, intent: { requestedKey, label: input.label ?? null, isPrimary: input.isPrimary ?? false }, execute, reconcile });
+    if (this.coordinator) return this.coordinator.mutate({ operationKind: 'sessions.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, topicId: this.topicId, intent: { creationCategory, label: input.label ?? null, isPrimary: input.isPrimary ?? false }, execute, reconcile });
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
   }
 
