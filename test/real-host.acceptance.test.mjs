@@ -286,7 +286,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         assert.equal(imported[index].text, occurrence.text);
         assert.deepEqual(imported[index].__openclaw.legacyDiscordV1, importedProvenance(migrationExport.channels[0].channelId, occurrence));
       }
-      assert.deepEqual(await readdir(path.dirname(databasePath)), ['metadata.sqlite']);
+      assert.deepEqual((await readdir(path.dirname(databasePath))).sort(), ['metadata.sqlite', 'projections']);
       const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try {
         assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, COMMAND_CENTER_SCHEMA_VERSION);
