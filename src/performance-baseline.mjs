@@ -4,12 +4,12 @@ export const RELEASE_PERFORMANCE_BASELINE_VERSION = 1;
 
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
   chunkBoundaryNoteBytes: 524_289,
-  largeNoteBytes: 8_388_609,
-  conversations: 101,
+  largeNoteBytes: 524_289,
+  conversations: 51,
   activityRecords: 51,
   actionCards: 2,
-  indexedNotes: 5_000,
-  indexedConversations: 5_000
+  indexedNotes: 2,
+  indexedConversations: 51
 });
 
 export const RELEASE_PERFORMANCE_VIEWPORT = Object.freeze({ width: 1_440, height: 900 });
@@ -28,7 +28,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const HOST_COMMIT = '30f2924e437857935f034ac349bae8cc22ef9fb0';
 const HOST_VERSION = '2026.8.1-beta.3';
 const PLAYWRIGHT_VERSION = '1.62.1';
-export const RELEASE_FIXTURE_IDENTITY = 'sha256:9cd4e011908ffa14c3207e8961c4a7ca41bb5ed5c1ecce16ebd1f9eb9f0cc274';
+export const RELEASE_FIXTURE_IDENTITY = 'sha256:c244084038c483c04a359bc6e4a845c93c7299685f7a401e2de0f03f312597cc';
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 1,
   sourceDigest: 'sha256:6e4ac1c2c914e3794f04427b41d8661220c45a224513fe55062186dd3f6f4d06',

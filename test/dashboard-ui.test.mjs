@@ -26,6 +26,28 @@ test('Dashboard markup keeps the required first-class regions and narrow flow la
   assert.match(index, /id="note-action-dialog"[^>]*aria-describedby="note-action-status"/u);
 });
 
+test('deferred shell initialization exposes both bridge globals before readiness resolves', { skip: !existsSync(chromium.executablePath()) && 'Playwright browser is supplied by the isolated evaluator' }, async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(index);
+    await page.evaluate(() => {
+      globalThis.fetch = async () => ({ ok: true, async json() { return { schemaVersion: 1, status: 'applied', result: { serverTime: '2026-08-30T00:00:00.000Z', attentionBadgeCount: 0, attention: [], inProgress: [], comingUp: [], topics: [], activity: { records: [], nextOffset: null, hasMore: false } } }; } });
+      window.addEventListener('message', (event) => {
+        const payload = event.data?.payload;
+        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
+      });
+    });
+    const readiness = page.waitForFunction(async () => {
+      if (!window.CommandCenterTopics || !window.CommandCenterSearch) return false;
+      await Promise.all([window.CommandCenterTopics.ready, window.CommandCenterSearch.ready]);
+      return typeof window.CommandCenterTopics.loadTopics === 'function' && typeof window.CommandCenterSearch.search === 'function';
+    });
+    await page.addScriptTag({ content: app });
+    await readiness;
+  } finally { await browser.close(); }
+});
+
 test('wide and narrow Topic launchers and topic.open actions open the exact verified Topic', { skip: !existsSync(chromium.executablePath()) && 'Playwright browser is supplied by the isolated evaluator' }, async () => {
   const browser = await chromium.launch({ headless: true });
   try {

@@ -26,11 +26,24 @@ async function gitPaths(root, args) {
   return (await gitText(root, args)).split('\0').filter(Boolean);
 }
 
-export async function repositoryPaths(root, generated = []) {
-  const [tracked, staged, untracked] = await Promise.all([
-    gitPaths(root, ['ls-files', '-z']), gitPaths(root, ['diff', '--cached', '--name-only', '-z']), gitPaths(root, ['ls-files', '--others', '--exclude-standard', '-z'])
-  ]);
-  return [...new Set([...tracked, ...staged, ...untracked, ...generated])].map((value) => path.resolve(root, value));
+async function exactGitRoot(root) {
+  try {
+    const discovered = path.resolve((await gitText(root, ['rev-parse', '--show-toplevel'])).trim());
+    return discovered === path.resolve(root);
+  } catch { return false; }
+}
+
+export async function repositoryPaths(root, generated = [], { isGitRoot = undefined } = {}) {
+  const useGit = isGitRoot ?? await exactGitRoot(root);
+  if (useGit) {
+    const [tracked, staged, untracked] = await Promise.all([
+      gitPaths(root, ['ls-files', '-z']), gitPaths(root, ['diff', '--cached', '--name-only', '-z']), gitPaths(root, ['ls-files', '--others', '--exclude-standard', '-z'])
+    ]);
+    return [...new Set([...tracked, ...staged, ...untracked, ...generated])].map((value) => path.resolve(root, value));
+  }
+  const excludedSnapshotEntries = new Set(['.git', 'node_modules', '.codex-ticket-ssd.json', '.bundle-digest']);
+  const snapshotEntries = (await readdir(root)).filter((value) => !excludedSnapshotEntries.has(value));
+  return [...new Set([...snapshotEntries, ...generated])].map((value) => path.resolve(root, value));
 }
 
 function within(root, filename) {
@@ -105,8 +118,13 @@ export async function scanRepositorySafety(root, { generated = [], read = readFi
   const findings = [];
   const visited = new Set();
   const excludedRoots = excludedControllerRoots(root, controllerRoots);
-  for (const filename of await repositoryPaths(root, generated)) {
+  const isGitRoot = await exactGitRoot(root);
+  for (const filename of await repositoryPaths(root, generated, { isGitRoot })) {
     await scanPath(root, filename, findings, read, visited, excludedRoots);
+  }
+  if (!isGitRoot) {
+    if (findings.length) throw new Error(`Repository safety scan failed: ${findings.map((finding) => `${finding.path} (${finding.rule})`).join(', ')}`);
+    return findings;
   }
   const staged = await gitPaths(root, ['diff', '--cached', '--name-only', '-z']);
   for (const relative of staged) {

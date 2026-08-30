@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { assertAcceptanceReportPassed, createAcceptanceReport, RELEASE_ROW_IDS, runAcceptanceRows } from '../src/acceptance-report.mjs';
+
+test('real-host aggregate owns scenario lifetimes without nested node:test children', async () => {
+  const source = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /testContext\.test\(/u);
+  assert.match(source, /collectScenario\('pinned-host-startup'/u);
+  assert.match(source, /testContext\.diagnostic\(/u);
+});
 
 test('release rows all execute and collect failures in canonical order', async () => {
   const visited = [];

@@ -137,3 +137,36 @@ test('fails closed when candidate content cannot be read', async () => {
     await rm(fixture, { force: true });
   }
 });
+
+async function withIgnoredAncestorSnapshot(run) {
+  const parent = await mkdtemp(path.join(os.tmpdir(), 'command-center-safety-parent-'));
+  try {
+    await execute('git', ['init', '--quiet', parent]);
+    await writeFile(path.join(parent, '.gitignore'), 'tmp/\n');
+    const snapshot = path.join(parent, 'tmp', 'candidate');
+    await mkdir(path.join(snapshot, 'src'), { recursive: true });
+    await writeFile(path.join(snapshot, 'package.json'), '{"name":"fictional-snapshot"}\n');
+    await writeFile(path.join(snapshot, 'src', 'safe.mjs'), 'export const safe = true;\n');
+    await run(snapshot);
+  } finally { await rm(parent, { recursive: true, force: true }); }
+}
+
+test('Gitless snapshot nested beneath an ignored ancestor repository scans safe content', async () => {
+  await withIgnoredAncestorSnapshot(async (snapshot) => {
+    await scanRepositorySafety(snapshot);
+  });
+});
+
+test('Gitless snapshot nested beneath an ignored ancestor repository rejects unsafe source', async () => {
+  await withIgnoredAncestorSnapshot(async (snapshot) => {
+    await writeFile(path.join(snapshot, 'src', 'unsafe.mjs'), fictionalBearer);
+    await assert.rejects(scanRepositorySafety(snapshot), /src\/unsafe\.mjs/u);
+  });
+});
+
+test('Gitless snapshot nested beneath an ignored ancestor repository rejects captured output', async () => {
+  await withIgnoredAncestorSnapshot(async (snapshot) => {
+    await writeFile(path.join(snapshot, 'captured-output.txt'), fictionalBearer);
+    await assert.rejects(scanRepositorySafety(snapshot), /captured-output\.txt/u);
+  });
+});
