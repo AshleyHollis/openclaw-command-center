@@ -61,11 +61,11 @@ test('owned projection store publishes a versioned disposable SQLite FTS store',
     assert.equal(result[0].folderReferenceId, 'folder:one');
     assert.deepEqual(result[0].snippetHighlights.map(({ start, end }) => result[0].snippet.slice(start, end)), ['alpha']);
     assert.equal(store.query({ topicId: 'topic-one', query: 'CAFÉ' }).length, 1);
-    const folderReference = { version: 1, referenceId: 'folder:one', topicId: 'topic-one', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/topic-one', observedRevision: null, createdAt: null, updatedAt: null };
+    const noteReference = { version: 1, referenceId: 'note:one', topicId: 'topic-one', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/topic-one/one.md', observedRevision: 'sha256:one', createdAt: null, updatedAt: null };
     const exactNote = {
-      kind: 'note', topicId: 'topic-one', sourceReference: folderReference, path: result[0].path, heading: result[0].heading, snippet: result[0].snippet, highlights: result[0].snippetHighlights,
+      kind: 'note', topicId: 'topic-one', sourceReference: noteReference, path: result[0].path, heading: result[0].heading, snippet: result[0].snippet, highlights: result[0].snippetHighlights,
       contextBefore: result[0].context.before, contextAfter: result[0].context.after,
-      navigation: { kind: 'note', topicId: 'topic-one', referenceId: folderReference.referenceId, path: 'one.md', heading: 'Heading', observedRevision: 'sha256:one' }
+      navigation: { kind: 'note', topicId: 'topic-one', referenceId: noteReference.referenceId, path: 'one.md', heading: 'Heading', observedRevision: 'sha256:one' }
     };
     const validResponse = { schemaVersion: 1, topicId: 'topic-one', query: 'alpha', notes: { results: [exactNote] }, conversations: { results: [] } };
     const adapted = await createSearchAdapter({ provider: { query: async () => validResponse } }).query({ schemaVersion: 1, topicId: 'topic-one', query: 'alpha' });

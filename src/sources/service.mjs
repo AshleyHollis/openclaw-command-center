@@ -87,6 +87,44 @@ export class AuthoritativeSourceService {
     return this.forTopic(topicId);
   }
 
+  getTopicSourceReference({ topicId, referenceId, sourceKind } = {}) {
+    const topic = this.metadata.getTopic?.(String(topicId ?? '').trim());
+    if (!topic) throw sourceError('source-recovery', 'The requested Topic does not exist.');
+    const reference = this.metadata.getSourceReference?.(String(referenceId ?? '').trim());
+    if (!reference || reference.topicId !== topic.topicId || (sourceKind && reference.sourceKind !== sourceKind)) throw sourceError('source-recovery', 'The exact Topic-owned Source Reference was not found.');
+    return reference;
+  }
+
+  listTopicSourceReferences(topicId) {
+    const id = String(topicId ?? '').trim();
+    if (!this.metadata.getTopic?.(id)) throw sourceError('source-recovery', 'The requested Topic does not exist.');
+    const references = this.metadata.listSourceReferences?.(id) ?? [];
+    if (references.some((reference) => reference.topicId !== id)) throw sourceError('source-recovery', 'Topic ownership metadata returned a foreign Source Reference.');
+    return references;
+  }
+
+  assertExactNoteReference(input, { create = false, read = false } = {}) {
+    if (input.referenceId === undefined) return;
+    const topicId = String(input.topicId ?? '').trim();
+    const reference = this.getTopicSourceReference({ topicId, referenceId: input.referenceId });
+    const folders = this.listTopicSourceReferences(topicId).filter((source) => source.sourceSystem === 'obsidian' && source.sourceKind === 'note_folder');
+    if (folders.length > 1) throw sourceError('source-recovery', 'The Topic Note Folder binding is ambiguous.');
+    const folder = folders[0];
+    if (create) {
+      if (!folder) throw sourceError('source-recovery', 'The Topic Note Folder binding is missing.');
+      if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder' || reference.referenceId !== folder.referenceId) throw sourceError('source-recovery', 'Note creation requires the exact Topic Note Folder Source Reference.');
+      return reference;
+    }
+    const notePath = input.path ?? input.notePath ?? input.sourcePath;
+    const folderRoot = folder && (this.metadata.getSourceLocator?.(folder.referenceId)?.locator ?? folder.externalSourceId);
+    const expectedExternalId = folderRoot ? `${String(folderRoot).replace(/\/+$/u, '')}/${notePath}` : null;
+    if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || (expectedExternalId && reference.externalSourceId !== expectedExternalId)) throw sourceError('source-recovery', 'The exact Topic-owned Note Source Reference does not match the requested path.');
+    const expectedRevision = read ? input.observedRevision : input.expectedRevision;
+    const replay = input.logicalOperationId ? this.metadata.getOperation?.(input.logicalOperationId) : null;
+    if (expectedRevision !== undefined && reference.observedRevision !== expectedRevision && !replay) throw sourceError('conflict', 'The Note Source Reference revision is stale.');
+    return reference;
+  }
+
   assertTopicReadiness(topic) {
     if (topic?.lifecycle !== 'active') throw sourceError('source-recovery', 'The requested Topic is still provisioning and is not available for normal use.');
     if (!this.migration) return;
@@ -120,10 +158,35 @@ export class AuthoritativeSourceService {
   }
 
   async notesBrowse(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'notes'); return service.notes.browse(adapterInput(input)); }
-  async notesRead(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'notes'); return service.notes.read(adapterInput(input)); }
+  async notesRead(input = {}) {
+    const service = this.requireTopicService(input);
+    requireCapability(this.capabilities, 'notes');
+    this.assertExactNoteReference(input, { read: true });
+    const { offset: _offset, ...noteInput } = adapterInput(input);
+    const note = await service.notes.read(noteInput);
+    if (input.offset === undefined) return note;
+    if (!Number.isInteger(input.offset) || input.offset < 0) throw sourceError('invalid-request', 'A non-negative byte offset is required.');
+    if (input.offset > 0 && (typeof input.observedRevision !== 'string' || input.observedRevision !== note.revision)) throw sourceError('conflict', 'The Note changed during chunk retrieval.');
+    const bytes = Buffer.from(note.text, 'utf8');
+    if (bytes.length > 8_388_609) throw sourceError('invalid-request', 'The authoritative Note exceeds the bounded Topic Page size.');
+    if (input.offset > bytes.length) throw sourceError('invalid-request', 'The Note byte offset exceeds its authoritative length.');
+    const nextOffset = Math.min(input.offset + 524_288, bytes.length);
+    return {
+      schemaVersion: 1,
+      path: note.path,
+      contentBase64: bytes.subarray(input.offset, nextOffset).toString('base64'),
+      byteOffset: input.offset,
+      nextOffset,
+      totalBytes: bytes.length,
+      revision: note.revision,
+      complete: nextOffset === bytes.length,
+      sourceReference: note.sourceReference
+    };
+  }
   async guardedNoteMutation(input, operationKind, method) {
     const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['note_folder'] });
     requireCapability(this.capabilities, 'notes');
+    this.assertExactNoteReference(input, { create: method === 'create' });
     const execute = () => service.notes[method](adapterInput(input));
     if (!this.coordinator) return execute();
     const logicalOperationId = input.logicalOperationId;
@@ -188,6 +251,14 @@ export class AuthoritativeSourceService {
   async notesRename(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.rename', 'rename'); await this.refreshSearch(input.topicId); return result; }
   async notesMove(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.move', 'move'); await this.refreshSearch(input.topicId); return result; }
   async sessionsHistory(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); return service.sessions.history(adapterInput(input)); }
+  async sessionsList(input = {}) {
+    const service = this.requireTopicService(input);
+    requireCapability(this.capabilities, 'sessions');
+    if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' });
+    const { includeClosed: _includeClosed, ...adapterRequest } = adapterInput(input);
+    const value = await service.sessions.list({ ...adapterRequest, status: input.includeClosed === true ? 'all' : 'open' });
+    return { schemaVersion: 1, topicId: input.topicId, conversations: value.conversations };
+  }
   async sessionsNavigate(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); return service.sessions.navigate(adapterInput(input)); }
   async verifyPrimarySessionForCreate(topicId, sessions) {
     const primary = (this.metadata.listSourceReferences?.(topicId) ?? []).filter((reference) => reference.topicId === topicId && reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session' && this.metadata.getSessionState?.(reference.referenceId)?.isPrimary === true);

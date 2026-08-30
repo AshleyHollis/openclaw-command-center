@@ -16,7 +16,7 @@ function codePoints(value) { return Array.from(String(value ?? '')).length; }
 function validateReference(reference, topicId, kind) {
   exactKeys(reference, ['version', 'referenceId', 'topicId', 'sourceSystem', 'sourceKind', 'externalSourceId', 'observedRevision', 'createdAt', 'updatedAt'], 'Source Reference');
   if (reference.version !== 1 || reference.topicId !== topicId) fail('Source Reference Topic identity is invalid.');
-  if (kind === 'note' && (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder')) fail('Note result requires its authoritative Note Folder Source Reference.');
+  if (kind === 'note' && (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note')) fail('Note result requires its authoritative Note Source Reference.');
   if (kind === 'conversation' && (reference.sourceSystem !== 'openclaw' || reference.sourceKind !== 'session')) fail('Conversation result requires its authoritative Session Source Reference.');
   nonBlank(reference.referenceId, 'Source Reference identity');
   if (kind === 'conversation') nonBlank(reference.externalSourceId, 'Source Reference external identity');

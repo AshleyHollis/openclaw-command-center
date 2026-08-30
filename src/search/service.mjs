@@ -147,8 +147,10 @@ function isCurrentResult(metadata, topicId, scope, result) {
       if (reference.topicId !== topicId || reference.referenceId !== result.sourceReference?.referenceId) return false;
       for (const field of ['version', 'referenceId', 'topicId', 'sourceSystem', 'sourceKind', 'externalSourceId', 'observedRevision']) if (result.sourceReference?.[field] !== reference[field]) return false;
       const folder = exactReference(metadata, topicId, result.folderReferenceId);
-      return reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder'
-        && reference.referenceId === folder.referenceId
+      const folderRoot = metadata?.getSourceLocator?.(folder.referenceId)?.locator ?? folder.externalSourceId;
+      const expectedExternalSourceId = `${folderRoot.replace(/\/+$/u, '')}/${result.path}`;
+      return reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note'
+        && reference.externalSourceId === expectedExternalSourceId
         && folder.referenceId === scope.folder.referenceId
         && folder.externalSourceId === scope.folder.externalSourceId;
     }
@@ -271,7 +273,7 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
         const reference = metadata?.getSourceReference?.(descriptor.referenceId);
         if (!reference) throw sourceError('source-recovery', 'The Note navigation Source Reference is missing.');
         if (reference.topicId !== topicId || reference.referenceId !== descriptor.referenceId) throw sourceError('cross-topic', 'The Note navigation Source Reference is invalid.');
-        if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder') throw sourceError('cross-topic', 'The Note navigation Source Reference is invalid.');
+        if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note') throw sourceError('cross-topic', 'The Note navigation Source Reference is invalid.');
         if (typeof descriptor.path !== 'string' || descriptor.path.trim() === '') throw sourceError('invalid-request', 'Note navigation requires path.');
         if (descriptor.heading !== null && typeof descriptor.heading !== 'string') throw sourceError('invalid-request', 'Note navigation heading is invalid.');
         const opened = await stores();
@@ -279,9 +281,8 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
         if (!target) throw sourceError('source-recovery', 'The Note navigation target is stale or was not produced by the committed projection.');
         if (!navigationSourceService?.notesRead) throw sourceError('capability-unavailable', 'Authoritative Note navigation is unavailable.', { capability: 'notes' });
         const note = await navigationSourceService.notesRead({ schemaVersion: 1, topicId, path: descriptor.path, referenceId: reference.referenceId, observedRevision: descriptor.observedRevision });
-        const expectedExternalSourceId = `${reference.externalSourceId.replace(/\/+$/u, '')}/${descriptor.path}`;
         const sectionMatches = authoritativeNoteSections(note?.text).some((section) => section.heading === target.heading && section.text === target.text);
-        if (note?.path !== descriptor.path || note?.sourceReference?.topicId !== topicId || note?.sourceReference?.externalSourceId !== expectedExternalSourceId || note?.revision !== descriptor.observedRevision || !sectionMatches) throw sourceError('source-recovery', 'Authoritative Note navigation did not preserve the exact result identity.');
+        if (note?.path !== descriptor.path || note?.sourceReference?.topicId !== topicId || note?.sourceReference?.referenceId !== reference.referenceId || note?.sourceReference?.externalSourceId !== reference.externalSourceId || note?.revision !== descriptor.observedRevision || !sectionMatches) throw sourceError('source-recovery', 'Authoritative Note navigation did not preserve the exact result identity.');
         return Object.freeze({ ...note, heading: descriptor.heading });
       }
       if (descriptor.kind === 'conversation') {

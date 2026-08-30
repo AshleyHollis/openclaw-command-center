@@ -142,6 +142,16 @@ test('public source service writes durable authoritative Markdown and keeps meta
     const metadataRows = metadata.listOperations();
     assert.equal(metadataRows.length, 1);
     assert.equal(JSON.stringify(metadataRows).includes('authoritative text'), false);
+    const noteReference = created.value.note.sourceReference;
+    await assert.rejects(() => service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', referenceId: 'folder-integration', path: 'nested/note.md', observedRevision: noteReference.observedRevision }), (error) => error.code === 'source-recovery');
+    await assert.rejects(() => service.notesEdit({ schemaVersion: 1, topicId: 'topic-integration', referenceId: 'folder-integration', path: 'nested/note.md', text: 'wrong target', expectedRevision: noteReference.observedRevision, logicalOperationId: randomUUID() }), (error) => error.code === 'source-recovery');
+    assert.equal((await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', referenceId: noteReference.referenceId, path: 'nested/note.md', observedRevision: noteReference.observedRevision })).text, 'authoritative text');
+    const chunked = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/chunked.md', text: 'x'.repeat(524_289), logicalOperationId: randomUUID() });
+    const chunkReference = chunked.value.note.sourceReference;
+    const firstChunk = await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', referenceId: chunkReference.referenceId, path: 'nested/chunked.md', offset: 0 });
+    assert.deepEqual({ byteOffset: firstChunk.byteOffset, nextOffset: firstChunk.nextOffset, totalBytes: firstChunk.totalBytes, complete: firstChunk.complete, decodedBytes: Buffer.from(firstChunk.contentBase64, 'base64').length }, { byteOffset: 0, nextOffset: 524_288, totalBytes: 524_289, complete: false, decodedBytes: 524_288 });
+    const finalChunk = await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', referenceId: chunkReference.referenceId, path: 'nested/chunked.md', offset: firstChunk.nextOffset, observedRevision: firstChunk.revision });
+    assert.deepEqual({ byteOffset: finalChunk.byteOffset, nextOffset: finalChunk.nextOffset, complete: finalChunk.complete, text: Buffer.from(finalChunk.contentBase64, 'base64').toString('utf8') }, { byteOffset: 524_288, nextOffset: 524_289, complete: true, text: 'x' });
     assert.equal((await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/note.md' })).text, 'authoritative text');
     assert.throws(() => service.analysisRead({ schemaVersion: 1, topicId: 'topic-integration' }), (error) => error.code === 'capability-unavailable');
   } finally {
@@ -252,7 +262,7 @@ test('registered authenticated bridge persists request-bound Note effects across
   const invoke = async (method, params, requestId) => {
     let response;
     await registrations.get(method).handler({ req: { id: requestId }, params, context: { authenticated: true, operator: 'fictional' }, respond: (...args) => { response = args; } });
-    assert.equal(response[0], true);
+    assert.equal(response[0], true, JSON.stringify(response[2]));
     return response[1];
   };
   try {
@@ -262,25 +272,27 @@ test('registered authenticated bridge persists request-bound Note effects across
     let service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true }, attentionDelivery: () => { sideEffects.attention += 1; }, push: () => { sideEffects.push += 1; } });
     registerBridgeMethods(api, service);
     const logicalOperationId = randomUUID();
-    const created = await invoke('command-center.v1.notes.create', { schemaVersion: 1, topicId: 'topic-bridge-integration', path: 'bridge.md', text: 'bridge authoritative text', logicalOperationId }, 'gateway-frame-create');
+    const created = await invoke('command-center.v1.notes.create', { schemaVersion: 1, topicId: 'topic-bridge-integration', referenceId: 'folder-bridge-integration', path: 'bridge.md', text: 'bridge authoritative text', logicalOperationId }, 'gateway-frame-create');
     assert.equal(created.requestId, 'gateway-frame-create');
     assert.equal(created.logicalOperationId, logicalOperationId);
     assert.equal(await readFile(path.join(vault, 'bridge.md'), 'utf8'), 'bridge authoritative text');
     assert.equal(JSON.stringify(metadata.listOperations()).includes('bridge authoritative text'), false);
+    const bridgeNoteReferenceId = metadata.listSourceReferences('topic-bridge-integration').find((reference) => reference.sourceKind === 'note').referenceId;
     metadata.close();
 
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true }, attentionDelivery: () => { sideEffects.attention += 1; }, push: () => { sideEffects.push += 1; } });
     registrations.clear();
     registerBridgeMethods(api, service);
-    const replayed = await invoke('command-center.v1.notes.create', { schemaVersion: 1, topicId: 'topic-bridge-integration', path: 'bridge.md', text: 'bridge authoritative text', logicalOperationId }, 'gateway-frame-replay');
+    const replayed = await invoke('command-center.v1.notes.create', { schemaVersion: 1, topicId: 'topic-bridge-integration', referenceId: 'folder-bridge-integration', path: 'bridge.md', text: 'bridge authoritative text', logicalOperationId }, 'gateway-frame-replay');
     assert.equal(replayed.requestId, 'gateway-frame-replay');
     assert.equal(replayed.result.value.note.path, 'bridge.md');
     assert.equal(replayed.result.value.note.text, 'bridge authoritative text');
     assert.equal('intentDigest' in replayed.result, false);
-    const read = await invoke('command-center.v1.notes.read', { schemaVersion: 1, topicId: 'topic-bridge-integration', path: 'bridge.md' }, 'gateway-frame-read');
+    const read = await invoke('command-center.v1.notes.read', { schemaVersion: 1, topicId: 'topic-bridge-integration', referenceId: bridgeNoteReferenceId, path: 'bridge.md', offset: 0 }, 'gateway-frame-read');
     assert.equal(read.requestId, 'gateway-frame-read');
-    assert.equal(read.result.text, 'bridge authoritative text');
+    assert.equal(Buffer.from(read.result.contentBase64, 'base64').toString('utf8'), 'bridge authoritative text');
+    assert.equal(read.result.complete, true);
     assert.equal(metadata.listOperations().length, 1);
     assert.deepEqual(metadata.listActivity(), []);
     assert.deepEqual(sideEffects, { attention: 0, push: 0 });
@@ -291,16 +303,33 @@ test('registered authenticated bridge persists request-bound Note effects across
   }
 });
 
+test('exact Note validation resolves a provisioned stable Folder identity through its authoritative locator', async () => {
+  const topicId = 'topic-provisioned-note-identity';
+  const folder = { version: 1, referenceId: `note-folder:${topicId}`, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: `note-folder:${topicId}`, observedRevision: 'folder-revision' };
+  const note = { version: 1, referenceId: `note:${topicId}:brief`, topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/provisioned/brief.md', observedRevision: 'note-revision' };
+  const metadata = {
+    getTopic: (requestedTopicId) => requestedTopicId === topicId ? { topicId, lifecycle: 'active', paraCategory: 'project' } : null,
+    getOperatingStatus: () => ({ mode: 'normal', schemaVersion: 2, diagnostics: [] }),
+    listSourceReferences: () => [folder, note],
+    getSourceReference: (referenceId) => [folder, note].find((reference) => reference.referenceId === referenceId) ?? null,
+    getSourceLocator: (referenceId) => referenceId === folder.referenceId ? { referenceId, locator: '/fictional/provisioned' } : null
+  };
+  const service = createAuthoritativeSourceService({ metadata, capabilities: { notes: true } });
+  service.forTopic = () => ({ notes: { read: async () => ({ path: 'brief.md', revision: note.observedRevision, text: 'fictional provisioned Note', sourceReference: note }) } });
+  const read = await service.notesRead({ schemaVersion: 1, topicId, referenceId: note.referenceId, path: 'brief.md', observedRevision: note.observedRevision });
+  assert.equal(read.text, 'fictional provisioned Note');
+});
+
 test('derived search and Topic Analysis use only injected providers', async () => {
   const metadata = { getTopic: (topicId) => topicId === 'topic-provider' ? { topicId, lifecycle: 'active' } : null, getOperatingStatus: () => ({ mode: 'ready', schemaVersion: 3, diagnostics: [] }), listSourceReferences: () => [] };
   const unavailable = createAuthoritativeSourceService({ metadata, capabilities: { notes: false, sessions: false, scheduler: false, activity: true, search: false, analysis: false, attention: false } });
   await assert.rejects(() => unavailable.searchQuery({ schemaVersion: 1, topicId: 'topic-provider', query: 'fictional' }), (error) => error.code === 'capability-unavailable');
-  const noteFolderReference = { version: 1, referenceId: 'note-folder:provider', topicId: 'topic-provider', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/topic-provider', observedRevision: 'revision-provider' };
+  const noteReference = { version: 1, referenceId: 'note:provider', topicId: 'topic-provider', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/topic-provider/provider.md', observedRevision: 'revision-provider' };
   const groupedSearch = {
     schemaVersion: 1,
     topicId: 'topic-provider',
     query: 'fictional',
-    notes: { results: [{ kind: 'note', topicId: 'topic-provider', sourceReference: noteFolderReference, path: 'provider.md', heading: 'Provider', snippet: 'fictional', highlights: [{ start: 0, end: 9 }], contextBefore: '', contextAfter: '', navigation: { kind: 'note', topicId: 'topic-provider', referenceId: noteFolderReference.referenceId, path: 'provider.md', heading: 'Provider', observedRevision: 'revision-provider' } }] },
+    notes: { results: [{ kind: 'note', topicId: 'topic-provider', sourceReference: noteReference, path: 'provider.md', heading: 'Provider', snippet: 'fictional', highlights: [{ start: 0, end: 9 }], contextBefore: '', contextAfter: '', navigation: { kind: 'note', topicId: 'topic-provider', referenceId: noteReference.referenceId, path: 'provider.md', heading: 'Provider', observedRevision: 'revision-provider' } }] },
     conversations: { results: [] }
   };
   const service = createAuthoritativeSourceService({
@@ -311,6 +340,7 @@ test('derived search and Topic Analysis use only injected providers', async () =
   });
   const search = await service.searchQuery({ schemaVersion: 1, topicId: 'topic-provider', query: 'fictional' });
   assert.equal(search.notes.results[0].path, 'provider.md');
+  assert.equal(search.notes.results[0].navigation.referenceId, noteReference.referenceId);
   assert.deepEqual(search.conversations.results, []);
   assert.equal((await service.analysisRead({ topicId: 'topic-provider' })).status, 'idle');
   assert.equal((await service.analysisRun({ topicId: 'topic-provider', input: {}, logicalOperationId: randomUUID() })).value.status, 'queued');

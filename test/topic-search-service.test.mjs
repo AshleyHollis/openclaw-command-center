@@ -15,7 +15,7 @@ const metadata = {
   listSourceReferences: () => Object.values(references),
   getSessionState: () => ({ sessionId: 'session-one', status: 'closed', isPrimary: false, wasPrimary: false })
 };
-const noteStore = { query: () => [{ schemaVersion: 1, kind: 'note', topicId: 'topic-one', referenceId: 'folder:one', folderReferenceId: 'folder:one', sourceReference: folderReference, score: -1, sourceRevision: null, path: 'one.md', heading: null, revision: null, text: 'fresh note', snippet: 'note', context: { before: '', after: '' }, contextBefore: '', contextAfter: '', provenance: 'native', navigation: { kind: 'note', topicId: 'topic-one', path: 'one.md', sourceReference: folderReference } }], resolveNoteTarget: (descriptor) => descriptor.path === 'one.md' && descriptor.heading === null && descriptor.observedRevision === null ? { heading: null, revision: null, text: 'fresh note' } : null };
+const noteStore = { query: () => [{ schemaVersion: 1, kind: 'note', topicId: 'topic-one', referenceId: 'note:one', folderReferenceId: 'folder:one', sourceReference: noteReference, score: -1, sourceRevision: null, path: 'one.md', heading: null, revision: null, text: 'fresh note', snippet: 'note', context: { before: '', after: '' }, contextBefore: '', contextAfter: '', provenance: 'native', navigation: { kind: 'note', topicId: 'topic-one', path: 'one.md', sourceReference: noteReference } }], resolveNoteTarget: (descriptor) => descriptor.path === 'one.md' && descriptor.heading === null && descriptor.observedRevision === null ? { heading: null, revision: null, text: 'fresh note' } : null };
 const conversationStore = { query: () => [{ schemaVersion: 1, kind: 'conversation', topicId: 'topic-one', referenceId: 'session:one', sourceReference: sessionReference, score: -2, sourceRevision: null, sessionKey: sessionReference.externalSourceId, sessionId: 'session-one', messageId: 'message-one', name: 'agent:main:one', date: '2026-08-23T00:00:00.000Z', role: 'user', historyProvenance: 'linked-session', status: 'closed', closed: true, primaryState: 'ordinary', importedFrom: null, snippet: 'conversation', context: { before: '', after: '' }, contextBefore: '', contextAfter: '', provenance: 'native', navigation: { kind: 'conversation', topicId: 'topic-one', sessionKey: sessionReference.externalSourceId, sessionId: 'session-one', sourceReference: sessionReference, messageId: 'message-one' } }] };
 
 test('search service returns separate independently ranked groups and exact navigation', async () => {
@@ -59,14 +59,15 @@ test('search and navigation reject a projected Note after its Source Reference i
   );
 });
 
-test('unobserved folder-owned Markdown is searchable through the exact Folder Source Reference', async () => {
+test('observed folder-owned Markdown is searchable through its exact Note Source Reference', async () => {
   const externalSourceId = '/fictional/topic-one/new.md';
   const referenceId = `note:topic-one:${createHash('sha256').update(externalSourceId).digest('hex').slice(0, 24)}`;
   const sourceReference = { ...noteReference, referenceId, externalSourceId, observedRevision: 'sha256:new' };
-  const projected = { ...noteStore.query()[0], path: 'new.md', revision: 'sha256:new' };
+  const projected = { ...noteStore.query()[0], referenceId, sourceReference, path: 'new.md', revision: 'sha256:new' };
+  const observedMetadata = { ...metadata, getSourceReference: (id) => id === referenceId ? sourceReference : references[id] ?? null, listSourceReferences: () => [...Object.values(references), sourceReference] };
   const calls = [];
   const service = createTopicSearchService({
-    metadata,
+    metadata: observedMetadata,
     noteStore: { ...noteStore, query: () => [projected], resolveNoteTarget: (descriptor) => descriptor.path === 'new.md' && descriptor.observedRevision === 'sha256:new' ? { heading: null, revision: 'sha256:new', text: 'new text' } : null },
     conversationStore: { query: () => [] },
     sourceService: { notesRead: async (input) => { calls.push(input); return { path: 'new.md', text: 'new text', revision: 'sha256:new', sourceReference }; } }
@@ -74,7 +75,7 @@ test('unobserved folder-owned Markdown is searchable through the exact Folder So
   const result = await service.query({ schemaVersion: 1, topicId: 'topic-one', query: 'new' });
   assert.equal(result.notes.results.length, 1);
   await service.navigate(result.notes.results[0].navigation);
-  assert.equal(calls[0].referenceId, folderReference.referenceId);
+  assert.equal(calls[0].referenceId, sourceReference.referenceId);
   assert.equal(calls[0].observedRevision, 'sha256:new');
 });
 

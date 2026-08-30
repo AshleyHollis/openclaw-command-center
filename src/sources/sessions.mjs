@@ -28,7 +28,7 @@ export class SessionAdapter {
   }
 
   references() {
-    return (this.metadata?.listSourceReferences?.(this.topicId) ?? []).filter((reference) => reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session');
+    return (this.metadata?.listSourceReferences?.(this.topicId) ?? []).filter((reference) => reference.topicId === this.topicId && reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session');
   }
 
   resolveReference(input) {
@@ -126,9 +126,17 @@ export class SessionAdapter {
     if (this.sessionStore) {
       const exact = await this.resolveExact({ referenceId: reference.referenceId });
       if (!this.transcriptReader) return { messages: [], sessionKey: exact.sessionKey, sessionId: exact.sessionId };
-      const page = await this.transcriptReader({ sessionKey: exact.sessionKey, sessionId: exact.sessionId, maxMessages: input.limit ?? 100 });
+      const page = await this.transcriptReader({ agentId: 'main', sessionKey: exact.sessionKey, sessionId: exact.sessionId, maxMessages: input.limit ?? 100 });
       if (page?.kind === 'missing') throw sourceError('source-recovery', 'The exact authoritative Session is missing.');
-      return { messages: (page?.entries ?? []).map((entry) => entry.message), sessionKey: exact.sessionKey, sessionId: exact.sessionId };
+      if (page?.kind === 'unavailable' || page?.kind === 'reset') throw sourceError('capability-unavailable', 'The authoritative Session transcript is refreshing; try again.', { capability: 'sessions' });
+      const returnedKey = responseKey(page);
+      const returnedSessionId = responseSessionId(page);
+      if (returnedKey !== null && returnedKey !== exact.sessionKey || returnedSessionId !== null && returnedSessionId !== exact.sessionId) throw sourceError('source-recovery', 'The authoritative Session transcript identity did not match the exact linked Session.');
+      const current = await this.resolveExact({ referenceId: reference.referenceId });
+      if (current.sessionKey !== exact.sessionKey || current.sessionId !== exact.sessionId) throw sourceError('source-recovery', 'The exact authoritative Session changed during transcript retrieval.');
+      const entries = Array.isArray(page) ? page : page?.entries;
+      if (!Array.isArray(entries)) throw sourceError('source-recovery', 'The authoritative Session transcript returned an incomplete read.');
+      return { messages: entries.slice(0, input.limit ?? 100).map((entry) => entry.message ?? entry), sessionKey: exact.sessionKey, sessionId: exact.sessionId };
     }
     const result = await this.request('chat.history', { sessionKey: reference.externalSourceId, ...(input.limit !== undefined ? { limit: input.limit } : {}), ...(input.offset !== undefined ? { offset: input.offset } : {}), ...(input.messageId !== undefined ? { messageId: input.messageId } : {}) });
     const returnedKey = responseKey(result);
@@ -147,9 +155,8 @@ export class SessionAdapter {
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     nonBlank(input.message, 'message');
     const execute = async ({ requestId }) => {
-      const state = this.metadata?.getSessionState?.(reference.referenceId);
+      const { state, exact } = await this.resolveStableState(reference.referenceId);
       if (state?.status === 'closed') throw sourceError('conflict', 'A Closed Conversation is read-only and cannot receive Chat messages.');
-      const exact = await this.resolveExact({ referenceId: reference.referenceId });
       const result = await this.request('chat.send', { sessionKey: exact.sessionKey, message: input.message, idempotencyKey: logicalOperationId }, { requestId });
       if (result?.runId !== logicalOperationId) throw sourceError('unavailable', 'chat.send returned an unexpected idempotency result.');
       return result;
@@ -169,6 +176,29 @@ export class SessionAdapter {
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
   }
 
+  async list(input = {}) {
+    assertNoUnexpectedKeys(input, ['schemaVersion', 'status', 'requestId'], 'Session list request');
+    const status = input.status ?? 'open';
+    if (!['open', 'closed', 'all'].includes(status)) throw sourceError('invalid-request', 'Session list status must be open, closed, or all.');
+    const conversations = [];
+    for (const reference of this.references()) {
+      const { state } = await this.resolveStableState(reference.referenceId);
+      if (typeof state.updatedAt !== 'string' || state.updatedAt.trim() === '') throw sourceError('source-recovery', 'A linked Conversation has incomplete persisted presentation state.');
+      if (status !== 'all' && state.status !== status) continue;
+      conversations.push({
+        referenceId: reference.referenceId,
+        sessionId: state.sessionId,
+        displayName: state.displayName || (state.isPrimary ? 'Primary Conversation' : 'Conversation'),
+        status: state.status,
+        isPrimary: state.isPrimary === true,
+        wasPrimary: state.wasPrimary === true,
+        updatedAt: state.updatedAt
+      });
+    }
+    conversations.sort((left, right) => (left.isPrimary === right.isPrimary ? left.displayName.localeCompare(right.displayName) : left.isPrimary ? -1 : 1) || left.referenceId.localeCompare(right.referenceId));
+    return Object.freeze({ schemaVersion: 1, topicId: this.topicId, status, conversations: Object.freeze(conversations.map((conversation) => Object.freeze(conversation))) });
+  }
+
   async close(input = {}) {
     return this.setClosed(input, 'closed');
   }
@@ -180,12 +210,15 @@ export class SessionAdapter {
   async setClosed(input, status) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId', 'requestId', 'logicalOperationId', 'isPrimary'], 'Session metadata request');
     const reference = this.resolveReference(input);
-    if (this.sessionStore) await this.resolveExact({ referenceId: reference.referenceId });
-    const current = this.metadata?.getSessionState?.(reference.referenceId);
+    const { state: current } = await this.resolveStableState(reference.referenceId);
     if (status === 'closed') assertPrimaryMayClose(current);
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
-    const apply = () => this.metadata?.setSessionState?.({ referenceId: reference.referenceId, sessionId: current?.sessionId ?? reference.observedRevision, status, isPrimary: input.isPrimary ?? current?.isPrimary ?? false, updatedAt: this.now() });
-    const execute = () => apply() ?? { referenceId: reference.referenceId, status };
+    const execute = async () => {
+      const { state: latest } = await this.resolveStableState(reference.referenceId);
+      if (latest.sessionId !== current.sessionId) throw sourceError('source-recovery', 'The exact persisted Session identity changed before the lifecycle mutation.');
+      if (status === 'closed') assertPrimaryMayClose(latest);
+      return this.metadata?.setSessionState?.({ referenceId: reference.referenceId, sessionId: latest.sessionId, status, isPrimary: latest.isPrimary === true, wasPrimary: latest.wasPrimary === true, displayName: latest.displayName, updatedAt: this.now() }) ?? { referenceId: reference.referenceId, status };
+    };
     const reconcile = async () => {
       const observed = this.metadata?.getSessionState?.(reference.referenceId);
       if (!observed) return { outcome: 'not-applied' };
@@ -197,19 +230,26 @@ export class SessionAdapter {
       logicalOperationId,
       topicId: this.topicId,
       referenceId: reference.referenceId,
-      intent: { status, isPrimary: input.isPrimary ?? current?.isPrimary ?? false },
+      intent: { status, isPrimary: current?.isPrimary === true },
       execute,
       reconcile
     });
-    return { schemaVersion: 1, status: 'applied', logicalOperationId, value: execute() };
+    return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute() };
   }
 
   async navigate(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId'], 'Session navigation request');
     const reference = this.resolveReference(input);
-    const state = this.metadata?.getSessionState?.(reference.referenceId);
-    if (typeof state?.sessionId !== 'string' || !state.sessionId) throw sourceError('source-recovery', 'The linked Session does not have an exact persisted identity.');
+    const { state } = await this.resolveStableState(reference.referenceId);
     return Object.freeze({ schemaVersion: 1, status: 'applied', sessionKey: reference.externalSourceId, sessionId: state.sessionId, sourceReference: reference });
+  }
+
+  async resolveStableState(referenceId) {
+    const exact = await this.resolveExact({ referenceId });
+    const state = this.metadata?.getSessionState?.(referenceId);
+    if (!state || typeof state.sessionId !== 'string' || state.sessionId.trim() === '' || !['open', 'closed'].includes(state.status)) throw sourceError('source-recovery', 'The linked Session state is missing or incomplete.');
+    if (state.sessionId !== exact.sessionId) throw sourceError('source-recovery', 'The exact persisted Session identity changed during authoritative resolution.');
+    return { state, exact };
   }
 
   async resolveExact(input = {}) {

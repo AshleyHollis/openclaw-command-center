@@ -40,6 +40,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.notes.rename': (service, params) => service.notesRename(params),
   'command-center.v1.notes.move': (service, params) => service.notesMove(params),
   'command-center.v1.sessions.history': (service, params) => service.sessionsHistory(params),
+  'command-center.v1.sessions.browse': (service, params) => service.sessionsList(params),
   'command-center.v1.sessions.navigate': (service, params) => service.sessionsNavigate(params),
   'command-center.v1.sessions.create': (service, params) => service.sessionsCreate(params),
   'command-center.v1.sessions.send': (service, params) => service.sessionsSend(params),

@@ -45,22 +45,23 @@ test('Note source snapshot reads only the exact Topic Folder and preserves headi
   });
   assert.equal(snapshot.notes[0].heading, 'Heading');
   assert.equal(snapshot.notes[0].path, 'one.md');
-  assert.equal(snapshot.notes[0].sourceReference.referenceId, noteFolder.referenceId);
+  assert.equal(snapshot.notes[0].sourceReference.referenceId, noteReference.referenceId);
   assert.equal(snapshot.notes[0].contextAfter, 'before after');
   await assert.rejects(() => readNoteSourceSnapshot({ topicId: topic.topicId, metadata: metadata(), noteAdapter: { browse: async () => [{ path: 'foreign.md', sourceReference: { ...noteReference, topicId: 'topic-two' } }], read: async () => ({}) } }), /foreign|identity/i);
 });
 
-test('Note source snapshot indexes sections and preserves null headings without metadata writes', async () => {
+test('Note source snapshot indexes sections and preserves null headings with stable Note identities', async () => {
   const calls = [];
   const snapshot = await readNoteSourceSnapshot({ topicId: topic.topicId, metadata: metadata(), noteAdapter: {
     browse: async (input) => { calls.push(input); return [{ path: 'one.md', revision: 'sha256:one', sourceReference: noteReference }]; },
     read: async (input) => { calls.push(input); return { path: 'one.md', text: 'preamble\n\n# First\n\nalpha\n\n## Second\n\nbeta', revision: 'sha256:one', sourceReference: noteReference }; }
   } });
   assert.deepEqual(snapshot.notes.map(({ heading }) => heading), [null, 'First', 'Second']);
-  assert.ok(calls.every((input) => input.observe === false));
+  assert.deepEqual(calls.map((input) => input.observe), [true, true, false]);
+  assert.equal(calls[1].referenceId, noteReference.referenceId);
 });
 
-test('production Note snapshot reads do not create or revise authoritative Note metadata', async () => {
+test('production Note snapshot registers the exact authoritative Note identity for navigation', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-search-note-state-'));
   const vault = path.join(stateDir, 'vault');
   let durable;
@@ -75,7 +76,10 @@ test('production Note snapshot reads do not create or revise authoritative Note 
     const before = durable.listSourceReferences('topic-note-snapshot');
     const snapshot = await readNoteSourceSnapshot({ topicId: 'topic-note-snapshot', metadata: durable, noteAdapter: adapter });
     assert.equal(snapshot.notes[0].path, 'fixture.md');
-    assert.deepEqual(durable.listSourceReferences('topic-note-snapshot'), before);
+    const after = durable.listSourceReferences('topic-note-snapshot');
+    assert.equal(after.length, before.length + 1);
+    assert.equal(after.find((reference) => reference.sourceKind === 'note')?.referenceId, snapshot.notes[0].sourceReference.referenceId);
+    assert.equal(after.find((reference) => reference.sourceKind === 'note')?.observedRevision, snapshot.notes[0].revision);
   } finally {
     adapter?.close();
     durable?.close();

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { ordinaryTestArgv, selectOrdinaryTestFiles } from '../src/test-selection.mjs';
+import { ordinaryTestArgv, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
 
 test('ordinary suite excludes only the separately invoked real-host receipt test', () => {
   assert.deepEqual(selectOrdinaryTestFiles([
@@ -36,4 +36,29 @@ test('package test command selects every current ordinary test and preserves the
   assert.equal(entries.includes('real-host.acceptance.test.mjs'), true);
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(packageJson.scripts.test, 'node scripts/test.mjs');
+});
+
+test('Topic Page runner selects only its explicit ticket-owned tests', () => {
+  const selected = selectTopicPageTicketTestFiles([
+    'topic-page.acceptance.test.mjs',
+    'topic-page-http.test.mjs',
+    'dashboard-ui.test.mjs',
+    'real-host.acceptance.test.mjs',
+    'fixtures'
+  ]);
+  assert.deepEqual(selected, [
+    'test/topic-page-http.test.mjs',
+    'test/topic-page.acceptance.test.mjs'
+  ]);
+});
+
+test('Topic Page browser runner is mandatory, pinned, and included in the ordinary suite', async () => {
+  const entries = await readdir(new URL('./', import.meta.url));
+  assert.equal(selectOrdinaryTestFiles(entries).includes('test/topic-page.acceptance.test.mjs'), true);
+  const script = await readFile(new URL('../scripts/test-topic-page.mjs', import.meta.url), 'utf8');
+  const setup = await readFile(new URL('../src/browser-setup.mjs', import.meta.url), 'utf8');
+  assert.match(script, /selectTopicPageTicketTestFiles/u);
+  assert.doesNotMatch(script, /skip|PLAYWRIGHT_BROWSERS_PATH\s*=|npm\s+(?:install|ci)/u);
+  assert.match(setup, /PLAYWRIGHT_VERSION = '1\.62\.1'/u);
+  assert.match(setup, /evaluator-provided PLAYWRIGHT_BROWSERS_PATH/u);
 });

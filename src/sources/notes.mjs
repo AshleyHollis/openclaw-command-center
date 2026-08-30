@@ -383,7 +383,7 @@ export class NoteAdapter {
     const expectedRevision = nonBlank(input.expectedRevision, 'expectedRevision');
     const bytes = bytesForText(input.text ?? input.content);
     const root = await this.resolveRoot();
-    const before = await this.read({ path: notePath });
+    const before = await this.read({ path: notePath, ...(input.referenceId === undefined ? {} : { referenceId: input.referenceId }) });
     const desiredRevision = revisionForBytes(bytes);
     if (before.revision === desiredRevision && before.revision !== expectedRevision) {
       await this.observe(before.sourceReference);
@@ -391,7 +391,7 @@ export class NoteAdapter {
     }
     if (before.revision !== expectedRevision) throw sourceError('conflict', 'The Note revision is stale.', { currentRevision: before.revision, currentPath: notePath, expectedRevision });
     await this.beforeCommit?.({ operation: 'edit', path: notePath, expectedRevision });
-    const latest = await this.read({ path: notePath });
+    const latest = await this.read({ path: notePath, ...(input.referenceId === undefined ? {} : { referenceId: input.referenceId }) });
     if (latest.revision !== expectedRevision) throw sourceError('conflict', 'The Note changed before commit.', { currentRevision: latest.revision, currentPath: notePath, expectedRevision });
     await this.atomicReplace(root, notePath, bytes, expectedRevision);
     const note = { schemaVersion: 1, path: notePath, text: bytes.toString('utf8'), revision: desiredRevision, sourceReference: { ...latest.sourceReference, observedRevision: desiredRevision } };
@@ -410,13 +410,13 @@ export class NoteAdapter {
     if (sourcePath === destinationPath) throw sourceError('invalid-path', 'A Note cannot be moved onto itself.');
     if (input.destinationTopicId !== undefined && input.destinationTopicId !== this.topicId) throw sourceError('cross-topic', 'Notes cannot move across Topics.');
     const root = await this.resolveRoot();
-    const current = await this.read({ path: sourcePath });
+    const current = await this.read({ path: sourcePath, ...(input.referenceId === undefined ? {} : { referenceId: input.referenceId }) });
     if (current.revision !== expectedRevision) throw sourceError('conflict', 'The Note revision is stale.', { currentRevision: current.revision, currentPath: sourcePath, expectedRevision });
     await assertSafeNotePath(root, destinationPath, { allowMissing: true });
     const destinationExisting = await this.read({ path: destinationPath }).catch((error) => (error?.code === 'not-found' || error?.code === 'ENOENT') ? null : Promise.reject(error));
     if (destinationExisting) throw sourceError('conflict', 'The destination Note already exists.', { currentRevision: destinationExisting.revision, currentPath: destinationPath });
     await this.beforeCommit?.({ operation: 'move', path: sourcePath, destinationPath, expectedRevision });
-    const latest = await this.read({ path: sourcePath });
+    const latest = await this.read({ path: sourcePath, ...(input.referenceId === undefined ? {} : { referenceId: input.referenceId }) });
     if (latest.revision !== expectedRevision) throw sourceError('conflict', 'The Note changed before commit.', { currentRevision: latest.revision, currentPath: sourcePath, expectedRevision });
     const sourceParent = await this.openParent(root, sourcePath, { operation });
     let destinationParent;

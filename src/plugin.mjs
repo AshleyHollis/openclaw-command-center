@@ -9,6 +9,7 @@ import { createTopicsHttpHandler } from './topics/http.mjs';
 import { createDashboardReadHttpHandler, createDashboardActionsHttpHandler } from './dashboard/http-route.mjs';
 import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandler } from './topics/analysis-http.mjs';
 import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
+import { createTopicPageActionsHandler } from './topics/page-http.mjs';
 
 export { runNoteMaintenance } from './plugin-service.mjs';
 
@@ -19,6 +20,7 @@ export const pluginPath = '/plugins/command-center';
 const assets = new Map([
   [`${pluginPath}`, ['index.html', 'text/html; charset=utf-8']],
   [`${pluginPath}/styles.css`, ['styles.css', 'text/css; charset=utf-8']],
+  [`${pluginPath}/markdown.js`, ['markdown.js', 'text/javascript; charset=utf-8']],
   [`${pluginPath}/app.js`, ['app.js', 'text/javascript; charset=utf-8']]
 ]);
 
@@ -80,7 +82,22 @@ export default definePluginEntry({
       id: routeId,
       label: 'Command Center',
       group: 'control',
-      path: pluginPath
+      path: pluginPath,
+      capabilityBridge: {
+        protocolVersion: 1,
+        requiredMethods: [
+          'command-center.v1.topics.list',
+          'command-center.v1.topics.get',
+          'command-center.v1.sessions.browse',
+          'command-center.v1.sessions.history',
+          'command-center.v1.sessions.navigate',
+          'command-center.v1.notes.browse',
+          'command-center.v1.notes.read',
+          'command-center.v1.search.query',
+          'ui.session.navigate'
+        ],
+        optionalMethods: []
+      }
     });
     for (const path of assets.keys()) {
       api.registerHttpRoute({
@@ -113,6 +130,12 @@ export default definePluginEntry({
       auth: 'plugin',
       match: 'exact',
       handler: createTopicsHttpHandler(serviceProxy)
+    });
+    api.registerHttpRoute({
+      path: '/plugins/command-center/api/topic/actions',
+      auth: 'plugin',
+      match: 'exact',
+      handler: createTopicPageActionsHandler(serviceProxy)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topic-analysis',
