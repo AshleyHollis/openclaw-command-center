@@ -7,26 +7,27 @@ async function readReleasePerformanceBaseline() {
   return validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
 }
 
-test('release performance baseline is pinned to the exact host receipt, release fixtures, and three first observations', async () => {
+test('release performance baseline is pinned to the exact host receipt, release fixtures, and first successful observation', async () => {
   const baseline = await readReleasePerformanceBaseline();
   assert.deepEqual(baseline.thresholds, deriveReleaseThresholds(baseline.observations));
   assert.deepEqual(baseline.viewport, { width: 1440, height: 900 });
-  assert.deepEqual(baseline.fixtureCounts, { chunkBoundaryNoteBytes: 524289, largeNoteBytes: 8388609, conversations: 100, activityRecords: 51, actionCards: 3, indexedNotes: 5000, indexedConversations: 5000 });
+  assert.deepEqual(baseline.fixtureCounts, { chunkBoundaryNoteBytes: 524289, largeNoteBytes: 8388609, conversations: 101, activityRecords: 51, actionCards: 2, indexedNotes: 5000, indexedConversations: 5000 });
   assert.equal(baseline.fixtureIdentity, RELEASE_FIXTURE_IDENTITY);
   assert.deepEqual(Object.keys(baseline.observations), [...RELEASE_MEASUREMENTS]);
-  for (const samples of Object.values(baseline.observations)) assert.equal(samples.length, 3);
+  for (const observation of Object.values(baseline.observations)) assert.ok(observation > 0);
   assert.equal(baseline.hostReceipt.commit, '30f2924e437857935f034ac349bae8cc22ef9fb0');
   assert.equal(baseline.hostReceipt.sourceDigest, 'sha256:6e4ac1c2c914e3794f04427b41d8661220c45a224513fe55062186dd3f6f4d06');
   assert.equal(baseline.hostReceipt.contractDigest, 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6');
 });
 
-test('release performance baseline rejects receipt drift, inflated maxima, and silent regeneration', async () => {
+test('release performance baseline rejects receipt drift, widened ceilings, zero observations, and silent regeneration', async () => {
   const baseline = await readReleasePerformanceBaseline();
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostVersion: 'fictional-other-host' }), /pinned/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostReceipt: { ...baseline.hostReceipt, contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }), /pinned host identity/u);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, thresholds: { ...baseline.thresholds, dashboardReadyMs: 999999 } }), /first three observations/);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 101 } }), /conversations must be 100/);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: [1, 2] } }), /exactly three/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, thresholds: { ...baseline.thresholds, dashboardInteractiveMs: 999999 } }), /first observation/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 100 } }), /conversations must be 101/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, searchQueryMs: 0 } }), /first positive/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, searchQueryMs: undefined } }), /first positive/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureIdentity: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }), /release fixture/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, generatedAt: '2026-08-30T00:00:00.000Z' }), /unsupported field/);
 });

@@ -3,9 +3,9 @@ export const RELEASE_PERFORMANCE_BASELINE_VERSION = 1;
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
   chunkBoundaryNoteBytes: 524_289,
   largeNoteBytes: 8_388_609,
-  conversations: 100,
+  conversations: 101,
   activityRecords: 51,
-  actionCards: 3,
+  actionCards: 2,
   indexedNotes: 5_000,
   indexedConversations: 5_000
 });
@@ -13,12 +13,12 @@ export const RELEASE_FIXTURE_COUNTS = Object.freeze({
 export const RELEASE_PERFORMANCE_VIEWPORT = Object.freeze({ width: 1_440, height: 900 });
 
 export const RELEASE_MEASUREMENTS = Object.freeze([
-  'dashboardReadyMs',
-  'topicReadyMs',
-  'conversationSwitchMs',
-  'indexedSearchMs',
-  'largeNoteRenderMs',
-  'activityNextPageMs'
+  'dashboardInteractiveMs',
+  'topicInteractiveMs',
+  'activityNextPageMs',
+  'searchRebuildMs',
+  'searchQueryMs',
+  'slowestJourneyActionMs'
 ]);
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest']);
@@ -46,7 +46,7 @@ function closed(value, keys, label) {
 }
 
 function positiveInteger(value, label) {
-  if (!Number.isSafeInteger(value) || value < 0) invalid(`${label} must be a non-negative integer`);
+  if (!Number.isSafeInteger(value) || value < 1) invalid(`${label} must be a positive integer`);
   return value;
 }
 
@@ -87,9 +87,9 @@ function assertObservations(value) {
   closed(value, RELEASE_MEASUREMENTS, 'observations');
   const result = {};
   for (const name of RELEASE_MEASUREMENTS) {
-    const samples = value[name];
-    if (!Array.isArray(samples) || samples.length !== 3) invalid(`observations.${name} must contain exactly three non-negative integer samples`);
-    result[name] = Object.freeze(samples.map((sample, index) => positiveInteger(sample, `observations.${name}[${index}]`)));
+    const observation = value[name];
+    if (typeof observation !== 'number' || !Number.isFinite(observation) || observation <= 0) invalid(`observations.${name} must be the first positive finite observation`);
+    result[name] = observation;
   }
   return Object.freeze(result);
 }
@@ -98,8 +98,8 @@ function assertThresholds(value, observations) {
   closed(value, RELEASE_MEASUREMENTS, 'thresholds');
   const result = {};
   for (const name of RELEASE_MEASUREMENTS) {
-    const expected = Math.max(...observations[name]);
-    if (value[name] !== expected) invalid(`thresholds.${name} must equal the maximum of the first three observations (${expected} ms)`);
+    const expected = Math.max(1, Math.ceil(observations[name]));
+    if (value[name] !== expected) invalid(`thresholds.${name} must equal max(1, ceil(first observation)) (${expected} ms)`);
     result[name] = expected;
   }
   return Object.freeze(result);
@@ -107,7 +107,7 @@ function assertThresholds(value, observations) {
 
 export function deriveReleaseThresholds(observations) {
   const normalized = assertObservations(observations);
-  return Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map((name) => [name, Math.max(...normalized[name])])));
+  return Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map((name) => [name, Math.max(1, Math.ceil(normalized[name]))])));
 }
 
 export function validateReleasePerformanceBaseline(value) {

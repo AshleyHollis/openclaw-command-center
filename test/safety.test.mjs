@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { scanRepositorySafety } from '../src/safety.mjs';
+import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const execute = promisify(execFile);
@@ -20,6 +20,16 @@ const fictionalEncryptedKeyHeader = ['-----BEGIN ENCRYPTED ', 'PRIVATE KEY-----'
 const fictionalLabeledKeyHeader = ['-----BEGIN DSA ', 'PRIVATE KEY-----'].join('');
 const fictionalRootPath = ['/ro', 'ot/fictional-file'].join('');
 const fictionalWindowsHomePath = ['C:', '\\Users\\fictional-user\\file'].join('');
+
+test('runtime evidence scanning rejects sensitive values without echoing the match', () => {
+  const unsafeEvidence = ['status=failed to', 'ken=fictional-sensitive-value'].join('');
+  assert.throws(() => scanPublicEvidence([unsafeEvidence]), (error) => {
+    assert.match(error.message, /runtime-evidence\[0\]/u);
+    assert.doesNotMatch(error.message, /fictional-sensitive-value/u);
+    return true;
+  });
+  assert.deepEqual(scanPublicEvidence(['status=passed', '{"rows":9}', ['to', 'ken=[redacted]'].join('')]), []);
+});
 
 async function assertUnsafeFixture(label, content) {
   const fixture = path.join(root, `.fictional-safety-${label}.txt`);

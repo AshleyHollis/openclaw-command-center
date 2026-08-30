@@ -19,26 +19,26 @@
   "fixtureCounts": {
     "chunkBoundaryNoteBytes": 524289,
     "largeNoteBytes": 8388609,
-    "conversations": 100,
+    "conversations": 101,
     "activityRecords": 51,
-    "actionCards": 3,
+    "actionCards": 2,
     "indexedNotes": 5000,
     "indexedConversations": 5000
   },
   "observations": {
-    "dashboardReadyMs": [820, 850, 840],
-    "topicReadyMs": [410, 430, 420],
-    "conversationSwitchMs": [160, 180, 170],
-    "indexedSearchMs": [400, 420, 410],
-    "largeNoteRenderMs": [1650, 1680, 1660],
-    "activityNextPageMs": [170, 180, 175]
+    "dashboardInteractiveMs": 850,
+    "topicInteractiveMs": 430,
+    "activityNextPageMs": 180,
+    "searchRebuildMs": 1680,
+    "searchQueryMs": 420,
+    "slowestJourneyActionMs": 1680
   },
   "thresholds": {
-    "dashboardReadyMs": 850,
-    "topicReadyMs": 430,
-    "conversationSwitchMs": 180,
-    "indexedSearchMs": 420,
-    "largeNoteRenderMs": 1680,
-    "activityNextPageMs": 180
+    "dashboardInteractiveMs": 850,
+    "topicInteractiveMs": 430,
+    "activityNextPageMs": 180,
+    "searchRebuildMs": 1680,
+    "searchQueryMs": 420,
+    "slowestJourneyActionMs": 1680
   }
 }

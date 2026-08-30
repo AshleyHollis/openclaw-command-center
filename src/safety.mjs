@@ -75,6 +75,16 @@ function inspectContent(findings, relative, content) {
   if (matched >= 0) findings.push({ path: relative, rule: `content-${matched + 1}` });
 }
 
+export function scanPublicEvidence(values, { label = 'runtime-evidence' } = {}) {
+  const findings = [];
+  for (const [index, value] of values.entries()) {
+    const content = String(value).replace(/\b(?:token|password|secret|key)=\[redacted\]/giu, 'redacted-field');
+    inspectContent(findings, `${label}[${index}]`, content);
+  }
+  if (findings.length) throw new Error(`Public evidence safety scan failed: ${findings.map((finding) => `${finding.path} (${finding.rule})`).join(', ')}`);
+  return Object.freeze([]);
+}
+
 async function scanPath(root, filename, findings, read, visited, excludedRoots) {
   const relative = path.relative(root, filename);
   if (!within(root, filename) || isExcludedControllerPath(filename, excludedRoots) || visited.has(filename)) return;

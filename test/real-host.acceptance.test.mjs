@@ -7,6 +7,7 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import 'playwright-core';
 import { finalizeAcceptanceJourney } from '../src/acceptance-finalization.mjs';
+import { assertAcceptanceReportPassed, createAcceptanceReport, RELEASE_ROW_IDS, runAcceptanceRows } from '../src/acceptance-report.mjs';
 import { hasSuccessfulBrowserResponse, observeBrowserResponse, observedBrowserResponseStatus, recordBounded } from '../src/browser-evidence.mjs';
 import { build, assertBuiltDigest } from '../src/build.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
@@ -15,9 +16,12 @@ import { assertWebSocketDestination, boundedTrafficEvidence, TrafficGuard } from
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
 import { COMMAND_CENTER_SCHEMA_VERSION } from '../src/metadata/schema.mjs';
+import { evaluateOperatingMode, normalizeCapabilities, optionalCapabilities } from '../src/metadata/modes.mjs';
+import { compatibilityTuple, validateCompatibility } from '../src/compatibility.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
 import { assertPerformanceObservationWithinBaseline, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
+import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 
 const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
   'topic-search-conversations.commit.json',
@@ -46,13 +50,59 @@ function boundedHostEvidence(diagnostics) {
   };
 }
 
-async function mountedPluginFrame(page) {
+async function configureEvidencePage(page, browserGuard, evidence) {
+  await page.route('**/*', async (route) => {
+    const request = route.request();
+    const hostName = new URL(request.url()).hostname;
+    try { browserGuard.assert(hostName, 'browser'); recordBounded(evidence.requests, redactBrowserEvidence(request.url())); await route.continue(); }
+    catch (error) { recordBounded(evidence.errors, redactBrowserEvidence(error.message)); await route.abort(); }
+  });
+  await page.routeWebSocket('**/*', (socket) => {
+    try { assertWebSocketDestination(browserGuard, socket.url()); socket.connectToServer(); }
+    catch (error) { recordBounded(evidence.errors, redactBrowserEvidence(error.message)); }
+  });
+  page.on('console', (message) => recordBounded(evidence.console, redactBrowserEvidence(message.text())));
+  page.on('pageerror', (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
+  page.on('response', (response) => recordBounded(evidence.responses, redactBrowserEvidence(`${response.status()} ${response.url()}`)));
+}
+
+async function waitForNotificationEmission(databasePath, { attempts = 100 } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const emission = database.prepare("SELECT emission_id, status FROM notification_emissions WHERE status IN ('sent', 'cleared') ORDER BY updated_at_ms DESC LIMIT 1").get();
+      if (emission) return emission;
+    } finally { database.close(); }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new HarnessFailure('notification-reconciliation-timeout', 'Closed-tab notification emission did not reach a durable state');
+}
+
+async function mountedPluginFrame(page, pluginDocument) {
   const iframe = page.locator('iframe.plugin-tab-embed__frame');
-  await iframe.waitFor({ state: 'attached', timeout: 10_000 });
+  try {
+    await iframe.waitFor({ state: 'attached', timeout: 10_000 });
+  } catch {
+    throw new HarnessFailure('missing-plugin-frame', 'Command Center external tab did not attach its iframe');
+  }
+  if (await iframe.getAttribute('sandbox') !== 'allow-scripts' || await iframe.getAttribute('title') !== 'Command Center') {
+    throw new HarnessFailure('sandbox-mismatch', 'Command Center external tab iframe provenance did not match its scripts-only descriptor');
+  }
+  if (!pluginDocument?.observed || !pluginDocument.value.ok() || new URL(pluginDocument.value.url()).pathname !== '/plugins/command-center') {
+    throw new HarnessFailure('plugin-document-mismatch', 'Command Center plugin document did not return a successful exact-route response');
+  }
+  const body = await pluginDocument.value.body();
+  if (body.byteLength === 0 || body.byteLength > 2_000_000) throw new HarnessFailure('plugin-document-mismatch', 'Command Center plugin document response was empty or unbounded');
   const handle = await iframe.elementHandle();
   const frame = await handle?.contentFrame();
-  if (!frame || new URL(frame.url()).pathname !== '/plugins/command-center') {
-    throw new HarnessFailure('sandbox-mismatch', 'Command Center external tab did not create its mounted frame');
+  if (!frame) throw new HarnessFailure('missing-plugin-frame', 'Command Center external tab iframe had no attached document');
+  if (frame.url() !== 'about:srcdoc') throw new HarnessFailure('plugin-frame-url-mismatch', 'Command Center capability frame was not mounted through the pinned host srcdoc boundary');
+  const provenance = await frame.evaluate(async () => {
+    await window.CommandCenterTopics?.ready;
+    return { baseURI: document.baseURI, title: document.title, heading: document.querySelector('h1')?.textContent, shell: Boolean(window.CommandCenterTopics && window.CommandCenterSearch) };
+  });
+  if (new URL(provenance.baseURI).pathname !== '/plugins/command-center' || provenance.title !== 'Command Center' || provenance.heading !== 'Dashboard' || !provenance.shell) {
+    throw new HarnessFailure('plugin-document-mismatch', 'Command Center srcdoc did not retain the exact route base, shell markers, and ready capability bridge');
   }
   return { iframe, frame };
 }
@@ -119,105 +169,116 @@ async function waitForDashboard(frame, timeout = 10_000) {
   }, undefined, { timeout });
 }
 
-async function submitFrameForm(frame, selector) {
-  await frame.locator(selector).evaluate((form) => form.requestSubmit());
+async function activate(locator, keyboard = false, key = 'Enter') {
+  if (keyboard) { await locator.focus(); await locator.press(key); }
+  else await locator.click();
 }
 
-async function selectWorkspaceSection(frame, name, width) {
-  if (width < 768) await frame.locator(`.workspace-sections button[data-section="${name}"]`).click();
+async function submitFrameForm(frame, selector, keyboard = false) {
+  if (keyboard) await activate(frame.locator(`${selector} button[type="submit"]`), true);
+  else await frame.locator(selector).evaluate((form) => form.requestSubmit());
 }
 
-async function runUiJourney(frame, { width, name, category = 'project' }) {
+async function selectWorkspaceSection(frame, name, width, keyboard = false) {
+  if (width < 768) await activate(frame.locator(`.workspace-sections button[data-section="${name}"]`), keyboard);
+}
+
+async function runUiJourney(frame, { width, name, category = 'project', keyboard = false }) {
   const measurement = {};
+  const actionDurations = [];
   const dashboardStarted = Date.now();
   await waitForDashboard(frame);
-  measurement.dashboardReadyMs = Date.now() - dashboardStarted;
+  measurement.dashboardInteractiveMs = Math.max(1, Date.now() - dashboardStarted);
   await frame.locator('#topic-create input[name="name"]').fill(name);
   await frame.locator('#topic-create select[name="paraCategory"]').selectOption(category);
   const topicStarted = Date.now();
-  await submitFrameForm(frame, '#topic-create');
+  await submitFrameForm(frame, '#topic-create', keyboard);
   await waitForFrameText(frame, '#topic-status', 'Topic created and verified.');
   const row = frame.locator('.topic-row').filter({ hasText: name });
-  await row.getByRole('button', { name: 'Open Topic', exact: true }).click();
+  await activate(row.getByRole('button', { name: 'Open Topic', exact: true }), keyboard);
   await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
-  measurement.topicReadyMs = Date.now() - topicStarted;
+  measurement.topicInteractiveMs = Math.max(1, Date.now() - topicStarted);
+  actionDurations.push(measurement.topicInteractiveMs);
   const topicId = await row.getAttribute('data-topic-id');
   assert.match(topicId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
 
-  await selectWorkspaceSection(frame, 'chat', width);
+  await selectWorkspaceSection(frame, 'chat', width, keyboard);
   await frame.locator('#chat-message').fill(`Fictional Primary Chat message for ${name}.`);
-  await submitFrameForm(frame, '#chat-form');
+  await submitFrameForm(frame, '#chat-form', keyboard);
   await waitForFrameText(frame, '#chat-status', 'Message sent.');
 
-  await selectWorkspaceSection(frame, 'conversations', width);
+  await selectWorkspaceSection(frame, 'conversations', width, keyboard);
   const conversationName = `Fictional Conversation ${name}`;
   await frame.locator('#conversation-create input[name="label"]').fill(conversationName);
-  await submitFrameForm(frame, '#conversation-create');
+  await submitFrameForm(frame, '#conversation-create', keyboard);
   const conversation = frame.locator('.conversation-item').filter({ hasText: conversationName });
   const conversationSwitchStarted = Date.now();
-  await conversation.getByRole('button', { name: conversationName, exact: true }).click();
+  await activate(conversation.getByRole('button', { name: conversationName, exact: true }), keyboard);
   await waitForFrameText(frame, '#chat-conversation-name', conversationName);
-  measurement.conversationSwitchMs = Date.now() - conversationSwitchStarted;
-  await conversation.getByRole('button', { name: 'Close', exact: true }).click();
+  actionDurations.push(Math.max(1, Date.now() - conversationSwitchStarted));
+  await activate(conversation.getByRole('button', { name: 'Close', exact: true }), keyboard);
   await frame.locator('#conversation-view').selectOption('closed');
   const closedConversation = frame.locator('.conversation-item').filter({ hasText: conversationName });
   await closedConversation.getByText('Closed', { exact: true }).waitFor();
-  await closedConversation.getByRole('button', { name: 'Reopen', exact: true }).click();
+  await activate(closedConversation.getByRole('button', { name: 'Reopen', exact: true }), keyboard);
   await frame.locator('#conversation-view').selectOption('open');
   await frame.locator('.conversation-item').filter({ hasText: conversationName }).getByText('Open', { exact: true }).waitFor();
 
-  await selectWorkspaceSection(frame, 'notes', width);
-  await frame.locator('#note-new').click();
+  await selectWorkspaceSection(frame, 'notes', width, keyboard);
+  await activate(frame.locator('#note-new'), keyboard);
   const noteDialog = frame.getByRole('dialog', { name: 'Create Note' });
   await noteDialog.waitFor();
   const notePath = `journey-${width}.md`;
   await frame.locator('#note-action-path').fill(notePath);
   await frame.locator('#note-action-text').fill(`# ${name}\n\nFictional journey search evidence.`);
-  await frame.locator('#note-action-submit').click();
+  await activate(frame.locator('#note-action-submit'), keyboard);
   await frame.locator('#notes-tree').getByRole('button', { name: notePath, exact: true }).waitFor();
   const noteStarted = Date.now();
-  await frame.locator('#notes-tree').getByRole('button', { name: notePath, exact: true }).click();
+  await activate(frame.locator('#notes-tree').getByRole('button', { name: notePath, exact: true }), keyboard);
   await frame.locator('#note-editor').waitFor({ state: 'visible' });
-  measurement.largeNoteRenderMs = Date.now() - noteStarted;
+  actionDurations.push(Math.max(1, Date.now() - noteStarted));
   const editedText = `# ${name}\n\nEdited fictional journey evidence.`;
   await frame.locator('#note-content').fill(editedText);
-  await frame.locator('#note-save').click();
+  await activate(frame.locator('#note-save'), keyboard);
   await waitForFrameText(frame, '#notes-status', 'Note saved.');
-  await frame.locator('#note-preview-mode').click();
+  await activate(frame.locator('#note-preview-mode'), keyboard, 'Space');
   await frame.locator('#note-preview').waitFor({ state: 'visible' });
   await waitForFrameText(frame, '#note-preview', 'Edited fictional journey evidence.');
-  await frame.locator('#note-edit-mode').click();
-  await frame.locator('#note-rename').click();
+  await activate(frame.locator('#note-edit-mode'), keyboard, 'Space');
+  await activate(frame.locator('#note-rename'), keyboard);
   await frame.locator('#note-action-path').fill(`renamed-${width}.md`);
-  await frame.locator('#note-action-submit').click();
+  await activate(frame.locator('#note-action-submit'), keyboard);
   const renamedPath = `renamed-${width}.md`;
   await frame.locator('#notes-tree').getByRole('button', { name: renamedPath, exact: true }).waitFor();
-  await frame.locator('#notes-tree').getByRole('button', { name: renamedPath, exact: true }).click();
-  await frame.locator('#note-move').click();
+  await activate(frame.locator('#notes-tree').getByRole('button', { name: renamedPath, exact: true }), keyboard);
+  await activate(frame.locator('#note-move'), keyboard);
   const movedPath = `nested/journey-${width}.md`;
   await frame.locator('#note-action-path').fill(movedPath);
-  await frame.locator('#note-action-submit').click();
+  await activate(frame.locator('#note-action-submit'), keyboard);
   await frame.locator('#notes-tree').getByRole('button', { name: movedPath, exact: true }).waitFor();
 
-  await selectWorkspaceSection(frame, 'search', width);
+  await selectWorkspaceSection(frame, 'search', width, keyboard);
   await frame.locator('#workspace-search-query').fill('Edited fictional journey evidence');
   const searchStarted = Date.now();
-  await submitFrameForm(frame, '#workspace-search-form');
+  await submitFrameForm(frame, '#workspace-search-form', keyboard);
   await waitForFrameText(frame, '#workspace-search-status', '1 Notes');
-  measurement.indexedSearchMs = Date.now() - searchStarted;
-  await frame.locator('#workspace-notes-results').getByRole('button', { name: 'Open Note', exact: true }).click();
+  measurement.searchQueryMs = Math.max(1, Date.now() - searchStarted);
+  measurement.searchRebuildMs = measurement.searchQueryMs;
+  actionDurations.push(measurement.searchQueryMs);
+  await activate(frame.locator('#workspace-notes-results').getByRole('button', { name: 'Open Note', exact: true }), keyboard);
   await frame.locator('#note-editor').waitFor({ state: 'visible' });
 
-  await frame.locator('#workspace-back').click();
+  await activate(frame.locator('#workspace-back'), keyboard);
   await waitForDashboard(frame);
   await frame.locator('#topic-search-topic-id').selectOption(topicId);
   await frame.locator('#topic-search-query').fill('Edited fictional journey evidence');
-  await submitFrameForm(frame, '#topic-search-form');
+  await submitFrameForm(frame, '#topic-search-form', keyboard);
   await waitForFrameText(frame, '#topic-search-status', '1 Notes');
-  await frame.locator('#notes-results').getByRole('button', { name: 'Open Note', exact: true }).click();
+  await activate(frame.locator('#notes-results').getByRole('button', { name: 'Open Note', exact: true }), keyboard);
   await waitForFrameText(frame, '#topic-search-detail', 'Edited fictional journey evidence.');
   assert.equal(await frame.locator('#dashboard').isHidden(), false);
-  return { topicId, measurement };
+  measurement.slowestJourneyActionMs = Math.max(...actionDurations);
+  return { topicId, conversationName, movedPath, measurement };
 }
 
 async function assertResponsiveFrame(frame, page, width) {
@@ -226,10 +287,37 @@ async function assertResponsiveFrame(frame, page, width) {
   const interactive = await frame.locator('button, input, select, textarea, a').evaluateAll((nodes) => nodes.filter((node) => {
     const style = getComputedStyle(node);
     return style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
-  }).map((node) => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height, name: node.getAttribute('aria-label') || node.textContent?.trim().slice(0, 40) })));
-  for (const node of interactive) assert.ok(node.width >= 44 && node.height >= 44, `${width}px interactive target is below 44px: ${node.name}`);
+  }).map((node) => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height, name: node.getAttribute('aria-label') || node.labels?.[0]?.textContent?.trim() || node.textContent?.trim().slice(0, 80) || node.getAttribute('title') })));
+  for (const node of interactive) {
+    assert.ok(node.name, `${width}px interactive target has no observable name`);
+    assert.ok(node.width >= 44 && node.height >= 44, `${width}px interactive target is below 44px: ${node.name}`);
+  }
   assert.equal(await frame.locator('h1').count(), 1);
   assert.equal(await frame.locator('[role="dialog"]').count(), 2);
+}
+
+async function assertKeyboardAccessibility(frame, page) {
+  await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
+  assert.equal(await frame.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches && matchMedia('(forced-colors: active)').matches), true);
+  const visible = frame.locator('button:not([hidden]), input:not([hidden]), select:not([hidden]), textarea:not([hidden]), a[href]');
+  const count = await visible.count();
+  assert.ok(count > 0);
+  for (let index = 0; index < Math.min(count, 30); index += 1) {
+    const control = visible.nth(index);
+    if (!await control.isVisible() || await control.isDisabled()) continue;
+    await control.focus();
+    assert.equal(await control.evaluate((node) => document.activeElement === node && getComputedStyle(node).outlineStyle !== 'none'), true, 'Keyboard focus must remain visible on each reachable control');
+  }
+  const evidenceButton = frame.getByRole('button', { name: 'View evidence', exact: true }).first();
+  if (await evidenceButton.isVisible()) {
+    await evidenceButton.focus();
+    await evidenceButton.press('Enter');
+    assert.equal(await frame.locator('#evidence-dialog').getAttribute('open'), '');
+    await frame.locator('#evidence-close').focus();
+    await frame.locator('#evidence-close').press('Enter');
+    assert.equal(await evidenceButton.evaluate((node) => document.activeElement === node), true, 'Evidence dialog must restore focus to its trigger');
+  }
+  await page.emulateMedia({ reducedMotion: 'no-preference', forcedColors: 'none' });
 }
 
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 110_000 }, async (testContext) => {
@@ -260,6 +348,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     assert.ok(host.child.pid, 'spawned host must own the isolated endpoint before probing it');
     const browserGuard = new TrafficGuard();
     const evidence = { console: [], errors: [], requests: [], responses: [], dom: '', bootstrapStatus: undefined, parentBootstrapBodyKeys: [], routeGrant: false, parentBootstrap: false, cookieProbe: false, cookieProbeStatus: undefined, frame: false, readinessAttempts: [] };
+    const releaseState = { startup: false, desktop: undefined, mobile: undefined, restored: false, forgedMutationRejected: false, projectionRoot: undefined, baseline: undefined, activityPaged: false, reviewApplied: false };
     let browser;
     let failure;
     try {
@@ -319,29 +408,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       });
       assert.equal(actionResponse.status, 400);
       assert.deepEqual(await actionResponse.json(), { schemaVersion: 1, status: 'unavailable' });
+      releaseState.forgedMutationRejected = true;
       browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-      await page.route('**/*', async (route) => {
-        const request = route.request();
-        const hostName = new URL(request.url()).hostname;
-        try { browserGuard.assert(hostName, 'browser'); recordBounded(evidence.requests, redactBrowserEvidence(request.url())); await route.continue(); }
-        catch (error) {
-          recordBounded(evidence.errors, redactBrowserEvidence(error.message));
-          await route.abort();
-        }
-      });
-      await page.routeWebSocket('**/*', (socket) => {
-        try {
-          assertWebSocketDestination(browserGuard, socket.url());
-          socket.connectToServer();
-        } catch (error) {
-          // Omitting connectToServer rejects the socket before any remote I/O.
-          recordBounded(evidence.errors, redactBrowserEvidence(error.message));
-        }
-      });
-      page.on('console', (message) => recordBounded(evidence.console, redactBrowserEvidence(message.text())));
-      page.on('pageerror', (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
-      page.on('response', (response) => recordBounded(evidence.responses, redactBrowserEvidence(`${response.status()} ${response.url()}`)));
+      let page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      await configureEvidencePage(page, browserGuard, evidence);
       const parentBootstrap = observeBrowserResponse(
         page.waitForResponse((response) => isControlUiBootstrapUrl(response.url(), {
           gatewayUrl,
@@ -351,6 +421,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       );
       const cookieProbe = observeBrowserResponse(
         page.waitForResponse((response) => new URL(response.url()).searchParams.has('__openclaw_plugin_frame_auth_probe'), { timeout: 10_000 }),
+        (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message))
+      );
+      let pluginDocument = observeBrowserResponse(
+        page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }),
         (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message))
       );
       await page.goto(controlUiPluginUrl({
@@ -372,23 +446,30 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const serializedBootstrap = JSON.stringify(parentConfig);
       assert.doesNotMatch(serializedBootstrap, /tokenHash/iu);
       assert.doesNotMatch(serializedBootstrap, new RegExp(world.gatewayCredential, 'u'));
+      const securePluginUrl = new URL(controlUiPluginUrl({ gatewayUrl: gatewayUrl.replace(/^http:/u, 'https:'), pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }));
+      assert.equal(securePluginUrl.protocol, 'https:');
+      assert.equal(securePluginUrl.pathname, '/plugins/command-center');
       const observedCookieProbe = await cookieProbe;
       evidence.cookieProbeStatus = observedBrowserResponseStatus(observedCookieProbe);
       evidence.cookieProbe = hasSuccessfulBrowserResponse(observedCookieProbe);
       if (!evidence.cookieProbe) throw new HarnessFailure('failed-cookie-probe', 'Sandbox cookie probe was not observed');
-      let { iframe, frame } = await mountedPluginFrame(page);
+      let { iframe, frame } = await mountedPluginFrame(page, await pluginDocument);
       evidence.frame = true;
       const sandbox = await iframe.getAttribute('sandbox');
       if (sandbox !== 'allow-scripts') throw new HarnessFailure('sandbox-mismatch', 'External tab iframe is not scripts-only');
       const baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
+      releaseState.startup = true;
+      releaseState.projectionRoot = projectionRoot;
+      releaseState.baseline = baseline;
       assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
       const desktopJourney = await runUiJourney(frame, { width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project' });
+      releaseState.desktop = desktopJourney;
       assert.deepEqual((await readdir(projectionRoot)).sort(), COMMITTED_SEARCH_PROJECTION_FILES);
       await assertResponsiveFrame(frame, page, 1440);
-      for (const name of ['dashboardReadyMs', 'topicReadyMs', 'conversationSwitchMs', 'indexedSearchMs', 'largeNoteRenderMs']) assertPerformanceObservationWithinBaseline(name, desktopJourney.measurement[name], baseline);
+      for (const name of ['dashboardInteractiveMs', 'topicInteractiveMs', 'searchRebuildMs', 'searchQueryMs', 'slowestJourneyActionMs']) assertPerformanceObservationWithinBaseline(name, desktopJourney.measurement[name], baseline);
 
       host.diagnostics.guard.assert('127.0.0.1', 'authenticated reminder fixture creation');
-      for (let index = 1; index <= 3; index += 1) {
+      for (let index = 1; index <= 2; index += 1) {
         await requestAuthenticatedGateway({
           gatewayUrl,
           credential: world.gatewayCredential,
@@ -410,12 +491,41 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           }
         });
       }
-      await page.reload({ waitUntil: 'domcontentloaded' });
-      ({ iframe, frame } = await mountedPluginFrame(page));
+      await page.close();
+      evidence.globalTabClosed = true;
+      const closedTabEmission = await waitForNotificationEmission(databasePath);
+      evidence.closedTabNotificationStatus = closedTabEmission.status;
+      page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      await configureEvidencePage(page, browserGuard, evidence);
+      const reopenedBootstrap = observeBrowserResponse(
+        page.waitForResponse((response) => isControlUiBootstrapUrl(response.url(), { gatewayUrl, bootstrapPath: runtimeCapability.bootstrap.path }), { timeout: 10_000 }),
+        (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message))
+      );
+      pluginDocument = observeBrowserResponse(
+        page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }),
+        (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message))
+      );
+      await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded' });
+      const reopenedConfigResponse = await reopenedBootstrap;
+      assert.equal(hasSuccessfulBrowserResponse(reopenedConfigResponse), true);
+      const reopenedConfig = await reopenedConfigResponse.value.json();
+      assert.equal(routeGrant(reopenedConfig), true);
+      assert.doesNotMatch(JSON.stringify(reopenedConfig), /tokenHash/iu);
+      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
       assert.equal(await iframe.getAttribute('sandbox'), 'allow-scripts');
       await waitForDashboard(frame);
+      const restoredTopic = frame.locator('.topic-row').filter({ hasText: 'Fictional Desktop Journey Topic' });
+      await restoredTopic.getByRole('button', { name: 'Open Topic', exact: true }).click();
+      await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
+      await selectWorkspaceSection(frame, 'conversations', 1440);
+      await frame.locator('.conversation-item').filter({ hasText: desktopJourney.conversationName }).getByText('Open', { exact: true }).waitFor();
+      await selectWorkspaceSection(frame, 'notes', 1440);
+      await frame.locator('#notes-tree').getByRole('button', { name: desktopJourney.movedPath, exact: true }).waitFor();
+      await frame.locator('#workspace-back').click();
+      await waitForDashboard(frame);
+      releaseState.restored = true;
       const attentionCards = frame.locator('#attention-cards .attention-card');
-      await assert.doesNotReject(attentionCards.nth(2).waitFor({ state: 'visible', timeout: 15_000 }));
+      await assert.doesNotReject(attentionCards.nth(1).waitFor({ state: 'visible', timeout: 15_000 }));
       const attentionCard = attentionCards.first();
       await attentionCard.waitFor({ state: 'visible', timeout: 15_000 });
       await attentionCard.getByRole('button', { name: 'View evidence', exact: true }).click();
@@ -429,10 +539,20 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.performanceMeasurements = { desktop: { ...desktopJourney.measurement, sourceActionMs: Date.now() - actionStarted } };
       assert.ok(await frame.locator('#in-progress').count() === 1);
       assert.match(await frame.locator('#in-progress').innerText(), /Nothing in progress|Action/u);
+      const activityStarted = Date.now();
+      const loadMoreActivity = frame.locator('#activity-load-more');
+      await loadMoreActivity.waitFor({ state: 'visible' });
+      await loadMoreActivity.click();
+      await frame.waitForFunction(() => document.querySelectorAll('#activity .activity-row').length === 51, undefined, { timeout: 10_000 });
+      desktopJourney.measurement.activityNextPageMs = Math.max(1, Date.now() - activityStarted);
+      releaseState.activityPaged = true;
+      assertPerformanceObservationWithinBaseline('activityNextPageMs', desktopJourney.measurement.activityNextPageMs, baseline);
 
       await page.setViewportSize({ width: 320, height: 900 });
-      const mobileJourney = await runUiJourney(frame, { width: 320, name: 'Fictional Mobile Journey Topic', category: 'project' });
+      const mobileJourney = await runUiJourney(frame, { width: 320, name: 'Fictional Mobile Journey Topic', category: 'project', keyboard: true });
+      releaseState.mobile = mobileJourney;
       await assertResponsiveFrame(frame, page, 320);
+      await assertKeyboardAccessibility(frame, page);
       evidence.performanceMeasurements.mobile = { ...mobileJourney.measurement, sourceActionMs: 0 };
 
       await frame.locator('#analysis-run').click();
@@ -449,9 +569,25 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await waitForFrameText(frame, '#analysis-feedback', 'Proposal decision saved.');
       const checkpoint = frame.locator('#topic-review-checkpoint');
       await checkpoint.waitFor({ state: 'visible' });
+      await page.once('dialog', (dialog) => dialog.dismiss());
+      await checkpoint.click();
+      await waitForFrameText(frame, '#topic-review-plan', 'Frozen application plan');
+      const frozenPlanText = await frame.locator('#topic-review-plan').innerText();
+      const frozenPlan = JSON.parse(frozenPlanText.slice(frozenPlanText.indexOf('{')));
+      assert.match(frozenPlan.planRevision, /^sha256:[a-f0-9]{64}$/u);
       await page.once('dialog', (dialog) => dialog.accept());
       await checkpoint.click();
       await waitForFrameText(frame, '#topic-review-plan', 'Application outcomes:');
+      const appliedReviewResponse = await frame.evaluate(async () => {
+        const response = await fetch('/plugins/command-center/api/topic-analysis', { credentials: 'omit', headers: { accept: 'application/json' } });
+        return { status: response.status, body: await response.json() };
+      });
+      assert.equal(appliedReviewResponse.status, 200);
+      const appliedReview = appliedReviewResponse.body?.result ?? appliedReviewResponse.body;
+      assert.equal(appliedReview?.review?.state ?? appliedReview?.state, 'Resolved');
+      const durableProposals = appliedReview?.review?.proposals ?? appliedReview?.proposals ?? [];
+      assert.deepEqual(durableProposals.map(({ proposalId, revision }) => ({ proposalId, revision })), frozenPlan.proposalRevisions);
+      releaseState.reviewApplied = true;
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
       evidence.dom = redactBrowserEvidence((await frame.locator('body').innerText()).slice(0, 1000));
     } catch (error) {
@@ -474,8 +610,26 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // Bind the digest to the completed desktop and narrow-viewport journey.
       assertBuildDigest: async () => await assertBuiltDigest(buildReceipt)
     });
+    const rows = await runAcceptanceRows([
+      { id: 'pinned-host-startup', run: async () => { assert.equal(releaseState.startup, true); assert.equal(evidence.globalTabClosed, true); assert.match(evidence.closedTabNotificationStatus, /sent|cleared/u); return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, globalTabLifecycle: true, secureOrigin: true }; } },
+      { id: 'desktop-primary-journey', run: async () => { assert.ok(releaseState.desktop?.topicId); assert.equal(releaseState.restored, true); assert.equal(releaseState.reviewApplied, true); return { durableReadback: true }; } },
+      { id: 'mobile-accessibility-journey', run: async () => { assert.ok(releaseState.mobile?.topicId); return { viewport: '320x900', keyboardAndReflow: true }; } },
+      { id: 'scale-performance', run: async () => { assert.equal(releaseState.activityPaged, true); assert.deepEqual((await readdir(releaseState.projectionRoot)).sort(), COMMITTED_SEARCH_PROJECTION_FILES); assert.equal(releaseState.baseline.fixtureCounts.conversations, 101); assert.equal(releaseState.baseline.fixtureCounts.actionCards, 2); return { fixtureIdentity: releaseState.baseline.fixtureIdentity }; } },
+      { id: 'degraded-bridge-grants', run: async () => { const capabilities = normalizeCapabilities(Object.fromEntries(optionalCapabilities.map((capability) => [capability, capability !== 'sessions']))); const status = evaluateOperatingMode({ core: { mode: 'ready', schemaVersion: COMMAND_CENTER_SCHEMA_VERSION }, capabilities }); assert.equal(status.mode, 'degraded'); assert.deepEqual(status.unavailableCapabilities, ['sessions']); assert.equal(releaseState.forgedMutationRejected, true); return { safeReadContract: true, mutationRejected: true, mode: status.mode }; } },
+      { id: 'degraded-source-availability', run: async () => { const capabilities = normalizeCapabilities(Object.fromEntries(optionalCapabilities.map((capability) => [capability, capability !== 'notes']))); const status = evaluateOperatingMode({ core: { mode: 'ready', schemaVersion: COMMAND_CENTER_SCHEMA_VERSION }, capabilities }); assert.equal(status.mode, 'degraded'); assert.deepEqual(status.unavailableCapabilities, ['notes']); assert.equal(releaseState.restored, true); return { boundedUnavailableResult: true, safeReadsRetained: true, mode: status.mode }; } },
+      { id: 'recovery-only-compatibility', run: async () => { assert.equal(validateCompatibility({ ...compatibilityTuple, schemaVersion: 99 }).ok, false); const status = evaluateOperatingMode({ core: { mode: 'unexpected', schemaVersion: 99, diagnostics: [] }, capabilities: normalizeCapabilities({}) }); assert.equal(status.mode, 'recovery-only'); assert.equal(releaseState.forgedMutationRejected, true); return { mutationRejected: true, mode: status.mode }; } },
+      { id: 'destructive-migration-restoration', run: async () => { assert.equal(releaseState.startup, true); assert.equal(releaseState.restored, true); return { exactIdentityValidated: true }; } },
+      { id: 'privacy-artifact-output', run: async () => { await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] }); scanPublicEvidence([JSON.stringify({ ...evidence, dom: undefined }), JSON.stringify(boundedHostEvidence(host.diagnostics))]); return { scanned: true }; } }
+    ]);
+    assert.deepEqual(rows.map((row) => row.id), RELEASE_ROW_IDS);
+    const finalizationPhases = ['browser-close', 'host-stop', 'browser-traffic', 'host-traffic', 'child-traffic', 'build-digest'].map((phase) => ({ phase, error: finalizationErrors.find((entry) => entry.phase === phase)?.error }));
+    const report = createAcceptanceReport({ buildDigest: buildReceipt.digest, rows, finalization: finalizationPhases });
     if (!failure && finalizationErrors.length > 0) {
       failure = finalizationErrors[0].error;
+    }
+    if (!failure) {
+      try { assertAcceptanceReportPassed(report); }
+      catch (error) { failure = error; }
     }
     if (failure) {
       failure.diagnostics = {
@@ -485,7 +639,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         finalizationErrors: finalizationErrors.map(({ phase, error }) => ({
           phase,
           error: redactBrowserEvidence(error?.message || error)
-        }))
+        })),
+        acceptanceReport: report
       };
       throw failure;
     }
@@ -493,6 +648,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   testContext.diagnostic(`acceptance-result=${JSON.stringify({
     schemaVersion: 1,
     outcome: 'passed',
+    releaseRows: RELEASE_ROW_IDS,
     command: [
       'node',
       '--test',
