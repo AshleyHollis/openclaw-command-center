@@ -19,6 +19,15 @@ import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
 import { assertPerformanceObservationWithinBaseline, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 
+const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
+  'topic-search-conversations.commit.json',
+  'topic-search-conversations.json',
+  'topic-search-conversations.sqlite',
+  'topic-search-notes.commit.json',
+  'topic-search-notes.json',
+  'topic-search-notes.sqlite'
+]);
+
 function routeGrant(config) {
   const values = config?.[runtimeCapability.bootstrap.grantsField] || [];
   return Array.isArray(values) && values.some((value) => value?.pluginId === 'command-center' && value?.path === '/plugins/command-center' && value?.match === 'exact');
@@ -288,14 +297,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       }
       const pluginStateRoot = path.dirname(databasePath);
       assert.deepEqual((await readdir(pluginStateRoot)).sort(), ['metadata.sqlite', 'projections']);
-      assert.deepEqual((await readdir(path.join(pluginStateRoot, 'projections'))).sort(), [
-        'topic-search-conversations.commit.json',
-        'topic-search-conversations.json',
-        'topic-search-conversations.sqlite',
-        'topic-search-notes.commit.json',
-        'topic-search-notes.json',
-        'topic-search-notes.sqlite'
-      ]);
+      const projectionRoot = path.join(pluginStateRoot, 'projections');
+      assert.deepEqual(await readdir(projectionRoot), ['.topic-search.invalidated.json']);
       const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try {
         assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, COMMAND_CENTER_SCHEMA_VERSION);
@@ -380,6 +383,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
       assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
       const desktopJourney = await runUiJourney(frame, { width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project' });
+      assert.deepEqual((await readdir(projectionRoot)).sort(), COMMITTED_SEARCH_PROJECTION_FILES);
       await assertResponsiveFrame(frame, page, 1440);
       for (const name of ['dashboardReadyMs', 'topicReadyMs', 'conversationSwitchMs', 'indexedSearchMs', 'largeNoteRenderMs']) assertPerformanceObservationWithinBaseline(name, desktopJourney.measurement[name], baseline);
 
