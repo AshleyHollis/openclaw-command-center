@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "openclaw-control-ui-v1",
+  "bootstrap": {
+    "path": "/__openclaw__/control-ui-config.json",
+    "grantsField": "pluginFrameGrants",
+    "providesCredential": false
+  },
+  "authentication": {
+    "mode": "token",
+    "configPaths": ["gateway.auth.mode", "gateway.auth.token"],
+    "urlFragmentParameter": "token"
+  },
+  "diagnostics": {
+    "requiredEvidenceFields": ["readinessAttempts", "url", "status", "error", "bodyKeys"]
+  }
+}

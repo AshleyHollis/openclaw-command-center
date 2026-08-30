@@ -1,0 +1,53 @@
+{
+  "id": "command-center",
+  "name": "Command Center",
+  "version": "0.4.0",
+  "entry": "dist/plugin.mjs",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "legacyDiscordMigration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schemaVersion", "exportPath", "channels"],
+        "properties": {
+          "schemaVersion": { "const": 1 },
+          "exportPath": { "type": "string", "minLength": 1 },
+          "channels": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["channelId", "topicId", "paraCategory", "noteFolderPath"],
+              "properties": {
+                "channelId": { "type": "string", "minLength": 1 },
+                "topicId": { "type": "string", "minLength": 1 },
+                "paraCategory": { "enum": ["project", "area", "resource", "archive"] },
+                "noteFolderPath": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      },
+      "topics": {
+        "type": "object",
+        "properties": { "noteRoot": { "type": "string", "minLength": 1, "pattern": "\\S" } },
+        "required": ["noteRoot"],
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  },
+  "contracts": {
+    "tools": ["command_center_topic_context", "command_center_topic_analysis"],
+    "gatewayMethodDispatch": ["authenticated-request"]
+  },
+  "controlUi": {
+    "routeId": "command-center",
+    "sandbox": "allow-scripts"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "name": "openclaw-command-center",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "The Command Center external Control UI plugin for OpenClaw.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node scripts/test.mjs",
+    "test:topic-page": "node scripts/test-topic-page.mjs"
+  },
+  "dependencies": {
+    "openclaw": "2026.8.1-beta.3"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "playwright-core": "1.62.1"
+  },
+  "commandCenter": {
+    "runtimeCapability": {
+      "id": "openclaw-control-ui-v1",
+      "sourceGraph": "./runtime-capability.source-graph.json"
+    },
+    "compatibilityTuple": {
+      "formatVersion": 1,
+      "package": {
+        "name": "openclaw-command-center",
+        "version": "0.4.0",
+        "build": "0.4.0"
+      },
+      "priorRelease": {
+        "package": {
+          "name": "openclaw-command-center",
+          "version": "0.3.0",
+          "build": "0.3.0"
+        },
+        "host": { "range": "=2026.8.1-beta.3", "commit": "30f2924e437857935f034ac349bae8cc22ef9fb0" },
+        "pluginApi": { "package": "openclaw", "range": "=2026.8.1-beta.3" },
+        "commandCenterSchema": { "readable": { "min": 1, "max": 5 }, "migratable": { "min": 1, "max": 4 }, "writable": { "min": 5, "max": 5 } },
+        "capabilityBridgeProtocol": { "min": 1, "max": 1 }
+      },
+      "host": { "range": "=2026.8.1-beta.3", "commit": "30f2924e437857935f034ac349bae8cc22ef9fb0" },
+      "pluginApi": { "package": "openclaw", "range": "=2026.8.1-beta.3" },
+      "commandCenterSchema": { "readable": { "min": 1, "max": 8 }, "migratable": { "min": 1, "max": 7 }, "writable": { "min": 8, "max": 8 } },
+      "capabilityBridgeProtocol": { "min": 1, "max": 1 }
+    }
+  },
+  "openclaw": {
+    "extensions": ["./dist/plugin.mjs"],
+    "compat": {
+      "pluginApi": "=2026.8.1-beta.3"
+    }
+  }
+}

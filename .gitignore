@@ -1,0 +1,37 @@
+# Dependencies and generated output
+node_modules/
+dist/
+build/
+coverage/
+.cache/
+.tmp/
+tmp/
+
+# Environment and secret-bearing files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs and local data
+*.log
+logs/
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Local tooling and editor state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local planning scratch space
+.scratch/
