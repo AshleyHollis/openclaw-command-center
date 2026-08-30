@@ -125,13 +125,13 @@ async function runUiJourney(frame, { width, name, category = 'project' }) {
   measurement.dashboardReadyMs = Date.now() - dashboardStarted;
   await frame.locator('#topic-create input[name="name"]').fill(name);
   await frame.locator('#topic-create select[name="paraCategory"]').selectOption(category);
-  const createStarted = Date.now();
+  const topicStarted = Date.now();
   await submitFrameForm(frame, '#topic-create');
   await waitForFrameText(frame, '#topic-status', 'Topic created and verified.');
-  measurement.topicCreateMs = Date.now() - createStarted;
   const row = frame.locator('.topic-row').filter({ hasText: name });
   await row.getByRole('button', { name: 'Open Topic', exact: true }).click();
   await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
+  measurement.topicReadyMs = Date.now() - topicStarted;
   const topicId = await row.getAttribute('data-topic-id');
   assert.match(topicId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
 
@@ -145,8 +145,10 @@ async function runUiJourney(frame, { width, name, category = 'project' }) {
   await frame.locator('#conversation-create input[name="label"]').fill(conversationName);
   await submitFrameForm(frame, '#conversation-create');
   const conversation = frame.locator('.conversation-item').filter({ hasText: conversationName });
+  const conversationSwitchStarted = Date.now();
   await conversation.getByRole('button', { name: conversationName, exact: true }).click();
   await waitForFrameText(frame, '#chat-conversation-name', conversationName);
+  measurement.conversationSwitchMs = Date.now() - conversationSwitchStarted;
   await conversation.getByRole('button', { name: 'Close', exact: true }).click();
   await frame.locator('#conversation-view').selectOption('closed');
   const closedConversation = frame.locator('.conversation-item').filter({ hasText: conversationName });
@@ -167,7 +169,7 @@ async function runUiJourney(frame, { width, name, category = 'project' }) {
   const noteStarted = Date.now();
   await frame.locator('#notes-tree').getByRole('button', { name: notePath, exact: true }).click();
   await frame.locator('#note-editor').waitFor({ state: 'visible' });
-  measurement.largeNoteOpenMs = Date.now() - noteStarted;
+  measurement.largeNoteRenderMs = Date.now() - noteStarted;
   const editedText = `# ${name}\n\nEdited fictional journey evidence.`;
   await frame.locator('#note-content').fill(editedText);
   await frame.locator('#note-save').click();
@@ -370,35 +372,38 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
       const desktopJourney = await runUiJourney(frame, { width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project' });
       await assertResponsiveFrame(frame, page, 1440);
-      for (const name of ['dashboardReadyMs', 'indexedSearchMs', 'largeNoteOpenMs']) assertPerformanceObservationWithinBaseline(name, desktopJourney.measurement[name], baseline);
+      for (const name of ['dashboardReadyMs', 'topicReadyMs', 'conversationSwitchMs', 'indexedSearchMs', 'largeNoteRenderMs']) assertPerformanceObservationWithinBaseline(name, desktopJourney.measurement[name], baseline);
 
       host.diagnostics.guard.assert('127.0.0.1', 'authenticated reminder fixture creation');
-      const reminderOperationId = randomUUID();
-      await requestAuthenticatedGateway({
-        gatewayUrl,
-        credential: world.gatewayCredential,
-        scopes: ['operator.read', 'operator.write'],
-        method: 'command-center.v1.reminders.create',
-        params: {
-          schemaVersion: 1,
-          topicId: desktopJourney.topicId,
-          logicalOperationId: reminderOperationId,
-          declaration: {
-            name: 'Fictional due reminder',
-            enabled: true,
-            deleteAfterRun: false,
-            schedule: { kind: 'at', at: new Date(Date.now() - 60_000).toISOString() },
-            payload: { kind: 'systemEvent', text: 'Fictional release journey reminder' },
-            sessionTarget: 'main',
-            wakeMode: 'next-heartbeat'
+      for (let index = 1; index <= 3; index += 1) {
+        await requestAuthenticatedGateway({
+          gatewayUrl,
+          credential: world.gatewayCredential,
+          scopes: ['operator.read', 'operator.write'],
+          method: 'command-center.v1.reminders.create',
+          params: {
+            schemaVersion: 1,
+            topicId: desktopJourney.topicId,
+            logicalOperationId: randomUUID(),
+            declaration: {
+              name: `Fictional due reminder ${index}`,
+              enabled: true,
+              deleteAfterRun: false,
+              schedule: { kind: 'at', at: new Date(Date.now() - 60_000 - index).toISOString() },
+              payload: { kind: 'systemEvent', text: `Fictional release journey reminder ${index}` },
+              sessionTarget: 'main',
+              wakeMode: 'next-heartbeat'
+            }
           }
-        }
-      });
+        });
+      }
       await page.reload({ waitUntil: 'domcontentloaded' });
       ({ iframe, frame } = await mountedPluginFrame(page));
       assert.equal(await iframe.getAttribute('sandbox'), 'allow-scripts');
       await waitForDashboard(frame);
-      const attentionCard = frame.locator('#attention-cards .attention-card').first();
+      const attentionCards = frame.locator('#attention-cards .attention-card');
+      await assert.doesNotReject(attentionCards.nth(2).waitFor({ state: 'visible', timeout: 15_000 }));
+      const attentionCard = attentionCards.first();
       await attentionCard.waitFor({ state: 'visible', timeout: 15_000 });
       await attentionCard.getByRole('button', { name: 'View evidence', exact: true }).click();
       assert.equal(await frame.locator('#evidence-dialog').getAttribute('open'), '');
@@ -408,15 +413,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const actionStarted = Date.now();
       await attentionCard.getByRole('button', { name: 'Snooze', exact: true }).click();
       await waitForFrameText(frame, '#dashboard-feedback', 'Item snoozed.');
-      evidence.performanceMeasurements = { desktop: { ...desktopJourney.measurement, actionCardCompletionMs: Date.now() - actionStarted } };
+      evidence.performanceMeasurements = { desktop: { ...desktopJourney.measurement, sourceActionMs: Date.now() - actionStarted } };
       assert.ok(await frame.locator('#in-progress').count() === 1);
       assert.match(await frame.locator('#in-progress').innerText(), /Nothing in progress|Action/u);
 
       await page.setViewportSize({ width: 320, height: 900 });
       const mobileJourney = await runUiJourney(frame, { width: 320, name: 'Fictional Mobile Journey Topic', category: 'project' });
       await assertResponsiveFrame(frame, page, 320);
-      evidence.performanceMeasurements.mobile = { ...mobileJourney.measurement, actionCardCompletionMs: 0 };
-      for (const name of ['dashboardReadyMs', 'indexedSearchMs', 'largeNoteOpenMs']) assertPerformanceObservationWithinBaseline(name, mobileJourney.measurement[name], baseline);
+      evidence.performanceMeasurements.mobile = { ...mobileJourney.measurement, sourceActionMs: 0 };
 
       await frame.locator('#analysis-run').click();
       await waitForFrameText(frame, '#analysis-feedback', 'Analysis completed.');

@@ -1,25 +1,24 @@
 export const RELEASE_PERFORMANCE_BASELINE_VERSION = 1;
 
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
+  chunkBoundaryNoteBytes: 524_289,
   largeNoteBytes: 8_388_609,
-  conversations: 101,
+  conversations: 100,
   activityRecords: 51,
-  actionCards: 2,
+  actionCards: 3,
   indexedNotes: 5_000,
   indexedConversations: 5_000
 });
 
-export const RELEASE_VIEWPORTS = Object.freeze({
-  desktop: Object.freeze({ width: 1_440, height: 900 }),
-  mobile: Object.freeze({ width: 320, height: 900 })
-});
+export const RELEASE_PERFORMANCE_VIEWPORT = Object.freeze({ width: 1_440, height: 900 });
 
 export const RELEASE_MEASUREMENTS = Object.freeze([
   'dashboardReadyMs',
-  'activityAppendMs',
+  'topicReadyMs',
+  'conversationSwitchMs',
   'indexedSearchMs',
-  'largeNoteOpenMs',
-  'actionCardCompletionMs'
+  'largeNoteRenderMs',
+  'activityNextPageMs'
 ]);
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest']);
@@ -27,6 +26,14 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const HOST_COMMIT = '30f2924e437857935f034ac349bae8cc22ef9fb0';
 const HOST_VERSION = '2026.8.1-beta.3';
 const PLAYWRIGHT_VERSION = '1.62.1';
+export const RELEASE_FIXTURE_IDENTITY = 'sha256:9cd4e011908ffa14c3207e8961c4a7ca41bb5ed5c1ecce16ebd1f9eb9f0cc274';
+const HOST_RECEIPT = Object.freeze({
+  schemaVersion: 1,
+  sourceDigest: 'sha256:6e4ac1c2c914e3794f04427b41d8661220c45a224513fe55062186dd3f6f4d06',
+  commit: HOST_COMMIT,
+  executableDigest: 'sha256:e5ec47e5fcad9a75be0d7164f71b8e069d78aa6422b0c9ed750bf5521735e083',
+  contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6'
+});
 
 function invalid(message) {
   throw new TypeError(`Release performance baseline: ${message}`);
@@ -58,9 +65,10 @@ function assertFixtureCounts(value) {
 
 function assertHostReceipt(value) {
   closed(value, REQUIRED_HOST_RECEIPT_FIELDS, 'hostReceipt');
-  if (value.schemaVersion !== 1 || value.commit !== HOST_COMMIT) invalid('hostReceipt is not the pinned host identity');
-  for (const key of ['sourceDigest', 'executableDigest', 'contractDigest']) digest(value[key], `hostReceipt.${key}`);
-  return Object.freeze({ ...value });
+  for (const key of REQUIRED_HOST_RECEIPT_FIELDS) {
+    if (value[key] !== HOST_RECEIPT[key]) invalid('hostReceipt is not the pinned host identity');
+  }
+  return HOST_RECEIPT;
 }
 
 function assertBrowser(value) {
@@ -69,50 +77,52 @@ function assertBrowser(value) {
   return Object.freeze({ ...value });
 }
 
-function assertViewport(value, label, expected) {
-  closed(value, ['width', 'height'], label);
-  if (value.width !== expected.width || value.height !== expected.height) invalid(`${label} must be ${expected.width}x${expected.height}`);
-  return Object.freeze({ ...value });
+function assertViewport(value) {
+  closed(value, ['width', 'height'], 'viewport');
+  if (value.width !== RELEASE_PERFORMANCE_VIEWPORT.width || value.height !== RELEASE_PERFORMANCE_VIEWPORT.height) invalid(`viewport must be ${RELEASE_PERFORMANCE_VIEWPORT.width}x${RELEASE_PERFORMANCE_VIEWPORT.height}`);
+  return RELEASE_PERFORMANCE_VIEWPORT;
 }
 
-function assertMeasurements(value) {
-  closed(value, RELEASE_MEASUREMENTS, 'rawMeasurements');
+function assertObservations(value) {
+  closed(value, RELEASE_MEASUREMENTS, 'observations');
   const result = {};
   for (const name of RELEASE_MEASUREMENTS) {
-    const observation = closed(value[name], ['desktop', 'mobile'], `rawMeasurements.${name}`);
-    result[name] = Object.freeze({ desktop: positiveInteger(observation.desktop, `rawMeasurements.${name}.desktop`), mobile: positiveInteger(observation.mobile, `rawMeasurements.${name}.mobile`) });
+    const samples = value[name];
+    if (!Array.isArray(samples) || samples.length !== 3) invalid(`observations.${name} must contain exactly three non-negative integer samples`);
+    result[name] = Object.freeze(samples.map((sample, index) => positiveInteger(sample, `observations.${name}[${index}]`)));
   }
   return Object.freeze(result);
 }
 
-function assertThresholds(value, measurements) {
+function assertThresholds(value, observations) {
   closed(value, RELEASE_MEASUREMENTS, 'thresholds');
   const result = {};
   for (const name of RELEASE_MEASUREMENTS) {
-    const expected = Math.ceil(Math.max(measurements[name].desktop, measurements[name].mobile));
-    if (value[name] !== expected) invalid(`thresholds.${name} must equal the slower first observation (${expected} ms)`);
+    const expected = Math.max(...observations[name]);
+    if (value[name] !== expected) invalid(`thresholds.${name} must equal the maximum of the first three observations (${expected} ms)`);
     result[name] = expected;
   }
   return Object.freeze(result);
 }
 
-export function deriveReleaseThresholds(rawMeasurements) {
-  const measurements = assertMeasurements(rawMeasurements);
-  return Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map((name) => [name, Math.ceil(Math.max(measurements[name].desktop, measurements[name].mobile))])));
+export function deriveReleaseThresholds(observations) {
+  const normalized = assertObservations(observations);
+  return Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map((name) => [name, Math.max(...normalized[name])])));
 }
 
 export function validateReleasePerformanceBaseline(value) {
-  closed(value, ['schemaVersion', 'hostVersion', 'hostReceipt', 'pluginBuildDigest', 'browser', 'viewports', 'fixtureCounts', 'rawMeasurements', 'thresholds'], 'baseline');
+  closed(value, ['schemaVersion', 'hostVersion', 'hostReceipt', 'pluginBuildDigest', 'browser', 'viewport', 'fixtureIdentity', 'fixtureCounts', 'observations', 'thresholds'], 'baseline');
   if (value.schemaVersion !== RELEASE_PERFORMANCE_BASELINE_VERSION || value.hostVersion !== HOST_VERSION) invalid('version or host identity is not pinned');
   const hostReceipt = assertHostReceipt(value.hostReceipt);
   digest(value.pluginBuildDigest, 'pluginBuildDigest');
   const browser = assertBrowser(value.browser);
-  const viewports = closed(value.viewports, ['desktop', 'mobile'], 'viewports');
-  const normalizedViewports = Object.freeze({ desktop: assertViewport(viewports.desktop, 'viewports.desktop', RELEASE_VIEWPORTS.desktop), mobile: assertViewport(viewports.mobile, 'viewports.mobile', RELEASE_VIEWPORTS.mobile) });
+  const viewport = assertViewport(value.viewport);
+  const fixtureIdentity = digest(value.fixtureIdentity, 'fixtureIdentity');
+  if (fixtureIdentity !== RELEASE_FIXTURE_IDENTITY) invalid('fixtureIdentity is not the measured release fixture');
   const fixtureCounts = assertFixtureCounts(value.fixtureCounts);
-  const rawMeasurements = assertMeasurements(value.rawMeasurements);
-  const thresholds = assertThresholds(value.thresholds, rawMeasurements);
-  return Object.freeze({ schemaVersion: 1, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewports: normalizedViewports, fixtureCounts, rawMeasurements, thresholds });
+  const observations = assertObservations(value.observations);
+  const thresholds = assertThresholds(value.thresholds, observations);
+  return Object.freeze({ schemaVersion: 1, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts, observations, thresholds });
 }
 
 export function assertPerformanceObservationWithinBaseline(name, observation, baseline) {
@@ -123,4 +133,4 @@ export function assertPerformanceObservationWithinBaseline(name, observation, ba
   return true;
 }
 
-export const releasePerformanceIdentity = Object.freeze({ hostVersion: HOST_VERSION, hostCommit: HOST_COMMIT, playwrightVersion: PLAYWRIGHT_VERSION });
+export const releasePerformanceIdentity = Object.freeze({ hostVersion: HOST_VERSION, hostReceipt: HOST_RECEIPT, playwrightVersion: PLAYWRIGHT_VERSION, viewport: RELEASE_PERFORMANCE_VIEWPORT });
