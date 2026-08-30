@@ -286,7 +286,16 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         assert.equal(imported[index].text, occurrence.text);
         assert.deepEqual(imported[index].__openclaw.legacyDiscordV1, importedProvenance(migrationExport.channels[0].channelId, occurrence));
       }
-      assert.deepEqual((await readdir(path.dirname(databasePath))).sort(), ['metadata.sqlite', 'projections']);
+      const pluginStateRoot = path.dirname(databasePath);
+      assert.deepEqual((await readdir(pluginStateRoot)).sort(), ['metadata.sqlite', 'projections']);
+      assert.deepEqual((await readdir(path.join(pluginStateRoot, 'projections'))).sort(), [
+        'topic-search-conversations.commit.json',
+        'topic-search-conversations.json',
+        'topic-search-conversations.sqlite',
+        'topic-search-notes.commit.json',
+        'topic-search-notes.json',
+        'topic-search-notes.sqlite'
+      ]);
       const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try {
         assert.equal(startupDatabase.prepare('PRAGMA user_version').get().user_version, COMMAND_CENTER_SCHEMA_VERSION);
