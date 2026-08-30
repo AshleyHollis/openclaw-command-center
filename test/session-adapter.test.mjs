@@ -48,6 +48,23 @@ function pluginSessionBoundary({ completions } = {}) {
   return { entries, gateway, sessionStore };
 }
 
+function pinnedSanitizedSessionBoundary() {
+  const key = 'agent:main:dashboard:command-center-sanitized';
+  const entry = { sessionId: 'fictional-pinned-session', updatedAt: 47, category: null };
+  return {
+    gateway: { async request(method, params) {
+      if (method === 'sessions.create') {
+        entry.category = params.category;
+        return { key };
+      }
+      if (method === 'sessions.list') return { sessions: [{ key, sessionId: entry.sessionId, updatedAt: entry.updatedAt, category: entry.category }] };
+      throw new Error(`Unexpected ${method}`);
+    } },
+    entry,
+    key
+  };
+}
+
 test('Session create/history/send use exact linked keys without transcript inheritance', async () => {
   const metadata = metadataFixture();
   const calls = [];
@@ -87,6 +104,18 @@ test('Session create reads the pinned host entry identity and revision shape', a
   assert.equal(created.value.sessionId, entry.sessionId);
   assert.equal(created.value.creationRevision, String(entry.updatedAt));
   assert.equal(metadata.getSessionState(created.value.sourceReference.referenceId).sessionId, entry.sessionId);
+});
+
+test('Session create accepts the pinned sanitized response and proves identity through plugin-scoped catalog readback', async () => {
+  const metadata = metadataFixture();
+  const boundary = pinnedSanitizedSessionBoundary();
+  const logicalOperationId = randomUUID();
+  const adapter = createSessionAdapter({ metadata, gateway: boundary.gateway, topicId: 'topic-sanitized-shape' });
+  const created = await adapter.create({ logicalOperationId, label: 'Sanitized Host Shape' });
+  assert.equal(created.value.key, boundary.key);
+  assert.equal(created.value.sessionId, boundary.entry.sessionId);
+  assert.equal(created.value.creationRevision, String(boundary.entry.updatedAt));
+  assert.equal(boundary.entry.category, `command-center:${logicalOperationId}`);
 });
 
 test('Session creation uses the plugin-scoped Gateway and authoritative catalog without agent harness ownership', async () => {

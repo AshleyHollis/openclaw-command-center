@@ -4,12 +4,12 @@ export const RELEASE_PERFORMANCE_BASELINE_VERSION = 1;
 
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
   chunkBoundaryNoteBytes: 524_289,
-  largeNoteBytes: 524_289,
-  conversations: 51,
-  activityRecords: 51,
+  largeNoteBytes: 8_388_609,
+  conversations: 100,
+  activityRecords: 101,
   actionCards: 2,
-  indexedNotes: 2,
-  indexedConversations: 51
+  indexedNotes: 5_000,
+  indexedConversationMessages: 5_000
 });
 
 export const RELEASE_PERFORMANCE_VIEWPORT = Object.freeze({ width: 1_440, height: 900 });
@@ -30,7 +30,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const HOST_COMMIT = '30f2924e437857935f034ac349bae8cc22ef9fb0';
 const HOST_VERSION = '2026.8.1-beta.3';
 const PLAYWRIGHT_VERSION = '1.62.1';
-export const RELEASE_FIXTURE_IDENTITY = 'sha256:c244084038c483c04a359bc6e4a845c93c7299685f7a401e2de0f03f312597cc';
+export const RELEASE_FIXTURE_IDENTITY = 'sha256:fda82d83cb8e6d5a627a52002392948932f7c6a0d92c68897f9ac6abe96b86be';
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 1,
   sourceDigest: 'sha256:6e4ac1c2c914e3794f04427b41d8661220c45a224513fe55062186dd3f6f4d06',
@@ -61,6 +61,20 @@ function digest(value, label) {
 
 function canonicalDigest(value) {
   return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+
+function normalizeIdentity(value, { allowPendingCapture = false } = {}) {
+  const keys = ['schemaVersion', 'hostVersion', 'hostReceipt', 'pluginBuildDigest', 'browser', 'viewport', 'fixtureIdentity', 'fixtureCounts', ...(allowPendingCapture ? ['capture'] : [])];
+  closed(value, keys, allowPendingCapture ? 'baseline seed' : 'baseline identity');
+  if (value.schemaVersion !== RELEASE_PERFORMANCE_BASELINE_VERSION || value.hostVersion !== HOST_VERSION) invalid('version or host identity is not pinned');
+  const hostReceipt = assertHostReceipt(value.hostReceipt);
+  digest(value.pluginBuildDigest, 'pluginBuildDigest');
+  const browser = assertBrowser(value.browser);
+  const viewport = assertViewport(value.viewport);
+  const fixtureIdentity = digest(value.fixtureIdentity, 'fixtureIdentity');
+  if (fixtureIdentity !== RELEASE_FIXTURE_IDENTITY) invalid('fixtureIdentity is not the measured release fixture');
+  const fixtureCounts = assertFixtureCounts(value.fixtureCounts);
+  return { schemaVersion: 1, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts };
 }
 
 function assertFixtureCounts(value) {
@@ -118,16 +132,34 @@ export function deriveReleaseThresholds(observations) {
   return Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map((name) => [name, Math.max(1, Math.ceil(normalized[name]))])));
 }
 
+export function validateReleasePerformanceBaselineSeed(value) {
+  const identity = normalizeIdentity(value, { allowPendingCapture: true });
+  closed(value.capture, ['policy', 'successfulRunOrdinal'], 'capture');
+  if (value.capture.policy !== 'first-successful-pinned-harness-observation' || value.capture.successfulRunOrdinal !== null) invalid('baseline seed must remain pending until the first successful pinned harness run');
+  return Object.freeze({ ...identity, capture: Object.freeze({ ...value.capture }) });
+}
+
+export function captureFirstReleasePerformanceBaseline(seed, observations) {
+  const identity = validateReleasePerformanceBaselineSeed(seed);
+  const normalizedObservations = assertObservations(observations);
+  const thresholds = deriveReleaseThresholds(normalizedObservations);
+  const identityFields = { schemaVersion: identity.schemaVersion, hostVersion: identity.hostVersion, hostReceipt: identity.hostReceipt, pluginBuildDigest: identity.pluginBuildDigest, browser: identity.browser, viewport: identity.viewport, fixtureIdentity: identity.fixtureIdentity, fixtureCounts: identity.fixtureCounts };
+  return validateReleasePerformanceBaseline({
+    ...identityFields,
+    observations: normalizedObservations,
+    thresholds,
+    capture: {
+      policy: 'first-successful-pinned-harness-observation',
+      successfulRunOrdinal: 1,
+      identityDigest: canonicalDigest(identityFields),
+      observationsDigest: canonicalDigest(normalizedObservations)
+    }
+  });
+}
+
 export function validateReleasePerformanceBaseline(value) {
   closed(value, ['schemaVersion', 'hostVersion', 'hostReceipt', 'pluginBuildDigest', 'browser', 'viewport', 'fixtureIdentity', 'fixtureCounts', 'observations', 'thresholds', 'capture'], 'baseline');
-  if (value.schemaVersion !== RELEASE_PERFORMANCE_BASELINE_VERSION || value.hostVersion !== HOST_VERSION) invalid('version or host identity is not pinned');
-  const hostReceipt = assertHostReceipt(value.hostReceipt);
-  digest(value.pluginBuildDigest, 'pluginBuildDigest');
-  const browser = assertBrowser(value.browser);
-  const viewport = assertViewport(value.viewport);
-  const fixtureIdentity = digest(value.fixtureIdentity, 'fixtureIdentity');
-  if (fixtureIdentity !== RELEASE_FIXTURE_IDENTITY) invalid('fixtureIdentity is not the measured release fixture');
-  const fixtureCounts = assertFixtureCounts(value.fixtureCounts);
+  const { hostReceipt, browser, viewport, fixtureIdentity, fixtureCounts } = normalizeIdentity(Object.fromEntries(Object.entries(value).filter(([key]) => !['observations', 'thresholds', 'capture'].includes(key))));
   const observations = assertObservations(value.observations);
   const thresholds = assertThresholds(value.thresholds, observations);
   closed(value.capture, ['policy', 'successfulRunOrdinal', 'identityDigest', 'observationsDigest'], 'capture');

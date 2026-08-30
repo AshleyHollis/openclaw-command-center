@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { assertDeclarativeMirror } from '../src/compatibility.mjs';
 import { build, distRoot } from '../src/build.mjs';
 import { scanRepositorySafety } from '../src/safety.mjs';
-import { validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
+import { validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
@@ -25,7 +25,7 @@ if (!Array.isArray(packageJson.openclaw?.extensions) || !packageJson.openclaw.ex
 if (packageJson.openclaw?.compat?.pluginApi !== packageJson.commandCenter.compatibilityTuple.pluginApi.range) throw new Error('OpenClaw plugin API compatibility mirror drift');
 if (!pluginManifest.configSchema || typeof pluginManifest.configSchema !== 'object' || Array.isArray(pluginManifest.configSchema)) throw new Error('Plugin configSchema must be an object');
 const buildReceipt = await build();
-const performanceBaseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(path.join(root, 'test', 'fixtures', 'release-performance-baseline.v1.json'), 'utf8')));
+const performanceBaseline = validateReleasePerformanceBaselineSeed(JSON.parse(await readFile(path.join(root, 'test', 'fixtures', 'release-performance-baseline.v1.json'), 'utf8')));
 if (performanceBaseline.pluginBuildDigest !== `sha256:${buildReceipt.digest}`) throw new Error('Release performance baseline is not bound to the current plugin build digest');
 await scanRepositorySafety(root, { generated: [distRoot] });
 process.stdout.write('Command Center checks passed\n');

@@ -142,6 +142,7 @@ function actionResultSchema(method) {
     analysisId: Object.freeze({ type: 'string' }),
     observedRevision: Object.freeze({ type: ['string', 'null'] }),
     referenceId: Object.freeze({ type: 'string' }),
+    replacementReferenceId: Object.freeze({ type: 'string' }),
     topicId: Object.freeze({ type: 'string' }),
     sourceSystem: Object.freeze({ type: 'string' }),
     sourceKind: Object.freeze({ type: 'string' }),
@@ -224,8 +225,8 @@ function actionResultSchema(method) {
     ? ['schemaVersion', 'recovery']
     : method.endsWith('topics.structural-change.preview') || method.endsWith('topics.archive.preview') || method.endsWith('topics.restore.preview') || method.endsWith('topics.structural-preview') || method.endsWith('topics.archive-preview')
     ? ['schemaVersion', 'preview']
-    : method.endsWith('topics.recovery.verify') || method.endsWith('topics.recovery-verify') || method.endsWith('topics.recovery-relink') || method.endsWith('topics.recovery-replace')
-    ? ['schemaVersion', 'status', 'recovery']
+    : method.endsWith('topics.recovery.verify') || method.endsWith('topics.recovery.relink') || method.endsWith('topics.recovery.replace') || method.endsWith('topics.recovery-verify') || method.endsWith('topics.recovery-relink') || method.endsWith('topics.recovery-replace')
+    ? ['schemaVersion', 'status', 'replacementReferenceId', 'recovery']
     : method.endsWith('attention.list')
     ? ['schemaVersion', 'revision', 'buckets', 'episodes', 'inProgress']
     : method.endsWith('attention.get')
@@ -561,7 +562,7 @@ function sanitizeGroups(value) {
 
 function sanitizeMutationValue(method, value) {
   if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) return value;
-  const allowed = ['schemaVersion', 'status', 'logicalOperationId', 'key', 'sessionKey', 'sessionId', 'runId', 'referenceId', 'topicId', 'isPrimary', 'updatedAt', 'observedRevision', 'attentionId', 'actionId', 'analysisId', 'paraCategory', 'lifecycle', 'createdAt', 'displayLabel', 'sortOrder', 'collapsed', 'aspect', 'state', 'policyId', 'version', 'digest', 'proposalId', 'revision', 'name', 'usable', 'topic', 'recovery', 'sourceReferences', 'locators', 'result', 'note', 'sourceReference', 'job'];
+  const allowed = ['schemaVersion', 'status', 'logicalOperationId', 'key', 'sessionKey', 'sessionId', 'runId', 'referenceId', 'replacementReferenceId', 'topicId', 'isPrimary', 'updatedAt', 'observedRevision', 'attentionId', 'actionId', 'analysisId', 'paraCategory', 'lifecycle', 'createdAt', 'displayLabel', 'sortOrder', 'collapsed', 'aspect', 'state', 'policyId', 'version', 'digest', 'proposalId', 'revision', 'name', 'usable', 'topic', 'recovery', 'sourceReferences', 'locators', 'result', 'note', 'sourceReference', 'job'];
   const result = copyClosed(value, allowed, `${method} mutation result`);
   if (result.topic && typeof result.topic === 'object') result.topic = sanitizeTopic(result.topic);
   if (Array.isArray(result.recovery)) result.recovery = result.recovery.map(sanitizeRecovery);

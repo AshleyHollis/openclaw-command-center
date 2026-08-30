@@ -60,9 +60,14 @@ export class SessionAdapter {
     const creationCategory = `command-center:${logicalOperationId}`;
     const displayName = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : `Topic Conversation ${logicalOperationId}`;
     const catalogRows = async () => {
-      if (this.sessionStore?.listSessionEntries) return this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
-      const listing = await this.request('sessions.list', {});
-      return Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
+      // Ordinary plugin-created Sessions are owned through the authenticated
+      // Gateway catalog. The runtime store remains useful for exact latest-row
+      // readback, but it must not replace that public ownership boundary.
+      if (this.gateway?.request) {
+        const listing = await this.gateway.request('sessions.list', { agentId: 'main' });
+        return Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
+      }
+      return this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
     };
     const readCreatedCatalogEntry = async ({ expectedKey } = {}) => {
       const rows = await catalogRows();
@@ -90,10 +95,12 @@ export class SessionAdapter {
       const result = await this.gateway.request('sessions.create', { agentId: 'main', label: displayName, category: creationCategory }, { requestId });
       const createdKey = responseKey(result);
       if (!createdKey) throw sourceError('unavailable', 'sessions.create omitted its created Session key.');
-      if (result?.entry?.pluginOwnerId !== 'command-center') throw sourceError('unavailable', 'sessions.create omitted its plugin ownership proof.');
       const readback = await readCreatedCatalogEntry({ expectedKey: createdKey });
       if (!readback.matched) throw sourceError('unavailable', 'The created Session was not returned by authoritative catalog readback.');
       const { sessionKey, sessionId, revision } = readback;
+      const responseId = responseSessionId(result);
+      const responseRev = responseRevision(result);
+      if (responseId !== null && responseId !== sessionId || responseRev !== null && responseRev !== revision) throw sourceError('conflict', 'sessions.create did not match authoritative catalog readback.');
       const reference = await this.persistReference({ ['k' + 'ey']: sessionKey, sessionId, isPrimary: input.isPrimary ?? false, displayName });
       return { ['k' + 'ey']: sessionKey, sessionId, creationRevision: revision, sourceReference: reference };
     };

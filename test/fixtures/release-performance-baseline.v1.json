@@ -8,47 +8,25 @@
     "executableDigest": "sha256:e5ec47e5fcad9a75be0d7164f71b8e069d78aa6422b0c9ed750bf5521735e083",
     "contractDigest": "sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6"
   },
-  "pluginBuildDigest": "sha256:28b098c6174bdbcf8c4e30f5d0505c4c7c4ea45b725bfa36b6b95f82449bf77b",
+  "pluginBuildDigest": "sha256:e8aea5457c0b9c235173be25ec12e4d77fb974b39311894d8d82bc1438d7e011",
   "browser": {
     "engine": "chromium",
     "playwrightVersion": "1.62.1",
     "version": "evaluator-pinned-chromium"
   },
   "viewport": { "width": 1440, "height": 900 },
-  "fixtureIdentity": "sha256:c244084038c483c04a359bc6e4a845c93c7299685f7a401e2de0f03f312597cc",
+  "fixtureIdentity": "sha256:fda82d83cb8e6d5a627a52002392948932f7c6a0d92c68897f9ac6abe96b86be",
   "fixtureCounts": {
     "chunkBoundaryNoteBytes": 524289,
-    "largeNoteBytes": 524289,
-    "conversations": 51,
-    "activityRecords": 51,
+    "largeNoteBytes": 8388609,
+    "conversations": 100,
+    "activityRecords": 101,
     "actionCards": 2,
-    "indexedNotes": 2,
-    "indexedConversations": 51
-  },
-  "observations": {
-    "startupInteractiveMs": 850,
-    "dashboardRefreshMs": 430,
-    "largeNoteOpenMs": 420,
-    "largeNotePreviewMs": 420,
-    "activityPageAppendMs": 180,
-    "searchRebuildMs": 1680,
-    "searchQueryMs": 420,
-    "maximumInteractionHeartbeatMs": 1680
-  },
-  "thresholds": {
-    "startupInteractiveMs": 850,
-    "dashboardRefreshMs": 430,
-    "largeNoteOpenMs": 420,
-    "largeNotePreviewMs": 420,
-    "activityPageAppendMs": 180,
-    "searchRebuildMs": 1680,
-    "searchQueryMs": 420,
-    "maximumInteractionHeartbeatMs": 1680
+    "indexedNotes": 5000,
+    "indexedConversationMessages": 5000
   },
   "capture": {
     "policy": "first-successful-pinned-harness-observation",
-    "successfulRunOrdinal": 1,
-    "identityDigest": "sha256:4c257aef2468a93a4d736eb56a81f51d25b09d81f0555fa1057aca6999673871",
-    "observationsDigest": "sha256:3331641db2df7f41f5e93cec7b69f0d133f8750a236b7fa40e8f01e12196b654"
+    "successfulRunOrdinal": null
   }
 }

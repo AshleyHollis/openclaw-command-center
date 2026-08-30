@@ -86,6 +86,30 @@ test('handlers preserve authenticated request context and echo request and logic
   assert.deepEqual(response[1], { schemaVersion: 1, status: 'applied', requestId: 'gateway-frame-1', logicalOperationId: null, result: { mode: 'ready' } });
 });
 
+test('registered Session create bridge preserves independent durable identities under reversed completion', async () => {
+  const registrations = [];
+  const completions = [];
+  const durable = new Map();
+  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
+    sessionsCreate: ({ topicId, logicalOperationId }) => new Promise((resolve) => completions.push(() => {
+      const ordinal = durable.size + 1;
+      const value = { key: `agent:main:dashboard:bridge-${ordinal}`, sessionId: `fictional-bridge-session-${ordinal}`, creationRevision: String(ordinal), sourceReference: { version: 1, referenceId: `session:${topicId}:bridge-${ordinal}`, topicId, sourceSystem: 'openclaw', sourceKind: 'session' } };
+      durable.set(logicalOperationId, value);
+      resolve({ schemaVersion: 1, status: 'applied', logicalOperationId, value });
+    }))
+  });
+    const handler = registrations.find(([method]) => method === 'command-center.v1.sessions.create')[1];
+    const operations = Array.from({ length: 3 }, () => randomUUID());
+    const responses = [];
+  const pending = operations.map((logicalOperationId, index) => handler({ req: { id: `bridge-create-${index}` }, params: { schemaVersion: 1, topicId: 'topic-bridge-interleaving', label: `Bridge ${index}`, isPrimary: false, logicalOperationId }, context: { authenticated: true }, respond: (...args) => { responses[index] = args; } }));
+  while (completions.length < operations.length) await new Promise((resolve) => setImmediate(resolve));
+  for (const complete of completions.reverse()) complete();
+  await Promise.all(pending);
+    assert.equal(responses.every(([ok]) => ok === true), true);
+    assert.equal(new Set(responses.map(([, payload]) => payload.result.value.key)).size, operations.length);
+  for (const operationId of operations) assert.ok(durable.has(operationId));
+});
+
 test('Reminder creation uses the authenticated scheduler declaration boundary without a pre-existing reference', async () => {
   const registrations = [];
   const calls = [];
@@ -223,6 +247,15 @@ test('Source Recovery status is bounded and omits authoritative identities', asy
   const serialized = JSON.stringify(response[1]);
   assert.doesNotMatch(serialized, /fictional\/private|private-identity|private failure/);
   assert.deepEqual(response[1].result.recovery.diagnostics[0], { topicId, referenceId: 'note-folder:fictional', sourceKind: 'note_folder', expectedIdentity: 'exact Note Folder identity', check: 'exact-folder-resolution', status: 'recovery-required', retryable: true });
+});
+
+test('Session recovery replacement exposes only the durable replacement reference identity', async () => {
+  const topicId = randomUUID();
+  const replacementReferenceId = `session:${topicId}:replacement`;
+  const result = await invokeBridgeMethod({ topics: { recoveryReplace: async () => ({ schemaVersion: 1, status: 'replaced', replacementReferenceId, privateLocator: 'agent:main:private' }) } }, 'command-center.v1.topics.recovery.replace', {
+    schemaVersion: 1, topicId, referenceId: `session:${topicId}:revoked`, sessionKey: 'agent:main:dashboard:replacement', sessionId: 'fictional-replacement-session', expectedRevision: 4, expectedSourceRevision: 'fictional-revoked-session', logicalOperationId: randomUUID()
+  });
+  assert.deepEqual(result, { schemaVersion: 1, status: 'replaced', replacementReferenceId });
 });
 
 test('Structural Change bridge previews omit private Note Folder locators', async () => {
