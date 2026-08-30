@@ -14,9 +14,26 @@ function messageIdempotencyKey(value) {
   return value?.idempotencyKey ?? value?.__openclaw?.idempotencyKey ?? value?.metadata?.idempotencyKey ?? value?.message?.idempotencyKey ?? null;
 }
 
+const creationQueues = new WeakMap();
+
+async function serializeCreation(owner, logicalOperationId, run) {
+  if (!owner || typeof owner !== 'object') return run();
+  let queue = creationQueues.get(owner);
+  if (!queue) { queue = new Map(); creationQueues.set(owner, queue); }
+  const previous = queue.get(logicalOperationId) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(run);
+  queue.set(logicalOperationId, current);
+  try { return await current; }
+  finally {
+    if (queue.get(logicalOperationId) === current) queue.delete(logicalOperationId);
+    if (queue.size === 0) creationQueues.delete(owner);
+  }
+}
+
 export class SessionAdapter {
   constructor({ api, gateway, sessionStore, transcriptReader, metadata, topicId, coordinator, now } = {}) {
     this.api = api;
+    this.creationGateway = gateway;
     this.gateway = gateway ?? api?.runtime?.gateway;
     this.sessionStore = sessionStore ?? api?.runtime?.agent?.session;
     this.transcriptReader = transcriptReader;
@@ -54,17 +71,20 @@ export class SessionAdapter {
     throw sourceError('capability-unavailable', `The Session store does not support ${method}.`);
   }
 
-  async create(input = {}) {
+  async create(input = {}, runtime = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'logicalOperationId', 'requestId', 'label', 'isPrimary'], 'Session create request');
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const creationCategory = `command-center:${logicalOperationId}`;
     const displayName = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : `Topic Conversation ${logicalOperationId}`;
+    const gatewayRequest = typeof runtime?.gatewayRequest === 'function'
+      ? runtime.gatewayRequest
+      : this.creationGateway?.request?.bind(this.creationGateway);
     const catalogRows = async () => {
       // Ordinary plugin-created Sessions are owned through the authenticated
       // Gateway catalog. The runtime store remains useful for exact latest-row
       // readback, but it must not replace that public ownership boundary.
-      if (this.gateway?.request) {
-        const listing = await this.gateway.request('sessions.list', { agentId: 'main' });
+      if (gatewayRequest) {
+        const listing = await gatewayRequest('sessions.list', { agentId: 'main', limit: 200 });
         return Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
       }
       return this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
@@ -81,18 +101,17 @@ export class SessionAdapter {
       const row = matches[0];
       const sessionKey = responseKey(row);
       const listed = row?.entry ?? row;
-      const latest = this.sessionStore?.getSessionEntry?.({ agentId: 'main', sessionKey, readConsistency: 'latest' }) ?? listed;
-      if (!sessionKey || !latest || responseSessionId(row) !== responseSessionId({ entry: latest })) throw sourceError('unavailable', 'The created Session identity did not survive authoritative catalog readback.');
-      if (latest.category !== creationCategory) throw sourceError('conflict', 'The created Session operation identity changed during authoritative readback.');
-      if (latest.pluginOwnerId !== undefined && latest.pluginOwnerId !== 'command-center') throw sourceError('conflict', 'The created Session is not owned by Command Center.');
-      const sessionId = responseSessionId({ entry: latest });
-      const revision = responseRevision({ entry: latest });
+      if (!sessionKey || !listed) throw sourceError('unavailable', 'The created Session identity did not survive authoritative catalog readback.');
+      if (listed.category !== creationCategory) throw sourceError('conflict', 'The created Session operation identity changed during authoritative readback.');
+      if (listed.pluginOwnerId !== undefined && listed.pluginOwnerId !== 'command-center') throw sourceError('conflict', 'The created Session is not owned by Command Center.');
+      const sessionId = responseSessionId(row);
+      const revision = responseRevision(row);
       if (typeof sessionId !== 'string' || sessionId.trim() === '' || revision === null) throw sourceError('unavailable', 'The created Session readback omitted its exact identity or revision.');
       return { matched: true, sessionKey, sessionId, revision };
     };
     const execute = async ({ requestId }) => {
-      if (!this.gateway?.request) throw sourceError('capability-unavailable', 'Plugin-scoped Session creation is unavailable.', { capability: 'sessions' });
-      const result = await this.gateway.request('sessions.create', { agentId: 'main', label: displayName, category: creationCategory }, { requestId });
+      if (!gatewayRequest) throw sourceError('capability-unavailable', 'Authenticated request-scoped Session creation is unavailable.', { capability: 'sessions' });
+      const result = await gatewayRequest('sessions.create', { agentId: 'main', label: displayName, category: creationCategory }, { requestId });
       const createdKey = responseKey(result);
       if (!createdKey) throw sourceError('unavailable', 'sessions.create omitted its created Session key.');
       const readback = await readCreatedCatalogEntry({ expectedKey: createdKey });
@@ -110,7 +129,7 @@ export class SessionAdapter {
       const reference = await this.persistReference({ ['k' + 'ey']: readback.sessionKey, sessionId: readback.sessionId, isPrimary: input.isPrimary ?? false, displayName, preserveState: applied });
       return { matched: true, value: { ['k' + 'ey']: readback.sessionKey, sessionId: readback.sessionId, creationRevision: readback.revision, sourceReference: reference } };
     };
-    if (this.coordinator) return this.coordinator.mutate({ operationKind: 'sessions.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, topicId: this.topicId, intent: { creationCategory, label: input.label ?? null, isPrimary: input.isPrimary ?? false }, execute, reconcile });
+    if (this.coordinator) return serializeCreation(this.metadata ?? this.coordinator, logicalOperationId, () => this.coordinator.mutate({ operationKind: 'sessions.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, topicId: this.topicId, intent: { creationCategory, label: input.label ?? null, isPrimary: input.isPrimary ?? false }, execute, reconcile }));
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
   }
 

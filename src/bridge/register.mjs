@@ -1,5 +1,6 @@
 import { BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, sanitizeBridgeResult, validateBridgeRequest } from './contracts.mjs';
 import { errorResult, SourceServiceError } from '../sources/errors.mjs';
+import { createRequestScopedGatewayRequest } from './gateway-method-dispatch.mjs';
 
 const handlerMap = Object.freeze({
   'command-center.v1.sources.status': (service) => service.status(),
@@ -9,11 +10,11 @@ const handlerMap = Object.freeze({
   'command-center.v1.topics.list': async (service) => service.topics.listDestinationVerified ? service.topics.listDestinationVerified() : service.topics.listDestination(),
   'command-center.v1.topics.get': async (service, params) => ({ topic: service.topics.getVerified ? await service.topics.getVerified(params.topicId) : service.topics.get(params.topicId) }),
   'command-center.v1.topics.recovery.status': async (service, params) => ({ recovery: await service.topics.inspectSourceRecovery(params) }),
-  'command-center.v1.topics.create': async (service, params) => ({ value: await service.topics.create(params) }),
-  'command-center.v1.topics.provisioning.retry': async (service, params) => ({ value: await service.topics.provisioningRetry(params) }),
+  'command-center.v1.topics.create': async (service, params, runtime) => ({ value: await service.topics.create(params, runtime) }),
+  'command-center.v1.topics.provisioning.retry': async (service, params, runtime) => ({ value: await service.topics.provisioningRetry(params, runtime) }),
   'command-center.v1.topics.provisioning.rollback': async (service, params) => ({ value: await service.topics.provisioningRollback(params) }),
   'command-center.v1.topics.rename': async (service, params) => ({ value: await service.topics.rename(params) }),
-  'command-center.v1.topics.replace-primary-session': async (service, params) => ({ value: await service.topics.replacePrimarySession(params) }),
+  'command-center.v1.topics.replace-primary-session': async (service, params, runtime) => ({ value: await service.topics.replacePrimarySession(params, runtime) }),
   'command-center.v1.topics.structural-change.preview': (service, params) => ({ preview: service.topics.recategorizationPreview(params) }),
   'command-center.v1.topics.structural-change.confirm': async (service, params) => ({ value: await service.topics.recategorizationConfirm(params) }),
   'command-center.v1.topics.archive.preview': async (service, params) => ({ preview: await service.topics.archivePreview(params) }),
@@ -42,7 +43,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.sessions.history': (service, params) => service.sessionsHistory(params),
   'command-center.v1.sessions.browse': (service, params) => service.sessionsList(params),
   'command-center.v1.sessions.navigate': (service, params) => service.sessionsNavigate(params),
-  'command-center.v1.sessions.create': (service, params) => service.sessionsCreate(params),
+  'command-center.v1.sessions.create': (service, params, runtime) => service.sessionsCreate(params, runtime),
   'command-center.v1.sessions.send': (service, params) => service.sessionsSend(params),
   'command-center.v1.sessions.close': (service, params) => service.sessionsClose(params),
   'command-center.v1.sessions.reopen': (service, params) => service.sessionsReopen(params),
@@ -69,17 +70,18 @@ const handlerMap = Object.freeze({
   'command-center.v1.search.query': (service, params) => service.searchQuery(params)
 });
 
-export async function invokeBridgeMethod(service, method, params, requestId = null, authenticatedOperatorId = null) {
+export async function invokeBridgeMethod(service, method, params, requestId = null, authenticatedOperatorId = null, runtime = {}) {
   validateBridgeRequest(method, params, { mutation: WRITE_METHODS.includes(method) });
   const handler = handlerMap[method];
   if (!handler) throw new SourceServiceError('invalid-request', 'Unsupported Command Center method.');
-  return sanitizeBridgeResult(method, await handler(service, { ...params, ...(requestId === null ? {} : { requestId }), ...(authenticatedOperatorId === null ? {} : { authenticatedOperatorId }) }));
+  return sanitizeBridgeResult(method, await handler(service, { ...params, ...(requestId === null ? {} : { requestId }), ...(authenticatedOperatorId === null ? {} : { authenticatedOperatorId }) }, runtime));
 }
 
 export function registerBridgeMethods(api, service) {
   if (!api?.registerGatewayMethod) throw new TypeError('registerGatewayMethod is required');
   if (!service) throw new TypeError('authoritative source service is required');
   const registered = [];
+  const gatewayRequest = createRequestScopedGatewayRequest();
   const handlerService = Object.prototype.hasOwnProperty.call(service ?? {}, 'source') && service?.topics
     ? new Proxy(service.source, { get(target, property) { return property === 'topics' ? service.topics : target[property]; } })
     : service;
@@ -93,7 +95,7 @@ export function registerBridgeMethods(api, service) {
         service.notificationCaptureBinding?.();
         if (method === 'command-center.v1.attention.act' && (typeof client?.authenticatedUserId !== 'string' || client.authenticatedUserId.trim() === '')) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
         const operatorId = method.startsWith('command-center.v1.attention.') && typeof client?.authenticatedUserId === 'string' ? client.authenticatedUserId : null;
-        const result = await invokeBridgeMethod(handlerService, method, params, requestId, operatorId);
+        const result = await invokeBridgeMethod(handlerService, method, params, requestId, operatorId, { gatewayRequest });
         const logicalOperationId = params.logicalOperationId ?? null;
         respond(true, { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId, result });
       } catch (error) {

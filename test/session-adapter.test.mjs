@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSessionAdapter } from '../src/sources/sessions.mjs';
+import { createMutationCoordinator } from '../src/sources/mutation-coordinator.mjs';
 
 function metadataFixture() {
   const refs = [];
@@ -118,6 +119,29 @@ test('Session create accepts the pinned sanitized response and proves identity t
   assert.equal(boundary.entry.category, `command-center:${logicalOperationId}`);
 });
 
+test('Session creation uses the authenticated request-scoped dispatcher instead of the detached runtime gateway', async () => {
+  const metadata = metadataFixture();
+  const boundary = pinnedSanitizedSessionBoundary();
+  let detachedCalls = 0;
+  const adapter = createSessionAdapter({
+    api: { runtime: { gateway: { async request() { detachedCalls += 1; throw new Error('detached gateway must not create Sessions'); } } } },
+    metadata,
+    topicId: 'topic-request-scoped'
+  });
+  const dispatched = [];
+  const gatewayRequest = async (method, params) => {
+    dispatched.push(method);
+    return boundary.gateway.request(method, params);
+  };
+  const created = await adapter.create(
+    { logicalOperationId: randomUUID(), label: 'Request Scoped' },
+    { gatewayRequest }
+  );
+  assert.equal(created.value.key, boundary.key);
+  assert.deepEqual(dispatched, ['sessions.create', 'sessions.list']);
+  assert.equal(detachedCalls, 0);
+});
+
 test('Session creation uses the plugin-scoped Gateway and authoritative catalog without agent harness ownership', async () => {
   const metadata = metadataFixture();
   const boundary = pluginSessionBoundary();
@@ -168,6 +192,24 @@ test('overlapping Session creates preserve every distinct plugin-owned key regar
     assert.equal(metadata.getSessionState(item.value.sourceReference.referenceId).sessionId, boundary.entries.get(key).sessionId);
     assert.equal(item.value.creationRevision, String(boundary.entries.get(key).updatedAt));
   }
+});
+
+test('overlapping equivalent Session create replays serialize to one authoritative Session', async () => {
+  const metadata = metadataFixture();
+  const completions = [];
+  const boundary = pluginSessionBoundary({ completions });
+  const logicalOperationId = randomUUID();
+  const coordinator = createMutationCoordinator({ metadata });
+  const first = createSessionAdapter({ metadata, coordinator, gateway: boundary.gateway, sessionStore: boundary.sessionStore, topicId: 'topic-equivalent-overlap' });
+  const second = createSessionAdapter({ metadata, coordinator, gateway: boundary.gateway, sessionStore: boundary.sessionStore, topicId: 'topic-equivalent-overlap' });
+  const pending = [first, second].map((adapter) => adapter.create({ logicalOperationId, label: 'Equivalent overlap' }));
+  while (completions.length < 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(completions.length, 1);
+  completions[0]();
+  const created = await Promise.all(pending);
+  assert.equal(boundary.entries.size, 1);
+  assert.equal(created[0].value.key, created[1].value.key);
+  assert.equal(created[0].value.sessionId, created[1].value.sessionId);
 });
 
 test('Session-store reads and lifecycle writes refuse a missing exact authoritative row', async () => {
@@ -271,7 +313,8 @@ test('Session creation refuses the rejected runtime store and agent-harness owne
   assert.deepEqual(metadata.refs, []);
   const production = await readFile(new URL('../src/sources/sessions.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(production, /createSessionEntry|agentHarnessId/u);
-  assert.match(production, /gateway\.request\('sessions\.create'/u);
+  assert.match(production, /gatewayRequest\('sessions\.create'/u);
+  assert.doesNotMatch(production, /this\.gateway\.request\('sessions\.create'/u);
 });
 
 test('Session history withholds an explicitly mismatched authoritative identity', async () => {

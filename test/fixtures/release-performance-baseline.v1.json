@@ -8,7 +8,7 @@
     "executableDigest": "sha256:e5ec47e5fcad9a75be0d7164f71b8e069d78aa6422b0c9ed750bf5521735e083",
     "contractDigest": "sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6"
   },
-  "pluginBuildDigest": "sha256:e8aea5457c0b9c235173be25ec12e4d77fb974b39311894d8d82bc1438d7e011",
+  "pluginBuildDigest": "sha256:60673f355d2c279a0741951ed759c2b28661d97b740ac94a138d47ee47f5116b",
   "browser": {
     "engine": "chromium",
     "playwrightVersion": "1.62.1",

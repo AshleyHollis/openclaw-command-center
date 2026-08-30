@@ -162,17 +162,17 @@ export class TopicService {
   get(topicId) { return topicView(this.metadata, this.lifecycle.topic(topicId)); }
   getTopic(topicId) { return this.get(topicId); }
 
-  create(input) { return this.provisioning.create(input); }
-  createTopic(input) { return this.create(input); }
-  provisioningRetry(input) { return this.provisioning.retry(input); }
-  retryProvisioning(input) { return this.provisioningRetry(input); }
-  retry(input) { return this.provisioning.retry(input); }
+  create(input, runtime) { return this.provisioning.create(input, runtime); }
+  createTopic(input, runtime) { return this.create(input, runtime); }
+  provisioningRetry(input, runtime) { return this.provisioning.retry(input, runtime); }
+  retryProvisioning(input, runtime) { return this.provisioningRetry(input, runtime); }
+  retry(input, runtime) { return this.provisioning.retry(input, runtime); }
   provisioningRollback(input) { return this.provisioning.rollback(input); }
   rollbackProvisioning(input) { return this.provisioningRollback(input); }
   rollback(input) { return this.provisioning.rollback(input); }
   rename(input) { return this.lifecycle.rename(input); }
   renameTopic(input) { return this.rename(input); }
-  replacePrimarySession(input) { return this.lifecycle.replacePrimarySession(input); }
+  replacePrimarySession(input, runtime) { return this.lifecycle.replacePrimarySession(input, runtime); }
   recategorizationPreview(input) { return this.lifecycle.recategorizePreview(input); }
   previewStructuralChange(input) { return this.recategorizationPreview(input); }
   recategorizePreview(input) { return this.lifecycle.recategorizePreview(input); }

@@ -37,11 +37,11 @@ function fixtureService() {
   return service;
 }
 
-async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json' } } = {}) {
+async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json' }, dispatchGatewayMethod = async () => ({ ok: true, payload: {} }) } = {}) {
   const request = Readable.from([Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]);
   Object.assign(request, { method, headers });
   const response = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(value) { this.body = value; } };
-  await createTopicPageActionsHandler(service)(request, response);
+  await createTopicPageActionsHandler(service, { dispatchGatewayMethod })(request, response);
   return { statusCode: response.statusCode, headers: response.headers, body: response.body ? JSON.parse(response.body) : null };
 }
 
@@ -102,6 +102,26 @@ test('Topic Page actions are POST-only, closed, bounded, and content-free', asyn
   const oversizedResponse = await invoke(service, { body: base('conversations.create', { expectedRevision: 4 }) });
   assert.equal(oversizedResponse.statusCode, 507);
   assert.equal(Buffer.byteLength(JSON.stringify(oversizedResponse.body)) < 32 * 1024, true);
+});
+
+test('Conversation creation receives only the authenticated request-scoped Gateway dispatcher', async () => {
+  const service = fixtureService();
+  let scopedRequest;
+  service.sessionsCreate = async (input, runtime) => {
+    scopedRequest = await runtime.gatewayRequest('sessions.create', { agentId: 'main', label: input.label });
+    return { status: 'applied', referenceId: 'session:new' };
+  };
+  const calls = [];
+  const response = await invoke(service, {
+    body: base('conversations.create', { expectedRevision: 4, label: 'Scoped Conversation' }),
+    dispatchGatewayMethod: async (method, params, options) => {
+      calls.push({ method, params, options });
+      return { ok: true, payload: { key: 'fictional-request-scoped-key' } };
+    }
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(scopedRequest.key, 'fictional-request-scoped-key');
+  assert.deepEqual(calls, [{ method: 'sessions.create', params: { agentId: 'main', label: 'Scoped Conversation' }, options: { expectFinal: true, timeoutMs: 10000 } }]);
 });
 
 test('Note actions verify exact Topic/source revisions and reach the guarded service', async () => {

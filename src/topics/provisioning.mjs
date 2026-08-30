@@ -49,7 +49,7 @@ export class TopicProvisioningService {
     this.now = options.now ?? nowDefault;
   }
 
-  async create(input = {}) {
+  async create(input = {}, runtime = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw sourceError('invalid-request', 'Topic create request must be an object.');
     const name = validateTopicName(input.name);
     const paraCategory = validateParaCategory(input.paraCategory, { allowArchive: false });
@@ -58,15 +58,15 @@ export class TopicProvisioningService {
     if (existing) {
       if (existing.operationKind !== 'topics.create' || existing.intent?.name !== name || existing.intent?.paraCategory !== paraCategory) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Topic create intent.');
       if (existing.state === 'applied') return this.result(logicalOperationId);
-      return this.run(logicalOperationId, input.requestId ?? logicalOperationId);
+      return this.run(logicalOperationId, input.requestId ?? logicalOperationId, runtime);
     }
     const topicId = input.topicId ?? randomUUID();
     const intent = { name, paraCategory, topicId };
     this.metadata.recordTopicOperation({ logicalOperationId, operationKind: 'topics.create', state: 'pending', currentStep: 'reserve', intent, createdAt: this.now(), updatedAt: this.now() });
-    return this.run(logicalOperationId, input.requestId ?? logicalOperationId);
+    return this.run(logicalOperationId, input.requestId ?? logicalOperationId, runtime);
   }
 
-  async retry(input = {}) {
+  async retry(input = {}, runtime = {}) {
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const operation = this.metadata.getTopicOperation(logicalOperationId);
     if (!operation || operation.operationKind !== 'topics.create') throw sourceError('not-found', 'The Topic provisioning operation was not found.');
@@ -74,10 +74,10 @@ export class TopicProvisioningService {
     const topic = this.metadata.getTopic(operation.topicId);
     if (operation.state === 'applied') return this.result(operation.logicalOperationId);
     if (!topic || !Number.isInteger(input.expectedRevision) || input.expectedRevision !== topic.revision) throw sourceError('conflict', 'Provisioning retry Topic revision is stale.', { currentRevision: topic?.revision, expectedRevision: input.expectedRevision });
-    return this.run(operation.logicalOperationId, input.requestId ?? input.logicalOperationId);
+    return this.run(operation.logicalOperationId, input.requestId ?? input.logicalOperationId, runtime);
   }
 
-  async run(logicalOperationId, requestId) {
+  async run(logicalOperationId, requestId, runtime = {}) {
     const { operation } = operationSummary(this.metadata, logicalOperationId);
     const intent = operation.intent;
     const topicId = intent.topicId;
@@ -92,7 +92,7 @@ export class TopicProvisioningService {
       this.step(logicalOperationId, topicId, 'folder', operation);
       const folder = await this.bindFolder(topicId, intent);
       this.step(logicalOperationId, topicId, 'session', operation, { folderReferenceId: folder.referenceId });
-      const session = await this.bindSession(topicId, intent, logicalOperationId, requestId);
+      const session = await this.bindSession(topicId, intent, logicalOperationId, requestId, runtime);
       this.step(logicalOperationId, topicId, 'verify-bindings', operation, { folderReferenceId: folder.referenceId, sessionReferenceId: session.referenceId });
       await this.verifyFolderBinding(topicId, folder.referenceId);
       await this.verifySessionBinding(topicId, session.referenceId, session.adapter);
@@ -154,12 +154,12 @@ export class TopicProvisioningService {
     return { referenceId, ...folder };
   }
 
-  async bindSession(topicId, intent, logicalOperationId, requestId) {
+  async bindSession(topicId, intent, logicalOperationId, requestId, runtime = {}) {
     const sessionOperationId = logicalOperationId;
     const factory = this.sessionAdapterFactory ?? ((options) => createSessionAdapter(options));
     const adapter = factory({ metadata: this.metadata, gateway: this.gateway, sessionStore: this.sessionStore, topicId });
     if (!adapter?.create) throw sourceError('capability-unavailable', 'The Sessions capability is required to provision a Primary Session.');
-    const created = unwrap(await adapter.create({ label: conventionalSessionLabel(topicId, intent.name), isPrimary: true, logicalOperationId: sessionOperationId, requestId }));
+    const created = unwrap(await adapter.create({ label: conventionalSessionLabel(topicId, intent.name), isPrimary: true, logicalOperationId: sessionOperationId, requestId }, runtime));
     const reference = created?.sourceReference ?? (created?.referenceId ? this.metadata.getSourceReference(created.referenceId) : null);
     if (!reference) throw sourceError('source-recovery', 'Primary Session creation did not return a bound Source Reference.');
     const state = this.metadata.getSessionState(reference.referenceId);

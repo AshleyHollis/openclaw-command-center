@@ -845,12 +845,13 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       for (let offset = 1; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
         await Promise.all(Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => {
           const index = offset + batchIndex;
-          return requestAuthenticatedGateway({
-            gatewayUrl,
-            credential: world.gatewayCredential,
-            scopes: ['operator.read', 'operator.write'],
-            method: 'command-center.v1.sessions.create',
-            params: { schemaVersion: 1, topicId: 'fictional-topic-scale', label: `Fictional scale Conversation ${index}`, isPrimary: false, logicalOperationId: randomUUID() }
+          return fetch(`${gatewayUrl}/plugins/command-center/api/topic/actions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: 'fictional-topic-scale', label: `Fictional scale Conversation ${index}`, expectedRevision: 1, logicalOperationId: randomUUID() })
+          }).then(async (response) => {
+            if (!response.ok) throw new Error(`Authenticated request-scoped Session fixture creation failed: ${response.status}`);
+            return response.json();
           });
         }));
       }

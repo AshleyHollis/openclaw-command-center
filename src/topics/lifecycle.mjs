@@ -301,7 +301,7 @@ export class TopicLifecycleService {
     }
   }
 
-  async replacePrimarySession(input = {}) {
+  async replacePrimarySession(input = {}, runtime = {}) {
     const topicId = String(input.topicId ?? '').trim();
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const current = this.snapshot(topicId);
@@ -314,7 +314,7 @@ export class TopicLifecycleService {
     } else this.metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.replace-primary-session', state: 'pending', currentStep: 'create-session', intent: { topicId, expectedRevision: current.revision }, updatedAt: this.now() });
     const factory = this.sessionAdapterFactory ?? ((options) => createSessionAdapter(options));
     const adapter = factory({ metadata: this.metadata, gateway: this.gateway, sessionStore: this.sessionStore, topicId });
-    const created = unwrap(await adapter.create({ label: conventionalSessionLabel(topicId, current.name), isPrimary: true, logicalOperationId, requestId: logicalOperationId }));
+    const created = unwrap(await adapter.create({ label: conventionalSessionLabel(topicId, current.name), isPrimary: true, logicalOperationId, requestId: logicalOperationId }, runtime));
     const reference = created?.sourceReference ?? this.metadata.getSourceReference(created?.referenceId);
     if (!reference || !this.metadata.getSessionState(reference.referenceId)?.isPrimary) throw sourceError('source-recovery', 'Replacement Session did not become the exact Primary Session.');
     this.metadata.setSourceConventionState({ referenceId: reference.referenceId, aspect: 'display_label', state: 'managed' });

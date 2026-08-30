@@ -1,4 +1,5 @@
 import { invokeBridgeMethod } from '../bridge/register.mjs';
+import { createRequestScopedGatewayRequest } from '../bridge/gateway-method-dispatch.mjs';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { publicTopicDestination } from './snapshot.mjs';
 
@@ -203,7 +204,8 @@ export function createTopicsSearchHttpHandler(service) {
   };
 }
 
-export function createTopicsHttpHandler(service) {
+export function createTopicsHttpHandler(service, { dispatchGatewayMethod } = {}) {
+  const gatewayRequest = createRequestScopedGatewayRequest(dispatchGatewayMethod);
   return async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
@@ -235,7 +237,7 @@ export function createTopicsHttpHandler(service) {
             const preview = service.topics.restorePreview(params);
             return { value: await service.topics.restoreConfirm({ ...params, structuralChangeId: preview.structuralChangeId, previewDigest: preview.digest, expectedRevisions: preview.expectedRevisions }) };
           })()
-        : await invokeBridgeMethod(service, method, params);
+        : await invokeBridgeMethod(service, method, params, null, null, { gatewayRequest });
       const frameResult = sanitizeFrameResult(method, result);
       const destination = await mutationDestination(service);
       if (frameResult.value) frameResult.value.destination = destination;
