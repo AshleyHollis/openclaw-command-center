@@ -40,5 +40,11 @@
     "searchRebuildMs": 1680,
     "searchQueryMs": 420,
     "slowestJourneyActionMs": 1680
+  },
+  "capture": {
+    "policy": "first-successful-pinned-harness-observation",
+    "successfulRunOrdinal": 1,
+    "identityDigest": "sha256:a34770240dde9d5c79a6c948805dc734f8fb659f6b693e865c541532d1cd7749",
+    "observationsDigest": "sha256:5fcc61c1bfe84e0c5b382e0f0ac2b9354b18e69132c27d14b8bb78484ea1341a"
   }
 }

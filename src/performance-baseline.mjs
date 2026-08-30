@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 export const RELEASE_PERFORMANCE_BASELINE_VERSION = 1;
 
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
@@ -53,6 +55,10 @@ function positiveInteger(value, label) {
 function digest(value, label) {
   if (typeof value !== 'string' || !DIGEST.test(value)) invalid(`${label} must be a sha256 digest`);
   return value;
+}
+
+function canonicalDigest(value) {
+  return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
 }
 
 function assertFixtureCounts(value) {
@@ -111,7 +117,7 @@ export function deriveReleaseThresholds(observations) {
 }
 
 export function validateReleasePerformanceBaseline(value) {
-  closed(value, ['schemaVersion', 'hostVersion', 'hostReceipt', 'pluginBuildDigest', 'browser', 'viewport', 'fixtureIdentity', 'fixtureCounts', 'observations', 'thresholds'], 'baseline');
+  closed(value, ['schemaVersion', 'hostVersion', 'hostReceipt', 'pluginBuildDigest', 'browser', 'viewport', 'fixtureIdentity', 'fixtureCounts', 'observations', 'thresholds', 'capture'], 'baseline');
   if (value.schemaVersion !== RELEASE_PERFORMANCE_BASELINE_VERSION || value.hostVersion !== HOST_VERSION) invalid('version or host identity is not pinned');
   const hostReceipt = assertHostReceipt(value.hostReceipt);
   digest(value.pluginBuildDigest, 'pluginBuildDigest');
@@ -122,7 +128,13 @@ export function validateReleasePerformanceBaseline(value) {
   const fixtureCounts = assertFixtureCounts(value.fixtureCounts);
   const observations = assertObservations(value.observations);
   const thresholds = assertThresholds(value.thresholds, observations);
-  return Object.freeze({ schemaVersion: 1, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts, observations, thresholds });
+  closed(value.capture, ['policy', 'successfulRunOrdinal', 'identityDigest', 'observationsDigest'], 'capture');
+  if (value.capture.policy !== 'first-successful-pinned-harness-observation' || value.capture.successfulRunOrdinal !== 1) invalid('capture must identify the first successful pinned harness observation');
+  const expectedIdentityDigest = canonicalDigest({ schemaVersion: 1, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts });
+  const expectedObservationsDigest = canonicalDigest(observations);
+  if (value.capture.identityDigest !== expectedIdentityDigest || value.capture.observationsDigest !== expectedObservationsDigest) invalid('capture evidence does not match the pinned identities and observations');
+  const capture = Object.freeze({ ...value.capture });
+  return Object.freeze({ schemaVersion: 1, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts, observations, thresholds, capture });
 }
 
 export function assertPerformanceObservationWithinBaseline(name, observation, baseline) {
