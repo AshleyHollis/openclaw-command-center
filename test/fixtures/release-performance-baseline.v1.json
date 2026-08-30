@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "hostVersion": "2026.8.1-beta.3",
+  "hostReceipt": {
+    "schemaVersion": 1,
+    "sourceDigest": "sha256:c5cd73cdd48381d4abcc807aec6eb237cc21a26f0ae528d17d423aab75ad4b98",
+    "commit": "30f2924e437857935f034ac349bae8cc22ef9fb0",
+    "executableDigest": "sha256:e5ec47e5fcad9a75be0d7164f71b8e069d78aa6422b0c9ed750bf5521735e083",
+    "contractDigest": "sha256:671a968d0f9950c7c239605166f9f3ee46c520b521fc7665fa0eba80e840a307"
+  },
+  "pluginBuildDigest": "sha256:993bffc146da73ada5125d9fe2f9a8b924e474bdf31dfc347e6184e8a5f8e538",
+  "browser": {
+    "engine": "chromium",
+    "playwrightVersion": "1.62.1",
+    "version": "evaluator-pinned-chromium"
+  },
+  "viewports": {
+    "desktop": { "width": 1440, "height": 900 },
+    "mobile": { "width": 320, "height": 900 }
+  },
+  "fixtureCounts": {
+    "largeNoteBytes": 8388609,
+    "conversations": 101,
+    "activityRecords": 51,
+    "actionCards": 2,
+    "indexedNotes": 5000,
+    "indexedConversations": 5000
+  },
+  "rawMeasurements": {
+    "dashboardReadyMs": { "desktop": 850, "mobile": 1030 },
+    "activityAppendMs": { "desktop": 180, "mobile": 240 },
+    "indexedSearchMs": { "desktop": 420, "mobile": 690 },
+    "largeNoteOpenMs": { "desktop": 1680, "mobile": 2430 },
+    "actionCardCompletionMs": { "desktop": 360, "mobile": 520 }
+  },
+  "thresholds": {
+    "dashboardReadyMs": 1030,
+    "activityAppendMs": 240,
+    "indexedSearchMs": 690,
+    "largeNoteOpenMs": 2430,
+    "actionCardCompletionMs": 520
+  }
+}

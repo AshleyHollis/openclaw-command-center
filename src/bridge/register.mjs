@@ -47,6 +47,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.sessions.close': (service, params) => service.sessionsClose(params),
   'command-center.v1.sessions.reopen': (service, params) => service.sessionsReopen(params),
   'command-center.v1.reminders.list': (service, params) => service.remindersList(params),
+  'command-center.v1.reminders.create': (service, params) => service.remindersCreate(params),
   'command-center.v1.reminders.snooze': async (service, params) => { const result = await service.remindersSnooze(params); await service.notificationReconcile?.(); return result; },
   'command-center.v1.reminders.complete': async (service, params) => { const result = await service.remindersComplete(params); await service.notificationReconcile?.(); return result; },
   'command-center.v1.schedules.get': (service, params) => service.schedulesGet(params),

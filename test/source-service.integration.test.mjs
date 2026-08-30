@@ -366,6 +366,31 @@ test('authoritative creates reject a missing Topic before provider dispatch', as
   assert.deepEqual(calls, []);
 });
 
+test('Reminder creation uses the exact scheduler declaration and refreshes durable Attention observations', async () => {
+  const topicId = 'topic-reminder-create';
+  const logicalOperationId = randomUUID();
+  const calls = [];
+  const metadata = {
+    getTopic: (requestedTopicId) => requestedTopicId === topicId ? { topicId, lifecycle: 'active', paraCategory: 'project' } : null
+  };
+  const scheduler = {
+    async createReminder(input) {
+      calls.push(['create', input]);
+      return { schemaVersion: 1, status: 'applied', logicalOperationId, value: { job: { id: 'fictional-reminder' } } };
+    }
+  };
+  const reminders = { async list(input) { calls.push(['list', input]); return []; } };
+  const service = createAuthoritativeSourceService({ metadata, capabilities: { scheduler: true } });
+  service.forTopic = () => ({ scheduler, reminders });
+  const declaration = { name: 'Fictional reminder', enabled: true, schedule: { kind: 'every', everyMs: 60_000 }, payload: { kind: 'systemEvent', text: 'Fictional reminder payload' } };
+  const result = await service.remindersCreate({ schemaVersion: 1, topicId, logicalOperationId, declaration });
+  assert.equal(result.logicalOperationId, logicalOperationId);
+  assert.deepEqual(calls, [
+    ['create', { schemaVersion: 1, logicalOperationId, declaration }],
+    ['list', { schemaVersion: 1 }]
+  ]);
+});
+
 test('migration-configured Topics require exact authoritative bindings and completion before normal admission', () => {
   const metadata = {
     getTopic: () => ({ topicId: 'topic-migrated', lifecycle: 'active' }),

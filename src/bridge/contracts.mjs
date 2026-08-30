@@ -34,6 +34,7 @@ export const READ_METHODS = Object.freeze([
 
 export const WRITE_METHODS = Object.freeze([
   'command-center.v1.migration.resume',
+  'command-center.v1.reminders.create',
   'command-center.v1.topics.create',
   'command-center.v1.topics.provisioning.retry',
   'command-center.v1.topics.provisioning.rollback',
@@ -293,6 +294,7 @@ const required = Object.freeze({
   'command-center.v1.sessions.close': ['topicId', 'referenceId'],
   'command-center.v1.sessions.reopen': ['topicId', 'referenceId'],
   'command-center.v1.reminders.list': ['topicId'],
+  'command-center.v1.reminders.create': ['topicId', 'declaration'],
   'command-center.v1.reminders.snooze': ['topicId', 'expectedConfigRevision', 'patch'],
   'command-center.v1.reminders.complete': ['topicId', 'expectedConfigRevision'],
   'command-center.v1.schedules.list': ['topicId'],
@@ -358,6 +360,7 @@ const fields = Object.freeze({
   'command-center.v1.sessions.close': ['topicId', 'referenceId', 'sessionReferenceId', 'isPrimary', 'logicalOperationId'],
   'command-center.v1.sessions.reopen': ['topicId', 'referenceId', 'sessionReferenceId', 'isPrimary', 'logicalOperationId'],
   'command-center.v1.reminders.list': ['topicId'],
+  'command-center.v1.reminders.create': ['topicId', 'declaration', 'logicalOperationId'],
   'command-center.v1.reminders.snooze': ['topicId', 'referenceId', 'scheduleReferenceId', 'expectedConfigRevision', 'patch', 'logicalOperationId'],
   'command-center.v1.reminders.complete': ['topicId', 'referenceId', 'scheduleReferenceId', 'expectedConfigRevision', 'logicalOperationId'],
   'command-center.v1.schedules.get': ['topicId', 'referenceId', 'scheduleReferenceId'],
@@ -434,7 +437,7 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
   if (method.endsWith('notes.move') && !(typeof params.newPath === 'string' || typeof params.destinationPath === 'string')) throw sourceError('invalid-request', 'Bridge move requires a destination path.');
   if (method.includes('.sessions.') && !method.endsWith('.create') && !method.endsWith('.browse') && !(typeof params.referenceId === 'string' || typeof params.sessionReferenceId === 'string')) throw sourceError('invalid-request', 'Bridge Session request requires an exact Source Reference.');
   if (method.endsWith('.metadata.read') && params.referenceId !== undefined && typeof params.topicId !== 'string') throw sourceError('invalid-request', 'Bridge metadata Source Reference reads require topicId ownership.');
-  if ((method.includes('.reminders.') && !method.endsWith('.list')) || (method.includes('.schedules.') && !method.endsWith('.list') && !method.endsWith('.create'))) {
+  if ((method.includes('.reminders.') && !method.endsWith('.list') && !method.endsWith('.create')) || (method.includes('.schedules.') && !method.endsWith('.list') && !method.endsWith('.create'))) {
     if (!(typeof params.referenceId === 'string' || typeof params.scheduleReferenceId === 'string')) throw sourceError('invalid-request', 'Bridge scheduler request requires an exact Source Reference.');
   }
   if (params.enabled !== undefined && typeof params.enabled !== 'boolean') throw sourceError('invalid-request', 'enabled must be a boolean.');

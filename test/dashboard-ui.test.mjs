@@ -20,6 +20,10 @@ test('Dashboard markup keeps the required first-class regions and narrow flow la
   assert.match(app, /Load more Activity/u);
   assert.match(app, /command-center\.v1\.topics\.get/u);
   assert.match(app, /data-topic-id|dataset\.topicId/u);
+  assert.match(app, /credentials: 'omit'/u);
+  assert.match(app, /loadDashboard\(\)/u);
+  assert.match(index, /aria-describedby="evidence-content"/u);
+  assert.match(index, /id="note-action-dialog"[^>]*aria-describedby="note-action-status"/u);
 });
 
 test('wide and narrow Topic launchers and topic.open actions open the exact verified Topic', { skip: !existsSync(chromium.executablePath()) && 'Playwright browser is supplied by the isolated evaluator' }, async () => {

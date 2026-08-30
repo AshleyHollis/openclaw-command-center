@@ -24,7 +24,7 @@ let topicAnalysisScheduleRevision = null;
 let topicReviewState = null;
 
 async function dashboardRead(offset = 0) {
-  const response = await fetch(`${DASHBOARD_ROUTE}?activityOffset=${encodeURIComponent(offset)}&activityLimit=50`, { credentials: 'include', headers: { accept: 'application/json' } });
+  const response = await fetch(`${DASHBOARD_ROUTE}?activityOffset=${encodeURIComponent(offset)}&activityLimit=50`, { credentials: 'omit', headers: { accept: 'application/json' } });
   const value = await response.json();
   if (!response.ok || value.status === 'error') throw new Error(value.message || 'Dashboard is unavailable.');
   return value.result ?? value;
@@ -60,7 +60,7 @@ function renderNotificationSettings(settings) {
   }
 }
 async function topicAnalysisRead() {
-  const response = await fetch(TOPIC_ANALYSIS_ROUTE, { credentials: 'include', headers: { accept: 'application/json' } });
+  const response = await fetch(TOPIC_ANALYSIS_ROUTE, { credentials: 'omit', headers: { accept: 'application/json' } });
   const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis is unavailable.'); return value.result ?? value;
 }
 function renderTopicReview(review) {
@@ -93,7 +93,7 @@ function renderTopicReview(review) {
   if (checkpoint) { const proposals = review?.proposals ?? []; checkpoint.hidden = proposals.length === 0 || !proposals.some((proposal) => proposal.state === 'approved') || proposals.some((proposal) => proposal.state !== 'approved'); }
   const snooze = document.querySelector('#topic-review-snooze'); if (snooze) snooze.hidden = !review || review.state === 'Resolved';
 }
-async function topicAnalysisAction(action, input = {}) { const response = await fetch(TOPIC_ANALYSIS_ACTIONS_ROUTE, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: operationId(), ...input }) }); const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis action was refused.'); return value.result ?? value; }
+async function topicAnalysisAction(action, input = {}) { const response = await fetch(TOPIC_ANALYSIS_ACTIONS_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: operationId(), ...input }) }); const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis action was refused.'); return value.result ?? value; }
 async function topicReviewDecision(action, proposal) { const feedback = document.querySelector('#analysis-feedback'); try { await topicAnalysisAction(action, { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision }); feedback.textContent = 'Proposal decision saved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
 async function topicReviewAdjust(proposal) { const feedback = document.querySelector('#analysis-feedback'); if (proposal.operation === 'archive') { feedback.textContent = 'Archive proposals support Approve or Keep as-is.'; return; } const target = proposal.after?.topic ?? proposal.after ?? {}; const initial = proposal.operation === 'create' ? { name: target.name, paraCategory: target.paraCategory } : { paraCategory: target.paraCategory }; const adjustmentJson = window.prompt('Enter the adjusted name/category fields as JSON.', JSON.stringify(initial)); if (!adjustmentJson) return; try { await topicAnalysisAction('proposal.adjust', { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision, adjustment: JSON.parse(adjustmentJson) }); feedback.textContent = 'Proposal adjustment approved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
 async function loadTopicAnalysis() { try { const value = await topicAnalysisRead(); const settings = value.schedule; if (settings) { topicAnalysisScheduleRevision = settings.revision; for (const [id, item] of [['analysis-enabled', settings.enabled], ['analysis-weekday', String(settings.weekday)]]) { const control = document.querySelector(`#${id}`); if (control) id === 'analysis-enabled' ? control.checked = item : control.value = item; } for (const [id, item] of [['analysis-local-time', settings.localTime], ['analysis-time-zone', settings.timeZone]]) { const control = document.querySelector(`#${id}`); if (control && document.activeElement !== control) control.value = item; } } renderTopicReview(value.review); } catch (error) { const feedback = document.querySelector('#analysis-feedback'); if (feedback) feedback.textContent = error.message || 'Topic Analysis is unavailable.'; } }
@@ -116,7 +116,7 @@ async function saveNotificationSettings(event) {
   };
   if (!event.currentTarget.reportValidity()) return;
   try {
-    const response = await fetch(DASHBOARD_ACTIONS_ROUTE, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'settings.update', logicalOperationId: operationId(), expectedRevision: notificationSettingsRevision, settings }) });
+    const response = await fetch(DASHBOARD_ACTIONS_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'settings.update', logicalOperationId: operationId(), expectedRevision: notificationSettingsRevision, settings }) });
     const value = await response.json();
     if (!response.ok || value.status === 'error') throw new Error(value.message || 'Notification settings were refused.');
     feedback.textContent = 'Notification settings saved.';
@@ -125,7 +125,7 @@ async function saveNotificationSettings(event) {
 }
 document.querySelector('#notification-settings-form')?.addEventListener('submit', saveNotificationSettings);
 async function dashboardMutate(episode, action, input = {}) {
-  const response = await fetch(ATTENTION_ROUTE, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+  const response = await fetch(ATTENTION_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
     schemaVersion: 1, logicalOperationId: operationId(), sourceCapabilityId: episode.sourceCapabilityId, stableSubjectId: episode.stableSubjectId, episodeId: episode.episodeId,
     expectedEpisodeRevision: episode.revision, expectedSourceRevision: episode.sourceRevision ?? undefined, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actionId: action, input
   }) });
@@ -234,7 +234,7 @@ async function loadDashboard() {
     document.querySelector('#attention-badge').textContent = String(dashboardState.attentionBadgeCount ?? 0);
     const progress = document.querySelector('#in-progress'); progress.replaceChildren(...(dashboardState.inProgress ?? []).map((episode) => { const item = document.createElement('p'); item.textContent = episode.context || 'Action in progress'; return item; })); if (!progress.childElementCount) progress.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nothing in progress.' }));
     const coming = document.querySelector('#coming-up'); coming.replaceChildren(...(dashboardState.comingUp ?? []).map((item) => { const row = document.createElement('p'); row.textContent = `${item.day} · ${item.time} · ${item.context} · ${item.label}`; return row; })); if (!coming.childElementCount) coming.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No future Reminders.' }));
-    fillTopicLaunchers(dashboardState.topics); renderActivity(dashboardState.activity?.records); const more = document.querySelector('#activity-load-more'); more.textContent = 'Load more Activity'; more.hidden = dashboardState.activity?.hasMore !== true; more.onclick = async () => { const next = await dashboardRead(dashboardState.activity.nextOffset); dashboardState.activity = next.activity; renderActivity(next.activity.records, true); more.hidden = next.activity.hasMore !== true; };
+    fillTopicLaunchers(dashboardState.topics); renderActivity(dashboardState.activity?.records); const more = document.querySelector('#activity-load-more'); more.textContent = 'Load more Activity'; more.hidden = dashboardState.activity?.hasMore !== true; more.onclick = async () => { const next = await dashboardRead(dashboardState.activity.nextOffset); dashboardState.activity = next.activity; renderActivity(next.activity.records, true); more.hidden = next.activity.hasMore !== true; }; if (statusNode) statusNode.textContent = 'Dashboard is current.';
     focusNotificationTarget();
     await loadTopicAnalysis();
   } catch (error) { document.querySelector('#dashboard-feedback').textContent = error.message || 'Dashboard is unavailable.'; }
@@ -280,7 +280,7 @@ async function read(view = 'destination') {
   throw new Error('Unsupported read view.');
 }
 async function mutate(action, input) {
-  const response = await fetch(HTTP_ROUTE, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: input.logicalOperationId ?? operationId(), ...input }) });
+  const response = await fetch(HTTP_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: input.logicalOperationId ?? operationId(), ...input }) });
   const value = await response.json();
   if (!response.ok || value.status === 'error') throw Object.assign(new Error(value.message || 'Topic action failed.'), { destination: value.result?.destination });
   return value;
@@ -553,7 +553,7 @@ function selectMobileSection(name) { workspace.mobileSection = name; if (name ==
 function updateResponsivePanes() { const mobile = typeof matchMedia === 'function' && matchMedia('(max-width: 47.99rem)').matches; for (const pane of selectAll('.workspace-layout > [data-pane]')) { const visible = mobile ? pane.dataset.pane === workspace.mobileSection : !['conversations', 'notes'].includes(pane.dataset.pane) || workspace.panes[pane.dataset.pane]; pane.style.display = visible ? '' : 'none'; pane.inert = !visible; } }
 function revealWorkspaceTarget(name) { if (typeof matchMedia === 'function' && matchMedia('(max-width: 47.99rem)').matches) { selectMobileSection(name); focusPane(name); } else if (name === 'notes' || name === 'conversations') setPaneOpen(name, true); else focusPane(name, false); }
 for (const control of selectAll('.workspace-sections button')) control.addEventListener('click', () => selectMobileSection(control.dataset.section)); if (typeof matchMedia === 'function') matchMedia('(max-width: 47.99rem)').addEventListener?.('change', updateResponsivePanes); updateResponsivePanes();
-document.querySelector('#workspace-back')?.addEventListener('click', () => { ++workspace.generation; setWorkspaceVisible(false); document.querySelector('#topics-heading')?.focus(); });
+document.querySelector('#workspace-back')?.addEventListener('click', () => { ++workspace.generation; setWorkspaceVisible(false); document.querySelector('#topics-heading')?.focus(); if (hasDashboardDestination) void loadDashboard(); });
 
 window.CommandCenterTopics = Object.freeze({ loadTopics, renderDestination, mutate, read, openResult, openTopic: openTopicWorkspace, routes: { HTTP_ROUTE, PAGE_ACTION_ROUTE, SHELL_ROUTE }, view: 'destination', searchView: 'search', get ready() { return bridgeReady; } });
 window.CommandCenterSearch = Object.freeze({

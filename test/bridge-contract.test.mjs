@@ -39,6 +39,7 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.notes.edit', { schemaVersion: 1, topicId: 'topic', referenceId: 'note:a', path: 'a.md', expectedRevision: 'sha256:x', text: 'x', logicalOperationId: randomUUID() }));
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.edit', { schemaVersion: 1, topicId: 'topic', path: 'a.md', expectedRevision: 'sha256:x', text: 'x', logicalOperationId: randomUUID() }), /referenceId/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.reminders.complete', { schemaVersion: 1, topicId: 'topic', referenceId: 'reminder', expectedConfigRevision: 'revision', patch: { payload: {} }, logicalOperationId: randomUUID() }), /unsupported.*patch/i);
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.reminders.create', { schemaVersion: 1, topicId: 'topic', declaration: { name: 'Fictional reminder', schedule: { kind: 'at', at: '2026-08-30T00:00:00.000Z' }, payload: { kind: 'systemEvent', text: 'Fictional reminder' } }, logicalOperationId: randomUUID() }));
   assert.throws(() => validateBridgeRequest('command-center.v1.schedules.set-enabled', { schemaVersion: 1, topicId: 'topic', referenceId: 'schedule', expectedConfigRevision: 'revision', enabled: false, patch: { schedule: {} }, logicalOperationId: randomUUID() }), /unsupported.*patch/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.send', { schemaVersion: 1, topicId: 'topic', message: 'fictional', logicalOperationId: randomUUID() }), /exact Source Reference/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.schedules.run', { schemaVersion: 1, topicId: 'topic', logicalOperationId: randomUUID() }), /exact Source Reference/i);
@@ -83,6 +84,21 @@ test('handlers preserve authenticated request context and echo request and logic
   await statusHandler({ req: { id: 'gateway-frame-1' }, params: { schemaVersion: 1 }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
   assert.deepEqual(response[1], { schemaVersion: 1, status: 'applied', requestId: 'gateway-frame-1', logicalOperationId: null, result: { mode: 'ready' } });
+});
+
+test('Reminder creation uses the authenticated scheduler declaration boundary without a pre-existing reference', async () => {
+  const registrations = [];
+  const calls = [];
+  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
+    remindersCreate: async (input) => { calls.push(input); return { schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, value: { job: { id: 'fictional-reminder', enabled: true, schedule: { kind: 'at', at: '2026-08-30T00:00:00.000Z' }, payload: { kind: 'systemEvent', text: 'Fictional reminder' } } } }; }
+  });
+  const handler = registrations.find(([method]) => method === 'command-center.v1.reminders.create')[1];
+  const logicalOperationId = randomUUID();
+  let response;
+  await handler({ req: { id: 'gateway-reminder-create' }, params: { schemaVersion: 1, topicId: 'topic-fictional', declaration: { name: 'Fictional reminder', enabled: true, schedule: { kind: 'at', at: '2026-08-30T00:00:00.000Z' }, payload: { kind: 'systemEvent', text: 'Fictional reminder' } }, logicalOperationId }, context: { authenticated: true }, respond: (...args) => { response = args; } });
+  assert.equal(response[0], true);
+  assert.equal(calls[0].topicId, 'topic-fictional');
+  assert.equal(response[1].result.value.job.id, 'fictional-reminder');
 });
 
 test('Topic mutation handlers await the public service and return sanitized durable results', async () => {

@@ -349,6 +349,14 @@ export class AuthoritativeSourceService {
     if (!service.reminders) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' });
     return this.ingestReminderRows(input.topicId, await service.reminders.list(adapterInput(input)));
   }
+  async remindersCreate(input = {}) {
+    const service = this.requireTopicService(input, { write: true });
+    requireCapability(this.capabilities, 'scheduler');
+    if (!service.scheduler) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' });
+    const result = await service.scheduler.createReminder({ ...adapterInput(input), logicalOperationId: input.logicalOperationId });
+    await this.remindersList({ schemaVersion: 1, topicId: input.topicId });
+    return result;
+  }
   async refreshReminderAttention() {
     for (const topic of this.metadata.listUsableTopics?.() ?? []) await this.remindersList({ schemaVersion: 1, topicId: topic.topicId });
   }

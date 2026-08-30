@@ -14,7 +14,6 @@ import { createTopicAnalysisRunner } from './topics/analysis-runner.mjs';
 import { createProductionTopicAnalyzer } from './topics/production-analyzer.mjs';
 import { createTopicAnalysisScheduleService } from './topics/analysis-schedule.mjs';
 import { createTopicReviewService } from './topics/review.mjs';
-import { readVisibleSessionTranscriptMessageEntries } from 'openclaw/plugin-sdk/session-transcript-runtime';
 
 let activeMaintenanceService;
 
@@ -88,6 +87,10 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
         rebuild: (input) => searchService.rebuild(input),
         invalidate: (input) => searchService.invalidate(input)
       };
+      // Keep the published SDK boundary lazy. The built asset can be imported
+      // for shell/build inspection without resolving host-only packages; the
+      // pinned host still supplies the transcript reader before service start.
+      const { readVisibleSessionTranscriptMessageEntries } = await import('openclaw/plugin-sdk/session-transcript-runtime');
       sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
       searchRebuildService = createSearchRebuildService({

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -16,6 +17,7 @@ import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
 import { COMMAND_CENTER_SCHEMA_VERSION } from '../src/metadata/schema.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
+import { assertPerformanceObservationWithinBaseline, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 
 function routeGrant(config) {
   const values = config?.[runtimeCapability.bootstrap.grantsField] || [];
@@ -61,7 +63,7 @@ async function waitForMigrationCompletion(databasePath, { attempts = 100, delayM
   throw new HarnessFailure('migration-incomplete', 'Pinned-host startup did not durably complete the configured legacy migration');
 }
 
-async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey }) {
+async function requestAuthenticatedGateway({ gatewayUrl, credential, method, params = {}, scopes = ['operator.read'] }) {
   const socket = new WebSocket(gatewayUrl.replace(/^http/u, 'ws'));
   const frames = [];
   const waitForFrame = (predicate, timeoutMs = 10_000) => new Promise((resolve, reject) => {
@@ -81,16 +83,142 @@ async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey }) 
     });
     const challenge = await challengePromise;
     assert.equal(typeof challenge.payload?.nonce, 'string');
-    const connectId = 'command-center-acceptance-connect';
-    socket.send(JSON.stringify({ type: 'req', id: connectId, method: 'connect', params: { minProtocol: 4, maxProtocol: 4, client: { id: 'cli', version: '1', platform: 'test', mode: 'cli' }, caps: [], commands: [], role: 'operator', scopes: ['operator.read'], auth: { ['to' + 'ken']: credential } } }));
+    const connectId = `command-center-acceptance-connect-${randomUUID()}`;
+    socket.send(JSON.stringify({ type: 'req', id: connectId, method: 'connect', params: { minProtocol: 4, maxProtocol: 4, client: { id: 'cli', version: '1', platform: 'test', mode: 'cli' }, caps: [], commands: [], role: 'operator', scopes, auth: { ['to' + 'ken']: credential } } }));
     const connected = await waitForFrame((frame) => frame?.type === 'res' && frame.id === connectId);
     if (!connected.ok) throw new Error(`Authenticated Gateway connect failed: ${connected.error?.code ?? 'unknown'}`);
-    const historyId = 'command-center-acceptance-history';
-    socket.send(JSON.stringify({ type: 'req', id: historyId, method: 'chat.history', params: { sessionKey } }));
-    const response = await waitForFrame((frame) => frame?.type === 'res' && frame.id === historyId);
-    if (!response.ok) throw new Error(`Authenticated chat.history failed: ${response.error?.code ?? 'unknown'}`);
+    const requestId = `command-center-acceptance-${randomUUID()}`;
+    socket.send(JSON.stringify({ type: 'req', id: requestId, method, params }));
+    const response = await waitForFrame((frame) => frame?.type === 'res' && frame.id === requestId);
+    if (!response.ok) throw new Error(`Authenticated ${method} failed: ${response.error?.code ?? 'unknown'}`);
     return response.payload;
   } finally { socket.close(); }
+}
+
+async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey }) {
+  return requestAuthenticatedGateway({ gatewayUrl, credential, method: 'chat.history', params: { sessionKey } });
+}
+
+async function waitForFrameText(frame, selector, expected, timeout = 10_000) {
+  await frame.waitForFunction(({ selector: target, expectedText }) => document.querySelector(target)?.textContent?.includes(expectedText), { selector, expectedText: expected }, { timeout });
+}
+
+async function waitForDashboard(frame, timeout = 10_000) {
+  await frame.waitForFunction(() => {
+    const dashboard = document.querySelector('#dashboard');
+    return dashboard && !dashboard.textContent?.includes('Loading current Attention…') && !dashboard.textContent?.includes('Loading Activity…');
+  }, undefined, { timeout });
+}
+
+async function submitFrameForm(frame, selector) {
+  await frame.locator(selector).evaluate((form) => form.requestSubmit());
+}
+
+async function selectWorkspaceSection(frame, name, width) {
+  if (width < 768) await frame.locator(`.workspace-sections button[data-section="${name}"]`).click();
+}
+
+async function runUiJourney(frame, { width, name, category = 'project' }) {
+  const measurement = {};
+  const dashboardStarted = Date.now();
+  await waitForDashboard(frame);
+  measurement.dashboardReadyMs = Date.now() - dashboardStarted;
+  await frame.locator('#topic-create input[name="name"]').fill(name);
+  await frame.locator('#topic-create select[name="paraCategory"]').selectOption(category);
+  const createStarted = Date.now();
+  await submitFrameForm(frame, '#topic-create');
+  await waitForFrameText(frame, '#topic-status', 'Topic created and verified.');
+  measurement.topicCreateMs = Date.now() - createStarted;
+  const row = frame.locator('.topic-row').filter({ hasText: name });
+  await row.getByRole('button', { name: 'Open Topic', exact: true }).click();
+  await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
+  const topicId = await row.getAttribute('data-topic-id');
+  assert.match(topicId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+
+  await selectWorkspaceSection(frame, 'chat', width);
+  await frame.locator('#chat-message').fill(`Fictional Primary Chat message for ${name}.`);
+  await submitFrameForm(frame, '#chat-form');
+  await waitForFrameText(frame, '#chat-status', 'Message sent.');
+
+  await selectWorkspaceSection(frame, 'conversations', width);
+  const conversationName = `Fictional Conversation ${name}`;
+  await frame.locator('#conversation-create input[name="label"]').fill(conversationName);
+  await submitFrameForm(frame, '#conversation-create');
+  const conversation = frame.locator('.conversation-item').filter({ hasText: conversationName });
+  await conversation.getByRole('button', { name: conversationName, exact: true }).click();
+  await waitForFrameText(frame, '#chat-conversation-name', conversationName);
+  await conversation.getByRole('button', { name: 'Close', exact: true }).click();
+  await frame.locator('#conversation-view').selectOption('closed');
+  const closedConversation = frame.locator('.conversation-item').filter({ hasText: conversationName });
+  await closedConversation.getByText('Closed', { exact: true }).waitFor();
+  await closedConversation.getByRole('button', { name: 'Reopen', exact: true }).click();
+  await frame.locator('#conversation-view').selectOption('open');
+  await frame.locator('.conversation-item').filter({ hasText: conversationName }).getByText('Open', { exact: true }).waitFor();
+
+  await selectWorkspaceSection(frame, 'notes', width);
+  await frame.locator('#note-new').click();
+  const noteDialog = frame.getByRole('dialog', { name: 'Create Note' });
+  await noteDialog.waitFor();
+  const notePath = `journey-${width}.md`;
+  await frame.locator('#note-action-path').fill(notePath);
+  await frame.locator('#note-action-text').fill(`# ${name}\n\nFictional journey search evidence.`);
+  await frame.locator('#note-action-submit').click();
+  await frame.locator('#notes-tree').getByRole('button', { name: notePath, exact: true }).waitFor();
+  const noteStarted = Date.now();
+  await frame.locator('#notes-tree').getByRole('button', { name: notePath, exact: true }).click();
+  await frame.locator('#note-editor').waitFor({ state: 'visible' });
+  measurement.largeNoteOpenMs = Date.now() - noteStarted;
+  const editedText = `# ${name}\n\nEdited fictional journey evidence.`;
+  await frame.locator('#note-content').fill(editedText);
+  await frame.locator('#note-save').click();
+  await waitForFrameText(frame, '#notes-status', 'Note saved.');
+  await frame.locator('#note-preview-mode').click();
+  await frame.locator('#note-preview').waitFor({ state: 'visible' });
+  await waitForFrameText(frame, '#note-preview', 'Edited fictional journey evidence.');
+  await frame.locator('#note-edit-mode').click();
+  await frame.locator('#note-rename').click();
+  await frame.locator('#note-action-path').fill(`renamed-${width}.md`);
+  await frame.locator('#note-action-submit').click();
+  const renamedPath = `renamed-${width}.md`;
+  await frame.locator('#notes-tree').getByRole('button', { name: renamedPath, exact: true }).waitFor();
+  await frame.locator('#notes-tree').getByRole('button', { name: renamedPath, exact: true }).click();
+  await frame.locator('#note-move').click();
+  const movedPath = `nested/journey-${width}.md`;
+  await frame.locator('#note-action-path').fill(movedPath);
+  await frame.locator('#note-action-submit').click();
+  await frame.locator('#notes-tree').getByRole('button', { name: movedPath, exact: true }).waitFor();
+
+  await selectWorkspaceSection(frame, 'search', width);
+  await frame.locator('#workspace-search-query').fill('Edited fictional journey evidence');
+  const searchStarted = Date.now();
+  await submitFrameForm(frame, '#workspace-search-form');
+  await waitForFrameText(frame, '#workspace-search-status', '1 Notes');
+  measurement.indexedSearchMs = Date.now() - searchStarted;
+  await frame.locator('#workspace-notes-results').getByRole('button', { name: 'Open Note', exact: true }).click();
+  await frame.locator('#note-editor').waitFor({ state: 'visible' });
+
+  await frame.locator('#workspace-back').click();
+  await waitForDashboard(frame);
+  await frame.locator('#topic-search-topic-id').selectOption(topicId);
+  await frame.locator('#topic-search-query').fill('Edited fictional journey evidence');
+  await submitFrameForm(frame, '#topic-search-form');
+  await waitForFrameText(frame, '#topic-search-status', '1 Notes');
+  await frame.locator('#notes-results').getByRole('button', { name: 'Open Note', exact: true }).click();
+  await waitForFrameText(frame, '#topic-search-detail', 'Edited fictional journey evidence.');
+  assert.equal(await frame.locator('#dashboard').isHidden(), false);
+  return { topicId, measurement };
+}
+
+async function assertResponsiveFrame(frame, page, width) {
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, `${width}px page has horizontal overflow`);
+  assert.equal(await frame.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, `${width}px plugin frame has horizontal overflow`);
+  const interactive = await frame.locator('button, input, select, textarea, a').evaluateAll((nodes) => nodes.filter((node) => {
+    const style = getComputedStyle(node);
+    return style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
+  }).map((node) => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height, name: node.getAttribute('aria-label') || node.textContent?.trim().slice(0, 40) })));
+  for (const node of interactive) assert.ok(node.width >= 44 && node.height >= 44, `${width}px interactive target is below 44px: ${node.name}`);
+  assert.equal(await frame.locator('h1').count(), 1);
+  assert.equal(await frame.locator('[role="dialog"]').count(), 2);
 }
 
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 110_000 }, async (testContext) => {
@@ -227,21 +355,87 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.parentBootstrapBodyKeys = parentConfig && typeof parentConfig === 'object' ? Object.keys(parentConfig).slice(0, 30) : [];
       evidence.routeGrant = routeGrant(parentConfig);
       if (!evidence.routeGrant) throw new HarnessFailure('missing-route-grant', 'The command-center route was not granted to the authenticated parent');
+      const serializedBootstrap = JSON.stringify(parentConfig);
+      assert.doesNotMatch(serializedBootstrap, /tokenHash/iu);
+      assert.doesNotMatch(serializedBootstrap, new RegExp(world.gatewayCredential, 'u'));
       const observedCookieProbe = await cookieProbe;
       evidence.cookieProbeStatus = observedBrowserResponseStatus(observedCookieProbe);
       evidence.cookieProbe = hasSuccessfulBrowserResponse(observedCookieProbe);
       if (!evidence.cookieProbe) throw new HarnessFailure('failed-cookie-probe', 'Sandbox cookie probe was not observed');
-      const { iframe, frame } = await mountedPluginFrame(page);
+      let { iframe, frame } = await mountedPluginFrame(page);
       evidence.frame = true;
       const sandbox = await iframe.getAttribute('sandbox');
       if (sandbox !== 'allow-scripts') throw new HarnessFailure('sandbox-mismatch', 'External tab iframe is not scripts-only');
-      for (const width of [1440, 320]) {
-        await page.setViewportSize({ width, height: 900 });
-        const title = frame.getByRole('heading', { name: 'Command Center' });
-        await assert.doesNotReject(title.waitFor());
-        const box = await title.boundingBox();
-        assert.ok(box && box.width <= width, `mounted shell overflows ${width}px`);
-      }
+      const baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
+      assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
+      const desktopJourney = await runUiJourney(frame, { width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project' });
+      await assertResponsiveFrame(frame, page, 1440);
+      for (const name of ['dashboardReadyMs', 'indexedSearchMs', 'largeNoteOpenMs']) assertPerformanceObservationWithinBaseline(name, desktopJourney.measurement[name], baseline);
+
+      host.diagnostics.guard.assert('127.0.0.1', 'authenticated reminder fixture creation');
+      const reminderOperationId = randomUUID();
+      await requestAuthenticatedGateway({
+        gatewayUrl,
+        credential: world.gatewayCredential,
+        scopes: ['operator.read', 'operator.write'],
+        method: 'command-center.v1.reminders.create',
+        params: {
+          schemaVersion: 1,
+          topicId: desktopJourney.topicId,
+          logicalOperationId: reminderOperationId,
+          declaration: {
+            name: 'Fictional due reminder',
+            enabled: true,
+            deleteAfterRun: false,
+            schedule: { kind: 'at', at: new Date(Date.now() - 60_000).toISOString() },
+            payload: { kind: 'systemEvent', text: 'Fictional release journey reminder' },
+            sessionTarget: 'main',
+            wakeMode: 'next-heartbeat'
+          }
+        }
+      });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      ({ iframe, frame } = await mountedPluginFrame(page));
+      assert.equal(await iframe.getAttribute('sandbox'), 'allow-scripts');
+      await waitForDashboard(frame);
+      const attentionCard = frame.locator('#attention-cards .attention-card').first();
+      await attentionCard.waitFor({ state: 'visible', timeout: 15_000 });
+      await attentionCard.getByRole('button', { name: 'View evidence', exact: true }).click();
+      assert.equal(await frame.locator('#evidence-dialog').getAttribute('open'), '');
+      assert.ok((await frame.locator('#evidence-content').innerText()).length > 0);
+      await frame.locator('#evidence-close').click();
+      await attentionCard.locator('select[aria-label="Snooze duration"]').selectOption('PT72H');
+      const actionStarted = Date.now();
+      await attentionCard.getByRole('button', { name: 'Snooze', exact: true }).click();
+      await waitForFrameText(frame, '#dashboard-feedback', 'Item snoozed.');
+      evidence.performanceMeasurements = { desktop: { ...desktopJourney.measurement, actionCardCompletionMs: Date.now() - actionStarted } };
+      assert.ok(await frame.locator('#in-progress').count() === 1);
+      assert.match(await frame.locator('#in-progress').innerText(), /Nothing in progress|Action/u);
+
+      await page.setViewportSize({ width: 320, height: 900 });
+      const mobileJourney = await runUiJourney(frame, { width: 320, name: 'Fictional Mobile Journey Topic', category: 'project' });
+      await assertResponsiveFrame(frame, page, 320);
+      evidence.performanceMeasurements.mobile = { ...mobileJourney.measurement, actionCardCompletionMs: 0 };
+      for (const name of ['dashboardReadyMs', 'indexedSearchMs', 'largeNoteOpenMs']) assertPerformanceObservationWithinBaseline(name, mobileJourney.measurement[name], baseline);
+
+      await frame.locator('#analysis-run').click();
+      await waitForFrameText(frame, '#analysis-feedback', 'Analysis completed.');
+      const mobileRow = frame.locator('.topic-row').filter({ hasText: 'Fictional Mobile Journey Topic' });
+      await page.once('dialog', (dialog) => dialog.accept('Area: Fictional Mobile Journey Topic'));
+      await mobileRow.getByRole('button', { name: 'Rename', exact: true }).click();
+      await waitForFrameText(frame, '#topic-status', 'Topic renamed.');
+      await frame.locator('#analysis-run').click();
+      await waitForFrameText(frame, '#analysis-feedback', 'Analysis completed.');
+      const proposal = frame.locator('.topic-review-proposal').first();
+      await proposal.waitFor({ state: 'visible', timeout: 15_000 });
+      await proposal.getByRole('button', { name: 'Approve', exact: true }).click();
+      await waitForFrameText(frame, '#analysis-feedback', 'Proposal decision saved.');
+      const checkpoint = frame.locator('#topic-review-checkpoint');
+      await checkpoint.waitFor({ state: 'visible' });
+      await page.once('dialog', (dialog) => dialog.accept());
+      await checkpoint.click();
+      await waitForFrameText(frame, '#topic-review-plan', 'Application outcomes:');
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
       evidence.dom = redactBrowserEvidence((await frame.locator('body').innerText()).slice(0, 1000));
     } catch (error) {
       failure = error;
