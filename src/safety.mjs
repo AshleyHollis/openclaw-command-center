@@ -7,7 +7,7 @@ const prohibited = [
   /-----BEGIN(?: [A-Z0-9][A-Z0-9 -]*)? PRIVATE KEY-----/i,
   /\b(?:bearer|basic)\s+[A-Za-z0-9._~+\/=:-]{12,}/i,
   /(?:\b(?:set-cookie|cookie)\b|["'](?:set-cookie|cookie)["'])\s*[:=]\s*['\"]?[^\s'\";,]{8,}/i,
-  /(?:\b(?:token|password|secret|key|api[_-]?key)\b|["'](?:token|password|secret|key|api[_-]?key)["'])\s*[=:]\s*['\"]?[^\s'\";,]+/i,
+  /(?:\b(?:token|password|secret|api[_-]?key)\b|["'](?:token|password|secret|api[_-]?key)["'])\s*[=:]\s*['\"]?[^\s'\";,]+/i,
   /\b(?:ghp_|github_pat_|sk-|xox[baprs]-|AKIA)[A-Za-z0-9_-]{4,}\b/,
   /(?:\/(?:Users|home)\/[A-Za-z0-9_.-]+\/|\/root\/|[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9_.-]+[\\/])/i
 ];

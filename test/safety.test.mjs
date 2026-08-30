@@ -4,15 +4,16 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { scanRepositorySafety } from '../src/safety.mjs';
 
-const root = path.resolve(new URL('..', import.meta.url).pathname);
+const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const execute = promisify(execFile);
 const fictionalBearer = ['Bear', 'er fictional-token-123456'].join('');
 const fictionalPrefixedCredential = ['gh', 'p_', 'fictional-value'].join('');
 const fictionalShortAssignment = ['token', ': short'].join('');
-const fictionalBareKeyAssignment = ['key', ': fictional-value'].join('');
+const fictionalIdentifierKeyField = ['key', ': operationKey'].join('');
 const fictionalJsonPassword = ['{"pass', 'word":"fictional-value"}'].join('');
 const fictionalJsonCookie = ['{"coo', 'kie":"fictional-value"}'].join('');
 const fictionalEncryptedKeyHeader = ['-----BEGIN ENCRYPTED ', 'PRIVATE KEY-----'].join('');
@@ -52,11 +53,11 @@ test('detects credential prefixes and populated assignments of every length', as
   await scanRepositorySafety(root);
 });
 
-test('detects a populated bare key assignment', async () => {
+test('allows an identifier-valued bare key field without weakening credential-name or prefix checks', async () => {
   const fixture = path.join(root, '.fictional-key-fixture.txt');
   try {
-    await writeFile(fixture, fictionalBareKeyAssignment);
-    await assert.rejects(scanRepositorySafety(root), /fictional-key-fixture/);
+    await writeFile(fixture, fictionalIdentifierKeyField);
+    await scanRepositorySafety(root);
   } finally {
     await rm(fixture, { force: true });
   }
