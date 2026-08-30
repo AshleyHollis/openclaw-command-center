@@ -98,7 +98,8 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
         metadata: metadataService,
         api,
         gateway: api.runtime?.gateway,
-        noteAdapterFactory: (topicId) => sourceService.forTopic(topicId).notes
+        noteAdapterFactory: (topicId) => sourceService.forTopic(topicId).notes,
+        requireAuthorizedPreparation: true
       });
       searchService = createTopicSearchService({
         stateDir,
@@ -208,6 +209,7 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
     get attentionService() { return attentionService; },
     get maintenanceService() { return maintenanceService; },
     get searchService() { return searchService; },
+    get searchRebuildService() { return searchRebuildService; },
     get topicService() { return topicService; },
     get dashboardService() { return dashboardService; },
     get notificationService() { return notificationService; },
@@ -250,6 +252,11 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
     topicContextRetrieve(input) {
       if (!contextPolicy) throw new Error('Command Center Topic context is not ready.');
       return contextPolicy.retrieve(input);
+    },
+    async searchRebuild(input) {
+      if (!searchRebuildService) throw new Error('Command Center Topic Search rebuild is not ready.');
+      await searchRebuildService.prepareAuthorized(input);
+      return searchRebuildService.rebuildPrepared(input);
     }
   };
 }

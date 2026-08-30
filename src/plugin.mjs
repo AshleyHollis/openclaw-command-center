@@ -10,6 +10,7 @@ import { createDashboardReadHttpHandler, createDashboardActionsHttpHandler } fro
 import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandler } from './topics/analysis-http.mjs';
 import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
 import { createTopicPageActionsHandler } from './topics/page-http.mjs';
+import { createSearchRebuildHttpHandler, searchRebuildRoute } from './search/http-route.mjs';
 
 export { runNoteMaintenance } from './plugin-service.mjs';
 
@@ -70,6 +71,7 @@ export default definePluginEntry({
         if (property === 'topicAnalysisSchedule') return service.topicAnalysisSchedule;
         if (property === 'analysisRunner') return service.topicAnalysisRunner;
         if (property === 'topicAnalysisRunner') return service.topicAnalysisRunner;
+        if (property === 'searchRebuild') return (input) => service.searchRebuild(input);
         if (property === 'review') return service.topicReview;
         if (property === 'topicReview') return service.topicReview;
         return sourceProxy[property];
@@ -136,6 +138,12 @@ export default definePluginEntry({
       auth: 'plugin',
       match: 'exact',
       handler: createTopicPageActionsHandler(serviceProxy)
+    });
+    api.registerHttpRoute({
+      path: searchRebuildRoute,
+      auth: 'plugin',
+      match: 'exact',
+      handler: createSearchRebuildHttpHandler(serviceProxy)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topic-analysis',

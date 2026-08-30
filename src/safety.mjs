@@ -98,15 +98,18 @@ export function scanPublicEvidence(values, { label = 'runtime-evidence' } = {}) 
   return Object.freeze([]);
 }
 
-async function scanPath(root, filename, findings, read, visited, excludedRoots) {
+async function scanPath(root, filename, findings, read, statPath, visited, excludedRoots) {
   const relative = path.relative(root, filename);
   if (!within(root, filename) || isExcludedControllerPath(filename, excludedRoots) || visited.has(filename)) return;
   visited.add(filename);
-  const stat = await lstat(filename).catch(() => undefined);
-  if (!stat) return;
+  const stat = await statPath(filename).catch(() => undefined);
+  if (!stat) { findings.push({ path: relative, rule: 'missing-or-unreadable-entry' }); return; }
   if (stat.isSymbolicLink()) { findings.push({ path: relative, rule: 'symlink' }); return; }
   if (stat.isDirectory()) {
-    for (const entry of await readdir(filename)) await scanPath(root, path.join(filename, entry), findings, read, visited, excludedRoots);
+    let entries;
+    try { entries = await readdir(filename); }
+    catch { findings.push({ path: relative, rule: 'missing-or-unreadable-entry' }); return; }
+    for (const entry of entries) await scanPath(root, path.join(filename, entry), findings, read, statPath, visited, excludedRoots);
     return;
   }
   if (!stat.isFile()) return;
@@ -114,13 +117,13 @@ async function scanPath(root, filename, findings, read, visited, excludedRoots) 
   catch { findings.push({ path: relative, rule: 'unreadable-content' }); }
 }
 
-export async function scanRepositorySafety(root, { generated = [], read = readFile, controllerRoots = [] } = {}) {
+export async function scanRepositorySafety(root, { generated = [], read = readFile, stat = lstat, controllerRoots = [] } = {}) {
   const findings = [];
   const visited = new Set();
   const excludedRoots = excludedControllerRoots(root, controllerRoots);
   const isGitRoot = await exactGitRoot(root);
   for (const filename of await repositoryPaths(root, generated, { isGitRoot })) {
-    await scanPath(root, filename, findings, read, visited, excludedRoots);
+    await scanPath(root, filename, findings, read, stat, visited, excludedRoots);
   }
   if (!isGitRoot) {
     if (findings.length) throw new Error(`Repository safety scan failed: ${findings.map((finding) => `${finding.path} (${finding.rule})`).join(', ')}`);

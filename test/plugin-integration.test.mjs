@@ -53,6 +53,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false } = {}) {
       return response.result;
     },
     revokeBinding() { revoked = true; },
+    restoreBinding() { revoked = false; },
     get bindingCaptures() { return bindingCaptures; }
   };
 }
@@ -69,6 +70,7 @@ test('real plugin registers one required emitter and reconciles in the backgroun
     assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sessions.browse'));
     assert.equal(host.services.length, 1);
     assert.equal(host.routes.some((route) => route.path === '/plugins/command-center' && route.auth === 'gateway'), true);
+    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/api/search/rebuild' && route.auth === 'plugin' && route.match === 'exact'), true);
     const service = host.services[0];
     await service.start();
     service.notificationService.updateSettings({
@@ -89,6 +91,10 @@ test('real plugin registers one required emitter and reconciles in the backgroun
     await service.attentionService.ingest({ schemaVersion: 1, sourceCapabilityId: 'integration-monitor', stableSubjectId: 'fictional-high', attentionReason: 'fictional-failure', occurrenceId: 'fictional-critical-occurrence', occurredAt: new Date(Date.now() + 1_000).toISOString(), evidenceFacts: { 'active-security-exposure': true } });
     await service.notificationReconcile();
     assert.equal(host.candidates.length, 1, 'a revoked retained binding must fail closed before delivery');
+    host.restoreBinding();
+    await host.authenticatedGatewayRequest('command-center.v1.topics.list', { schemaVersion: 1 });
+    await service.notificationReconcile();
+    assert.equal(host.candidates.length, 2, 'fresh authenticated reconciliation restores a current opaque binding');
 
     for (const sourceKind of ['chat', 'activity', 'topic-review']) {
       const sourceCapabilityId = `routine-${sourceKind}`;
@@ -96,7 +102,7 @@ test('real plugin registers one required emitter and reconciles in the backgroun
       await service.attentionService.ingest({ schemaVersion: 1, sourceCapabilityId, stableSubjectId: `fictional-${sourceKind}`, attentionReason: 'routine-history', occurrenceId: `fictional-${sourceKind}-occurrence`, occurredAt: new Date().toISOString(), evidenceFacts: { context: 'Fictional routine history' } });
     }
     await service.notificationReconcile();
-    assert.equal(host.candidates.length, 1, 'routine Chat, Activity, and Topic Review must not emit');
+    assert.equal(host.candidates.length, 2, 'routine Chat, Activity, and Topic Review must not emit');
     service.stop();
   } finally {
     host.services[0]?.stop?.();

@@ -15,12 +15,14 @@ export const RELEASE_FIXTURE_COUNTS = Object.freeze({
 export const RELEASE_PERFORMANCE_VIEWPORT = Object.freeze({ width: 1_440, height: 900 });
 
 export const RELEASE_MEASUREMENTS = Object.freeze([
-  'dashboardInteractiveMs',
-  'topicInteractiveMs',
-  'activityNextPageMs',
+  'startupInteractiveMs',
+  'dashboardRefreshMs',
+  'largeNoteOpenMs',
+  'largeNotePreviewMs',
+  'activityPageAppendMs',
   'searchRebuildMs',
   'searchQueryMs',
-  'slowestJourneyActionMs'
+  'maximumInteractionHeartbeatMs'
 ]);
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest']);

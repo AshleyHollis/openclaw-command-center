@@ -26,7 +26,7 @@ test('release performance baseline rejects receipt drift, widened ceilings, zero
   const baseline = await readReleasePerformanceBaseline();
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostVersion: 'fictional-other-host' }), /pinned/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostReceipt: { ...baseline.hostReceipt, contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }), /pinned host identity/u);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, thresholds: { ...baseline.thresholds, dashboardInteractiveMs: 999999 } }), /first observation/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, thresholds: { ...baseline.thresholds, dashboardRefreshMs: 999999 } }), /first observation/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 50 } }), /conversations must be 51/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, searchQueryMs: 0 } }), /first positive/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, searchQueryMs: undefined } }), /first positive/);

@@ -138,6 +138,26 @@ test('fails closed when candidate content cannot be read', async () => {
   }
 });
 
+test('fails closed when an enumerated explicit entry disappears before inspection', async () => {
+  const snapshot = await mkdtemp(path.join(os.tmpdir(), 'command-center-safety-race-'));
+  const fixture = path.join(snapshot, 'captured-output.txt');
+  try {
+    await writeFile(fixture, 'safe bounded output');
+    await assert.rejects(
+      scanRepositorySafety(snapshot, {
+        stat: async (filename) => {
+          if (filename === fixture) {
+            await rm(fixture, { force: true });
+            throw Object.assign(new Error('fictional disappearance'), { code: 'ENOENT' });
+          }
+          return import('node:fs/promises').then(({ lstat }) => lstat(filename));
+        }
+      }),
+      /captured-output\.txt \(missing-or-unreadable-entry\)/u,
+    );
+  } finally { await rm(snapshot, { recursive: true, force: true }); }
+});
+
 async function withIgnoredAncestorSnapshot(run) {
   const parent = await mkdtemp(path.join(os.tmpdir(), 'command-center-safety-parent-'));
   try {

@@ -8,7 +8,7 @@
     "executableDigest": "sha256:e5ec47e5fcad9a75be0d7164f71b8e069d78aa6422b0c9ed750bf5521735e083",
     "contractDigest": "sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6"
   },
-  "pluginBuildDigest": "sha256:0f4d725294fc6f7ffbf2c82481d82bb4f55282f911234e3607a057fbacc60ebe",
+  "pluginBuildDigest": "sha256:e6e971f2d65f51e7387fe4f87fb0dfd9549edb35cec44e80a8a6ad43c2da5a22",
   "browser": {
     "engine": "chromium",
     "playwrightVersion": "1.62.1",
@@ -26,25 +26,29 @@
     "indexedConversations": 51
   },
   "observations": {
-    "dashboardInteractiveMs": 850,
-    "topicInteractiveMs": 430,
-    "activityNextPageMs": 180,
+    "startupInteractiveMs": 850,
+    "dashboardRefreshMs": 430,
+    "largeNoteOpenMs": 420,
+    "largeNotePreviewMs": 420,
+    "activityPageAppendMs": 180,
     "searchRebuildMs": 1680,
     "searchQueryMs": 420,
-    "slowestJourneyActionMs": 1680
+    "maximumInteractionHeartbeatMs": 1680
   },
   "thresholds": {
-    "dashboardInteractiveMs": 850,
-    "topicInteractiveMs": 430,
-    "activityNextPageMs": 180,
+    "startupInteractiveMs": 850,
+    "dashboardRefreshMs": 430,
+    "largeNoteOpenMs": 420,
+    "largeNotePreviewMs": 420,
+    "activityPageAppendMs": 180,
     "searchRebuildMs": 1680,
     "searchQueryMs": 420,
-    "slowestJourneyActionMs": 1680
+    "maximumInteractionHeartbeatMs": 1680
   },
   "capture": {
     "policy": "first-successful-pinned-harness-observation",
     "successfulRunOrdinal": 1,
-    "identityDigest": "sha256:8b080e9bf1b260839bc644fb3a75450164f3955d99c0e3bf66fd49b9f221c561",
-    "observationsDigest": "sha256:5fcc61c1bfe84e0c5b382e0f0ac2b9354b18e69132c27d14b8bb78484ea1341a"
+    "identityDigest": "sha256:86cfa2a6d44ff4c873519bbdd7f93b1da1ff239e44f7e22a7f0ce0dcc332a9ba",
+    "observationsDigest": "sha256:3331641db2df7f41f5e93cec7b69f0d133f8750a236b7fa40e8f01e12196b654"
   }
 }

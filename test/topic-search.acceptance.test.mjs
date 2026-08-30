@@ -39,6 +39,32 @@ test('an empty authoritative workspace publishes both empty projection generatio
   }
 });
 
+test('concurrent authenticated rebuild replay converges while changed intent fails closed', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-concurrent-'));
+  let release;
+  const deferred = new Promise((resolve) => { release = resolve; });
+  const operationId = randomUUID();
+  const metadata = { listTopics: () => [{ ...topic, topicId: 'topic-a' }, { ...topic, topicId: 'topic-b' }] };
+  const rebuild = createSearchRebuildService({
+    stateDir,
+    metadata,
+    sourceSnapshotFactory: async ({ topicId }) => { await deferred; return { notes: [], conversations: [], note: { sourceRevision: `notes-${topicId}` }, conversation: { sourceRevision: `sessions-${topicId}` } }; },
+    requireAuthorizedPreparation: true
+  });
+  try {
+    const first = rebuild.prepareAuthorized({ topicId: 'topic-a', logicalOperationId: operationId });
+    const replay = rebuild.prepareAuthorized({ topicId: 'topic-a', logicalOperationId: operationId });
+    await assert.rejects(rebuild.prepareAuthorized({ topicId: 'topic-b', logicalOperationId: operationId }), (error) => error?.code === 'intent-mismatch');
+    release();
+    assert.deepEqual(await first, await replay);
+    const committed = await rebuild.rebuildPrepared({ topicId: 'topic-a', logicalOperationId: operationId });
+    assert.deepEqual(committed.topicIds, ['topic-a']);
+  } finally {
+    release?.();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('temporary authoritative fixtures rebuild equivalent grouped Topic Search results', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-acceptance-'));
   const authoritative = JSON.stringify({ markdown: '# Readme\n\nalpha phrase', session: 'closed conversation alpha phrase', metadata: 'Topic metadata' });
