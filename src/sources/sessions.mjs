@@ -15,6 +15,10 @@ function messageIdempotencyKey(value) {
 }
 
 const creationQueues = new WeakMap();
+// The pinned host retains sessions.create idempotency results for five minutes
+// and documents four minutes as its safe retry window. Never risk creating a
+// second authoritative Session after that public replay boundary expires.
+const SESSION_CREATE_REPLAY_WINDOW_MS = 4 * 60_000;
 
 async function serializeCreation(owner, logicalOperationId, run) {
   if (!owner || typeof owner !== 'object') return run();
@@ -74,7 +78,6 @@ export class SessionAdapter {
   async create(input = {}, runtime = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'logicalOperationId', 'requestId', 'label', 'isPrimary'], 'Session create request');
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
-    const creationCategory = `command-center:${logicalOperationId}`;
     const displayName = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : `Topic Conversation ${logicalOperationId}`;
     const gatewayRequest = typeof runtime.gatewayRequest === 'function'
       ? runtime.gatewayRequest
@@ -89,20 +92,17 @@ export class SessionAdapter {
       }
       return this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
     };
+    const createParams = Object.freeze({ agentId: 'main', label: displayName, idempotencyKey: logicalOperationId });
     const readCreatedCatalogEntry = async ({ expectedKey } = {}) => {
+      if (!expectedKey) return { matched: false };
       const rows = await catalogRows();
-      const matches = rows.filter((row) => {
-        if (expectedKey) return responseKey(row) === expectedKey;
-        const entry = row?.entry ?? row;
-        return entry?.category === creationCategory && (entry?.pluginOwnerId === undefined || entry.pluginOwnerId === 'command-center');
-      });
+      const matches = rows.filter((row) => responseKey(row) === expectedKey);
       if (matches.length > 1) throw sourceError('conflict', 'The Session catalog contains duplicate results for one logical creation operation.');
       if (matches.length === 0) return { matched: false };
       const row = matches[0];
       const sessionKey = responseKey(row);
       const listed = row?.entry ?? row;
       if (!sessionKey || !listed) throw sourceError('unavailable', 'The created Session identity did not survive authoritative catalog readback.');
-      if (listed.category !== creationCategory) throw sourceError('conflict', 'The created Session operation identity changed during authoritative readback.');
       if (listed.pluginOwnerId !== undefined && listed.pluginOwnerId !== 'command-center') throw sourceError('conflict', 'The created Session is not owned by Command Center.');
       const sessionId = responseSessionId(row);
       const revision = responseRevision(row);
@@ -111,7 +111,7 @@ export class SessionAdapter {
     };
     const execute = async ({ requestId }) => {
       if (!gatewayRequest) throw sourceError('capability-unavailable', 'Plugin-scoped Session creation is unavailable.', { capability: 'sessions' });
-      const result = await gatewayRequest('sessions.create', { agentId: 'main', label: displayName, category: creationCategory }, { requestId });
+      const result = await gatewayRequest('sessions.create', createParams, { requestId });
       const createdKey = responseKey(result);
       if (!createdKey) throw sourceError('unavailable', 'sessions.create omitted its created Session key.');
       const readback = await readCreatedCatalogEntry({ expectedKey: createdKey });
@@ -123,13 +123,21 @@ export class SessionAdapter {
       const reference = await this.persistReference({ ['k' + 'ey']: sessionKey, sessionId, isPrimary: input.isPrimary ?? false, displayName });
       return { ['k' + 'ey']: sessionKey, sessionId, creationRevision: revision, sourceReference: reference };
     };
-    const reconcile = async ({ applied = false } = {}) => {
-      const readback = await readCreatedCatalogEntry();
+    const reconcile = async ({ applied = false, resultIdentity, operationCreatedAt } = {}) => {
+      let expectedKey = resultIdentity;
+      if (!expectedKey) {
+        const createdAtMs = Date.parse(operationCreatedAt);
+        const observedAtMs = Date.parse(this.now());
+        if (!Number.isFinite(createdAtMs) || !Number.isFinite(observedAtMs) || observedAtMs < createdAtMs || observedAtMs - createdAtMs > SESSION_CREATE_REPLAY_WINDOW_MS) return { outcome: 'unknown' };
+        const replay = await gatewayRequest('sessions.create', createParams, { requestId: input.requestId ?? logicalOperationId });
+        expectedKey = responseKey(replay);
+      }
+      const readback = await readCreatedCatalogEntry({ expectedKey });
       if (!readback.matched) return { matched: false };
       const reference = await this.persistReference({ ['k' + 'ey']: readback.sessionKey, sessionId: readback.sessionId, isPrimary: input.isPrimary ?? false, displayName, preserveState: applied });
       return { matched: true, value: { ['k' + 'ey']: readback.sessionKey, sessionId: readback.sessionId, creationRevision: readback.revision, sourceReference: reference } };
     };
-    if (this.coordinator) return serializeCreation(this.metadata ?? this.coordinator, logicalOperationId, () => this.coordinator.mutate({ operationKind: 'sessions.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, topicId: this.topicId, intent: { creationCategory, label: input.label ?? null, isPrimary: input.isPrimary ?? false }, execute, reconcile }));
+    if (this.coordinator) return serializeCreation(this.metadata ?? this.coordinator, logicalOperationId, () => this.coordinator.mutate({ operationKind: 'sessions.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, topicId: this.topicId, intent: { idempotencyKey: logicalOperationId, label: input.label ?? null, isPrimary: input.isPrimary ?? false }, idempotent: true, execute, reconcile }));
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
   }
 

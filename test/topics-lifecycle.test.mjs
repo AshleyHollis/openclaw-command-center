@@ -29,13 +29,14 @@ function pluginSessionBoundary({ sessionId = () => randomUUID(), updatedAt = () 
     if (method === 'sessions.create') {
       assert.equal(params.agentId, 'main');
       assert.equal(params.key, undefined);
-      assert.match(params.category, /^command-center:[0-9a-f-]{36}$/u);
+      assert.match(params.idempotencyKey, /^[0-9a-f-]{36}$/u);
+      assert.equal(params.category, undefined);
       const key = `agent:main:dashboard:command-center-${++ordinal}`;
       const entry = {
         sessionId: sessionId({ key, ordinal, params }),
         updatedAt: updatedAt({ key, ordinal, params }),
         label: params.label,
-        category: params.category,
+        category: null,
         pluginOwnerId: 'command-center'
       };
       entries.set(key, entry);
@@ -171,7 +172,7 @@ test('Topic provisioning activates through the pinned public Session store and v
 
     assert.equal(created.topic.lifecycle, 'active');
     assert.equal(boundary.entries.get(sessionKey).label, 'Runtime Session Context');
-    assert.equal(boundary.entries.get(sessionKey).category, `command-center:${logicalOperationId}`);
+    assert.equal(boundary.entries.get(sessionKey).category, null);
     assert.equal(boundary.entries.get(sessionKey).pluginOwnerId, 'command-center');
     assert.equal((await topics.listDestinationVerified()).activeGroups.project[0].topicId, created.topic.topicId);
     const archive = await topics.archivePreview({ topicId: created.topic.topicId });

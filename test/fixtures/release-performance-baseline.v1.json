@@ -8,17 +8,17 @@
     "executableDigest": "sha256:e7864937c006d7cc098417370661307694352bc8768482806f7b8064fb734b00",
     "contractDigest": "sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6"
   },
-  "pluginBuildDigest": "sha256:bd037e0e9ea665fc2ede1d1e79ca3426cd4122a04b7ada0735eb851a90e203b3",
+  "pluginBuildDigest": "sha256:af057154fa159a3b9d4091bad64ca42c0a8c0264dade134c22ac4b8b24b87050",
   "browser": {
     "engine": "chromium",
     "playwrightVersion": "1.62.1",
     "version": "evaluator-pinned-chromium"
   },
   "viewport": { "width": 1440, "height": 900 },
-  "fixtureIdentity": "sha256:c420774f2a85c24e3b2fd39dd609e2119311adb8193a029958c9885f65e81239",
+  "fixtureIdentity": "sha256:a453a7532f086632d38d601bd6ecb05392159d606272643e239ddb926fc45138",
   "fixtureCounts": {
     "largeNoteBytes": 524289,
-    "conversations": 51,
+    "conversations": 101,
     "activityRecords": 51,
     "actionCards": 2,
     "indexedNotes": 5000,

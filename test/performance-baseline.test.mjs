@@ -10,7 +10,7 @@ async function readReleasePerformanceBaseline() {
 test('release performance seed pins the exact corpus without claiming an unobserved successful baseline', async () => {
   const seed = await readReleasePerformanceBaseline();
   assert.deepEqual(seed.viewport, { width: 1440, height: 900 });
-  assert.deepEqual(seed.fixtureCounts, { largeNoteBytes: 524289, conversations: 51, activityRecords: 51, actionCards: 2, indexedNotes: 5000, indexedConversationMessages: 5000 });
+  assert.deepEqual(seed.fixtureCounts, { largeNoteBytes: 524289, conversations: 101, activityRecords: 51, actionCards: 2, indexedNotes: 5000, indexedConversationMessages: 5000 });
   assert.deepEqual(RELEASE_MEASUREMENTS, ['startupReadinessMs', 'dashboardLoadMs', 'topicOpenCreateMs', 'chatSendMs', 'conversationLifecycleMs', 'largeNoteLifecycleMs', 'indexedSearchMs', 'activityNextPageMs', 'topicReviewApplyMs', 'mobileReflowMs']);
   assert.equal(seed.fixtureIdentity, RELEASE_FIXTURE_IDENTITY);
   assert.deepEqual(seed.capture, { policy: 'first-successful-pinned-harness-observation', successfulRunOrdinal: null });
@@ -28,7 +28,7 @@ test('release performance baseline rejects receipt drift, widened ceilings, zero
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostVersion: 'fictional-other-host' }), /pinned/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostReceipt: { ...baseline.hostReceipt, contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }), /pinned host identity/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, thresholds: { ...baseline.thresholds, dashboardLoadMs: 999999 } }), /first observation/);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 52 } }), /conversations must be 51/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 100 } }), /conversations must be 101/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, activityRecords: 52 } }), /activityRecords must be 51/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: 0 } }), /first positive/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: undefined } }), /first positive/);

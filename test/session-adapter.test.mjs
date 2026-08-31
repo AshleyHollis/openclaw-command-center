@@ -23,13 +23,17 @@ function metadataFixture() {
 
 function pluginSessionBoundary({ completions, onDeferred } = {}) {
   const entries = new Map();
+  const keysByIdempotency = new Map();
   let ordinal = 0;
   const gateway = { request: async (method, params) => {
     if (method === 'sessions.create') {
       const create = () => {
+        const existingKey = keysByIdempotency.get(params.idempotencyKey);
+        if (existingKey) return { key: existingKey, entry: entries.get(existingKey) };
         const key = `agent:main:dashboard:command-center-${++ordinal}`;
-        const entry = { sessionId: randomUUID(), updatedAt: Date.now(), label: params.label, category: params.category, pluginOwnerId: 'command-center' };
+        const entry = { sessionId: randomUUID(), updatedAt: Date.now(), label: params.label, category: null, pluginOwnerId: 'command-center' };
         entries.set(key, entry);
+        keysByIdempotency.set(params.idempotencyKey, key);
         return { key, entry };
       };
       if (completions) return new Promise((resolve) => { completions.push(() => resolve(create())); onDeferred?.(completions.length); });
@@ -62,16 +66,18 @@ function deferredGate(expected, timeoutMs = 1_000) {
 function pinnedSanitizedSessionBoundary() {
   const key = 'agent:main:dashboard:command-center-sanitized';
   const entry = { sessionId: 'fictional-pinned-session', updatedAt: 47, category: null };
+  let idempotencyKey;
   return {
     gateway: { async request(method, params) {
       if (method === 'sessions.create') {
-        entry.category = params.category;
+        idempotencyKey = params.idempotencyKey;
         return { key };
       }
       if (method === 'sessions.list') return { sessions: [{ key, sessionId: entry.sessionId, updatedAt: entry.updatedAt, category: entry.category }] };
       throw new Error(`Unexpected ${method}`);
     } },
     entry,
+    get idempotencyKey() { return idempotencyKey; },
     key
   };
 }
@@ -85,7 +91,8 @@ test('Session create/history/send use exact linked keys without transcript inher
   const logicalOperationId = randomUUID();
   const created = await adapter.create({ logicalOperationId, isPrimary: true });
   assert.match(created.value.sourceReference.externalSourceId, /^agent:main:dashboard:command-center-/u);
-  assert.equal(calls[0].params.category, `command-center:${logicalOperationId}`);
+  assert.equal(calls[0].params.idempotencyKey, logicalOperationId);
+  assert.equal(calls[0].params.category, undefined);
   assert.equal(calls[0].params.key, undefined);
   assert.equal(calls[0].params.parentSessionKey, undefined);
   assert.equal(calls[0].params.fork, undefined);
@@ -126,7 +133,8 @@ test('Session create accepts the pinned sanitized response and proves identity t
   assert.equal(created.value.key, boundary.key);
   assert.equal(created.value.sessionId, boundary.entry.sessionId);
   assert.equal(created.value.creationRevision, String(boundary.entry.updatedAt));
-  assert.equal(boundary.entry.category, `command-center:${logicalOperationId}`);
+  assert.equal(boundary.idempotencyKey, logicalOperationId);
+  assert.equal(boundary.entry.category, null);
 });
 
 test('Session creation uses authenticated request-scoped dispatch when the detached plugin Gateway is unavailable', async () => {
@@ -157,7 +165,7 @@ test('Session creation preserves the pinned ownership refusal without inventing 
       throw new Error(`Unexpected ${method}`);
     } }
   });
-  await assert.rejects(() => adapter.create({ logicalOperationId: randomUUID(), label: 'Refused Session' }), (error) => error.code === 'unknown' && error.cause?.code === 'unavailable');
+  await assert.rejects(() => adapter.create({ logicalOperationId: randomUUID(), label: 'Refused Session' }), (error) => error.code === 'unavailable');
   assert.deepEqual(metadata.refs, []);
 });
 
@@ -183,7 +191,7 @@ test('Session creation uses the plugin-scoped Gateway and authoritative catalog 
 
   assert.equal(created.value.sourceReference.externalSourceId, sessionKey);
   assert.equal(boundary.entries.get(sessionKey).label, 'Runtime Store');
-  assert.equal(boundary.entries.get(sessionKey).category, `command-center:${logicalOperationId}`);
+  assert.equal(boundary.entries.get(sessionKey).category, null);
   assert.equal(boundary.entries.get(sessionKey).pluginOwnerId, 'command-center');
   assert.equal(boundary.entries.get(sessionKey).updatedAt >= beforeCreate && boundary.entries.get(sessionKey).updatedAt <= afterCreate, true);
   assert.match(created.value.sessionId, /^[0-9a-f-]{36}$/u);
@@ -442,15 +450,17 @@ test('Gateway close and reopen refuse a missing persisted Session state before m
   assert.equal(gatewayCalls, 0);
 });
 
-test('Primary close is rejected and ambiguous create reconciles by operation category catalog readback', async () => {
+test('Primary close is rejected and ambiguous create reconciles through the pinned idempotency key', async () => {
   const metadata = metadataFixture();
   let createCalls = 0;
   const entries = new Map();
   const gateway = { request: async (method, params) => {
     if (method === 'sessions.create') {
       createCalls += 1;
-      entries.set('agent:main:dashboard:reconciled', { sessionId: 'reconciled-id', updatedAt: 10, category: params.category, pluginOwnerId: 'command-center' });
-      const error = new Error('delivery unknown'); error.code = 'timeout'; error.ambiguous = true; throw error;
+      assert.equal(params.idempotencyKey, operationId);
+      entries.set('agent:main:dashboard:reconciled', { sessionId: 'reconciled-id', updatedAt: 10, category: null, pluginOwnerId: 'command-center' });
+      if (createCalls === 1) { const error = new Error('delivery unknown'); error.code = 'timeout'; error.ambiguous = true; throw error; }
+      return { key: 'agent:main:dashboard:reconciled' };
     }
     if (method === 'sessions.list') return { sessions: [...entries].map(([sessionKey, entry]) => ({ sessionKey, ...entry })) };
     return {};
@@ -459,8 +469,27 @@ test('Primary close is rejected and ambiguous create reconciles by operation cat
   const adapter = createSessionAdapter({ topicId: 'topic-session', metadata, gateway });
   const created = await adapter.create({ logicalOperationId: operationId, isPrimary: true });
   assert.equal(created.status, 'applied');
-  assert.equal(createCalls, 1);
+  assert.equal(createCalls, 2);
+  assert.equal(entries.size, 1);
   await assert.rejects(() => adapter.close({ referenceId: created.value.sourceReference.referenceId, logicalOperationId: randomUUID() }), /Primary Session|Primary/i);
+});
+
+test('expired Session creation recovery remains unknown without replaying beyond the pinned retry window', async () => {
+  const metadata = metadataFixture();
+  let gatewayCalls = 0;
+  const now = '2026-08-31T12:10:00.000Z';
+  const coordinator = {
+    async mutate({ reconcile }) {
+      return reconcile({ operationCreatedAt: '2026-08-31T12:00:00.000Z' });
+    }
+  };
+  const adapter = createSessionAdapter({
+    topicId: 'topic-expired-create', metadata, coordinator, now: () => now,
+    gateway: { async request() { gatewayCalls += 1; throw new Error('expired idempotency replay must not be sent'); } }
+  });
+  assert.deepEqual(await adapter.create({ logicalOperationId: randomUUID(), label: 'Expired Create' }), { outcome: 'unknown' });
+  assert.equal(gatewayCalls, 0);
+  assert.deepEqual(metadata.refs, []);
 });
 
 test('creating a replacement Primary atomically demotes and permits closing the former Primary', async () => {

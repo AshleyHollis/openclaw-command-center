@@ -1205,25 +1205,37 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   }
   await selectWorkspaceSection(frame, 'conversations', 1440);
   await frame.locator('#conversation-view').selectOption('all');
-  await frame.locator('#conversation-page-status').getByText('Page 1 of 2', { exact: true }).waitFor();
+  await frame.locator('#conversation-page-status').getByText('Page 1 of 3', { exact: true }).waitFor();
   assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 50);
   const firstPageReferences = await frame.locator('#conversation-list .conversation-item button:first-child').allTextContents();
   await frame.locator('#conversation-next').click();
-  await frame.locator('#conversation-page-status').getByText('Page 2 of 2', { exact: true }).waitFor();
-  assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 1);
+  await frame.locator('#conversation-page-status').getByText('Page 2 of 3', { exact: true }).waitFor();
+  assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 50);
   const pageTwoConversation = frame.locator('#conversation-list .conversation-item button:first-child');
   const pageTwoRow = frame.locator('#conversation-list .conversation-item').first();
   const pageTwoName = await pageTwoConversation.textContent();
   assert.equal(firstPageReferences.includes(pageTwoName), false);
   const pageTwoIdentity = await pageTwoRow.evaluate((row) => ({ referenceId: row.dataset.referenceId, sessionId: row.dataset.sessionId }));
-  await pageTwoConversation.click();
-  await waitForFrameText(frame, '#chat-conversation-name', pageTwoName);
+  await frame.locator('#conversation-next').click();
+  await frame.locator('#conversation-page-status').getByText('Page 3 of 3', { exact: true }).waitFor();
+  assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 1);
+  const pageThreeConversation = frame.locator('#conversation-list .conversation-item button:first-child');
+  const pageThreeRow = frame.locator('#conversation-list .conversation-item').first();
+  const pageThreeName = await pageThreeConversation.textContent();
+  assert.equal(firstPageReferences.includes(pageThreeName), false);
+  assert.notEqual(pageThreeName, pageTwoName);
+  const pageThreeIdentity = await pageThreeRow.evaluate((row) => ({ referenceId: row.dataset.referenceId, sessionId: row.dataset.sessionId }));
+  await pageThreeConversation.click();
+  await waitForFrameText(frame, '#chat-conversation-name', pageThreeName);
   const catalogResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId } });
-  const authoritative = ((catalogResponse?.result ?? catalogResponse)?.conversations ?? catalogResponse?.conversations ?? []).find((item) => item.displayName === pageTwoName);
-  assert.deepEqual(pageTwoIdentity, { referenceId: authoritative?.referenceId, sessionId: authoritative?.sessionId });
-  const navigationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId, referenceId: pageTwoIdentity.referenceId } });
+  const conversations = (catalogResponse?.result ?? catalogResponse)?.conversations ?? catalogResponse?.conversations ?? [];
+  const authoritativePageTwo = conversations.find((item) => item.displayName === pageTwoName);
+  const authoritativePageThree = conversations.find((item) => item.displayName === pageThreeName);
+  assert.deepEqual(pageTwoIdentity, { referenceId: authoritativePageTwo?.referenceId, sessionId: authoritativePageTwo?.sessionId });
+  assert.deepEqual(pageThreeIdentity, { referenceId: authoritativePageThree?.referenceId, sessionId: authoritativePageThree?.sessionId });
+  const navigationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId, referenceId: pageThreeIdentity.referenceId } });
   const navigation = navigationResponse?.result ?? navigationResponse;
-  assert.deepEqual({ referenceId: navigation.sourceReference?.referenceId, sessionId: navigation.sessionId, sessionKeyPresent: Boolean(navigation.sessionKey) }, { referenceId: pageTwoIdentity.referenceId, sessionId: pageTwoIdentity.sessionId, sessionKeyPresent: true });
+  assert.deepEqual({ referenceId: navigation.sourceReference?.referenceId, sessionId: navigation.sessionId, sessionKeyPresent: Boolean(navigation.sessionKey) }, { referenceId: pageThreeIdentity.referenceId, sessionId: pageThreeIdentity.sessionId, sessionKeyPresent: true });
   await frame.locator('#workspace-back').click();
   await waitForDashboard(frame);
   measurements.largeNoteLifecycleMs = Math.max(1, Date.now() - lifecycleStarted);
@@ -1525,7 +1537,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       } finally { activitySource.close(); activityMetadata.close(); }
       // Complete the frozen conversation fixture through the public Session
       // contract before any browser mutation begins. The migrated primary
-      // Session is the first of the exact 51 Topic Conversations.
+      // Session is the first of the exact 101 Topic Conversations.
       for (let offset = 1; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
         await withDeadline(`Session fixture batch ${Math.floor(offset / 10) + 1}`, () => Promise.all(Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => {
           const index = offset + batchIndex;
@@ -1780,7 +1792,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.publicBindingBoundary = { safeReadObserved: Boolean(closedDashboard && typeof closedDashboard === 'object'), mutationRejected: true, bindingObserved: true };
       const replacementCreated = await requestAuthenticatedGateway({
         gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'sessions.create',
-        params: { agentId: 'main', label: 'Fictional reconciled Primary Session', category: `command-center:${randomUUID()}` }
+        params: { agentId: 'main', label: 'Fictional reconciled Primary Session', idempotencyKey: randomUUID() }
       });
       const replacementSession = replacementCreated?.result ?? replacementCreated;
       assert.ok(replacementSession?.key && replacementSession?.sessionId);
@@ -1940,23 +1952,28 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       if (await frame.locator('#activity-load-more').isVisible()) await activate(frame.locator('#activity-load-more'), true);
       await assertResponsiveFrame(frame, page, 320);
       const cdp = await page.context().newCDPSession(page);
-      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 160, height: 450, screenWidth: 320, screenHeight: 900, deviceScaleFactor: 2, mobile: false });
-      assert.deepEqual(await page.evaluate(() => ({ width: document.documentElement.clientWidth, ratio: devicePixelRatio, physicalWidth: document.documentElement.clientWidth * devicePixelRatio })), { width: 160, ratio: 2, physicalWidth: 320 });
-      assert.deepEqual(await frame.evaluate(() => ({ width: document.documentElement.clientWidth, ratio: devicePixelRatio, physicalWidth: document.documentElement.clientWidth * devicePixelRatio })), { width: 160, ratio: 2, physicalWidth: 320 });
+      await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
+      const parentZoom = await page.evaluate(() => ({ layoutWidth: document.documentElement.clientWidth, visualWidth: visualViewport.width, scale: visualViewport.scale, frameLayoutWidth: document.querySelector('iframe')?.getBoundingClientRect().width ?? 0 }));
+      const frameZoom = await frame.evaluate(() => ({ layoutWidth: document.documentElement.clientWidth, ratio: devicePixelRatio }));
+      assert.equal(parentZoom.layoutWidth, 320);
+      assert.equal(parentZoom.visualWidth, 160);
+      assert.equal(parentZoom.scale, 2);
+      assert.equal(frameZoom.ratio, 1, 'browser zoom must not be simulated with device pixel density');
+      assert.ok(parentZoom.frameLayoutWidth / parentZoom.scale <= parentZoom.visualWidth, '200% browser zoom must scale the mounted frame into the effective viewport');
       const reflowStarted = Date.now();
-      const zoomJourney = await runUiJourney(frame, { page, width: 160, name: 'Fictional 200 Percent Zoom Topic', category: 'area', keyboard: true });
+      const zoomJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional 200 Percent Zoom Topic', category: 'area', keyboard: true });
       assert.ok(zoomJourney.topicId);
       mobileJourney.accessibilityStates.push(...zoomJourney.accessibilityStates);
       mobileJourney.focusRestorations.push(...zoomJourney.focusRestorations);
       mobileJourney.announcementTransitions.push(...zoomJourney.announcementTransitions);
-      await assertResponsiveFrame(frame, page, 160);
+      await assertResponsiveFrame(frame, page, 320);
       mobileJourney.measurement.mobileReflowMs = Math.max(1, Date.now() - reflowStarted);
-      await cdp.send('Emulation.clearDeviceMetricsOverride');
+      mobileJourney.zoomEvidence = { ...parentZoom, frameLayoutWidth: frameZoom.layoutWidth };
+      await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
       await cdp.detach();
-      await page.setViewportSize({ width: 320, height: 900 });
       await assertKeyboardAccessibility(frame, page);
       evidence.performanceMeasurements.mobile = { ...mobileJourney.measurement, sourceActionMs: 0 };
-      return { topicId: mobileJourney.topicId, viewport: '320x900', keyboardAndReflow: true, zoom200TopicId: zoomJourney.topicId, accessibilityStates: mobileJourney.accessibilityStates, focusRestorations: mobileJourney.focusRestorations, announcementTransitions: mobileJourney.announcementTransitions };
+      return { topicId: mobileJourney.topicId, viewport: '320x900', keyboardAndReflow: true, zoom200TopicId: zoomJourney.topicId, zoomEvidence: mobileJourney.zoomEvidence, accessibilityStates: mobileJourney.accessibilityStates, focusRestorations: mobileJourney.focusRestorations, announcementTransitions: mobileJourney.announcementTransitions };
     });
     await collectScenario('desktop-primary-journey-review', async () => {
       assert.ok(browser, 'review scenario requires an independently mounted browser fixture');
@@ -2099,7 +2116,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         assert.equal((await isolatedResult('fresh-mobile')).assertionsCompleted, true);
         const states = accessibility.accessibilityStates;
         assert.ok(states.length >= 12, 'Accessibility evidence must cover every dynamic journey state');
-        return { schemaVersion: 1, viewport: { width: 320, height: 900 }, keyboardOnly: true, zoom200: Boolean(accessibility.zoom200TopicId), forcedColors: states.some((state) => state.forcedColorsPreference), reducedMotion: states.filter((state) => state.reducedMotionPreference).every((state) => state.reducedMotion), focusRestored: accessibility.focusRestorations.length >= 10, announcements: accessibility.announcementTransitions.length >= 9, colorIndependent: states.every((state) => state.colorIndependent), minimumTargetCssPx: Math.min(...states.map((state) => state.minimumTargetCssPx)), noPageOverflow: states.every((state) => state.noPageOverflow), states: states.map((state) => state.label) };
+        return { schemaVersion: 1, viewport: { width: 320, height: 900 }, keyboardOnly: true, zoom200: accessibility.zoomEvidence?.scale === 2 && accessibility.zoomEvidence?.visualWidth === 160, forcedColors: states.some((state) => state.forcedColorsPreference), reducedMotion: states.filter((state) => state.reducedMotionPreference).every((state) => state.reducedMotion), focusRestored: accessibility.focusRestorations.length >= 10, announcements: accessibility.announcementTransitions.length >= 9, colorIndependent: states.every((state) => state.colorIndependent), minimumTargetCssPx: Math.min(...states.map((state) => state.minimumTargetCssPx)), noPageOverflow: states.every((state) => state.noPageOverflow), states: states.map((state) => state.label) };
       } },
       { id: 'scale-performance', run: async () => {
         scenarioResult('scale-performance');
