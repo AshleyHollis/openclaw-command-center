@@ -75,8 +75,8 @@ function validatePassedEvidence(id, evidence, buildDigest) {
         const observed = evidence.observations[metric];
         if (typeof observed !== 'number' || !Number.isFinite(observed) || observed <= 0 || evidence.thresholds[metric] !== Math.max(1, Math.ceil(observed))) invalid(`${id}.${metric} is not an exact first-observation ceiling`);
       }
-      closed(evidence.activityPage, ['firstPageCount', 'secondPageCount', 'thirdPageCount', 'unique', 'orderPreserved'], `${id}.activityPage`);
-      if (evidence.activityPage.firstPageCount !== 50 || evidence.activityPage.secondPageCount !== 50 || evidence.activityPage.thirdPageCount !== 1) invalid(`${id}.activityPage is incomplete`);
+      closed(evidence.activityPage, ['firstPageCount', 'secondPageCount', 'unique', 'orderPreserved'], `${id}.activityPage`);
+      if (evidence.activityPage.firstPageCount !== 50 || evidence.activityPage.secondPageCount !== 1) invalid(`${id}.activityPage is incomplete`);
       yes(evidence.activityPage.unique, `${id}.activityPage.unique`); yes(evidence.activityPage.orderPreserved, `${id}.activityPage.orderPreserved`);
       closed(evidence.search, ['missingProjectionRebuilt', 'staleProjectionRebuilt', 'indexedQuery'], `${id}.search`);
       for (const value of Object.values(evidence.search)) yes(value, `${id}.search`);

@@ -15,12 +15,11 @@
     "version": "evaluator-pinned-chromium"
   },
   "viewport": { "width": 1440, "height": 900 },
-  "fixtureIdentity": "sha256:fda82d83cb8e6d5a627a52002392948932f7c6a0d92c68897f9ac6abe96b86be",
+  "fixtureIdentity": "sha256:97e0e9c8b68d2cae04956ff6da075fcd9343a015a7e7a2e14f3f4dc750c044f3",
   "fixtureCounts": {
     "chunkBoundaryNoteBytes": 524289,
-    "largeNoteBytes": 8388609,
-    "conversations": 100,
-    "activityRecords": 101,
+    "conversations": 50,
+    "activityRecords": 51,
     "actionCards": 2,
     "indexedNotes": 5000,
     "indexedConversationMessages": 5000

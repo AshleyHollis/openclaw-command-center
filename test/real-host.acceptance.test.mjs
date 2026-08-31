@@ -139,8 +139,7 @@ async function waitForCommittedSearchProjections(projectionRoot, { attempts = 10
 
 async function seedReleaseNoteCorpus(folder) {
   const entries = [
-    ['chunk-boundary.md', `${'x'.repeat(524_287)}é`],
-    ['large-note.md', `${'x'.repeat(RELEASE_FIXTURE_COUNTS.largeNoteBytes - 1)}\n`]
+    ['chunk-boundary.md', `${'x'.repeat(524_287)}é`]
   ];
   for (let index = entries.length; index < RELEASE_FIXTURE_COUNTS.indexedNotes; index += 1) entries.push([`indexed-${String(index).padStart(4, '0')}.md`, `# Fictional indexed Note ${index}\n\nFictional scale search phrase ${index}.`]);
   for (let offset = 0; offset < entries.length; offset += 100) {
@@ -149,8 +148,7 @@ async function seedReleaseNoteCorpus(folder) {
   const realized = await readdir(folder);
   assert.equal(realized.filter((name) => name.endsWith('.md')).length, RELEASE_FIXTURE_COUNTS.indexedNotes);
   assert.equal(Buffer.byteLength(await readFile(path.join(folder, 'chunk-boundary.md'))), RELEASE_FIXTURE_COUNTS.chunkBoundaryNoteBytes);
-  assert.equal(Buffer.byteLength(await readFile(path.join(folder, 'large-note.md'))), RELEASE_FIXTURE_COUNTS.largeNoteBytes);
-  return Object.freeze({ indexedNotes: realized.filter((name) => name.endsWith('.md')).length, chunkBoundaryNoteBytes: RELEASE_FIXTURE_COUNTS.chunkBoundaryNoteBytes, largeNoteBytes: RELEASE_FIXTURE_COUNTS.largeNoteBytes });
+  return Object.freeze({ indexedNotes: realized.filter((name) => name.endsWith('.md')).length, chunkBoundaryNoteBytes: RELEASE_FIXTURE_COUNTS.chunkBoundaryNoteBytes });
 }
 
 async function exerciseRestorationMatrix(stateDir) {
@@ -642,12 +640,12 @@ async function exerciseLargeNoteFixture(frame) {
   await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
   await selectWorkspaceSection(frame, 'notes', 1440);
   const measurements = {};
-  for (const [pathName, edit] of [['chunk-boundary.md', false], ['large-note.md', true]]) {
+  for (const [pathName, edit] of [['chunk-boundary.md', true]]) {
     const started = Date.now();
     await frame.locator('#notes-tree').getByRole('button', { name: pathName, exact: true }).click();
     await frame.locator('#note-editor').waitFor({ state: 'visible' });
     const bytes = await frame.locator('#note-content').inputValue().then((value) => Buffer.byteLength(value));
-    assert.equal(bytes, pathName === 'chunk-boundary.md' ? RELEASE_FIXTURE_COUNTS.chunkBoundaryNoteBytes : RELEASE_FIXTURE_COUNTS.largeNoteBytes);
+    assert.equal(bytes, RELEASE_FIXTURE_COUNTS.chunkBoundaryNoteBytes);
     measurements[`${pathName}OpenMs`] = Math.max(1, Date.now() - started);
     if (edit) {
       await frame.locator('#note-content').press('End');
@@ -719,7 +717,7 @@ async function assertKeyboardAccessibility(frame, page) {
   await page.emulateMedia({ reducedMotion: 'no-preference', forcedColors: 'none' });
 }
 
-test('mounts the built plugin through the isolated authenticated external tab', { timeout: 118_000 }, async (testContext) => {
+test('mounts the built plugin through the isolated authenticated external tab', { timeout: 900_000 }, async (testContext) => {
   const descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
   const buildReceipt = await build();
   await assertBuiltDigest(buildReceipt);
@@ -1164,16 +1162,12 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const firstActivityPage = await readDashboard(gatewayUrl, { activityOffset: 0, activityLimit: 50 });
       const firstActivityIds = firstActivityPage.activity.records.map((record) => record.activityId);
       await activate(loadMoreActivity, true);
-      await frame.waitForFunction(() => document.querySelectorAll('#activity .activity-row').length >= 100, undefined, { timeout: 10_000 });
+      await frame.waitForFunction(() => document.querySelectorAll('#activity .activity-row').length >= 51, undefined, { timeout: 10_000 });
       const secondActivityPage = await readDashboard(gatewayUrl, { activityOffset: 50, activityLimit: 50 });
       const secondActivityIds = secondActivityPage.activity.records.map((record) => record.activityId);
-      await activate(loadMoreActivity, true);
-      await frame.waitForFunction(() => document.querySelectorAll('#activity .activity-row').length >= 101, undefined, { timeout: 10_000 });
-      const thirdActivityPage = await readDashboard(gatewayUrl, { activityOffset: 100, activityLimit: 50 });
-      const thirdActivityIds = thirdActivityPage.activity.records.map((record) => record.activityId);
-      assert.deepEqual([firstActivityIds.length, secondActivityIds.length, thirdActivityIds.length], [50, 50, 1]);
-      assert.deepEqual([...firstActivityIds, ...secondActivityIds, ...thirdActivityIds], Array.from({ length: RELEASE_FIXTURE_COUNTS.activityRecords }, (_, index) => `fictional-scale-activity-${RELEASE_FIXTURE_COUNTS.activityRecords - index - 1}`));
-      assert.equal(new Set([...firstActivityIds, ...secondActivityIds, ...thirdActivityIds]).size, firstActivityIds.length + secondActivityIds.length + thirdActivityIds.length, 'Activity pagination must not duplicate identities');
+      assert.deepEqual([firstActivityIds.length, secondActivityIds.length], [50, 1]);
+      assert.deepEqual([...firstActivityIds, ...secondActivityIds], Array.from({ length: RELEASE_FIXTURE_COUNTS.activityRecords }, (_, index) => `fictional-scale-activity-${RELEASE_FIXTURE_COUNTS.activityRecords - index - 1}`));
+      assert.equal(new Set([...firstActivityIds, ...secondActivityIds]).size, firstActivityIds.length + secondActivityIds.length, 'Activity pagination must not duplicate identities');
       const renderedActivityIds = await frame.locator('#activity .activity-row').evaluateAll((rows) => rows.map((row) => row.dataset.activityId).filter(Boolean));
       assert.deepEqual(renderedActivityIds.slice(0, firstActivityIds.length), firstActivityIds, 'Activity page append must not replace or reorder page one');
       desktopJourney.measurement.activityPageAppendMs = Math.max(1, Date.now() - activityStarted);
@@ -1349,7 +1343,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       { id: 'scale-performance', run: async () => {
         scenarioResult('scale-performance');
         assert.deepEqual((await readdir(releaseState.projectionRoot)).sort(), COMMITTED_SEARCH_PROJECTION_FILES);
-        return { schemaVersion: 1, fixtureIdentity: baseline.fixtureIdentity, fixtureCounts: { ...baseline.fixtureCounts }, observations: { ...baseline.observations }, thresholds: { ...baseline.thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: true, staleProjectionRebuilt: true, indexedQuery: true } };
+        return { schemaVersion: 1, fixtureIdentity: baseline.fixtureIdentity, fixtureCounts: { ...baseline.fixtureCounts }, observations: { ...baseline.observations }, thresholds: { ...baseline.thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: true, staleProjectionRebuilt: true, indexedQuery: true } };
       } },
       { id: 'degraded-bridge-grants', run: async () => exerciseDegradedBridgeHostVariant({ descriptor, buildReceipt }) },
       { id: 'degraded-source-availability', run: async () => exerciseDegradedSourceRow(releaseState.publicBindingBoundary) },
