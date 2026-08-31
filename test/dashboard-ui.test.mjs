@@ -18,6 +18,11 @@ test('Dashboard markup keeps the required first-class regions and narrow flow la
   assert.match(styles, /overflow-x: hidden/u);
   assert.match(app, /openclawNotification|notificationRecord/u);
   assert.match(app, /Load more Activity/u);
+  assert.match(app, /\['session', 'note'\]\.includes\(record\.navigation\.kind\)/u);
+  assert.match(app, /Activity source opened\./u);
+  for (const id of ['conversation-previous', 'conversation-next', 'conversation-page-status']) assert.match(index, new RegExp(`id="${id}"`, 'u'));
+  assert.match(app, /CONVERSATION_PAGE_SIZE = 50/u);
+  assert.match(app, /workspace\.conversations\.slice\(start, start \+ CONVERSATION_PAGE_SIZE\)/u);
   assert.match(app, /command-center\.v1\.topics\.get/u);
   assert.match(app, /data-topic-id|dataset\.topicId/u);
   assert.match(app, /credentials: 'omit'/u);

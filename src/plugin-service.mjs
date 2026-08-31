@@ -147,7 +147,10 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
               if (navigation?.sessionKey && navigation?.sessionId) return Object.freeze({ kind: 'session', topicId, referenceId, sessionKey: navigation.sessionKey, sessionId: navigation.sessionId, verified: true });
             } catch { return undefined; }
           }
-          return Object.freeze({ kind: 'source', topicId, referenceId, sourceKind: reference.sourceKind, verified: true });
+          if (reference.sourceKind === 'note' && typeof reference.externalSourceId === 'string' && typeof record.verificationRevision === 'string' && record.verificationRevision === reference.observedRevision) {
+            return Object.freeze({ kind: 'note', topicId, referenceId, path: reference.externalSourceId, observedRevision: reference.observedRevision, verified: true });
+          }
+          return undefined;
         }
       });
       notificationService = createNotificationService({

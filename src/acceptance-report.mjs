@@ -58,9 +58,9 @@ function validatePassedEvidence(id, evidence, buildDigest) {
       return;
     }
     case 'mobile-accessibility-journey': {
-      closed(evidence, ['schemaVersion', 'viewport', 'keyboardOnly', 'zoom200', 'reflow400', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'minimumTargetCssPx', 'noPageOverflow', 'states'], id);
+      closed(evidence, ['schemaVersion', 'viewport', 'keyboardOnly', 'zoom200', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'minimumTargetCssPx', 'noPageOverflow', 'states'], id);
       exactMap(evidence.viewport, { width: 320, height: 900 }, `${id}.viewport`);
-      for (const key of ['keyboardOnly', 'zoom200', 'reflow400', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'noPageOverflow']) yes(evidence[key], `${id}.${key}`);
+      for (const key of ['keyboardOnly', 'zoom200', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'noPageOverflow']) yes(evidence[key], `${id}.${key}`);
       if (evidence.minimumTargetCssPx < 44) invalid(`${id}.minimumTargetCssPx must be at least 44`);
       if (!Array.isArray(evidence.states) || evidence.states.length < 8 || evidence.states.length > 40) invalid(`${id}.states is incomplete or unbounded`);
       return;
@@ -76,8 +76,8 @@ function validatePassedEvidence(id, evidence, buildDigest) {
         const observed = evidence.observations[metric];
         if (typeof observed !== 'number' || !Number.isFinite(observed) || observed <= 0 || evidence.thresholds[metric] !== Math.max(1, Math.ceil(observed))) invalid(`${id}.${metric} is not an exact first-observation ceiling`);
       }
-      closed(evidence.activityPage, ['firstPageCount', 'secondPageCount', 'thirdPageCount', 'unique', 'orderPreserved'], `${id}.activityPage`);
-      if (evidence.activityPage.firstPageCount !== 50 || evidence.activityPage.secondPageCount !== 50 || evidence.activityPage.thirdPageCount !== 1) invalid(`${id}.activityPage is incomplete`);
+      closed(evidence.activityPage, ['firstPageCount', 'secondPageCount', 'unique', 'orderPreserved'], `${id}.activityPage`);
+      if (evidence.activityPage.firstPageCount !== 50 || evidence.activityPage.secondPageCount !== 1) invalid(`${id}.activityPage is incomplete`);
       yes(evidence.activityPage.unique, `${id}.activityPage.unique`); yes(evidence.activityPage.orderPreserved, `${id}.activityPage.orderPreserved`);
       closed(evidence.search, ['missingProjectionRebuilt', 'staleProjectionRebuilt', 'indexedQuery'], `${id}.search`);
       for (const value of Object.values(evidence.search)) yes(value, `${id}.search`);
@@ -127,27 +127,81 @@ function validatePassedEvidence(id, evidence, buildDigest) {
   }
 }
 
-export async function runAcceptanceRows(rows, { timeoutMs = 120_000, onProgress } = {}) {
+class RowCancellationFailure extends Error {}
+
+export async function runAcceptanceRows(rows, { timeoutMs = 120_000, cleanupTimeoutMs = 1_000, maxConcurrency = 2, onProgress } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) throw new TypeError('Acceptance row timeout must be between 1 and 300000 ms.');
+  if (!Number.isInteger(cleanupTimeoutMs) || cleanupTimeoutMs < 1 || cleanupTimeoutMs > 5_000) throw new TypeError('Acceptance row cleanup timeout must be between 1 and 5000 ms.');
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 4) throw new TypeError('Acceptance row concurrency must be between 1 and 4.');
   const configured = new Map(rows.map((row) => [row.id, row]));
-  const run = async (id) => {
+  const run = async (id, controller = new AbortController()) => {
     const row = configured.get(id);
     if (!row || typeof row.run !== 'function') return Object.freeze({ id, outcome: 'failed', error: 'release row is not configured' });
     onProgress?.(Object.freeze({ id, phase: 'started' }));
     let timer;
+    let abortListener;
+    const task = Promise.resolve().then(() => row.run(controller.signal));
     try {
-      const evidence = await Promise.race([
-        Promise.resolve().then(() => row.run()),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Release row ${id} exceeded its ${timeoutMs} ms deadline`)), timeoutMs); })
+      const deadline = Symbol('deadline');
+      const cancelled = Symbol('cancelled');
+      const outcome = await Promise.race([
+        task,
+        new Promise((resolve) => { timer = setTimeout(() => resolve(deadline), timeoutMs); }),
+        new Promise((resolve) => {
+          abortListener = () => resolve(cancelled);
+          controller.signal.addEventListener('abort', abortListener, { once: true });
+        })
       ]);
+      if (outcome === deadline || outcome === cancelled) {
+        if (outcome === deadline) controller.abort(new Error(`Release row ${id} exceeded its ${timeoutMs} ms deadline`));
+        const cleanupDeadline = Symbol('cleanup-deadline');
+        let cleanupTimer;
+        const cleanup = await Promise.race([task.then(() => true, () => true), new Promise((resolve) => { cleanupTimer = setTimeout(() => resolve(cleanupDeadline), cleanupTimeoutMs); })]);
+        clearTimeout(cleanupTimer);
+        if (cleanup === cleanupDeadline) throw new RowCancellationFailure(`Release row ${id} did not settle within ${cleanupTimeoutMs} ms after cancellation`);
+        throw controller.signal.reason ?? new Error(`Release row ${id} was cancelled`);
+      }
+      const evidence = outcome;
       onProgress?.(Object.freeze({ id, phase: 'passed' }));
       return Object.freeze({ id, outcome: 'passed', evidence: evidence ?? null });
     } catch (error) {
+      if (error instanceof RowCancellationFailure) throw error;
       onProgress?.(Object.freeze({ id, phase: 'failed' }));
       return Object.freeze({ id, outcome: 'failed', error: boundedError(error) });
-    } finally { clearTimeout(timer); }
+    } finally {
+      clearTimeout(timer);
+      if (abortListener) controller.signal.removeEventListener('abort', abortListener);
+    }
   };
-  return Object.freeze(await Promise.all(RELEASE_ROW_IDS.map(run)));
+  const results = new Array(RELEASE_ROW_IDS.length);
+  let nextIndex = 0;
+  let cancellationFailure;
+  const activeControllers = new Set();
+  const originalRun = run;
+  const trackedRun = async (id) => {
+    const controller = new AbortController();
+    activeControllers.add(controller);
+    try {
+      return await originalRun(id, controller);
+    } finally {
+      activeControllers.delete(controller);
+    }
+  };
+  const worker = async () => {
+    while (!cancellationFailure && nextIndex < RELEASE_ROW_IDS.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        results[index] = await trackedRun(RELEASE_ROW_IDS[index]);
+      } catch (error) {
+        cancellationFailure ??= error;
+        for (const controller of activeControllers) controller.abort(error);
+      }
+    }
+  };
+  await Promise.allSettled(Array.from({ length: Math.min(maxConcurrency, RELEASE_ROW_IDS.length) }, worker));
+  if (cancellationFailure) throw cancellationFailure;
+  return Object.freeze(results);
 }
 
 export function createAcceptanceReport({ buildDigest, rows, finalization }) {

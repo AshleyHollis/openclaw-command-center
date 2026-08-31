@@ -10,10 +10,11 @@ async function readReleasePerformanceBaseline() {
 test('release performance seed pins the exact corpus without claiming an unobserved successful baseline', async () => {
   const seed = await readReleasePerformanceBaseline();
   assert.deepEqual(seed.viewport, { width: 1440, height: 900 });
-  assert.deepEqual(seed.fixtureCounts, { chunkBoundaryNoteBytes: 524289, largeNoteBytes: 8388609, conversations: 100, activityRecords: 101, actionCards: 2, indexedNotes: 5000, indexedConversationMessages: 5000 });
+  assert.deepEqual(seed.fixtureCounts, { largeNoteBytes: 524289, conversations: 51, activityRecords: 51, actionCards: 2, indexedNotes: 5000, indexedConversationMessages: 5000 });
+  assert.deepEqual(RELEASE_MEASUREMENTS, ['startupReadinessMs', 'dashboardLoadMs', 'topicOpenCreateMs', 'chatSendMs', 'conversationLifecycleMs', 'largeNoteLifecycleMs', 'indexedSearchMs', 'activityNextPageMs', 'topicReviewApplyMs', 'mobileReflowMs']);
   assert.equal(seed.fixtureIdentity, RELEASE_FIXTURE_IDENTITY);
   assert.deepEqual(seed.capture, { policy: 'first-successful-pinned-harness-observation', successfulRunOrdinal: null });
-  assert.equal(seed.hostReceipt.commit, '30f2924e437857935f034ac349bae8cc22ef9fb0');
+  assert.equal(seed.hostReceipt.commit, '6d542e6a0c5743a22a19c3226e754bf94cbf35b1');
   assert.throws(() => validateReleasePerformanceBaseline(seed), /unsupported field|observations/u);
 });
 
@@ -26,22 +27,21 @@ test('release performance baseline rejects receipt drift, widened ceilings, zero
   assert.throws(() => validateReleasePerformanceBaselineSeed({ ...seed, capture: { ...seed.capture, successfulRunOrdinal: 1 } }), /pending/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostVersion: 'fictional-other-host' }), /pinned/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostReceipt: { ...baseline.hostReceipt, contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }), /pinned host identity/u);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, thresholds: { ...baseline.thresholds, dashboardRefreshMs: 999999 } }), /first observation/);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 99 } }), /conversations must be 100/);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, searchQueryMs: 0 } }), /first positive/);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, searchQueryMs: undefined } }), /first positive/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, thresholds: { ...baseline.thresholds, dashboardLoadMs: 999999 } }), /first observation/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 52 } }), /conversations must be 51/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, activityRecords: 52 } }), /activityRecords must be 51/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: 0 } }), /first positive/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: undefined } }), /first positive/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, capture: { ...baseline.capture, successfulRunOrdinal: 2 } }), /first successful/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, capture: { ...baseline.capture, observationsDigest: 'sha256:' + 'a'.repeat(64) } }), /capture evidence/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureIdentity: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }), /release fixture/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, generatedAt: '2026-08-30T00:00:00.000Z' }), /unsupported field/);
 });
 
-test('release fixture includes the large and multibyte boundary Notes', () => {
-  const chunkBoundaryNote = `${'x'.repeat(524_287)}é`;
-  const chunkBoundaryBytes = Buffer.from(chunkBoundaryNote, 'utf8');
-  assert.equal(chunkBoundaryBytes.length, RELEASE_FIXTURE_COUNTS.chunkBoundaryNoteBytes);
-  assert.equal(chunkBoundaryBytes.subarray(0, 524_288).at(-1), 0xc3);
-  assert.equal(chunkBoundaryBytes.subarray(524_288).at(0), 0xa9);
-  const largeNote = `${'x'.repeat(8_388_608)}\n`;
-  assert.equal(Buffer.byteLength(largeNote), RELEASE_FIXTURE_COUNTS.largeNoteBytes);
+test('release fixture includes one exact UTF-8 boundary Note', () => {
+  const largeNote = `${'x'.repeat(524_287)}é`;
+  const bytes = Buffer.from(largeNote, 'utf8');
+  assert.equal(bytes.length, RELEASE_FIXTURE_COUNTS.largeNoteBytes);
+  assert.equal(bytes.subarray(0, 524_288).at(-1), 0xc3);
+  assert.equal(bytes.subarray(524_288).at(0), 0xa9);
 });

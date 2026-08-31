@@ -3,24 +3,23 @@
   "hostVersion": "2026.8.1-beta.3",
   "hostReceipt": {
     "schemaVersion": 1,
-    "sourceDigest": "sha256:6e4ac1c2c914e3794f04427b41d8661220c45a224513fe55062186dd3f6f4d06",
-    "commit": "30f2924e437857935f034ac349bae8cc22ef9fb0",
-    "executableDigest": "sha256:e5ec47e5fcad9a75be0d7164f71b8e069d78aa6422b0c9ed750bf5521735e083",
+    "sourceDigest": "sha256:dcaa96ca24dc1bee1442603cc86cf492bde40c22c9127b1c76c22c8917b2983e",
+    "commit": "6d542e6a0c5743a22a19c3226e754bf94cbf35b1",
+    "executableDigest": "sha256:e7864937c006d7cc098417370661307694352bc8768482806f7b8064fb734b00",
     "contractDigest": "sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6"
   },
-  "pluginBuildDigest": "sha256:b05499360d4692536166c20b127397c3e80040d4cfa8d57bd3a097721a7c6d6e",
+  "pluginBuildDigest": "sha256:bd037e0e9ea665fc2ede1d1e79ca3426cd4122a04b7ada0735eb851a90e203b3",
   "browser": {
     "engine": "chromium",
     "playwrightVersion": "1.62.1",
     "version": "evaluator-pinned-chromium"
   },
   "viewport": { "width": 1440, "height": 900 },
-  "fixtureIdentity": "sha256:fda82d83cb8e6d5a627a52002392948932f7c6a0d92c68897f9ac6abe96b86be",
+  "fixtureIdentity": "sha256:c420774f2a85c24e3b2fd39dd609e2119311adb8193a029958c9885f65e81239",
   "fixtureCounts": {
-    "chunkBoundaryNoteBytes": 524289,
-    "largeNoteBytes": 8388609,
-    "conversations": 100,
-    "activityRecords": 101,
+    "largeNoteBytes": 524289,
+    "conversations": 51,
+    "activityRecords": 51,
     "actionCards": 2,
     "indexedNotes": 5000,
     "indexedConversationMessages": 5000

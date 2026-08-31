@@ -93,7 +93,10 @@ async function seedBaselineMigratedV2(stateDir) {
   const material = ensureRecoverySnapshot({ stateDir, databasePath });
   const manifest = JSON.parse(await readFile(material.manifestPath, 'utf8'));
   manifest.targetRelease.package = { name: 'openclaw-command-center', version: '0.2.0', build: '0.2.0' };
+  manifest.targetRelease.host = canonical.priorRelease.host;
+  manifest.targetRelease.pluginApi = canonical.priorRelease.pluginApi;
   manifest.targetRelease.commandCenterSchema = { readable: { min: 1, max: 2 }, migratable: { min: 1, max: 1 }, writable: { min: 2, max: 2 } };
+  manifest.targetRelease.capabilityBridgeProtocol = canonical.priorRelease.capabilityBridgeProtocol;
   await writeFile(material.manifestPath, JSON.stringify(manifest, null, 2) + '\n');
   const database = new DatabaseSync(databasePath);
   try { applyV1ToV2Migration(database, { snapshotId: material.manifest.snapshotId }); } finally { database.close(); }
@@ -155,7 +158,7 @@ test('schema-2 stores retain and reuse baseline schema-1 recovery evidence durin
   await withState(async (stateDir) => {
     const databasePath = await seedBaselineMigratedV2(stateDir);
     const service = open({ stateDir });
-    assert.equal(service.getOperatingStatus().mode, 'ready');
+    assert.equal(service.getOperatingStatus().mode, 'ready', JSON.stringify(service.getOperatingStatus()));
     service.close();
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try { assert.deepEqual(database.prepare('SELECT sequence, from_version, to_version FROM schema_migrations ORDER BY sequence').all().map((row) => ({ ...row })), [{ sequence: 1, from_version: 1, to_version: 2 }, { sequence: 2, from_version: 2, to_version: 3 }, { sequence: 3, from_version: 3, to_version: 4 }, { sequence: 4, from_version: 4, to_version: 5 }, { sequence: 5, from_version: 5, to_version: 6 }, { sequence: 6, from_version: 6, to_version: 7 }, { sequence: 7, from_version: 7, to_version: 8 }]); } finally { database.close(); }

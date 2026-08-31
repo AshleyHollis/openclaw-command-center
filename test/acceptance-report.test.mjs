@@ -13,8 +13,8 @@ function validEvidence(id) {
   const values = {
     'pinned-host-startup': { schemaVersion: 1, hostReceipt: { ...releasePerformanceIdentity.hostReceipt }, buildDigest: BUILD, startupMigrationVerified: true, routeGrantObserved: true, scriptsOnlyFrame: true, secureOrigin: { protocol: 'https:', hostname: 'command-center.fictional.ts.net', loopbackOnly: true }, notificationLifecycle: { closedTabDelivered: true, cleared: true, bindingRevoked: true, bindingReconciled: true } },
     'desktop-primary-journey': { schemaVersion: 1, topicId: 'fictional-topic', authoritativeReadback: { primarySession: true, conversation: true, closedConversation: true, note: true, attention: true, activity: true, topicReview: true }, actions: Array.from({ length: 12 }, (_, index) => `action-${index}`) },
-    'mobile-accessibility-journey': { schemaVersion: 1, viewport: { width: 320, height: 900 }, keyboardOnly: true, zoom200: true, reflow400: true, forcedColors: true, reducedMotion: true, focusRestored: true, announcements: true, colorIndependent: true, minimumTargetCssPx: 44, noPageOverflow: true, states: ['navigation', 'topic', 'conversation', 'note-dialog', 'note-preview', 'search', 'attention', 'review'] },
-    'scale-performance': { schemaVersion: 1, fixtureIdentity: RELEASE_FIXTURE_IDENTITY, fixtureCounts: { ...RELEASE_FIXTURE_COUNTS }, observations: { ...observations }, thresholds: { ...thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: true, staleProjectionRebuilt: true, indexedQuery: true } },
+    'mobile-accessibility-journey': { schemaVersion: 1, viewport: { width: 320, height: 900 }, keyboardOnly: true, zoom200: true, forcedColors: true, reducedMotion: true, focusRestored: true, announcements: true, colorIndependent: true, minimumTargetCssPx: 44, noPageOverflow: true, states: ['navigation', 'topic', 'conversation', 'note-dialog', 'note-preview', 'search', 'attention', 'review'] },
+    'scale-performance': { schemaVersion: 1, fixtureIdentity: RELEASE_FIXTURE_IDENTITY, fixtureCounts: { ...RELEASE_FIXTURE_COUNTS }, observations: { ...observations }, thresholds: { ...thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: true, staleProjectionRebuilt: true, indexedQuery: true } },
     'degraded-bridge-grants': { schemaVersion: 1, mode: 'degraded', safeReadObserved: true, mutationRejected: true, bridge: { protocolVersion: 1, writeGrant: false, observedFromBootstrap: true } },
     'degraded-source-availability': { schemaVersion: 1, mode: 'degraded', safeReadObserved: true, mutationRejected: true, source: { capability: 'sessions', available: false, bindingObserved: true } },
     'recovery-only-compatibility': { schemaVersion: 1, mode: 'recovery-only', safeReadObserved: true, mutationsRejected: true, mismatches: ['host', 'build', 'pluginApi', 'bridgeProtocol', 'binding', 'schema'] },
@@ -38,6 +38,21 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   assert.doesNotMatch(source, /requireScenario\(/u);
   assert.match(source, /testContext\.diagnostic\(/u);
   assert.match(source, /timeout: 900_000/u);
+  const isolatedCompletion = source.indexOf("await Promise.all([...isolatedSlices.keys()]");
+  const finalization = source.indexOf('const finalizationErrors = await finalizeAcceptanceJourney', isolatedCompletion);
+  const privacyPreflight = source.indexOf('await scanRepositorySafety', finalization);
+  const baselineCapture = source.indexOf('candidateBaseline = captureFirstReleasePerformanceBaseline', privacyPreflight);
+  const reportRows = source.indexOf('const rows = await runAcceptanceRows', finalization);
+  const reportValidation = source.indexOf('assertAcceptanceReportPassed(report)', reportRows);
+  const capturedOutputScan = source.indexOf('scanPublicEvidence([JSON.stringify(report)', reportValidation);
+  const baselineCommit = source.indexOf('releaseState.baseline = baseline', capturedOutputScan);
+  assert.ok(isolatedCompletion > 0 && isolatedCompletion < finalization && finalization < privacyPreflight && privacyPreflight < baselineCapture && baselineCapture < reportRows && reportRows < reportValidation && reportValidation < capturedOutputScan && capturedOutputScan < baselineCommit, 'all isolated slices, finalization, privacy, report validation, and captured-output scanning must precede baseline commitment');
+  assert.doesNotMatch(source, /const passed = await (?:testContext\.test|isolatedRunPromises)/u);
+  assert.doesNotMatch(source, /withDeadline\(`isolated release slice/u);
+  assert.match(source, /isolated-slice-timeout/u);
+  assert.match(source, /signal\?\.addEventListener\('abort', abortCleanup/u);
+  assert.match(source, /api\/topics\/actions`.*, \{ method: 'POST'/u);
+  assert.match(source, /performanceBaseline: emittedBaseline/u);
   assert.match(sessionSource, /overlapping Session creates preserve every distinct plugin-owned key/u);
   assert.match(bridgeSource, /registered Session create bridge preserves independent durable identities under reversed completion/u);
 });
@@ -53,12 +68,16 @@ test('release rows all execute and collect failures in canonical order', async (
 test('release rows bound a stalled sibling and retain independent completion evidence', async () => {
   const progress = [];
   const completed = [];
+  let active = 0;
+  let peak = 0;
   const rows = await runAcceptanceRows(RELEASE_ROW_IDS.map((id, index) => ({
     id,
-    run: async () => {
-      if (index === 1) return new Promise(() => {});
-      completed.push(id);
-      return validEvidence(id);
+    run: async (signal) => {
+      if (index === 1) return new Promise((resolve) => signal.addEventListener('abort', () => resolve(undefined), { once: true }));
+      active += 1;
+      peak = Math.max(peak, active);
+      try { completed.push(id); return validEvidence(id); }
+      finally { active -= 1; }
     }
   })), { timeoutMs: 25, onProgress: (entry) => progress.push(entry) });
   assert.equal(rows[1].outcome, 'failed');
@@ -66,6 +85,41 @@ test('release rows bound a stalled sibling and retain independent completion evi
   assert.deepEqual(completed, RELEASE_ROW_IDS.filter((_, index) => index !== 1));
   assert.equal(progress.filter((entry) => entry.phase === 'started').length, RELEASE_ROW_IDS.length);
   assert.equal(progress.some((entry) => entry.id === RELEASE_ROW_IDS.at(-1) && entry.phase === 'passed'), true);
+  assert.ok(peak <= 2, 'release rows must stay within the medium-resource concurrency lane');
+});
+
+test('release row cancellation settles cleanup before returning the failed row', async () => {
+  let cleanupFinished = false;
+  const rows = await runAcceptanceRows(RELEASE_ROW_IDS.map((id, index) => ({
+    id,
+    run: async (signal) => {
+      if (index !== 0) return validEvidence(id);
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      cleanupFinished = true;
+      return validEvidence(id);
+    }
+  })), { timeoutMs: 10 });
+  assert.equal(rows[0].outcome, 'failed');
+  assert.equal(cleanupFinished, true);
+});
+
+test('an uncooperative timed-out row aborts report construction within a secondary bound', async () => {
+  const startedAt = Date.now();
+  let siblingCancelled = false;
+  await assert.rejects(() => runAcceptanceRows(RELEASE_ROW_IDS.map((id, index) => ({
+    id,
+    run: async (signal) => {
+      if (index === 0) return new Promise(() => {});
+      if (index === 1) {
+        await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+        siblingCancelled = true;
+      }
+      return validEvidence(id);
+    }
+  })), { timeoutMs: 5, cleanupTimeoutMs: 10 }), /did not settle/iu);
+  assert.equal(siblingCancelled, true, 'fatal row cancellation must abort and await active sibling cleanup');
+  assert.ok(Date.now() - startedAt < 200, 'uncooperative row cancellation exceeded its cleanup bound');
 });
 
 test('release report binds closed evidence and finalization to one build digest', async () => {

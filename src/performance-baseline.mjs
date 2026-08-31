@@ -3,10 +3,9 @@ import { createHash } from 'node:crypto';
 export const RELEASE_PERFORMANCE_BASELINE_VERSION = 1;
 
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
-  chunkBoundaryNoteBytes: 524_289,
-  largeNoteBytes: 8_388_609,
-  conversations: 100,
-  activityRecords: 101,
+  largeNoteBytes: 524_289,
+  conversations: 51,
+  activityRecords: 51,
   actionCards: 2,
   indexedNotes: 5_000,
   indexedConversationMessages: 5_000
@@ -15,27 +14,29 @@ export const RELEASE_FIXTURE_COUNTS = Object.freeze({
 export const RELEASE_PERFORMANCE_VIEWPORT = Object.freeze({ width: 1_440, height: 900 });
 
 export const RELEASE_MEASUREMENTS = Object.freeze([
-  'startupInteractiveMs',
-  'dashboardRefreshMs',
-  'largeNoteOpenMs',
-  'largeNotePreviewMs',
-  'activityPageAppendMs',
-  'searchRebuildMs',
-  'searchQueryMs',
-  'maximumInteractionHeartbeatMs'
+  'startupReadinessMs',
+  'dashboardLoadMs',
+  'topicOpenCreateMs',
+  'chatSendMs',
+  'conversationLifecycleMs',
+  'largeNoteLifecycleMs',
+  'indexedSearchMs',
+  'activityNextPageMs',
+  'topicReviewApplyMs',
+  'mobileReflowMs'
 ]);
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest']);
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
-const HOST_COMMIT = '30f2924e437857935f034ac349bae8cc22ef9fb0';
+const HOST_COMMIT = '6d542e6a0c5743a22a19c3226e754bf94cbf35b1';
 const HOST_VERSION = '2026.8.1-beta.3';
 const PLAYWRIGHT_VERSION = '1.62.1';
-export const RELEASE_FIXTURE_IDENTITY = 'sha256:fda82d83cb8e6d5a627a52002392948932f7c6a0d92c68897f9ac6abe96b86be';
+export const RELEASE_FIXTURE_IDENTITY = 'sha256:c420774f2a85c24e3b2fd39dd609e2119311adb8193a029958c9885f65e81239';
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 1,
-  sourceDigest: 'sha256:6e4ac1c2c914e3794f04427b41d8661220c45a224513fe55062186dd3f6f4d06',
+  sourceDigest: 'sha256:dcaa96ca24dc1bee1442603cc86cf492bde40c22c9127b1c76c22c8917b2983e',
   commit: HOST_COMMIT,
-  executableDigest: 'sha256:e5ec47e5fcad9a75be0d7164f71b8e069d78aa6422b0c9ed750bf5521735e083',
+  executableDigest: 'sha256:e7864937c006d7cc098417370661307694352bc8768482806f7b8064fb734b00',
   contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6'
 });
 

@@ -203,7 +203,7 @@ function renderActivity(records, append = false) {
   const target = document.querySelector('#activity'); if (!append) activityRecords = [];
   activityRecords = [...activityRecords, ...(records ?? [])]; target.replaceChildren(...activityRecords.map((record) => {
     const row = document.createElement('article'); row.className = 'activity-row'; row.dataset.activityId = record.activityId; const text = document.createElement('span'); text.textContent = `${record.operationKind || 'Activity'} · ${record.outcome || 'recorded'}`; row.append(text);
-    if (record.navigation?.verified === true && record.navigation.kind === 'session') row.append(dashboardButton('Open source', () => openActivity(record)));
+    if (record.navigation?.verified === true && ['session', 'note'].includes(record.navigation.kind)) row.append(dashboardButton('Open source', () => openActivity(record)));
     return row;
   }));
   if (!activityRecords.length) target.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No routine history.' }));
@@ -211,9 +211,17 @@ function renderActivity(records, append = false) {
 async function openActivity(record) {
   const feedback = document.querySelector('#dashboard-feedback');
   try {
+    if (record.navigation.kind === 'note') {
+      const note = unwrap(await bridgeRequest('command-center.v1.notes.read', { schemaVersion: 1, topicId: record.navigation.topicId, referenceId: record.navigation.referenceId, path: record.navigation.path, observedRevision: record.navigation.observedRevision, offset: 0 }));
+      if (note?.path !== record.navigation.path || note?.revision !== record.navigation.observedRevision || note?.sourceReference?.referenceId !== record.navigation.referenceId || note?.sourceReference?.topicId !== record.navigation.topicId) throw new Error('The authoritative Note changed after this Activity was recorded.');
+      document.querySelector('#topic-search-detail').textContent = decodeText(note.contentBase64);
+      feedback.textContent = 'Activity source opened.';
+      return;
+    }
     const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: record.navigation.topicId, referenceId: record.navigation.referenceId }));
-    if (!target?.sessionKey || target.sessionKey !== record.navigation.sessionKey || target.sessionId !== record.navigation.sessionId) throw new Error('The authoritative source changed after this record was created.');
+    if (!target?.sessionKey || target.sessionKey !== record.navigation.sessionKey || target.sessionId !== record.navigation.sessionId || target.sourceReference?.referenceId !== record.navigation.referenceId || target.sourceReference?.topicId !== record.navigation.topicId) throw new Error('The authoritative Conversation changed after this Activity was recorded.');
     await bridgeRequest('ui.session.navigate', { sessionKey: target.sessionKey });
+    feedback.textContent = 'Activity source opened.';
   } catch (error) { feedback.textContent = error.message || 'Authoritative navigation was refused.'; }
 }
 function focusNotificationTarget() {
@@ -380,8 +388,9 @@ document.querySelector('#topic-search-rebuild')?.addEventListener('click', async
 
 const workspace = {
   topic: null, generation: 0, conversations: [], selected: null, selectionGeneration: 0, historyGeneration: 0, chatSendGeneration: 0, chatSendOperations: new Map(),
-  notes: [], note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
+  conversationPage: 0, notes: [], note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
 };
+const CONVERSATION_PAGE_SIZE = 50;
 const workspaceNode = document.querySelector('#topic-workspace');
 const workspaceStatus = document.querySelector('#workspace-status');
 const notesStatus = document.querySelector('#notes-status');
@@ -407,7 +416,7 @@ async function pageAction(action, input) {
   return value.result ?? value;
 }
 function resetWorkspacePresentation() {
-  workspace.topic = null; workspace.conversations = []; workspace.selected = null; workspace.notes = []; workspace.note = null; workspace.drafts = new Map();
+  workspace.topic = null; workspace.conversations = []; workspace.selected = null; workspace.conversationPage = 0; workspace.notes = []; workspace.note = null; workspace.drafts = new Map();
   workspace.selectionGeneration += 1; workspace.historyGeneration += 1; workspace.noteGeneration += 1; workspace.searchGeneration += 1;
   document.querySelector('#conversation-list')?.replaceChildren(); document.querySelector('#chat-messages')?.replaceChildren(); document.querySelector('#notes-tree')?.replaceChildren();
   document.querySelector('#workspace-notes-results')?.replaceChildren(); document.querySelector('#workspace-conversations-results')?.replaceChildren();
@@ -436,6 +445,8 @@ async function loadConversations({ selectPrimary = false, generation = workspace
   const value = unwrap(await bridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: workspace.topic.topicId, includeClosed: view !== 'open' }));
   if (generation !== workspace.generation) return;
   workspace.conversations = (value?.conversations ?? []).filter((item) => view === 'all' || item.status === view);
+  const selectedIndex = workspace.conversations.findIndex((item) => item.referenceId === workspace.selected?.referenceId);
+  workspace.conversationPage = selectedIndex >= 0 ? Math.floor(selectedIndex / CONVERSATION_PAGE_SIZE) : Math.min(workspace.conversationPage, Math.max(0, Math.ceil(workspace.conversations.length / CONVERSATION_PAGE_SIZE) - 1));
   renderConversations(); conversationStatus.textContent = `${workspace.conversations.length} ${view === 'closed' ? 'closed ' : ''}Conversations.`;
   if (selectPrimary) {
     const primary = (value?.conversations ?? []).find((item) => item.isPrimary);
@@ -445,13 +456,19 @@ async function loadConversations({ selectPrimary = false, generation = workspace
 }
 function renderConversations() {
   const target = document.querySelector('#conversation-list'); target.replaceChildren();
-  for (const item of workspace.conversations) {
-    const row = document.createElement('div'); row.className = 'conversation-item';
+  const pageCount = Math.max(1, Math.ceil(workspace.conversations.length / CONVERSATION_PAGE_SIZE));
+  workspace.conversationPage = Math.min(workspace.conversationPage, pageCount - 1);
+  const start = workspace.conversationPage * CONVERSATION_PAGE_SIZE;
+  for (const item of workspace.conversations.slice(start, start + CONVERSATION_PAGE_SIZE)) {
+    const row = document.createElement('div'); row.className = 'conversation-item'; row.dataset.referenceId = item.referenceId; row.dataset.sessionId = item.sessionId;
     const choose = button(item.displayName, () => selectConversation(item)); if (workspace.selected?.referenceId === item.referenceId) choose.setAttribute('aria-current', 'true'); row.append(choose);
     const state = document.createElement('span'); state.textContent = item.status === 'closed' ? 'Closed' : item.isPrimary ? 'Primary' : 'Open'; row.append(state);
     if (!item.isPrimary) row.append(button(item.status === 'closed' ? 'Reopen' : 'Close', () => changeConversationStatus(item)));
     target.append(row);
   }
+  const previous = document.querySelector('#conversation-previous'); const next = document.querySelector('#conversation-next');
+  previous.disabled = workspace.conversationPage === 0; next.disabled = workspace.conversationPage >= pageCount - 1;
+  document.querySelector('#conversation-page-status').textContent = `Page ${workspace.conversationPage + 1} of ${pageCount}`;
 }
 function sameConversation(left, right) { return left?.topicId === right?.topicId && left?.referenceId === right?.referenceId && left?.sessionId === right?.sessionId; }
 function syncSelectedConversationControls() { const closed = workspace.selected?.status === 'closed'; document.querySelector('#chat-send').disabled = closed; document.querySelector('#chat-message').disabled = closed; }
@@ -505,7 +522,9 @@ document.querySelector('#chat-form')?.addEventListener('submit', async (event) =
 });
 document.querySelector('#conversation-create')?.addEventListener('submit', async (event) => { event.preventDefault(); const input = event.currentTarget.elements.label; const label = input.value.trim(); const generation = workspace.generation; const topic = workspace.topic; try { await pageAction('conversations.create', { topicId: topic.topicId, label, expectedRevision: topic.revision }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; if (input.value.trim() === label) input.value = ''; await loadConversations({ generation }); } catch (error) { if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) conversationStatus.textContent = error.message || 'Conversation creation was refused.'; } });
 document.querySelector('#conversation-refresh')?.addEventListener('click', () => loadConversations());
-document.querySelector('#conversation-view')?.addEventListener('change', () => loadConversations());
+document.querySelector('#conversation-view')?.addEventListener('change', () => { workspace.conversationPage = 0; void loadConversations(); });
+document.querySelector('#conversation-previous')?.addEventListener('click', () => { if (workspace.conversationPage > 0) { workspace.conversationPage -= 1; renderConversations(); } });
+document.querySelector('#conversation-next')?.addEventListener('click', () => { if ((workspace.conversationPage + 1) * CONVERSATION_PAGE_SIZE < workspace.conversations.length) { workspace.conversationPage += 1; renderConversations(); } });
 
 async function loadNotes({ generation = workspace.generation } = {}) {
   const value = unwrap(await bridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: workspace.topic.topicId }));
