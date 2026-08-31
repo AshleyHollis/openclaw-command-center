@@ -76,7 +76,7 @@ export async function invokeBridgeMethod(service, method, params, requestId = nu
   return sanitizeBridgeResult(method, await handler(service, { ...params, ...(requestId === null ? {} : { requestId }), ...(authenticatedOperatorId === null ? {} : { authenticatedOperatorId }) }, runtime));
 }
 
-export function registerBridgeMethods(api, service) {
+export function registerBridgeMethods(api, service, { mutationsAllowed = true } = {}) {
   if (!api?.registerGatewayMethod) throw new TypeError('registerGatewayMethod is required');
   if (!service) throw new TypeError('authoritative source service is required');
   const registered = [];
@@ -90,6 +90,7 @@ export function registerBridgeMethods(api, service) {
       const requestId = req?.id ?? null;
       try {
         if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
+        if (!mutationsAllowed && WRITE_METHODS.includes(method)) throw new SourceServiceError('capability-unavailable', 'Control UI mutation grant is unavailable.');
         service.notificationCaptureBinding?.();
         if (method === 'command-center.v1.attention.act' && (typeof client?.authenticatedUserId !== 'string' || client.authenticatedUserId.trim() === '')) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
         const operatorId = method.startsWith('command-center.v1.attention.') && typeof client?.authenticatedUserId === 'string' ? client.authenticatedUserId : null;

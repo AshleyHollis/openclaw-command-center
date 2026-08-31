@@ -1,4 +1,10 @@
 const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs']);
+const browserHeavyTests = new Set([
+  'test/dashboard-ui.test.mjs',
+  'test/topic-page.acceptance.test.mjs',
+  'test/topic-review-ui.test.mjs',
+  'test/topics-ui.test.mjs'
+]);
 const topicPageTicketTests = new Set([
   'bridge-contract.test.mjs',
   'browser-setup.test.mjs',
@@ -13,6 +19,15 @@ const topicPageTicketTests = new Set([
   'topic-page-http.test.mjs',
   'topic-page.acceptance.test.mjs',
   'topic-search.acceptance.test.mjs'
+]);
+const issue32TicketTests = new Set([
+  'acceptance-finalization.test.mjs',
+  'acceptance-report.test.mjs',
+  'bridge-contract.test.mjs',
+  'check-phases.test.mjs',
+  'plugin-integration.test.mjs',
+  'real-host.acceptance.test.mjs',
+  'test-selection.test.mjs'
 ]);
 
 /**
@@ -38,10 +53,30 @@ export function ordinaryTestArgv(files) {
   return ['--test', '--test-concurrency=4', ...files];
 }
 
+/** Keep Chromium-heavy files selected but serialize them in a separate lane. */
+export function ordinaryTestLanes(files) {
+  if (!Array.isArray(files) || files.some((file) => typeof file !== 'string')) throw new TypeError('test files must be an array of strings');
+  const browser = files.filter((file) => browserHeavyTests.has(file));
+  const parallel = files.filter((file) => !browserHeavyTests.has(file));
+  return [
+    ...(parallel.length ? [{ id: 'parallel', argv: ordinaryTestArgv(parallel) }] : []),
+    ...(browser.length ? [{ id: 'browser', argv: ['--test', '--test-concurrency=1', ...browser] }] : [])
+  ];
+}
+
 export function selectTopicPageTicketTestFiles(entries) {
   if (!Array.isArray(entries)) throw new TypeError('test entries must be an array');
   return entries
     .filter((entry) => typeof entry === 'string' && topicPageTicketTests.has(entry))
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+    .map((entry) => `test/${entry}`);
+}
+
+/** Select only issue #32's receipt and indispensable integration boundaries. */
+export function selectIssue32TicketTestFiles(entries) {
+  if (!Array.isArray(entries)) throw new TypeError('test entries must be an array');
+  return entries
+    .filter((entry) => typeof entry === 'string' && issue32TicketTests.has(entry))
     .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
     .map((entry) => `test/${entry}`);
 }

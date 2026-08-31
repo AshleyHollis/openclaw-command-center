@@ -22,6 +22,7 @@ import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
 import { captureFirstReleasePerformanceBaseline, RELEASE_FIXTURE_COUNTS, releasePerformanceIdentity, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
+import { compatibilityTuple, validateCompatibility } from '../src/compatibility.mjs';
 
 const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
   'topic-search-conversations.commit.json',
@@ -31,6 +32,62 @@ const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
   'topic-search-notes.json',
   'topic-search-notes.sqlite'
 ]);
+const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
+
+function reportProgress(testContext, phase, detail = {}) {
+  testContext.diagnostic(`release-progress=${JSON.stringify({ schemaVersion: 1, phase, ...detail })}`);
+}
+
+async function withDeadline(label, operation, timeoutMs = EXTERNAL_OPERATION_TIMEOUT_MS) {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer;
+  const pending = Promise.resolve().then(() => operation(controller.signal));
+  void pending.then(async (value) => {
+    if (!timedOut) return;
+    try {
+      if (value?.child) await stopPinnedHost(value.child);
+      else await value?.close?.();
+    } catch { /* a timed-out operation remains failed; cleanup is best effort */ }
+  }, () => {});
+  try {
+    return await Promise.race([
+      pending,
+      new Promise((_, reject) => { timer = setTimeout(() => { timedOut = true; controller.abort(); reject(new HarnessFailure('operation-timeout', `${label} exceeded its ${timeoutMs} ms deadline`)); }, timeoutMs); })
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
+async function launchManagedBrowser(options) {
+  const server = await chromium.launchServer(options);
+  try {
+    const browser = await chromium.connect(server.wsEndpoint());
+    return { browser, server, close: async () => { await browser.close(); await server.close().catch(() => {}); } };
+  } catch (error) {
+    await server.kill().catch(() => {});
+    throw error;
+  }
+}
+
+async function closeManagedBrowser(managed, signal) {
+  if (!managed) return;
+  const forceClose = () => { void managed.server.kill(); };
+  if (signal?.aborted) forceClose();
+  else signal?.addEventListener('abort', forceClose, { once: true });
+  try { await managed.close(); }
+  finally { signal?.removeEventListener('abort', forceClose); }
+}
+
+async function fetchWithDeadline(url, options = {}, label = 'HTTP operation', timeoutMs = EXTERNAL_OPERATION_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) throw new HarnessFailure('transport-timeout', `${label} exceeded its ${timeoutMs} ms deadline`);
+    throw error;
+  } finally { clearTimeout(timer); }
+}
 
 function routeGrant(config) {
   const values = config?.[runtimeCapability.bootstrap.grantsField] || [];
@@ -137,14 +194,15 @@ async function waitForCommittedSearchProjections(projectionRoot, { attempts = 10
   throw new HarnessFailure('search-rebuild-timeout', 'Search rebuild did not publish the exact committed projection set');
 }
 
-async function seedReleaseNoteCorpus(folder) {
+async function seedReleaseNoteCorpus(folder, onBatch) {
   const entries = [
     ['chunk-boundary.md', `${'x'.repeat(524_287)}é`],
     ['large-note.md', `${'x'.repeat(RELEASE_FIXTURE_COUNTS.largeNoteBytes - 1)}\n`]
   ];
   for (let index = entries.length; index < RELEASE_FIXTURE_COUNTS.indexedNotes; index += 1) entries.push([`indexed-${String(index).padStart(4, '0')}.md`, `# Fictional indexed Note ${index}\n\nFictional scale search phrase ${index}.`]);
   for (let offset = 0; offset < entries.length; offset += 100) {
-    await Promise.all(entries.slice(offset, offset + 100).map(([name, content]) => writeFile(path.join(folder, name), content)));
+    await withDeadline(`Note fixture batch ${offset / 100 + 1}`, () => Promise.all(entries.slice(offset, offset + 100).map(([name, content]) => writeFile(path.join(folder, name), content))));
+    onBatch?.({ completed: Math.min(offset + 100, entries.length), total: entries.length });
   }
   const realized = await readdir(folder);
   assert.equal(realized.filter((name) => name.endsWith('.md')).length, RELEASE_FIXTURE_COUNTS.indexedNotes);
@@ -215,41 +273,78 @@ async function exerciseRestorationMatrix(stateDir) {
   return Object.freeze({ snapshotId: manifest.snapshotId, writesBlocked: true, exactIdentityValidated: true, postValidationMutation: true });
 }
 
-async function exerciseDegradedSourceRow(publicBoundary) {
-  assert.deepEqual(publicBoundary, { safeReadObserved: true, mutationRejected: true, bindingObserved: true });
-  return Object.freeze({ schemaVersion: 1, mode: 'degraded', safeReadObserved: publicBoundary.safeReadObserved, mutationRejected: publicBoundary.mutationRejected, source: { capability: 'sessions', available: false, bindingObserved: publicBoundary.bindingObserved } });
+async function exerciseDegradedSourceRow({ descriptor, buildReceipt }) {
+  return withIsolatedWorld(async (sourceWorld) => {
+    const stateDir = path.join(sourceWorld.root, '.openclaw');
+    const seeded = openCommandCenterMetadataService({ stateDir });
+    try { seeded.createTopic({ topicId: 'fictional-source-degraded-topic', paraCategory: 'resource', lifecycle: 'active' }); }
+    finally { seeded.close(); }
+    const config = JSON.parse(await readFile(sourceWorld.manifest.configPath, 'utf8'));
+    config.plugins.entries['command-center'].config = { sourceCapabilities: { sessions: false } };
+    await writeFile(sourceWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
+    const sourceHost = await withDeadline('source-degraded host launch', (signal) => launchPinnedHost({ descriptor, world: sourceWorld, buildReceipt, signal }), 120_000);
+    try {
+      await waitForConsecutiveReadiness(async () => {
+        const response = await fetchWithDeadline(`${sourceWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${sourceWorld.gatewayCredential}` } }, 'source-degraded readiness probe', 10_000);
+        return response.ok;
+      }, undefined, { required: 2, attempts: 100, delayMs: 100 });
+      const statusResponse = await requestAuthenticatedGateway({ gatewayUrl: sourceWorld.gateway.url, credential: sourceWorld.gatewayCredential, method: 'command-center.v1.sources.status', params: { schemaVersion: 1 } });
+      const status = statusResponse?.result ?? statusResponse;
+      assert.equal(status.mode, 'degraded');
+      assert.ok(status.unavailableCapabilities.includes('sessions'));
+      const safeRead = await requestAuthenticatedGateway({ gatewayUrl: sourceWorld.gateway.url, credential: sourceWorld.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 } });
+      assert.ok(JSON.stringify(safeRead).includes('fictional-source-degraded-topic'));
+      await assert.rejects(() => requestAuthenticatedGateway({
+        gatewayUrl: sourceWorld.gateway.url,
+        credential: sourceWorld.gatewayCredential,
+        scopes: ['operator.read', 'operator.write'],
+        method: 'command-center.v1.sessions.create',
+        params: { schemaVersion: 1, topicId: 'fictional-source-degraded-topic', logicalOperationId: randomUUID(), label: 'Blocked source mutation' }
+      }), /sessions.*unavailable|capability-unavailable/iu);
+      return Object.freeze({ schemaVersion: 1, mode: status.mode, safeReadObserved: true, mutationRejected: true, source: { capability: 'sessions', available: false, bindingObserved: true } });
+    } finally {
+      await withDeadline('source-degraded host stop', async () => { await stopPinnedHost(sourceHost.child); await sourceHost.outputDrained; });
+      assertNoFatalHostOutput(sourceHost.diagnostics);
+      await assertRecordedChildTraffic(sourceWorld);
+      sourceHost.diagnostics.guard.assertClean();
+    }
+  }, { candidateRoot: process.cwd() });
 }
 
 async function exerciseDegradedBridgeHostVariant({ descriptor, buildReceipt }) {
   return withIsolatedWorld(async (degradedWorld) => {
     const config = JSON.parse(await readFile(degradedWorld.manifest.configPath, 'utf8'));
-    config.plugins.entries['command-center'].enabled = false;
+    config.plugins.entries['command-center'].config = {
+      controlUiGrant: false
+    };
     await writeFile(degradedWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
-    const degradedHost = await launchPinnedHost({ descriptor, world: degradedWorld, buildReceipt });
+    const degradedHost = await withDeadline('grant-degraded host launch', (signal) => launchPinnedHost({ descriptor, world: degradedWorld, buildReceipt, signal }), 120_000);
     try {
       let bootstrap;
       await waitForConsecutiveReadiness(async () => {
-        const response = await fetch(`${degradedWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${degradedWorld.gatewayCredential}` } });
+        const response = await fetchWithDeadline(`${degradedWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${degradedWorld.gatewayCredential}` } }, 'grant-degraded readiness probe', 10_000);
         if (!response.ok) return false;
         bootstrap = await response.json();
         return true;
       }, undefined, { required: 2, attempts: 100, delayMs: 100 });
-      assert.equal(routeGrant(bootstrap), false, 'disabled isolated plugin must not receive a Control UI frame grant');
-      const safeRead = await requestAuthenticatedGateway({ gatewayUrl: degradedWorld.gateway.url, credential: degradedWorld.gatewayCredential, method: 'sessions.list', params: { agentId: 'main' } });
-      assert.ok(safeRead && typeof safeRead === 'object');
-      const mutation = await fetch(`${degradedWorld.gateway.url}/plugins/command-center/api/attention/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1 }) });
-      assert.equal(mutation.status, 404);
-      return Object.freeze({ schemaVersion: 1, mode: 'degraded', safeReadObserved: true, mutationRejected: true, bridge: { protocolVersion: runtimeCapability.schemaVersion, writeGrant: false, observedFromBootstrap: true } });
+      assert.equal(routeGrant(bootstrap), false, 'isolated plugin must not receive a withheld Control UI frame grant');
+      const safeReadResponse = await requestAuthenticatedGateway({ gatewayUrl: degradedWorld.gateway.url, credential: degradedWorld.gatewayCredential, method: 'command-center.v1.sources.status', params: { schemaVersion: 1 } });
+      const safeRead = safeReadResponse?.result ?? safeReadResponse;
+      assert.equal(safeRead.mode, 'degraded');
+      const mutation = await fetchWithDeadline(`${degradedWorld.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'create', name: 'Blocked grant mutation', paraCategory: 'resource', logicalOperationId: randomUUID() }) }, 'grant-degraded mutation', 10_000);
+      assert.equal(mutation.status, 422);
+      assert.equal((await mutation.json()).code, 'capability-unavailable');
+      return Object.freeze({ schemaVersion: 1, mode: safeRead.mode, safeReadObserved: true, mutationRejected: true, bridge: { protocolVersion: runtimeCapability.schemaVersion, writeGrant: false, observedFromBootstrap: true } });
     } finally {
-      await stopPinnedHost(degradedHost.child);
-      await degradedHost.outputDrained;
+      await withDeadline('grant-degraded host stop', async () => { await stopPinnedHost(degradedHost.child); await degradedHost.outputDrained; });
       assertNoFatalHostOutput(degradedHost.diagnostics);
+      await assertRecordedChildTraffic(degradedWorld);
       degradedHost.diagnostics.guard.assertClean();
     }
   }, { candidateRoot: process.cwd() });
 }
 
-async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt }) {
+async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, bindingEvidence }) {
   return withIsolatedWorld(async (recoveryWorld) => {
     const stateDir = path.join(recoveryWorld.root, '.openclaw');
     const databasePath = resolveCommandCenterDatabasePath(stateDir);
@@ -257,10 +352,10 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt }) {
     const future = new DatabaseSync(databasePath);
     try { future.exec('CREATE TABLE fictional_future_marker (id TEXT) STRICT; PRAGMA user_version = 99;'); }
     finally { future.close(); }
-    const recoveryHost = await launchPinnedHost({ descriptor, world: recoveryWorld, buildReceipt });
+    const recoveryHost = await withDeadline('recovery-only host launch', (signal) => launchPinnedHost({ descriptor, world: recoveryWorld, buildReceipt, signal }), 120_000);
     try {
       await waitForConsecutiveReadiness(async () => {
-        const response = await fetch(`${recoveryWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${recoveryWorld.gatewayCredential}` } });
+        const response = await fetchWithDeadline(`${recoveryWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${recoveryWorld.gatewayCredential}` } }, 'recovery-only readiness probe', 10_000);
         return response.ok;
       }, undefined, { required: 2, attempts: 100, delayMs: 100 });
       const statusResponse = await requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, method: 'command-center.v1.sources.status', params: { schemaVersion: 1 } });
@@ -269,11 +364,28 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt }) {
       const safeRead = await requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 } });
       assert.ok(safeRead && typeof safeRead === 'object');
       await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, name: 'Blocked Recovery Topic', paraCategory: 'resource', logicalOperationId: randomUUID() } }), /recovery-only/iu);
-      return Object.freeze({ schemaVersion: 1, mode: 'recovery-only', safeReadObserved: true, mutationsRejected: true, mismatches: ['host', 'build', 'pluginApi', 'bridgeProtocol', 'binding', 'schema'] });
+      const mismatches = [];
+      for (const [dimension, mutate] of [
+        ['host', (value) => { value.host.commit = '0000000000000000000000000000000000000000'; }],
+        ['pluginApi', (value) => { value.pluginApi.range = '=2026.8.1-beta.2'; }],
+        ['bridgeProtocol', (value) => { value.capabilityBridgeProtocol.max = 2; }]
+      ]) {
+        const incompatible = structuredClone(compatibilityTuple);
+        mutate(incompatible);
+        assert.equal(validateCompatibility(incompatible).ok, false);
+        mismatches.push(dimension);
+      }
+      await assert.rejects(() => assertBuiltDigest({ ...buildReceipt, digest: '0'.repeat(64) }), /digest|build/iu);
+      mismatches.push('build');
+      assert.deepEqual(bindingEvidence, { safeReadObserved: true, mutationRejected: true, bindingObserved: true });
+      mismatches.push('binding');
+      assert.ok(status.diagnostics.some((entry) => entry?.code === 'future-schema'));
+      mismatches.push('schema');
+      return Object.freeze({ schemaVersion: 1, mode: 'recovery-only', safeReadObserved: true, mutationsRejected: true, mismatches });
     } finally {
-      await stopPinnedHost(recoveryHost.child);
-      await recoveryHost.outputDrained;
+      await withDeadline('recovery-only host stop', async () => { await stopPinnedHost(recoveryHost.child); await recoveryHost.outputDrained; });
       assertNoFatalHostOutput(recoveryHost.diagnostics);
+      await assertRecordedChildTraffic(recoveryWorld);
       recoveryHost.diagnostics.guard.assertClean();
     }
   }, { candidateRoot: process.cwd() });
@@ -284,13 +396,16 @@ async function exerciseSecureHostVariant({ descriptor, buildReceipt }) {
     const config = JSON.parse(await readFile(secureWorld.manifest.configPath, 'utf8'));
     config.gateway.tls = { enabled: true, autoGenerate: true };
     await writeFile(secureWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
-    const secureHost = await launchPinnedHost({ descriptor, world: secureWorld, buildReceipt });
+    const secureHost = await withDeadline('secure-origin host launch', (signal) => launchPinnedHost({ descriptor, world: secureWorld, buildReceipt, signal }), 120_000);
     const numericSecureUrl = new URL(secureWorld.gateway.url.replace(/^http:/u, 'https:'));
     const fictionalTailnetHost = 'command-center.fictional.ts.net';
     const secureUrl = `https://${fictionalTailnetHost}:${numericSecureUrl.port}`;
-    const browser = await chromium.launch({ headless: true, args: [`--host-resolver-rules=MAP ${fictionalTailnetHost} 127.0.0.1,EXCLUDE localhost`] });
+    let managedBrowser;
+    let browser;
     const secureBrowserGuard = new TrafficGuard();
     try {
+      managedBrowser = await withDeadline('secure-origin browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000, args: [`--host-resolver-rules=MAP ${fictionalTailnetHost} 127.0.0.1,EXCLUDE localhost`] }));
+      browser = managedBrowser.browser;
       const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 320, height: 900 } });
       const page = await context.newPage();
       await page.route('**/*', async (route) => {
@@ -301,23 +416,27 @@ async function exerciseSecureHostVariant({ descriptor, buildReceipt }) {
       });
       await waitForConsecutiveReadiness(async () => {
         try {
-          const response = await context.request.get(`${secureUrl}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${secureWorld.gatewayCredential}` } });
+          const response = await context.request.get(`${secureUrl}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${secureWorld.gatewayCredential}` }, timeout: 10_000 });
           return response.ok();
         } catch { return false; }
       }, secureHost.earlyExit, { attempts: 60, delayMs: 250 });
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
-      await page.goto(controlUiPluginUrl({ gatewayUrl: secureUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: secureWorld.gatewayCredential }), { waitUntil: 'domcontentloaded' });
+      await page.goto(controlUiPluginUrl({ gatewayUrl: secureUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: secureWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await mountedPluginFrame(page, await pluginDocument);
       assert.equal(new URL(page.url()).hostname, fictionalTailnetHost);
       assert.equal(new URL(page.url()).protocol, 'https:');
       return Object.freeze({ secureOrigin: new URL(page.url()).origin, actualTlsLoad: true, fictionalTailnetHost, loopbackResolution: '127.0.0.1' });
     } finally {
-      await browser.close();
-      secureBrowserGuard.assertClean();
-      await stopPinnedHost(secureHost.child);
-      await secureHost.outputDrained;
-      assertNoFatalHostOutput(secureHost.diagnostics);
-      await assertRecordedChildTraffic(secureWorld);
+      const finalizationErrors = await finalizeAcceptanceJourney({
+        closeBrowser: async (signal) => await closeManagedBrowser(managedBrowser, signal),
+        stopHost: async () => { await stopPinnedHost(secureHost.child); await secureHost.outputDrained; },
+        assertBrowserTraffic: () => secureBrowserGuard.assertClean(),
+        assertHostTraffic: () => assertNoFatalHostOutput(secureHost.diagnostics),
+        assertChildTraffic: async () => await assertRecordedChildTraffic(secureWorld),
+        assertBuildDigest: async () => await assertBuiltDigest(buildReceipt),
+        timeoutMs: 60_000
+      });
+      if (finalizationErrors.length) throw new AggregateError(finalizationErrors.map(({ error }) => error), 'Secure-origin finalization failed');
     }
   }, { candidateRoot: process.cwd() });
 }
@@ -371,15 +490,15 @@ function reminderActionRequest(episode) {
 }
 
 async function readDashboard(gatewayUrl, { activityOffset = 0, activityLimit = 50 } = {}) {
-  const response = await fetch(`${gatewayUrl}/plugins/command-center/api/dashboard?activityOffset=${activityOffset}&activityLimit=${activityLimit}`, { headers: { accept: 'application/json' } });
+  const response = await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/dashboard?activityOffset=${activityOffset}&activityLimit=${activityLimit}`, { headers: { accept: 'application/json' } }, 'dashboard read');
   assert.equal(response.status, 200);
   return (await response.json()).result;
 }
 
 async function completeReminder(gatewayUrl, episode) {
-  const response = await fetch(`${gatewayUrl}/plugins/command-center/api/attention/actions`, {
+  const response = await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/attention/actions`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(reminderActionRequest(episode))
-  });
+  }, 'attention action');
   assert.equal(response.status, 200);
   return response.json();
 }
@@ -719,11 +838,33 @@ async function assertKeyboardAccessibility(frame, page) {
   await page.emulateMedia({ reducedMotion: 'no-preference', forcedColors: 'none' });
 }
 
-test('mounts the built plugin through the isolated authenticated external tab', { timeout: 900_000 }, async (testContext) => {
+test('mounts the built plugin through the isolated authenticated external tab', { timeout: 900_000, concurrency: true }, async (testContext) => {
+  reportProgress(testContext, 'build:started');
   const descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
-  const buildReceipt = await build();
-  await assertBuiltDigest(buildReceipt);
+  const buildReceipt = await withDeadline('candidate build', () => build(), 120_000);
+  await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
+  reportProgress(testContext, 'build:passed');
+  const isolatedEvidence = new Map();
+  const startIsolatedSlice = (id, run) => testContext.test(`release isolated slice: ${id}`, { timeout: 240_000 }, async () => {
+    reportProgress(testContext, `isolated:${id}:started`);
+    const evidence = await withDeadline(`isolated release slice ${id}`, run, 235_000);
+    isolatedEvidence.set(id, evidence);
+    reportProgress(testContext, `isolated:${id}:passed`);
+  });
+  const isolatedSlices = new Map([
+    ['secure-origin', startIsolatedSlice('secure-origin', () => exerciseSecureHostVariant({ descriptor, buildReceipt }))],
+    ['degraded-bridge-grants', startIsolatedSlice('degraded-bridge-grants', () => exerciseDegradedBridgeHostVariant({ descriptor, buildReceipt }))],
+    ['degraded-source-availability', startIsolatedSlice('degraded-source-availability', () => exerciseDegradedSourceRow({ descriptor, buildReceipt }))],
+    ['recovery-only-compatibility', startIsolatedSlice('recovery-only-compatibility', () => exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, bindingEvidence: { safeReadObserved: true, mutationRejected: true, bindingObserved: true } }))],
+    ['destructive-migration-restoration', startIsolatedSlice('destructive-migration-restoration', () => withIsolatedWorld((rowWorld) => exerciseRestorationMatrix(path.join(rowWorld.tempRoot, 'release-restoration-row')), { candidateRoot: process.cwd() }))]
+  ]);
+  const isolatedResult = async (id) => {
+    const passed = await isolatedSlices.get(id);
+    if (!passed || !isolatedEvidence.has(id)) throw new HarnessFailure('release-row-missing', `Independent release slice produced no evidence for ${id}`);
+    return isolatedEvidence.get(id);
+  };
   await withIsolatedWorld(async (world) => {
+    reportProgress(testContext, 'fixture:started');
     const migrationExportPath = path.join(world.tempRoot, 'legacy-discord-export.v1.json');
     const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
     const scaleMigrationFolderPath = path.join(world.paths.vault, 'fictional-scale');
@@ -741,7 +882,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         edits: [], replyToMessageId: null, thread: null, reactions: [], attachments: []
       }))
     });
-    const realizedScaleSeed = await seedReleaseNoteCorpus(migrationFolderPath);
+    const realizedScaleSeed = await seedReleaseNoteCorpus(migrationFolderPath, ({ completed, total }) => reportProgress(testContext, 'fixture:note-batch', { completed, total }));
     await writeFile(migrationExportPath, `${JSON.stringify(migrationExport)}\n`);
     const configured = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
     configured.plugins.entries[world.manifest.candidate.id].config = {
@@ -778,7 +919,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       }
       assert.equal(activityFixture.listActivity('fictional-scale-activity-topic').length, RELEASE_FIXTURE_COUNTS.activityRecords);
     } finally { activityFixture.close(); }
-    const host = await launchPinnedHost({ descriptor, world, buildReceipt });
+    reportProgress(testContext, 'fixture:passed');
+    reportProgress(testContext, 'host-launch:started');
+    const host = await withDeadline('pinned host launch', (signal) => launchPinnedHost({ descriptor, world, buildReceipt, signal }), 120_000);
+    reportProgress(testContext, 'host-launch:passed');
     const gatewayUrl = world.gateway.url;
     const databasePath = resolveCommandCenterDatabasePath(resolvedStateDir);
     assert.deepEqual(host.endpoint, world.gateway);
@@ -786,17 +930,19 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     assert.ok(host.child.pid, 'spawned host must own the isolated endpoint before probing it');
     const browserGuard = new TrafficGuard();
     const evidence = { console: [], errors: [], requests: [], responses: [], bootstrapStatus: undefined, parentBootstrapBodyKeys: [], routeGrant: false, parentBootstrap: false, cookieProbe: false, cookieProbeStatus: undefined, frame: false, readinessAttempts: [] };
-    const releaseState = { startup: false, desktop: undefined, mobile: undefined, restored: false, forgedMutationRejected: false, projectionRoot: undefined, baseline: undefined, activityPaged: false, reviewApplied: false, realizedScaleSeed };
-    let browser, page, iframe, frame, baseline, baselineSeed, desktopJourney, mobileJourney, pluginDocument;
+    const releaseState = { startup: false, desktop: undefined, mobile: undefined, restored: false, forgedMutationRejected: false, projectionRoot: undefined, baseline: undefined, activityPaged: false, reviewApplied: false, missingProjectionRebuilt: false, staleProjectionRebuilt: false, realizedScaleSeed };
+    let managedBrowser, browser, page, iframe, frame, baseline, baselineSeed, desktopJourney, mobileJourney, pluginDocument;
     let failure;
     const scenarioFailures = [];
     const scenarioEvidence = new Map();
     const collectScenario = async (id, run) => {
       let observedError;
-      const passed = await testContext.test(`release scenario: ${id}`, async () => {
-        try { scenarioEvidence.set(id, await run()); }
+      reportProgress(testContext, `scenario:${id}:started`);
+      const passed = await testContext.test(`release scenario: ${id}`, { timeout: 240_000 }, async () => {
+        try { scenarioEvidence.set(id, await withDeadline(`release scenario ${id}`, run, 235_000)); }
         catch (error) { observedError = error; throw error; }
       });
+      reportProgress(testContext, `scenario:${id}:${passed ? 'passed' : 'failed'}`);
       if (!passed) {
         const bounded = redactBrowserEvidence(observedError?.message || `Scenario ${id} failed without unbounded diagnostics`);
         scenarioFailures.push({ id, error: new HarnessFailure('release-row-failed', bounded) });
@@ -812,7 +958,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           const observation = { attempt: evidence.readinessAttempts.length + 1, url: `${gatewayUrl}${runtimeCapability.bootstrap.path}`, status: undefined, error: undefined, bodyKeys: [] };
           try {
             host.diagnostics.guard.assert('127.0.0.1', 'harness bootstrap');
-            const response = await fetch(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` } });
+            const response = await fetchWithDeadline(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` } }, 'Control UI readiness probe', 10_000);
             observation.status = response.status;
             const body = await response.json().catch(() => undefined);
             observation.bodyKeys = body && typeof body === 'object' ? Object.keys(body).slice(0, 30) : [];
@@ -843,17 +989,18 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // contract before any browser mutation begins. The migrated primary
       // Session is the first of the exact 100 Topic Conversations.
       for (let offset = 1; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
-        await Promise.all(Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => {
+        await withDeadline(`Session fixture batch ${Math.floor(offset / 10) + 1}`, () => Promise.all(Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => {
           const index = offset + batchIndex;
-          return fetch(`${gatewayUrl}/plugins/command-center/api/topic/actions`, {
+          return fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/topic/actions`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: 'fictional-topic-scale', label: `Fictional scale Conversation ${index}`, expectedRevision: 1, logicalOperationId: randomUUID() })
-          }).then(async (response) => {
+          }, 'plugin-scoped Session fixture creation').then(async (response) => {
             if (!response.ok) throw new Error(`Plugin-scoped Session fixture creation failed: ${response.status}`);
             return response.json();
           });
-        }));
+        })));
+        reportProgress(testContext, 'fixture:session-batch', { completed: Math.min(offset + 10, RELEASE_FIXTURE_COUNTS.conversations), total: RELEASE_FIXTURE_COUNTS.conversations });
       }
       const seededSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: 'fictional-topic-scale' } });
       releaseState.realizedConversationCount = ((seededSessions?.result ?? seededSessions)?.conversations ?? seededSessions?.conversations ?? []).length;
@@ -892,19 +1039,23 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         assert.equal(conversationProjection.prepare('SELECT count(*) AS count FROM conversation_documents WHERE topic_id = ?').get('fictional-topic-scale').count, RELEASE_FIXTURE_COUNTS.indexedConversationMessages);
         releaseState.realizedSearchCounts = { notes: RELEASE_FIXTURE_COUNTS.indexedNotes, conversationMessages: RELEASE_FIXTURE_COUNTS.indexedConversationMessages };
       } finally { notesProjection.close(); conversationProjection.close(); }
-      // Force the measured journey to prove missing-index rebuild rather than
-      // reusing the fixture-verification publication.
-      await Promise.all(COMMITTED_SEARCH_PROJECTION_FILES.map((name) => unlink(path.join(projectionRoot, name))));
+      // A stale projection is a distinct recovery condition from an absent
+      // projection. Break the committed generation identity, require a public
+      // query to repair it, and derive the receipt from the repaired files.
+      const staleManifestPath = path.join(projectionRoot, 'topic-search-notes.json');
+      const staleManifest = JSON.parse(await readFile(staleManifestPath, 'utf8'));
+      await writeFile(staleManifestPath, `${JSON.stringify({ ...staleManifest, generation: 'fictional-stale-generation' })}\n`);
       host.diagnostics.guard.assert('127.0.0.1', 'bounded attention action route verification');
-      const actionResponse = await fetch(`${gatewayUrl}/plugins/command-center/api/attention/actions`, {
+      const actionResponse = await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/attention/actions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ schemaVersion: 1 })
-      });
+      }, 'bounded attention action route verification');
       assert.equal(actionResponse.status, 400);
       assert.deepEqual(await actionResponse.json(), { schemaVersion: 1, status: 'unavailable' });
       releaseState.forgedMutationRejected = true;
-      browser = await chromium.launch({ headless: true });
+      managedBrowser = await withDeadline('primary browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
+      browser = managedBrowser.browser;
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
       const parentBootstrap = observeBrowserResponse(
@@ -929,7 +1080,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         routeId: 'command-center',
         fragmentParameter: runtimeCapability.authentication.urlFragmentParameter,
         credential: world.gatewayCredential
-      }), { waitUntil: 'domcontentloaded' });
+      }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       const observedBootstrap = await parentBootstrap;
       evidence.parentBootstrap = observedBootstrap.observed;
       if (!evidence.parentBootstrap) throw new HarnessFailure('bootstrap-authentication-failure', 'Parent token-fragment authentication did not fetch the Control UI bootstrap response');
@@ -957,6 +1108,19 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.frame = true;
       const sandbox = await iframe.getAttribute('sandbox');
       if (sandbox !== 'allow-scripts') throw new HarnessFailure('sandbox-mismatch', 'External tab iframe is not scripts-only');
+      await frame.locator('#topic-search-topic-id').selectOption('fictional-topic-alpha');
+      await frame.locator('#topic-search-query').fill('Fictional');
+      await frame.locator('#topic-search-query').press('Enter');
+      await frame.waitForFunction(() => /Notes.*Conversations/u.test(document.querySelector('#topic-search-status')?.textContent ?? ''), undefined, { timeout: 60_000 });
+      await waitForCommittedSearchProjections(projectionRoot);
+      const repairedManifest = JSON.parse(await readFile(staleManifestPath, 'utf8'));
+      const repairedCommit = JSON.parse(await readFile(path.join(projectionRoot, 'topic-search-notes.commit.json'), 'utf8'));
+      assert.equal(repairedManifest.generation, repairedCommit.generation);
+      assert.notEqual(repairedManifest.generation, 'fictional-stale-generation');
+      releaseState.staleProjectionRebuilt = true;
+      // Keep missing-projection recovery distinct: the next public journey
+      // query must detect absence and perform its own closed POST rebuild.
+      await Promise.all(COMMITTED_SEARCH_PROJECTION_FILES.map((name) => unlink(path.join(projectionRoot, name))));
       baselineSeed = validateReleasePerformanceBaselineSeed(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
       releaseState.startup = true;
       releaseState.startupInteractiveMs = Math.max(1, Date.now() - startupInteractiveStartedAt);
@@ -969,6 +1133,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       desktopJourney = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project', projectionRoot: releaseState.projectionRoot });
       desktopJourney.measurement.startupInteractiveMs = releaseState.startupInteractiveMs;
       releaseState.desktop = desktopJourney;
+      releaseState.missingProjectionRebuilt = true;
       const desktopSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: desktopJourney.topicId } });
       const primarySession = (desktopSessions?.result ?? desktopSessions)?.conversations?.find((session) => session.isPrimary === true) ?? (desktopSessions?.conversations ?? []).find((session) => session.isPrimary === true);
       assert.ok(primarySession?.sessionId && primarySession?.referenceId);
@@ -1093,7 +1258,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }),
         (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message))
       );
-      await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded' });
+      await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       const reopenedConfigResponse = await reopenedBootstrap;
       assert.equal(hasSuccessfulBrowserResponse(reopenedConfigResponse), true);
       const reopenedConfig = await reopenedConfigResponse.value.json();
@@ -1188,7 +1353,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       page = await browser.newPage({ viewport: { width: 320, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }), (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
-      await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded' });
+      await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
       mobileJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional Mobile Journey Topic', category: 'project', keyboard: true });
@@ -1311,7 +1476,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     });
     if (scenarioFailures.length > 0) failure = new AggregateError(scenarioFailures.map(({ error }) => error), `Release scenarios failed: ${scenarioFailures.map(({ id }) => id).join(', ')}`);
     const finalizationErrors = await finalizeAcceptanceJourney({
-      closeBrowser: async () => await browser?.close(),
+      closeBrowser: async (signal) => await closeManagedBrowser(managedBrowser, signal),
       stopHost: async () => {
         await stopPinnedHost(host.child);
         await host.outputDrained;
@@ -1325,12 +1490,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       },
       assertChildTraffic: async () => await assertRecordedChildTraffic(world),
       // Bind the digest to the completed desktop and narrow-viewport journey.
-      assertBuildDigest: async () => await assertBuiltDigest(buildReceipt)
+      assertBuildDigest: async () => await assertBuiltDigest(buildReceipt),
+      timeoutMs: 60_000,
+      onProgress: ({ phase, status }) => reportProgress(testContext, `finalization:${phase}:${status}`)
     });
     const rows = await runAcceptanceRows([
       { id: 'pinned-host-startup', run: async () => {
         scenarioResult('pinned-host-startup');
-        const secure = await exerciseSecureHostVariant({ descriptor, buildReceipt });
+        const secure = await isolatedResult('secure-origin');
         const lifecycle = scenarioResult('scale-performance');
         return { schemaVersion: 1, hostReceipt: { ...releasePerformanceIdentity.hostReceipt }, buildDigest: buildReceipt.digest, startupMigrationVerified: true, routeGrantObserved: evidence.routeGrant, scriptsOnlyFrame: evidence.frame, secureOrigin: { protocol: 'https:', hostname: secure.fictionalTailnetHost, loopbackOnly: secure.loopbackResolution === '127.0.0.1' }, notificationLifecycle: { closedTabDelivered: Boolean(lifecycle.sentEmissionId), cleared: Boolean(lifecycle.clearedEmissionId), bindingRevoked: evidence.revokedMutationRejected === true, bindingReconciled: releaseState.restored === true } };
       } },
@@ -1349,14 +1516,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       { id: 'scale-performance', run: async () => {
         scenarioResult('scale-performance');
         assert.deepEqual((await readdir(releaseState.projectionRoot)).sort(), COMMITTED_SEARCH_PROJECTION_FILES);
-        return { schemaVersion: 1, fixtureIdentity: baseline.fixtureIdentity, fixtureCounts: { ...baseline.fixtureCounts }, observations: { ...baseline.observations }, thresholds: { ...baseline.thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: true, staleProjectionRebuilt: true, indexedQuery: true } };
+        return { schemaVersion: 1, fixtureIdentity: baseline.fixtureIdentity, fixtureCounts: { ...baseline.fixtureCounts }, observations: { ...baseline.observations }, thresholds: { ...baseline.thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: releaseState.missingProjectionRebuilt, staleProjectionRebuilt: releaseState.staleProjectionRebuilt, indexedQuery: true } };
       } },
-      { id: 'degraded-bridge-grants', run: async () => exerciseDegradedBridgeHostVariant({ descriptor, buildReceipt }) },
-      { id: 'degraded-source-availability', run: async () => exerciseDegradedSourceRow(releaseState.publicBindingBoundary) },
-      { id: 'recovery-only-compatibility', run: async () => exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt }) },
-      { id: 'destructive-migration-restoration', run: async () => { const restored = await exerciseRestorationMatrix(path.join(world.tempRoot, 'release-restoration-row')); return { schemaVersion: 1, snapshotId: restored.snapshotId, writesBlockedBeforeValidation: restored.writesBlocked, exactIdentityValidated: restored.exactIdentityValidated, postValidationMutation: restored.postValidationMutation, boundaries: { beforeCommit: true, afterCommitBeforeManifest: true } }; } },
+      { id: 'degraded-bridge-grants', run: async () => isolatedResult('degraded-bridge-grants') },
+      { id: 'degraded-source-availability', run: async () => isolatedResult('degraded-source-availability') },
+      { id: 'recovery-only-compatibility', run: async () => isolatedResult('recovery-only-compatibility') },
+      { id: 'destructive-migration-restoration', run: async () => { const restored = await isolatedResult('destructive-migration-restoration'); return { schemaVersion: 1, snapshotId: restored.snapshotId, writesBlockedBeforeValidation: restored.writesBlocked, exactIdentityValidated: restored.exactIdentityValidated, postValidationMutation: restored.postValidationMutation, boundaries: { beforeCommit: true, afterCommitBeforeManifest: true } }; } },
       { id: 'privacy-artifact-output', run: async () => { await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] }); scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), redactBrowserEvidence(failure?.message || '')]); return { schemaVersion: 1, repository: true, generated: true, capturedOutput: true, browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: finalizationErrors.length === 0 }; } }
-    ]);
+    ], { timeoutMs: 240_000, onProgress: ({ id, phase }) => reportProgress(testContext, `row:${id}:${phase}`) });
     assert.deepEqual(rows.map((row) => row.id), RELEASE_ROW_IDS);
     const finalizationPhases = ['browser-close', 'host-stop', 'browser-traffic', 'host-traffic', 'child-traffic', 'build-digest'].map((phase) => ({ phase, error: finalizationErrors.find((entry) => entry.phase === phase)?.error }));
     const report = createAcceptanceReport({ buildDigest: buildReceipt.digest, rows, finalization: finalizationPhases });

@@ -38,6 +38,23 @@
         "properties": { "noteRoot": { "type": "string", "minLength": 1, "pattern": "\\S" } },
         "required": ["noteRoot"],
         "additionalProperties": false
+      },
+      "sourceCapabilities": {
+        "type": "object",
+        "description": "Fail-closed source availability supplied by an isolated host or operator configuration.",
+        "properties": {
+          "notes": { "const": false },
+          "sessions": { "const": false },
+          "scheduler": { "const": false },
+          "activity": { "const": false },
+          "search": { "const": false },
+          "attention": { "const": false }
+        },
+        "additionalProperties": false
+      },
+      "controlUiGrant": {
+        "const": false,
+        "description": "Fail closed by withholding the external-tab grant in an isolated compatibility variant."
       }
     },
     "additionalProperties": false

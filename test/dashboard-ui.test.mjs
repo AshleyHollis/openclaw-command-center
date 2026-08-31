@@ -22,6 +22,8 @@ test('Dashboard markup keeps the required first-class regions and narrow flow la
   assert.match(app, /data-topic-id|dataset\.topicId/u);
   assert.match(app, /credentials: 'omit'/u);
   assert.match(app, /loadDashboard\(\)/u);
+  assert.match(app, /error\?\.code !== 'capability-unavailable'/u);
+  assert.match(app, /await rebuildTopicSearchProjection\(params\.topicId\)/u);
   assert.match(index, /aria-describedby="evidence-content"/u);
   assert.match(index, /id="note-action-dialog"[^>]*aria-describedby="note-action-status"/u);
 });

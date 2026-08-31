@@ -127,16 +127,27 @@ function validatePassedEvidence(id, evidence, buildDigest) {
   }
 }
 
-export async function runAcceptanceRows(rows) {
+export async function runAcceptanceRows(rows, { timeoutMs = 120_000, onProgress } = {}) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) throw new TypeError('Acceptance row timeout must be between 1 and 300000 ms.');
   const configured = new Map(rows.map((row) => [row.id, row]));
-  const results = [];
-  for (const id of RELEASE_ROW_IDS) {
+  const run = async (id) => {
     const row = configured.get(id);
-    if (!row || typeof row.run !== 'function') { results.push(Object.freeze({ id, outcome: 'failed', error: 'release row is not configured' })); continue; }
-    try { results.push(Object.freeze({ id, outcome: 'passed', evidence: (await row.run()) ?? null })); }
-    catch (error) { results.push(Object.freeze({ id, outcome: 'failed', error: boundedError(error) })); }
-  }
-  return Object.freeze(results);
+    if (!row || typeof row.run !== 'function') return Object.freeze({ id, outcome: 'failed', error: 'release row is not configured' });
+    onProgress?.(Object.freeze({ id, phase: 'started' }));
+    let timer;
+    try {
+      const evidence = await Promise.race([
+        Promise.resolve().then(() => row.run()),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Release row ${id} exceeded its ${timeoutMs} ms deadline`)), timeoutMs); })
+      ]);
+      onProgress?.(Object.freeze({ id, phase: 'passed' }));
+      return Object.freeze({ id, outcome: 'passed', evidence: evidence ?? null });
+    } catch (error) {
+      onProgress?.(Object.freeze({ id, phase: 'failed' }));
+      return Object.freeze({ id, outcome: 'failed', error: boundedError(error) });
+    } finally { clearTimeout(timer); }
+  };
+  return Object.freeze(await Promise.all(RELEASE_ROW_IDS.map(run)));
 }
 
 export function createAcceptanceReport({ buildDigest, rows, finalization }) {

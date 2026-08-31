@@ -48,7 +48,16 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
     async start() {
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
-      const capabilities = { notes: true, sessions: gatewayAvailable, scheduler: gatewayAvailable, activity: true, search: true, analysis: false, attention: true };
+      const configuredSourceCapabilities = api.pluginConfig?.sourceCapabilities ?? {};
+      const capabilities = {
+        notes: configuredSourceCapabilities.notes !== false,
+        sessions: gatewayAvailable && configuredSourceCapabilities.sessions !== false,
+        scheduler: gatewayAvailable && configuredSourceCapabilities.scheduler !== false,
+        activity: configuredSourceCapabilities.activity !== false,
+        search: configuredSourceCapabilities.search !== false,
+        analysis: false,
+        attention: configuredSourceCapabilities.attention !== false
+      };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
       const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: api.pluginConfig?.legacyDiscordMigration, logger: api.logger });
       attentionService = createAttentionService({

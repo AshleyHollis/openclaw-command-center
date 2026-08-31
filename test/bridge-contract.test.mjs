@@ -89,20 +89,25 @@ test('handlers preserve authenticated request context and echo request and logic
 test('registered Session create bridge preserves independent durable identities under reversed completion', async () => {
   const registrations = [];
   const completions = [];
+  let releaseReady;
+  const ready = Promise.race([
+    new Promise((resolve) => { releaseReady = resolve; }),
+    new Promise((resolve) => setTimeout(() => resolve(false), 1_000))
+  ]);
   const durable = new Map();
   registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
-    sessionsCreate: ({ topicId, logicalOperationId }) => new Promise((resolve) => completions.push(() => {
+    sessionsCreate: ({ topicId, logicalOperationId }) => new Promise((resolve) => { completions.push(() => {
       const ordinal = durable.size + 1;
       const value = { key: `agent:main:dashboard:bridge-${ordinal}`, sessionId: `fictional-bridge-session-${ordinal}`, creationRevision: String(ordinal), sourceReference: { version: 1, referenceId: `session:${topicId}:bridge-${ordinal}`, topicId, sourceSystem: 'openclaw', sourceKind: 'session' } };
       durable.set(logicalOperationId, value);
       resolve({ schemaVersion: 1, status: 'applied', logicalOperationId, value });
-    }))
+    }); if (completions.length === 3) releaseReady(true); })
   });
     const handler = registrations.find(([method]) => method === 'command-center.v1.sessions.create')[1];
     const operations = Array.from({ length: 3 }, () => randomUUID());
     const responses = [];
   const pending = operations.map((logicalOperationId, index) => handler({ req: { id: `bridge-create-${index}` }, params: { schemaVersion: 1, topicId: 'topic-bridge-interleaving', label: `Bridge ${index}`, isPrimary: false, logicalOperationId }, context: { authenticated: true }, respond: (...args) => { responses[index] = args; } }));
-  while (completions.length < operations.length) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await ready, true, 'registered Session creates did not reach the controlled completion barrier');
   for (const complete of completions.reverse()) complete();
   await Promise.all(pending);
     assert.equal(responses.every(([ok]) => ok === true), true);

@@ -3,9 +3,9 @@ import { sourceError } from '../sources/errors.mjs';
 
 const DISPATCH_TIMEOUT_MS = 10_000;
 
-// Reserved for authenticated host routes that explicitly opt into request-scoped
-// Gateway dispatch. Ordinary Topic Session creation uses api.runtime.gateway,
-// whose pinned plugin wrapper enforces Session ownership before dispatch.
+// Construct only inside an authenticated plugin Gateway handler. The pinned
+// host binds dispatchGatewayMethod to that request scope and refuses detached
+// plugin calls.
 export function createRequestScopedGatewayRequest(dispatchGatewayMethod = hostDispatchGatewayMethod) {
   if (typeof dispatchGatewayMethod !== 'function') throw new TypeError('dispatchGatewayMethod is required');
   return async (method, params) => {

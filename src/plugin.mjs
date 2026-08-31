@@ -11,6 +11,7 @@ import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandl
 import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
 import { createTopicPageActionsHandler } from './topics/page-http.mjs';
 import { createSearchRebuildHttpHandler, searchRebuildRoute } from './search/http-route.mjs';
+import { createRequestScopedGatewayRequest } from './bridge/gateway-method-dispatch.mjs';
 
 export { runNoteMaintenance } from './plugin-service.mjs';
 
@@ -31,13 +32,26 @@ async function serveShell(req, res) {
   return serveShellAsset(req, res, { assets });
 }
 
+function gateControlUiMutation(handler, allowed) {
+  if (allowed) return handler;
+  return async (req, res) => {
+    if (req.method !== 'POST') return handler(req, res);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.statusCode = 422;
+    res.end(JSON.stringify({ schemaVersion: 1, status: 'error', code: 'capability-unavailable', message: 'Control UI grant is unavailable.' }));
+    return true;
+  };
+}
+
 export default definePluginEntry({
   id: pluginId,
   name: 'Command Center',
   description: 'A responsive Command Center control destination.',
-  configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema, topics: { type: 'object', properties: { noteRoot: { type: 'string', minLength: 1, pattern: '\\S' } }, required: ['noteRoot'], additionalProperties: false } }, additionalProperties: false },
+  configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema, topics: { type: 'object', properties: { noteRoot: { type: 'string', minLength: 1, pattern: '\\S' } }, required: ['noteRoot'], additionalProperties: false }, sourceCapabilities: { type: 'object', properties: Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'search', 'attention'].map((name) => [name, { const: false }])), additionalProperties: false }, controlUiGrant: { const: false } }, additionalProperties: false },
   /** @param {OpenClawPluginApi} api */
   register(api) {
+    const controlUiMutationsAllowed = api.pluginConfig?.controlUiGrant !== false;
     if (typeof api.notifications?.registerEmitter !== 'function') throw new Error('Command Center requires the published notification emitter API.');
     const notificationEmitter = api.notifications.registerEmitter({
       version: 1,
@@ -59,6 +73,16 @@ export default definePluginEntry({
     });
     const serviceProxy = new Proxy({}, {
       get(_target, property) {
+        if (property === 'status') return async () => {
+          const status = await sourceProxy.status();
+          if (api.pluginConfig?.controlUiGrant !== false || status.mode === 'recovery-only') return status;
+          return {
+            ...status,
+            mode: 'degraded',
+            diagnostics: [...(status.diagnostics ?? []), { code: 'control-ui-grant-unavailable', capability: 'control-ui-grant' }],
+            unavailableCapabilities: [...new Set([...(status.unavailableCapabilities ?? []), 'control-ui-grant'])]
+          };
+        };
         if (property === 'topics') return service.topicService;
         if (property === 'dashboard') return { get: (input) => service.dashboardGet(input) };
         if (property === 'dashboardGet') return (input) => service.dashboardGet(input);
@@ -79,7 +103,7 @@ export default definePluginEntry({
     });
     // This public SDK seam asks Control UI to render the route in its default
     // scripts-only frame. Gateway auth makes the host mint a frame grant.
-    api.session.controls.registerControlUiDescriptor({
+    if (api.pluginConfig?.controlUiGrant !== false) api.session.controls.registerControlUiDescriptor({
       surface: 'tab',
       id: routeId,
       label: 'Command Center',
@@ -113,7 +137,7 @@ export default definePluginEntry({
       path: '/plugins/command-center/api/attention/actions',
       auth: 'plugin',
       match: 'exact',
-      handler: createAttentionActionHandler(serviceProxy)
+      handler: gateControlUiMutation(createAttentionActionHandler(serviceProxy), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/dashboard',
@@ -125,25 +149,25 @@ export default definePluginEntry({
       path: '/plugins/command-center/api/dashboard/actions',
       auth: 'plugin',
       match: 'exact',
-      handler: createDashboardActionsHttpHandler(serviceProxy)
+      handler: gateControlUiMutation(createDashboardActionsHttpHandler(serviceProxy), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topics/actions',
       auth: 'plugin',
       match: 'exact',
-      handler: createTopicsHttpHandler(serviceProxy)
+      handler: gateControlUiMutation(createTopicsHttpHandler(serviceProxy, { gatewayRequestFactory: createRequestScopedGatewayRequest }), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topic/actions',
       auth: 'plugin',
       match: 'exact',
-      handler: createTopicPageActionsHandler(serviceProxy)
+      handler: gateControlUiMutation(createTopicPageActionsHandler(serviceProxy, { gatewayRequestFactory: createRequestScopedGatewayRequest }), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: searchRebuildRoute,
       auth: 'plugin',
       match: 'exact',
-      handler: createSearchRebuildHttpHandler(serviceProxy)
+      handler: gateControlUiMutation(createSearchRebuildHttpHandler(serviceProxy), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topic-analysis',
@@ -155,9 +179,9 @@ export default definePluginEntry({
       path: '/plugins/command-center/api/topic-analysis/actions',
       auth: 'plugin',
       match: 'exact',
-      handler: createTopicAnalysisActionsHttpHandler(serviceProxy)
+      handler: gateControlUiMutation(createTopicAnalysisActionsHttpHandler(serviceProxy), controlUiMutationsAllowed)
     });
-    registerBridgeMethods(api, serviceProxy);
+    registerBridgeMethods(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
     api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });
     api.registerTool(topicAnalysisToolFactory({ run: (input) => service.topicAnalysisRun(input) }), { name: 'command_center_topic_analysis', optional: true });
     api.registerService(service);

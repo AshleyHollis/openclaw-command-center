@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,7 +8,7 @@ import plugin from '../src/plugin.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
 
-function fakePublishedApi(stateDir, { bindingAvailable = false } = {}) {
+function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {} } = {}) {
   const declarations = [];
   const descriptors = [];
   const routes = [];
@@ -23,7 +24,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false } = {}) {
   };
   const api = {
     config: { agents: { defaults: { userTimezone: 'UTC' } } },
-    pluginConfig: {},
+    pluginConfig,
     logger: { warn() {} },
     runtime: { state: { resolveStateDir: () => stateDir } },
     session: { controls: { registerControlUiDescriptor(value) { descriptors.push(structuredClone(value)); } } },
@@ -117,6 +118,65 @@ test('plugin activation refuses a host without the published notification emitte
   const refused = fakePublishedApi(path.join(os.tmpdir(), 'fictional-command-center-state-refused'));
   refused.api.notifications.registerEmitter = () => undefined;
   assert.throws(() => plugin.register(refused.api), /registration was refused/u);
+});
+
+test('isolated grant loss withholds the tab and rejects every public mutation route', async () => {
+  const host = fakePublishedApi(path.join(os.tmpdir(), 'fictional-command-center-grant-state'), { pluginConfig: { controlUiGrant: false } });
+  plugin.register(host.api);
+  assert.equal(host.descriptors.length, 0);
+  assert.equal(host.methods.has('command-center.v1.sources.status'), true);
+  const mutationPaths = [
+    '/plugins/command-center/api/attention/actions',
+    '/plugins/command-center/api/dashboard/actions',
+    '/plugins/command-center/api/topics/actions',
+    '/plugins/command-center/api/topic/actions',
+    '/plugins/command-center/api/search/rebuild',
+    '/plugins/command-center/api/topic-analysis/actions'
+  ];
+  for (const routePath of mutationPaths) {
+    const route = host.routes.find((candidate) => candidate.path === routePath);
+    assert.ok(route, `missing mutation route ${routePath}`);
+    let body = '';
+    const response = { setHeader() {}, end(value) { body = value; } };
+    assert.equal(await route.handler({ method: 'POST' }, response), true);
+    assert.equal(response.statusCode, 422);
+    assert.equal(JSON.parse(body).code, 'capability-unavailable');
+  }
+  await assert.rejects(() => host.authenticatedGatewayRequest('command-center.v1.topics.create', {
+    schemaVersion: 1,
+    name: 'Blocked bridge mutation',
+    paraCategory: 'resource',
+    logicalOperationId: randomUUID()
+  }), (error) => error?.code === 'capability-unavailable');
+});
+
+test('isolated source availability produces observable Degraded reads and rejects dependent writes', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-degraded-source-'));
+  const host = fakePublishedApi(stateDir, { pluginConfig: { sourceCapabilities: { sessions: false } } });
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir });
+    try { seed.createTopic({ topicId: 'fictional-degraded-source-topic', paraCategory: 'resource', lifecycle: 'active' }); }
+    finally { seed.close(); }
+    plugin.register(host.api);
+    const service = host.services[0];
+    await service.start();
+    const statusResponse = await host.authenticatedGatewayRequest('command-center.v1.sources.status', { schemaVersion: 1 });
+    const status = statusResponse?.result ?? statusResponse;
+    assert.equal(status.mode, 'degraded');
+    assert.ok(status.unavailableCapabilities.includes('sessions'));
+    assert.ok(status.unavailableCapabilities.includes('scheduler'));
+    const topics = await host.authenticatedGatewayRequest('command-center.v1.topics.list', { schemaVersion: 1 });
+    assert.ok(JSON.stringify(topics).includes('fictional-degraded-source-topic'));
+    await assert.rejects(() => host.authenticatedGatewayRequest('command-center.v1.sessions.create', {
+      schemaVersion: 1,
+      topicId: 'fictional-degraded-source-topic',
+      logicalOperationId: randomUUID(),
+      label: 'Blocked source mutation'
+    }), (error) => error?.code === 'capability-unavailable' && error?.details?.status === 'unavailable');
+  } finally {
+    host.services[0]?.stop?.();
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });
 
 test('background notification reconciliation excludes a future Reminder and routine source kinds', async () => {

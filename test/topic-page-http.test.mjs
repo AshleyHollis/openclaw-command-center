@@ -37,11 +37,11 @@ function fixtureService() {
   return service;
 }
 
-async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json' }, dispatchGatewayMethod = async () => ({ ok: true, payload: {} }) } = {}) {
+async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json' }, gatewayRequest = async () => ({}) } = {}) {
   const request = Readable.from([Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]);
   Object.assign(request, { method, headers });
   const response = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(value) { this.body = value; } };
-  await createTopicPageActionsHandler(service, { dispatchGatewayMethod })(request, response);
+  await createTopicPageActionsHandler(service, { gatewayRequestFactory: () => gatewayRequest })(request, response);
   return { statusCode: response.statusCode, headers: response.headers, body: response.body ? JSON.parse(response.body) : null };
 }
 
@@ -115,7 +115,7 @@ test('Conversation creation remains on the service-owned plugin Gateway boundary
     body: base('conversations.create', { expectedRevision: 4, label: 'Plugin Scoped Conversation' })
   });
   assert.equal(response.statusCode, 200);
-  assert.equal(receivedRuntime, undefined);
+  assert.equal(typeof receivedRuntime.gatewayRequest, 'function');
 });
 
 test('Note actions verify exact Topic/source revisions and reach the guarded service', async () => {

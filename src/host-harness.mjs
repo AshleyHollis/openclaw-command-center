@@ -184,8 +184,10 @@ function drainStream(stream) {
   });
 }
 
-export async function launchPinnedHost({ descriptor, world, buildReceipt, onOutput = () => {} }) {
+export async function launchPinnedHost({ descriptor, world, buildReceipt, onOutput = () => {}, signal }) {
+  signal?.throwIfAborted();
   const host = await verifyHost(descriptor);
+  signal?.throwIfAborted();
   await assertBuiltDigest(buildReceipt);
   if (world?.gateway?.host !== '127.0.0.1' || !Number.isInteger(world.gateway.port) || world.gateway.port === 18789
     || !world.gatewayReservation?.isReserved?.()) {
@@ -206,6 +208,10 @@ export async function launchPinnedHost({ descriptor, world, buildReceipt, onOutp
     env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot, COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.pathname}` },
     stdio: ['ignore', 'pipe', 'pipe']
   });
+  const abortHost = () => { void stopPinnedHost(child); };
+  if (signal?.aborted) abortHost();
+  else signal?.addEventListener('abort', abortHost, { once: true });
+  child.once('exit', () => signal?.removeEventListener('abort', abortHost));
   const diagnostics = { stdout: '', stderr: '', category: undefined, guard };
   const classifiers = { stdout: createHostOutputClassifier(), stderr: createHostOutputClassifier() };
   // A child can emit its final output after `exit`. Keep this promise from

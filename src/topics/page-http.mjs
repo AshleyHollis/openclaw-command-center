@@ -185,11 +185,11 @@ function mutationValue(value) {
   };
 }
 
-async function execute(service, body) {
+async function execute(service, body, runtime = {}) {
   const { action } = body;
   if (action === 'conversations.create') {
     assertTopicRevision(service, body.topicId, body.expectedRevision);
-    return service.sessionsCreate({ schemaVersion: 1, topicId: body.topicId, ...(body.label === undefined ? {} : { label: body.label }), isPrimary: false, logicalOperationId: body.logicalOperationId });
+    return service.sessionsCreate({ schemaVersion: 1, topicId: body.topicId, ...(body.label === undefined ? {} : { label: body.label }), isPrimary: false, logicalOperationId: body.logicalOperationId }, runtime);
   }
   if (action === 'chat.send') {
     assertConversationReference(service, body);
@@ -206,7 +206,7 @@ async function execute(service, body) {
   return service[method]({ schemaVersion: 1, topicId: body.topicId, referenceId: body.referenceId, path: body.path, ...(text === undefined ? {} : { text }), ...(body.destinationPath === undefined ? {} : { destinationPath: body.destinationPath }), ...(body.expectedRevision === undefined ? {} : { expectedRevision: body.expectedRevision }), logicalOperationId: body.logicalOperationId });
 }
 
-export function createTopicPageActionsHandler(service) {
+export function createTopicPageActionsHandler(service, { gatewayRequestFactory } = {}) {
   return async (req, res) => {
     if (!allowOpaqueFrame(req, res)) { sendJson(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed', message: 'Topic Page action origin is not allowed.' }); return true; }
     if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('Cache-Control', 'no-store'); res.end(); return true; }
@@ -216,7 +216,8 @@ export function createTopicPageActionsHandler(service) {
       const request = await readJson(req);
       const body = validateBody(request.body);
       assertRequestBounds(body, request.bytes);
-      const result = await execute(service, body);
+      const runtime = body.action === 'conversations.create' && typeof gatewayRequestFactory === 'function' ? { gatewayRequest: gatewayRequestFactory() } : {};
+      const result = await execute(service, body, runtime);
       sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...mutationValue(result) } });
     } catch (error) {
       const code = String(error?.code ?? 'invalid-request');

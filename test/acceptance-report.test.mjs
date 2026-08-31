@@ -33,6 +33,8 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   const sessionSource = await readFile(new URL('./session-adapter.test.mjs', import.meta.url), 'utf8');
   const bridgeSource = await readFile(new URL('./bridge-contract.test.mjs', import.meta.url), 'utf8');
   assert.match(source, /await testContext\.test\(`release scenario:/u);
+  assert.match(source, /startIsolatedSlice/u);
+  assert.match(source, /isolatedResult\('degraded-source-availability'\)/u);
   assert.doesNotMatch(source, /requireScenario\(/u);
   assert.match(source, /testContext\.diagnostic\(/u);
   assert.match(source, /timeout: 900_000/u);
@@ -46,6 +48,24 @@ test('release rows all execute and collect failures in canonical order', async (
   assert.deepEqual(visited, RELEASE_ROW_IDS);
   assert.equal(rows[1].outcome, 'failed');
   assert.equal(rows.at(-1).outcome, 'passed');
+});
+
+test('release rows bound a stalled sibling and retain independent completion evidence', async () => {
+  const progress = [];
+  const completed = [];
+  const rows = await runAcceptanceRows(RELEASE_ROW_IDS.map((id, index) => ({
+    id,
+    run: async () => {
+      if (index === 1) return new Promise(() => {});
+      completed.push(id);
+      return validEvidence(id);
+    }
+  })), { timeoutMs: 25, onProgress: (entry) => progress.push(entry) });
+  assert.equal(rows[1].outcome, 'failed');
+  assert.match(rows[1].error, /deadline/iu);
+  assert.deepEqual(completed, RELEASE_ROW_IDS.filter((_, index) => index !== 1));
+  assert.equal(progress.filter((entry) => entry.phase === 'started').length, RELEASE_ROW_IDS.length);
+  assert.equal(progress.some((entry) => entry.id === RELEASE_ROW_IDS.at(-1) && entry.phase === 'passed'), true);
 });
 
 test('release report binds closed evidence and finalization to one build digest', async () => {

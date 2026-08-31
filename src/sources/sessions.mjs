@@ -71,12 +71,14 @@ export class SessionAdapter {
     throw sourceError('capability-unavailable', `The Session store does not support ${method}.`);
   }
 
-  async create(input = {}) {
+  async create(input = {}, runtime = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'logicalOperationId', 'requestId', 'label', 'isPrimary'], 'Session create request');
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const creationCategory = `command-center:${logicalOperationId}`;
     const displayName = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : `Topic Conversation ${logicalOperationId}`;
-    const gatewayRequest = this.creationGateway?.request?.bind(this.creationGateway);
+    const gatewayRequest = typeof runtime.gatewayRequest === 'function'
+      ? runtime.gatewayRequest
+      : this.creationGateway?.request?.bind(this.creationGateway);
     const catalogRows = async () => {
       // Ordinary plugin-created Sessions are owned through the authenticated
       // Gateway catalog. The runtime store remains useful for exact latest-row

@@ -21,7 +21,7 @@ function metadataFixture() {
   };
 }
 
-function pluginSessionBoundary({ completions } = {}) {
+function pluginSessionBoundary({ completions, onDeferred } = {}) {
   const entries = new Map();
   let ordinal = 0;
   const gateway = { request: async (method, params) => {
@@ -32,7 +32,7 @@ function pluginSessionBoundary({ completions } = {}) {
         entries.set(key, entry);
         return { key, entry };
       };
-      if (completions) return new Promise((resolve) => completions.push(() => resolve(create())));
+      if (completions) return new Promise((resolve) => { completions.push(() => resolve(create())); onDeferred?.(completions.length); });
       return create();
     }
     if (method === 'sessions.list') return { sessions: [...entries].map(([sessionKey, entry]) => {
@@ -47,6 +47,16 @@ function pluginSessionBoundary({ completions } = {}) {
     getSessionEntry: ({ sessionKey }) => entries.get(sessionKey)
   };
   return { entries, gateway, sessionStore };
+}
+
+function deferredGate(expected, timeoutMs = 1_000) {
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  const timer = setTimeout(() => resolveReady(false), timeoutMs);
+  return {
+    ready: ready.finally(() => clearTimeout(timer)),
+    observe(count) { if (count === expected) resolveReady(true); }
+  };
 }
 
 function pinnedSanitizedSessionBoundary() {
@@ -119,21 +129,36 @@ test('Session create accepts the pinned sanitized response and proves identity t
   assert.equal(boundary.entry.category, `command-center:${logicalOperationId}`);
 });
 
-test('Session creation uses the pinned plugin-scoped Gateway even when a detached request dispatcher is unavailable', async () => {
+test('Session creation uses authenticated request-scoped dispatch when the detached plugin Gateway is unavailable', async () => {
   const metadata = metadataFixture();
   const boundary = pinnedSanitizedSessionBoundary();
   const calls = [];
   const adapter = createSessionAdapter({
-    api: { runtime: { gateway: { async request(method, params) { calls.push(method); return boundary.gateway.request(method, params); } } } },
+    api: { runtime: { gateway: { async request() { throw Object.assign(new Error('detached unavailable'), { code: 'unavailable' }); } } } },
     metadata,
     topicId: 'topic-plugin-scoped'
   });
   const created = await adapter.create(
     { logicalOperationId: randomUUID(), label: 'Plugin Scoped' },
-    { gatewayRequest: async () => { throw Object.assign(new Error('unavailable'), { code: 'unavailable' }); } }
+    { gatewayRequest: async (method, params) => { calls.push(method); return boundary.gateway.request(method, params); } }
   );
   assert.equal(created.value.key, boundary.key);
   assert.deepEqual(calls, ['sessions.create', 'sessions.list']);
+});
+
+test('Session creation preserves the pinned ownership refusal without inventing catalog state', async () => {
+  const metadata = metadataFixture();
+  const adapter = createSessionAdapter({
+    metadata,
+    topicId: 'topic-pinned-refusal',
+    gateway: { async request(method) {
+      if (method === 'sessions.create') throw Object.assign(new Error('Plugin cannot request this Session mutation.'), { code: 'unavailable' });
+      if (method === 'sessions.list') return { sessions: [] };
+      throw new Error(`Unexpected ${method}`);
+    } }
+  });
+  await assert.rejects(() => adapter.create({ logicalOperationId: randomUUID(), label: 'Refused Session' }), (error) => error.code === 'unknown' && error.cause?.code === 'unavailable');
+  assert.deepEqual(metadata.refs, []);
 });
 
 test('Session creation uses the plugin-scoped Gateway and authoritative catalog without agent harness ownership', async () => {
@@ -173,11 +198,12 @@ test('Session creation uses the plugin-scoped Gateway and authoritative catalog 
 test('overlapping Session creates preserve every distinct plugin-owned key regardless of completion order', async () => {
   const metadata = metadataFixture();
   const completions = [];
-  const boundary = pluginSessionBoundary({ completions });
-  const adapter = createSessionAdapter({ metadata, gateway: boundary.gateway, sessionStore: boundary.sessionStore, topicId: 'topic-overlap' });
   const operations = [randomUUID(), randomUUID(), randomUUID()];
+  const gate = deferredGate(operations.length);
+  const boundary = pluginSessionBoundary({ completions, onDeferred: (count) => gate.observe(count) });
+  const adapter = createSessionAdapter({ metadata, gateway: boundary.gateway, sessionStore: boundary.sessionStore, topicId: 'topic-overlap' });
   const pending = operations.map((logicalOperationId, index) => adapter.create({ logicalOperationId, label: `Overlap ${index}`, isPrimary: false }));
-  while (completions.length < operations.length) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await gate.ready, true, 'distinct Session creates did not reach the controlled completion barrier');
   for (const complete of completions.reverse()) complete();
   const created = await Promise.all(pending);
   assert.equal(new Set(created.map((item) => item.value.sourceReference.externalSourceId)).size, operations.length);
@@ -191,13 +217,14 @@ test('overlapping Session creates preserve every distinct plugin-owned key regar
 test('overlapping equivalent Session create replays serialize to one authoritative Session', async () => {
   const metadata = metadataFixture();
   const completions = [];
-  const boundary = pluginSessionBoundary({ completions });
+  const gate = deferredGate(1);
+  const boundary = pluginSessionBoundary({ completions, onDeferred: (count) => gate.observe(count) });
   const logicalOperationId = randomUUID();
   const coordinator = createMutationCoordinator({ metadata });
   const first = createSessionAdapter({ metadata, coordinator, gateway: boundary.gateway, sessionStore: boundary.sessionStore, topicId: 'topic-equivalent-overlap' });
   const second = createSessionAdapter({ metadata, coordinator, gateway: boundary.gateway, sessionStore: boundary.sessionStore, topicId: 'topic-equivalent-overlap' });
   const pending = [first, second].map((adapter) => adapter.create({ logicalOperationId, label: 'Equivalent overlap' }));
-  while (completions.length < 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await gate.ready, true, 'equivalent Session create did not reach the controlled completion barrier');
   assert.equal(completions.length, 1);
   completions[0]();
   const created = await Promise.all(pending);

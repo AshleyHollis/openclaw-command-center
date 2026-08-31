@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { ordinaryTestArgv, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
+import { ordinaryTestArgv, ordinaryTestLanes, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
 
 test('ordinary suite excludes only the separately invoked real-host receipt test', () => {
   assert.deepEqual(selectOrdinaryTestFiles([
@@ -12,6 +12,17 @@ test('ordinary suite excludes only the separately invoked real-host receipt test
   ]), [
     'test/attention-service.integration.test.mjs',
     'test/storage-recovery.test.mjs'
+  ]);
+});
+
+test('ordinary suite serializes browser-heavy files without deselecting them', () => {
+  assert.deepEqual(ordinaryTestLanes([
+    'test/storage-recovery.test.mjs',
+    'test/topic-page.acceptance.test.mjs',
+    'test/dashboard-ui.test.mjs'
+  ]), [
+    { id: 'parallel', argv: ['--test', '--test-concurrency=4', 'test/storage-recovery.test.mjs'] },
+    { id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/topic-page.acceptance.test.mjs', 'test/dashboard-ui.test.mjs'] }
   ]);
 });
 
@@ -50,6 +61,22 @@ test('Topic Page runner selects only its explicit ticket-owned tests', () => {
     'test/topic-page-http.test.mjs',
     'test/topic-page.acceptance.test.mjs'
   ]);
+});
+
+test('issue 32 selection keeps owning plugin contracts out of its standalone blocking set', () => {
+  const entries = [
+    'plugin-contract.test.mjs',
+    'plugin-integration.test.mjs',
+    'bridge-contract.test.mjs',
+    'real-host.acceptance.test.mjs'
+  ];
+  assert.deepEqual(selectIssue32TicketTestFiles(entries), [
+    'test/bridge-contract.test.mjs',
+    'test/plugin-integration.test.mjs',
+    'test/real-host.acceptance.test.mjs'
+  ]);
+  assert.equal(selectOrdinaryTestFiles(entries).includes('test/plugin-contract.test.mjs'), true);
+  assert.equal(selectTopicPageTicketTestFiles(entries).includes('test/plugin-contract.test.mjs'), true);
 });
 
 test('Topic Page browser runner is mandatory, pinned, and included in the ordinary suite', async () => {

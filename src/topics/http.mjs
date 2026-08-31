@@ -203,7 +203,7 @@ export function createTopicsSearchHttpHandler(service) {
   };
 }
 
-export function createTopicsHttpHandler(service) {
+export function createTopicsHttpHandler(service, { gatewayRequestFactory, mutationAllowed = true } = {}) {
   return async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
@@ -220,6 +220,7 @@ export function createTopicsHttpHandler(service) {
       return true;
     }
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ schemaVersion: 1, status: 'error', code: 'method-not-allowed' })); return true; }
+    if (!mutationAllowed) { sendJson(res, 422, { schemaVersion: 1, status: 'error', code: 'capability-unavailable', message: 'Topics request failed.' }); return true; }
     try {
       if (String(req.headers?.['content-type'] ?? '').toLowerCase() !== 'application/json') throw Object.assign(new Error('JSON content type is required.'), { code: 'invalid-request' });
       const body = await readJson(req);
@@ -235,7 +236,7 @@ export function createTopicsHttpHandler(service) {
             const preview = service.topics.restorePreview(params);
             return { value: await service.topics.restoreConfirm({ ...params, structuralChangeId: preview.structuralChangeId, previewDigest: preview.digest, expectedRevisions: preview.expectedRevisions }) };
           })()
-        : await invokeBridgeMethod(service, method, params);
+        : await invokeBridgeMethod(service, method, params, null, null, body.action === 'create' && typeof gatewayRequestFactory === 'function' ? { gatewayRequest: gatewayRequestFactory() } : {});
       const frameResult = sanitizeFrameResult(method, result);
       const destination = await mutationDestination(service);
       if (frameResult.value) frameResult.value.destination = destination;

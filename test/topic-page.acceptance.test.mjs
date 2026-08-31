@@ -270,8 +270,8 @@ test('opaque sandboxed Topic Page frame preflights and applies through the real 
   }
 });
 
-async function setupPage({ width = 1200, height = 900, queryless = false } = {}) {
-  const page = await browser.newPage({ viewport: { width, height } });
+async function setupPage({ width = 1200, height = 900, queryless = false, reducedMotion = 'no-preference' } = {}) {
+  const page = await browser.newPage({ viewport: { width, height }, reducedMotion });
   await guardBrowserTraffic(page, 'Topic Page browser');
   const topicId = '11111111-1111-4111-8111-111111111111';
   const topicBId = '22222222-2222-4222-8222-222222222222';
@@ -982,13 +982,38 @@ test('desktop panes stay independent and mobile sections are exclusive and recov
   } finally { await closeGuardedPage(page); }
 });
 
-test('keyboard journey has semantic dialogs, focus restoration, live status, inert sections, and reduced motion', async () => {
+test('keyboard Note dialog is semantic, traps focus, and restores its invoker', async () => {
   const page = await setupPage({ width: 320 });
   try {
     await page.getByRole('button', { name: 'Notes', exact: true }).click(); const newNote = page.getByRole('button', { name: 'New Note' }); await newNote.focus(); const beforeCalls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http').length); await newNote.press('Enter');
     const dialog = page.getByRole('dialog', { name: 'Create Note' }); await dialog.waitFor(); assert.equal(await page.evaluate(() => document.querySelector('#note-action-dialog').contains(document.activeElement)), true); await page.keyboard.press('Tab'); assert.equal(await page.evaluate(() => document.querySelector('#note-action-dialog').contains(document.activeElement)), true); await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden' }); assert.equal(await newNote.evaluate((node) => document.activeElement === node), true); assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http').length), beforeCalls);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('mobile section navigation keeps inactive panes inert and keyboard focus visible', async () => {
+  const page = await setupPage({ width: 320 });
+  try {
+    await page.getByRole('button', { name: 'Notes', exact: true }).click();
     assert.equal(await page.locator('#chat-pane').getAttribute('inert'), ''); const chatSection = page.getByRole('button', { name: 'Chat', exact: true }); await chatSection.focus(); await page.waitForFunction(() => document.activeElement === document.querySelector('.workspace-sections [data-section="chat"]')); assert.equal(await chatSection.evaluate((node) => getComputedStyle(node).outlineWidth), '3px'); await chatSection.press('Enter'); assert.equal(await page.locator('#chat-pane').getAttribute('inert'), null); assert.equal(await page.locator('#chat-pane').isVisible(), true);
-    await page.emulateMedia({ reducedMotion: 'reduce' }); const duration = await page.locator('#chat-pane').evaluate((node) => getComputedStyle(node).transitionDuration); assert.equal(duration === '0s' || duration.endsWith('ms') && Number.parseFloat(duration) <= 0.01 || duration.endsWith('s') && Number.parseFloat(duration) <= 0.00001, true);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('reduced-motion context settles with the media query active and no pane transition', async () => {
+  const page = await setupPage({ width: 320, reducedMotion: 'reduce' });
+  try {
+    await page.waitForFunction(() => matchMedia('(prefers-reduced-motion: reduce)').matches);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches), true);
+    const duration = await page.locator('#chat-pane').evaluate((node) => getComputedStyle(node).transitionDuration);
+    assert.equal(duration.split(',').every((value) => value.trim().endsWith('ms')
+      ? Number.parseFloat(value) <= 0.01
+      : Number.parseFloat(value) <= 0.00001), true);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('workspace status regions independently expose live announcements', async () => {
+  const page = await setupPage({ width: 320 });
+  try {
     for (const id of ['workspace-status', 'chat-status', 'conversation-status', 'notes-status', 'workspace-search-status']) assert.ok(['polite', 'assertive'].includes(await page.locator(`#${id}`).getAttribute('aria-live')));
   } finally { await closeGuardedPage(page); }
 });
