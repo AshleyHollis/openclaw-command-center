@@ -33,8 +33,8 @@ async function serializeCreation(owner, logicalOperationId, run) {
 export class SessionAdapter {
   constructor({ api, gateway, sessionStore, transcriptReader, metadata, topicId, coordinator, now } = {}) {
     this.api = api;
-    this.creationGateway = gateway;
     this.gateway = gateway ?? api?.runtime?.gateway;
+    this.creationGateway = this.gateway;
     this.sessionStore = sessionStore ?? api?.runtime?.agent?.session;
     this.transcriptReader = transcriptReader;
     if (!this.gateway?.request && !this.sessionStore?.listSessionEntries) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' });
@@ -71,14 +71,12 @@ export class SessionAdapter {
     throw sourceError('capability-unavailable', `The Session store does not support ${method}.`);
   }
 
-  async create(input = {}, runtime = {}) {
+  async create(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'logicalOperationId', 'requestId', 'label', 'isPrimary'], 'Session create request');
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const creationCategory = `command-center:${logicalOperationId}`;
     const displayName = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : `Topic Conversation ${logicalOperationId}`;
-    const gatewayRequest = typeof runtime?.gatewayRequest === 'function'
-      ? runtime.gatewayRequest
-      : this.creationGateway?.request?.bind(this.creationGateway);
+    const gatewayRequest = this.creationGateway?.request?.bind(this.creationGateway);
     const catalogRows = async () => {
       // Ordinary plugin-created Sessions are owned through the authenticated
       // Gateway catalog. The runtime store remains useful for exact latest-row
@@ -110,7 +108,7 @@ export class SessionAdapter {
       return { matched: true, sessionKey, sessionId, revision };
     };
     const execute = async ({ requestId }) => {
-      if (!gatewayRequest) throw sourceError('capability-unavailable', 'Authenticated request-scoped Session creation is unavailable.', { capability: 'sessions' });
+      if (!gatewayRequest) throw sourceError('capability-unavailable', 'Plugin-scoped Session creation is unavailable.', { capability: 'sessions' });
       const result = await gatewayRequest('sessions.create', { agentId: 'main', label: displayName, category: creationCategory }, { requestId });
       const createdKey = responseKey(result);
       if (!createdKey) throw sourceError('unavailable', 'sessions.create omitted its created Session key.');

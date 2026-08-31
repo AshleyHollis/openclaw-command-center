@@ -104,24 +104,18 @@ test('Topic Page actions are POST-only, closed, bounded, and content-free', asyn
   assert.equal(Buffer.byteLength(JSON.stringify(oversizedResponse.body)) < 32 * 1024, true);
 });
 
-test('Conversation creation receives only the authenticated request-scoped Gateway dispatcher', async () => {
+test('Conversation creation remains on the service-owned plugin Gateway boundary', async () => {
   const service = fixtureService();
-  let scopedRequest;
+  let receivedRuntime = 'not-called';
   service.sessionsCreate = async (input, runtime) => {
-    scopedRequest = await runtime.gatewayRequest('sessions.create', { agentId: 'main', label: input.label });
+    receivedRuntime = runtime;
     return { status: 'applied', referenceId: 'session:new' };
   };
-  const calls = [];
   const response = await invoke(service, {
-    body: base('conversations.create', { expectedRevision: 4, label: 'Scoped Conversation' }),
-    dispatchGatewayMethod: async (method, params, options) => {
-      calls.push({ method, params, options });
-      return { ok: true, payload: { key: 'fictional-request-scoped-key' } };
-    }
+    body: base('conversations.create', { expectedRevision: 4, label: 'Plugin Scoped Conversation' })
   });
   assert.equal(response.statusCode, 200);
-  assert.equal(scopedRequest.key, 'fictional-request-scoped-key');
-  assert.deepEqual(calls, [{ method: 'sessions.create', params: { agentId: 'main', label: 'Scoped Conversation' }, options: { expectFinal: true, timeoutMs: 10000 } }]);
+  assert.equal(receivedRuntime, undefined);
 });
 
 test('Note actions verify exact Topic/source revisions and reach the guarded service', async () => {

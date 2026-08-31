@@ -1,5 +1,4 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
-import { createRequestScopedGatewayRequest } from '../bridge/gateway-method-dispatch.mjs';
 
 const ROUTE = '/plugins/command-center/api/topic/actions';
 const MAX_NOTE_BYTES = 8 * 1024 * 1024 + 1;
@@ -186,11 +185,11 @@ function mutationValue(value) {
   };
 }
 
-async function execute(service, body, runtime) {
+async function execute(service, body) {
   const { action } = body;
   if (action === 'conversations.create') {
     assertTopicRevision(service, body.topicId, body.expectedRevision);
-    return service.sessionsCreate({ schemaVersion: 1, topicId: body.topicId, ...(body.label === undefined ? {} : { label: body.label }), isPrimary: false, logicalOperationId: body.logicalOperationId }, runtime);
+    return service.sessionsCreate({ schemaVersion: 1, topicId: body.topicId, ...(body.label === undefined ? {} : { label: body.label }), isPrimary: false, logicalOperationId: body.logicalOperationId });
   }
   if (action === 'chat.send') {
     assertConversationReference(service, body);
@@ -207,8 +206,7 @@ async function execute(service, body, runtime) {
   return service[method]({ schemaVersion: 1, topicId: body.topicId, referenceId: body.referenceId, path: body.path, ...(text === undefined ? {} : { text }), ...(body.destinationPath === undefined ? {} : { destinationPath: body.destinationPath }), ...(body.expectedRevision === undefined ? {} : { expectedRevision: body.expectedRevision }), logicalOperationId: body.logicalOperationId });
 }
 
-export function createTopicPageActionsHandler(service, { dispatchGatewayMethod } = {}) {
-  const gatewayRequest = createRequestScopedGatewayRequest(dispatchGatewayMethod);
+export function createTopicPageActionsHandler(service) {
   return async (req, res) => {
     if (!allowOpaqueFrame(req, res)) { sendJson(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed', message: 'Topic Page action origin is not allowed.' }); return true; }
     if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('Cache-Control', 'no-store'); res.end(); return true; }
@@ -218,7 +216,7 @@ export function createTopicPageActionsHandler(service, { dispatchGatewayMethod }
       const request = await readJson(req);
       const body = validateBody(request.body);
       assertRequestBounds(body, request.bytes);
-      const result = await execute(service, body, { gatewayRequest });
+      const result = await execute(service, body);
       sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...mutationValue(result) } });
     } catch (error) {
       const code = String(error?.code ?? 'invalid-request');

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { assertAcceptanceReportPassed, createAcceptanceReport, FINALIZATION_PHASES, RELEASE_ROW_IDS, runAcceptanceRows } from '../src/acceptance-report.mjs';
-import { RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../src/performance-baseline.mjs';
+import { RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 
 const BUILD = 'a'.repeat(64);
 const observations = Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map((name, index) => [name, index + 0.25])));
@@ -14,7 +14,7 @@ function validEvidence(id) {
     'pinned-host-startup': { schemaVersion: 1, hostReceipt: { ...releasePerformanceIdentity.hostReceipt }, buildDigest: BUILD, startupMigrationVerified: true, routeGrantObserved: true, scriptsOnlyFrame: true, secureOrigin: { protocol: 'https:', hostname: 'command-center.fictional.ts.net', loopbackOnly: true }, notificationLifecycle: { closedTabDelivered: true, cleared: true, bindingRevoked: true, bindingReconciled: true } },
     'desktop-primary-journey': { schemaVersion: 1, topicId: 'fictional-topic', authoritativeReadback: { primarySession: true, conversation: true, closedConversation: true, note: true, attention: true, activity: true, topicReview: true }, actions: Array.from({ length: 12 }, (_, index) => `action-${index}`) },
     'mobile-accessibility-journey': { schemaVersion: 1, viewport: { width: 320, height: 900 }, keyboardOnly: true, zoom200: true, reflow400: true, forcedColors: true, reducedMotion: true, focusRestored: true, announcements: true, colorIndependent: true, minimumTargetCssPx: 44, noPageOverflow: true, states: ['navigation', 'topic', 'conversation', 'note-dialog', 'note-preview', 'search', 'attention', 'review'] },
-    'scale-performance': { schemaVersion: 1, fixtureIdentity: 'sha256:' + 'b'.repeat(64), fixtureCounts: { ...RELEASE_FIXTURE_COUNTS }, observations: { ...observations }, thresholds: { ...thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: true, staleProjectionRebuilt: true, indexedQuery: true } },
+    'scale-performance': { schemaVersion: 1, fixtureIdentity: RELEASE_FIXTURE_IDENTITY, fixtureCounts: { ...RELEASE_FIXTURE_COUNTS }, observations: { ...observations }, thresholds: { ...thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: true, staleProjectionRebuilt: true, indexedQuery: true } },
     'degraded-bridge-grants': { schemaVersion: 1, mode: 'degraded', safeReadObserved: true, mutationRejected: true, bridge: { protocolVersion: 1, writeGrant: false, observedFromBootstrap: true } },
     'degraded-source-availability': { schemaVersion: 1, mode: 'degraded', safeReadObserved: true, mutationRejected: true, source: { capability: 'sessions', available: false, bindingObserved: true } },
     'recovery-only-compatibility': { schemaVersion: 1, mode: 'recovery-only', safeReadObserved: true, mutationsRejected: true, mismatches: ['host', 'build', 'pluginApi', 'bridgeProtocol', 'binding', 'schema'] },
@@ -56,6 +56,12 @@ test('release report binds closed evidence and finalization to one build digest'
   assert.equal(report.rows.length, 9);
   assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows: rows.slice(1), finalization: finalization() }), /all release rows/u);
   assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization().slice(1) }), /every finalization phase/u);
+});
+
+test('release report rejects a different scale fixture identity', async () => {
+  const rows = await validRows();
+  rows.find((row) => row.id === 'scale-performance').evidence.fixtureIdentity = `sha256:${'b'.repeat(64)}`;
+  assert.throws(() => createAcceptanceReport({ rows, buildDigest: BUILD, finalization: finalization() }), /fixtureIdentity/u);
 });
 
 test('every passing release row rejects missing, open, stale, or unbounded evidence', async () => {

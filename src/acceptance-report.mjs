@@ -1,4 +1,4 @@
-import { RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from './performance-baseline.mjs';
+import { RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from './performance-baseline.mjs';
 
 export const ACCEPTANCE_REPORT_VERSION = 1;
 export const RELEASE_ROW_IDS = Object.freeze(['pinned-host-startup', 'desktop-primary-journey', 'mobile-accessibility-journey', 'scale-performance', 'degraded-bridge-grants', 'degraded-source-availability', 'recovery-only-compatibility', 'destructive-migration-restoration', 'privacy-artifact-output']);
@@ -68,6 +68,7 @@ function validatePassedEvidence(id, evidence, buildDigest) {
     case 'scale-performance': {
       closed(evidence, ['schemaVersion', 'fixtureIdentity', 'fixtureCounts', 'observations', 'thresholds', 'activityPage', 'search'], id);
       if (!DIGEST.test(evidence.fixtureIdentity)) invalid(`${id}.fixtureIdentity is invalid`);
+      if (evidence.fixtureIdentity !== RELEASE_FIXTURE_IDENTITY) invalid(`${id}.fixtureIdentity does not match the release fixture`);
       exactMap(evidence.fixtureCounts, RELEASE_FIXTURE_COUNTS, `${id}.fixtureCounts`);
       closed(evidence.observations, RELEASE_MEASUREMENTS, `${id}.observations`);
       closed(evidence.thresholds, RELEASE_MEASUREMENTS, `${id}.thresholds`);
@@ -75,8 +76,8 @@ function validatePassedEvidence(id, evidence, buildDigest) {
         const observed = evidence.observations[metric];
         if (typeof observed !== 'number' || !Number.isFinite(observed) || observed <= 0 || evidence.thresholds[metric] !== Math.max(1, Math.ceil(observed))) invalid(`${id}.${metric} is not an exact first-observation ceiling`);
       }
-      closed(evidence.activityPage, ['firstPageCount', 'secondPageCount', 'unique', 'orderPreserved'], `${id}.activityPage`);
-      if (evidence.activityPage.firstPageCount !== 50 || evidence.activityPage.secondPageCount !== 1) invalid(`${id}.activityPage is incomplete`);
+      closed(evidence.activityPage, ['firstPageCount', 'secondPageCount', 'thirdPageCount', 'unique', 'orderPreserved'], `${id}.activityPage`);
+      if (evidence.activityPage.firstPageCount !== 50 || evidence.activityPage.secondPageCount !== 50 || evidence.activityPage.thirdPageCount !== 1) invalid(`${id}.activityPage is incomplete`);
       yes(evidence.activityPage.unique, `${id}.activityPage.unique`); yes(evidence.activityPage.orderPreserved, `${id}.activityPage.orderPreserved`);
       closed(evidence.search, ['missingProjectionRebuilt', 'staleProjectionRebuilt', 'indexedQuery'], `${id}.search`);
       for (const value of Object.values(evidence.search)) yes(value, `${id}.search`);

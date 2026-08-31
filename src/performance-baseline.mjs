@@ -4,8 +4,9 @@ export const RELEASE_PERFORMANCE_BASELINE_VERSION = 1;
 
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
   chunkBoundaryNoteBytes: 524_289,
-  conversations: 50,
-  activityRecords: 51,
+  largeNoteBytes: 8_388_609,
+  conversations: 100,
+  activityRecords: 101,
   actionCards: 2,
   indexedNotes: 5_000,
   indexedConversationMessages: 5_000
@@ -29,7 +30,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const HOST_COMMIT = '30f2924e437857935f034ac349bae8cc22ef9fb0';
 const HOST_VERSION = '2026.8.1-beta.3';
 const PLAYWRIGHT_VERSION = '1.62.1';
-export const RELEASE_FIXTURE_IDENTITY = 'sha256:97e0e9c8b68d2cae04956ff6da075fcd9343a015a7e7a2e14f3f4dc750c044f3';
+export const RELEASE_FIXTURE_IDENTITY = 'sha256:fda82d83cb8e6d5a627a52002392948932f7c6a0d92c68897f9ac6abe96b86be';
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 1,
   sourceDigest: 'sha256:6e4ac1c2c914e3794f04427b41d8661220c45a224513fe55062186dd3f6f4d06',

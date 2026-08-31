@@ -1,6 +1,5 @@
 import { BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, sanitizeBridgeResult, validateBridgeRequest } from './contracts.mjs';
 import { errorResult, SourceServiceError } from '../sources/errors.mjs';
-import { createRequestScopedGatewayRequest } from './gateway-method-dispatch.mjs';
 
 const handlerMap = Object.freeze({
   'command-center.v1.sources.status': (service) => service.status(),
@@ -81,7 +80,6 @@ export function registerBridgeMethods(api, service) {
   if (!api?.registerGatewayMethod) throw new TypeError('registerGatewayMethod is required');
   if (!service) throw new TypeError('authoritative source service is required');
   const registered = [];
-  const gatewayRequest = createRequestScopedGatewayRequest();
   const handlerService = Object.prototype.hasOwnProperty.call(service ?? {}, 'source') && service?.topics
     ? new Proxy(service.source, { get(target, property) { return property === 'topics' ? service.topics : target[property]; } })
     : service;
@@ -95,7 +93,7 @@ export function registerBridgeMethods(api, service) {
         service.notificationCaptureBinding?.();
         if (method === 'command-center.v1.attention.act' && (typeof client?.authenticatedUserId !== 'string' || client.authenticatedUserId.trim() === '')) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
         const operatorId = method.startsWith('command-center.v1.attention.') && typeof client?.authenticatedUserId === 'string' ? client.authenticatedUserId : null;
-        const result = await invokeBridgeMethod(handlerService, method, params, requestId, operatorId, { gatewayRequest });
+        const result = await invokeBridgeMethod(handlerService, method, params, requestId, operatorId);
         const logicalOperationId = params.logicalOperationId ?? null;
         respond(true, { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId, result });
       } catch (error) {

@@ -119,27 +119,21 @@ test('Session create accepts the pinned sanitized response and proves identity t
   assert.equal(boundary.entry.category, `command-center:${logicalOperationId}`);
 });
 
-test('Session creation uses the authenticated request-scoped dispatcher instead of the detached runtime gateway', async () => {
+test('Session creation uses the pinned plugin-scoped Gateway even when a detached request dispatcher is unavailable', async () => {
   const metadata = metadataFixture();
   const boundary = pinnedSanitizedSessionBoundary();
-  let detachedCalls = 0;
+  const calls = [];
   const adapter = createSessionAdapter({
-    api: { runtime: { gateway: { async request() { detachedCalls += 1; throw new Error('detached gateway must not create Sessions'); } } } },
+    api: { runtime: { gateway: { async request(method, params) { calls.push(method); return boundary.gateway.request(method, params); } } } },
     metadata,
-    topicId: 'topic-request-scoped'
+    topicId: 'topic-plugin-scoped'
   });
-  const dispatched = [];
-  const gatewayRequest = async (method, params) => {
-    dispatched.push(method);
-    return boundary.gateway.request(method, params);
-  };
   const created = await adapter.create(
-    { logicalOperationId: randomUUID(), label: 'Request Scoped' },
-    { gatewayRequest }
+    { logicalOperationId: randomUUID(), label: 'Plugin Scoped' },
+    { gatewayRequest: async () => { throw Object.assign(new Error('unavailable'), { code: 'unavailable' }); } }
   );
   assert.equal(created.value.key, boundary.key);
-  assert.deepEqual(dispatched, ['sessions.create', 'sessions.list']);
-  assert.equal(detachedCalls, 0);
+  assert.deepEqual(calls, ['sessions.create', 'sessions.list']);
 });
 
 test('Session creation uses the plugin-scoped Gateway and authoritative catalog without agent harness ownership', async () => {
@@ -313,8 +307,8 @@ test('Session creation refuses the rejected runtime store and agent-harness owne
   assert.deepEqual(metadata.refs, []);
   const production = await readFile(new URL('../src/sources/sessions.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(production, /createSessionEntry|agentHarnessId/u);
-  assert.match(production, /gatewayRequest\('sessions\.create'/u);
-  assert.doesNotMatch(production, /this\.gateway\.request\('sessions\.create'/u);
+  assert.match(production, /this\.creationGateway/u);
+  assert.doesNotMatch(production, /runtime\?\.gatewayRequest/u);
 });
 
 test('Session history withholds an explicitly mismatched authoritative identity', async () => {
