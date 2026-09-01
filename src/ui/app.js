@@ -155,7 +155,15 @@ async function openTopic(topicId) {
 async function runDashboardAction(episode, action, input, label) {
   const feedback = document.querySelector('#dashboard-feedback');
   try {
+    delete feedback.dataset.activityReceipt;
     const result = await dashboardMutate(episode, action, input);
+    const activity = result?.result?.activity ?? result?.activity;
+    if (activity?.activityId) {
+      const keys = ['activityId', 'episodeId', 'logicalOperationId', 'attemptId', 'topicId', 'sourceReferenceId', 'actorMode', 'actionId', 'operationKind', 'outcome', 'verificationRevision', 'occurredAt'];
+      const receipt = Object.fromEntries(keys.filter((key) => activity[key] !== undefined).map((key) => [key, activity[key]]));
+      const serialized = JSON.stringify(receipt);
+      if (serialized.length <= 4096) feedback.dataset.activityReceipt = serialized;
+    }
     const navigation = result?.result?.navigation ?? result?.navigation;
     if (navigation?.topicId) { await openTopic(navigation.topicId); return; }
     feedback.textContent = label;

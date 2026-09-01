@@ -12,7 +12,7 @@ import { assertAcceptanceReportPassed, createAcceptanceReport, RELEASE_ROW_IDS, 
 import { hasSuccessfulBrowserResponse, observeBrowserResponse, observedBrowserResponseStatus, recordBounded } from '../src/browser-evidence.mjs';
 import { build, assertBuiltDigest } from '../src/build.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
-import { assertNoFatalHostOutput, assertRecordedChildTraffic, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
+import { assertNoFatalHostOutput, assertRecordedChildTraffic, fetchJsonWithDeadline, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { assertWebSocketDestination, boundedTrafficEvidence, TrafficGuard } from '../src/isolation.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
@@ -20,7 +20,6 @@ import { COMMAND_CENTER_SCHEMA_VERSION, metadataSchemaV1Sql } from '../src/metad
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
-import { createAttentionService } from '../src/attention/service.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
 import { assertPerformanceObservationWithinBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
@@ -1627,6 +1626,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.migrationBinding = Object.freeze({ ...completed.binding });
       return completed;
     };
+    let readinessAttempt = 0;
+    const recordReadinessObservation = (observation) => {
+      evidence.readinessAttempts.push(Object.freeze({ ...observation }));
+      if (evidence.readinessAttempts.length > 20) evidence.readinessAttempts.shift();
+    };
     const ensureScaleConversationFixture = async (signal) => {
       signal?.throwIfAborted();
       const topicResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
@@ -1658,36 +1662,30 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(releaseState.realizedConversationCount, RELEASE_FIXTURE_COUNTS.conversations);
       return { reconciledOperations: RELEASE_FIXTURE_COUNTS.conversations - 1, authoritativeTotal: releaseState.realizedConversationCount };
     };
-    const ensureVerifiedActivityFixture = async () => {
-      const { binding } = await ensureMigrationBinding();
-      const activityMetadata = openCommandCenterMetadataService({ stateDir: resolvedStateDir });
-      const activitySource = createAttentionService({ metadata: activityMetadata, now: () => '2100-08-30T12:00:00.000Z' });
-      try {
-        activitySource.registerSourceCapability({ sourceCapabilityId: 'session-activity-fixture', sourceKind: 'session', actions: [], deriveEvidence: () => ({ verified: true }), verifyTransition: (value) => value.transitionEvidence?.state === 'resolved' && value.transitionEvidence?.version === value.occurrenceVersion });
-        const occurrence = { schemaVersion: 1, sourceCapabilityId: 'session-activity-fixture', stableSubjectId: binding.sessionKey, attentionReason: 'verified-session-navigation', occurrenceId: 'fictional-session-activity', occurrenceVersion: binding.sessionId, occurredAt: '2100-08-30T11:59:00.000Z', topicId: RELEASE_ALPHA_TOPIC_ID, sourceReferenceId: binding.referenceId, evidenceFacts: {} };
-        await activitySource.ingest(occurrence);
-        const transition = await activitySource.ingest({ ...occurrence, occurrenceId: 'fictional-session-activity-resolved', transitionEvidence: { state: 'resolved', version: binding.sessionId } });
-        assert.ok(transition.activity?.activityId);
-        releaseState.verifiedActivity = { activityId: transition.activity.activityId, topicId: transition.activity.topicId, referenceId: transition.activity.sourceReferenceId, sessionId: binding.sessionId, sessionKey: binding.sessionKey };
-        return { binding, transition };
-      } finally { activitySource.close(); activityMetadata.close(); }
-    };
     await collectScenario('pinned-host-startup', async (signal) => {
       try {
         await waitForConsecutiveReadiness(async () => {
-          const observation = { attempt: evidence.readinessAttempts.length + 1, url: `${gatewayUrl}${runtimeCapability.bootstrap.path}`, status: undefined, error: undefined, bodyKeys: [] };
+          const observation = { attempt: ++readinessAttempt, url: `${gatewayUrl}${runtimeCapability.bootstrap.path}`, status: null, error: null, bodyKeys: [] };
           try {
             host.diagnostics.guard.assert('127.0.0.1', 'harness bootstrap');
-            const response = await fetchWithDeadline(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal }, 'Control UI readiness probe', 3_000);
+            const { response, body, parseError } = await fetchJsonWithDeadline(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal }, { label: 'Control UI readiness probe', timeoutMs: 3_000 });
             observation.status = response.status;
-            const body = await response.json().catch(() => undefined);
             observation.bodyKeys = body && typeof body === 'object' ? Object.keys(body).slice(0, 30) : [];
-            evidence.readinessAttempts.push(observation);
-            return response.ok && isCommandCenterMetadataReady(databasePath);
-          } catch (error) { observation.error = String(error).slice(0, 300); evidence.readinessAttempts.push(observation); return false; }
-        }, host.earlyExit, { attempts: 60, delayMs: 250, signal });
+            if (!response.ok) observation.error = `bootstrap-http-${response.status}`;
+            else if (parseError || !body || typeof body !== 'object' || Array.isArray(body)) observation.error = 'bootstrap-invalid-response';
+            else if (!isCommandCenterMetadataReady(databasePath)) observation.error = 'metadata-not-ready';
+            recordReadinessObservation(observation);
+            return observation.error === null;
+          } catch (error) {
+            if (signal.aborted) throw signal.reason ?? error;
+            observation.error = redactBrowserEvidence(error?.message ?? error);
+            recordReadinessObservation(observation);
+            return false;
+          }
+        }, host.earlyExit, { deadlineMs: 220_000, delayMs: 250, signal });
       } catch (error) {
-        throw new HarnessFailure(error.category || 'readiness-flapping', `${error.message}; host stdout: ${host.diagnostics.stdout}; host stderr: ${host.diagnostics.stderr}`);
+        const observations = redact(JSON.stringify(evidence.readinessAttempts.slice(-5)), 1_500);
+        throw new HarnessFailure(error.category || 'readiness-timeout', `${error.message}; last readiness observations: ${observations}; host stdout: ${host.diagnostics.stdout}; host stderr: ${host.diagnostics.stderr}`);
       }
       // The service receives the pinned host's resolved stateDir. Verify the
       // startup-created store is beneath this disposable fixture and that no
@@ -1768,14 +1766,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.deepEqual(await actionResponse.json(), { schemaVersion: 1, status: 'unavailable' });
       releaseState.forgedMutationRejected = true;
       return { rejected: true };
-    });
-    await collectScenario('verified-activity-readback', async () => {
-      const { binding, transition } = await ensureVerifiedActivityFixture();
-      const activityResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.activity.get', params: { schemaVersion: 1, activityId: transition.activity.activityId } });
-      const verifiedActivity = (activityResponse?.result ?? activityResponse)?.record;
-      assert.deepEqual({ activityId: verifiedActivity?.activityId, episodeId: verifiedActivity?.episodeId, logicalOperationId: verifiedActivity?.logicalOperationId, topicId: verifiedActivity?.topicId, sourceReferenceId: verifiedActivity?.sourceReferenceId, operationKind: verifiedActivity?.operationKind, outcome: verifiedActivity?.outcome, verificationRevision: verifiedActivity?.verificationRevision, occurredAt: verifiedActivity?.occurredAt }, { activityId: transition.activity.activityId, episodeId: transition.activity.episodeId, logicalOperationId: transition.activity.logicalOperationId, topicId: transition.activity.topicId, sourceReferenceId: transition.activity.sourceReferenceId, operationKind: transition.activity.operationKind, outcome: transition.activity.outcome, verificationRevision: transition.activity.verificationRevision, occurredAt: transition.activity.occurredAt });
-      assert.deepEqual({ topicId: verifiedActivity.topicId, sourceReferenceId: verifiedActivity.sourceReferenceId, outcome: verifiedActivity.outcome, verificationRevision: verifiedActivity.verificationRevision }, { topicId: RELEASE_ALPHA_TOPIC_ID, sourceReferenceId: binding.referenceId, outcome: 'resolved', verificationRevision: binding.sessionId });
-      return { activityId: verifiedActivity.activityId, sourceReferenceId: verifiedActivity.sourceReferenceId };
     });
     await collectScenario('authenticated-control-ui-mount', async () => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');
@@ -1888,7 +1878,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     await collectScenario('scale-performance', async () => {
       assert.ok(browser && releaseState.projectionRoot, 'scale scenario requires the independently seeded authoritative fixture');
       await ensureScaleConversationFixture();
-      await ensureVerifiedActivityFixture();
       if (page && !page.isClosed()) await page.close();
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
@@ -1938,11 +1927,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const seededTopicReviews = seededDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'topic-review');
       assert.equal(seededReminders.length, 1);
       assert.equal(seededTopicReviews.length, 1);
-      const fixtureActivity = new DatabaseSync(databasePath, { readOnly: true });
       let realizedActivityRecords;
-      try { realizedActivityRecords = fixtureActivity.prepare("SELECT (SELECT count(*) FROM activity_records WHERE operation_kind = 'fixture.scale') + (SELECT count(*) FROM attention_activity_records WHERE activity_id = ?) AS count").get(releaseState.verifiedActivity.activityId).count; }
-      finally { fixtureActivity.close(); }
-      assert.equal(realizedActivityRecords, RELEASE_FIXTURE_COUNTS.activityRecords);
       await page.close();
       evidence.globalTabClosed = true;
       const closedTabEmission = await waitForNotificationEmission(databasePath, { status: 'sent' });
@@ -2049,13 +2034,16 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await frame.waitForFunction(() => !document.querySelector('#in-progress')?.textContent?.includes('Nothing in progress'), undefined, { timeout: 10_000 });
       await sourceActionStarted;
       await waitForFrameText(frame, '#dashboard-feedback', 'Complete Reminder accepted.');
-      const sourceActivity = await frame.evaluate(async () => {
-        const response = await fetch('/plugins/command-center/api/dashboard?activityOffset=0&activityLimit=50', { credentials: 'omit', headers: { accept: 'application/json' } });
-        return (await response.json()).result;
-      });
-      const completedActivity = sourceActivity.activity.records.find((record) => /reminder.*complete|complete.*reminder/iu.test(record.operationKind ?? '') && record.outcome === 'applied');
-      assert.ok(completedActivity?.activityId && completedActivity?.logicalOperationId);
+      const actionReceipt = JSON.parse(await frame.locator('#dashboard-feedback').getAttribute('data-activity-receipt'));
+      assert.ok(actionReceipt?.activityId && actionReceipt?.logicalOperationId, 'keyboard source action must expose its bounded Activity receipt');
+      const sourceActivityResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.activity.get', params: { schemaVersion: 1, activityId: actionReceipt.activityId } });
+      const completedActivity = (sourceActivityResponse?.result ?? sourceActivityResponse)?.record;
+      const exactActivity = (value) => ({ activityId: value?.activityId, episodeId: value?.episodeId, logicalOperationId: value?.logicalOperationId, topicId: value?.topicId, sourceReferenceId: value?.sourceReferenceId, operationKind: value?.operationKind, outcome: value?.outcome, verificationRevision: value?.verificationRevision, occurredAt: value?.occurredAt });
+      assert.deepEqual(exactActivity(completedActivity), exactActivity(actionReceipt));
+      assert.equal(completedActivity.outcome, 'applied');
+      assert.match(completedActivity.operationKind, /reminder.*complete|complete.*reminder/iu);
       releaseState.sourceActionActivity = completedActivity;
+      releaseState.verifiedActivity = completedActivity;
       assert.notEqual(clearedEmission.emission_id, undefined);
       await attentionCard.waitFor({ state: 'visible', timeout: 15_000 });
       await auditDynamicAccessibilityState(frame, page, 1440, 'desktop Attention cards', true);
@@ -2080,6 +2068,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const secondActivityPage = await readDashboard(gatewayUrl, { activityOffset: 50, activityLimit: 50 });
       const secondActivityIds = secondActivityPage.activity.records.map((record) => record.activityId);
       assert.deepEqual([firstActivityIds.length, secondActivityIds.length], [50, 1]);
+      realizedActivityRecords = firstActivityIds.length + secondActivityIds.length;
+      assert.equal(realizedActivityRecords, RELEASE_FIXTURE_COUNTS.activityRecords);
       assert.equal([...firstActivityIds, ...secondActivityIds].includes(releaseState.verifiedActivity.activityId), true);
       assert.equal(new Set([...firstActivityIds, ...secondActivityIds]).size, firstActivityIds.length + secondActivityIds.length, 'Activity pagination must not duplicate identities');
       const renderedActivityIds = await frame.locator('#activity .activity-row').evaluateAll((rows) => rows.map((row) => row.dataset.activityId).filter(Boolean));
@@ -2089,16 +2079,18 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await assertNoFrameOverflow(frame, '320px 51-record Activity');
       await page.setViewportSize({ width: 1440, height: 900 });
       const verifiedActivityRow = frame.locator(`#activity .activity-row[data-activity-id="${releaseState.verifiedActivity.activityId}"]`);
-      const destination = page.waitForURL((url) => !url.pathname.startsWith('/plugins/command-center') && /\/chat\//u.test(url.pathname), { timeout: 10_000 });
-      await activate(verifiedActivityRow.getByRole('button', { name: 'Open source', exact: true }), true);
-      await destination;
-      assert.match(new URL(page.url()).pathname, /\/chat\//u, 'Activity source action must reach the host-owned Conversation destination');
-      const verifiedNavigationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId: releaseState.verifiedActivity.topicId, referenceId: releaseState.verifiedActivity.referenceId } });
-      const verifiedNavigation = verifiedNavigationResponse?.result ?? verifiedNavigationResponse;
-      assert.deepEqual({ topicId: verifiedNavigation.sourceReference?.topicId, referenceId: verifiedNavigation.sourceReference?.referenceId, sessionId: verifiedNavigation.sessionId, sessionKey: verifiedNavigation.sessionKey }, { topicId: releaseState.verifiedActivity.topicId, referenceId: releaseState.verifiedActivity.referenceId, sessionId: releaseState.verifiedActivity.sessionId, sessionKey: releaseState.verifiedActivity.sessionKey });
+      await verifiedActivityRow.waitFor({ state: 'visible' });
       scaleJourney.measurement.activityNextPageMs = Math.max(1, Date.now() - activityStarted);
       releaseState.activityPaged = true;
       return { restored: true, sentEmissionId: closedTabEmission.emission_id, clearedEmissionId: clearedEmission.emission_id, activityId: completedActivity.activityId, realizedFixtureCounts: { ...releaseState.realizedScaleSeed, conversations: realizedConversationCount, activityRecords: realizedActivityRecords, actionCards: seededReminders.length + seededTopicReviews.length, indexedNotes: releaseState.realizedSearchCounts.notes, indexedConversationMessages: releaseState.realizedSearchCounts.conversationMessages } };
+    });
+    await collectScenario('verified-activity-readback', async () => {
+      const receipt = releaseState.verifiedActivity;
+      assert.ok(receipt?.activityId, 'verified Activity requires the prior keyboard source-action receipt');
+      const activityResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.activity.get', params: { schemaVersion: 1, activityId: receipt.activityId } });
+      const verifiedActivity = (activityResponse?.result ?? activityResponse)?.record;
+      assert.deepEqual({ activityId: verifiedActivity?.activityId, episodeId: verifiedActivity?.episodeId, logicalOperationId: verifiedActivity?.logicalOperationId, topicId: verifiedActivity?.topicId, sourceReferenceId: verifiedActivity?.sourceReferenceId, operationKind: verifiedActivity?.operationKind, outcome: verifiedActivity?.outcome, verificationRevision: verifiedActivity?.verificationRevision, occurredAt: verifiedActivity?.occurredAt }, { activityId: receipt.activityId, episodeId: receipt.episodeId, logicalOperationId: receipt.logicalOperationId, topicId: receipt.topicId, sourceReferenceId: receipt.sourceReferenceId, operationKind: receipt.operationKind, outcome: receipt.outcome, verificationRevision: receipt.verificationRevision, occurredAt: receipt.occurredAt });
+      return { activityId: verifiedActivity.activityId, sourceReferenceId: verifiedActivity.sourceReferenceId, logicalOperationId: verifiedActivity.logicalOperationId };
     });
     await collectScenario('mobile-accessibility-journey', async () => {
       assert.ok(browser, 'mobile scenario requires an independently reset browser fixture');

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
+import { createMetadataService } from '../src/plugin-service.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
 
@@ -59,6 +60,60 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
   };
 }
 
+test('plugin readiness precedes deferred Search rebuild and shutdown settles the producer', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-deferred-search-'));
+  let releaseRebuild;
+  const rebuild = new Promise((resolve) => { releaseRebuild = resolve; });
+  const events = [];
+  const api = { runtime: { state: { resolveStateDir: () => stateDir } }, logger: { warn: (message) => events.push(['warning', message]) }, pluginConfig: {} };
+  const service = createMetadataService(api, {
+    searchRebuildServiceFactory: () => ({
+      async rebuild() { events.push(['rebuild', 'started']); await rebuild; events.push(['rebuild', 'settled']); }
+    })
+  });
+  try {
+    const startup = service.start().then(() => events.push(['service', 'ready']));
+    await startup;
+    assert.deepEqual(events, [['service', 'ready']], 'plugin readiness must precede disposable projection work');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(events, [['service', 'ready'], ['rebuild', 'started']]);
+    let stopped = false;
+    const stopping = service.stop().then(() => { stopped = true; events.push(['service', 'stopped']); });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(stopped, false, 'shutdown must retain owned resources until the rebuild producer settles');
+    releaseRebuild();
+    await stopping;
+    assert.deepEqual(events, [['service', 'ready'], ['rebuild', 'started'], ['rebuild', 'settled'], ['service', 'stopped']]);
+  } finally {
+    releaseRebuild?.();
+    await service.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('plugin shutdown aborts a deferred Search rebuild before closing owned state', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-cancel-search-'));
+  const events = [];
+  const api = { runtime: { state: { resolveStateDir: () => stateDir } }, logger: {}, pluginConfig: {} };
+  const service = createMetadataService(api, {
+    searchRebuildServiceFactory: () => ({
+      async rebuild({ signal }) {
+        events.push('rebuild-started');
+        await new Promise((resolve, reject) => signal.addEventListener('abort', () => { events.push('rebuild-aborted'); reject(signal.reason); }, { once: true }));
+      }
+    })
+  });
+  try {
+    await service.start();
+    await new Promise((resolve) => setImmediate(resolve));
+    await service.stop();
+    assert.deepEqual(events, ['rebuild-started', 'rebuild-aborted']);
+  } finally {
+    await service.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('real plugin registers one required emitter and reconciles in the background with an authenticated binding', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-notifications-'));
   const host = fakePublishedApi(stateDir);
@@ -104,9 +159,9 @@ test('real plugin registers one required emitter and reconciles in the backgroun
     }
     await service.notificationReconcile();
     assert.equal(host.candidates.length, 2, 'routine Chat, Activity, and Topic Review must not emit');
-    service.stop();
+    await service.stop();
   } finally {
-    host.services[0]?.stop?.();
+    await host.services[0]?.stop?.();
     await rm(stateDir, { recursive: true, force: true });
   }
 });
@@ -174,7 +229,7 @@ test('isolated source availability produces observable Degraded reads and reject
       label: 'Blocked source mutation'
     }), (error) => error?.code === 'capability-unavailable' && error?.details?.status === 'unavailable');
   } finally {
-    host.services[0]?.stop?.();
+    await host.services[0]?.stop?.();
     await rm(stateDir, { recursive: true, force: true });
   }
 });

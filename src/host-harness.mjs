@@ -276,14 +276,64 @@ async function withAbort(operation, signal) {
   });
 }
 
-export async function waitForConsecutiveReadiness(observe, earlyExit, { required = 2, attempts = 20, delayMs = 100, signal } = {}) {
+export async function waitForConsecutiveReadiness(observe, earlyExit, { required = 2, attempts = 20, deadlineMs, delayMs = 100, signal, now = Date.now, wait = abortableDelay } = {}) {
+  if (deadlineMs !== undefined && (!Number.isFinite(deadlineMs) || deadlineMs <= 0)) throw new TypeError('Readiness deadline must be positive.');
+  const startedAt = now();
   let consecutive = 0;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  let attempt = 0;
+  while (deadlineMs === undefined ? attempt < attempts : now() - startedAt < deadlineMs) {
     signal?.throwIfAborted();
-    const result = await withAbort(Promise.race([Promise.resolve().then(() => observe(signal)), earlyExit.then((error) => { throw error; })]), signal);
+    const remainingProbeMs = deadlineMs === undefined ? undefined : Math.max(1, deadlineMs - (now() - startedAt));
+    const probeController = remainingProbeMs === undefined ? undefined : new AbortController();
+    const abortProbe = () => probeController.abort(signal.reason);
+    if (probeController && signal?.aborted) abortProbe();
+    else if (probeController) signal?.addEventListener('abort', abortProbe, { once: true });
+    const probeTimer = probeController && setTimeout(() => probeController.abort(new HarnessFailure('readiness-timeout', `Host readiness probe exceeded the remaining ${remainingProbeMs} ms startup deadline`)), remainingProbeMs);
+    const probeSignal = probeController?.signal ?? signal;
+    let result;
+    try {
+      result = await withAbort(Promise.race([Promise.resolve().then(() => observe(probeSignal)), earlyExit.then((error) => { throw error; })]), probeSignal);
+    } finally {
+      if (probeTimer) clearTimeout(probeTimer);
+      signal?.removeEventListener('abort', abortProbe);
+    }
+    attempt += 1;
     consecutive = result ? consecutive + 1 : 0;
     if (consecutive >= required) return;
-    await withAbort(Promise.race([abortableDelay(delayMs, signal), earlyExit.then((error) => { throw error; })]), signal);
+    const remaining = deadlineMs === undefined ? delayMs : Math.max(0, deadlineMs - (now() - startedAt));
+    if (remaining === 0) break;
+    await withAbort(Promise.race([wait(Math.min(delayMs, remaining), signal), earlyExit.then((error) => { throw error; })]), signal);
   }
-  throw new HarnessFailure('readiness-flapping', 'Host did not produce consecutive readiness observations');
+  throw new HarnessFailure(deadlineMs === undefined ? 'readiness-flapping' : 'readiness-timeout', deadlineMs === undefined
+    ? 'Host did not produce consecutive readiness observations'
+    : `Host did not produce consecutive readiness observations within ${deadlineMs} ms`);
+}
+
+export async function fetchJsonWithDeadline(url, options = {}, { label = 'HTTP operation', timeoutMs = 10_000, fetchImpl = fetch } = {}) {
+  const controller = new AbortController();
+  const parentSignal = options.signal;
+  let timedOut = false;
+  const abortFromParent = () => controller.abort(parentSignal.reason);
+  if (parentSignal?.aborted) abortFromParent();
+  else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  try {
+    const response = await fetchImpl(url, { ...options, signal: controller.signal });
+    controller.signal.throwIfAborted();
+    let body;
+    let parseError;
+    try { body = await response.json(); }
+    catch (error) {
+      if (controller.signal.aborted) throw error;
+      parseError = error;
+    }
+    return { response, body, parseError };
+  } catch (error) {
+    if (parentSignal?.aborted) throw parentSignal.reason ?? error;
+    if (timedOut) throw new HarnessFailure('transport-timeout', `${label} exceeded its ${timeoutMs} ms deadline`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', abortFromParent);
+  }
 }

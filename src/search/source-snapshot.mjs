@@ -2,6 +2,19 @@ import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
 import { normalizeNotePath } from '../sources/note-path.mjs';
 
+async function withSignal(operation, signal) {
+  signal?.throwIfAborted();
+  if (!signal) return operation;
+  return new Promise((resolve, reject) => {
+    const aborted = () => { signal.removeEventListener('abort', aborted); reject(signal.reason ?? new Error('Snapshot cancelled.')); };
+    signal.addEventListener('abort', aborted, { once: true });
+    Promise.resolve(operation).then(
+      (value) => { signal.removeEventListener('abort', aborted); resolve(value); },
+      (error) => { signal.removeEventListener('abort', aborted); reject(error); }
+    );
+  });
+}
+
 function exactTopicReferences(metadata, topicId, sourceSystem, sourceKind) {
   const listed = metadata?.listSourceReferences?.(topicId) ?? [];
   if (listed.some((reference) => reference?.topicId !== topicId)) throw sourceError('source-recovery', 'Topic ownership metadata returned a foreign Source Reference.');
@@ -51,24 +64,27 @@ function digest(value) {
   return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
 }
 
-export async function readNoteSourceSnapshot({ topicId, metadata, noteAdapter, query = '' } = {}) {
+export async function readNoteSourceSnapshot({ topicId, metadata, noteAdapter, query = '', signal } = {}) {
+  signal?.throwIfAborted();
   if (!noteAdapter?.browse || !noteAdapter?.read) throw sourceError('source-unavailable', 'The authoritative Note adapter is unavailable.');
   const folders = exactTopicReferences(metadata, topicId, 'obsidian', 'note_folder');
   if (folders.length !== 1) throw sourceError('source-recovery', 'Exactly one Topic-owned Note Folder Source Reference is required.');
   const folderRoot = metadata?.getSourceLocator?.(folders[0].referenceId)?.locator ?? folders[0].externalSourceId;
-  const entries = await noteAdapter.browse({ observe: true });
+  const entries = await withSignal(noteAdapter.browse({ observe: true }), signal);
   if (!Array.isArray(entries)) throw sourceError('source-inconsistent', 'The Note adapter returned an invalid browse result.');
   const notes = [];
   for (const entry of entries) {
+    signal?.throwIfAborted();
     if (!entry || typeof entry.path !== 'string' || entry.sourceReference?.topicId !== topicId || entry.sourceReference?.sourceSystem !== 'obsidian' || entry.sourceReference?.sourceKind !== 'note') throw sourceError('source-recovery', 'The Note adapter returned a foreign or identity-mismatched Note.');
     const relativePath = normalizeNotePath(entry.path);
     const expectedExternalId = `${folderRoot.replace(/\/+$/u, '')}/${relativePath}`;
     if (entry.sourceReference.externalSourceId !== expectedExternalId) throw sourceError('source-recovery', 'The Note adapter returned a Note outside the exact Topic Folder.');
-    const read = await noteAdapter.read({ path: relativePath, referenceId: entry.sourceReference.referenceId, observe: true });
+    const read = await withSignal(noteAdapter.read({ path: relativePath, referenceId: entry.sourceReference.referenceId, observe: true }), signal);
     if (read.path !== relativePath || read.sourceReference?.topicId !== topicId || read.sourceReference?.sourceSystem !== 'obsidian' || read.sourceReference?.sourceKind !== 'note' || read.sourceReference.externalSourceId !== expectedExternalId) throw sourceError('source-recovery', 'The Note adapter returned a foreign or identity-mismatched Note.');
     if (read.sourceReference.referenceId !== entry.sourceReference.referenceId || read.sourceReference.observedRevision !== read.revision) throw sourceError('source-recovery', 'The Note adapter returned a changed Note identity.');
     const sections = noteSections(read.text);
     for (const section of sections) {
+      signal?.throwIfAborted();
       const context = paragraphContext(section.text, query);
       notes.push({
         topicId, sourceReference: read.sourceReference, folderReferenceId: folders[0].referenceId, path: read.path, heading: section.heading, revision: read.revision,
@@ -76,7 +92,7 @@ export async function readNoteSourceSnapshot({ topicId, metadata, noteAdapter, q
       });
     }
   }
-  const verifiedEntries = await noteAdapter.browse({ observe: false });
+  const verifiedEntries = await withSignal(noteAdapter.browse({ observe: false }), signal);
   const identityList = (value) => value.map((entry) => [entry.path, entry.revision, entry.sourceReference?.referenceId, entry.sourceReference?.externalSourceId]).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   if (!Array.isArray(verifiedEntries) || JSON.stringify(identityList(verifiedEntries)) !== JSON.stringify(identityList(entries))) throw sourceError('source-incomplete', 'The Note Folder changed during snapshotting.');
   notes.sort((left, right) => left.path.localeCompare(right.path));
@@ -150,15 +166,17 @@ function conversationName(described, reference) {
   return reference.externalSourceId;
 }
 
-async function transcriptPass(gateway, reference, expectedSessionId) {
+async function transcriptPass(gateway, reference, expectedSessionId, signal) {
   const messages = [];
   const limit = 100;
   let offset = 0;
   for (;;) {
-    const page = await gateway.request('chat.history', { sessionKey: reference.externalSourceId, limit, offset });
+    signal?.throwIfAborted();
+    const page = await withSignal(gateway.request('chat.history', { sessionKey: reference.externalSourceId, limit, offset }), signal);
     assertSessionIdentity(page, reference, expectedSessionId, 'chat.history');
     if (!Array.isArray(page?.messages)) throw sourceError('source-inconsistent', 'chat.history returned an invalid message page.');
     for (const message of page.messages) {
+      signal?.throwIfAborted();
       if (!message || typeof message !== 'object') throw sourceError('source-incomplete', 'A visible Session message lacks authoritative identity.');
       messages.push(message);
     }
@@ -171,31 +189,34 @@ async function transcriptPass(gateway, reference, expectedSessionId) {
   return { messages, fingerprint: digest(messages) };
 }
 
-async function completeTranscript(gateway, reference, expectedSessionId) {
-  const snapshot = await transcriptPass(gateway, reference, expectedSessionId);
-  const verification = await transcriptPass(gateway, reference, expectedSessionId);
+async function completeTranscript(gateway, reference, expectedSessionId, signal) {
+  const snapshot = await transcriptPass(gateway, reference, expectedSessionId, signal);
+  const verification = await transcriptPass(gateway, reference, expectedSessionId, signal);
   if (verification.fingerprint !== snapshot.fingerprint) throw sourceError('source-incomplete', 'The authoritative Session history changed during snapshotting.');
   return snapshot;
 }
 
-export async function readConversationSourceSnapshot({ topicId, metadata, gateway, api, query = '' } = {}) {
+export async function readConversationSourceSnapshot({ topicId, metadata, gateway, api, query = '', signal } = {}) {
+  signal?.throwIfAborted();
   const references = exactTopicReferences(metadata, topicId, 'openclaw', 'session');
   const authoritativeGateway = gateway ?? api?.runtime?.gateway;
   if (typeof authoritativeGateway?.request !== 'function') throw sourceError('source-unavailable', 'The authoritative Sessions gateway is unavailable.');
   const conversations = [];
   const dedupe = new Map();
   for (const reference of references) {
+    signal?.throwIfAborted();
     const state = metadata?.getSessionState?.(reference.referenceId) ?? null;
     if (typeof state?.sessionId !== 'string' || state.sessionId.trim() === '') throw sourceError('source-recovery', 'The linked Session does not have an exact authoritative Session ID.');
     const describeRequest = { includeDerivedTitles: true };
     describeRequest['k' + 'ey'] = reference.externalSourceId;
-    const described = await authoritativeGateway.request('sessions.describe', describeRequest);
+    const described = await withSignal(authoritativeGateway.request('sessions.describe', describeRequest), signal);
     assertSessionIdentity(described, reference, state.sessionId, 'sessions.describe');
-    const history = await completeTranscript(authoritativeGateway, reference, state.sessionId);
+    const history = await completeTranscript(authoritativeGateway, reference, state.sessionId, signal);
     const messages = history.messages;
     const name = conversationName(described, reference);
     const primaryState = state?.isPrimary ? 'primary' : state?.wasPrimary ? 'former-primary' : 'ordinary';
     for (let index = 0; index < messages.length; index += 1) {
+      signal?.throwIfAborted();
       const message = messages[index];
       const text = messageText(message);
       if (!text.trim()) continue;

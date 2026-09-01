@@ -48,8 +48,9 @@ test('plugin retains tools, search, maintenance, and bounded asset serving', asy
   const source = await pluginSource();
   assert.match(source, /api\.registerTool\(topicContextToolFactory/);
   assert.match(source, /name:\s*'command_center_topic_context',\s*optional:\s*true/);
-  assert.match(source, /createSearchRebuildService\(/);
-  assert.match(source, /await searchService\.rebuild\(\{\}\)/);
+  assert.match(source, /searchRebuildServiceFactory = createSearchRebuildService/);
+  assert.match(source, /startupSearchRebuildTask = new Promise\(\(resolve\) => setImmediate\(resolve\)\)\.then/);
+  assert.match(source, /stopPromise = Promise\.resolve\(startupSearchRebuildTask\)/);
   assert.match(source, /createNoteMaintenanceService\(/);
   assert.match(source, /maintenanceService/);
   assert.match(source, /export function runNoteMaintenance\(input\)/);
@@ -126,7 +127,7 @@ test('plugin startup preserves migration wiring and binds approvals to a stable 
     assert.match(pending.approval.host, /^command-center-runtime:[a-f0-9]{64}$/);
     assert.doesNotMatch(pending.approval.host, new RegExp(stateDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   } finally {
-    service.stop();
+    await service.stop();
     await rm(stateDir, { recursive: true, force: true });
   }
 });

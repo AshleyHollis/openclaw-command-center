@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputClassifier, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
+import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 
 const sourceDigest = `sha256:${'a'.repeat(64)}`;
 const placeholderExecutableDigest = `sha256:${'b'.repeat(64)}`;
@@ -65,6 +65,23 @@ test('requires consecutive readiness and notices flapping', async () => {
   await assert.rejects(waitForConsecutiveReadiness(() => false, new Promise(() => {}), { attempts: 2 }), (error) => error.category === 'readiness-flapping');
 });
 
+test('elapsed readiness deadlines allow late success and reject flapping without real sleeps', async () => {
+  let clock = 0;
+  const wait = async (delayMs) => { clock += delayMs; };
+  const late = [false, false, true, true];
+  await waitForConsecutiveReadiness(() => late.shift(), new Promise(() => {}), { deadlineMs: 1_000, delayMs: 100, now: () => clock, wait });
+  assert.equal(clock, 300);
+
+  clock = 0;
+  const observations = [];
+  await assert.rejects(
+    waitForConsecutiveReadiness(() => { const value = observations.length % 2 === 0; observations.push(value); return value; }, new Promise(() => {}), { deadlineMs: 250, delayMs: 100, now: () => clock, wait }),
+    (error) => error.category === 'readiness-timeout' && /within 250 ms/u.test(error.message)
+  );
+  assert.deepEqual(observations, [true, false, true]);
+  assert.equal(clock, 250);
+});
+
 test('readiness cancellation settles during a pending probe and between attempts', async () => {
   const duringProbe = new AbortController();
   let probeAborted = false;
@@ -85,6 +102,29 @@ test('readiness cancellation settles during a pending probe and between attempts
   betweenAttempts.abort(new Error('cancel between readiness probes'));
   await assert.rejects(pendingDelay, /cancel between readiness probes/u);
   assert.equal(observations, 1);
+});
+
+test('readiness deadline aborts a non-settling active probe', async () => {
+  await assert.rejects(
+    waitForConsecutiveReadiness((signal) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })), new Promise(() => {}), { deadlineMs: 10 }),
+    (error) => error.category === 'readiness-timeout' && /probe exceeded/iu.test(error.message)
+  );
+});
+
+test('JSON readiness fetch keeps cancellation and timeout active through a deferred body', async () => {
+  const deferredResponse = (_url, { signal }) => Promise.resolve({
+    ok: true,
+    status: 200,
+    json: () => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+  });
+  const cancelled = new AbortController();
+  const cancellation = fetchJsonWithDeadline('http://127.0.0.1/readiness', { signal: cancelled.signal }, { fetchImpl: deferredResponse, timeoutMs: 1_000 });
+  cancelled.abort(new Error('cancel deferred readiness body'));
+  await assert.rejects(cancellation, /cancel deferred readiness body/u);
+  await assert.rejects(
+    fetchJsonWithDeadline('http://127.0.0.1/readiness', {}, { label: 'deferred readiness body', fetchImpl: deferredResponse, timeoutMs: 10 }),
+    (error) => error.category === 'transport-timeout' && /deferred readiness body/u.test(error.message)
+  );
 });
 
 test('categorizes host integrity failures and early exit', async () => {

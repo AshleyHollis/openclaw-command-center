@@ -26,7 +26,7 @@ function topicIds(metadata, requested) {
   throw sourceError('source-recovery', 'Topic ownership metadata is unavailable.');
 }
 
-export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory, noteAdapter, api, gateway, topicId, authoritativeSources, sourceSnapshotFactory = readTopicSourceSnapshot, onProgress } = {}) {
+export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory, noteAdapter, api, gateway, topicId, authoritativeSources, sourceSnapshotFactory = readTopicSourceSnapshot, onProgress, signal } = {}) {
   const topics = topicIds(metadata, topicId);
   const notes = [];
   const conversations = [];
@@ -37,10 +37,13 @@ export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory,
     ? async (input) => authoritativeSources.readTopicSnapshot?.(input) ?? authoritativeSources.readTopic(input)
     : sourceSnapshotFactory;
   for (const id of topics) {
+    signal?.throwIfAborted();
     const snapshot = await suppliedFactory({
       topicId: id, metadata, api, gateway,
       noteAdapter: noteAdapterFactory ? await noteAdapterFactory(id) : noteAdapter,
+      signal,
     });
+    signal?.throwIfAborted();
     notes.push(...(snapshot.notes ?? snapshot.note?.notes ?? []));
     conversations.push(...(snapshot.conversations ?? snapshot.conversation?.conversations ?? []));
     noteRevisions.push([id, snapshot.note?.sourceRevision ?? snapshot.sourceRevision ?? null]);
@@ -55,7 +58,8 @@ export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory,
   return Object.freeze({ topicId: topicId ?? null, topicIds: Object.freeze(topics), notes: Object.freeze(notes), conversations: Object.freeze(conversations), noteSourceRevision, conversationSourceRevision, sourceRevision });
 }
 
-export async function publishTopicSearchSnapshot({ stateDir, prepared, metadata } = {}) {
+export async function publishTopicSearchSnapshot({ stateDir, prepared, metadata, signal } = {}) {
+  signal?.throwIfAborted();
   if (typeof stateDir !== 'string' || !stateDir.trim()) throw new TypeError('stateDir must be a non-empty string');
   if (!prepared || !Array.isArray(prepared.topicIds) || !Array.isArray(prepared.notes) || !Array.isArray(prepared.conversations) || typeof prepared.noteSourceRevision !== 'string' || typeof prepared.conversationSourceRevision !== 'string') throw sourceError('source-incomplete', 'A complete prepared Topic Search snapshot is required.');
   const noteStore = await openProjectionStore({ stateDir, kind: 'note' });
@@ -64,8 +68,10 @@ export async function publishTopicSearchSnapshot({ stateDir, prepared, metadata 
   // both empty generations so startup never confuses "no Topics" with a lost
   // or partially created projection.
   return withGroupedProjectionPublication({ stateDir }, async (_groupLease) => {
-    const notesResult = await noteStore.rebuild({ topicId: prepared.topicId, topicIds: prepared.topicIds, rows: prepared.notes, sourceRevision: prepared.noteSourceRevision, _groupLease });
-    const conversationsResult = await conversationStore.rebuild({ topicId: prepared.topicId, topicIds: prepared.topicIds, rows: prepared.conversations, sourceRevision: prepared.conversationSourceRevision, _groupLease });
+    const notesResult = await noteStore.rebuild({ topicId: prepared.topicId, topicIds: prepared.topicIds, rows: prepared.notes, sourceRevision: prepared.noteSourceRevision, _groupLease, signal });
+    signal?.throwIfAborted();
+    const conversationsResult = await conversationStore.rebuild({ topicId: prepared.topicId, topicIds: prepared.topicIds, rows: prepared.conversations, sourceRevision: prepared.conversationSourceRevision, _groupLease, signal });
+    signal?.throwIfAborted();
     metadata?.setProjectionBookkeepingBatch?.([notesResult, conversationsResult].map((projection) => ({
       projectionId: projection.projectionId,
       sourceRevision: projection.sourceRevision,
@@ -100,7 +106,8 @@ export async function reconcileTopicSearchBookkeeping({ stateDir, metadata } = {
 
 export async function rebuildTopicSearchProjections(options = {}) {
   const prepared = await prepareTopicSearchSnapshot(options);
-  return publishTopicSearchSnapshot({ stateDir: options.stateDir, prepared, metadata: options.metadata });
+  options.signal?.throwIfAborted();
+  return publishTopicSearchSnapshot({ stateDir: options.stateDir, prepared, metadata: options.metadata, signal: options.signal });
 }
 
 export const rebuildSearchProjections = rebuildTopicSearchProjections;

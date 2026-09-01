@@ -50,6 +50,28 @@ test('Note source snapshot reads only the exact Topic Folder and preserves headi
   await assert.rejects(() => readNoteSourceSnapshot({ topicId: topic.topicId, metadata: metadata(), noteAdapter: { browse: async () => [{ path: 'foreign.md', sourceReference: { ...noteReference, topicId: 'topic-two' } }], read: async () => ({}) } }), /foreign|identity/i);
 });
 
+test('production source snapshots settle when startup rebuild cancellation interrupts pending authority reads', async () => {
+  const noteAbort = new AbortController();
+  const noteSnapshot = readNoteSourceSnapshot({
+    topicId: topic.topicId,
+    metadata: metadata(),
+    signal: noteAbort.signal,
+    noteAdapter: { browse: () => new Promise(() => {}), read: async () => ({}) }
+  });
+  noteAbort.abort(new Error('cancel pending Note snapshot'));
+  await assert.rejects(noteSnapshot, /cancel pending Note snapshot/u);
+
+  const sessionAbort = new AbortController();
+  const conversationSnapshot = readConversationSourceSnapshot({
+    topicId: topic.topicId,
+    metadata: metadata(),
+    signal: sessionAbort.signal,
+    gateway: { request: () => new Promise(() => {}) }
+  });
+  sessionAbort.abort(new Error('cancel pending Session snapshot'));
+  await assert.rejects(conversationSnapshot, /cancel pending Session snapshot/u);
+});
+
 test('Note source snapshot indexes sections and preserves null headings with stable Note identities', async () => {
   const calls = [];
   const snapshot = await readNoteSourceSnapshot({ topicId: topic.topicId, metadata: metadata(), noteAdapter: {

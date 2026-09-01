@@ -28,7 +28,7 @@ export function runNoteMaintenance(input) {
   return activeMaintenanceService.run(input);
 }
 
-export function createMetadataService(api, { notificationEmitter } = {}) {
+export function createMetadataService(api, { notificationEmitter, searchRebuildServiceFactory = createSearchRebuildService } = {}) {
   let metadataService;
   let sourceService;
   let attentionService;
@@ -43,9 +43,16 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
   let topicAnalysisRunner;
   let topicAnalysisSchedule;
   let topicReview;
+  let startupSearchRebuildTask = Promise.resolve();
+  let startupSearchRebuildController;
+  let stopPromise;
+  let stopping = false;
   return {
     id: 'command-center-metadata',
     async start() {
+      stopping = false;
+      stopPromise = undefined;
+      startupSearchRebuildController = new AbortController();
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
       const configuredSourceCapabilities = api.pluginConfig?.sourceCapabilities ?? {};
@@ -102,7 +109,7 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
       const { readVisibleSessionTranscriptMessageEntries } = await import('openclaw/plugin-sdk/session-transcript-runtime');
       sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
-      searchRebuildService = createSearchRebuildService({
+      searchRebuildService = searchRebuildServiceFactory({
         stateDir,
         metadata: metadataService,
         api,
@@ -119,11 +126,6 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
       contextPolicy = createTopicContextPolicy({ metadata: metadataService, searchService });
       const migrationResult = await migrationService.start();
       await reconcileTopicSearchBookkeeping({ stateDir, metadata: metadataService });
-      try {
-        await searchService.invalidate({});
-        await searchService.rebuild({});
-      }
-      catch { api.logger?.warn?.('Command Center Topic Search remains unavailable until its authoritative sources can be rebuilt.'); }
       if (gatewayAvailable) {
         try { await sourceService.refreshReminderAttention(); }
         catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
@@ -193,29 +195,42 @@ export function createMetadataService(api, { notificationEmitter } = {}) {
       notificationTimer.unref?.();
       maintenanceService = createNoteMaintenanceService({ sourceService, metadata: metadataService });
       activeMaintenanceService = maintenanceService;
+      // Search projections are disposable and publish atomically. Schedule
+      // their replacement only after every activation-critical await has
+      // completed, and retain a prior generation until publication succeeds.
+      startupSearchRebuildTask = new Promise((resolve) => setImmediate(resolve)).then(async () => {
+        if (stopping) return;
+        await searchService.rebuild({ signal: startupSearchRebuildController.signal });
+      }).catch(() => { api.logger?.warn?.('Command Center Topic Search remains unavailable until its authoritative sources can be rebuilt.'); });
       return migrationResult;
     },
     stop() {
+      if (stopPromise) return stopPromise;
+      stopping = true;
+      startupSearchRebuildController?.abort(new Error('Command Center is stopping.'));
       if (notificationTimer) clearInterval(notificationTimer);
       notificationTimer = undefined;
-      notificationService?.close?.();
-      sourceService?.close?.();
-      attentionService?.close?.();
-      metadataService?.close();
-      metadataService = undefined;
-      sourceService = undefined;
-      searchService = undefined;
-      searchRebuildService = undefined;
-      contextPolicy = undefined;
-      topicService = undefined;
-      attentionService = undefined;
-      dashboardService = undefined;
-      notificationService = undefined;
-      topicAnalysisRunner = undefined;
-      topicAnalysisSchedule = undefined;
-      topicReview = undefined;
-      maintenanceService = undefined;
-      activeMaintenanceService = undefined;
+      stopPromise = Promise.resolve(startupSearchRebuildTask).catch(() => {}).then(() => {
+        notificationService?.close?.();
+        sourceService?.close?.();
+        attentionService?.close?.();
+        metadataService?.close();
+        metadataService = undefined;
+        sourceService = undefined;
+        searchService = undefined;
+        searchRebuildService = undefined;
+        contextPolicy = undefined;
+        topicService = undefined;
+        attentionService = undefined;
+        dashboardService = undefined;
+        notificationService = undefined;
+        topicAnalysisRunner = undefined;
+        topicAnalysisSchedule = undefined;
+        topicReview = undefined;
+        maintenanceService = undefined;
+        activeMaintenanceService = undefined;
+      });
+      return stopPromise;
     },
     get sourceService() { return sourceService; },
     get attentionService() { return attentionService; },

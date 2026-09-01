@@ -61,7 +61,12 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   assert.match(source, /release preparation: candidate build and authenticated descriptor/u);
   assert.match(source, /release preparation: deterministic source fixtures/u);
   assert.match(source, /release preparation: pinned host launch/u);
+  for (const category of ['bootstrap-http-', 'bootstrap-invalid-response', 'metadata-not-ready']) assert.match(source, new RegExp(category, 'u'));
   assert.match(source, /api\/topics\/actions`.*, \{ method: 'POST'/u);
+  assert.doesNotMatch(source, /ensureVerifiedActivityFixture|createAttentionService/u);
+  assert.match(source, /data-activity-receipt/u);
+  assert.match(source, /method: 'command-center\.v1\.activity\.get'.*activityId: actionReceipt\.activityId/u);
+  assert.ok(source.indexOf("collectScenario('scale-performance'") < source.indexOf("collectScenario('verified-activity-readback'"), 'verified Activity readback must follow the keyboard source action that produced its receipt');
   assert.match(source, /performanceBaseline: emittedBaseline/u);
   assert.match(source, /browser\.version\(\), baseline\.browser\.version/u);
   assert.match(sessionSource, /overlapping Session creates preserve every distinct plugin-owned key/u);

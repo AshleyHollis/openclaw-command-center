@@ -20,6 +20,8 @@ test('Dashboard markup keeps the required first-class regions and narrow flow la
   assert.match(app, /Load more Activity/u);
   assert.match(app, /\['session', 'note'\]\.includes\(record\.navigation\.kind\)/u);
   assert.match(app, /Activity source opened\./u);
+  assert.match(app, /feedback\.dataset\.activityReceipt = serialized/u);
+  assert.match(app, /serialized\.length <= 4096/u);
   for (const id of ['conversation-previous', 'conversation-next', 'conversation-page-status']) assert.match(index, new RegExp(`id="${id}"`, 'u'));
   assert.match(app, /CONVERSATION_PAGE_SIZE = 50/u);
   assert.match(app, /workspace\.conversations\.slice\(start, start \+ CONVERSATION_PAGE_SIZE\)/u);
@@ -65,7 +67,7 @@ test('wide and narrow Topic launchers and topic.open actions open the exact veri
       await page.evaluate(() => {
         const topic = { topicId: 'topic-ui', name: 'Fictional Topic', paraCategory: 'project', lifecycle: 'active' };
         globalThis.fetch = async (_url, options = {}) => {
-          if (options.method === 'POST') return { ok: true, async json() { return { schemaVersion: 1, status: 'applied', result: { navigation: { topicId: topic.topicId } } }; } };
+          if (options.method === 'POST') return { ok: true, async json() { return { schemaVersion: 1, status: 'applied', result: { navigation: { topicId: topic.topicId }, activity: { activityId: 'activity-ui-source-action', episodeId: 'episode-ui', logicalOperationId: 'operation-ui', topicId: topic.topicId, sourceReferenceId: 'source-ui', operationKind: 'topic.open', outcome: 'applied', verificationRevision: 'revision-ui', occurredAt: '2026-08-27T12:00:01.000Z' } } }; } };
           return { ok: true, async json() { return { schemaVersion: 1, status: 'applied', result: { serverTime: '2026-08-27T12:00:00.000Z', attentionBadgeCount: 1, attention: [{ episodeId: 'episode-ui', sourceCapabilityId: 'monitor', stableSubjectId: 'subject-ui', topicId: topic.topicId, revision: 1, severity: 'High', sourceKind: 'monitor', context: 'A fictional item', evidence: {}, actions: [{ actionId: 'topic.open', label: 'Open Topic', kind: 'navigation' }], eligibleSnoozeChoices: [] }], inProgress: [], comingUp: [], topics: [topic], activity: { records: [], nextOffset: null, hasMore: false }, activityOffset: 0, activityLimit: 50 } }; } };
         };
         window.__topicRequests = [];
@@ -90,6 +92,7 @@ test('wide and narrow Topic launchers and topic.open actions open the exact veri
       await page.getByRole('button', { name: 'Open Topic' }).click();
       await page.waitForFunction((count) => window.__topicRequests.filter((method) => method === 'command-center.v1.topics.get').length > count, before);
       assert.equal(await page.evaluate(() => document.activeElement?.dataset?.topicId), 'topic-ui');
+      assert.deepEqual(JSON.parse(await page.locator('#dashboard-feedback').getAttribute('data-activity-receipt')), { activityId: 'activity-ui-source-action', episodeId: 'episode-ui', logicalOperationId: 'operation-ui', topicId: 'topic-ui', sourceReferenceId: 'source-ui', operationKind: 'topic.open', outcome: 'applied', verificationRevision: 'revision-ui', occurredAt: '2026-08-27T12:00:01.000Z' });
       await page.close();
     }
   } finally { await browser.close(); }
