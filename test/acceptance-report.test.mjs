@@ -35,7 +35,7 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   const sessionSource = await readFile(new URL('./session-adapter.test.mjs', import.meta.url), 'utf8');
   const bridgeSource = await readFile(new URL('./bridge-contract.test.mjs', import.meta.url), 'utf8');
   assert.match(source, /await testContext\.test\(`release scenario:/u);
-  for (const boundary of ['startup-migration-channel-count', 'startup-migration-occurrence-count', 'startup-authenticated-history', 'startup-imported-history-text', 'startup-imported-history-provenance', 'migrated-scale-conversation-seeding', 'startup-projection-recovery', 'malformed-topic-route-rejection']) assert.match(source, new RegExp(`collectScenario\\('${boundary}'`, 'u'));
+  for (const boundary of ['startup-migration-channel-count', 'startup-migration-occurrence-count', 'startup-authenticated-history', 'startup-imported-history-text', 'startup-imported-history-provenance', 'migrated-scale-conversation-seeding', 'startup-projection-recovery', 'invalidated-projection-recovery', 'missing-projection-recovery', 'stale-projection-recovery', 'malformed-topic-route-rejection']) assert.match(source, new RegExp(`collectScenario\\('${boundary}'`, 'u'));
   assert.match(source, /migrationFixtureEvidence = retainPreparedMigrationFixtureEvidence\(migrationExport\)/u);
   assert.match(source, /prepared migration fixture evidence must remain available after fixture preparation/u);
   assert.doesNotMatch(source, /fictional-topic-(?:alpha|scale)/u);

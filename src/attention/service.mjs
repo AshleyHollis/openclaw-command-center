@@ -74,18 +74,27 @@ function mapActivity(row) {
 
 function mapLegacyActivity(row) {
   if (!row) return null;
+  const operationKind = row.operationKind ?? row.operation_kind;
+  const observedRevision = row.observedRevision ?? row.observed_revision ?? null;
+  let analysisEvidence = null;
+  if (operationKind === 'topic-analysis.run' && observedRevision) {
+    try {
+      const parsed = JSON.parse(observedRevision);
+      if (typeof parsed?.sourceReferenceId === 'string' && (parsed.sourceRevision === null || typeof parsed.sourceRevision === 'string')) analysisEvidence = parsed;
+    } catch { /* pre-evidence analysis rows remain readable without inventing a source identity */ }
+  }
   return Object.freeze({
     activityId: row.activityId ?? row.activity_id,
     episodeId: null,
     logicalOperationId: row.logicalOperationId ?? row.logical_operation_id,
     attemptId: null,
     topicId: row.topicId ?? row.topic_id ?? null,
-    sourceReferenceId: null,
+    sourceReferenceId: analysisEvidence?.sourceReferenceId ?? null,
     actorMode: 'system',
     actionId: null,
-    operationKind: row.operationKind ?? row.operation_kind,
+    operationKind,
     outcome: row.outcome,
-    verificationRevision: row.observedRevision ?? row.observed_revision ?? null,
+    verificationRevision: analysisEvidence ? analysisEvidence.sourceRevision : observedRevision,
     occurredAt: row.createdAt ?? row.created_at,
     createdAt: row.createdAt ?? row.created_at,
     updatedAt: row.updatedAt ?? row.updated_at

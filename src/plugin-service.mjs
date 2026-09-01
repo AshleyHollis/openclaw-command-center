@@ -11,6 +11,7 @@ import { createTopicService } from './topics/service.mjs';
 import { createDashboardService } from './dashboard/service.mjs';
 import { createNotificationService } from './notifications/service.mjs';
 import { createTopicAnalysisRunner } from './topics/analysis-runner.mjs';
+import { createTopicAnalysisProvider } from './topics/analysis-provider.mjs';
 import { createProductionTopicAnalyzer } from './topics/production-analyzer.mjs';
 import { createTopicAnalysisScheduleService } from './topics/analysis-schedule.mjs';
 import { createTopicReviewService } from './topics/review.mjs';
@@ -28,7 +29,7 @@ export function runNoteMaintenance(input) {
   return activeMaintenanceService.run(input);
 }
 
-export function createMetadataService(api, { notificationEmitter, searchRebuildServiceFactory = createSearchRebuildService } = {}) {
+export function createMetadataService(api, { notificationEmitter, searchRebuildServiceFactory = createSearchRebuildService, topicAnalyzerFactory = createProductionTopicAnalyzer } = {}) {
   let metadataService;
   let sourceService;
   let attentionService;
@@ -56,13 +57,15 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
       const configuredSourceCapabilities = api.pluginConfig?.sourceCapabilities ?? {};
+      const topicAnalyzer = topicAnalyzerFactory?.();
+      const analysisUsable = typeof topicAnalyzer === 'function' || typeof topicAnalyzer?.analyze === 'function';
       const capabilities = {
         notes: configuredSourceCapabilities.notes !== false,
         sessions: gatewayAvailable && configuredSourceCapabilities.sessions !== false,
         scheduler: gatewayAvailable && configuredSourceCapabilities.scheduler !== false,
         activity: configuredSourceCapabilities.activity !== false,
         search: configuredSourceCapabilities.search !== false,
-        analysis: false,
+        analysis: analysisUsable && configuredSourceCapabilities.analysis !== false,
         attention: configuredSourceCapabilities.attention !== false
       };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
@@ -107,7 +110,8 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       // for shell/build inspection without resolving host-only packages; the
       // pinned host still supplies the transcript reader before service start.
       const { readVisibleSessionTranscriptMessageEntries } = await import('openclaw/plugin-sdk/session-transcript-runtime');
-      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
+      const analysisProvider = analysisUsable ? createTopicAnalysisProvider({ getRunner: () => topicAnalysisRunner, metadata: metadataService, onCompleted: () => topicReview?.refresh?.() }) : null;
+      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider, analysisProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
       searchRebuildService = searchRebuildServiceFactory({
         stateDir,
@@ -121,7 +125,13 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
         stateDir,
         metadata: metadataService,
         sourceService,
-        rebuild: (input) => searchRebuildService.rebuild(input)
+        rebuild: (input) => searchRebuildService.rebuild(input),
+        preparedRebuild: typeof searchRebuildService.prepareAuthorized === 'function' && typeof searchRebuildService.rebuildPrepared === 'function'
+          ? async (input) => {
+              await searchRebuildService.prepareAuthorized(input);
+              return searchRebuildService.rebuildPrepared(input);
+            }
+          : undefined
       });
       contextPolicy = createTopicContextPolicy({ metadata: metadataService, searchService });
       const migrationResult = await migrationService.start();
@@ -167,7 +177,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       topicAnalysisRunner = createTopicAnalysisRunner({
         metadata: metadataService,
         topicService,
-        analyzer: createProductionTopicAnalyzer(),
+        analyzer: topicAnalyzer,
         now: () => Date.now()
       });
       topicReview = createTopicReviewService({ metadata: metadataService, topicService, attentionService, logger: api.logger, now: () => Date.now() });
@@ -281,9 +291,8 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       return contextPolicy.retrieve(input);
     },
     async searchRebuild(input) {
-      if (!searchRebuildService) throw new Error('Command Center Topic Search rebuild is not ready.');
-      await searchRebuildService.prepareAuthorized(input);
-      return searchRebuildService.rebuildPrepared(input);
+      if (!searchService?.rebuildPrepared) throw new Error('Command Center Topic Search rebuild is not ready.');
+      return searchService.rebuildPrepared(input);
     }
   };
 }

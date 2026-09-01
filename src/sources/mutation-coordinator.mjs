@@ -121,11 +121,11 @@ export class MutationCoordinator {
 
 function identityOf(value) {
   if (value === null || value === undefined) return null;
-  return value.sourceReference?.externalSourceId ?? value.sourceReference?.referenceId ?? value.note?.sourceReference?.externalSourceId ?? value.note?.sourceReference?.referenceId ?? value.externalSourceId ?? value.path ?? value.note?.path ?? value.runId ?? value.run?.runId ?? value.id ?? null;
+  return value.sourceReference?.externalSourceId ?? value.sourceReference?.referenceId ?? value.note?.sourceReference?.externalSourceId ?? value.note?.sourceReference?.referenceId ?? value.externalSourceId ?? value.path ?? value.note?.path ?? value.analysisId ?? value.runId ?? value.run?.runId ?? value.id ?? null;
 }
 
 function revisionOf(value) {
-  return value?.revision ?? value?.sourceReference?.observedRevision ?? value?.note?.revision ?? value?.note?.sourceReference?.observedRevision ?? value?.job?.configRevision ?? null;
+  return value?.revision ?? value?.observedRevision ?? value?.sourceReference?.observedRevision ?? value?.note?.revision ?? value?.note?.sourceReference?.observedRevision ?? value?.job?.configRevision ?? null;
 }
 
 export function createMutationCoordinator(options) {

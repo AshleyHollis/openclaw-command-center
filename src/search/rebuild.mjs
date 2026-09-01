@@ -182,6 +182,7 @@ export function createSearchRebuildService(options = {}) {
       if (typeof topicId !== 'string' || !topicId.trim()) throw sourceError('invalid-request', 'One exact Topic ID is required for authenticated rebuild preparation.');
       const operationId = assertLogicalOperationId(logicalOperationId);
       const intentDigest = rebuildIntentDigest(topicId);
+      topicIds(options.metadata, topicId);
       prune();
       const receipt = readReceipt(options.stateDir, operationId);
       if (receipt) {
@@ -196,7 +197,10 @@ export function createSearchRebuildService(options = {}) {
       }
       if (!existing && operations.size >= 8) throw sourceError('source-unavailable', 'Too many authenticated rebuild operations are active.');
       const operation = { topicId, intentDigest, status: 'preparing', expiresAt: Number.POSITIVE_INFINITY, prepared: null, result: null, promise: null };
-      operation.promise = prepareTopicSearchSnapshot({ ...options, topicId, gateway }).then((prepared) => {
+      // The requested Topic remains the authorization and idempotency intent,
+      // while publication snapshots every active Topic so a rebuild can never
+      // narrow the globally committed projection set.
+      operation.promise = prepareTopicSearchSnapshot({ ...options, topicId: undefined, gateway }).then((prepared) => {
         operation.prepared = prepared;
         operation.status = 'prepared';
         operation.expiresAt = clock() + preparedTtlMs;

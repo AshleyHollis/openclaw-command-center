@@ -9,7 +9,7 @@ import { createMetadataService } from '../src/plugin-service.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
 
-function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {} } = {}) {
+function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {}, gateway } = {}) {
   const declarations = [];
   const descriptors = [];
   const routes = [];
@@ -27,7 +27,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     config: { agents: { defaults: { userTimezone: 'UTC' } } },
     pluginConfig,
     logger: { warn() {} },
-    runtime: { state: { resolveStateDir: () => stateDir } },
+    runtime: { state: { resolveStateDir: () => stateDir }, ...(gateway ? { gateway } : {}) },
     session: { controls: { registerControlUiDescriptor(value) { descriptors.push(structuredClone(value)); } } },
     lifecycle: { registerRuntimeLifecycle() {} },
     notifications: {
@@ -60,6 +60,56 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
   };
 }
 
+test('production plugin exposes Ready analysis and replays its durable bridge result without redispatch', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-analysis-'));
+  const topicId = 'fictional-production-analysis-topic';
+  const sourceId = 'fictional-production-analysis-source';
+  const logicalOperationId = '7a111111-1111-4111-8111-111111111111';
+  const gateway = { async request(method, input = {}) {
+    if (method === 'cron.list') return { jobs: [] };
+    if (method === 'cron.add') return { id: 'fictional-analysis-cron', declarationKey: input.declarationKey, enabled: true, schedule: input.schedule, sessionTarget: input.sessionTarget, wakeMode: input.wakeMode, payload: input.payload, delivery: input.delivery, configRevision: 'fictional-analysis-cron-r1' };
+    throw new Error(`unexpected production integration Gateway method ${method}`);
+  } };
+  const host = fakePublishedApi(stateDir, { gateway });
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, scheduler: true, activity: true, search: true, analysis: true, attention: true } });
+    try {
+      seed.createTopic({ topicId, name: 'Project: Fictional production analysis', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
+      seed.createSourceReference({ version: 1, referenceId: sourceId, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: 'fictional-production-analysis', observedRevision: 'fictional-analysis-source-r1', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
+      seed.recordTopicAnalysisRun({ runId: 'fictional-prior-analysis-run', schemaVersion: 1, trigger: 'manual', outcome: 'success', baselineCursor: { nextTopicId: null, nextSourceId: null }, successCursor: { nextTopicId: null, nextSourceId: null }, changedCount: 0, evaluatedCount: 0, proposalCount: 0, retainedOverflowCount: 0, startedAt: '2026-08-21T00:00:00.000Z', finishedAt: '2026-08-21T00:00:01.000Z' });
+    } finally { seed.close(); }
+    plugin.register(host.api);
+    const service = host.services[0];
+    await service.start();
+    const statusEnvelope = await host.authenticatedGatewayRequest('command-center.v1.sources.status', { schemaVersion: 1 });
+    assert.equal(statusEnvelope.result.mode, 'ready');
+    assert.equal(statusEnvelope.result.unavailableCapabilities.includes('analysis'), false);
+
+    const params = { schemaVersion: 1, topicId, input: {}, logicalOperationId };
+    const first = await host.authenticatedGatewayRequest('command-center.v1.analysis.run', params);
+    assert.equal(first.logicalOperationId, logicalOperationId);
+    assert.equal(first.result.value.status, 'applied');
+    assert.equal(typeof first.result.value.analysisId, 'string');
+    assert.equal(first.result.value.observedRevision, first.result.value.analysisId);
+    const runId = first.result.value.analysisId;
+    assert.equal(service.topicAnalysisRunner.metadata.listTopicAnalysisRuns().filter((run) => run.runId === runId).length, 1);
+    const proposal = service.topicAnalysisRunner.metadata.listTopicProposals().find((item) => item.affectedTopicIds.includes(topicId));
+    assert.ok(proposal);
+    assert.equal(service.topicAnalysisRunner.metadata.listTopicAnalysisEvidence(proposal.proposalId, { currentOnly: true }).length, 1);
+    const activity = service.attentionService.getActivity(`activity:topic-analysis:${runId}`);
+    assert.deepEqual({ logicalOperationId: activity.logicalOperationId, topicId: activity.topicId, sourceReferenceId: activity.sourceReferenceId, verificationRevision: activity.verificationRevision }, { logicalOperationId: `topic-analysis:${runId}`, topicId, sourceReferenceId: sourceId, verificationRevision: 'fictional-analysis-source-r1' });
+    assert.equal(service.attentionService.allEpisodes().some((episode) => episode.sourceCapabilityId === 'topic-review' && episode.state === 'Active'), true, 'bridge completion must refresh the Topic Review Attention projection');
+
+    const beforeReplay = service.topicAnalysisRunner.metadata.listTopicAnalysisRuns().length;
+    const replay = await host.authenticatedGatewayRequest('command-center.v1.analysis.run', params);
+    assert.deepEqual(replay.result.value, first.result.value);
+    assert.equal(service.topicAnalysisRunner.metadata.listTopicAnalysisRuns().length, beforeReplay, 'same-operation replay must reconcile the durable run without analysis redispatch');
+  } finally {
+    await host.services[0]?.stop?.();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('plugin readiness precedes deferred Search rebuild and shutdown settles the producer', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-deferred-search-'));
   let releaseRebuild;
@@ -83,7 +133,13 @@ test('plugin readiness precedes deferred Search rebuild and shutdown settles the
     assert.equal(stopped, false, 'shutdown must retain owned resources until the rebuild producer settles');
     releaseRebuild();
     await stopping;
-    assert.deepEqual(events, [['service', 'ready'], ['rebuild', 'started'], ['rebuild', 'settled'], ['service', 'stopped']]);
+    assert.deepEqual(events, [
+      ['service', 'ready'],
+      ['rebuild', 'started'],
+      ['rebuild', 'settled'],
+      ['warning', 'Command Center Topic Search remains unavailable until its authoritative sources can be rebuilt.'],
+      ['service', 'stopped']
+    ]);
   } finally {
     releaseRebuild?.();
     await service.stop();

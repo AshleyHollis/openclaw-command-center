@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence } from '../src/acceptance-migration.mjs';
+import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence } from '../src/acceptance-migration.mjs';
 import { createAcceptanceScenarioCoordinator } from '../src/acceptance-scenario-coordinator.mjs';
 
 const topicId = '11111111-1111-4111-8111-111111111111';
@@ -67,4 +67,38 @@ test('prepared migration fixture evidence remains available to every independent
   assert.deepEqual(coordinator.failures, []);
   for (const [id] of startupCases) assert.deepEqual(coordinator.result(id), { retained: true });
   assert.throws(() => { preparedEvidence.migrationExport.channels[0].messages[0].text = 'changed'; }, /read only|Cannot assign/iu);
+});
+
+test('verified imported history hands the exact migration binding to authenticated readback', async () => {
+  const binding = Object.freeze({
+    referenceId: 'reference-fictional-primary',
+    sessionKey: 'session:fictional-primary',
+    sessionId: 'session-id-fictional'
+  });
+  const prepared = retainPreparedMigrationFixtureEvidence({
+    schemaVersion: 1,
+    source: 'discord',
+    channels: [{ channelId: 'fictional-alpha', messages: [{ messageId: 'alpha-1', text: 'Fictional alpha text.' }] }]
+  });
+  const observed = [];
+
+  const evidence = await readVerifiedImportedHistoryEvidence({
+    ensureMigrationBinding: async () => ({ completion: { completion_id: 'legacy-discord-v1' }, binding }),
+    requireMigrationFixtureEvidence: () => prepared,
+    readHistory: async (receivedBinding) => {
+      observed.push(receivedBinding);
+      return {
+        messages: [
+          { text: 'ordinary' },
+          { text: 'Fictional alpha text.', __openclaw: { legacyDiscordV1: { immutable: true } } }
+        ]
+      };
+    }
+  });
+
+  assert.deepEqual(observed, [binding]);
+  assert.equal(evidence.binding, binding);
+  assert.equal(evidence.channel.channelId, 'fictional-alpha');
+  assert.equal(evidence.imported.length, 1);
+  assert.equal(evidence.imported[0].text, 'Fictional alpha text.');
 });

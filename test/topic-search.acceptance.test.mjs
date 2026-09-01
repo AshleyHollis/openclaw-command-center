@@ -7,6 +7,7 @@ import test from 'node:test';
 import { sanitizeBridgeResult } from '../src/bridge/contracts.mjs';
 import { createTopicSearchService } from '../src/search/service.mjs';
 import { createSearchRebuildService } from '../src/search/rebuild.mjs';
+import { openProjectionStore } from '../src/search/projection-store.mjs';
 import { createSearchAdapter } from '../src/sources/search.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSourceReference } from '../src/sources/reference.mjs';
@@ -58,7 +59,15 @@ test('concurrent authenticated rebuild replay converges while changed intent fai
     release();
     assert.deepEqual(await first, await replay);
     const committed = await rebuild.rebuildPrepared({ topicId: 'topic-a', logicalOperationId: operationId });
-    assert.deepEqual(committed.topicIds, ['topic-a']);
+    assert.deepEqual(committed.topicIds, ['topic-a', 'topic-b']);
+    const secondOperationId = randomUUID();
+    await rebuild.prepareAuthorized({ topicId: 'topic-b', logicalOperationId: secondOperationId });
+    const secondCommitted = await rebuild.rebuildPrepared({ topicId: 'topic-b', logicalOperationId: secondOperationId });
+    assert.deepEqual(secondCommitted.topicIds, ['topic-a', 'topic-b']);
+    const noteProjection = await openProjectionStore({ stateDir, kind: 'note' });
+    const conversationProjection = await openProjectionStore({ stateDir, kind: 'conversation' });
+    assert.deepEqual(noteProjection.manifest().topicIds, ['topic-a', 'topic-b']);
+    assert.deepEqual(conversationProjection.manifest().topicIds, ['topic-a', 'topic-b']);
   } finally {
     release?.();
     await rm(stateDir, { recursive: true, force: true });

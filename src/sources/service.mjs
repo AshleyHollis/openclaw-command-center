@@ -439,7 +439,18 @@ export class AuthoritativeSourceService {
     this.assertMutationAllowed();
     const analysis = this.requireTopicService(input, { write: true, requiredSourceKinds: ['note_folder'] }).analysis;
     if (!analysis) throw sourceError('capability-unavailable', 'Topic Analysis capability is unavailable.', { capability: 'analysis' });
-    return this.coordinator.mutate({ operationKind: 'analysis.run', requestId: input.requestId ?? input.logicalOperationId, logicalOperationId: input.logicalOperationId, topicId: input.topicId, intent: { input: input.input }, execute: () => analysis.run(input) });
+    return this.coordinator.mutate({
+      operationKind: 'analysis.run',
+      requestId: input.requestId ?? input.logicalOperationId,
+      logicalOperationId: input.logicalOperationId,
+      topicId: input.topicId,
+      intent: { input: input.input },
+      execute: () => analysis.run(input),
+      reconcile: ({ resultIdentity, logicalOperationId }) => {
+        const value = (resultIdentity && this.analysisProvider?.read?.(resultIdentity)) || this.analysisProvider?.reconcile?.(logicalOperationId);
+        return value ? { matched: true, value } : { matched: false };
+      }
+    });
   }
   attentionAct(input) {
     requireCapability(this.capabilities, 'attention');

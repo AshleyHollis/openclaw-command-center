@@ -25,3 +25,17 @@ export function retainPreparedMigrationFixtureEvidence(migrationExport) {
   const retained = deepFreeze(structuredClone(migrationExport));
   return Object.freeze({ migrationExport: retained, channelCount: retained.channels.length, occurrenceCount });
 }
+
+export async function readVerifiedImportedHistoryEvidence({
+  ensureMigrationBinding,
+  requireMigrationFixtureEvidence,
+  readHistory,
+  signal
+}) {
+  const { binding } = await ensureMigrationBinding(signal);
+  const prepared = requireMigrationFixtureEvidence();
+  const channel = prepared.migrationExport.channels[0];
+  const history = await readHistory(binding, signal);
+  const imported = (history.messages ?? []).filter((message) => message?.__openclaw?.legacyDiscordV1?.immutable === true);
+  return { binding, channel, history, imported };
+}

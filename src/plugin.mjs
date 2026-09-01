@@ -47,7 +47,7 @@ export default definePluginEntry({
   id: pluginId,
   name: 'Command Center',
   description: 'A responsive Command Center control destination.',
-  configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema, topics: { type: 'object', properties: { noteRoot: { type: 'string', minLength: 1, pattern: '\\S' } }, required: ['noteRoot'], additionalProperties: false }, sourceCapabilities: { type: 'object', properties: Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'search', 'attention'].map((name) => [name, { const: false }])), additionalProperties: false }, controlUiGrant: { const: false } }, additionalProperties: false },
+  configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema, topics: { type: 'object', properties: { noteRoot: { type: 'string', minLength: 1, pattern: '\\S' } }, required: ['noteRoot'], additionalProperties: false }, sourceCapabilities: { type: 'object', properties: Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'search', 'analysis', 'attention'].map((name) => [name, { const: false }])), additionalProperties: false }, controlUiGrant: { const: false } }, additionalProperties: false },
   /** @param {OpenClawPluginApi} api */
   register(api) {
     const controlUiMutationsAllowed = api.pluginConfig?.controlUiGrant !== false;

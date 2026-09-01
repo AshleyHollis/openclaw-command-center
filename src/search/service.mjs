@@ -167,31 +167,58 @@ function isCurrentResult(metadata, topicId, scope, result) {
   }
 }
 
-export function createTopicSearchService({ stateDir, metadata, sourceService, noteStore, conversationStore, rebuild } = {}) {
+export function createTopicSearchService({ stateDir, metadata, sourceService, noteStore, conversationStore, rebuild, preparedRebuild } = {}) {
   let notes = noteStore;
   let conversations = conversationStore;
   let rebuildQueue = Promise.resolve();
   let invalidated = hasTopicSearchInvalidationMarker(stateDir);
+  let freshnessEpoch = invalidated ? 1 : 0;
   const stores = async () => {
     notes ??= await openProjectionStore({ stateDir, kind: 'note' });
     conversations ??= await openProjectionStore({ stateDir, kind: 'conversation' });
     return { notes, conversations };
   };
-  const queueRebuild = (input = {}) => {
-    if (typeof rebuild !== 'function') return Promise.reject(sourceError('capability-unavailable', 'Topic Search rebuild is unavailable.', { capability: 'search' }));
-    const run = async () => {
-      const result = await rebuild(input);
-      clearTopicSearchInvalidationMarker(stateDir);
-      invalidated = false;
-      return result;
-    };
+  const enqueueMaintenance = (run) => {
     const queued = rebuildQueue.then(run, run);
     rebuildQueue = queued.catch(() => {});
     return queued;
   };
+  const hasCommittedProjectionSet = async () => {
+    const opened = await stores();
+    if (typeof metadata?.getProjectionBookkeeping !== 'function') return false;
+    const projectionIds = new Set();
+    for (const store of [opened.notes, opened.conversations]) {
+      const manifest = store.manifest?.();
+      if (!manifest || manifest.schemaVersion !== 1 || typeof manifest.projectionId !== 'string' || typeof manifest.generation !== 'string' || !Array.isArray(manifest.topicIds)) return false;
+      projectionIds.add(manifest.projectionId);
+      const checkpoint = metadata.getProjectionBookkeeping(manifest.projectionId);
+      if (!checkpoint || checkpoint.sourceRevision !== manifest.sourceRevision || checkpoint.inputDigest !== manifest.inputDigest) return false;
+    }
+    return projectionIds.size === 2 && Object.values(SEARCH_PROJECTION_VERSIONS).every(({ projectionId }) => projectionIds.has(projectionId));
+  };
+  const queueRebuildOperation = (runRebuild, input = {}) => {
+    if (typeof runRebuild !== 'function') return Promise.reject(sourceError('capability-unavailable', 'Topic Search rebuild is unavailable.', { capability: 'search' }));
+    const rebuildEpoch = freshnessEpoch;
+    const run = async () => {
+      const result = await runRebuild(input);
+      if (rebuildEpoch !== freshnessEpoch) return result;
+      if (!await hasCommittedProjectionSet()) {
+        invalidated = true;
+        try { markTopicSearchInvalidated(stateDir); } catch { /* Existing metadata denial remains authoritative. */ }
+        throw sourceError('projection-unavailable', 'Topic Search rebuild did not commit both projections and bookkeeping.');
+      }
+      clearTopicSearchInvalidationMarker(stateDir);
+      invalidated = false;
+      return result;
+    };
+    return enqueueMaintenance(run);
+  };
+  const queueRebuild = (input = {}) => queueRebuildOperation(rebuild, input);
   const service = {
     rebuild: rebuild ? queueRebuild : undefined,
+    rebuildPrepared: preparedRebuild ? (input = {}) => queueRebuildOperation(preparedRebuild, input) : undefined,
     async invalidate() {
+      freshnessEpoch += 1;
       invalidated = true;
       let markerWritten = false;
       let checkpointWritten = false;
@@ -204,19 +231,21 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
         })));
         checkpointWritten = typeof metadata?.setProjectionBookkeepingBatch === 'function';
       } catch { /* The independent marker and artifact deletion are still attempted. */ }
-      let opened;
-      try { opened = await stores(); }
-      catch {
-        if (!markerWritten && !checkpointWritten) throw sourceError('projection-unavailable', 'Topic Search invalidation could not be persisted.');
-        return Object.freeze({ notes: false, conversations: false });
-      }
-      const discard = (store) => {
-        try { return store.delete(); }
-        catch { return false; }
-      };
-      const result = Object.freeze({ notes: discard(opened.notes), conversations: discard(opened.conversations) });
-      if (!markerWritten && !checkpointWritten && (!result.notes || !result.conversations)) throw sourceError('projection-unavailable', 'Topic Search invalidation could not be persisted.');
-      return result;
+      return enqueueMaintenance(async () => {
+        let opened;
+        try { opened = await stores(); }
+        catch {
+          if (!markerWritten && !checkpointWritten) throw sourceError('projection-unavailable', 'Topic Search invalidation could not be persisted.');
+          return Object.freeze({ notes: false, conversations: false });
+        }
+        const discard = (store) => {
+          try { return store.delete(); }
+          catch { return false; }
+        };
+        const result = Object.freeze({ notes: discard(opened.notes), conversations: discard(opened.conversations) });
+        if (!markerWritten && !checkpointWritten && (!result.notes || !result.conversations)) throw sourceError('projection-unavailable', 'Topic Search invalidation could not be persisted.');
+        return result;
+      });
     },
     async query(input = {}) {
       const request = validateSearchRequest(input);

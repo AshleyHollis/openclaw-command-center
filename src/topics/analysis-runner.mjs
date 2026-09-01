@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { candidateToProposal, eligibleTopics, MAX_CHANGED_TOPICS, MAX_PROPOSALS, orderProposals } from './analysis-policy.mjs';
 import { canonicalJson, materialEvidenceDigest } from './analysis-evidence.mjs';
 
@@ -17,6 +17,14 @@ function proposalContent(proposal, evidenceDigest) {
   return { operation: proposal.operation, affectedTopicIds: proposal.affectedTopicIds, affectedSourceIds: proposal.affectedSourceIds, plannedSourceIds: proposal.plannedSourceIds, before: proposal.before, after: proposal.after, rationale: proposal.rationale, provenance: withoutCaptureTimes(proposal.provenance), searchRetrievalConsequences: proposal.searchRetrievalConsequences, dependencies: proposal.dependencies, blockers: proposal.blockers, reversibility: proposal.reversibility, materialEvidenceDigest: evidenceDigest };
 }
 
+export function topicAnalysisRunId(logicalOperationId) {
+  if (!logicalOperationId) return randomUUID();
+  const hex = createHash('sha256').update(`command-center:topic-analysis:${logicalOperationId}`).digest('hex').slice(0, 32).split('');
+  hex[12] = '4';
+  hex[16] = ['8', '9', 'a', 'b'][Number.parseInt(hex[16], 16) % 4];
+  return `${hex.slice(0, 8).join('')}-${hex.slice(8, 12).join('')}-${hex.slice(12, 16).join('')}-${hex.slice(16, 20).join('')}-${hex.slice(20).join('')}`;
+}
+
 export class TopicAnalysisRunner {
   constructor(options = {}) {
     this.metadata = options.metadata;
@@ -33,7 +41,8 @@ export class TopicAnalysisRunner {
     if (!['weekly', 'manual', 'catch-up'].includes(trigger)) throw new TypeError('Analysis trigger is invalid.');
     const owner = this.metadata;
     const logicalOperationId = input.logicalOperationId;
-    const intent = { action: 'analysis.run', trigger };
+    const topicId = input.topicId ?? null;
+    const intent = { action: 'analysis.run', trigger, topicId };
     if (logicalOperationId) {
       const journal = this.metadata.getOperation?.(logicalOperationId);
       if (journal) {
@@ -42,12 +51,23 @@ export class TopicAnalysisRunner {
       }
     }
     const active = locks.get(owner);
-    if (logicalOperationId && active && active.logicalOperationId === logicalOperationId && active.trigger !== trigger) throw Object.assign(new Error('Logical operation ID was reused with different analysis intent.'), { code: 'intent-mismatch' });
+    if (logicalOperationId && active && active.logicalOperationId === logicalOperationId && (active.trigger !== trigger || active.topicId !== topicId)) throw Object.assign(new Error('Logical operation ID was reused with different analysis intent.'), { code: 'intent-mismatch' });
+    if (active && active.topicId !== topicId) {
+      try { await active.promise; } catch { /* the next exact scope remains independently runnable */ }
+      return this.run(input);
+    }
     let promise; let ownsLock = false;
-    if (active) promise = active.promise;
+    if (active) {
+      promise = active.promise;
+      if (logicalOperationId) {
+        const at = nowIso(this.now);
+        this.metadata.recordOperation?.({ logicalOperationId, transportRequestId: logicalOperationId, intentDigest: canonicalJson(intent), operationKind: 'topic-analysis.run', state: 'pending', resultStatus: 'pending', resultIdentity: null, observedRevision: active.runId, createdAt: at, updatedAt: at });
+      }
+    }
     else {
-      promise = Promise.resolve().then(() => this.#runLocked({ ...input, trigger }));
-      locks.set(owner, { promise, logicalOperationId, trigger });
+      const runId = topicAnalysisRunId(logicalOperationId);
+      promise = Promise.resolve().then(() => this.#runLocked({ ...input, trigger, runId }));
+      locks.set(owner, { promise, logicalOperationId, trigger, topicId, runId });
       ownsLock = true;
     }
     try {
@@ -59,15 +79,15 @@ export class TopicAnalysisRunner {
     }
   }
 
-  async #runLocked({ trigger }) {
-    const startedAt = nowIso(this.now); const runId = randomUUID();
+  async #runLocked({ trigger, topicId = null, runId }) {
+    const startedAt = nowIso(this.now);
     const priorRuns = this.metadata.listTopicAnalysisRuns?.() ?? [];
     const previousSuccess = priorRuns.filter((run) => run.outcome === 'success').at(-1) ?? null;
     const baselineCursor = this.metadata.getTopicAnalysisCursor?.() ?? { nextTopicId: null, nextSourceId: null };
     this.metadata.recordTopicAnalysisRun({ runId, schemaVersion: 1, trigger, outcome: 'running', baselineCursor, startedAt });
-    let changed = []; let evaluated = 0; let proposals = 0; let retainedOverflowCount = 0;
+    let changed = []; let evaluated = 0; let proposals = 0; let retainedOverflowCount = 0; let activitySourceReferenceId = null; let activitySourceRevision = null;
     try {
-      const topics = eligibleTopics(this.topicService?.listTopics?.({ includeArchived: true, includeProvisioning: false, includeRetired: false }) ?? this.metadata.listTopics().filter((topic) => topic.lifecycle === 'active'));
+      const topics = eligibleTopics(this.topicService?.listTopics?.({ includeArchived: true, includeProvisioning: false, includeRetired: false }) ?? this.metadata.listTopics().filter((topic) => topic.lifecycle === 'active')).filter((topic) => topicId === null || topic.topicId === topicId);
       const watermarks = new Map((this.metadata.listTopicAnalysisWatermarks?.() ?? []).map((item) => [item.subjectId, item]));
       const scoped = topics.map((topic) => {
         const sources = (this.metadata.listSourceReferences(topic.topicId) ?? []).slice(0, MAX_SOURCES).map((source) => ({ ...source, observedRevision: sourceRevision(this.metadata, source) }));
@@ -76,6 +96,8 @@ export class TopicAnalysisRunner {
         const sourceChanged = sources.some((source) => !watermarks.has(`source:${source.referenceId}`) || watermarks.get(`source:${source.referenceId}`).observedRevision !== source.observedRevision);
         return { topic, sources, changed: topicChanged || sourceChanged };
       });
+      activitySourceReferenceId = topicId === null ? null : scoped[0]?.sources?.[0]?.referenceId ?? null;
+      activitySourceRevision = topicId === null ? null : scoped[0]?.sources?.[0]?.observedRevision ?? null;
       const current = scoped.filter((item) => item.changed);
       const cursorId = baselineCursor.nextTopicId;
       if (cursorId) { const index = current.findIndex((item) => item.topic.topicId === cursorId); if (index >= 0) current.push(...current.splice(0, index)); }
@@ -91,7 +113,7 @@ export class TopicAnalysisRunner {
         this.metadata.setTopicAnalysisCursor({ nextTopicId: null, nextSourceId: null, updatedAt: startedAt });
         const result = { schemaVersion: 1, runId, trigger, baseline: true, changedCount: 0, evaluatedCount: 0, proposalCount: 0, retainedOverflowCount: 0, outcome: 'success' };
         this.metadata.recordTopicAnalysisRun({ runId, schemaVersion: 1, trigger, outcome: 'success', baselineCursor, successCursor: { nextTopicId: null, nextSourceId: null }, changedCount: 0, evaluatedCount: 0, proposalCount: 0, retainedOverflowCount: 0, startedAt, finishedAt: nowIso(this.now) });
-        this.recordActivity(runId, startedAt, 'applied');
+        this.recordActivity(runId, startedAt, 'applied', topicId, activitySourceReferenceId, activitySourceRevision);
         return freeze(result);
       }
       const pendingWatermarks = [];
@@ -148,12 +170,12 @@ export class TopicAnalysisRunner {
       this.metadata.setTopicAnalysisCursor({ nextTopicId, nextSourceId: null, updatedAt: nowIso(this.now) });
       const finishedAt = nowIso(this.now);
       this.metadata.recordTopicAnalysisRun({ runId, schemaVersion: 1, trigger, outcome: 'success', baselineCursor, successCursor: { nextTopicId, nextSourceId: null }, changedCount: changed.length, evaluatedCount: evaluated, proposalCount: proposals, retainedOverflowCount, startedAt, finishedAt });
-      this.recordActivity(runId, finishedAt, 'applied');
+      this.recordActivity(runId, finishedAt, 'applied', topicId, activitySourceReferenceId, activitySourceRevision);
       return freeze({ schemaVersion: 1, runId, trigger, baseline: false, changedCount: changed.length, evaluatedCount: evaluated, proposalCount: proposals, retainedOverflowCount, outcome: 'success' });
     } catch (error) {
       const finishedAt = nowIso(this.now); const message = publicFailure(error);
       this.metadata.recordTopicAnalysisRun({ runId, schemaVersion: 1, trigger, outcome: 'failed', baselineCursor, changedCount: changed.length, evaluatedCount: evaluated, proposalCount: proposals, retainedOverflowCount, startedAt, finishedAt, error: message });
-      this.recordActivity(runId, finishedAt, 'failed');
+      this.recordActivity(runId, finishedAt, 'failed', topicId, activitySourceReferenceId, activitySourceRevision);
       return freeze({ schemaVersion: 1, runId, trigger, outcome: 'failed', error: message, changedCount: changed.length, evaluatedCount: evaluated, proposalCount: proposals, retainedOverflowCount });
     }
   }
@@ -164,8 +186,9 @@ export class TopicAnalysisRunner {
     return Array.isArray(result) ? result : result?.proposals ?? result?.candidates ?? [];
   }
 
-  recordActivity(runId, at, outcome) {
-    try { this.metadata.recordActivity({ activityId: `activity:topic-analysis:${runId}`, topicId: null, logicalOperationId: `topic-analysis:${runId}`, transportRequestId: runId, operationKind: 'topic-analysis.run', outcome, createdAt: at, updatedAt: at }); } catch { /* Activity failure must not turn a completed analysis into a second run. */ }
+  recordActivity(runId, at, outcome, topicId = null, sourceReferenceId = null, sourceRevision = null) {
+    const observedRevision = sourceReferenceId ? JSON.stringify({ sourceReferenceId, sourceRevision }) : null;
+    try { this.metadata.recordActivity({ activityId: `activity:topic-analysis:${runId}`, topicId, logicalOperationId: `topic-analysis:${runId}`, transportRequestId: runId, operationKind: 'topic-analysis.run', outcome, observedRevision, createdAt: at, updatedAt: at }); } catch { /* Activity failure must not turn a completed analysis into a second run. */ }
   }
 }
 
