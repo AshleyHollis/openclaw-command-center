@@ -23,6 +23,7 @@ let activityRecords = [];
 let notificationSettingsRevision = null;
 let topicAnalysisScheduleRevision = null;
 let topicReviewState = null;
+let operatingState = Object.freeze({ mode: 'recovery-only', unavailableCapabilities: ['operating-mode-unverified'] });
 
 async function dashboardRead(offset = 0) {
   const response = await fetch(`${DASHBOARD_ROUTE}?activityOffset=${encodeURIComponent(offset)}&activityLimit=50`, { credentials: 'omit', headers: { accept: 'application/json' } });
@@ -30,7 +31,7 @@ async function dashboardRead(offset = 0) {
   if (!response.ok || value.status === 'error') throw new Error(value.message || 'Dashboard is unavailable.');
   return value.result ?? value;
 }
-function dashboardButton(label, action) { const node = button(label, action); node.className = 'dashboard-action'; return node; }
+function dashboardButton(label, action, { mutation = true } = {}) { const node = mutation ? mutationButton(label, action) : button(label, action); node.className = 'dashboard-action'; return node; }
 function displayEvidence(value) {
   const target = document.querySelector('#evidence-content');
   target.replaceChildren();
@@ -94,7 +95,7 @@ function renderTopicReview(review) {
   if (checkpoint) { const proposals = review?.proposals ?? []; checkpoint.hidden = proposals.length === 0 || !proposals.some((proposal) => proposal.state === 'approved') || proposals.some((proposal) => proposal.state !== 'approved'); }
   const snooze = document.querySelector('#topic-review-snooze'); if (snooze) snooze.hidden = !review || review.state === 'Resolved';
 }
-async function topicAnalysisAction(action, input = {}) { const response = await fetch(TOPIC_ANALYSIS_ACTIONS_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: operationId(), ...input }) }); const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis action was refused.'); return value.result ?? value; }
+async function topicAnalysisAction(action, input = {}) { requireReadyMutation(); const response = await fetch(TOPIC_ANALYSIS_ACTIONS_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: operationId(), ...input }) }); const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis action was refused.'); return value.result ?? value; }
 async function topicReviewDecision(action, proposal) { const feedback = document.querySelector('#analysis-feedback'); try { await topicAnalysisAction(action, { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision }); feedback.textContent = 'Proposal decision saved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
 async function topicReviewAdjust(proposal) { const feedback = document.querySelector('#analysis-feedback'); if (proposal.operation === 'archive') { feedback.textContent = 'Archive proposals support Approve or Keep as-is.'; return; } const target = proposal.after?.topic ?? proposal.after ?? {}; const initial = proposal.operation === 'create' ? { name: target.name, paraCategory: target.paraCategory } : { paraCategory: target.paraCategory }; const adjustmentJson = window.prompt('Enter the adjusted name/category fields as JSON.', JSON.stringify(initial)); if (!adjustmentJson) return; try { await topicAnalysisAction('proposal.adjust', { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision, adjustment: JSON.parse(adjustmentJson) }); feedback.textContent = 'Proposal adjustment approved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
 async function loadTopicAnalysis() { try { const value = await topicAnalysisRead(); const settings = value.schedule; if (settings) { topicAnalysisScheduleRevision = settings.revision; for (const [id, item] of [['analysis-enabled', settings.enabled], ['analysis-weekday', String(settings.weekday)]]) { const control = document.querySelector(`#${id}`); if (control) id === 'analysis-enabled' ? control.checked = item : control.value = item; } for (const [id, item] of [['analysis-local-time', settings.localTime], ['analysis-time-zone', settings.timeZone]]) { const control = document.querySelector(`#${id}`); if (control && document.activeElement !== control) control.value = item; } } renderTopicReview(value.review); } catch (error) { const feedback = document.querySelector('#analysis-feedback'); if (feedback) feedback.textContent = error.message || 'Topic Analysis is unavailable.'; } }
@@ -126,6 +127,7 @@ async function saveNotificationSettings(event) {
 }
 document.querySelector('#notification-settings-form')?.addEventListener('submit', saveNotificationSettings);
 async function dashboardMutate(episode, action, input = {}) {
+  requireReadyMutation();
   const response = await fetch(ATTENTION_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
     schemaVersion: 1, logicalOperationId: operationId(), sourceCapabilityId: episode.sourceCapabilityId, stableSubjectId: episode.stableSubjectId, episodeId: episode.episodeId,
     expectedEpisodeRevision: episode.revision, expectedSourceRevision: episode.sourceRevision ?? undefined, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actionId: action, input
@@ -188,7 +190,7 @@ function renderAttentionCard(episode) {
   const actions = document.createElement('div'); actions.className = 'card-actions';
   for (const action of (episode.actions ?? []).filter((item) => !['attention.snooze', 'reminder.snooze'].includes(item.actionId)).slice(0, 3)) actions.append(dashboardButton(action.label || 'Open', () => runDashboardAction(episode, action.actionId, action.actionId === 'reminder.complete' ? { expectedConfigRevision: episode.sourceRevision } : {}, `${action.label || 'Action'} accepted.`)));
   const snooze = snoozeControl(episode); if (snooze) actions.append(snooze);
-  const evidence = dashboardButton('View evidence', () => showEvidence(episode, evidence)); actions.append(evidence);
+  const evidence = dashboardButton('View evidence', () => showEvidence(episode, evidence), { mutation: false }); actions.append(evidence);
   card.append(heading, meta, actions); return card;
 }
 function fillTopicLaunchers(topics) {
@@ -203,7 +205,7 @@ function renderActivity(records, append = false) {
   const target = document.querySelector('#activity'); if (!append) activityRecords = [];
   activityRecords = [...activityRecords, ...(records ?? [])]; target.replaceChildren(...activityRecords.map((record) => {
     const row = document.createElement('article'); row.className = 'activity-row'; row.dataset.activityId = record.activityId; const text = document.createElement('span'); text.textContent = `${record.operationKind || 'Activity'} · ${record.outcome || 'recorded'}`; row.append(text);
-    if (record.navigation?.verified === true && ['session', 'note'].includes(record.navigation.kind)) row.append(dashboardButton('Open source', () => openActivity(record)));
+    if (record.navigation?.verified === true && ['session', 'note'].includes(record.navigation.kind)) row.append(dashboardButton('Open source', () => openActivity(record), { mutation: false }));
     return row;
   }));
   if (!activityRecords.length) target.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No routine history.' }));
@@ -252,6 +254,7 @@ async function loadDashboard() {
 function operationId() { return crypto.randomUUID(); }
 function unwrap(value) { while (value?.result !== undefined || value?.value !== undefined) value = value.result ?? value.value; return value; }
 const pendingBridgeRequests = new Map();
+let advertisedBridgeMethods = new Set();
 let resolveBridgeReady;
 let rejectBridgeReady;
 const bridgeReady = new Promise((resolve, reject) => { resolveBridgeReady = resolve; rejectBridgeReady = reject; });
@@ -262,7 +265,7 @@ window.addEventListener('message', (event) => {
   const message = event.data.payload;
   if (message?.type === 'openclaw:capability-bridge-ready') {
     clearTimeout(bridgeTimer);
-    const methods = new Set(Array.isArray(message.methods) ? message.methods : []);
+    const methods = new Set(Array.isArray(message.methods) ? message.methods : []); advertisedBridgeMethods = methods;
     const required = [...(hasTopicsDestination ? ['command-center.v1.topics.list'] : []), 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.notes.browse', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigate'];
     if (message.upgradeRequired === true || !required.every((method) => methods.has(method))) rejectBridgeReady(new Error('Command Center requires unavailable host capabilities.'));
     else resolveBridgeReady();
@@ -284,7 +287,26 @@ async function bridgeRequest(method, params) {
     sendBridge({ type: 'openclaw:capability-bridge-request', requestId, method, params });
   });
 }
+const STATIC_MUTATION_SELECTORS = Object.freeze(['#topic-create', '#notification-settings-form', '#topic-analysis-schedule', '#topic-review-snooze', '#topic-review-checkpoint', '#topic-search-rebuild', '#conversation-create', '#chat-form', '#note-new', '#note-save', '#note-rename', '#note-move', '#note-action-submit', '#workspace-search-rebuild']);
+function mutationsAvailable() { return operatingState.mode === 'ready'; }
+function applyOperatingState(value) {
+  const mode = ['ready', 'degraded', 'recovery-only'].includes(value?.mode) ? value.mode : 'recovery-only';
+  operatingState = Object.freeze({ mode, unavailableCapabilities: Object.freeze(Array.isArray(value?.unavailableCapabilities) ? [...value.unavailableCapabilities] : []) });
+  if (document.documentElement) document.documentElement.dataset.operatingMode = mode;
+  const queryAll = (selector) => document.querySelectorAll?.(selector) ?? [];
+  for (const selector of STATIC_MUTATION_SELECTORS) for (const node of queryAll(selector)) { node.hidden = mode !== 'ready'; for (const control of node.matches?.('button,input,select,textarea') ? [node] : node.querySelectorAll?.('button,input,select,textarea') ?? []) control.disabled = mode !== 'ready'; }
+  for (const node of queryAll('[data-command-center-mutation]')) { node.hidden = mode !== 'ready'; node.disabled = mode !== 'ready'; }
+  const status = document.querySelector('#operating-mode-status'); if (status) status.textContent = mode === 'ready' ? 'Ready' : mode === 'degraded' ? 'Degraded · safe reads only' : 'Recovery-only · diagnostics and safe reads only';
+}
+async function loadOperatingState() {
+  if (!advertisedBridgeMethods.has('command-center.v1.sources.status')) { applyOperatingState({ mode: 'recovery-only', unavailableCapabilities: ['command-center.v1.sources.status'] }); return operatingState; }
+  try { const value = unwrap(await bridgeRequest('command-center.v1.sources.status', { schemaVersion: 1 })); applyOperatingState(value); }
+  catch { applyOperatingState({ mode: 'recovery-only', unavailableCapabilities: ['command-center.v1.sources.status'] }); }
+  return operatingState;
+}
+function requireReadyMutation() { if (!mutationsAvailable()) throw new Error(`Mutations are unavailable in ${operatingState.mode} mode.`); }
 async function rebuildTopicSearchProjection(topicId) {
+  requireReadyMutation();
   const response = await fetch(SEARCH_REBUILD_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId: operationId() }) });
   const value = await response.json();
   if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Search rebuild was refused.');
@@ -303,6 +325,7 @@ async function read(view = 'destination') {
   throw new Error('Unsupported read view.');
 }
 async function mutate(action, input) {
+  requireReadyMutation();
   const response = await fetch(HTTP_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: input.logicalOperationId ?? operationId(), ...input }) });
   const value = await response.json();
   if (!response.ok || value.status === 'error') throw Object.assign(new Error(value.message || 'Topic action failed.'), { destination: value.result?.destination });
@@ -315,6 +338,7 @@ function validateTopicNameInput() {
   return valid;
 }
 function button(label, action) { const node = document.createElement('button'); node.type = 'button'; node.textContent = label; node.addEventListener('click', action); return node; }
+function mutationButton(label, action) { const node = button(label, action); node.dataset.commandCenterMutation = 'true'; node.hidden = !mutationsAvailable(); node.disabled = !mutationsAvailable(); return node; }
 function diagnostic(topic) {
   const node = document.createElement('p'); node.className = 'recovery-diagnostic';
   const recovery = topic.recovery?.find((item) => item.state === 'required');
@@ -334,26 +358,26 @@ async function runAction(action, input, message) {
 function topicRow(topic, kind) {
   const row = document.createElement('div'); row.className = 'topic-row'; row.dataset.topicId = topic.topicId; const name = document.createElement('strong'); name.textContent = topic.name; row.append(name);
   if (kind === 'provisioning') {
-    row.append(button('Retry', () => runAction('provisioning.retry', { topicId: topic.topicId, expectedRevision: topic.revision, logicalOperationId: topic.provisioningOperationId }, 'Provisioning record retried.')));
-    row.append(button('Roll back', () => runAction('provisioning.rollback', { topicId: topic.topicId, expectedRevision: topic.revision, logicalOperationId: topic.provisioningOperationId }, 'Provisioning record rolled back.')));
+    row.append(mutationButton('Retry', () => runAction('provisioning.retry', { topicId: topic.topicId, expectedRevision: topic.revision, logicalOperationId: topic.provisioningOperationId }, 'Provisioning record retried.')));
+    row.append(mutationButton('Roll back', () => runAction('provisioning.rollback', { topicId: topic.topicId, expectedRevision: topic.revision, logicalOperationId: topic.provisioningOperationId }, 'Provisioning record rolled back.')));
   } else if (kind === 'archived') {
-    row.append(button('Restore to project', () => runAction('restore', { topicId: topic.topicId, paraCategory: 'project', expectedRevision: topic.revision }, 'Topic restored.')));
+    row.append(mutationButton('Restore to project', () => runAction('restore', { topicId: topic.topicId, paraCategory: 'project', expectedRevision: topic.revision }, 'Topic restored.')));
     row.append(button('Search archive', () => { document.querySelector('#topic-search-topic-id').value = topic.topicId; document.querySelector('#topic-search-query').focus(); }));
   } else if (kind === 'recovery') {
     const recovery = topic.recovery.find((item) => item.state === 'required'); row.append(diagnostic(topic));
-    row.append(button('Verify exact source', () => runAction('recovery.verify', { topicId: topic.topicId, referenceId: recovery.referenceId, expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Source verified.')));
+    row.append(mutationButton('Verify exact source', () => runAction('recovery.verify', { topicId: topic.topicId, referenceId: recovery.referenceId, expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Source verified.')));
     if (recovery.sourceKind === 'session') {
       const exactSession = () => ({ sessionKey: prompt('Session key'), sessionId: prompt('Session ID') });
-      row.append(button('Relink Session', () => runAction('recovery.relink', { topicId: topic.topicId, referenceId: recovery.referenceId, ...exactSession(), expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Session relinked.')));
-      row.append(button('Replace Primary Session', () => runAction('recovery.replace-session', { topicId: topic.topicId, referenceId: recovery.referenceId, ...exactSession(), expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Primary Session replaced.')));
+      row.append(mutationButton('Relink Session', () => runAction('recovery.relink', { topicId: topic.topicId, referenceId: recovery.referenceId, ...exactSession(), expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Session relinked.')));
+      row.append(mutationButton('Replace Primary Session', () => runAction('recovery.replace-session', { topicId: topic.topicId, referenceId: recovery.referenceId, ...exactSession(), expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Primary Session replaced.')));
     } else {
-      row.append(button('Relink Note Folder', () => runAction('recovery.verify', { topicId: topic.topicId, referenceId: recovery.referenceId, replacementLocator: prompt('Exact Note Folder path'), expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Note Folder relinked.')));
+      row.append(mutationButton('Relink Note Folder', () => runAction('recovery.verify', { topicId: topic.topicId, referenceId: recovery.referenceId, replacementLocator: prompt('Exact Note Folder path'), expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Note Folder relinked.')));
     }
   } else {
     row.append(button('Open Topic', () => openTopicWorkspace(topic)));
-    row.append(button('Rename', () => runAction('rename', { topicId: topic.topicId, name: prompt('New Topic name', topic.name), expectedRevision: topic.revision }, 'Topic renamed.')));
-    const target = topic.paraCategory === 'project' ? 'area' : 'project'; row.append(button(`Move to ${target}`, async () => { const preview = await mutate('recategorize.preview', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision }); if (confirm(`Category: ${topic.paraCategory} → ${target}\n${preview.result.preview.changes?.length ? 'Move managed Note Folder' : 'Note Folder location: unchanged (customized)'}`)) await runAction('recategorize.apply', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic moved.'); }));
-    row.append(button('Archive', async () => { const preview = await mutate('archive.preview', { topicId: topic.topicId, expectedRevision: topic.revision }); if (confirm(`Disable and retain every active Reminder and scheduled operation (${preview.result.preview.commitments?.filter((item) => item.enabled).length ?? 0} active of ${preview.result.preview.commitments?.length ?? 0} commitment(s))`)) await runAction('archive.apply', { topicId: topic.topicId, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic archived.'); }));
+    row.append(mutationButton('Rename', () => runAction('rename', { topicId: topic.topicId, name: prompt('New Topic name', topic.name), expectedRevision: topic.revision }, 'Topic renamed.')));
+    const target = topic.paraCategory === 'project' ? 'area' : 'project'; row.append(mutationButton(`Move to ${target}`, async () => { const preview = await mutate('recategorize.preview', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision }); if (confirm(`Category: ${topic.paraCategory} → ${target}\n${preview.result.preview.changes?.length ? 'Move managed Note Folder' : 'Note Folder location: unchanged (customized)'}`)) await runAction('recategorize.apply', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic moved.'); }));
+    row.append(mutationButton('Archive', async () => { const preview = await mutate('archive.preview', { topicId: topic.topicId, expectedRevision: topic.revision }); if (confirm(`Disable and retain every active Reminder and scheduled operation (${preview.result.preview.commitments?.filter((item) => item.enabled).length ?? 0} active of ${preview.result.preview.commitments?.length ?? 0} commitment(s))`)) await runAction('archive.apply', { topicId: topic.topicId, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic archived.'); }));
   }
   return row;
 }
@@ -388,9 +412,11 @@ document.querySelector('#topic-search-rebuild')?.addEventListener('click', async
 
 const workspace = {
   topic: null, generation: 0, conversations: [], selected: null, selectionGeneration: 0, historyGeneration: 0, chatSendGeneration: 0, chatSendOperations: new Map(),
-  conversationPage: 0, notes: [], note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
+  conversationPage: 0, notes: [], notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
 };
 const CONVERSATION_PAGE_SIZE = 50;
+const NOTE_PAGE_SIZE = 100;
+const HISTORY_RENDER_BATCH_SIZE = 50;
 const workspaceNode = document.querySelector('#topic-workspace');
 const workspaceStatus = document.querySelector('#workspace-status');
 const notesStatus = document.querySelector('#notes-status');
@@ -407,6 +433,7 @@ function exactTopicReference(topic, kind, referenceId) {
   return (topic?.sourceReferences ?? []).find((item) => item.sourceKind === kind && (!referenceId || item.referenceId === referenceId));
 }
 async function pageAction(action, input) {
+  requireReadyMutation();
   let response; let value;
   try {
     response = await fetch(PAGE_ACTION_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: input.logicalOperationId ?? operationId(), ...input }) });
@@ -416,7 +443,7 @@ async function pageAction(action, input) {
   return value.result ?? value;
 }
 function resetWorkspacePresentation() {
-  workspace.topic = null; workspace.conversations = []; workspace.selected = null; workspace.conversationPage = 0; workspace.notes = []; workspace.note = null; workspace.drafts = new Map();
+  workspace.topic = null; workspace.conversations = []; workspace.selected = null; workspace.conversationPage = 0; workspace.notes = []; workspace.notePage = 0; workspace.note = null; workspace.drafts = new Map();
   workspace.selectionGeneration += 1; workspace.historyGeneration += 1; workspace.noteGeneration += 1; workspace.searchGeneration += 1;
   document.querySelector('#conversation-list')?.replaceChildren(); document.querySelector('#chat-messages')?.replaceChildren(); document.querySelector('#notes-tree')?.replaceChildren();
   document.querySelector('#workspace-notes-results')?.replaceChildren(); document.querySelector('#workspace-conversations-results')?.replaceChildren();
@@ -463,7 +490,7 @@ function renderConversations() {
     const row = document.createElement('div'); row.className = 'conversation-item'; row.dataset.referenceId = item.referenceId; row.dataset.sessionId = item.sessionId;
     const choose = button(item.displayName, () => selectConversation(item)); if (workspace.selected?.referenceId === item.referenceId) choose.setAttribute('aria-current', 'true'); row.append(choose);
     const state = document.createElement('span'); state.textContent = item.status === 'closed' ? 'Closed' : item.isPrimary ? 'Primary' : 'Open'; row.append(state);
-    if (!item.isPrimary) row.append(button(item.status === 'closed' ? 'Reopen' : 'Close', () => changeConversationStatus(item)));
+    if (!item.isPrimary) row.append(mutationButton(item.status === 'closed' ? 'Reopen' : 'Close', () => changeConversationStatus(item)));
     target.append(row);
   }
   const previous = document.querySelector('#conversation-previous'); const next = document.querySelector('#conversation-next');
@@ -489,18 +516,26 @@ async function selectConversation(item) {
   try {
     const value = unwrap(await bridgeRequest('command-center.v1.sessions.history', { schemaVersion: 1, topicId: workspace.topic.topicId, referenceId: item.referenceId, limit: 100 }));
     if (topicGeneration !== workspace.generation || selectionGeneration !== workspace.selectionGeneration || historyGeneration !== workspace.historyGeneration || workspace.selected?.referenceId !== item.referenceId || workspace.selected?.sessionId !== item.sessionId) return;
-    renderHistory(value?.messages ?? []);
+    await renderHistory(value?.messages ?? [], { topicGeneration, selectionGeneration, historyGeneration, referenceId: item.referenceId, sessionId: item.sessionId });
   } catch (error) {
     if (topicGeneration === workspace.generation && selectionGeneration === workspace.selectionGeneration && historyGeneration === workspace.historyGeneration && chatSendGeneration === workspace.chatSendGeneration && workspace.selected?.referenceId === item.referenceId && workspace.selected?.sessionId === item.sessionId) chatStatus.textContent = error.message;
   }
 }
-function renderHistory(messages) {
-  const target = document.querySelector('#chat-messages'); target.replaceChildren();
-  for (const message of messages) {
-    const row = document.createElement('article'); row.className = 'chat-message'; const role = document.createElement('strong'); role.textContent = `${message.role ?? 'message'}: `; const content = document.createElement('span'); content.textContent = message.content ?? ''; row.append(role, content);
-    if (message.details?.kind === 'note') row.append(button('Open referenced Note', () => openAuthoritativeNote(message.details, { referenceError: true })));
-    target.append(row);
+function yieldToUserInput() { return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))); }
+async function renderHistory(messages, identity) {
+  const target = document.querySelector('#chat-messages'); target.replaceChildren(); target.dataset.totalMessages = String(messages.length);
+  for (let offset = 0; offset < messages.length; offset += HISTORY_RENDER_BATCH_SIZE) {
+    if (identity.topicGeneration !== workspace.generation || identity.selectionGeneration !== workspace.selectionGeneration || identity.historyGeneration !== workspace.historyGeneration || workspace.selected?.referenceId !== identity.referenceId || workspace.selected?.sessionId !== identity.sessionId) return false;
+    const fragment = document.createDocumentFragment();
+    for (const message of messages.slice(offset, offset + HISTORY_RENDER_BATCH_SIZE)) {
+      const row = document.createElement('article'); row.className = 'chat-message'; const role = document.createElement('strong'); role.textContent = `${message.role ?? 'message'}: `; const content = document.createElement('span'); content.textContent = message.content ?? ''; row.append(role, content);
+      if (message.details?.kind === 'note') row.append(button('Open referenced Note', () => openAuthoritativeNote(message.details, { referenceError: true })));
+      fragment.append(row);
+    }
+    target.append(fragment);
+    if (offset + HISTORY_RENDER_BATCH_SIZE < messages.length) await yieldToUserInput();
   }
+  return true;
 }
 function chatSendIntent(selected, message) { return { topicId: workspace.topic?.topicId, referenceId: selected?.referenceId, sessionId: selected?.sessionId, message }; }
 function sameChatSendIntent(left, right) { return left?.topicId === right?.topicId && left?.referenceId === right?.referenceId && left?.sessionId === right?.sessionId && left?.message === right?.message; }
@@ -528,12 +563,16 @@ document.querySelector('#conversation-next')?.addEventListener('click', () => { 
 
 async function loadNotes({ generation = workspace.generation } = {}) {
   const value = unwrap(await bridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: workspace.topic.topicId }));
-  if (generation !== workspace.generation) return; workspace.notes = Array.isArray(value) ? value : value?.notes ?? []; renderNotes();
+  if (generation !== workspace.generation) return; workspace.notes = Array.isArray(value) ? value : value?.notes ?? []; workspace.notePage = Math.min(workspace.notePage, Math.max(0, Math.ceil(workspace.notes.length / NOTE_PAGE_SIZE) - 1)); renderNotes();
 }
 function renderNotes() {
   const target = document.querySelector('#notes-tree'); target.replaceChildren();
-  for (const note of workspace.notes) { const source = note.sourceReference ?? exactTopicReference(workspace.topic, 'note', note.referenceId); const open = button(note.path, () => openAuthoritativeNote({ kind: 'note', topicId: workspace.topic.topicId, referenceId: source?.referenceId, path: note.path, observedRevision: note.revision ?? source?.observedRevision })); open.className = 'note-tree-item'; target.append(open); }
+  const pageCount = Math.max(1, Math.ceil(workspace.notes.length / NOTE_PAGE_SIZE)); workspace.notePage = Math.min(workspace.notePage, pageCount - 1); const start = workspace.notePage * NOTE_PAGE_SIZE;
+  for (const note of workspace.notes.slice(start, start + NOTE_PAGE_SIZE)) { const source = note.sourceReference ?? exactTopicReference(workspace.topic, 'note', note.referenceId); const open = button(note.path, () => openAuthoritativeNote({ kind: 'note', topicId: workspace.topic.topicId, referenceId: source?.referenceId, path: note.path, observedRevision: note.revision ?? source?.observedRevision })); open.className = 'note-tree-item'; target.append(open); }
+  document.querySelector('#note-previous').disabled = workspace.notePage === 0; document.querySelector('#note-next').disabled = workspace.notePage >= pageCount - 1; document.querySelector('#note-page-status').textContent = `${workspace.notes.length} Notes · Page ${workspace.notePage + 1} of ${pageCount}`;
 }
+document.querySelector('#note-previous')?.addEventListener('click', () => { if (workspace.notePage > 0) { workspace.notePage -= 1; renderNotes(); } });
+document.querySelector('#note-next')?.addEventListener('click', () => { if ((workspace.notePage + 1) * NOTE_PAGE_SIZE < workspace.notes.length) { workspace.notePage += 1; renderNotes(); } });
 function encodeText(text) { const bytes = new TextEncoder().encode(text); let binary = ''; for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)); return btoa(binary); }
 function decodeBase64Bytes(value) { return Uint8Array.from(atob(value), (character) => character.charCodeAt(0)); }
 function decodeText(value) { return new TextDecoder('utf-8', { fatal: true }).decode(decodeBase64Bytes(value)); }
@@ -604,7 +643,10 @@ window.CommandCenterSearch = Object.freeze({
   openResult,
   get ready() { return bridgeReady; }
 });
+applyOperatingState(operatingState);
 sendBridge({ type: 'openclaw:capability-bridge-hello', protocolVersion: 1 });
-if (hasDashboardDestination) loadDashboard();
-if (requestedTopicId === null) loadTopics();
-else if (workspaceNode) bridgeReady.then(() => openTopicWorkspace(requestedTopicId)).catch((error) => { workspaceStatus.textContent = error.message; });
+bridgeReady.then(loadOperatingState).then(() => {
+  if (hasDashboardDestination) void loadDashboard();
+  if (requestedTopicId === null) void loadTopics();
+  else if (workspaceNode) void openTopicWorkspace(requestedTopicId).catch((error) => { workspaceStatus.textContent = error.message; });
+}).catch((error) => { applyOperatingState({ mode: 'recovery-only', unavailableCapabilities: ['capability-bridge'] }); if (workspaceStatus) workspaceStatus.textContent = error.message; });

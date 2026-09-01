@@ -8,7 +8,7 @@
     "executableDigest": "sha256:e7864937c006d7cc098417370661307694352bc8768482806f7b8064fb734b00",
     "contractDigest": "sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6"
   },
-  "pluginBuildDigest": "sha256:2de13fd1f1962e8e4523b212704ed5658a9c572aa2f84a1c406b7198119a112f",
+  "pluginBuildDigest": "sha256:09abc67d5ecd32e696230502053925e1fbd01ca904b3b79df4a3175465a5c43e",
   "browser": {
     "engine": "chromium",
     "playwrightVersion": "1.62.1",
@@ -51,7 +51,7 @@
   "capture": {
     "policy": "first-successful-pinned-harness-observation",
     "successfulRunOrdinal": 1,
-    "identityDigest": "sha256:8a9ea88736abb818707b6b01e3993f744788dea66ced10f0885bdec5aafcf302",
+    "identityDigest": "sha256:57c5bf651bd9e1eb2fde13d58e99f508239658d85eae6d383d90cc4813c5b0fd",
     "observationsDigest": "sha256:236772be3c4f65215aafaa30f1b673a5149f050a7d0b903924bb99f465bca3d3"
   }
 }

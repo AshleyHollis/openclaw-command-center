@@ -349,7 +349,10 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
     const noteChunk = (note, offset = 0) => { const bytes = note ? new TextEncoder().encode(note.text) : new Uint8Array(); const nextOffset = Math.min(offset + 524288, bytes.length); let binary = ''; for (let index = offset; index < nextOffset; index += 1) binary += String.fromCharCode(bytes[index]); return note ? { schemaVersion: 1, path: note.path, contentBase64: btoa(binary), byteOffset: offset, nextOffset, totalBytes: bytes.length, revision: note.revision, complete: nextOffset === bytes.length, sourceReference: note.sourceReference } : {}; };
     const respond = (requestId, result, error = null) => window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId, ...(error ? { error } : { result: copy(result) }) } }, '*');
     const fixture = globalThis.__topicPageFixture = {
-      topicId, folderId, primaryId, conversationId, closedId, topic, topicB, topicBPrimaryId, conversations, calls: [], failNextNoteEdit: false, foreignNextNoteRead: false, deferNoteEdit: false, noteEditPending: false, noteEditResolver: null, deferSend: false, sendPending: false, deferredSendResolvers: [], interruptNextSendResponse: false, appliedSendOperations: new Set(), completedSends: 0, deliveredActionResponses: 0, deliveredBridgeResponses: 0, deferConversationCreate: false, conversationCreatePending: false, conversationCreateResolver: null, deferSearch: false, searchPending: false, searchResolver: null, completedSearches: 0, deferNavigateReference: null, deferredNavigate: null, deferHistoryReferences: new Set(), deferredHistories: new Map(), deferNoteReadPath: null, deferredNoteRead: null, deferTopicGetId: null, deferredTopicGet: null, histories,
+      topicId, folderId, primaryId, conversationId, closedId, topic, topicB, topicBPrimaryId, conversations, calls: [], failNextNoteEdit: false, foreignNextNoteRead: false, deferNoteEdit: false, noteEditPending: false, noteEditResolver: null, deferSend: false, sendPending: false, deferredSendResolvers: [], interruptNextSendResponse: false, appliedSendOperations: new Set(), completedSends: 0, deliveredActionResponses: 0, deliveredBridgeResponses: 0, deferConversationCreate: false, conversationCreatePending: false, conversationCreateResolver: null, deferSearch: false, searchPending: false, searchResolver: null, completedSearches: 0, deferProjectionRebuild: false, projectionRebuildPending: false, projectionRebuildResolver: null, deferNavigateReference: null, deferredNavigate: null, deferHistoryReferences: new Set(), deferredHistories: new Map(), deferNoteReadPath: null, deferredNoteRead: null, deferTopicGetId: null, deferredTopicGet: null, histories,
+      setScaleNotes(count) { notes = notes.filter((note) => note.sourceReference.topicId !== topicId); for (let index = 0; index < count; index += 1) { const path = `scale/note-${String(index).padStart(4, '0')}.md`; notes.push({ path, text: `# Scale ${index}`, revision: `scale-revision-${index}`, sourceReference: noteReference(path, `scale-revision-${index}`) }); } },
+      deferNotesBrowse: false, notesBrowsePending: false, notesBrowseRequest: null,
+      resolveNotesBrowse() { if (!this.notesBrowseRequest) return; const requestId = this.notesBrowseRequest; this.notesBrowseRequest = null; this.notesBrowsePending = false; respond(requestId, notes.filter((note) => note.sourceReference.topicId === topicId).map(({ text: _text, ...note }) => note)); },
       rejectDeferredHistory(referenceId) { const deferred = this.deferredHistories.get(referenceId); if (!deferred) return; this.deferredHistories.delete(referenceId); respond(deferred.requestId, null, { code: 'unavailable', message: 'Delayed fictional history failure.' }); },
       resolveDeferredHistory(referenceId) { const deferred = this.deferredHistories.get(referenceId); if (!deferred) return; this.deferredHistories.delete(referenceId); respond(deferred.requestId, { messages: histories[referenceId] ?? [] }); },
       resolveDeferredNoteRead() { if (!this.deferredNoteRead) return; const deferred = this.deferredNoteRead; this.deferredNoteRead = null; respond(deferred.requestId, noteChunk(notes.find((note) => note.path === deferred.path), deferred.offset)); },
@@ -359,6 +362,7 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
       resolveDeferredConversationCreate() { this.conversationCreateResolver?.(); this.conversationCreateResolver = null; },
       resolveDeferredNavigate() { if (!this.deferredNavigate) return; const deferred = this.deferredNavigate; this.deferredNavigate = null; respond(deferred.requestId, deferred.result); },
       resolveDeferredSearch() { this.searchResolver?.(); this.searchResolver = null; },
+      resolveProjectionRebuild() { this.projectionRebuildResolver?.(); this.projectionRebuildResolver = null; },
       resolveDeferredTopicGet() { if (!this.deferredTopicGet) return; const deferred = this.deferredTopicGet; this.deferredTopicGet = null; respond(deferred.requestId, { topic: deferred.topic }); },
       async waitForApplicationSettlement(channel, target) {
         const field = channel === 'action' ? 'deliveredActionResponses' : 'deliveredBridgeResponses';
@@ -369,6 +373,7 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
     };
 
     globalThis.fetch = async (_url, options) => {
+      if (String(_url).endsWith('/api/search/rebuild')) { if (fixture.deferProjectionRebuild) { fixture.deferProjectionRebuild = false; fixture.projectionRebuildPending = true; await new Promise((resolve) => { fixture.projectionRebuildResolver = resolve; }); fixture.projectionRebuildPending = false; } return { ok: true, status: 200, async json() { return { schemaVersion: 1, status: 'applied' }; } }; }
       const body = JSON.parse(options.body); fixture.calls.push({ transport: 'http', ...copy(body) });
       const routed = await globalThis.__invokeTopicPageAction(body);
       if (!routed.ok) return { ok: false, status: routed.status, async json() { fixture.deliveredActionResponses += 1; return routed.body; } };
@@ -388,16 +393,17 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
     window.addEventListener('message', async (event) => {
       if (event.data?.type !== 'openclaw:capability-bridge-send') return;
       const payload = event.data.payload;
-      if (payload.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*'); return; }
+      if (payload.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*'); return; }
       if (payload.type !== 'openclaw:capability-bridge-request') return;
       fixture.calls.push({ transport: 'bridge', method: payload.method, params: copy(payload.params) });
       let result = {};
+      if (payload.method.endsWith('sources.status')) result = { schemaVersion: 1, mode: 'ready', unavailableCapabilities: [] };
       if (payload.method.endsWith('topics.list')) result = { activeGroups: { project: [topic, topicB], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] };
       if (payload.method.endsWith('topics.get')) { const requestedTopic = payload.params.topicId === topicBId ? topicB : topic; if (fixture.deferTopicGetId === payload.params.topicId) { fixture.deferTopicGetId = null; fixture.deferredTopicGet = { requestId: payload.requestId, topic: requestedTopic }; return; } result = { topic: requestedTopic }; }
       if (payload.method.endsWith('sessions.browse')) { const topicConversations = payload.params.topicId === topicBId ? [topicBConversation] : conversations; result = { schemaVersion: 1, topicId: payload.params.topicId, conversations: topicConversations.filter((item) => payload.params.includeClosed === true || item.status === 'open').map(({ sessionKey: _private, ...item }) => item) }; }
       if (payload.method.endsWith('sessions.history')) { if (fixture.deferHistoryReferences.has(payload.params.referenceId)) { fixture.deferHistoryReferences.delete(payload.params.referenceId); fixture.deferredHistories.set(payload.params.referenceId, { requestId: payload.requestId }); return; } result = { messages: histories[payload.params.referenceId] ?? [] }; }
       if (payload.method.endsWith('sessions.navigate')) { const item = [...conversations, topicBConversation].find((conversation) => conversation.referenceId === payload.params.referenceId); result = item ? { schemaVersion: 1, status: 'applied', sessionKey: item.sessionKey, sessionId: item.sessionId, sourceReference: { referenceId: item.referenceId, topicId: item.topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: item.sessionKey, observedRevision: null } } : {}; if (fixture.deferNavigateReference === payload.params.referenceId) { fixture.deferNavigateReference = null; fixture.deferredNavigate = { requestId: payload.requestId, result }; return; } }
-      if (payload.method.endsWith('notes.browse')) result = notes.filter((note) => note.sourceReference.topicId === payload.params.topicId).map(({ text: _text, ...note }) => note);
+      if (payload.method.endsWith('notes.browse')) { if (fixture.deferNotesBrowse && payload.params.topicId === topicId) { fixture.deferNotesBrowse = false; fixture.notesBrowsePending = true; fixture.notesBrowseRequest = payload.requestId; return; } result = notes.filter((note) => note.sourceReference.topicId === payload.params.topicId).map(({ text: _text, ...note }) => note); }
       if (payload.method.endsWith('notes.read')) {
         if (fixture.deferNoteReadPath === payload.params.path) { fixture.deferNoteReadPath = null; fixture.deferredNoteRead = { requestId: payload.requestId, path: payload.params.path, offset: payload.params.offset }; return; }
         result = noteChunk(notes.find((item) => item.path === payload.params.path), payload.params.offset);
@@ -458,6 +464,54 @@ test('Conversation pane keeps a 51-record authoritative catalog in a bounded 50-
     await page.getByRole('button', { name: 'Scale Conversation 50', exact: true }).click();
     assert.equal(await page.locator('#chat-conversation-name').textContent(), 'Scale Conversation 50');
     await page.waitForFunction(() => globalThis.__topicPageFixture.calls.some((call) => call.method === 'command-center.v1.sessions.history' && call.params?.referenceId === 'session:fictional-topic:scale-50'));
+  } finally { await closeGuardedPage(page); }
+});
+
+test('large Notes loading and bounded transcript rendering yield to unrelated controls', async () => {
+  const page = await setupPage();
+  try {
+    await page.evaluate(() => {
+      const fixture = globalThis.__topicPageFixture;
+      fixture.setScaleNotes(5_000);
+      fixture.histories[fixture.primaryId] = Array.from({ length: 100 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', content: `Fictional bounded history message ${index}` }));
+      fixture.deferNotesBrowse = true;
+    });
+    await page.locator('#notes-refresh').click();
+    await page.waitForFunction(() => globalThis.__topicPageFixture.notesBrowsePending === true);
+    const browseWhileNotesPending = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.method?.endsWith('sessions.browse')).length);
+    await page.locator('#conversation-refresh').click();
+    await page.waitForFunction((before) => globalThis.__topicPageFixture.calls.filter((call) => call.method?.endsWith('sessions.browse')).length > before, browseWhileNotesPending);
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.notesBrowsePending), true);
+    await page.evaluate(() => globalThis.__topicPageFixture.resolveNotesBrowse());
+    await page.getByText(/5000 Notes · Page 1 of 50/u).waitFor();
+    assert.equal(await page.locator('#notes-tree .note-tree-item').count(), 100);
+    assert.equal(await page.locator('#notes-tree .note-tree-item').first().textContent(), 'scale/note-0000.md');
+    await page.locator('#note-next').click();
+    await page.getByText(/5000 Notes · Page 2 of 50/u).waitFor();
+    assert.equal(await page.locator('#notes-tree .note-tree-item').count(), 100);
+
+    const browseBefore = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.method?.endsWith('sessions.browse')).length);
+    await page.getByRole('button', { name: 'Primary Conversation', exact: true }).click();
+    await page.waitForFunction(() => { const count = document.querySelectorAll('#chat-messages .chat-message').length; return count >= 50 && count < 100; });
+    await page.locator('#conversation-refresh').click();
+    await page.waitForFunction((before) => globalThis.__topicPageFixture.calls.filter((call) => call.method?.endsWith('sessions.browse')).length > before, browseBefore);
+    await page.waitForFunction(() => document.querySelectorAll('#chat-messages .chat-message').length === 100);
+    assert.equal(await page.locator('#chat-messages').getAttribute('data-total-messages'), '100');
+  } finally { await closeGuardedPage(page); }
+});
+
+test('projection rebuild completion can remain pending while a safe read control completes', async () => {
+  const page = await setupPage();
+  try {
+    await page.evaluate(() => { globalThis.__topicPageFixture.deferProjectionRebuild = true; });
+    await page.locator('#workspace-search-rebuild').click();
+    await page.waitForFunction(() => globalThis.__topicPageFixture.projectionRebuildPending === true);
+    const browseBefore = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.method?.endsWith('sessions.browse')).length);
+    await page.locator('#conversation-refresh').click();
+    await page.waitForFunction((before) => globalThis.__topicPageFixture.calls.filter((call) => call.method?.endsWith('sessions.browse')).length > before, browseBefore);
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.projectionRebuildPending), true);
+    await page.evaluate(() => globalThis.__topicPageFixture.resolveProjectionRebuild());
+    await page.getByText('Topic Search index rebuilt from authoritative sources.', { exact: true }).waitFor();
   } finally { await closeGuardedPage(page); }
 });
 

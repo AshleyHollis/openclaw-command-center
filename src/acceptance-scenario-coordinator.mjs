@@ -11,12 +11,13 @@ export function createAcceptanceScenarioCoordinator({
     let result;
     onProgress({ id, status: 'started' });
     try {
-      result = await execute(id, async () => {
-        try { return await run(); }
+      result = await execute(id, async (signal) => {
+        try { return await run(signal); }
         catch (error) { observedError = error; throw error; }
       });
     } catch (error) {
       observedError ??= error;
+      if (error?.fatalAcceptanceCleanup === true) throw error;
     }
     if (observedError === undefined && result !== undefined) evidence.set(id, result);
     const passed = observedError === undefined && evidence.has(id);
@@ -58,4 +59,55 @@ export async function runSettledAcceptanceBatch(items, { run, identify = (_item,
     throw error;
   }
   return outcomes.map((outcome) => outcome.value);
+}
+
+export async function runBoundedAcceptanceSlice(id, run, { timeoutMs = 240_000, cleanupTimeoutMs = 15_000 } = {}) {
+  if (typeof id !== 'string' || !id || typeof run !== 'function') throw new TypeError('Bounded acceptance slice requires an id and run function.');
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs >= 300_000) throw new TypeError('Acceptance slice timeout must remain below the controller inactivity timeout.');
+  if (!Number.isInteger(cleanupTimeoutMs) || cleanupTimeoutMs < 1 || timeoutMs + cleanupTimeoutMs >= 300_000) throw new TypeError('Acceptance slice execution plus cleanup must remain below the controller inactivity timeout.');
+  const controller = new AbortController();
+  const task = Promise.resolve().then(() => run(controller.signal));
+  const deadline = Symbol('acceptance-slice-deadline');
+  let timer;
+  let outcome;
+  try { outcome = await Promise.race([task, new Promise((resolve) => { timer = setTimeout(() => resolve(deadline), timeoutMs); })]); }
+  finally { clearTimeout(timer); }
+  if (outcome !== deadline) return outcome;
+  controller.abort(new Error(`Acceptance slice ${id} exceeded its ${timeoutMs} ms deadline`));
+  const cleanupDeadline = Symbol('acceptance-slice-cleanup-deadline');
+  let cleanupTimer;
+  const cleanup = await Promise.race([task.then(() => true, () => true), new Promise((resolve) => { cleanupTimer = setTimeout(() => resolve(cleanupDeadline), cleanupTimeoutMs); })]);
+  clearTimeout(cleanupTimer);
+  if (cleanup === cleanupDeadline) {
+    const error = new Error(`Acceptance slice ${id} did not settle within ${cleanupTimeoutMs} ms after cancellation`);
+    error.fatalAcceptanceCleanup = true;
+    throw error;
+  }
+  throw controller.signal.reason;
+}
+
+export async function runIsolatedAcceptanceSlices(slices, { maxConcurrency = 2, timeoutMs = 240_000, cleanupTimeoutMs = 15_000, onProgress = () => {} } = {}) {
+  if (!Array.isArray(slices) || slices.some((slice) => typeof slice?.id !== 'string' || typeof slice?.run !== 'function')) throw new TypeError('Isolated acceptance slices require closed id/run entries.');
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 2) throw new TypeError('Isolated acceptance slices support at most two lanes.');
+  const results = new Map();
+  const failures = [];
+  let next = 0;
+  let fatalCleanup = false;
+  const worker = async (lane) => {
+    while (!fatalCleanup && next < slices.length) {
+      const slice = slices[next++];
+      onProgress({ id: slice.id, lane, status: 'started' });
+      try {
+        const evidence = await runBoundedAcceptanceSlice(slice.id, slice.run, { timeoutMs, cleanupTimeoutMs });
+        results.set(slice.id, evidence);
+        onProgress({ id: slice.id, lane, status: 'passed' });
+      } catch (error) {
+        failures.push({ id: slice.id, error });
+        onProgress({ id: slice.id, lane, status: 'failed' });
+        if (error?.fatalAcceptanceCleanup === true) fatalCleanup = true;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(maxConcurrency, slices.length) }, (_, lane) => worker(lane)));
+  return Object.freeze({ results, failures: Object.freeze(failures) });
 }

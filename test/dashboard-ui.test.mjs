@@ -42,7 +42,7 @@ test('deferred shell initialization exposes both bridge globals before readiness
       globalThis.fetch = async () => ({ ok: true, async json() { return { schemaVersion: 1, status: 'applied', result: { serverTime: '2026-08-30T00:00:00.000Z', attentionBadgeCount: 0, attention: [], inProgress: [], comingUp: [], topics: [], activity: { records: [], nextOffset: null, hasMore: false } } }; } });
       window.addEventListener('message', (event) => {
         const payload = event.data?.payload;
-        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
+        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
       });
     });
     const readiness = page.waitForFunction(async () => {
@@ -71,7 +71,7 @@ test('wide and narrow Topic launchers and topic.open actions open the exact veri
         window.__topicRequests = [];
         window.addEventListener('message', (event) => {
           const payload = event.data?.payload;
-          if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
+          if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
           if (payload?.type !== 'openclaw:capability-bridge-request') return;
           window.__topicRequests.push(payload.method);
           const result = payload.method === 'command-center.v1.topics.get'
@@ -109,7 +109,7 @@ test('Dashboard is keyboard-usable at 320px and opens a scrollable evidence dial
       };
       window.addEventListener('message', (event) => {
         const payload = event.data?.payload;
-        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
+        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
         if (payload?.type === 'openclaw:capability-bridge-request') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result: { result: { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] } } } }, '*');
       });
     });
@@ -122,5 +122,51 @@ test('Dashboard is keyboard-usable at 320px and opens a scrollable evidence dial
     assert.equal(await page.getByRole('dialog').getAttribute('open'), null);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= 320), true);
     assert.equal(await page.locator('button').evaluateAll((nodes) => nodes.filter((node) => getComputedStyle(node).display !== 'none').every((node) => node.getBoundingClientRect().height >= 44)), true);
+  } finally { await browser.close(); }
+});
+
+test('authenticated operating modes preserve safe reads and suppress unsupported mounted mutations', { skip: !existsSync(chromium.executablePath()) && 'Playwright browser is supplied by the isolated evaluator' }, async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (const variant of [
+      { mode: 'ready', unavailableCapabilities: [], mutations: true },
+      { mode: 'degraded', unavailableCapabilities: ['sessions.write'], mutations: false },
+      { mode: 'degraded', unavailableCapabilities: ['notes.write', 'search.rebuild'], mutations: false },
+      { mode: 'recovery-only', unavailableCapabilities: ['database-schema'], mutations: false },
+      { mode: 'recovery-only', unavailableCapabilities: ['compatibility-tuple', 'binding'], mutations: false }
+    ]) {
+      const page = await browser.newPage({ viewport: { width: 900, height: 800 } });
+      const document = index.replace('<link rel="stylesheet" href="/plugins/command-center/styles.css">', `<style>${styles}</style>`).replace('<script defer src="/plugins/command-center/app.js"></script>', '');
+      await page.setContent(document);
+      await page.evaluate(({ mode, unavailableCapabilities }) => {
+        const topic = { topicId: 'topic-mode-fixture', name: 'Fictional Mode Topic', revision: 1, paraCategory: 'project', lifecycle: 'active', usable: true, sourceReferences: [] };
+        globalThis.__modePosts = [];
+        globalThis.fetch = async (url, options = {}) => {
+          if (options.method === 'POST') globalThis.__modePosts.push(url);
+          if (url.includes('/api/dashboard')) return { ok: true, async json() { return { status: 'ok', result: { serverTime: '2026-08-30T00:00:00.000Z', attention: [], attentionBadgeCount: 0, inProgress: [], comingUp: [], topics: [topic], activity: { records: [], hasMore: false }, notificationSettings: null } }; } };
+          if (url.endsWith('/api/topic-analysis')) return { ok: true, async json() { return { status: 'ok', result: { schedule: null, review: null } }; } };
+          return { ok: false, async json() { return { status: 'error', message: 'Mutation refused by fixture.' }; } };
+        };
+        window.addEventListener('message', (event) => {
+          const payload = event.data?.payload;
+          if (payload?.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*'); return; }
+          if (payload?.type !== 'openclaw:capability-bridge-request') return;
+          const result = payload.method.endsWith('sources.status') ? { schemaVersion: 1, mode, unavailableCapabilities } : payload.method.endsWith('topics.list') ? { activeGroups: { project: [topic], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] } : payload.method.endsWith('topics.get') ? { topic } : {};
+          window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result: { result } } }, '*');
+        });
+      }, variant);
+      await page.addScriptTag({ content: app });
+      await page.getByText(variant.mode === 'ready' ? 'Ready' : variant.mode === 'degraded' ? 'Degraded · safe reads only' : 'Recovery-only · diagnostics and safe reads only', { exact: true }).waitFor();
+      await page.getByText('Fictional Mode Topic').first().waitFor();
+      assert.equal(await page.getByRole('button', { name: 'Open Topic' }).isVisible(), true, `${variant.mode} must retain safe Topic reads`);
+      assert.equal(await page.locator('#topic-search-form button[type="submit"]').isVisible(), true, `${variant.mode} must retain safe indexed reads`);
+      for (const selector of ['#topic-create', '#notification-settings-form', '#topic-analysis-schedule', '#topic-search-rebuild']) assert.equal(await page.locator(selector).isVisible(), variant.mutations, `${variant.mode} mutation visibility mismatch for ${selector}`);
+      assert.equal(await page.getByRole('button', { name: 'Rename' }).isVisible(), variant.mutations);
+      if (!variant.mutations) {
+        await assert.rejects(() => page.evaluate(() => window.CommandCenterTopics.mutate('create', { name: 'Blocked', paraCategory: 'project' })), /Mutations are unavailable/iu);
+        assert.deepEqual(await page.evaluate(() => globalThis.__modePosts), []);
+      }
+      await page.close();
+    }
   } finally { await browser.close(); }
 });

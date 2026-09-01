@@ -56,8 +56,11 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   assert.doesNotMatch(source, /captureFirstReleasePerformanceBaseline/u);
   assert.doesNotMatch(source, /const passed = await (?:testContext\.test|isolatedRunPromises)/u);
   assert.doesNotMatch(source, /withDeadline\(`isolated release slice/u);
-  assert.match(source, /isolated-slice-timeout/u);
-  assert.match(source, /signal\?\.addEventListener\('abort', abortCleanup/u);
+  assert.match(source, /runBoundedAcceptanceSlice/u);
+  assert.match(source, /timeoutMs: 240_000, cleanupTimeoutMs: 15_000/u);
+  assert.match(source, /release preparation: candidate build and authenticated descriptor/u);
+  assert.match(source, /release preparation: deterministic source fixtures/u);
+  assert.match(source, /release preparation: pinned host launch/u);
   assert.match(source, /api\/topics\/actions`.*, \{ method: 'POST'/u);
   assert.match(source, /performanceBaseline: emittedBaseline/u);
   assert.match(source, /browser\.version\(\), baseline\.browser\.version/u);

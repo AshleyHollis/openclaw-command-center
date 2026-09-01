@@ -24,7 +24,7 @@ import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapU
 import { assertPerformanceObservationWithinBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
-import { createAcceptanceScenarioCoordinator, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
+import { createAcceptanceScenarioCoordinator, runBoundedAcceptanceSlice, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
 import { readVerifiedMigrationCompletion } from '../src/acceptance-migration.mjs';
 
 const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
@@ -362,6 +362,49 @@ async function exerciseRestorationMatrix({ stateDir, descriptor, buildReceipt, w
   return Object.freeze({ ...result, realStartupValidated: true });
 }
 
+async function assertMountedReadOnlyOperatingMode({ world, expectedMode }) {
+  const managedBrowser = await withDeadline(`${expectedMode} UI browser launch`, () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
+  const guard = new TrafficGuard();
+  const evidence = { console: [], errors: [], requests: [], responses: [] };
+  try {
+    const page = await managedBrowser.browser.newPage({ viewport: { width: 320, height: 900 } });
+    await configureEvidencePage(page, guard, evidence);
+    const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
+    await page.goto(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    const { frame } = await mountedPluginFrame(page, await pluginDocument);
+    const expectedText = expectedMode === 'degraded' ? 'Degraded · safe reads only' : 'Recovery-only · diagnostics and safe reads only';
+    await frame.getByText(expectedText, { exact: true }).waitFor();
+    await frame.locator('#topic-search-form button[type="submit"]').waitFor({ state: 'visible' });
+    for (const selector of ['#topic-create', '#notification-settings-form', '#topic-analysis-schedule', '#topic-search-rebuild']) assert.equal(await frame.locator(selector).isHidden(), true, `${expectedMode} mounted UI exposed ${selector}`);
+    assert.equal(await frame.locator('[data-command-center-mutation]:visible').count(), 0, `${expectedMode} mounted UI exposed a mutation control`);
+    return true;
+  } finally {
+    await closeManagedBrowser(managedBrowser);
+    guard.assertClean();
+  }
+}
+
+async function assertPluginFrameUnavailable({ world, label }) {
+  const managedBrowser = await withDeadline(`${label} UI browser launch`, () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
+  const guard = new TrafficGuard();
+  const evidence = { console: [], errors: [], requests: [], responses: [] };
+  try {
+    const page = await managedBrowser.browser.newPage({ viewport: { width: 320, height: 900 } });
+    await configureEvidencePage(page, guard, evidence);
+    const bootstrap = observeBrowserResponse(page.waitForResponse((response) => isControlUiBootstrapUrl(response.url(), { gatewayUrl: world.gateway.url, bootstrapPath: runtimeCapability.bootstrap.path }), { timeout: 10_000 }));
+    await page.goto(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    const bootstrapResponse = await bootstrap;
+    assert.equal(hasSuccessfulBrowserResponse(bootstrapResponse), true, `${label} did not reach an authenticated terminal bootstrap response`);
+    assert.equal(routeGrant(await bootstrapResponse.value.json()), false, `${label} unexpectedly advertised a frame grant`);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.locator('iframe.plugin-tab-embed__frame').count(), 0, `${label} unexpectedly mounted a mutation-capable plugin frame`);
+    return true;
+  } finally {
+    await closeManagedBrowser(managedBrowser);
+    guard.assertClean();
+  }
+}
+
 async function exerciseDegradedSourceRow({ descriptor, buildReceipt, combined = false, signal }) {
   return withIsolatedWorld(async (sourceWorld) => {
     const stateDir = path.join(sourceWorld.root, '.openclaw');
@@ -394,7 +437,9 @@ async function exerciseDegradedSourceRow({ descriptor, buildReceipt, combined = 
         method: 'command-center.v1.sessions.create',
         params: { schemaVersion: 1, topicId: 'fictional-source-degraded-topic', logicalOperationId: randomUUID(), label: 'Blocked source mutation' }
       }), /sessions.*unavailable|capability-unavailable/iu);
-      return Object.freeze({ schemaVersion: 1, mode: status.mode, safeReadObserved: true, mutationRejected: true, source: { capability: 'sessions', available: false, bindingObserved: true }, ...(combined ? { combinedGrantDenied: true } : {}) });
+      const mountedUiObserved = combined ? false : await assertMountedReadOnlyOperatingMode({ world: sourceWorld, expectedMode: status.mode });
+      const frameUnavailableObserved = combined ? await assertPluginFrameUnavailable({ world: sourceWorld, label: 'combined degraded' }) : false;
+      return Object.freeze({ schemaVersion: 1, mode: status.mode, safeReadObserved: true, mutationRejected: true, mountedUiObserved, frameUnavailableObserved, unsupportedControlsAbsent: mountedUiObserved, source: { capability: 'sessions', available: false, bindingObserved: true }, ...(combined ? { combinedGrantDenied: true } : {}) });
     } finally {
       removeAbortCleanup();
       await withDeadline('source-degraded host stop', async () => { await stopPinnedHost(sourceHost.child); await sourceHost.outputDrained; });
@@ -430,7 +475,8 @@ async function exerciseDegradedBridgeHostVariant({ descriptor, buildReceipt, sig
       const mutation = await fetchWithDeadline(`${degradedWorld.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'create', name: 'Blocked grant mutation', paraCategory: 'resource', logicalOperationId: randomUUID() }) }, 'grant-degraded mutation', 10_000);
       assert.equal(mutation.status, 422);
       assert.equal((await mutation.json()).code, 'capability-unavailable');
-      return Object.freeze({ schemaVersion: 1, mode: safeRead.mode, safeReadObserved: true, mutationRejected: true, bridge: { protocolVersion: runtimeCapability.schemaVersion, writeGrant: false, observedFromBootstrap: true } });
+      const frameUnavailableObserved = await assertPluginFrameUnavailable({ world: degradedWorld, label: 'missing frame grant' });
+      return Object.freeze({ schemaVersion: 1, mode: safeRead.mode, safeReadObserved: true, mutationRejected: true, mountedUiObserved: false, frameUnavailableObserved, unsupportedControlsAbsent: false, bridge: { protocolVersion: runtimeCapability.schemaVersion, writeGrant: false, observedFromBootstrap: true } });
     } finally {
       removeAbortCleanup();
       await withDeadline('grant-degraded host stop', async () => { await stopPinnedHost(degradedHost.child); await degradedHost.outputDrained; });
@@ -465,8 +511,12 @@ async function exerciseBindingMismatchHostVariant({ descriptor, buildReceipt, si
       await waitForConsecutiveReadiness(async () => (await fetchWithDeadline(`${bindingWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${bindingWorld.gatewayCredential}` } }, 'binding-mismatch readiness', 10_000)).ok, bindingHost.earlyExit, { required: 2, attempts: 100, delayMs: 100 });
       const topics = await requestAuthenticatedGateway({ gatewayUrl: bindingWorld.gateway.url, credential: bindingWorld.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 } });
       assert.equal(JSON.stringify(topics).includes('fictional-binding-mismatch-topic'), false, 'conflicting binding must be absent from normal authenticated reads');
+      const statusResponse = await requestAuthenticatedGateway({ gatewayUrl: bindingWorld.gateway.url, credential: bindingWorld.gatewayCredential, method: 'command-center.v1.sources.status', params: { schemaVersion: 1 } });
+      const status = statusResponse?.result ?? statusResponse;
+      assert.notEqual(status.mode, 'ready');
       await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: bindingWorld.gateway.url, credential: bindingWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.sessions.create', params: { schemaVersion: 1, topicId: 'fictional-binding-mismatch-topic', logicalOperationId: randomUUID(), label: 'Blocked binding mutation' } }), /source-recovery|binding|unavailable/iu);
-      return Object.freeze({ kind: 'binding', safeReadObserved: true, mutationRejected: true, bindingObserved: true });
+      const mountedUiObserved = await assertMountedReadOnlyOperatingMode({ world: bindingWorld, expectedMode: status.mode });
+      return Object.freeze({ kind: 'binding', mode: status.mode, safeReadObserved: true, mutationRejected: true, bindingObserved: true, mountedUiObserved, unsupportedControlsAbsent: true });
     } finally {
       removeAbortCleanup();
       await withDeadline('binding-mismatch host stop', async () => { await stopPinnedHost(bindingHost.child); await bindingHost.outputDrained; });
@@ -528,7 +578,8 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
       try { assert.equal(recoveryDatabase.prepare('PRAGMA user_version').get().user_version, 99); }
       finally { recoveryDatabase.close(); }
       assert.ok(status.diagnostics.some((entry) => entry?.code === 'future-schema'));
-      return Object.freeze({ schemaVersion: 1, mode: 'recovery-only', safeReadObserved: true, mutationsRejected: true, mismatches: ['schema'] });
+      const mountedUiObserved = await assertMountedReadOnlyOperatingMode({ world: recoveryWorld, expectedMode: status.mode });
+      return Object.freeze({ schemaVersion: 1, mode: 'recovery-only', safeReadObserved: true, mutationsRejected: true, mountedUiObserved, unsupportedControlsAbsent: true, mismatches: ['schema'] });
     } finally {
       removeAbortCleanup();
       await withDeadline('recovery-only host stop', async () => { await stopPinnedHost(recoveryHost.child); await recoveryHost.outputDrained; });
@@ -663,7 +714,9 @@ async function exerciseRejectedCandidateVariant({ descriptor, buildReceipt, kind
       assert.equal(mutation.status, kind === 'build' ? 422 : 404);
       assert.deepEqual(await readFile(restoredDatabase), restoredBytes, `${kind} rejection must preserve restored database bytes`);
       for (const [index, name] of ['manifest.json', 'metadata.sqlite.snapshot'].entries()) assert.deepEqual(await readFile(path.join(restoredRecovery, name)), restoredArtifacts[index], `${kind} rejection must preserve ${name}`);
-      return Object.freeze({ kind, ...(kind === 'build' ? { mode: 'recovery-only', safeReadObserved: true } : { activationRejected: true }), mutationRejected: true, restoredStatePreserved: true });
+      const mountedUiObserved = kind === 'build' ? await assertMountedReadOnlyOperatingMode({ world: variantWorld, expectedMode: 'recovery-only' }) : false;
+      const frameUnavailableObserved = kind === 'build' ? false : await assertPluginFrameUnavailable({ world: variantWorld, label: `${kind} activation rejection` });
+      return Object.freeze({ kind, ...(kind === 'build' ? { mode: 'recovery-only', safeReadObserved: true, mountedUiObserved, frameUnavailableObserved, unsupportedControlsAbsent: true } : { activationRejected: true, mountedUiObserved: false, frameUnavailableObserved, unsupportedControlsAbsent: false }), mutationRejected: true, restoredStatePreserved: true });
     } finally {
       removeAbortCleanup();
       await withDeadline(`${kind} variant host stop`, async () => { await stopPinnedHost(variantHost.child); await variantHost.outputDrained; });
@@ -719,7 +772,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       const { frame } = await mountedPluginFrame(page, await pluginDocument);
       const scenarioName = kind === 'review' ? 'Area: Fictional Fresh Review Topic' : `Fictional Fresh ${kind} Topic`;
-      const journey = await runUiJourney(frame, { page, width, name: scenarioName, category: 'project', keyboard: width <= 320 });
+      const journey = await runUiJourney(frame, { page, width, name: scenarioName, category: 'project', keyboard: true });
       const authoritativeSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
       const authoritativeConversations = (authoritativeSessions?.result ?? authoritativeSessions)?.conversations ?? authoritativeSessions?.conversations ?? [];
       assert.ok(authoritativeConversations.some((item) => item.isPrimary) && authoritativeConversations.some((item) => item.displayName === journey.conversationName));
@@ -910,7 +963,20 @@ async function waitForDashboard(frame, timeout = 10_000) {
 }
 
 async function assertNoFrameOverflow(frame, label) {
-  assert.equal(await frame.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, `${label} has page-level horizontal overflow`);
+  const audit = await frame.evaluate(() => {
+    const selectors = ['html', 'body', 'main', '#dashboard', '.dashboard-panel', '#topic-groups', '.topic-group', '#topic-exceptions', '#topic-workspace', '.workspace-layout', '.workspace-layout > [data-pane]', 'dialog[open]', '.evidence-scroll', '.card-list', '#activity', '#conversation-list', '#chat-messages', '#notes-tree', '.note-editor', '.markdown-preview', '.search-grid', '#notes-results', '#conversations-results', '#workspace-notes-results', '#workspace-conversations-results', '#topic-review-groups'];
+    const nodes = [...new Set(selectors.flatMap((selector) => [...document.querySelectorAll(selector)]))];
+    const visible = nodes.filter((node) => {
+      const style = getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]') && node.clientWidth > 0;
+    });
+    return {
+      checked: visible.map((node) => node.id || node.getAttribute('data-pane') || node.className || node.tagName),
+      overflowing: visible.filter((node) => node.scrollWidth > node.clientWidth).map((node) => ({ name: node.id || node.getAttribute('data-pane') || node.className || node.tagName, scrollWidth: node.scrollWidth, clientWidth: node.clientWidth }))
+    };
+  });
+  assert.ok(audit.checked.length > 0, `${label} did not audit any visible layout containers`);
+  assert.deepEqual(audit.overflowing, [], `${label} has pane-level horizontal overflow`);
 }
 
 async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
@@ -1211,7 +1277,7 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
       for (let index = 0; index < measuredEdit.length; index += 1) await frame.locator('#note-content').press('Shift+ArrowRight');
       await frame.locator('#note-content').pressSequentially(measuredEdit);
       assert.equal(await frame.locator('#note-content').inputValue().then((value) => Buffer.byteLength(value)), RELEASE_FIXTURE_COUNTS.largeNoteBytes);
-      await frame.locator('#note-save').click();
+      await activate(frame.locator('#note-save'), true);
       await waitForFrameText(frame, '#notes-status', 'Note saved.');
       measurements.largeNoteSaveMs = Math.max(1, Date.now() - saveStarted);
     }
@@ -1222,9 +1288,9 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
     await frame.locator('#note-edit-mode').press('Space');
     if (edit) {
       const moveStarted = Date.now();
-      await frame.locator('#note-move').click();
-      await frame.locator('#note-action-path').fill('measured/large-note.md');
-      await frame.locator('#note-action-submit').click();
+      await activate(frame.locator('#note-move'), true);
+      await enterText(frame.locator('#note-action-path'), 'measured/large-note.md', true);
+      await activate(frame.locator('#note-action-submit'), true);
       await frame.locator('#note-action-dialog').waitFor({ state: 'hidden' });
       await frame.locator('#notes-tree').getByRole('button', { name: 'measured/large-note.md', exact: true }).waitFor();
       measurements.largeNoteMoveMs = Math.max(1, Date.now() - moveStarted);
@@ -1232,11 +1298,12 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
     await assertNoFrameOverflow(frame, `large Note ${pathName}`);
   }
   await selectWorkspaceSection(frame, 'conversations', 1440);
-  await frame.locator('#conversation-view').selectOption('all');
+  await chooseOption(frame.locator('#conversation-view'), 'all', true);
   await frame.locator('#conversation-page-status').getByText('Page 1 of 2', { exact: true }).waitFor();
   assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 50);
+  await assertNoFrameOverflow(frame, '1440px 100-Conversation page one');
   const firstPageReferences = await frame.locator('#conversation-list .conversation-item button:first-child').allTextContents();
-  await frame.locator('#conversation-next').click();
+  await activate(frame.locator('#conversation-next'), true);
   await frame.locator('#conversation-page-status').getByText('Page 2 of 2', { exact: true }).waitFor();
   assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 50);
   const pageTwoConversation = frame.locator('#conversation-list .conversation-item button:first-child');
@@ -1244,7 +1311,7 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   const pageTwoName = await pageTwoConversation.textContent();
   assert.equal(firstPageReferences.includes(pageTwoName), false);
   const pageTwoIdentity = await pageTwoRow.evaluate((row) => ({ referenceId: row.dataset.referenceId, sessionId: row.dataset.sessionId }));
-  await pageTwoConversation.click();
+  await activate(pageTwoConversation, true);
   await waitForFrameText(frame, '#chat-conversation-name', pageTwoName);
   const catalogResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId } });
   const conversations = (catalogResponse?.result ?? catalogResponse)?.conversations ?? catalogResponse?.conversations ?? [];
@@ -1253,7 +1320,12 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   const navigationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId, referenceId: pageTwoIdentity.referenceId } });
   const navigation = navigationResponse?.result ?? navigationResponse;
   assert.deepEqual({ referenceId: navigation.sourceReference?.referenceId, sessionId: navigation.sessionId, sessionKeyPresent: Boolean(navigation.sessionKey) }, { referenceId: pageTwoIdentity.referenceId, sessionId: pageTwoIdentity.sessionId, sessionKeyPresent: true });
-  await frame.locator('#workspace-back').click();
+  await assertNoFrameOverflow(frame, '1440px 100-Conversation page two');
+  await frame.page().setViewportSize({ width: 320, height: 900 });
+  await selectWorkspaceSection(frame, 'conversations', 320, true);
+  await assertNoFrameOverflow(frame, '320px 100-Conversation page two');
+  await frame.page().setViewportSize({ width: 1440, height: 900 });
+  await activate(frame.locator('#workspace-back'), true);
   await waitForDashboard(frame);
   measurements.largeNoteLifecycleMs = Math.max(1, Date.now() - lifecycleStarted);
   return Object.freeze(measurements);
@@ -1261,7 +1333,7 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
 
 async function assertResponsiveFrame(frame, page, width) {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, `${width}px page has horizontal overflow`);
-  assert.equal(await frame.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, `${width}px plugin frame has horizontal overflow`);
+  await assertNoFrameOverflow(frame, `${width}px responsive frame`);
   const interactive = await frame.locator('button, input, select, textarea, a').evaluateAll((nodes) => nodes.filter((node) => {
     const style = getComputedStyle(node);
     return style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
@@ -1312,47 +1384,43 @@ async function assertKeyboardAccessibility(frame, page) {
 }
 
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 900_000, concurrency: true }, async (testContext) => {
-  reportProgress(testContext, 'build:started');
-  const descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
-  const buildReceipt = await withDeadline('candidate build', () => build(), 120_000);
-  await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
-  const baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
-  assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
-  reportProgress(testContext, 'build:passed');
+  let descriptor, buildReceipt, baseline;
+  await testContext.test('release preparation: candidate build and authenticated descriptor', async () => {
+    reportProgress(testContext, 'build:started');
+    descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
+    buildReceipt = await withDeadline('candidate build', () => build(), 120_000);
+    await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
+    baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
+    assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
+    reportProgress(testContext, 'build:passed');
+  });
   const isolatedEvidence = new Map();
   let isolatedActive = 0;
   const isolatedWaiters = [];
+  let isolatedFatalError;
   const acquireIsolatedLane = async () => {
-    if (isolatedActive >= 2) await new Promise((resolve) => isolatedWaiters.push(resolve));
+    if (isolatedFatalError) throw isolatedFatalError;
+    if (isolatedActive >= 2) await new Promise((resolve, reject) => isolatedWaiters.push({ resolve, reject }));
+    if (isolatedFatalError) throw isolatedFatalError;
     isolatedActive += 1;
     return () => {
       isolatedActive -= 1;
-      isolatedWaiters.shift()?.();
+      if (!isolatedFatalError) isolatedWaiters.shift()?.resolve();
     };
   };
   const startIsolatedSlice = (id, run) => () => testContext.test(`release isolated slice: ${id}`, async () => {
     const releaseLane = await acquireIsolatedLane();
     reportProgress(testContext, `isolated:${id}:started`);
     try {
-      const controller = new AbortController();
-      const task = Promise.resolve().then(() => run(controller.signal));
-      const deadline = Symbol('isolated-deadline');
-      let deadlineTimer;
-      let outcome;
-      try { outcome = await Promise.race([task, new Promise((resolve) => { deadlineTimer = setTimeout(() => resolve(deadline), 300_000); })]); }
-      finally { clearTimeout(deadlineTimer); }
-      if (outcome === deadline) {
-        controller.abort(new HarnessFailure('isolated-slice-timeout', `Isolated release slice ${id} exceeded its 300000 ms deadline`));
-        const cleanupDeadline = Symbol('isolated-cleanup-deadline');
-        let cleanupTimer;
-        const cleanup = await Promise.race([task.then(() => true, () => true), new Promise((resolve) => { cleanupTimer = setTimeout(() => resolve(cleanupDeadline), 60_000); })]);
-        clearTimeout(cleanupTimer);
-        if (cleanup === cleanupDeadline) throw new HarnessFailure('isolated-slice-cleanup-timeout', `Isolated release slice ${id} did not settle within 60000 ms after cancellation`);
-        throw controller.signal.reason;
-      }
-      const evidence = outcome;
+      const evidence = await runBoundedAcceptanceSlice(id, run, { timeoutMs: 240_000, cleanupTimeoutMs: 15_000 });
       isolatedEvidence.set(id, evidence);
       reportProgress(testContext, `isolated:${id}:passed`);
+    } catch (error) {
+      if (error?.fatalAcceptanceCleanup === true) {
+        isolatedFatalError = error;
+        for (const waiter of isolatedWaiters.splice(0)) waiter.reject(error);
+      }
+      throw error;
     } finally { releaseLane(); }
   });
   const isolatedSlices = new Map([
@@ -1388,7 +1456,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           assert.equal(mutation.status, 422);
           assert.deepEqual(await readFile(restoredDatabase), mismatchedBytes);
           assert.deepEqual(await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot')), mismatchedSnapshot);
-          return Object.freeze({ kind: 'host', admissionRejected: true, mode: 'recovery-only', safeReadObserved: true, mutationRejected: true, restoredStateValidated: true });
+          const mountedUiObserved = await assertMountedReadOnlyOperatingMode({ world: hostWorld, expectedMode: 'recovery-only' });
+          return Object.freeze({ kind: 'host', admissionRejected: true, mode: 'recovery-only', safeReadObserved: true, mutationRejected: true, restoredStateValidated: true, mountedUiObserved, unsupportedControlsAbsent: true });
         } finally {
           removeAbortCleanup();
           await withDeadline('host-tuple restoration stop', async () => { await stopPinnedHost(hostTupleRuntime.child); await hostTupleRuntime.outputDrained; });
@@ -1419,10 +1488,13 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   };
   let emittedBaseline;
   await withIsolatedWorld(async (world) => {
-    reportProgress(testContext, 'fixture:started');
-    const migrationExportPath = path.join(world.tempRoot, 'legacy-discord-export.v1.json');
-    const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
-    const scaleMigrationFolderPath = path.join(world.paths.vault, 'fictional-scale');
+    const resolvedStateDir = path.join(world.root, '.openclaw');
+    let realizedScaleSeed;
+    await testContext.test('release preparation: deterministic source fixtures', async () => withDeadline('deterministic release fixture preparation', async () => {
+      reportProgress(testContext, 'fixture:started');
+      const migrationExportPath = path.join(world.tempRoot, 'legacy-discord-export.v1.json');
+      const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
+      const scaleMigrationFolderPath = path.join(world.paths.vault, 'fictional-scale');
     await Promise.all([mkdir(migrationFolderPath, { recursive: true }), mkdir(scaleMigrationFolderPath, { recursive: true })]);
     const migrationExport = JSON.parse(await readFile(new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url), 'utf8'));
     migrationExport.channels.push({
@@ -1437,7 +1509,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         edits: [], replyToMessageId: null, thread: null, reactions: [], attachments: []
       }))
     });
-    const realizedScaleSeed = await seedReleaseNoteCorpus(scaleMigrationFolderPath, ({ completed, total }) => reportProgress(testContext, 'fixture:note-batch', { completed, total }));
+    realizedScaleSeed = await seedReleaseNoteCorpus(scaleMigrationFolderPath, ({ completed, total }) => reportProgress(testContext, 'fixture:note-batch', { completed, total }));
     await writeFile(migrationExportPath, `${JSON.stringify(migrationExport)}\n`);
     const configured = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
     configured.plugins.entries[world.manifest.candidate.id].config = {
@@ -1451,7 +1523,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       }
     };
     await writeFile(world.manifest.configPath, `${JSON.stringify(configured)}\n`);
-    const resolvedStateDir = path.join(world.root, '.openclaw');
     const activityFixture = openCommandCenterMetadataService({ stateDir: resolvedStateDir });
     try {
       activityFixture.createTopic({ topicId: RELEASE_ACTIVITY_TOPIC_ID, paraCategory: 'resource', lifecycle: 'active' });
@@ -1475,10 +1546,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       }
       assert.equal(activityFixture.listActivity(RELEASE_ACTIVITY_TOPIC_ID).length, RELEASE_FIXTURE_COUNTS.activityRecords - 1);
     } finally { activityFixture.close(); }
-    reportProgress(testContext, 'fixture:passed');
-    reportProgress(testContext, 'host-launch:started');
-    const host = await withDeadline('pinned host launch', (signal) => launchPinnedHost({ descriptor, world, buildReceipt, signal }), 120_000);
-    reportProgress(testContext, 'host-launch:passed');
+      reportProgress(testContext, 'fixture:passed');
+    }, 240_000));
+    let host;
+    await testContext.test('release preparation: pinned host launch', async () => {
+      reportProgress(testContext, 'host-launch:started');
+      host = await withDeadline('pinned host launch', (signal) => launchPinnedHost({ descriptor, world, buildReceipt, signal }), 120_000);
+      reportProgress(testContext, 'host-launch:passed');
+    });
     const gatewayUrl = world.gateway.url;
     const databasePath = resolveCommandCenterDatabasePath(resolvedStateDir);
     assert.deepEqual(host.endpoint, world.gateway);
@@ -1492,7 +1567,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const scenarioCoordinator = createAcceptanceScenarioCoordinator({
       execute: async (id, run) => {
         let result;
-        await testContext.test(`release scenario: ${id}`, async () => { result = await run(); });
+        await testContext.test(`release scenario: ${id}`, async () => { result = await runBoundedAcceptanceSlice(id, run, { timeoutMs: 240_000, cleanupTimeoutMs: 15_000 }); });
         return result;
       },
       onProgress: ({ id, status }) => reportProgress(testContext, `scenario:${id}:${status}`),
@@ -1718,9 +1793,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.frame = true;
       const sandbox = await iframe.getAttribute('sandbox');
       if (sandbox !== 'allow-scripts') throw new HarnessFailure('sandbox-mismatch', 'External tab iframe is not scripts-only');
-      await frame.locator('#topic-search-topic-id').selectOption(RELEASE_ALPHA_TOPIC_ID);
-      await frame.locator('#topic-search-query').fill('Fictional');
-      await frame.locator('#topic-search-query').press('Enter');
+      await chooseOption(frame.locator('#topic-search-topic-id'), RELEASE_ALPHA_TOPIC_ID, true);
+      await enterText(frame.locator('#topic-search-query'), 'Fictional', true);
+      await submitFrameForm(frame, '#topic-search-form', true);
       await frame.waitForFunction(() => /Notes.*Conversations/u.test(document.querySelector('#topic-search-status')?.textContent ?? ''), undefined, { timeout: 60_000 });
       await waitForCommittedSearchProjections(projectionRoot);
       const repairedManifest = JSON.parse(await readFile(staleManifestPath, 'utf8'));
@@ -1737,7 +1812,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     });
     await collectScenario('desktop-primary-journey', async () => {
       assert.ok(frame && page && releaseState.projectionRoot, 'desktop scenario requires its mounted fixture state');
-      desktopJourney = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project', projectionRoot: releaseState.projectionRoot });
+      desktopJourney = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project', keyboard: true, projectionRoot: releaseState.projectionRoot });
       desktopJourney.measurement.startupReadinessMs = releaseState.startupInteractiveMs;
       releaseState.desktop = desktopJourney;
       releaseState.missingProjectionRebuilt = true;
@@ -1773,7 +1848,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
-      scaleJourney = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Scale Journey Topic', category: 'resource', projectionRoot: releaseState.projectionRoot });
+      scaleJourney = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Scale Journey Topic', category: 'resource', keyboard: true, projectionRoot: releaseState.projectionRoot });
       scaleJourney.measurement.startupReadinessMs = releaseState.startupInteractiveMs;
       const scaleSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
       const scalePrimary = ((scaleSessions?.result ?? scaleSessions)?.conversations ?? scaleSessions?.conversations ?? []).find((session) => session.isPrimary === true);
@@ -1893,8 +1968,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
       assert.equal(await iframe.getAttribute('sandbox'), 'allow-scripts');
       await waitForDashboard(frame);
-      const restoredTopic = frame.locator('.topic-row').filter({ hasText: 'Fictional Desktop Journey Topic' });
-      await restoredTopic.getByRole('button', { name: 'Open Topic', exact: true }).click();
+      const restoredTopic = frame.locator(`.topic-row[data-topic-id="${scaleJourney.topicId}"]`);
+      await activate(restoredTopic.getByRole('button', { name: 'Open Topic', exact: true }), true);
       await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
       await selectWorkspaceSection(frame, 'conversations', 1440);
       await frame.locator('.conversation-item').filter({ hasText: scaleJourney.conversationName }).getByText('Open', { exact: true }).waitFor();
@@ -1911,11 +1986,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const reopenedNote = ((reopenedNotes?.result ?? reopenedNotes)?.notes ?? reopenedNotes?.notes ?? []).find((note) => note.path === scaleJourney.movedPath);
       assert.deepEqual({ referenceId: reopenedNote?.sourceReference?.referenceId, revision: reopenedNote?.revision, path: reopenedNote?.path }, releaseState.durableWorkspace.note);
       await selectWorkspaceSection(frame, 'search', 1440);
-      await frame.locator('#workspace-search-query').fill('Edited fictional journey evidence');
-      await frame.locator('#workspace-search-form').evaluate((form) => form.requestSubmit());
+      await enterText(frame.locator('#workspace-search-query'), 'Edited fictional journey evidence', true);
+      await submitFrameForm(frame, '#workspace-search-form', true);
       await waitForFrameText(frame, '#workspace-search-status', '1 Notes');
       await waitForCommittedSearchProjections(releaseState.projectionRoot);
-      await frame.locator('#workspace-back').click();
+      await activate(frame.locator('#workspace-back'), true);
       await waitForDashboard(frame);
       releaseState.restored = true;
       const attentionCards = frame.locator('#attention-cards .attention-card');
@@ -1936,7 +2011,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.sourceActionActivity = completedActivity;
       assert.notEqual(clearedEmission.emission_id, undefined);
       await attentionCard.waitFor({ state: 'visible', timeout: 15_000 });
-      await auditDynamicAccessibilityState(frame, page, 1440, 'desktop Attention cards', false);
+      await auditDynamicAccessibilityState(frame, page, 1440, 'desktop Attention cards', true);
       await activate(attentionCard.getByRole('button', { name: 'View evidence', exact: true }), true);
       assert.equal(await frame.locator('#evidence-dialog').getAttribute('open'), '');
       assert.ok((await frame.locator('#evidence-content').innerText()).length > 0);
@@ -1962,6 +2037,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(new Set([...firstActivityIds, ...secondActivityIds]).size, firstActivityIds.length + secondActivityIds.length, 'Activity pagination must not duplicate identities');
       const renderedActivityIds = await frame.locator('#activity .activity-row').evaluateAll((rows) => rows.map((row) => row.dataset.activityId).filter(Boolean));
       assert.deepEqual(renderedActivityIds.slice(0, firstActivityIds.length), firstActivityIds, 'Activity page append must not replace or reorder page one');
+      await assertNoFrameOverflow(frame, '1440px 51-record Activity');
+      await page.setViewportSize({ width: 320, height: 900 });
+      await assertNoFrameOverflow(frame, '320px 51-record Activity');
+      await page.setViewportSize({ width: 1440, height: 900 });
       const verifiedActivityRow = frame.locator(`#activity .activity-row[data-activity-id="${releaseState.verifiedActivity.activityId}"]`);
       const destination = page.waitForURL((url) => !url.pathname.startsWith('/plugins/command-center') && /\/chat\//u.test(url.pathname), { timeout: 10_000 });
       await activate(verifiedActivityRow.getByRole('button', { name: 'Open source', exact: true }), true);
