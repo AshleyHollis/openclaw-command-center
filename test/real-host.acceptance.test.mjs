@@ -25,7 +25,7 @@ import { assertPerformanceObservationWithinBaseline, RELEASE_FIXTURE_COUNTS, REL
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
 import { createAcceptanceScenarioCoordinator, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
-import { readVerifiedMigrationCompletion } from '../src/acceptance-migration.mjs';
+import { readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence } from '../src/acceptance-migration.mjs';
 
 const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
   'topic-search-conversations.commit.json',
@@ -1527,6 +1527,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   await withIsolatedWorld(async (world) => {
     const resolvedStateDir = path.join(world.root, '.openclaw');
     let realizedScaleSeed;
+    let migrationFixtureEvidence;
     await testContext.test('release preparation: deterministic source fixtures', async () => withDeadline('deterministic release fixture preparation', async () => {
       reportProgress(testContext, 'fixture:started');
       const migrationExportPath = path.join(world.tempRoot, 'legacy-discord-export.v1.json');
@@ -1546,6 +1547,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         edits: [], replyToMessageId: null, thread: null, reactions: [], attachments: []
       }))
     });
+    migrationFixtureEvidence = retainPreparedMigrationFixtureEvidence(migrationExport);
     realizedScaleSeed = await seedReleaseNoteCorpus(scaleMigrationFolderPath, ({ completed, total }) => reportProgress(testContext, 'fixture:note-batch', { completed, total }));
     await writeFile(migrationExportPath, `${JSON.stringify(migrationExport)}\n`);
     const configured = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
@@ -1626,6 +1628,19 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.migrationBinding = Object.freeze({ ...completed.binding });
       return completed;
     };
+    const requireMigrationFixtureEvidence = () => {
+      assert.ok(migrationFixtureEvidence, 'prepared migration fixture evidence must remain available after fixture preparation');
+      return migrationFixtureEvidence;
+    };
+    const readVerifiedImportedHistory = async (signal) => {
+      const { binding } = await ensureMigrationBinding(signal);
+      const prepared = requireMigrationFixtureEvidence();
+      const channel = prepared.migrationExport.channels[0];
+      host.diagnostics.guard.assert('127.0.0.1', 'authenticated chat.history verification');
+      const history = await readAuthenticatedHistory({ gatewayUrl, credential: world.gatewayCredential, sessionKey: binding.sessionKey, signal });
+      const imported = (history.messages ?? []).filter((message) => message?.__openclaw?.legacyDiscordV1?.immutable === true);
+      return { binding, channel, history, imported };
+    };
     let readinessAttempt = 0;
     const recordReadinessObservation = (observation) => {
       evidence.readinessAttempts.push(Object.freeze({ ...observation }));
@@ -1691,20 +1706,39 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // startup-created store is beneath this disposable fixture and that no
       // sibling Command Center storage was created.
       await access(databasePath);
-      const { completion, binding } = await ensureMigrationBinding(signal);
+      const { binding } = await ensureMigrationBinding(signal);
       releaseState.startupReadinessMs = Math.max(1, Date.now() - startupMilestoneStartedAt);
-      assert.equal(completion.verified_channel_count, migrationExport.channels.length);
-      assert.equal(completion.verified_occurrence_count, migrationExport.channels.reduce((count, channel) => count + channel.messages.length, 0));
-      host.diagnostics.guard.assert('127.0.0.1', 'authenticated chat.history verification');
-      const history = await readAuthenticatedHistory({ gatewayUrl, credential: world.gatewayCredential, sessionKey: binding.sessionKey, signal });
-      assert.equal(history.sessionId ?? history.session?.sessionId ?? binding.sessionId, binding.sessionId);
-      const imported = (history.messages ?? []).filter((message) => message?.__openclaw?.legacyDiscordV1?.immutable === true);
-      assert.equal(imported.length, migrationExport.channels[0].messages.length);
-      for (const [index, occurrence] of migrationExport.channels[0].messages.entries()) {
-        assert.equal(imported[index].text, occurrence.text);
-        assert.deepEqual(imported[index].__openclaw.legacyDiscordV1, importedProvenance(migrationExport.channels[0].channelId, occurrence));
-      }
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, migrationVerified: true, sourceReferenceId: binding.referenceId };
+    });
+    await collectScenario('startup-migration-channel-count', async (signal) => {
+      const { completion, binding } = await ensureMigrationBinding(signal);
+      const prepared = requireMigrationFixtureEvidence();
+      assert.equal(completion.verified_channel_count, prepared.channelCount);
+      return { channelCount: prepared.channelCount, sourceReferenceId: binding.referenceId };
+    });
+    await collectScenario('startup-migration-occurrence-count', async (signal) => {
+      const { completion, binding } = await ensureMigrationBinding(signal);
+      const prepared = requireMigrationFixtureEvidence();
+      assert.equal(completion.verified_occurrence_count, prepared.occurrenceCount);
+      return { occurrenceCount: prepared.occurrenceCount, sourceReferenceId: binding.referenceId };
+    });
+    await collectScenario('startup-authenticated-history', async (signal) => {
+      const { binding, channel, history, imported } = await readVerifiedImportedHistory(signal);
+      assert.equal(history.sessionId ?? history.session?.sessionId ?? binding.sessionId, binding.sessionId);
+      assert.equal(imported.length, channel.messages.length);
+      return { sessionId: binding.sessionId, importedCount: imported.length };
+    });
+    await collectScenario('startup-imported-history-text', async (signal) => {
+      const { binding, channel, imported } = await readVerifiedImportedHistory(signal);
+      assert.equal(imported.length, channel.messages.length);
+      for (const [index, occurrence] of channel.messages.entries()) assert.equal(imported[index].text, occurrence.text);
+      return { sourceReferenceId: binding.referenceId, verifiedTextCount: imported.length };
+    });
+    await collectScenario('startup-imported-history-provenance', async (signal) => {
+      const { binding, channel, imported } = await readVerifiedImportedHistory(signal);
+      assert.equal(imported.length, channel.messages.length);
+      for (const [index, occurrence] of channel.messages.entries()) assert.deepEqual(imported[index].__openclaw.legacyDiscordV1, importedProvenance(channel.channelId, occurrence));
+      return { sourceReferenceId: binding.referenceId, verifiedProvenanceCount: imported.length };
     });
     await collectScenario('migrated-scale-conversation-seeding', async (signal) => {
       return ensureScaleConversationFixture(signal);
@@ -2278,6 +2312,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const rows = await runAcceptanceRows([
       { id: 'pinned-host-startup', run: async () => {
         scenarioResult('pinned-host-startup');
+        scenarioResult('startup-migration-channel-count');
+        scenarioResult('startup-migration-occurrence-count');
+        scenarioResult('startup-authenticated-history');
+        scenarioResult('startup-imported-history-text');
+        scenarioResult('startup-imported-history-provenance');
         scenarioResult('migrated-scale-conversation-seeding');
         scenarioResult('startup-projection-recovery');
         scenarioResult('malformed-topic-route-rejection');

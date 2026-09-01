@@ -7,3 +7,21 @@ export function readVerifiedMigrationCompletion(database, { completionId, topicI
   if (!binding || typeof binding.referenceId !== 'string' || binding.referenceId.trim() === '') return undefined;
   return { completion: { ...completion }, binding: { ...binding } };
 }
+
+function deepFreeze(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const nested of Object.values(value)) deepFreeze(nested, seen);
+  return Object.freeze(value);
+}
+
+export function retainPreparedMigrationFixtureEvidence(migrationExport) {
+  if (!migrationExport || typeof migrationExport !== 'object' || Array.isArray(migrationExport) || !Array.isArray(migrationExport.channels)) throw new TypeError('Prepared migration fixture evidence requires an export with channels.');
+  let occurrenceCount = 0;
+  for (const [index, channel] of migrationExport.channels.entries()) {
+    if (!channel || typeof channel !== 'object' || typeof channel.channelId !== 'string' || !channel.channelId || !Array.isArray(channel.messages)) throw new TypeError(`Prepared migration fixture channel ${index} is invalid.`);
+    occurrenceCount += channel.messages.length;
+  }
+  const retained = deepFreeze(structuredClone(migrationExport));
+  return Object.freeze({ migrationExport: retained, channelCount: retained.channels.length, occurrenceCount });
+}

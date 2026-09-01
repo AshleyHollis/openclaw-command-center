@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { readVerifiedMigrationCompletion } from '../src/acceptance-migration.mjs';
+import { readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence } from '../src/acceptance-migration.mjs';
+import { createAcceptanceScenarioCoordinator } from '../src/acceptance-scenario-coordinator.mjs';
 
 const topicId = '11111111-1111-4111-8111-111111111111';
 
@@ -33,4 +34,37 @@ test('migration completion refuses a blank source reference identity', () => {
   try {
     assert.equal(readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId }), undefined);
   } finally { database.close(); }
+});
+
+test('prepared migration fixture evidence remains available to every independent startup case', async () => {
+  let preparedEvidence;
+  await (async function prepareFixture() {
+    const migrationExport = {
+      schemaVersion: 1,
+      source: 'discord',
+      channels: [
+        { channelId: 'fictional-alpha', messages: [{ messageId: 'alpha-1', text: 'Fictional alpha text.' }] },
+        { channelId: 'fictional-scale', messages: [{ messageId: 'scale-1', text: 'Fictional scale text.' }, { messageId: 'scale-2', text: 'More fictional scale text.' }] }
+      ]
+    };
+    preparedEvidence = retainPreparedMigrationFixtureEvidence(migrationExport);
+    migrationExport.channels.length = 0;
+  })();
+
+  const obtain = () => {
+    assert.ok(preparedEvidence, 'prepared fixture evidence must outlive the preparation callback');
+    return preparedEvidence;
+  };
+  const startupCases = [
+    ['startup-migration-channel-count', () => assert.equal(obtain().channelCount, 2)],
+    ['startup-migration-occurrence-count', () => assert.equal(obtain().occurrenceCount, 3)],
+    ['startup-authenticated-history', () => assert.equal(obtain().migrationExport.channels[0].messages.length, 1)],
+    ['startup-imported-history-text', () => assert.equal(obtain().migrationExport.channels[0].messages[0].text, 'Fictional alpha text.')],
+    ['startup-imported-history-provenance', () => assert.equal(obtain().migrationExport.channels[0].channelId, 'fictional-alpha')]
+  ];
+  const coordinator = createAcceptanceScenarioCoordinator();
+  for (const [id, startupCase] of startupCases) await coordinator.collect(id, async () => { startupCase(); return { retained: true }; });
+  assert.deepEqual(coordinator.failures, []);
+  for (const [id] of startupCases) assert.deepEqual(coordinator.result(id), { retained: true });
+  assert.throws(() => { preparedEvidence.migrationExport.channels[0].messages[0].text = 'changed'; }, /read only|Cannot assign/iu);
 });
