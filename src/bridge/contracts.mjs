@@ -530,7 +530,7 @@ function sanitizeRecovery(value) {
 }
 
 function sanitizeTopic(value) {
-  const result = copyClosed(value, ['topicId', 'name', 'revision', 'paraCategory', 'lifecycle', 'health', 'usable', 'provisioningOperationId', 'recovery', 'sourceReferences', 'locators', 'createdAt', 'updatedAt'], 'Topic');
+  const result = copyClosed(value, ['topicId', 'name', 'revision', 'paraCategory', 'lifecycle', 'health', 'usable', 'provisioningOperationId', 'recovery', 'sourceReferences', 'locators', 'activatedAt', 'createdAt', 'updatedAt'], 'Topic');
   if (Array.isArray(result.recovery)) result.recovery = result.recovery.map(sanitizeRecovery);
   if (Array.isArray(result.sourceReferences)) result.sourceReferences = result.sourceReferences.map(sanitizeTopicSourceReference);
   if (Array.isArray(result.locators)) result.locators = result.locators.map(sanitizeTopicLocator);

@@ -134,7 +134,7 @@ test('Topic mutation handlers await the public service and return sanitized dura
   const registrations = [];
   registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
     topics: {
-      create: async () => ({ status: 'applied', logicalOperationId: 'logical-topic-create', topic: { topicId: 'topic-fictional', name: 'Fictional Topic', sourceReferences: [{ version: 1, referenceId: 'session:fictional', topicId: 'topic-fictional', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:private-session' }], locators: [{ referenceId: 'note-folder:fictional', locatorVersion: 1, locator: '/fictional/private/Topics/Fictional Topic', observedRevision: 'fs:1:2:3' }], privateField: 'withheld' } })
+      create: async () => ({ status: 'applied', logicalOperationId: 'logical-topic-create', topic: { topicId: 'topic-fictional', name: 'Fictional Topic', activatedAt: '2026-08-30T12:00:00.000Z', sourceReferences: [{ version: 1, referenceId: 'session:fictional', topicId: 'topic-fictional', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:private-session' }], locators: [{ referenceId: 'note-folder:fictional', locatorVersion: 1, locator: '/fictional/private/Topics/Fictional Topic', observedRevision: 'fs:1:2:3' }], privateField: 'withheld' } })
     }
   });
   const handler = registrations.find(([method]) => method === 'command-center.v1.topics.create')[1];
@@ -144,6 +144,7 @@ test('Topic mutation handlers await the public service and return sanitized dura
   assert.equal(response[0], true);
   assert.equal(response[1].result.value.status, 'applied');
   assert.equal(response[1].result.value.topic.topicId, 'topic-fictional');
+  assert.equal(response[1].result.value.topic.activatedAt, '2026-08-30T12:00:00.000Z');
   assert.equal(response[1].result.value.topic.privateField, undefined);
   assert.equal(response[1].result.value.topic.sourceReferences[0].externalSourceId, undefined);
   assert.equal(response[1].result.value.topic.locators[0].locator, undefined);
@@ -158,10 +159,12 @@ test('Topic get withholds raw locators and external source identities', async ()
     revision: 4,
     paraCategory: 'project',
     lifecycle: 'active',
+    activatedAt: '2026-08-30T12:00:00.000Z',
     sourceReferences: [{ version: 1, referenceId: 'note-folder:fictional', topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/private/Topics/Fictional Topic', observedRevision: 'fs:1:2:3' }],
     locators: [{ referenceId: 'note-folder:fictional', locatorVersion: 2, locator: '/fictional/private/Topics/Fictional Topic', ownership: 'managed', observedRevision: 'fs:1:2:3' }]
   };
   const result = await invokeBridgeMethod({ topics: { getVerified: async () => topic } }, 'command-center.v1.topics.get', { schemaVersion: 1, topicId });
+  assert.equal(result.topic.activatedAt, topic.activatedAt);
   assert.equal(result.topic.sourceReferences[0].externalSourceId, undefined);
   assert.equal(result.topic.locators[0].locator, undefined);
   assert.equal(result.topic.locators[0].observedRevision, 'fs:1:2:3');
@@ -230,9 +233,10 @@ test('generic Topic-owned metadata writes honor archived read-only policy', asyn
 });
 
 test('Topics list sanitizes active, provisioning, recovery, archived, and retired collections', async () => {
-  const topic = { topicId: 'topic-list', name: 'Fictional', revision: 'r1', paraCategory: 'project', lifecycle: 'active', usable: true, recovery: [], sourceReferences: [], locators: [], privateField: 'withheld' };
+  const topic = { topicId: 'topic-list', name: 'Fictional', revision: 'r1', paraCategory: 'project', lifecycle: 'active', activatedAt: '2026-08-30T12:00:00.000Z', usable: true, recovery: [], sourceReferences: [], locators: [], privateField: 'withheld' };
   const result = await invokeBridgeMethod({ topics: { listDestination: () => ({ activeGroups: { project: [topic], area: [], resource: [] }, provisioning: [topic], recovery: [topic], archived: [topic], retired: [topic] }) } }, 'command-center.v1.topics.list', { schemaVersion: 1 });
   assert.deepEqual(Object.keys(result).sort(), ['activeGroups', 'archived', 'provisioning', 'recovery', 'retired']);
+  for (const publicTopic of [result.activeGroups.project[0], result.provisioning[0], result.recovery[0], result.archived[0], result.retired[0]]) assert.equal(publicTopic.activatedAt, topic.activatedAt);
   assert.equal(result.archived[0].privateField, undefined);
   assert.equal(result.retired[0].privateField, undefined);
 });
