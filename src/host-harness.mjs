@@ -253,13 +253,37 @@ export async function stopPinnedHost(child) {
   if (child.exitCode === null) { child.kill('SIGKILL'); await exited; }
 }
 
-export async function waitForConsecutiveReadiness(observe, earlyExit, { required = 2, attempts = 20, delayMs = 100 } = {}) {
+function abortableDelay(delayMs, signal) {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, delayMs);
+    function done() { signal?.removeEventListener('abort', aborted); resolve(); }
+    function aborted() { clearTimeout(timer); signal?.removeEventListener('abort', aborted); reject(signal.reason ?? new Error('Operation aborted.')); }
+    signal?.addEventListener('abort', aborted, { once: true });
+  });
+}
+
+async function withAbort(operation, signal) {
+  signal?.throwIfAborted();
+  if (!signal) return operation;
+  return new Promise((resolve, reject) => {
+    const aborted = () => { signal.removeEventListener('abort', aborted); reject(signal.reason ?? new Error('Operation aborted.')); };
+    signal.addEventListener('abort', aborted, { once: true });
+    Promise.resolve(operation).then(
+      (value) => { signal.removeEventListener('abort', aborted); resolve(value); },
+      (error) => { signal.removeEventListener('abort', aborted); reject(error); }
+    );
+  });
+}
+
+export async function waitForConsecutiveReadiness(observe, earlyExit, { required = 2, attempts = 20, delayMs = 100, signal } = {}) {
   let consecutive = 0;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const result = await Promise.race([Promise.resolve().then(observe), earlyExit.then((error) => { throw error; })]);
+    signal?.throwIfAborted();
+    const result = await withAbort(Promise.race([Promise.resolve().then(() => observe(signal)), earlyExit.then((error) => { throw error; })]), signal);
     consecutive = result ? consecutive + 1 : 0;
     if (consecutive >= required) return;
-    await Promise.race([new Promise((resolve) => setTimeout(resolve, delayMs)), earlyExit.then((error) => { throw error; })]);
+    await withAbort(Promise.race([abortableDelay(delayMs, signal), earlyExit.then((error) => { throw error; })]), signal);
   }
   throw new HarnessFailure('readiness-flapping', 'Host did not produce consecutive readiness observations');
 }

@@ -65,6 +65,28 @@ test('requires consecutive readiness and notices flapping', async () => {
   await assert.rejects(waitForConsecutiveReadiness(() => false, new Promise(() => {}), { attempts: 2 }), (error) => error.category === 'readiness-flapping');
 });
 
+test('readiness cancellation settles during a pending probe and between attempts', async () => {
+  const duringProbe = new AbortController();
+  let probeAborted = false;
+  const pendingProbe = waitForConsecutiveReadiness(async (signal) => {
+    await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+    probeAborted = true;
+    return false;
+  }, new Promise(() => {}), { attempts: 10, delayMs: 100, signal: duringProbe.signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  duringProbe.abort(new Error('cancel during readiness probe'));
+  await assert.rejects(pendingProbe, /cancel during readiness probe/u);
+  assert.equal(probeAborted, true);
+
+  const betweenAttempts = new AbortController();
+  let observations = 0;
+  const pendingDelay = waitForConsecutiveReadiness(() => { observations += 1; return false; }, new Promise(() => {}), { attempts: 10, delayMs: 10_000, signal: betweenAttempts.signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  betweenAttempts.abort(new Error('cancel between readiness probes'));
+  await assert.rejects(pendingDelay, /cancel between readiness probes/u);
+  assert.equal(observations, 1);
+});
+
 test('categorizes host integrity failures and early exit', async () => {
   const fixture = await temporaryHost();
   const descriptor = parseHostDescriptor(hostDescriptor({ checkout: fixture.root, integrity: fixture.integrity }));

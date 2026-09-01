@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAcceptanceScenarioCoordinator, runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
+import { createAcceptanceScenarioCoordinator, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
 
 test('scenario coordinator records an early failure and still completes later independent siblings', async () => {
   const progress = [];
@@ -85,6 +85,37 @@ test('bounded slices cancel and await cleanup below the controller inactivity bo
   }, { timeoutMs: 5, cleanupTimeoutMs: 20 }), /exceeded its 5 ms deadline/u);
   assert.equal(cleaned, true);
   await assert.rejects(() => runBoundedAcceptanceSlice('invalid-bound', async () => {}, { timeoutMs: 290_000, cleanupTimeoutMs: 10_000 }), /below the controller inactivity timeout/u);
+});
+
+test('a cooperatively cancelled timed-out scenario records failure and later siblings still run', async () => {
+  const reached = [];
+  const coordinator = createAcceptanceScenarioCoordinator({
+    execute: (id, run) => runBoundedAcceptanceSlice(id, run, { timeoutMs: 5, cleanupTimeoutMs: 20 })
+  });
+  await coordinator.collect('timed-out-startup', async (signal) => {
+    await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+    reached.push('startup-cleaned');
+  });
+  await coordinator.collect('later-sibling', async () => { reached.push('later-sibling'); return { passed: true }; });
+  assert.deepEqual(reached, ['startup-cleaned', 'later-sibling']);
+  assert.deepEqual(coordinator.failures.map(({ id }) => id), ['timed-out-startup']);
+  assert.deepEqual(coordinator.result('later-sibling'), { passed: true });
+});
+
+test('the shared browser boundary closes deferred work on cancellation before a sibling starts', async () => {
+  const reached = [];
+  const coordinator = createAcceptanceScenarioCoordinator({
+    execute: (id, run) => runBoundedAcceptanceSlice(id, (signal) => runAbortableAcceptanceBoundary(
+      () => run(signal),
+      { signal, onAbort: () => deferredReject(new Error('fictional browser page closed')) }
+    ), { timeoutMs: 5, cleanupTimeoutMs: 20 })
+  });
+  let deferredReject;
+  await coordinator.collect('deferred-browser-work', () => new Promise((_resolve, reject) => { deferredReject = reject; }));
+  await coordinator.collect('later-browser-sibling', async () => { reached.push('later-browser-sibling'); return { passed: true }; });
+  assert.deepEqual(reached, ['later-browser-sibling']);
+  assert.deepEqual(coordinator.failures.map(({ id }) => id), ['deferred-browser-work']);
+  assert.deepEqual(coordinator.result('later-browser-sibling'), { passed: true });
 });
 
 test('two isolated lanes interleave reversed completion and continue after an earlier failure', async () => {

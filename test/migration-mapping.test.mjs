@@ -62,6 +62,36 @@ test('one configured channel reconciles one provisioning Topic, Note Folder, and
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('5,000 imported occurrences use one checkpoint scan and constant-size persistence results', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-migration-scale-'));
+  let metadata;
+  try {
+    const exportPath = path.join(stateDir, 'scale-export.json');
+    const messages = Array.from({ length: 5_000 }, (_, index) => ({
+      messageId: `fictional-scale-${String(index).padStart(4, '0')}`,
+      displayOrder: index,
+      author: { id: 'fictional-scale-user', displayName: 'Fictional Scale User' },
+      timestamp: new Date(Date.UTC(2026, 7, 20) + index).toISOString(),
+      text: `Fictional scale occurrence ${index}.`,
+      edits: [], replyToMessageId: null, thread: null, reactions: [], attachments: []
+    }));
+    await writeFile(exportPath, JSON.stringify({ schemaVersion: 1, source: 'discord', channels: [{ channelId: 'fictional-channel-scale', displayName: 'Fictional Scale', messages }] }));
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
+    const observations = { checkpointScans: 0, writes: 0, initialBatchRows: 0, maximumIncrementalRows: 0 };
+    const countedMetadata = {
+      ...metadata,
+      listMigrationOccurrences(...args) { observations.checkpointScans += 1; return metadata.listMigrationOccurrences(...args); },
+      setMigrationOccurrences(...args) { observations.writes += 1; const rows = metadata.setMigrationOccurrences(...args); if (args[1].length > 1) observations.initialBatchRows = rows.length; else observations.maximumIncrementalRows = Math.max(observations.maximumIncrementalRows, rows.length); return rows; }
+    };
+    const scaleConfig = { schemaVersion: 1, exportPath, channels: [{ channelId: 'fictional-channel-scale', topicId: 'fictional-topic-scale', paraCategory: 'resource', noteFolderPath: '/fictional/vault/scale' }] };
+    const service = createLegacyDiscordMigrationService({ metadata: countedMetadata, config: scaleConfig, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-session-scale' }) }, transcriptRuntime: runtime(), folderVerifier: async () => undefined });
+    const result = await service.start();
+    assert.equal(result.complete, true, JSON.stringify(result));
+    assert.deepEqual(observations, { checkpointScans: 2, writes: 5_001, initialBatchRows: 5_000, maximumIncrementalRows: 1 });
+    assert.equal(metadata.getMigrationCompletion().verifiedOccurrenceCount, 5_000);
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('external plugin startup provisions through the public Session store runtime without trusted Gateway RPC', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-migration-public-session-'));
   let metadata;

@@ -12,6 +12,18 @@ const ZERO_DIGEST = 'sha256:' + '0'.repeat(64);
 function digest(value) { return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`; }
 function channelDigest(channel) { return digest(channel.occurrences.map((occurrence) => ({ identity: occurrenceIdentity(channel.channelId, occurrence), payload: occurrencePayloadDigest(occurrence) }))); }
 function occurrenceSequenceDigest(channel) { return channel.occurrences.length === 0 ? ZERO_DIGEST : digest(channel.occurrences.map((occurrence) => occurrenceIdentity(channel.channelId, occurrence))); }
+function occurrenceSequenceDigester(channelId) {
+  const hash = createHash('sha256').update('[');
+  let count = 0;
+  return {
+    append(occurrence) {
+      if (count > 0) hash.update(',');
+      hash.update(JSON.stringify(occurrenceIdentity(channelId, occurrence)));
+      count += 1;
+      return `sha256:${hash.copy().update(']').digest('hex')}`;
+    }
+  };
+}
 function safeError(error, fallback = 'migration-failure') { return { code: String(error?.code || fallback).slice(0, 80), summary: String(error?.code || fallback).slice(0, 300) }; }
 function readSessionId(value) { return value?.sessionId ?? value?.session?.sessionId ?? value?.id ?? null; }
 function readSessionKey(value) { return value?.key ?? value?.sessionKey ?? value?.session?.key ?? null; }
@@ -442,6 +454,8 @@ export class LegacyDiscordMigrationService {
         if (!occurrence || !provenanceMatches(entry.message, channel.channelId, occurrence) || entry.eventId !== occurrenceIdentity(channel.channelId, occurrence).eventId || entry.parentId !== expectedParentId) throw Object.assign(new Error('The existing transcript is not the exact imported source prefix.'), { code: 'destination-corrupt', channelId: channel.channelId });
       }
       let previousEventId = events.at(-1)?.eventId ?? null;
+      const checkpoints = new Map(this.metadata.listMigrationOccurrences(channel.channelId).map((entry) => [entry.occurrenceId, entry]));
+      const sequenceDigester = occurrenceSequenceDigester(channel.channelId);
       // The ledger is a checkpoint, never proof of a transcript write. Re-read
       // every deterministic occurrence so a checkpoint that survived before an
       // append is repaired rather than silently skipped.
@@ -449,7 +463,8 @@ export class LegacyDiscordMigrationService {
         const occurrence = channel.occurrences[index];
         const identity = occurrenceIdentity(channel.channelId, occurrence);
         const existing = events[index]?.message?.__openclaw?.legacyDiscordV1?.occurrenceId === identity.occurrenceId ? events[index] : null;
-        const checkpoint = this.metadata.listMigrationOccurrences(channel.channelId).find((entry) => entry.occurrenceId === identity.occurrenceId);
+        const checkpoint = checkpoints.get(identity.occurrenceId);
+        const importedDigest = sequenceDigester.append(occurrence);
         let result;
         if (existing) {
           if (!provenanceMatches(existing.message, channel.channelId, occurrence)) throw Object.assign(new Error('An imported occurrence payload differs from the unchanged source.'), { code: 'destination-corrupt', channelId: channel.channelId });
@@ -463,10 +478,11 @@ export class LegacyDiscordMigrationService {
         if (result) phaseHook(this.hooks, 'afterAuthoritativeAppend', { phase: 'importing', channelId: channel.channelId, displayOrder: occurrence.displayOrder, occurrenceId: identity.occurrenceId, destinationMessageId: result.result.messageId });
         if (result) {
           const target = { ...(await this.transcriptTarget(row)), sourceChannelId: channel.channelId };
-          this.metadata.setMigrationOccurrences(channel.channelId, [{ occurrenceId: identity.occurrenceId, occurrenceDigest: identity.occurrenceDigest, displayOrder: occurrence.displayOrder, destinationMessageId: result.result.messageId, destinationAnchor: durableAnchor(result.result, target, occurrence, index === 0 ? null : events[index - 1]?.eventId ?? null, index) }]);
+          const [persisted] = this.metadata.setMigrationOccurrences(channel.channelId, [{ occurrenceId: identity.occurrenceId, occurrenceDigest: identity.occurrenceDigest, displayOrder: occurrence.displayOrder, destinationMessageId: result.result.messageId, destinationAnchor: durableAnchor(result.result, target, occurrence, index === 0 ? null : events[index - 1]?.eventId ?? null, index) }]);
+          checkpoints.set(identity.occurrenceId, persisted);
         }
         phaseHook(this.hooks, 'afterAppend', { phase: 'importing', channelId: channel.channelId, displayOrder: occurrence.displayOrder, occurrenceId: identity.occurrenceId });
-        row = this.metadata.setMigrationChannel({ ...row, phase: 'importing', importedCount: index + 1, importedDigest: digest(channel.occurrences.slice(0, index + 1).map((entry) => occurrenceIdentity(channel.channelId, entry))), nextOrdinal: index + 1, updatedAt: this.now() });
+        row = this.metadata.setMigrationChannel({ ...row, phase: 'importing', importedCount: index + 1, importedDigest, nextOrdinal: index + 1, updatedAt: this.now() });
         phaseHook(this.hooks, 'afterCheckpoint', { phase: 'importing', channelId: channel.channelId, displayOrder: occurrence.displayOrder });
       }
       this.metadata.setMigrationChannel({ ...row, phase: 'verifying', nextOrdinal: channel.occurrences.length, updatedAt: this.now() });

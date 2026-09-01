@@ -61,6 +61,15 @@ export async function runSettledAcceptanceBatch(items, { run, identify = (_item,
   return outcomes.map((outcome) => outcome.value);
 }
 
+export async function runAbortableAcceptanceBoundary(run, { signal, onAbort = () => {} } = {}) {
+  if (typeof run !== 'function' || typeof onAbort !== 'function') throw new TypeError('Abortable acceptance boundary requires run and onAbort functions.');
+  signal?.throwIfAborted();
+  const aborted = () => { onAbort(signal.reason); };
+  signal?.addEventListener('abort', aborted, { once: true });
+  try { return await run(signal); }
+  finally { signal?.removeEventListener('abort', aborted); }
+}
+
 export async function runBoundedAcceptanceSlice(id, run, { timeoutMs = 240_000, cleanupTimeoutMs = 15_000 } = {}) {
   if (typeof id !== 'string' || !id || typeof run !== 'function') throw new TypeError('Bounded acceptance slice requires an id and run function.');
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs >= 300_000) throw new TypeError('Acceptance slice timeout must remain below the controller inactivity timeout.');

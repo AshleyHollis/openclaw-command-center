@@ -1202,6 +1202,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     const channelId = requiredString(sourceChannelId, 'sourceChannelId');
     if (!Array.isArray(occurrences)) throw new CommandCenterMetadataError('invalid-value', 'migration occurrences must be an array');
     return mutate(null, (db) => {
+      const affected = [];
       for (const occurrence of occurrences) {
         const value = objectValue(occurrence, 'migration occurrence');
         allowedKeys(value, ['occurrenceId', 'occurrenceDigest', 'displayOrder', 'destinationMessageId', 'destinationAnchor'], 'migration occurrence');
@@ -1214,10 +1215,12 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
         if (destinationAnchorJson && destinationAnchorJson.length > 2000) throw new CommandCenterMetadataError('invalid-value', 'destinationAnchor is too large.');
         const existing = db.prepare('SELECT occurrence_digest, display_order, destination_message_id, destination_anchor_json, destination_anchor_digest FROM migration_occurrences WHERE source_channel_id = ? AND occurrence_id = ?').get(channelId, occurrenceId);
         if (existing && (existing.occurrence_digest !== occurrenceDigest || existing.display_order !== displayOrder || (existing.destination_message_id && destinationMessageId && existing.destination_message_id !== destinationMessageId) || (existing.destination_anchor_json && destinationAnchorJson && existing.destination_anchor_json !== destinationAnchorJson))) throw new CommandCenterMetadataError('conflict', 'Migration occurrence identity cannot be rebound.');
-        db.prepare(`INSERT INTO migration_occurrences (source_channel_id, occurrence_id, occurrence_digest, display_order, destination_message_id, destination_anchor_json, destination_anchor_digest) VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(source_channel_id, occurrence_id) DO UPDATE SET destination_message_id = COALESCE(migration_occurrences.destination_message_id, excluded.destination_message_id), destination_anchor_json = COALESCE(migration_occurrences.destination_anchor_json, excluded.destination_anchor_json), destination_anchor_digest = COALESCE(migration_occurrences.destination_anchor_digest, excluded.destination_anchor_digest)`).run(channelId, occurrenceId, occurrenceDigest, displayOrder, destinationMessageId, destinationAnchorJson, destinationAnchorDigest);
+        const persisted = db.prepare(`INSERT INTO migration_occurrences (source_channel_id, occurrence_id, occurrence_digest, display_order, destination_message_id, destination_anchor_json, destination_anchor_digest) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_channel_id, occurrence_id) DO UPDATE SET destination_message_id = COALESCE(migration_occurrences.destination_message_id, excluded.destination_message_id), destination_anchor_json = COALESCE(migration_occurrences.destination_anchor_json, excluded.destination_anchor_json), destination_anchor_digest = COALESCE(migration_occurrences.destination_anchor_digest, excluded.destination_anchor_digest)
+          RETURNING *`).get(channelId, occurrenceId, occurrenceDigest, displayOrder, destinationMessageId, destinationAnchorJson, destinationAnchorDigest);
+        affected.push(mapMigrationOccurrence(persisted));
       }
-      return service.listMigrationOccurrences(channelId);
+      return affected;
     });
   };
 
