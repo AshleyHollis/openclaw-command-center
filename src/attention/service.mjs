@@ -444,14 +444,18 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     const effectiveOccurrence = Object.freeze({ ...occurrence, evidenceFacts: object(derivedFacts ?? EMPTY_OBJECT, 'derived evidenceFacts') });
     const severity = deriveSeverity(effectiveOccurrence.evidenceFacts, { verified: true });
     const identity = episodeIdentity(effectiveOccurrence);
-      const occurrenceIdentity = occurrenceKey(effectiveOccurrence);
+    const occurrenceIdentity = occurrenceKey(effectiveOccurrence);
     const clock = nowIso(now);
     return transaction((database) => {
       const exact = findOccurrence(identity.identityDigest, occurrenceIdentity);
-      if (exact) return Object.freeze({ episode: mapEpisode(exact) ?? exact, duplicate: true, ignored: false });
+      const confirmedState = verifiedTransition && ['withdrawn', 'resolved'].includes(effectiveOccurrence.transitionEvidence?.state) ? (effectiveOccurrence.transitionEvidence.state === 'withdrawn' ? 'Withdrawn' : 'Resolved') : null;
+      if (exact) {
+        const episode = mapEpisode(exact) ?? exact;
+        const activityId = confirmedState ? `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}` : null;
+        return Object.freeze({ episode, activity: activityId ? service.getActivity(activityId) : null, duplicate: true, ignored: false });
+      }
       const generations = findGenerations(identity);
       const current = generations[0];
-      const confirmedState = verifiedTransition && ['withdrawn', 'resolved'].includes(effectiveOccurrence.transitionEvidence?.state) ? (effectiveOccurrence.transitionEvidence.state === 'withdrawn' ? 'Withdrawn' : 'Resolved') : null;
       if (confirmedState === 'Withdrawn' && (!current || ['Resolved', 'Withdrawn'].includes(current.state))) return Object.freeze({ episode: current ?? null, duplicate: false, ignored: true });
       if (current && ['Resolved', 'Withdrawn'].includes(current.state)) {
         const terminal = Date.parse(current.terminalAt ?? current.updatedAt);
@@ -477,8 +481,10 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       if (confirmedState && !['Resolved', 'Withdrawn'].includes(episode.state)) episode = { ...episode, state: assertTransition(episode.state, confirmedState), terminalAt: clock, snoozedUntil: null };
       saveEpisode(episode, { insert: !current || ['Resolved', 'Withdrawn'].includes(current.state) });
       saveOccurrence(episode, effectiveOccurrence, severity, verifiedTransition);
-      if (confirmedState) saveActivity({ activityId: `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, episodeId: episode.episodeId, logicalOperationId: `transition:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, attemptId: null, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actorMode: 'system', actionId: `source.${confirmedState.toLowerCase()}`, operationKind: `attention.${confirmedState.toLowerCase()}`, outcome: confirmedState.toLowerCase(), verificationRevision: effectiveOccurrence.occurrenceVersion ?? null, createdAt: clock, updatedAt: clock });
-      return Object.freeze({ episode: findById(episode.episodeId), duplicate: false, ignored: false });
+      const activity = confirmedState
+        ? saveActivity({ activityId: `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, episodeId: episode.episodeId, logicalOperationId: `transition:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, attemptId: null, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actorMode: 'system', actionId: `source.${confirmedState.toLowerCase()}`, operationKind: `attention.${confirmedState.toLowerCase()}`, outcome: confirmedState.toLowerCase(), verificationRevision: effectiveOccurrence.occurrenceVersion ?? null, createdAt: clock, updatedAt: clock })
+        : null;
+      return Object.freeze({ episode: findById(episode.episodeId), activity, duplicate: false, ignored: false });
     });
   }
 

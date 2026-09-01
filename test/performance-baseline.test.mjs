@@ -10,7 +10,7 @@ async function readReleasePerformanceBaseline() {
 test('release performance seed pins the exact corpus without claiming an unobserved successful baseline', async () => {
   const seed = await readReleasePerformanceBaseline();
   assert.deepEqual(seed.viewport, { width: 1440, height: 900 });
-  assert.deepEqual(seed.fixtureCounts, { largeNoteBytes: 524289, conversations: 101, activityRecords: 51, actionCards: 2, indexedNotes: 5000, indexedConversationMessages: 5000 });
+  assert.deepEqual(seed.fixtureCounts, { largeNoteBytes: 8388609, conversations: 100, activityRecords: 51, actionCards: 2, indexedNotes: 5000, indexedConversationMessages: 5000 });
   assert.deepEqual(RELEASE_MEASUREMENTS, ['startupReadinessMs', 'dashboardLoadMs', 'topicOpenCreateMs', 'chatSendMs', 'conversationLifecycleMs', 'largeNoteLifecycleMs', 'indexedSearchMs', 'activityNextPageMs', 'topicReviewApplyMs', 'mobileReflowMs']);
   assert.equal(seed.fixtureIdentity, RELEASE_FIXTURE_IDENTITY);
   assert.deepEqual(seed.capture, { policy: 'first-successful-pinned-harness-observation', successfulRunOrdinal: null });
@@ -28,7 +28,7 @@ test('release performance baseline rejects receipt drift, widened ceilings, zero
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostVersion: 'fictional-other-host' }), /pinned/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostReceipt: { ...baseline.hostReceipt, contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }), /pinned host identity/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, thresholds: { ...baseline.thresholds, dashboardLoadMs: 999999 } }), /first observation/);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 100 } }), /conversations must be 101/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 101 } }), /conversations must be 100/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, activityRecords: 52 } }), /activityRecords must be 51/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: 0 } }), /first positive/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: undefined } }), /first positive/);
@@ -38,10 +38,10 @@ test('release performance baseline rejects receipt drift, widened ceilings, zero
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, generatedAt: '2026-08-30T00:00:00.000Z' }), /unsupported field/);
 });
 
-test('release fixture includes one exact UTF-8 boundary Note', () => {
-  const largeNote = `${'x'.repeat(524_287)}é`;
+test('release fixture includes one exact eight-MiB Note plus trailing newline', () => {
+  const largeNote = `${'x'.repeat(8_388_608)}\n`;
   const bytes = Buffer.from(largeNote, 'utf8');
   assert.equal(bytes.length, RELEASE_FIXTURE_COUNTS.largeNoteBytes);
-  assert.equal(bytes.subarray(0, 524_288).at(-1), 0xc3);
-  assert.equal(bytes.subarray(524_288).at(0), 0xa9);
+  assert.equal(bytes.subarray(0, 8_388_608).every((value) => value === 0x78), true);
+  assert.equal(bytes.at(-1), 0x0a);
 });

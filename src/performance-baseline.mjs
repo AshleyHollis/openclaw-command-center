@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 export const RELEASE_PERFORMANCE_BASELINE_VERSION = 1;
 
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
-  largeNoteBytes: 524_289,
-  conversations: 101,
+  largeNoteBytes: 8_388_609,
+  conversations: 100,
   activityRecords: 51,
   actionCards: 2,
   indexedNotes: 5_000,
@@ -31,7 +31,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const HOST_COMMIT = '6d542e6a0c5743a22a19c3226e754bf94cbf35b1';
 const HOST_VERSION = '2026.8.1-beta.3';
 const PLAYWRIGHT_VERSION = '1.62.1';
-export const RELEASE_FIXTURE_IDENTITY = 'sha256:a453a7532f086632d38d601bd6ecb05392159d606272643e239ddb926fc45138';
+export const RELEASE_FIXTURE_IDENTITY = 'sha256:bfcec92b9d27f43d94018e4cb6114a3eff0fff847f49ffdbf96d0499bf6ccedf';
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 1,
   sourceDigest: 'sha256:dcaa96ca24dc1bee1442603cc86cf492bde40c22c9127b1c76c22c8917b2983e',

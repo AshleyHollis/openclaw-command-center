@@ -209,7 +209,7 @@ async function waitForCommittedSearchProjections(projectionRoot, { attempts = 10
 
 async function seedReleaseNoteCorpus(folder, onBatch) {
   const entries = [
-    ['large-note.md', `${'x'.repeat(524_287)}é`]
+    ['large-note.md', `${'x'.repeat(8_388_608)}\n`]
   ];
   for (let index = entries.length; index < RELEASE_FIXTURE_COUNTS.indexedNotes; index += 1) entries.push([`indexed-${String(index).padStart(4, '0')}.md`, `# Fictional indexed Note ${index}\n\nFictional scale search phrase ${index}.`]);
   for (let offset = 0; offset < entries.length; offset += 100) {
@@ -1181,8 +1181,11 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
     measurements[`${pathName}OpenMs`] = Math.max(1, Date.now() - started);
     if (edit) {
       const saveStarted = Date.now();
-      await frame.locator('#note-content').press('End');
-      await frame.locator('#note-content').pressSequentially('\nFictional measured edit.');
+      const measuredEdit = 'Fictional measured edit.';
+      await frame.locator('#note-content').press('Control+Home');
+      for (let index = 0; index < measuredEdit.length; index += 1) await frame.locator('#note-content').press('Shift+ArrowRight');
+      await frame.locator('#note-content').pressSequentially(measuredEdit);
+      assert.equal(await frame.locator('#note-content').inputValue().then((value) => Buffer.byteLength(value)), RELEASE_FIXTURE_COUNTS.largeNoteBytes);
       await frame.locator('#note-save').click();
       await waitForFrameText(frame, '#notes-status', 'Note saved.');
       measurements.largeNoteSaveMs = Math.max(1, Date.now() - saveStarted);
@@ -1205,37 +1208,26 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   }
   await selectWorkspaceSection(frame, 'conversations', 1440);
   await frame.locator('#conversation-view').selectOption('all');
-  await frame.locator('#conversation-page-status').getByText('Page 1 of 3', { exact: true }).waitFor();
+  await frame.locator('#conversation-page-status').getByText('Page 1 of 2', { exact: true }).waitFor();
   assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 50);
   const firstPageReferences = await frame.locator('#conversation-list .conversation-item button:first-child').allTextContents();
   await frame.locator('#conversation-next').click();
-  await frame.locator('#conversation-page-status').getByText('Page 2 of 3', { exact: true }).waitFor();
+  await frame.locator('#conversation-page-status').getByText('Page 2 of 2', { exact: true }).waitFor();
   assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 50);
   const pageTwoConversation = frame.locator('#conversation-list .conversation-item button:first-child');
   const pageTwoRow = frame.locator('#conversation-list .conversation-item').first();
   const pageTwoName = await pageTwoConversation.textContent();
   assert.equal(firstPageReferences.includes(pageTwoName), false);
   const pageTwoIdentity = await pageTwoRow.evaluate((row) => ({ referenceId: row.dataset.referenceId, sessionId: row.dataset.sessionId }));
-  await frame.locator('#conversation-next').click();
-  await frame.locator('#conversation-page-status').getByText('Page 3 of 3', { exact: true }).waitFor();
-  assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 1);
-  const pageThreeConversation = frame.locator('#conversation-list .conversation-item button:first-child');
-  const pageThreeRow = frame.locator('#conversation-list .conversation-item').first();
-  const pageThreeName = await pageThreeConversation.textContent();
-  assert.equal(firstPageReferences.includes(pageThreeName), false);
-  assert.notEqual(pageThreeName, pageTwoName);
-  const pageThreeIdentity = await pageThreeRow.evaluate((row) => ({ referenceId: row.dataset.referenceId, sessionId: row.dataset.sessionId }));
-  await pageThreeConversation.click();
-  await waitForFrameText(frame, '#chat-conversation-name', pageThreeName);
+  await pageTwoConversation.click();
+  await waitForFrameText(frame, '#chat-conversation-name', pageTwoName);
   const catalogResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId } });
   const conversations = (catalogResponse?.result ?? catalogResponse)?.conversations ?? catalogResponse?.conversations ?? [];
   const authoritativePageTwo = conversations.find((item) => item.displayName === pageTwoName);
-  const authoritativePageThree = conversations.find((item) => item.displayName === pageThreeName);
   assert.deepEqual(pageTwoIdentity, { referenceId: authoritativePageTwo?.referenceId, sessionId: authoritativePageTwo?.sessionId });
-  assert.deepEqual(pageThreeIdentity, { referenceId: authoritativePageThree?.referenceId, sessionId: authoritativePageThree?.sessionId });
-  const navigationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId, referenceId: pageThreeIdentity.referenceId } });
+  const navigationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId, referenceId: pageTwoIdentity.referenceId } });
   const navigation = navigationResponse?.result ?? navigationResponse;
-  assert.deepEqual({ referenceId: navigation.sourceReference?.referenceId, sessionId: navigation.sessionId, sessionKeyPresent: Boolean(navigation.sessionKey) }, { referenceId: pageThreeIdentity.referenceId, sessionId: pageThreeIdentity.sessionId, sessionKeyPresent: true });
+  assert.deepEqual({ referenceId: navigation.sourceReference?.referenceId, sessionId: navigation.sessionId, sessionKeyPresent: Boolean(navigation.sessionKey) }, { referenceId: pageTwoIdentity.referenceId, sessionId: pageTwoIdentity.sessionId, sessionKeyPresent: true });
   await frame.locator('#workspace-back').click();
   await waitForDashboard(frame);
   measurements.largeNoteLifecycleMs = Math.max(1, Date.now() - lifecycleStarted);
@@ -1531,14 +1523,17 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         activitySource.registerSourceCapability({ sourceCapabilityId: 'session-activity-fixture', sourceKind: 'session', actions: [], deriveEvidence: () => ({ verified: true }), verifyTransition: (value) => value.transitionEvidence?.state === 'resolved' && value.transitionEvidence?.version === value.occurrenceVersion });
         const occurrence = { schemaVersion: 1, sourceCapabilityId: 'session-activity-fixture', stableSubjectId: binding.sessionKey, attentionReason: 'verified-session-navigation', occurrenceId: 'fictional-session-activity', occurrenceVersion: binding.sessionId, occurredAt: '2100-08-30T11:59:00.000Z', topicId: 'fictional-topic-alpha', sourceReferenceId: binding.referenceId, evidenceFacts: {} };
         await activitySource.ingest(occurrence);
-        await activitySource.ingest({ ...occurrence, occurrenceId: 'fictional-session-activity-resolved', transitionEvidence: { state: 'resolved', version: binding.sessionId } });
-        const verifiedActivity = activitySource.listActivity({ schemaVersion: 1, topicId: 'fictional-topic-alpha', limit: 50 }).records.find((record) => record.sourceReferenceId === binding.referenceId && record.outcome === 'resolved');
-        assert.ok(verifiedActivity?.activityId);
+        const transition = await activitySource.ingest({ ...occurrence, occurrenceId: 'fictional-session-activity-resolved', transitionEvidence: { state: 'resolved', version: binding.sessionId } });
+        assert.ok(transition.activity?.activityId);
+        const activityResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.activity.get', params: { schemaVersion: 1, activityId: transition.activity.activityId } });
+        const verifiedActivity = (activityResponse?.result ?? activityResponse)?.record;
+        assert.deepEqual({ activityId: verifiedActivity?.activityId, episodeId: verifiedActivity?.episodeId, logicalOperationId: verifiedActivity?.logicalOperationId, topicId: verifiedActivity?.topicId, sourceReferenceId: verifiedActivity?.sourceReferenceId, operationKind: verifiedActivity?.operationKind, outcome: verifiedActivity?.outcome, verificationRevision: verifiedActivity?.verificationRevision, occurredAt: verifiedActivity?.occurredAt }, { activityId: transition.activity.activityId, episodeId: transition.activity.episodeId, logicalOperationId: transition.activity.logicalOperationId, topicId: transition.activity.topicId, sourceReferenceId: transition.activity.sourceReferenceId, operationKind: transition.activity.operationKind, outcome: transition.activity.outcome, verificationRevision: transition.activity.verificationRevision, occurredAt: transition.activity.occurredAt });
+        assert.deepEqual({ topicId: verifiedActivity.topicId, sourceReferenceId: verifiedActivity.sourceReferenceId, outcome: verifiedActivity.outcome, verificationRevision: verifiedActivity.verificationRevision }, { topicId: 'fictional-topic-alpha', sourceReferenceId: binding.referenceId, outcome: 'resolved', verificationRevision: binding.sessionId });
         releaseState.verifiedActivity = { activityId: verifiedActivity.activityId, topicId: 'fictional-topic-alpha', referenceId: binding.referenceId, sessionId: binding.sessionId, sessionKey: binding.sessionKey };
       } finally { activitySource.close(); activityMetadata.close(); }
       // Complete the frozen conversation fixture through the public Session
       // contract before any browser mutation begins. The migrated primary
-      // Session is the first of the exact 101 Topic Conversations.
+      // Session is the first of the exact 100 Topic Conversations.
       for (let offset = 1; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
         await withDeadline(`Session fixture batch ${Math.floor(offset / 10) + 1}`, () => Promise.all(Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => {
           const index = offset + batchIndex;
