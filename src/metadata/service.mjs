@@ -1277,9 +1277,35 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
       const session = references.filter((reference) => reference.reference_id === channel.session_reference_id && reference.source_system === 'openclaw' && reference.source_kind === 'session');
       const sessionState = db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(channel.session_reference_id);
       if (references.length !== 2 || folder.length !== 1 || session.length !== 1 || session[0].external_source_id !== `agent:main:command-center:legacy-discord:${channel.source_channel_id}` || !sessionState || sessionState.session_id !== channel.session_id || sessionState.status !== 'open' || sessionState.is_primary !== 1) throw new CommandCenterMetadataError('conflict', 'Migration channel activation requires exact authoritative Topic bindings.');
-      db.prepare("UPDATE topics SET lifecycle = 'active', updated_at = ? WHERE topic_id = ?").run(completedAt, channel.topic_id);
+      db.prepare("UPDATE topics SET lifecycle = 'active', activated_at = COALESCE(activated_at, ?), revision = revision + 1, updated_at = ? WHERE topic_id = ?").run(completedAt, completedAt, channel.topic_id);
       db.prepare("UPDATE migration_channels SET phase = 'complete', failure_code = NULL, failure_summary = NULL, updated_at = ? WHERE source_channel_id = ?").run(completedAt, sourceChannelId);
       return mapMigrationChannel(db.prepare('SELECT * FROM migration_channels WHERE source_channel_id = ?').get(sourceChannelId));
+    });
+  };
+
+  service.reconcileCompletedLegacyDiscordTopics = ({ configDigest, verifiedTopicCount, verifiedAt } = {}) => {
+    const ownershipMarker = `legacy-discord-owner:${requiredString(configDigest, 'configDigest')}`;
+    const expectedCount = integerValue(verifiedTopicCount, 'verifiedTopicCount', { minimum: 0 });
+    const completedAt = timestamp(verifiedAt, 'verifiedAt');
+    return mutate(null, (db) => {
+      const topics = db.prepare(`SELECT DISTINCT topic.*, state.status AS migration_session_status, state.is_primary AS migration_session_is_primary FROM topics topic
+        JOIN source_references folder ON folder.topic_id = topic.topic_id
+        JOIN source_references session ON session.topic_id = topic.topic_id AND session.reference_id = replace(folder.reference_id, 'migration:folder:', 'migration:session:')
+        JOIN session_state state ON state.reference_id = session.reference_id
+        WHERE folder.source_system = 'obsidian' AND folder.source_kind = 'note_folder' AND folder.reference_id LIKE 'migration:folder:%' AND folder.last_observed_revision = ?
+          AND session.source_system = 'openclaw' AND session.source_kind = 'session'
+          AND session.external_source_id = 'agent:main:command-center:legacy-discord:' || substr(folder.reference_id, length('migration:folder:') + 1)
+          AND state.session_id IS NOT NULL
+        ORDER BY topic.topic_id`).all(ownershipMarker);
+      if (topics.length !== expectedCount) throw new CommandCenterMetadataError('conflict', `Completed migration Topic ownership count ${topics.length} does not match ${expectedCount}.`);
+      for (const topic of topics) {
+        if (topic.lifecycle !== 'active') throw new CommandCenterMetadataError('conflict', 'Completed migration Topic is not active.');
+        if (topic.revision >= 1 && topic.activated_at) continue;
+        if (topic.revision !== 0 || topic.activated_at !== null) throw new CommandCenterMetadataError('conflict', 'Completed migration Topic activation metadata is inconsistent.');
+        if (topic.migration_session_status !== 'open' || topic.migration_session_is_primary !== 1) throw new CommandCenterMetadataError('conflict', 'Legacy activation repair requires its original open Primary Session binding.');
+        db.prepare('UPDATE topics SET activated_at = ?, revision = 1, updated_at = ? WHERE topic_id = ? AND lifecycle = ? AND revision = 0 AND activated_at IS NULL').run(completedAt, completedAt, topic.topic_id, 'active');
+      }
+      return topics.map((topic) => mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(topic.topic_id)));
     });
   };
 

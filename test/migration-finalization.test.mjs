@@ -96,11 +96,20 @@ test('destination corruption blocks activation and completion; success leaves on
       assert.equal(cleanMetadata.getMigrationState(), null);
       assert.equal(Object.keys(tombstone).sort().join(','), 'completionId,completionRevision,configDigest,schemaVersion,sourceDigest,verifiedAt,verifiedChannelCount,verifiedOccurrenceCount');
       const importedCount = [...cleanRuntime.sessions.values()][0].length;
+      const cleanDatabasePath = cleanMetadata.databasePath;
       cleanMetadata.close();
+      const legacyDatabase = new DatabaseSync(cleanDatabasePath);
+      try {
+        legacyDatabase.prepare('UPDATE topics SET revision = 0, activated_at = NULL WHERE topic_id = ?').run('fictional-topic-finalization-clean');
+      } finally { legacyDatabase.close(); }
       cleanMetadata = openCommandCenterMetadataService({ stateDir: cleanState, capabilities: { notes: true, sessions: true } });
-      // The reopened completion tombstone short-circuits source rediscovery.
-      const restarted = createLegacyDiscordMigrationService({ metadata: cleanMetadata, config: { schemaVersion: 1, exportPath: '/fictional/missing-after-completion.json', channels: [{ ...channel, topicId: 'fictional-topic-finalization-clean' }] }, transcriptRuntime: runtime(), folderVerifier: async () => undefined });
+      // The reopened completion tombstone repairs legacy activation metadata
+      // without a retained config or authoritative source rediscovery.
+      const restarted = createLegacyDiscordMigrationService({ metadata: cleanMetadata });
       assert.equal((await restarted.start()).phase, 'complete');
+      const reconciledTopic = cleanMetadata.getTopic('fictional-topic-finalization-clean');
+      assert.equal(reconciledTopic.revision, 1);
+      assert.equal(reconciledTopic.activatedAt, tombstone.verifiedAt);
       const malformedRestart = createLegacyDiscordMigrationService({ metadata: cleanMetadata, config: { schemaVersion: 999, unexpected: true } });
       assert.equal((await malformedRestart.start()).phase, 'complete');
       const changedRestart = createLegacyDiscordMigrationService({ metadata: cleanMetadata, config: { schemaVersion: 1, exportPath: fixturePath, channels: [{ ...channel, topicId: 'fictional-topic-conflicting-completion' }] } });
@@ -112,6 +121,16 @@ test('destination corruption blocks activation and completion; success leaves on
       assert.equal(cleanMetadata.listMigrationChannels().length, 0);
       assert.equal(cleanMetadata.getMigrationState(), null);
       assert.equal([...cleanRuntime.sessions.values()][0].length, importedCount);
+      const ownedSession = cleanMetadata.listSourceReferences('fictional-topic-finalization-clean').find((reference) => reference.sourceKind === 'session');
+      const ownedSessionState = cleanMetadata.getSessionState(ownedSession.referenceId);
+      cleanMetadata.setSessionState({ referenceId: ownedSession.referenceId, sessionId: ownedSessionState.sessionId, status: 'closed', isPrimary: false, wasPrimary: true });
+      const replacedPrimaryRestart = createLegacyDiscordMigrationService({ metadata: cleanMetadata });
+      assert.equal((await replacedPrimaryRestart.start()).phase, 'complete');
+      cleanMetadata.setSessionState({ referenceId: ownedSession.referenceId, sessionId: null, status: 'closed', isPrimary: false, wasPrimary: true });
+      const missingBindingRestart = createLegacyDiscordMigrationService({ metadata: cleanMetadata });
+      const substitutedStatus = await missingBindingRestart.start();
+      assert.equal(substitutedStatus.phase, 'review');
+      assert.equal(substitutedStatus.failures[0].failureCode, 'completed-activation-conflict');
     } finally { cleanMetadata?.close(); await rm(cleanState, { recursive: true, force: true }); }
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });

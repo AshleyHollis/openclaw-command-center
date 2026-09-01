@@ -35,3 +35,27 @@ export function createAcceptanceScenarioCoordinator({
 
   return { collect, evidence, failures, result };
 }
+
+export async function runSettledAcceptanceBatch(items, { run, identify = (_item, index) => index } = {}) {
+  if (!Array.isArray(items) || typeof run !== 'function') throw new TypeError('Acceptance batch requires items and a run function.');
+  const outcomes = await Promise.all(items.map(async (item, index) => {
+    try {
+      return { ok: true, value: await run(item, index) };
+    } catch (error) {
+      return {
+        ok: false,
+        failure: {
+          id: String(identify(item, index)).slice(0, 120),
+          error: String(error?.message ?? error).slice(0, 300)
+        }
+      };
+    }
+  }));
+  const failures = outcomes.filter((outcome) => !outcome.ok).map((outcome) => outcome.failure);
+  if (failures.length > 0) {
+    const error = new Error(`Acceptance mutation batch failed: ${JSON.stringify(failures)}`);
+    error.failures = failures;
+    throw error;
+  }
+  return outcomes.map((outcome) => outcome.value);
+}

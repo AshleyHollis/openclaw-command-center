@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { createTopicPageActionsHandler, topicPageActionRoute } from '../src/topics/page-http.mjs';
 import { createSessionAdapter } from '../src/sources/sessions.mjs';
+import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
 
 const topicId = '11111111-1111-4111-8111-111111111111';
 const folderId = 'note-folder:fictional-topic';
@@ -121,17 +126,11 @@ test('Conversation creation remains on the service-owned plugin Gateway boundary
 
 test('a migrated canonical scale Topic creates 99 Conversations through the public route and authoritatively totals 100', async () => {
   const scaleTopicId = '22222222-2222-4222-8222-222222222222';
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-migrated-scale-route-'));
+  let migratedMetadata;
+  try {
   const service = fixtureService();
-  const catalog = new Map([['agent:main:dashboard:migrated-primary', { sessionId: 'session-migrated-primary', updatedAt: 1, label: 'Migrated Primary', pluginOwnerId: 'command-center' }]]);
-  const references = [];
-  const states = new Map();
-  const metadata = {
-    listSourceReferences: () => references,
-    createSourceReference: (reference) => { references.push(reference); return reference; },
-    getSourceReference: (referenceId) => references.find((reference) => reference.referenceId === referenceId) ?? null,
-    setSessionState: (state) => { states.set(state.referenceId, state); return state; },
-    getSessionState: (referenceId) => states.get(referenceId) ?? null
-  };
+  const catalog = new Map();
   let ordinal = 1;
   const keysByOperation = new Map();
   const operationId = (index) => `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`;
@@ -143,17 +142,59 @@ test('a migrated canonical scale Topic creates 99 Conversations through the publ
   const gatewayRequest = async (method, params) => {
     if (method === 'sessions.create') {
       const replayKey = keysByOperation.get(params.idempotencyKey);
-      if (replayKey) return { key: replayKey };
-      const key = `agent:main:dashboard:scale-${ordinal++}`;
-      catalog.set(key, { sessionId: `session-scale-${ordinal}`, updatedAt: ordinal, label: params.label, pluginOwnerId: 'command-center' });
-      keysByOperation.set(params.idempotencyKey, key);
-      return { key };
+      if (replayKey) return { key: replayKey, sessionId: catalog.get(replayKey).sessionId };
+      const key = params.key ?? `agent:main:dashboard:scale-${ordinal++}`;
+      const sessionId = `session-scale-${ordinal}`;
+      catalog.set(key, { sessionId, updatedAt: ordinal, label: params.label, pluginOwnerId: 'command-center' });
+      if (params.idempotencyKey) keysByOperation.set(params.idempotencyKey, key);
+      return { key, sessionId };
     }
     if (method === 'sessions.list') return { sessions: [...catalog].map(([sessionKey, entry]) => ({ sessionKey, ...entry })) };
     throw new Error(`Unexpected Gateway method ${method}`);
   };
-  const adapter = createSessionAdapter({ metadata, topicId: scaleTopicId, gateway: { request: gatewayRequest } });
-  service.topics.get = (requestedTopicId) => requestedTopicId === scaleTopicId ? { topicId: scaleTopicId, revision: 1, lifecycle: 'active', paraCategory: 'resource' } : null;
+  migratedMetadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
+  const transcriptEntries = new Map();
+  const transcriptRuntime = {
+    async withSessionTranscriptWriteLock(target, run) {
+      return run({
+        readEvents: async () => transcriptEntries.get(target.sessionKey) ?? [],
+        appendMessage: async (params) => {
+          const entries = transcriptEntries.get(target.sessionKey) ?? [];
+          entries.push({ id: params.eventId, parentId: params.parentId ?? null, message: params.message });
+          transcriptEntries.set(target.sessionKey, entries);
+          return { messageId: params.eventId, appended: true };
+        },
+        publishUpdate: async () => undefined
+      });
+    },
+    async readVisibleSessionTranscriptMessageEntries({ sessionKey }) { return transcriptEntries.get(sessionKey) ?? []; },
+    async appendSessionTranscriptMessageByIdentityStrict(params) {
+      const entries = transcriptEntries.get(params.sessionKey) ?? [];
+      entries.push({ id: params.eventId, parentId: params.parentId ?? null, message: params.message });
+      transcriptEntries.set(params.sessionKey, entries);
+      return { kind: 'result', result: { messageId: params.eventId, appended: true } };
+    }
+  };
+  const migration = createLegacyDiscordMigrationService({
+    metadata: migratedMetadata,
+    config: {
+      schemaVersion: 1,
+      exportPath: new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url).pathname,
+      channels: [{ channelId: 'fictional-channel-alpha', topicId: scaleTopicId, paraCategory: 'resource', noteFolderPath: '/fictional/vault/scale' }]
+    },
+    gateway: { request: gatewayRequest },
+    transcriptRuntime,
+    folderVerifier: async () => undefined
+  });
+  const migrationResult = await migration.start();
+  assert.equal(migrationResult.complete, true, JSON.stringify(migrationResult));
+  const migratedTopic = migratedMetadata.getTopic(scaleTopicId);
+  assert.equal(migratedTopic.lifecycle, 'active');
+  assert.equal(migratedTopic.revision, 1);
+  assert.equal(typeof migratedTopic.activatedAt, 'string');
+  const adapter = createSessionAdapter({ metadata: migratedMetadata, topicId: scaleTopicId, gateway: { request: gatewayRequest } });
+  service.metadata = migratedMetadata;
+  service.topics.get = (requestedTopicId) => migratedMetadata.getTopic(requestedTopicId);
   service.sessionsCreate = async (input, runtime) => {
     service.calls.push(['sessionsCreate', input]);
     const { topicId: requestedTopicId, ...adapterInput } = input;
@@ -164,7 +205,7 @@ test('a migrated canonical scale Topic creates 99 Conversations through the publ
   for (let pass = 0; pass < 2; pass += 1) {
     for (let index = 1; index < 100; index += 1) {
       const response = await invoke(service, {
-        body: { schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: `Fictional scale Conversation ${index}`, expectedRevision: 1, logicalOperationId: operationId(index) },
+        body: { schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: `Fictional scale Conversation ${index}`, expectedRevision: migratedTopic.revision, logicalOperationId: operationId(index) },
         gatewayRequest
       });
       assert.equal(response.statusCode, 200, JSON.stringify(response.body));
@@ -175,8 +216,19 @@ test('a migrated canonical scale Topic creates 99 Conversations through the publ
   assert.equal(service.calls.filter(([method]) => method === 'sessionsCreate').length, 198);
   assert.equal(keysByOperation.size, 99);
   assert.equal(authoritativeSessions.length, 100);
-  assert.equal(authoritativeSessions.some(({ sessionKey }) => sessionKey === 'agent:main:dashboard:migrated-primary'), true);
-  assert.equal(references.length, 99);
+  assert.equal(authoritativeSessions.some(({ sessionKey }) => sessionKey === 'agent:main:command-center:legacy-discord:fictional-channel-alpha'), true);
+  assert.equal(migratedMetadata.listSourceReferences(scaleTopicId).filter(({ sourceKind }) => sourceKind === 'session').length, 100);
+
+  const stale = await invoke(service, {
+    body: { schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: 'Stale revision Conversation', expectedRevision: migratedTopic.revision - 1, logicalOperationId: randomUUID() },
+    gatewayRequest
+  });
+  assert.equal(stale.statusCode, 409);
+  assert.equal((await gatewayRequest('sessions.list', { agentId: 'main', limit: 200 })).sessions.length, 100);
+  } finally {
+    migratedMetadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });
 
 test('Note actions verify exact Topic/source revisions and reach the guarded service', async () => {

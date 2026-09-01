@@ -136,11 +136,18 @@ export class LegacyDiscordMigrationService {
     const completion = this.metadata?.getMigrationCompletion?.();
     if (completion) {
       try {
+        this.metadata.reconcileCompletedLegacyDiscordTopics({ configDigest: completion.configDigest, verifiedTopicCount: completion.verifiedChannelCount, verifiedAt: completion.verifiedAt });
+      } catch (error) {
+        return this.statusShape('review', null, [], [{ failureCode: 'completed-activation-conflict', failureSummary: String(error?.message ?? error).slice(0, 300) }]);
+      }
+      try {
         const configured = this.normalizedConfig();
         if (configured && legacyDiscordMigrationConfigDigest(configured) !== completion.configDigest) {
           return this.statusShape('complete', completion, [], [{ failureCode: 'completed-bootstrap-conflict', failureSummary: 'The completed migration configuration differs from its durable tombstone.' }]);
         }
-      } catch { /* Configuration removal or later malformed input cannot re-arm completion. */ }
+      } catch {
+        // Configuration removal or later malformed input cannot re-arm completion.
+      }
       return this.status();
     }
     let config;

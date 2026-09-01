@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAcceptanceScenarioCoordinator } from '../src/acceptance-scenario-coordinator.mjs';
+import { createAcceptanceScenarioCoordinator, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
 
 test('scenario coordinator records an early failure and still completes later independent siblings', async () => {
   const progress = [];
@@ -48,4 +48,30 @@ test('scenario coordinator rejects missing completion evidence', async () => {
 
   assert.equal(coordinator.failures.length, 1);
   assert.throws(() => coordinator.result('empty-boundary'), /no completion evidence/iu);
+});
+
+test('mutation batches wait for every concurrent operation before reporting bounded failures', async () => {
+  const releases = new Map();
+  const completed = [];
+  const operations = ['first', 'second', 'third'];
+  const batch = runSettledAcceptanceBatch(operations, {
+    identify: (id) => id,
+    run: (id) => new Promise((resolve, reject) => releases.set(id, () => {
+      completed.push(id);
+      if (id === 'first') reject(new Error(`rejected ${'x'.repeat(500)}`));
+      else resolve(id);
+    }))
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  releases.get('first')();
+  releases.get('third')();
+  releases.get('second')();
+  await assert.rejects(batch, (error) => {
+    assert.deepEqual(completed, ['first', 'third', 'second']);
+    assert.equal(error.failures.length, 1);
+    assert.equal(error.failures[0].id, 'first');
+    assert.ok(error.failures[0].error.length <= 300);
+    return true;
+  });
 });

@@ -32,19 +32,33 @@ test('one configured channel reconciles one provisioning Topic, Note Folder, and
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
     const calls = [];
     const gateway = { request: async (method, params) => { calls.push({ method, params }); return { ['k' + 'ey']: params.key ?? params.kay, sessionId: 'fictional-session-alpha' }; } };
-    const service = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime: runtime(), folderVerifier: async () => undefined });
+    const transcripts = runtime();
+    const service = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined });
     const first = await service.start();
     assert.equal(first.complete, true);
     assert.equal(metadata.listTopics().length, 1);
-    assert.equal(metadata.getTopic('fictional-topic-alpha').lifecycle, 'active');
+    const activatedTopic = metadata.getTopic('fictional-topic-alpha');
+    assert.equal(activatedTopic.lifecycle, 'active');
+    assert.equal(activatedTopic.revision, 1);
+    assert.equal(typeof activatedTopic.activatedAt, 'string');
+    assert.notEqual(activatedTopic.activatedAt.trim(), '');
     assert.equal(metadata.listSourceReferences('fictional-topic-alpha').filter((row) => row.sourceKind === 'note_folder').length, 1);
     assert.equal(metadata.listSourceReferences('fictional-topic-alpha').filter((row) => row.sourceKind === 'session').length, 1);
     assert.equal(calls.filter((call) => call.method === 'sessions.create').length, 1);
     assert.equal(metadata.listMigrationChannels().length, 0);
     assert.ok(metadata.getMigrationCompletion());
     const second = await service.start();
-    assert.equal(second.complete, true);
+    assert.equal(second.complete, true, JSON.stringify(second));
     assert.equal(calls.filter((call) => call.method === 'sessions.create').length, 1);
+    const replayedTopic = metadata.getTopic('fictional-topic-alpha');
+    assert.equal(replayedTopic.revision, 1);
+    assert.equal(replayedTopic.activatedAt, activatedTopic.activatedAt);
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
+    const restarted = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined });
+    assert.equal((await restarted.start()).complete, true);
+    assert.equal(metadata.getTopic('fictional-topic-alpha').revision, 1);
+    assert.equal(metadata.getTopic('fictional-topic-alpha').activatedAt, activatedTopic.activatedAt);
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

@@ -24,7 +24,7 @@ import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapU
 import { captureFirstReleasePerformanceBaseline, RELEASE_FIXTURE_COUNTS, releasePerformanceIdentity, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
-import { createAcceptanceScenarioCoordinator } from '../src/acceptance-scenario-coordinator.mjs';
+import { createAcceptanceScenarioCoordinator, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
 import { readVerifiedMigrationCompletion } from '../src/acceptance-migration.mjs';
 
 const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
@@ -110,6 +110,13 @@ async function fetchWithDeadline(url, options = {}, label = 'HTTP operation', ti
     if (controller.signal.aborted) throw new HarnessFailure('transport-timeout', `${label} exceeded its ${timeoutMs} ms deadline`);
     throw error;
   } finally { clearTimeout(timer); }
+}
+
+async function requireBoundedMutationResponse(response, label) {
+  const body = await response.json().catch(() => undefined);
+  const bodyKeys = body && typeof body === 'object' ? Object.keys(body).slice(0, 30) : [];
+  if (!response.ok) throw new Error(`${label} failed with status ${response.status}; bodyKeys=${JSON.stringify(bodyKeys)}`);
+  return { status: response.status, bodyKeys };
 }
 
 function routeGrant(config) {
@@ -717,10 +724,21 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       const authoritativeConversations = (authoritativeSessions?.result ?? authoritativeSessions)?.conversations ?? authoritativeSessions?.conversations ?? [];
       assert.ok(authoritativeConversations.some((item) => item.isPrimary) && authoritativeConversations.some((item) => item.displayName === journey.conversationName));
       if (kind === 'scale') {
+        const scaleTopicResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: scaleTopicId } });
+        const scaleTopic = (scaleTopicResponse?.result ?? scaleTopicResponse)?.topic;
+        assert.equal(scaleTopic?.lifecycle, 'active');
+        assert.equal(scaleTopic?.revision, 1);
+        assert.equal(typeof scaleTopic?.activatedAt, 'string');
         const initialScaleSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: scaleTopicId } });
         const initialCount = ((initialScaleSessions?.result ?? initialScaleSessions)?.conversations ?? initialScaleSessions?.conversations ?? []).length;
         assert.equal(initialCount, 1, 'fresh imported scale Topic must start with one authoritative Primary Conversation');
-        for (let offset = initialCount; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) await Promise.all(Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batch) => fetchWithDeadline(`${scenarioWorld.gateway.url}/plugins/command-center/api/topic/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: `Fresh scale Conversation ${offset + batch}`, expectedRevision: 1, logicalOperationId: randomUUID() }) }, 'fresh scale Session creation').then((response) => assert.equal(response.status, 200))));
+        for (let offset = initialCount; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
+          const indexes = Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batch) => offset + batch);
+          await runSettledAcceptanceBatch(indexes, {
+            identify: (index) => `fresh-scale-${index}`,
+            run: async (index) => requireBoundedMutationResponse(await fetchWithDeadline(`${scenarioWorld.gateway.url}/plugins/command-center/api/topic/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: `Fresh scale Conversation ${index}`, expectedRevision: scaleTopic.revision, logicalOperationId: randomUUID() }) }, 'fresh scale Session creation'), 'fresh scale Session creation')
+          });
+        }
         const sessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
         assert.ok(((sessions?.result ?? sessions)?.conversations ?? sessions?.conversations ?? []).length >= 2, 'fresh journey Topic remains independently authoritative');
         const scaleSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: scaleTopicId } });
@@ -1489,23 +1507,26 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       return completed;
     };
     const ensureScaleConversationFixture = async () => {
+      const topicResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID } });
+      const scaleTopic = (topicResponse?.result ?? topicResponse)?.topic;
+      assert.equal(scaleTopic?.lifecycle, 'active');
+      assert.equal(scaleTopic?.revision, 1);
+      assert.equal(typeof scaleTopic?.activatedAt, 'string');
       const listed = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID } });
       const initialCount = ((listed?.result ?? listed)?.conversations ?? listed?.conversations ?? []).length;
       assert.ok(initialCount >= 1 && initialCount <= RELEASE_FIXTURE_COUNTS.conversations, 'migrated scale Topic must retain a bounded authoritative Conversation catalog');
       releaseState.realizedConversationCount = initialCount;
       if (initialCount === RELEASE_FIXTURE_COUNTS.conversations) return { created: 0, authoritativeTotal: initialCount };
       for (let offset = 1; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
-        await withDeadline(`Session fixture batch ${Math.floor(offset / 10) + 1}`, () => Promise.all(Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => {
-          const index = offset + batchIndex;
-          return fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/topic/actions`, {
+        const indexes = Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => offset + batchIndex);
+        await withDeadline(`Session fixture batch ${Math.floor(offset / 10) + 1}`, () => runSettledAcceptanceBatch(indexes, {
+          identify: (index) => `migrated-scale-${index}`,
+          run: async (index) => requireBoundedMutationResponse(await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/topic/actions`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: RELEASE_SCALE_TOPIC_ID, label: `Fictional scale Conversation ${index}`, expectedRevision: 1, logicalOperationId: releaseScaleConversationOperationId(index) })
-          }, 'plugin-scoped Session fixture creation').then(async (response) => {
-            if (!response.ok) throw new Error(`Plugin-scoped Session fixture creation failed: ${response.status}`);
-            return response.json();
-          });
-        })));
+            body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: RELEASE_SCALE_TOPIC_ID, label: `Fictional scale Conversation ${index}`, expectedRevision: scaleTopic.revision, logicalOperationId: releaseScaleConversationOperationId(index) })
+          }, 'plugin-scoped Session fixture creation'), 'plugin-scoped Session fixture creation')
+        }));
         reportProgress(testContext, 'fixture:session-batch', { completed: Math.min(offset + 10, RELEASE_FIXTURE_COUNTS.conversations), total: RELEASE_FIXTURE_COUNTS.conversations });
       }
       const seeded = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID } });
