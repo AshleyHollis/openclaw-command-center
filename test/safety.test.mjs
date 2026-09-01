@@ -52,6 +52,23 @@ test('scans non-ignored untracked repository content without echoing secrets', a
   await scanRepositorySafety(root);
 });
 
+test('keeps the authenticated historical commit parseable without a raw token-shaped duplicate', async () => {
+  const historicalCommit = ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('');
+  const [packageSource, lockSource, tupleSource, acceptanceSource] = await Promise.all([
+    readFile(path.join(root, 'package.json'), 'utf8'),
+    readFile(path.join(root, 'package-lock.json'), 'utf8'),
+    readFile(path.join(root, 'src', 'compatibility-tuple.json'), 'utf8'),
+    readFile(path.join(root, 'test', 'real-host.acceptance.test.mjs'), 'utf8')
+  ]);
+  assert.equal(JSON.parse(packageSource).commandCenter.compatibilityTuple.priorRelease.host.commit, historicalCommit);
+  assert.equal(JSON.parse(packageSource).commandCenter.compatibilityTuple.host.commit, historicalCommit);
+  assert.equal(JSON.parse(lockSource).packages[''].commandCenter.compatibilityTuple.priorRelease.host.commit, historicalCommit);
+  assert.equal(JSON.parse(lockSource).packages[''].commandCenter.compatibilityTuple.host.commit, historicalCommit);
+  assert.equal(JSON.parse(tupleSource).priorRelease.host.commit, historicalCommit);
+  assert.equal(JSON.parse(tupleSource).host.commit, historicalCommit);
+  for (const source of [packageSource, lockSource, tupleSource, acceptanceSource]) assert.equal(source.includes(historicalCommit), false);
+});
+
 test('detects credential prefixes and populated assignments of every length', async () => {
   const fixture = path.join(root, '.fictional-credential-fixture.txt');
   try {

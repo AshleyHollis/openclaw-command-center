@@ -22,7 +22,7 @@ async function temporaryHost() {
   const contents = '#!/usr/bin/env node\nconsole.log("fixture host");\n';
   await Promise.all([
     writeFile(wrapper, contents),
-    writeFile(path.join(root, 'package.json'), JSON.stringify({ version: pinnedHost.version }))
+    writeFile(path.join(root, 'package.json'), JSON.stringify({ version: pinnedHost.packageVersion }))
   ]);
   const blob = createHash('sha1').update(`blob ${Buffer.byteLength(contents)}\0`).update(contents).digest('hex');
   const integrity = Object.freeze({ sourceDigest, executableDigest: `sha256:${createHash('sha256').update(contents).digest('hex')}`, contractDigest });
@@ -71,6 +71,15 @@ test('categorizes host integrity failures and early exit', async () => {
   try {
     const verified = await verifyHost(descriptor, { gitCommand: hostGit({ blob: fixture.blob }) });
     assert.equal(verified.commit, pinnedHost.commit);
+    await assert.rejects(
+      verifyHost(descriptor, {
+        gitCommand: hostGit({ blob: fixture.blob }),
+        read: async (filename) => filename.endsWith('package.json')
+          ? JSON.stringify({ version: '2026.8.1-beta.3' })
+          : readFile(filename)
+      }),
+      (error) => error.category === 'invalid-commit' && /package version/u.test(error.message)
+    );
     await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ commit: 'different', blob: fixture.blob }) }), (error) => error.category === 'invalid-commit');
     await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ status: ' M src/index.mjs', blob: fixture.blob }) }), (error) => error.category === 'dirty-host-source');
     await assert.rejects(verifyHost(descriptor, { gitCommand: hostGit({ blob: '0'.repeat(40) }) }), (error) => error.category === 'wrapper-mismatch');

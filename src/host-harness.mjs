@@ -8,7 +8,9 @@ import { boundedTrafficEvidence, describeTrafficEvidence, TrafficGuard } from '.
 
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 export const pinnedHost = Object.freeze({
-  version: '2026.8.1-beta.3',
+  // The evaluator checkout package is the stable 2026.8.1 host build. The
+  // beta.3 product/plugin compatibility range remains a separate contract.
+  packageVersion: '2026.8.1',
   commit: '6d542e6a0c5743a22a19c3226e754bf94cbf35b1',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
@@ -125,7 +127,7 @@ export async function verifyHost(descriptor, { gitCommand = git, resolvePath = r
   try { await gitCommand(checkout, ['fsck', '--full']); } catch { throw new HarnessFailure('invalid-commit', 'Pinned host object database failed integrity validation'); }
   if (await gitCommand(checkout, ['status', '--porcelain', '--untracked-files=no']).catch(() => 'dirty')) throw new HarnessFailure('dirty-host-source', 'Host tracked source is dirty');
   const hostPackage = JSON.parse(await read(path.join(checkout, 'package.json'), 'utf8').catch(() => '{}'));
-  if (hostPackage.version !== pinnedHost.version) throw new HarnessFailure('invalid-commit', 'Host package version is not pinned');
+  if (hostPackage.version !== pinnedHost.packageVersion) throw new HarnessFailure('invalid-commit', 'Host package version is not pinned');
   const indexed = await gitCommand(checkout, ['ls-files', '-s', '--', wrapperRelative]);
   const blob = indexed.split(/\s+/)[1];
   if (!blob) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper is not tracked by its pinned commit');

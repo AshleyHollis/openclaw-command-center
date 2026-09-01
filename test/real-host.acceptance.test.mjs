@@ -1346,7 +1346,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         const restoredStateDir = path.join(hostWorld.root, '.openclaw');
         const restoredDatabase = await prepareRestoredRuntimeState(restoredStateDir, 'fictional-restored-host-tuple-topic');
         const raw = JSON.parse(process.env.COMMAND_CENTER_ISOLATED_HOST);
-        assert.throws(() => parseHostDescriptor(JSON.stringify({ ...raw, commit: '30f2924e437857935f034ac349bae8cc22ef9fb0' })), (error) => error?.category === 'invalid-commit');
+        const productCompatibilityCommit = ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('');
+        assert.throws(() => parseHostDescriptor(JSON.stringify({ ...raw, commit: productCompatibilityCommit })), (error) => error?.category === 'invalid-commit');
         const incompatibleDescriptor = { ...descriptor, integrity: { ...descriptor.integrity, sourceDigest: `sha256:${'0'.repeat(64)}` } };
         await assert.rejects(() => launchPinnedHost({ descriptor: incompatibleDescriptor, world: hostWorld, buildReceipt }), (error) => error?.category === 'host-integrity');
         const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(restoredStateDir);

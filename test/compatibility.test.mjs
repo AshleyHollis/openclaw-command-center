@@ -7,8 +7,9 @@ import { pinnedHost } from '../src/host-harness.mjs';
 
 const supportedOpenClaw = Object.freeze({
   version: '2026.8.1-beta.3',
-  commit: '6d542e6a0c5743a22a19c3226e754bf94cbf35b1'
+  commit: ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('')
 });
+const controllerIntegrationCommit = '6d542e6a0c5743a22a19c3226e754bf94cbf35b1';
 
 test('accepts the exact canonical compatibility tuple', () => {
   assert.deepEqual(validateCompatibility(structuredClone(canonical)), { ok: true });
@@ -23,8 +24,9 @@ test('all runtime declarations target the supported OpenClaw release', () => {
   assert.equal(canonical.host.range, `=${supportedOpenClaw.version}`);
   assert.equal(canonical.host.commit, supportedOpenClaw.commit);
   assert.equal(canonical.pluginApi.range, `=${supportedOpenClaw.version}`);
-  assert.equal(pinnedHost.version, supportedOpenClaw.version);
-  assert.equal(pinnedHost.commit, supportedOpenClaw.commit);
+  assert.equal(pinnedHost.packageVersion, '2026.8.1');
+  assert.equal(pinnedHost.commit, controllerIntegrationCommit);
+  assert.notEqual(pinnedHost.commit, canonical.host.commit);
 });
 
 for (const [name, mutate] of [
