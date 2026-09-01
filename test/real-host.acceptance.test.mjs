@@ -24,6 +24,8 @@ import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapU
 import { captureFirstReleasePerformanceBaseline, RELEASE_FIXTURE_COUNTS, releasePerformanceIdentity, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
+import { createAcceptanceScenarioCoordinator } from '../src/acceptance-scenario-coordinator.mjs';
+import { readVerifiedMigrationCompletion } from '../src/acceptance-migration.mjs';
 
 const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
   'topic-search-conversations.commit.json',
@@ -34,6 +36,14 @@ const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
   'topic-search-notes.sqlite'
 ]);
 const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
+const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
+const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
+const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
+
+function releaseScaleConversationOperationId(index) {
+  assert.ok(Number.isInteger(index) && index > 0 && index < RELEASE_FIXTURE_COUNTS.conversations);
+  return `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`;
+}
 
 function reportProgress(testContext, phase, detail = {}) {
   testContext.diagnostic(`release-progress=${JSON.stringify({ schemaVersion: 1, phase, ...detail })}`);
@@ -184,15 +194,12 @@ async function mountedPluginFrame(page, pluginDocument) {
   return { iframe, frame };
 }
 
-async function waitForMigrationCompletion(databasePath, { attempts = 100, delayMs = 100 } = {}) {
+async function waitForMigrationCompletion(databasePath, topicId, { attempts = 100, delayMs = 100 } = {}) {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
-      const completion = database.prepare('SELECT * FROM migration_completion WHERE completion_id = ?').get('legacy-discord-v1');
-      const binding = completion ? database.prepare(`SELECT reference.external_source_id AS sessionKey, state.session_id AS sessionId
-        FROM source_references AS reference JOIN session_state AS state ON state.reference_id = reference.reference_id
-        WHERE reference.topic_id = ? AND reference.source_system = 'openclaw' AND reference.source_kind = 'session' AND state.is_primary = 1 AND state.status = 'open'`).get('fictional-topic-alpha') : null;
-      if (completion && binding) return { completion, binding };
+      const completion = readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId });
+      if (completion) return completion;
     } finally { database.close(); }
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
@@ -1165,7 +1172,7 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   return { topicId, conversationName, movedPath, primaryMessage, measurement, accessibilityStates, focusRestorations, announcementTransitions };
 }
 
-async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId = 'fictional-topic-scale' }) {
+async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId = RELEASE_SCALE_TOPIC_ID }) {
   const lifecycleStarted = Date.now();
   const importedTopic = frame.locator('.topic-row').filter({ hasText: 'Fictional Scale Corpus' });
   await importedTopic.getByRole('button', { name: 'Open Topic', exact: true }).click();
@@ -1418,8 +1425,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         schemaVersion: 1,
         exportPath: migrationExportPath,
         channels: [
-          { channelId: 'fictional-channel-alpha', topicId: 'fictional-topic-alpha', paraCategory: 'project', noteFolderPath: migrationFolderPath },
-          { channelId: 'fictional-channel-scale', topicId: 'fictional-topic-scale', paraCategory: 'resource', noteFolderPath: scaleMigrationFolderPath }
+          { channelId: 'fictional-channel-alpha', topicId: RELEASE_ALPHA_TOPIC_ID, paraCategory: 'project', noteFolderPath: migrationFolderPath },
+          { channelId: 'fictional-channel-scale', topicId: RELEASE_SCALE_TOPIC_ID, paraCategory: 'resource', noteFolderPath: scaleMigrationFolderPath }
         ]
       }
     };
@@ -1427,7 +1434,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const resolvedStateDir = path.join(world.root, '.openclaw');
     const activityFixture = openCommandCenterMetadataService({ stateDir: resolvedStateDir });
     try {
-      activityFixture.createTopic({ topicId: 'fictional-scale-activity-topic', paraCategory: 'resource', lifecycle: 'active' });
+      activityFixture.createTopic({ topicId: RELEASE_ACTIVITY_TOPIC_ID, paraCategory: 'resource', lifecycle: 'active' });
       for (let index = 0; index < RELEASE_FIXTURE_COUNTS.activityRecords - 1; index += 1) {
         // Keep the exact frozen Activity corpus at the head of the global
         // Dashboard feed so migration/journey records cannot change its
@@ -1436,7 +1443,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         const createdAt = new Date(Date.UTC(2099, 7, 29, 12, 0, 0) + index).toISOString();
         activityFixture.recordActivity({
           activityId: `fictional-scale-activity-${index}`,
-          topicId: 'fictional-scale-activity-topic',
+          topicId: RELEASE_ACTIVITY_TOPIC_ID,
           logicalOperationId: randomUUID(),
           transportRequestId: randomUUID(),
           operationKind: 'fixture.scale',
@@ -1446,7 +1453,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           updatedAt: createdAt
         });
       }
-      assert.equal(activityFixture.listActivity('fictional-scale-activity-topic').length, RELEASE_FIXTURE_COUNTS.activityRecords - 1);
+      assert.equal(activityFixture.listActivity(RELEASE_ACTIVITY_TOPIC_ID).length, RELEASE_FIXTURE_COUNTS.activityRecords - 1);
     } finally { activityFixture.close(); }
     reportProgress(testContext, 'fixture:passed');
     reportProgress(testContext, 'host-launch:started');
@@ -1462,27 +1469,63 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const releaseState = { startup: false, desktop: undefined, mobile: undefined, restored: false, forgedMutationRejected: false, projectionRoot: undefined, baseline: undefined, activityPaged: false, reviewApplied: false, missingProjectionRebuilt: false, staleProjectionRebuilt: false, realizedScaleSeed };
     let managedBrowser, browser, page, iframe, frame, baseline, candidateBaseline, baselineSeed, desktopJourney, scaleJourney, mobileJourney, reviewJourney, pluginDocument;
     let failure;
-    const scenarioFailures = [];
-    const scenarioEvidence = new Map();
-    const collectScenario = async (id, run) => {
-      let observedError;
-      reportProgress(testContext, `scenario:${id}:started`);
-      try {
-        await testContext.test(`release scenario: ${id}`, async () => {
-          try { scenarioEvidence.set(id, await run()); }
-          catch (error) { observedError = error; throw error; }
-        });
-      } catch (error) { observedError ??= error; }
-      const passed = observedError === undefined && scenarioEvidence.has(id);
-      reportProgress(testContext, `scenario:${id}:${passed ? 'passed' : 'failed'}`);
-      if (!passed) {
-        const bounded = redactBrowserEvidence(observedError?.message || `Scenario ${id} failed without unbounded diagnostics`);
-        scenarioFailures.push({ id, error: new HarnessFailure('release-row-failed', bounded) });
-      }
-    };
+    const scenarioCoordinator = createAcceptanceScenarioCoordinator({
+      execute: async (id, run) => {
+        let result;
+        await testContext.test(`release scenario: ${id}`, async () => { result = await run(); });
+        return result;
+      },
+      onProgress: ({ id, status }) => reportProgress(testContext, `scenario:${id}:${status}`),
+      normalizeFailure: (id, error) => new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || `Scenario ${id} failed without unbounded diagnostics`))
+    });
+    const { failures: scenarioFailures, evidence: scenarioEvidence, collect: collectScenario } = scenarioCoordinator;
     const scenarioResult = (id) => {
-      if (!scenarioEvidence.has(id)) throw new HarnessFailure('release-row-missing', `Release scenario produced no evidence for ${id}`);
-      return scenarioEvidence.get(id);
+      try { return scenarioCoordinator.result(id); }
+      catch { throw new HarnessFailure('release-row-missing', `Release scenario produced no evidence for ${id}`); }
+    };
+    const ensureMigrationBinding = async () => {
+      const completed = await waitForMigrationCompletion(databasePath, RELEASE_ALPHA_TOPIC_ID);
+      releaseState.migrationBinding = Object.freeze({ ...completed.binding });
+      return completed;
+    };
+    const ensureScaleConversationFixture = async () => {
+      const listed = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID } });
+      const initialCount = ((listed?.result ?? listed)?.conversations ?? listed?.conversations ?? []).length;
+      assert.ok(initialCount >= 1 && initialCount <= RELEASE_FIXTURE_COUNTS.conversations, 'migrated scale Topic must retain a bounded authoritative Conversation catalog');
+      releaseState.realizedConversationCount = initialCount;
+      if (initialCount === RELEASE_FIXTURE_COUNTS.conversations) return { created: 0, authoritativeTotal: initialCount };
+      for (let offset = 1; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
+        await withDeadline(`Session fixture batch ${Math.floor(offset / 10) + 1}`, () => Promise.all(Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => {
+          const index = offset + batchIndex;
+          return fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/topic/actions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: RELEASE_SCALE_TOPIC_ID, label: `Fictional scale Conversation ${index}`, expectedRevision: 1, logicalOperationId: releaseScaleConversationOperationId(index) })
+          }, 'plugin-scoped Session fixture creation').then(async (response) => {
+            if (!response.ok) throw new Error(`Plugin-scoped Session fixture creation failed: ${response.status}`);
+            return response.json();
+          });
+        })));
+        reportProgress(testContext, 'fixture:session-batch', { completed: Math.min(offset + 10, RELEASE_FIXTURE_COUNTS.conversations), total: RELEASE_FIXTURE_COUNTS.conversations });
+      }
+      const seeded = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID } });
+      releaseState.realizedConversationCount = ((seeded?.result ?? seeded)?.conversations ?? seeded?.conversations ?? []).length;
+      assert.equal(releaseState.realizedConversationCount, RELEASE_FIXTURE_COUNTS.conversations);
+      return { reconciledOperations: RELEASE_FIXTURE_COUNTS.conversations - 1, authoritativeTotal: releaseState.realizedConversationCount };
+    };
+    const ensureVerifiedActivityFixture = async () => {
+      const { binding } = await ensureMigrationBinding();
+      const activityMetadata = openCommandCenterMetadataService({ stateDir: resolvedStateDir });
+      const activitySource = createAttentionService({ metadata: activityMetadata, now: () => '2100-08-30T12:00:00.000Z' });
+      try {
+        activitySource.registerSourceCapability({ sourceCapabilityId: 'session-activity-fixture', sourceKind: 'session', actions: [], deriveEvidence: () => ({ verified: true }), verifyTransition: (value) => value.transitionEvidence?.state === 'resolved' && value.transitionEvidence?.version === value.occurrenceVersion });
+        const occurrence = { schemaVersion: 1, sourceCapabilityId: 'session-activity-fixture', stableSubjectId: binding.sessionKey, attentionReason: 'verified-session-navigation', occurrenceId: 'fictional-session-activity', occurrenceVersion: binding.sessionId, occurredAt: '2100-08-30T11:59:00.000Z', topicId: RELEASE_ALPHA_TOPIC_ID, sourceReferenceId: binding.referenceId, evidenceFacts: {} };
+        await activitySource.ingest(occurrence);
+        const transition = await activitySource.ingest({ ...occurrence, occurrenceId: 'fictional-session-activity-resolved', transitionEvidence: { state: 'resolved', version: binding.sessionId } });
+        assert.ok(transition.activity?.activityId);
+        releaseState.verifiedActivity = { activityId: transition.activity.activityId, topicId: transition.activity.topicId, referenceId: transition.activity.sourceReferenceId, sessionId: binding.sessionId, sessionKey: binding.sessionKey };
+        return { binding, transition };
+      } finally { activitySource.close(); activityMetadata.close(); }
     };
     await collectScenario('pinned-host-startup', async () => {
       try {
@@ -1505,7 +1548,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // startup-created store is beneath this disposable fixture and that no
       // sibling Command Center storage was created.
       await access(databasePath);
-      const { completion, binding } = await waitForMigrationCompletion(databasePath);
+      const { completion, binding } = await ensureMigrationBinding();
       assert.equal(completion.verified_channel_count, migrationExport.channels.length);
       assert.equal(completion.verified_occurrence_count, migrationExport.channels.reduce((count, channel) => count + channel.messages.length, 0));
       host.diagnostics.guard.assert('127.0.0.1', 'authenticated chat.history verification');
@@ -1517,50 +1560,23 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         assert.equal(imported[index].text, occurrence.text);
         assert.deepEqual(imported[index].__openclaw.legacyDiscordV1, importedProvenance(migrationExport.channels[0].channelId, occurrence));
       }
-      const activityMetadata = openCommandCenterMetadataService({ stateDir: resolvedStateDir });
-      const activitySource = createAttentionService({ metadata: activityMetadata, now: () => '2100-08-30T12:00:00.000Z' });
-      try {
-        activitySource.registerSourceCapability({ sourceCapabilityId: 'session-activity-fixture', sourceKind: 'session', actions: [], deriveEvidence: () => ({ verified: true }), verifyTransition: (value) => value.transitionEvidence?.state === 'resolved' && value.transitionEvidence?.version === value.occurrenceVersion });
-        const occurrence = { schemaVersion: 1, sourceCapabilityId: 'session-activity-fixture', stableSubjectId: binding.sessionKey, attentionReason: 'verified-session-navigation', occurrenceId: 'fictional-session-activity', occurrenceVersion: binding.sessionId, occurredAt: '2100-08-30T11:59:00.000Z', topicId: 'fictional-topic-alpha', sourceReferenceId: binding.referenceId, evidenceFacts: {} };
-        await activitySource.ingest(occurrence);
-        const transition = await activitySource.ingest({ ...occurrence, occurrenceId: 'fictional-session-activity-resolved', transitionEvidence: { state: 'resolved', version: binding.sessionId } });
-        assert.ok(transition.activity?.activityId);
-        const activityResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.activity.get', params: { schemaVersion: 1, activityId: transition.activity.activityId } });
-        const verifiedActivity = (activityResponse?.result ?? activityResponse)?.record;
-        assert.deepEqual({ activityId: verifiedActivity?.activityId, episodeId: verifiedActivity?.episodeId, logicalOperationId: verifiedActivity?.logicalOperationId, topicId: verifiedActivity?.topicId, sourceReferenceId: verifiedActivity?.sourceReferenceId, operationKind: verifiedActivity?.operationKind, outcome: verifiedActivity?.outcome, verificationRevision: verifiedActivity?.verificationRevision, occurredAt: verifiedActivity?.occurredAt }, { activityId: transition.activity.activityId, episodeId: transition.activity.episodeId, logicalOperationId: transition.activity.logicalOperationId, topicId: transition.activity.topicId, sourceReferenceId: transition.activity.sourceReferenceId, operationKind: transition.activity.operationKind, outcome: transition.activity.outcome, verificationRevision: transition.activity.verificationRevision, occurredAt: transition.activity.occurredAt });
-        assert.deepEqual({ topicId: verifiedActivity.topicId, sourceReferenceId: verifiedActivity.sourceReferenceId, outcome: verifiedActivity.outcome, verificationRevision: verifiedActivity.verificationRevision }, { topicId: 'fictional-topic-alpha', sourceReferenceId: binding.referenceId, outcome: 'resolved', verificationRevision: binding.sessionId });
-        releaseState.verifiedActivity = { activityId: verifiedActivity.activityId, topicId: 'fictional-topic-alpha', referenceId: binding.referenceId, sessionId: binding.sessionId, sessionKey: binding.sessionKey };
-      } finally { activitySource.close(); activityMetadata.close(); }
-      // Complete the frozen conversation fixture through the public Session
-      // contract before any browser mutation begins. The migrated primary
-      // Session is the first of the exact 100 Topic Conversations.
-      for (let offset = 1; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
-        await withDeadline(`Session fixture batch ${Math.floor(offset / 10) + 1}`, () => Promise.all(Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => {
-          const index = offset + batchIndex;
-          return fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/topic/actions`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: 'fictional-topic-scale', label: `Fictional scale Conversation ${index}`, expectedRevision: 1, logicalOperationId: randomUUID() })
-          }, 'plugin-scoped Session fixture creation').then(async (response) => {
-            if (!response.ok) throw new Error(`Plugin-scoped Session fixture creation failed: ${response.status}`);
-            return response.json();
-          });
-        })));
-        reportProgress(testContext, 'fixture:session-batch', { completed: Math.min(offset + 10, RELEASE_FIXTURE_COUNTS.conversations), total: RELEASE_FIXTURE_COUNTS.conversations });
-      }
-      const seededSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: 'fictional-topic-scale' } });
-      releaseState.realizedConversationCount = ((seededSessions?.result ?? seededSessions)?.conversations ?? seededSessions?.conversations ?? []).length;
-      assert.equal(releaseState.realizedConversationCount, RELEASE_FIXTURE_COUNTS.conversations);
+      return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, migrationVerified: true, sourceReferenceId: binding.referenceId };
+    });
+    await collectScenario('migrated-scale-conversation-seeding', async () => {
+      return ensureScaleConversationFixture();
+    });
+    await collectScenario('startup-projection-recovery', async () => {
       await requestAuthenticatedGateway({
         gatewayUrl,
         credential: world.gatewayCredential,
         scopes: ['operator.read', 'operator.write'],
         method: 'command-center.v1.analysis.run',
-        params: { schemaVersion: 1, topicId: 'fictional-topic-alpha', input: {}, logicalOperationId: randomUUID() }
+        params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, input: {}, logicalOperationId: randomUUID() }
       });
       const pluginStateRoot = path.dirname(databasePath);
       assert.deepEqual((await readdir(pluginStateRoot)).sort(), ['metadata.sqlite', 'projections']);
       const projectionRoot = path.join(pluginStateRoot, 'projections');
+      releaseState.projectionRoot = projectionRoot;
       assert.deepEqual(await readdir(projectionRoot), ['.topic-search.invalidated.json']);
       const startupDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try {
@@ -1575,22 +1591,26 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         startupDatabase.close();
       }
       host.diagnostics.guard.assert('127.0.0.1', 'pre-journey scale projection verification');
-      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: 'fictional-topic-alpha', query: 'Fictional', limit: 50 } });
-      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: 'fictional-topic-scale', query: 'Fictional indexed conversation phrase', limit: 50 } });
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, query: 'Fictional', limit: 50 } });
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, query: 'Fictional indexed conversation phrase', limit: 50 } });
       await waitForCommittedSearchProjections(projectionRoot);
       const notesProjection = new DatabaseSync(path.join(projectionRoot, 'topic-search-notes.sqlite'), { readOnly: true });
       const conversationProjection = new DatabaseSync(path.join(projectionRoot, 'topic-search-conversations.sqlite'), { readOnly: true });
       try {
-        assert.equal(notesProjection.prepare('SELECT count(*) AS count FROM note_documents WHERE topic_id = ?').get('fictional-topic-alpha').count, RELEASE_FIXTURE_COUNTS.indexedNotes);
-        assert.equal(conversationProjection.prepare('SELECT count(*) AS count FROM conversation_documents WHERE topic_id = ?').get('fictional-topic-scale').count, RELEASE_FIXTURE_COUNTS.indexedConversationMessages);
+        assert.equal(notesProjection.prepare('SELECT count(*) AS count FROM note_documents WHERE topic_id = ?').get(RELEASE_ALPHA_TOPIC_ID).count, RELEASE_FIXTURE_COUNTS.indexedNotes);
+        assert.equal(conversationProjection.prepare('SELECT count(*) AS count FROM conversation_documents WHERE topic_id = ?').get(RELEASE_SCALE_TOPIC_ID).count, RELEASE_FIXTURE_COUNTS.indexedConversationMessages);
         releaseState.realizedSearchCounts = { notes: RELEASE_FIXTURE_COUNTS.indexedNotes, conversationMessages: RELEASE_FIXTURE_COUNTS.indexedConversationMessages };
       } finally { notesProjection.close(); conversationProjection.close(); }
       // A stale projection is a distinct recovery condition from an absent
       // projection. Break the committed generation identity, require a public
       // query to repair it, and derive the receipt from the repaired files.
       const staleManifestPath = path.join(projectionRoot, 'topic-search-notes.json');
+      releaseState.staleManifestPath = staleManifestPath;
       const staleManifest = JSON.parse(await readFile(staleManifestPath, 'utf8'));
       await writeFile(staleManifestPath, `${JSON.stringify({ ...staleManifest, generation: 'fictional-stale-generation' })}\n`);
+      return { projectionRoot, indexedNotes: releaseState.realizedSearchCounts.notes, indexedConversationMessages: releaseState.realizedSearchCounts.conversationMessages };
+    });
+    await collectScenario('malformed-topic-route-rejection', async () => {
       host.diagnostics.guard.assert('127.0.0.1', 'bounded attention action route verification');
       const actionResponse = await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/attention/actions`, {
         method: 'POST',
@@ -1600,6 +1620,26 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(actionResponse.status, 400);
       assert.deepEqual(await actionResponse.json(), { schemaVersion: 1, status: 'unavailable' });
       releaseState.forgedMutationRejected = true;
+      return { rejected: true };
+    });
+    await collectScenario('verified-activity-readback', async () => {
+      const { binding, transition } = await ensureVerifiedActivityFixture();
+      const activityResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.activity.get', params: { schemaVersion: 1, activityId: transition.activity.activityId } });
+      const verifiedActivity = (activityResponse?.result ?? activityResponse)?.record;
+      assert.deepEqual({ activityId: verifiedActivity?.activityId, episodeId: verifiedActivity?.episodeId, logicalOperationId: verifiedActivity?.logicalOperationId, topicId: verifiedActivity?.topicId, sourceReferenceId: verifiedActivity?.sourceReferenceId, operationKind: verifiedActivity?.operationKind, outcome: verifiedActivity?.outcome, verificationRevision: verifiedActivity?.verificationRevision, occurredAt: verifiedActivity?.occurredAt }, { activityId: transition.activity.activityId, episodeId: transition.activity.episodeId, logicalOperationId: transition.activity.logicalOperationId, topicId: transition.activity.topicId, sourceReferenceId: transition.activity.sourceReferenceId, operationKind: transition.activity.operationKind, outcome: transition.activity.outcome, verificationRevision: transition.activity.verificationRevision, occurredAt: transition.activity.occurredAt });
+      assert.deepEqual({ topicId: verifiedActivity.topicId, sourceReferenceId: verifiedActivity.sourceReferenceId, outcome: verifiedActivity.outcome, verificationRevision: verifiedActivity.verificationRevision }, { topicId: RELEASE_ALPHA_TOPIC_ID, sourceReferenceId: binding.referenceId, outcome: 'resolved', verificationRevision: binding.sessionId });
+      return { activityId: verifiedActivity.activityId, sourceReferenceId: verifiedActivity.sourceReferenceId };
+    });
+    await collectScenario('authenticated-control-ui-mount', async () => {
+      const projectionRoot = path.join(path.dirname(databasePath), 'projections');
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, query: 'Fictional', limit: 50 } });
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, query: 'Fictional indexed conversation phrase', limit: 50 } });
+      await waitForCommittedSearchProjections(projectionRoot);
+      const staleManifestPath = path.join(projectionRoot, 'topic-search-notes.json');
+      const mountManifest = JSON.parse(await readFile(staleManifestPath, 'utf8'));
+      await writeFile(staleManifestPath, `${JSON.stringify({ ...mountManifest, generation: 'fictional-stale-generation' })}\n`);
+      releaseState.projectionRoot = projectionRoot;
+      releaseState.staleManifestPath = staleManifestPath;
       managedBrowser = await withDeadline('primary browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       browser = managedBrowser.browser;
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -1654,7 +1694,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.frame = true;
       const sandbox = await iframe.getAttribute('sandbox');
       if (sandbox !== 'allow-scripts') throw new HarnessFailure('sandbox-mismatch', 'External tab iframe is not scripts-only');
-      await frame.locator('#topic-search-topic-id').selectOption('fictional-topic-alpha');
+      await frame.locator('#topic-search-topic-id').selectOption(RELEASE_ALPHA_TOPIC_ID);
       await frame.locator('#topic-search-query').fill('Fictional');
       await frame.locator('#topic-search-query').press('Enter');
       await frame.waitForFunction(() => /Notes.*Conversations/u.test(document.querySelector('#topic-search-status')?.textContent ?? ''), undefined, { timeout: 60_000 });
@@ -1670,7 +1710,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       baselineSeed = validateReleasePerformanceBaselineSeed(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
       releaseState.startup = true;
       releaseState.startupInteractiveMs = Math.max(1, Date.now() - startupInteractiveStartedAt);
-      releaseState.projectionRoot = projectionRoot;
       assert.equal(baselineSeed.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant };
     });
@@ -1704,6 +1743,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     });
     await collectScenario('scale-performance', async () => {
       assert.ok(browser && releaseState.projectionRoot, 'scale scenario requires the independently seeded authoritative fixture');
+      await ensureScaleConversationFixture();
+      await ensureVerifiedActivityFixture();
       if (page && !page.isClosed()) await page.close();
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
@@ -2078,24 +2119,29 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       onProgress: ({ phase, status }) => reportProgress(testContext, `finalization:${phase}:${status}`)
     });
     let privacyEvidence;
-    if (scenarioFailures.length === 0 && finalizationErrors.length === 0) {
-      try {
-        await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });
-        scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), redactBrowserEvidence(failure?.message || '')]);
-        privacyEvidence = { schemaVersion: 1, repository: true, generated: true, capturedOutput: true, browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: true };
+    try {
+      await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });
+      scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), redactBrowserEvidence(failure?.message || '')]);
+      privacyEvidence = { schemaVersion: 1, repository: true, generated: true, capturedOutput: true, browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: finalizationErrors.length === 0 };
+      if (scenarioFailures.length === 0 && finalizationErrors.length === 0) {
         assert.ok(scaleJourney && mobileJourney && releaseState.reviewApplied, 'baseline capture requires every independently collected release phase');
         assert.equal(isolatedEvidence.size, isolatedSlices.size, 'baseline capture requires every independent runtime slice');
         scaleJourney.measurement.topicReviewApplyMs = releaseState.topicReviewApplyMs;
         scaleJourney.measurement.mobileReflowMs = mobileJourney.measurement.mobileReflowMs;
         candidateBaseline = captureFirstReleasePerformanceBaseline(baselineSeed, scaleJourney.measurement);
-      } catch (error) {
-        scenarioFailures.push({ id: 'release-preflight', error: new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || error)) });
       }
+    } catch (error) {
+      scenarioFailures.push({ id: 'release-preflight', error: new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || error)) });
     }
     if (scenarioFailures.length > 0) failure = new AggregateError(scenarioFailures.map(({ error }) => error), `Release scenarios failed: ${scenarioFailures.map(({ id }) => id).join(', ')}`);
     const rows = await runAcceptanceRows([
       { id: 'pinned-host-startup', run: async () => {
         scenarioResult('pinned-host-startup');
+        scenarioResult('migrated-scale-conversation-seeding');
+        scenarioResult('startup-projection-recovery');
+        scenarioResult('malformed-topic-route-rejection');
+        scenarioResult('verified-activity-readback');
+        scenarioResult('authenticated-control-ui-mount');
         const secure = await isolatedResult('secure-origin');
         const lifecycle = scenarioResult('scale-performance');
         return { schemaVersion: 1, hostReceipt: { ...releasePerformanceIdentity.hostReceipt }, buildDigest: buildReceipt.digest, startupMigrationVerified: true, routeGrantObserved: evidence.routeGrant, scriptsOnlyFrame: evidence.frame, secureOrigin: { protocol: 'https:', hostname: secure.fictionalTailnetHost, loopbackOnly: secure.loopbackResolution === '127.0.0.1' }, notificationLifecycle: { closedTabDelivered: Boolean(lifecycle.sentEmissionId), cleared: Boolean(lifecycle.clearedEmissionId), bindingRevoked: evidence.revokedMutationRejected === true, bindingReconciled: releaseState.restored === true } };

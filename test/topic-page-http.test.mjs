@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { createTopicPageActionsHandler, topicPageActionRoute } from '../src/topics/page-http.mjs';
+import { createSessionAdapter } from '../src/sources/sessions.mjs';
 
 const topicId = '11111111-1111-4111-8111-111111111111';
 const folderId = 'note-folder:fictional-topic';
@@ -116,6 +117,66 @@ test('Conversation creation remains on the service-owned plugin Gateway boundary
   });
   assert.equal(response.statusCode, 200);
   assert.equal(typeof receivedRuntime.gatewayRequest, 'function');
+});
+
+test('a migrated canonical scale Topic creates 99 Conversations through the public route and authoritatively totals 100', async () => {
+  const scaleTopicId = '22222222-2222-4222-8222-222222222222';
+  const service = fixtureService();
+  const catalog = new Map([['agent:main:dashboard:migrated-primary', { sessionId: 'session-migrated-primary', updatedAt: 1, label: 'Migrated Primary', pluginOwnerId: 'command-center' }]]);
+  const references = [];
+  const states = new Map();
+  const metadata = {
+    listSourceReferences: () => references,
+    createSourceReference: (reference) => { references.push(reference); return reference; },
+    getSourceReference: (referenceId) => references.find((reference) => reference.referenceId === referenceId) ?? null,
+    setSessionState: (state) => { states.set(state.referenceId, state); return state; },
+    getSessionState: (referenceId) => states.get(referenceId) ?? null
+  };
+  let ordinal = 1;
+  const keysByOperation = new Map();
+  const operationId = (index) => `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`;
+  for (const index of [2, 7, 11]) {
+    const key = `agent:main:dashboard:preseeded-scale-${index}`;
+    catalog.set(key, { sessionId: `session-preseeded-scale-${index}`, updatedAt: index + 1, label: `Fictional scale Conversation ${index}`, pluginOwnerId: 'command-center' });
+    keysByOperation.set(operationId(index), key);
+  }
+  const gatewayRequest = async (method, params) => {
+    if (method === 'sessions.create') {
+      const replayKey = keysByOperation.get(params.idempotencyKey);
+      if (replayKey) return { key: replayKey };
+      const key = `agent:main:dashboard:scale-${ordinal++}`;
+      catalog.set(key, { sessionId: `session-scale-${ordinal}`, updatedAt: ordinal, label: params.label, pluginOwnerId: 'command-center' });
+      keysByOperation.set(params.idempotencyKey, key);
+      return { key };
+    }
+    if (method === 'sessions.list') return { sessions: [...catalog].map(([sessionKey, entry]) => ({ sessionKey, ...entry })) };
+    throw new Error(`Unexpected Gateway method ${method}`);
+  };
+  const adapter = createSessionAdapter({ metadata, topicId: scaleTopicId, gateway: { request: gatewayRequest } });
+  service.topics.get = (requestedTopicId) => requestedTopicId === scaleTopicId ? { topicId: scaleTopicId, revision: 1, lifecycle: 'active', paraCategory: 'resource' } : null;
+  service.sessionsCreate = async (input, runtime) => {
+    service.calls.push(['sessionsCreate', input]);
+    const { topicId: requestedTopicId, ...adapterInput } = input;
+    assert.equal(requestedTopicId, scaleTopicId);
+    return adapter.create(adapterInput, runtime);
+  };
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (let index = 1; index < 100; index += 1) {
+      const response = await invoke(service, {
+        body: { schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: `Fictional scale Conversation ${index}`, expectedRevision: 1, logicalOperationId: operationId(index) },
+        gatewayRequest
+      });
+      assert.equal(response.statusCode, 200, JSON.stringify(response.body));
+    }
+  }
+
+  const authoritativeSessions = (await gatewayRequest('sessions.list', { agentId: 'main', limit: 200 })).sessions;
+  assert.equal(service.calls.filter(([method]) => method === 'sessionsCreate').length, 198);
+  assert.equal(keysByOperation.size, 99);
+  assert.equal(authoritativeSessions.length, 100);
+  assert.equal(authoritativeSessions.some(({ sessionKey }) => sessionKey === 'agent:main:dashboard:migrated-primary'), true);
+  assert.equal(references.length, 99);
 });
 
 test('Note actions verify exact Topic/source revisions and reach the guarded service', async () => {

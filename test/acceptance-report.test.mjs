@@ -33,6 +33,10 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   const sessionSource = await readFile(new URL('./session-adapter.test.mjs', import.meta.url), 'utf8');
   const bridgeSource = await readFile(new URL('./bridge-contract.test.mjs', import.meta.url), 'utf8');
   assert.match(source, /await testContext\.test\(`release scenario:/u);
+  for (const boundary of ['migrated-scale-conversation-seeding', 'startup-projection-recovery', 'malformed-topic-route-rejection']) assert.match(source, new RegExp(`collectScenario\\('${boundary}'`, 'u'));
+  assert.doesNotMatch(source, /fictional-topic-(?:alpha|scale)/u);
+  assert.match(source, /RELEASE_ALPHA_TOPIC_ID/u);
+  assert.match(source, /RELEASE_SCALE_TOPIC_ID/u);
   assert.match(source, /startIsolatedSlice/u);
   assert.match(source, /isolatedResult\('degraded-source-availability'\)/u);
   assert.doesNotMatch(source, /requireScenario\(/u);
