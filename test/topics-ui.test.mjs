@@ -14,6 +14,7 @@ const styles = await readFile(new URL('../src/ui/styles.css', import.meta.url), 
 
 async function invokeRoute({ method = 'POST', body = {}, headers = { 'content-type': 'application/json' }, service = { topics: {
     async create() { return { status: 'applied', topicId: randomUUID() }; },
+    async rename(input) { return { status: 'applied', topicId: input.topicId }; },
     listDestination() { return { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] }; }
   } } } = {}) {
   const request = Readable.from([Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]);
@@ -31,7 +32,8 @@ test('Topic mutation route is POST-only, closed, size-bounded, and sanitizes fai
   const oversized = await invokeRoute({ body: JSON.stringify({ schemaVersion: 1, action: 'create', logicalOperationId: randomUUID(), name: 'x'.repeat(33_000), paraCategory: 'project' }) });
   assert.equal(oversized.statusCode, 400);
   assert.equal(JSON.stringify(oversized.body).includes('x'.repeat(100)), false);
-  const applied = await invokeRoute({ body: { schemaVersion: 1, action: 'create', logicalOperationId: randomUUID(), name: 'Fictional', paraCategory: 'project' } });
+  const logicalOperationId = randomUUID();
+  const applied = await invokeRoute({ body: { schemaVersion: 1, action: 'create', topicId: randomUUID(), logicalOperationId, name: 'Fictional', paraCategory: 'project', authoritativeSession: { key: 'agent:main:dashboard:fictional', sessionId: 'fictional-session', revision: '1', idempotencyKey: logicalOperationId, label: 'Fictional' } } });
   assert.equal(applied.statusCode, 200);
   assert.deepEqual(Object.keys(applied.body.result.value.destination).sort(), ['activeGroups', 'archived', 'nextCursor', 'provisioning', 'recovery', 'retired']);
 });
@@ -73,7 +75,7 @@ test('Topic mutation previews replace private Note Folder locators with conventi
   }
 });
 
-test('Topics destination exposes only the two create inputs and the accepted POST lifecycle seam', () => {
+test('Topics destination uses the authenticated POST lifecycle seam', () => {
   assert.match(app, /\/plugins\/command-center\/api\/topics\/actions/);
   assert.match(index, /<h2 id="topics-heading">Topics<\/h2>/);
   assert.match(index, /<script defer src="\/plugins\/command-center\/app\.js"><\/script>/);
@@ -133,6 +135,9 @@ test('Topics destination exposes only the two create inputs and the accepted POS
   assert.match(app, /while \(value\?\.(?:result|value) !== undefined/);
   assert.match(app, /const bridgeTimer = setTimeout/);
   assert.match(app, /Topic created and verified/);
+  assert.match(app, /topicCreateOperation \?\?= \{ \.\.\.intent, topicId: crypto\.randomUUID\(\), logicalOperationId: operationId\(\) \}/);
+  assert.match(app, /Retry the unchanged name and category to reconcile it/);
+  assert.match(app, /The Topic action response was unavailable\.[\s\S]*terminal: false/u);
   assert.match(app, /Provisioning record/);
   assert.match(index, /topic-exceptions/);
   assert.doesNotMatch(app, /WebSocket|parent\.|location\.hash|Bearer/i);
@@ -170,12 +175,12 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
         if (event.data?.type !== 'openclaw:capability-bridge-send') return;
         const payload = event.data.payload;
         if (payload.type === 'openclaw:capability-bridge-hello') {
-          window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigate'] } }, '*');
+          window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'sessions.create', 'ui.session.navigate'] } }, '*');
           return;
         }
         if (payload.type !== 'openclaw:capability-bridge-request') return;
-        globalThis.__calls.push({ method: payload.method, params: payload.params });
-        const result = payload.method.endsWith('.list') ? { result: destination() } : payload.method.endsWith('search.query') ? { result: { notes: { results: [] }, conversations: { results: [] } } } : { result: {} };
+        globalThis.__calls.push({ method: payload.method, params: payload.params, operationId: payload.operationId });
+        const result = payload.method === 'sessions.create' ? { result: { key: `agent:main:dashboard:bridge-fictional-${payload.operationId}`, sessionId: `session-${payload.operationId}`, revision: '1' } } : payload.method.endsWith('.list') ? { result: destination() } : payload.method.endsWith('search.query') ? { result: { notes: { results: [] }, conversations: { results: [] } } } : { result: {} };
         window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result } }, '*');
       });
     }, sanitizedRecoveryTopic);

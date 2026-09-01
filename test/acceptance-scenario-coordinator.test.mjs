@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices, runSequentialAcceptanceBatch, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
+import { collectSequentialAcceptanceBatch, createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices, runSequentialAcceptanceBatch, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
 
 test('scenario coordinator records an early failure and still completes later independent siblings', async () => {
   const progress = [];
@@ -116,6 +116,37 @@ test('cancelled sequential fixture mutation settles the active item and never st
   assert.deepEqual(started, [1]);
 });
 
+test('collected sequential fixture mutations run every sibling in order and retain bounded failures', async () => {
+  const started = [];
+  const result = await collectSequentialAcceptanceBatch([1, 2, 3], {
+    identify: (item) => `fixture-${item}`,
+    run: async (item) => {
+      started.push(item);
+      if (item !== 2) return `created-${item}`;
+      throw new Error('fictional bounded rejection');
+    }
+  });
+  assert.deepEqual(started, [1, 2, 3]);
+  assert.deepEqual(result.values, ['created-1', 'created-3']);
+  assert.deepEqual(result.failures, [{ id: 'fixture-2', error: 'fictional bounded rejection' }]);
+});
+
+test('collected sequential fixture cancellation settles the active item without starting later siblings', async () => {
+  const controller = new AbortController();
+  const started = [];
+  const pending = collectSequentialAcceptanceBatch([1, 2, 3], {
+    signal: controller.signal,
+    run: async (item, _index, signal) => {
+      started.push(item);
+      await new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(new Error('collected fixture cancelled'));
+  await assert.rejects(pending, /collected fixture cancelled/u);
+  assert.deepEqual(started, [1]);
+});
+
 test('bounded mutation rejection reports status, body keys, and code without response content', async () => {
   const privateContent = 'fictional private response detail';
   await assert.rejects(
@@ -127,6 +158,17 @@ test('bounded mutation rejection reports status, body keys, and code without res
       assert.doesNotMatch(error.message, new RegExp(privateContent, 'u'));
       return true;
     }
+  );
+});
+
+test('bounded mutation rejection safely normalizes pinned uppercase protocol codes', async () => {
+  const response = new Response(JSON.stringify({ schemaVersion: 1, status: 'error', code: 'MISSING_SCOPE' }), {
+    status: 403,
+    headers: { 'content-type': 'application/json' }
+  });
+  await assert.rejects(
+    () => requireBoundedMutationResponse(response, 'pinned scope refusal'),
+    /status 403; code=missing-scope; bodyKeys=\["schemaVersion","status","code"\]/u
   );
 });
 

@@ -79,6 +79,24 @@ export async function runSequentialAcceptanceBatch(items, { run, identify = (_it
   return results;
 }
 
+export async function collectSequentialAcceptanceBatch(items, { run, identify = (_item, index) => index, signal } = {}) {
+  if (!Array.isArray(items) || typeof run !== 'function') throw new TypeError('Collected sequential acceptance batch requires items and a run function.');
+  const values = [];
+  const failures = [];
+  for (const [index, item] of items.entries()) {
+    signal?.throwIfAborted();
+    try { values.push(await run(item, index, signal)); }
+    catch (error) {
+      signal?.throwIfAborted();
+      failures.push({
+        id: String(identify(item, index)).slice(0, 120),
+        error: String(error?.message ?? error).slice(0, 300)
+      });
+    }
+  }
+  return Object.freeze({ values: Object.freeze(values), failures: Object.freeze(failures) });
+}
+
 export async function requireBoundedMutationResponse(response, label, signal) {
   signal?.throwIfAborted();
   let body;
@@ -108,9 +126,11 @@ export async function requireBoundedMutationResponse(response, label, signal) {
     }
   } else body = await response.json().catch(() => undefined);
   const bodyKeys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).slice(0, 30) : [];
-  const code = typeof body?.code === 'string' && /^[a-z0-9][a-z0-9._-]{0,119}$/u.test(body.code) ? body.code : 'unavailable';
+  const code = typeof body?.code === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/u.test(body.code)
+    ? body.code.toLowerCase().replaceAll('_', '-')
+    : 'unavailable';
   if (!response.ok) throw new Error(`${label} failed with status ${response.status}; code=${code}; bodyKeys=${JSON.stringify(bodyKeys)}`);
-  return { status: response.status, code, bodyKeys };
+  return { status: response.status, code, bodyKeys, body };
 }
 
 export async function runAbortableAcceptanceBoundary(run, { signal, onAbort = () => {} } = {}) {

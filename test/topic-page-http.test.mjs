@@ -43,16 +43,22 @@ function fixtureService() {
   return service;
 }
 
-async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json' }, gatewayRequest = async () => ({}) } = {}) {
+async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json' } } = {}) {
   const request = Readable.from([Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]);
   Object.assign(request, { method, headers });
   const response = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(value) { this.body = value; } };
-  await createTopicPageActionsHandler(service, { gatewayRequestFactory: () => gatewayRequest })(request, response);
+  await createTopicPageActionsHandler(service)(request, response);
   return { statusCode: response.statusCode, headers: response.headers, body: response.body ? JSON.parse(response.body) : null };
 }
 
 function base(action, fields = {}) {
   return { schemaVersion: 1, action, topicId, logicalOperationId: randomUUID(), ...fields };
+}
+
+function conversationCreate(fields = {}) {
+  const logicalOperationId = fields.logicalOperationId ?? randomUUID();
+  const label = fields.label ?? 'Fictional Conversation';
+  return base('conversations.create', { expectedRevision: 4, ...fields, label, logicalOperationId, authoritativeSession: { key: `agent:main:dashboard:${logicalOperationId}`, sessionId: `session-${logicalOperationId}`, revision: '1', idempotencyKey: logicalOperationId, label } });
 }
 
 test('Topic Page actions are POST-only, closed, bounded, and content-free', async () => {
@@ -98,14 +104,14 @@ test('Topic Page actions are POST-only, closed, bounded, and content-free', asyn
   const oversized = await invoke(service, { body: JSON.stringify(base('conversations.create', { expectedRevision: 4, label: 'x'.repeat(12 * 1024 * 1024) })) });
   assert.equal(oversized.statusCode, 400);
   assert.doesNotMatch(JSON.stringify(oversized.body), /x{100}/u);
-  const applied = await invoke(service, { body: base('conversations.create', { expectedRevision: 4, label: 'Fictional Conversation' }) });
+  const applied = await invoke(service, { body: conversationCreate() });
   assert.equal(applied.statusCode, 200);
   assert.equal(applied.body.result.referenceId, 'session:new');
   assert.doesNotMatch(JSON.stringify(applied.body), /fictional\/notes|agent:main|session-new/u);
   assert.equal(service.calls[0][1].isPrimary, false);
 
   service.sessionsCreate = async () => ({ status: 'applied', note: { path: 'x'.repeat(33 * 1024), revision: 'revision' } });
-  const oversizedResponse = await invoke(service, { body: base('conversations.create', { expectedRevision: 4 }) });
+  const oversizedResponse = await invoke(service, { body: conversationCreate() });
   assert.equal(oversizedResponse.statusCode, 507);
   assert.equal(Buffer.byteLength(JSON.stringify(oversizedResponse.body)) < 32 * 1024, true);
 });
@@ -117,11 +123,9 @@ test('Conversation creation remains on the service-owned plugin Gateway boundary
     receivedRuntime = runtime;
     return { status: 'applied', referenceId: 'session:new' };
   };
-  const response = await invoke(service, {
-    body: base('conversations.create', { expectedRevision: 4, label: 'Plugin Scoped Conversation' })
-  });
+  const response = await invoke(service, { body: conversationCreate({ label: 'Plugin Scoped Conversation' }) });
   assert.equal(response.statusCode, 200);
-  assert.equal(typeof receivedRuntime.gatewayRequest, 'function');
+  assert.equal(receivedRuntime.authoritativeSession.label, 'Plugin Scoped Conversation');
 });
 
 test('a migrated canonical scale Topic creates 99 Conversations through the public route and authoritatively totals 100', async () => {
@@ -135,7 +139,7 @@ test('a migrated canonical scale Topic creates 99 Conversations through the publ
   const keysByOperation = new Map();
   const operationId = (index) => `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`;
   for (const index of [2, 7, 11]) {
-    const key = `agent:main:dashboard:preseeded-scale-${index}`;
+    const key = `agent:main:dashboard:bridge-preseeded-scale-${operationId(index)}`;
     catalog.set(key, { sessionId: `session-preseeded-scale-${index}`, updatedAt: index + 1, label: `Fictional scale Conversation ${index}`, pluginOwnerId: 'command-center' });
     keysByOperation.set(operationId(index), key);
   }
@@ -143,9 +147,10 @@ test('a migrated canonical scale Topic creates 99 Conversations through the publ
     if (method === 'sessions.create') {
       const replayKey = keysByOperation.get(params.idempotencyKey);
       if (replayKey) return { key: replayKey, sessionId: catalog.get(replayKey).sessionId };
-      const key = params.key ?? `agent:main:dashboard:scale-${ordinal++}`;
+      const key = params.key ?? `agent:main:dashboard:bridge-scale-${params.idempotencyKey}`;
       const sessionId = `session-scale-${ordinal}`;
       catalog.set(key, { sessionId, updatedAt: ordinal, label: params.label, pluginOwnerId: 'command-center' });
+      ordinal += 1;
       if (params.idempotencyKey) keysByOperation.set(params.idempotencyKey, key);
       return { key, sessionId };
     }
@@ -204,8 +209,12 @@ test('a migrated canonical scale Topic creates 99 Conversations through the publ
 
   for (let pass = 0; pass < 2; pass += 1) {
     for (let index = 1; index < 100; index += 1) {
+      const logicalOperationId = operationId(index);
+      const label = `Fictional scale Conversation ${index}`;
+      const created = await gatewayRequest('sessions.create', { agentId: 'main', label, idempotencyKey: logicalOperationId });
+      const listed = catalog.get(created.key);
       const response = await invoke(service, {
-        body: { schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: `Fictional scale Conversation ${index}`, expectedRevision: migratedTopic.revision, logicalOperationId: operationId(index) },
+        body: { schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label, expectedRevision: migratedTopic.revision, logicalOperationId, authoritativeSession: { key: created.key, sessionId: listed.sessionId, revision: String(listed.updatedAt), idempotencyKey: logicalOperationId, label } },
         gatewayRequest
       });
       assert.equal(response.statusCode, 200, JSON.stringify(response.body));
@@ -219,8 +228,9 @@ test('a migrated canonical scale Topic creates 99 Conversations through the publ
   assert.equal(authoritativeSessions.some(({ sessionKey }) => sessionKey === 'agent:main:command-center:legacy-discord:fictional-channel-alpha'), true);
   assert.equal(migratedMetadata.listSourceReferences(scaleTopicId).filter(({ sourceKind }) => sourceKind === 'session').length, 100);
 
+  const staleOperationId = randomUUID();
   const stale = await invoke(service, {
-    body: { schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: 'Stale revision Conversation', expectedRevision: migratedTopic.revision - 1, logicalOperationId: randomUUID() },
+    body: { schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: 'Stale revision Conversation', expectedRevision: migratedTopic.revision - 1, logicalOperationId: staleOperationId, authoritativeSession: { key: 'agent:main:dashboard:stale', sessionId: 'session-stale', revision: '1', idempotencyKey: staleOperationId, label: 'Stale revision Conversation' } },
     gatewayRequest
   });
   assert.equal(stale.statusCode, 409);

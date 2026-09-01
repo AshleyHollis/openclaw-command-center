@@ -106,7 +106,7 @@ test('registered Session create bridge preserves independent durable identities 
     const handler = registrations.find(([method]) => method === 'command-center.v1.sessions.create')[1];
     const operations = Array.from({ length: 3 }, () => randomUUID());
     const responses = [];
-  const pending = operations.map((logicalOperationId, index) => handler({ req: { id: `bridge-create-${index}` }, params: { schemaVersion: 1, topicId: 'topic-bridge-interleaving', label: `Bridge ${index}`, isPrimary: false, logicalOperationId }, context: { authenticated: true }, respond: (...args) => { responses[index] = args; } }));
+  const pending = operations.map((logicalOperationId, index) => handler({ req: { id: `bridge-create-${index}` }, params: { schemaVersion: 1, topicId: 'topic-bridge-interleaving', label: `Bridge ${index}`, isPrimary: false, logicalOperationId, authoritativeSession: { key: `agent:main:dashboard:${index}`, sessionId: `session-${index}`, revision: String(index + 1), idempotencyKey: logicalOperationId, label: `Bridge ${index}` } }, context: { authenticated: true }, respond: (...args) => { responses[index] = args; } }));
   assert.equal(await ready, true, 'registered Session creates did not reach the controlled completion barrier');
   for (const complete of completions.reverse()) complete();
   await Promise.all(pending);
@@ -140,7 +140,7 @@ test('Topic mutation handlers await the public service and return sanitized dura
   const handler = registrations.find(([method]) => method === 'command-center.v1.topics.create')[1];
   let response;
   const logicalOperationId = randomUUID();
-  await handler({ req: { id: 'gateway-frame-topic' }, params: { schemaVersion: 1, name: 'Fictional Topic', paraCategory: 'project', logicalOperationId }, context: { authenticated: true }, respond: (...args) => { response = args; } });
+  await handler({ req: { id: 'gateway-frame-topic' }, params: { schemaVersion: 1, topicId: randomUUID(), name: 'Fictional Topic', paraCategory: 'project', logicalOperationId, authoritativeSession: { key: 'agent:main:dashboard:topic', sessionId: 'session-topic', revision: '1', idempotencyKey: logicalOperationId, label: 'Fictional Topic' } }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
   assert.equal(response[1].result.value.status, 'applied');
   assert.equal(response[1].result.value.topic.topicId, 'topic-fictional');

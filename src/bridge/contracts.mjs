@@ -75,7 +75,7 @@ export const WRITE_METHODS = Object.freeze([
 
 const common = ['schemaVersion'];
 const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId']);
-const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview']);
+const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession']);
 const arrayFields = new Set(['expectedRevisions']);
 
 function parameterSchema(field, method) {
@@ -267,7 +267,7 @@ const required = Object.freeze({
   'command-center.v1.topics.recovery-replace': ['topicId', 'referenceId', 'expectedRevision', 'expectedSourceRevision'],
   'command-center.v1.topics.get': ['topicId'],
   'command-center.v1.topics.recovery.status': ['topicId', 'referenceId'],
-  'command-center.v1.topics.create': ['name', 'paraCategory'],
+  'command-center.v1.topics.create': ['topicId', 'name', 'paraCategory', 'authoritativeSession'],
   'command-center.v1.topics.replace-primary-session': ['topicId', 'expectedRevision'],
   'command-center.v1.topics.provisioning.retry': ['topicId', 'expectedRevision'],
   'command-center.v1.topics.provisioning.rollback': ['topicId', 'expectedRevision'],
@@ -290,7 +290,7 @@ const required = Object.freeze({
   'command-center.v1.sessions.history': ['topicId', 'referenceId'],
   'command-center.v1.sessions.browse': ['topicId'],
   'command-center.v1.sessions.navigate': ['topicId', 'referenceId'],
-  'command-center.v1.sessions.create': ['topicId'],
+  'command-center.v1.sessions.create': ['topicId', 'authoritativeSession'],
   'command-center.v1.sessions.send': ['topicId', 'referenceId', 'message'],
   'command-center.v1.sessions.close': ['topicId', 'referenceId'],
   'command-center.v1.sessions.reopen': ['topicId', 'referenceId'],
@@ -332,7 +332,7 @@ const fields = Object.freeze({
   'command-center.v1.topics.list': [],
   'command-center.v1.topics.get': ['topicId'],
   'command-center.v1.topics.recovery.status': ['topicId', 'referenceId'],
-  'command-center.v1.topics.create': ['name', 'paraCategory'],
+  'command-center.v1.topics.create': ['topicId', 'name', 'paraCategory', 'authoritativeSession'],
   'command-center.v1.topics.replace-primary-session': ['topicId', 'expectedRevision'],
   'command-center.v1.topics.provisioning.retry': ['topicId', 'expectedRevision'],
   'command-center.v1.topics.provisioning.rollback': ['topicId', 'expectedRevision'],
@@ -356,7 +356,7 @@ const fields = Object.freeze({
   'command-center.v1.sessions.history': ['topicId', 'referenceId', 'sessionReferenceId', 'limit', 'offset', 'messageId'],
   'command-center.v1.sessions.browse': ['topicId', 'includeClosed'],
   'command-center.v1.sessions.navigate': ['topicId', 'referenceId', 'sessionReferenceId'],
-  'command-center.v1.sessions.create': ['topicId', 'label', 'isPrimary', 'logicalOperationId'],
+  'command-center.v1.sessions.create': ['topicId', 'label', 'isPrimary', 'logicalOperationId', 'authoritativeSession'],
   'command-center.v1.sessions.send': ['topicId', 'referenceId', 'message', 'logicalOperationId'],
   'command-center.v1.sessions.close': ['topicId', 'referenceId', 'sessionReferenceId', 'isPrimary', 'logicalOperationId'],
   'command-center.v1.sessions.reopen': ['topicId', 'referenceId', 'sessionReferenceId', 'isPrimary', 'logicalOperationId'],
@@ -443,6 +443,17 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
   }
   if (params.enabled !== undefined && typeof params.enabled !== 'boolean') throw sourceError('invalid-request', 'enabled must be a boolean.');
   for (const key of ['patch', 'declaration', 'input', 'value']) if (params[key] !== undefined && (!params[key] || typeof params[key] !== 'object' || Array.isArray(params[key]))) throw sourceError('invalid-request', `${key} must be an object.`);
+  if (params.authoritativeSession !== undefined) {
+    const session = params.authoritativeSession;
+    if (!session || typeof session !== 'object' || Array.isArray(session)) throw sourceError('invalid-request', 'authoritativeSession must be an object.');
+    const allowed = ['key', 'sessionId', 'revision', 'idempotencyKey', 'label'];
+    for (const key of Object.keys(session)) if (!allowed.includes(key)) throw sourceError('invalid-request', `Unsupported authoritativeSession field: ${key}`);
+    for (const key of allowed) if (typeof session[key] !== 'string' || session[key].trim() === '') throw sourceError('invalid-request', `authoritativeSession.${key} must be a non-blank string.`);
+    if (session.idempotencyKey !== params.logicalOperationId) throw sourceError('invalid-request', 'The authoritative Session idempotency key must match logicalOperationId.');
+    const expectedLabel = method.endsWith('topics.create') ? params.name : params.label;
+    if (session.label !== expectedLabel) throw sourceError('invalid-request', 'The authoritative Session label must match the requested label.');
+  }
+  if (method.endsWith('topics.create') && !isCanonicalUuid(params.topicId)) throw sourceError('invalid-request', 'Topic creation requires a canonical topicId.');
   if (method.endsWith('.schedules.create')) validateScheduleDeclaration(params.declaration);
   if (method.endsWith('.schedules.update')) validateScheduleUpdatePatch(params.patch);
   if (method.endsWith('.analysis.run') && Object.keys(params.input).length !== 0) throw sourceError('invalid-request', 'Topic Analysis input does not support caller-defined fields.');

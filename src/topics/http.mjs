@@ -203,7 +203,7 @@ export function createTopicsSearchHttpHandler(service) {
   };
 }
 
-export function createTopicsHttpHandler(service, { gatewayRequestFactory, mutationAllowed = true } = {}) {
+export function createTopicsHttpHandler(service, { mutationAllowed = true } = {}) {
   return async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
@@ -226,7 +226,7 @@ export function createTopicsHttpHandler(service, { gatewayRequestFactory, mutati
       const body = await readJson(req);
       if (!body || typeof body.action !== 'string') throw Object.assign(new Error('A closed Topic action request is required.'), { code: 'invalid-request' });
       const method = topicActions[body.action];
-      if (!method || Object.keys(body).some((key) => !['action', ...['schemaVersion', 'topicId', 'name', 'paraCategory', 'logicalOperationId', 'expectedRevision', 'expectedSourceRevision', 'structuralChangeId', 'previewDigest', 'expectedRevisions', 'referenceId', 'replacementLocator', 'sessionKey', 'sessionId']].includes(key))) throw Object.assign(new Error('The route accepts only closed Topic lifecycle actions.'), { code: 'invalid-request' });
+      if (!method || Object.keys(body).some((key) => !['action', ...['schemaVersion', 'topicId', 'name', 'paraCategory', 'logicalOperationId', 'authoritativeSession', 'expectedRevision', 'expectedSourceRevision', 'structuralChangeId', 'previewDigest', 'expectedRevisions', 'referenceId', 'replacementLocator', 'sessionKey', 'sessionId']].includes(key))) throw Object.assign(new Error('The route accepts only closed Topic lifecycle actions.'), { code: 'invalid-request' });
       if (!isCanonicalUuid(body.logicalOperationId) || body.action !== 'create' && (!isCanonicalUuid(body.topicId) || !Number.isInteger(body.expectedRevision))) throw Object.assign(new Error('Canonical operation identity, exact Topic identity, and Topic revision are required.'), { code: 'invalid-request' });
       const { action: _action, ...params } = body;
       const result = body.action === 'restore' && !body.previewDigest
@@ -236,7 +236,7 @@ export function createTopicsHttpHandler(service, { gatewayRequestFactory, mutati
             const preview = service.topics.restorePreview(params);
             return { value: await service.topics.restoreConfirm({ ...params, structuralChangeId: preview.structuralChangeId, previewDigest: preview.digest, expectedRevisions: preview.expectedRevisions }) };
           })()
-        : await invokeBridgeMethod(service, method, params, null, null, body.action === 'create' && typeof gatewayRequestFactory === 'function' ? { gatewayRequest: gatewayRequestFactory() } : {});
+        : await invokeBridgeMethod(service, method, params);
       const frameResult = sanitizeFrameResult(method, result);
       const destination = await mutationDestination(service);
       if (frameResult.value) frameResult.value.destination = destination;

@@ -24,7 +24,7 @@ import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapU
 import { assertPerformanceObservationWithinBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
-import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice, runSequentialAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
+import { collectSequentialAcceptanceBatch, createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice } from '../src/acceptance-scenario-coordinator.mjs';
 import { readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence } from '../src/acceptance-migration.mjs';
 
 const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
@@ -211,6 +211,12 @@ async function mountedPluginFrame(page, pluginDocument) {
   return { iframe, frame };
 }
 
+async function remountPluginFrame(page) {
+  const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
+  return (await mountedPluginFrame(page, await pluginDocument)).frame;
+}
+
 async function waitForMigrationCompletion(databasePath, topicId, { attempts = 100, delayMs = 100, signal } = {}) {
   signal ??= acceptanceSignalContext.getStore();
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -364,8 +370,10 @@ async function exerciseRestorationMatrix({ stateDir, descriptor, buildReceipt, w
     await waitForConsecutiveReadiness(async () => (await fetchWithDeadline(`${world.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${world.gatewayCredential}` } }, 'validated restoration readiness', 10_000)).ok, restoredHost.earlyExit, { required: 2, attempts: 100, delayMs: 100 });
     const statusResponse = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.sources.status', params: { schemaVersion: 1 } });
     assert.equal((statusResponse?.result ?? statusResponse).mode, 'ready');
-    const mutation = await fetchWithDeadline(`${world.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'create', name: 'Validated restored runtime Topic', paraCategory: 'resource', logicalOperationId: randomUUID() }) }, 'validated restoration mutation', 10_000);
-    assert.equal(mutation.status, 200);
+    const restoredTopicResponse = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: 'validated-post-restore-topic' } });
+    const restoredTopic = (restoredTopicResponse?.result ?? restoredTopicResponse)?.topic;
+    const mutation = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.rename', params: { schemaVersion: 1, topicId: restoredTopic.topicId, name: 'Validated restored runtime Topic', expectedRevision: restoredTopic.revision, logicalOperationId: randomUUID() } });
+    assert.equal((mutation?.result ?? mutation)?.value?.status ?? (mutation?.result ?? mutation)?.status, 'applied');
   } finally {
     removeAbortCleanup();
     await withDeadline('validated restoration host stop', async () => { await stopPinnedHost(restoredHost.child); await restoredHost.outputDrained; });
@@ -444,12 +452,13 @@ async function exerciseDegradedSourceRow({ descriptor, buildReceipt, combined = 
       if (combined) assert.equal(routeGrant(bootstrap), false, 'combined degraded runtime must independently withhold the frame grant');
       const safeRead = await requestAuthenticatedGateway({ gatewayUrl: sourceWorld.gateway.url, credential: sourceWorld.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 } });
       assert.ok(JSON.stringify(safeRead).includes('fictional-source-degraded-topic'));
+      const blockedOperationId = randomUUID();
       await assert.rejects(() => requestAuthenticatedGateway({
         gatewayUrl: sourceWorld.gateway.url,
         credential: sourceWorld.gatewayCredential,
         scopes: ['operator.read', 'operator.write'],
         method: 'command-center.v1.sessions.create',
-        params: { schemaVersion: 1, topicId: 'fictional-source-degraded-topic', logicalOperationId: randomUUID(), label: 'Blocked source mutation' }
+        params: { schemaVersion: 1, topicId: 'fictional-source-degraded-topic', logicalOperationId: blockedOperationId, label: 'Blocked source mutation', authoritativeSession: { key: 'agent:main:blocked-source', sessionId: 'blocked-source-session', revision: '1', idempotencyKey: blockedOperationId, label: 'Blocked source mutation' } }
       }), /sessions.*unavailable|capability-unavailable/iu);
       const mountedUiObserved = combined ? false : await assertMountedReadOnlyOperatingMode({ world: sourceWorld, expectedMode: status.mode });
       const frameUnavailableObserved = combined ? await assertPluginFrameUnavailable({ world: sourceWorld, label: 'combined degraded' }) : false;
@@ -528,7 +537,8 @@ async function exerciseBindingMismatchHostVariant({ descriptor, buildReceipt, si
       const statusResponse = await requestAuthenticatedGateway({ gatewayUrl: bindingWorld.gateway.url, credential: bindingWorld.gatewayCredential, method: 'command-center.v1.sources.status', params: { schemaVersion: 1 } });
       const status = statusResponse?.result ?? statusResponse;
       assert.notEqual(status.mode, 'ready');
-      await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: bindingWorld.gateway.url, credential: bindingWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.sessions.create', params: { schemaVersion: 1, topicId: 'fictional-binding-mismatch-topic', logicalOperationId: randomUUID(), label: 'Blocked binding mutation' } }), /source-recovery|binding|unavailable/iu);
+      const blockedBindingOperationId = randomUUID();
+      await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: bindingWorld.gateway.url, credential: bindingWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.sessions.create', params: { schemaVersion: 1, topicId: 'fictional-binding-mismatch-topic', logicalOperationId: blockedBindingOperationId, label: 'Blocked binding mutation', authoritativeSession: { key: 'agent:main:blocked-binding', sessionId: 'blocked-binding-session', revision: '1', idempotencyKey: blockedBindingOperationId, label: 'Blocked binding mutation' } } }), /source-recovery|binding|unavailable/iu);
       const mountedUiObserved = await assertMountedReadOnlyOperatingMode({ world: bindingWorld, expectedMode: status.mode });
       return Object.freeze({ kind: 'binding', mode: status.mode, safeReadObserved: true, mutationRejected: true, bindingObserved: true, mountedUiObserved, unsupportedControlsAbsent: true });
     } finally {
@@ -554,7 +564,8 @@ async function exerciseForeignDatabaseRestorationVariant({ descriptor, buildRece
       await waitForConsecutiveReadiness(async () => (await fetchWithDeadline(`${foreignWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${foreignWorld.gatewayCredential}` } }, 'foreign-database readiness', 10_000)).ok, foreignHost.earlyExit, { required: 2, attempts: 100, delayMs: 100 });
       const statusResponse = await requestAuthenticatedGateway({ gatewayUrl: foreignWorld.gateway.url, credential: foreignWorld.gatewayCredential, method: 'command-center.v1.sources.status', params: { schemaVersion: 1 } });
       assert.equal((statusResponse?.result ?? statusResponse).mode, 'recovery-only');
-      await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: foreignWorld.gateway.url, credential: foreignWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, name: 'Blocked foreign restoration', paraCategory: 'resource', logicalOperationId: randomUUID() } }), /recovery-only/iu);
+      const blockedForeignOperationId = randomUUID();
+      await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: foreignWorld.gateway.url, credential: foreignWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, topicId: randomUUID(), name: 'Blocked foreign restoration', paraCategory: 'resource', logicalOperationId: blockedForeignOperationId, authoritativeSession: { key: 'agent:main:blocked-foreign', sessionId: 'blocked-foreign-session', revision: '1', idempotencyKey: blockedForeignOperationId, label: 'Blocked foreign restoration' } } }), /recovery-only/iu);
       return Object.freeze({ kind: 'database-identity', mutationRejected: true, restoredStateValidated: true });
     } finally {
       removeAbortCleanup();
@@ -585,7 +596,8 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
       assert.equal(status.mode, 'recovery-only');
       const safeRead = await requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 } });
       assert.ok(safeRead && typeof safeRead === 'object');
-      await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, name: 'Blocked Recovery Topic', paraCategory: 'resource', logicalOperationId: randomUUID() } }), /recovery-only/iu);
+      const blockedRecoveryOperationId = randomUUID();
+      await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, topicId: randomUUID(), name: 'Blocked Recovery Topic', paraCategory: 'resource', logicalOperationId: blockedRecoveryOperationId, authoritativeSession: { key: 'agent:main:blocked-recovery', sessionId: 'blocked-recovery-session', revision: '1', idempotencyKey: blockedRecoveryOperationId, label: 'Blocked Recovery Topic' } } }), /recovery-only/iu);
       assert.equal(releasePerformanceIdentity.hostReceipt.commit, '6d542e6a0c5743a22a19c3226e754bf94cbf35b1', 'the launched runtime must be the controller-pinned compatible host, not the older recovery tuple');
       assert.equal(runtimeCapability.schemaVersion, 1, 'the active bootstrap must expose the supported bridge protocol');
       const recoveryDatabase = new DatabaseSync(databasePath, { readOnly: true });
@@ -784,7 +796,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: width <= 320 ? 'active' : 'none' });
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      const { frame } = await mountedPluginFrame(page, await pluginDocument);
+      let { frame } = await mountedPluginFrame(page, await pluginDocument);
       const scenarioName = kind === 'review' ? 'Area: Fictional Fresh Review Topic' : `Fictional Fresh ${kind} Topic`;
       const journey = await runUiJourney(frame, { page, width, name: scenarioName, category: 'project', keyboard: true });
       const authoritativeSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
@@ -799,18 +811,22 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const initialScaleSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: scaleTopicId } });
         const initialCount = ((initialScaleSessions?.result ?? initialScaleSessions)?.conversations ?? initialScaleSessions?.conversations ?? []).length;
         assert.equal(initialCount, 1, 'fresh imported scale Topic must start with one authoritative Primary Conversation');
+        const freshScaleCreationFailures = [];
         for (let offset = initialCount; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
           const indexes = Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batch) => offset + batch);
-          await runSequentialAcceptanceBatch(indexes, {
+          const batch = await collectSequentialAcceptanceBatch(indexes, {
             signal,
             identify: (index) => `fresh-scale-${index}`,
-            run: async (index, _batchIndex, requestSignal) => requireBoundedMutationResponse(await fetchWithDeadline(`${scenarioWorld.gateway.url}/plugins/command-center/api/topic/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: `Fresh scale Conversation ${index}`, expectedRevision: scaleTopic.revision, logicalOperationId: releaseScaleConversationOperationId(index) }), signal: requestSignal }, 'fresh scale Session creation'), 'fresh scale Session creation', requestSignal)
+            run: async (index, _batchIndex, requestSignal) => createSessionThroughAuthenticatedFrame(frame, { topicId: scaleTopicId, label: `Fresh scale Conversation ${index}`, logicalOperationId: releaseScaleConversationOperationId(index), signal: requestSignal })
           });
+          freshScaleCreationFailures.push(...batch.failures);
+          if (offset + 10 < RELEASE_FIXTURE_COUNTS.conversations) frame = await remountPluginFrame(page);
         }
         const sessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
         assert.ok(((sessions?.result ?? sessions)?.conversations ?? sessions?.conversations ?? []).length >= 2, 'fresh journey Topic remains independently authoritative');
         const scaleSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: scaleTopicId } });
-        assert.equal(((scaleSessions?.result ?? scaleSessions)?.conversations ?? scaleSessions?.conversations ?? []).length, RELEASE_FIXTURE_COUNTS.conversations);
+        const freshScaleAuthoritativeCount = ((scaleSessions?.result ?? scaleSessions)?.conversations ?? scaleSessions?.conversations ?? []).length;
+        if (freshScaleAuthoritativeCount !== RELEASE_FIXTURE_COUNTS.conversations) freshScaleCreationFailures.push({ id: 'fresh-scale-authoritative-count', error: `expected ${RELEASE_FIXTURE_COUNTS.conversations}, observed ${freshScaleAuthoritativeCount}` });
         const largeNote = await exerciseLargeNoteFixture(frame, { gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: scaleTopicId });
 
         const firstActivity = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 0, activityLimit: 50 });
@@ -846,6 +862,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await waitForCommittedSearchProjections(scaleProjectionRoot);
         const repairedManifest = JSON.parse(await readFile(staleManifestPath, 'utf8'));
         assert.notEqual(repairedManifest.generation, 'fictional-fresh-stale-generation');
+        if (freshScaleCreationFailures.length > 0) throw new AggregateError(freshScaleCreationFailures.map((failure) => new Error(`${failure.id}: ${failure.error}`)), `Fresh scale Session creation failures: ${freshScaleCreationFailures.map(({ id }) => id).join(', ')}`);
         return Object.freeze({ kind, topicId: journey.topicId, freshWorld: scenarioWorld.root, assertionsCompleted: true, scale: { largeNoteBytes: RELEASE_FIXTURE_COUNTS.largeNoteBytes, conversations: RELEASE_FIXTURE_COUNTS.conversations, activityRecords: RELEASE_FIXTURE_COUNTS.activityRecords, actionCards: RELEASE_FIXTURE_COUNTS.actionCards, indexedNotes: RELEASE_FIXTURE_COUNTS.indexedNotes, indexedConversationMessages: RELEASE_FIXTURE_COUNTS.indexedConversationMessages, largeNoteLifecycleMs: largeNote.largeNoteLifecycleMs, missingProjectionRebuilt: true, staleProjectionRebuilt: true } });
       } else if (kind === 'mobile') {
         assert.ok(journey.accessibilityStates.length >= 8 && journey.focusRestorations.length >= 4 && journey.announcementTransitions.length >= 4);
@@ -946,6 +963,42 @@ async function requestAuthenticatedGateway({ gatewayUrl, credential, method, par
     if (!response.ok) throw new Error(`Authenticated ${method} failed: ${response.error?.code ?? 'unknown'}`);
     return response.payload;
   } finally { signal?.removeEventListener('abort', abortSocket); socket.close(); }
+}
+
+async function createSessionThroughAuthenticatedFrame(frame, { topicId, label, logicalOperationId, signal }) {
+  signal?.throwIfAborted();
+  const evaluation = frame.evaluate(async ({ topicId: exactTopicId, label: exactLabel, logicalOperationId: operation }) => {
+    const requestId = crypto.randomUUID();
+    const created = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => { cleanup(); reject(new Error('mounted capability bridge sessions.create timed out')); }, 10_000);
+      const cleanup = () => { clearTimeout(timeout); window.removeEventListener('message', receive); };
+      const receive = (event) => {
+        const payload = event.data?.payload;
+        if (event.source !== window || event.data?.type !== 'openclaw:capability-bridge-receive' || payload?.type !== 'openclaw:capability-bridge-response' || payload.requestId !== requestId) return;
+        cleanup();
+        if (payload.error) reject(Object.assign(new Error('mounted capability bridge sessions.create failed'), { code: payload.error.code }));
+        else resolve(payload.result);
+      };
+      window.addEventListener('message', receive);
+      window.postMessage({ type: 'openclaw:capability-bridge-send', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-request', requestId, method: 'sessions.create', params: { agentId: 'main', label: exactLabel }, operationId: operation } }, '*');
+    });
+    const createdValue = created?.result ?? created;
+    const key = createdValue?.key ?? createdValue?.sessionKey;
+    const sessionId = createdValue?.sessionId ?? createdValue?.entry?.sessionId;
+    const revision = createdValue?.revision ?? createdValue?.updatedAt ?? createdValue?.entry?.updatedAt;
+    if (typeof key !== 'string' || typeof sessionId !== 'string' || revision === undefined || revision === null) throw new Error('mounted sessions.create returned an incomplete authoritative identity');
+    const exactSession = { key, sessionId, revision: String(revision), idempotencyKey: operation, label: exactLabel };
+    const mutationResponse = await fetch('/plugins/command-center/api/topic/actions', { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: exactTopicId, label: exactLabel, expectedRevision: 1, logicalOperationId: operation, authoritativeSession: exactSession }) });
+    return { status: mutationResponse.status, body: await mutationResponse.json() };
+  }, { topicId, label, logicalOperationId });
+  let abortEvaluation;
+  const aborted = signal && new Promise((_, reject) => { abortEvaluation = () => reject(signal.reason ?? new Error('mounted Session creation aborted')); signal.addEventListener('abort', abortEvaluation, { once: true }); });
+  let response;
+  try { response = aborted ? await Promise.race([evaluation, aborted]).catch(async (error) => { await evaluation.catch(() => undefined); throw error; }) : await evaluation; }
+  finally { if (abortEvaluation) signal.removeEventListener('abort', abortEvaluation); }
+  signal?.throwIfAborted();
+  if (response.status !== 200) throw new Error(`authenticated Session creation failed with status ${response.status}; code=${response.body?.code ?? 'unavailable'}`);
+  return response.body;
 }
 
 function reminderActionRequest(episode) {
@@ -1635,6 +1688,17 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const imported = (history.messages ?? []).filter((message) => message?.__openclaw?.legacyDiscordV1?.immutable === true);
       return { binding, channel, history, imported };
     };
+    const createScaleConversationThroughAuthenticatedRoute = async (signal) => {
+      const topicResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
+      const scaleTopic = (topicResponse?.result ?? topicResponse)?.topic;
+      assert.equal(scaleTopic?.revision, 1);
+      const logicalOperationId = releaseScaleConversationOperationId(1);
+      const accepted = await createSessionThroughAuthenticatedFrame(frame, { topicId: RELEASE_SCALE_TOPIC_ID, logicalOperationId, label: 'Fictional scale Conversation 1', signal });
+      assert.equal(accepted?.logicalOperationId, logicalOperationId);
+      assert.equal(accepted?.result?.topicId, RELEASE_SCALE_TOPIC_ID);
+      assert.equal(typeof accepted?.result?.referenceId, 'string');
+      return { logicalOperationId, referenceId: accepted.result.referenceId };
+    };
     let readinessAttempt = 0;
     const recordReadinessObservation = (observation) => {
       evidence.readinessAttempts.push(Object.freeze({ ...observation }));
@@ -1652,24 +1716,23 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.ok(initialCount >= 1 && initialCount <= RELEASE_FIXTURE_COUNTS.conversations, 'migrated scale Topic must retain a bounded authoritative Conversation catalog');
       releaseState.realizedConversationCount = initialCount;
       if (initialCount === RELEASE_FIXTURE_COUNTS.conversations) return { created: 0, authoritativeTotal: initialCount };
+      const creationFailures = [];
       for (let offset = 1; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
         signal?.throwIfAborted();
         const indexes = Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => offset + batchIndex);
-        await withDeadline(`Session fixture batch ${Math.floor(offset / 10) + 1}`, (batchSignal) => runSequentialAcceptanceBatch(indexes, {
-          signal: batchSignal,
+        const batch = await collectSequentialAcceptanceBatch(indexes, {
+          signal,
           identify: (index) => `migrated-scale-${index}`,
-          run: async (index, _batchIndex, requestSignal) => requireBoundedMutationResponse(await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/topic/actions`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: RELEASE_SCALE_TOPIC_ID, label: `Fictional scale Conversation ${index}`, expectedRevision: scaleTopic.revision, logicalOperationId: releaseScaleConversationOperationId(index) }),
-            signal: requestSignal
-          }, 'plugin-scoped Session fixture creation'), 'plugin-scoped Session fixture creation', requestSignal)
-        }), EXTERNAL_OPERATION_TIMEOUT_MS, signal);
+          run: async (index, _batchIndex, requestSignal) => createSessionThroughAuthenticatedFrame(frame, { topicId: RELEASE_SCALE_TOPIC_ID, logicalOperationId: releaseScaleConversationOperationId(index), label: `Fictional scale Conversation ${index}`, signal: requestSignal })
+        });
+        creationFailures.push(...batch.failures);
         reportProgress(testContext, 'fixture:session-batch', { completed: Math.min(offset + 10, RELEASE_FIXTURE_COUNTS.conversations), total: RELEASE_FIXTURE_COUNTS.conversations });
+        if (offset + 10 < RELEASE_FIXTURE_COUNTS.conversations) frame = await remountPluginFrame(page);
       }
       const seeded = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
       releaseState.realizedConversationCount = ((seeded?.result ?? seeded)?.conversations ?? seeded?.conversations ?? []).length;
-      assert.equal(releaseState.realizedConversationCount, RELEASE_FIXTURE_COUNTS.conversations);
+      if (releaseState.realizedConversationCount !== RELEASE_FIXTURE_COUNTS.conversations) creationFailures.push({ id: 'migrated-scale-authoritative-count', error: `expected ${RELEASE_FIXTURE_COUNTS.conversations}, observed ${releaseState.realizedConversationCount}` });
+      if (creationFailures.length > 0) throw new AggregateError(creationFailures.map((failure) => new Error(`${failure.id}: ${failure.error}`)), `Migrated scale Session creation failures: ${creationFailures.map(({ id }) => id).join(', ')}`);
       return { reconciledOperations: RELEASE_FIXTURE_COUNTS.conversations - 1, authoritativeTotal: releaseState.realizedConversationCount };
     };
     await collectScenario('pinned-host-startup', async (signal) => {
@@ -1734,9 +1797,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(imported.length, channel.messages.length);
       for (const [index, occurrence] of channel.messages.entries()) assert.deepEqual(imported[index].__openclaw.legacyDiscordV1, importedProvenance(channel.channelId, occurrence));
       return { sourceReferenceId: binding.referenceId, verifiedProvenanceCount: imported.length };
-    });
-    await collectScenario('migrated-scale-conversation-seeding', async (signal) => {
-      return ensureScaleConversationFixture(signal);
     });
     await collectScenario('startup-projection-recovery', async (signal) => {
       await requestAuthenticatedGateway({
@@ -1876,6 +1936,37 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.startup = true;
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant };
     });
+    await collectScenario('session-create-catalog-readback', async (signal) => {
+      const before = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
+      const beforeConversations = (before?.result ?? before)?.conversations ?? before?.conversations ?? [];
+      const created = await createScaleConversationThroughAuthenticatedRoute(signal);
+      const after = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
+      const afterConversations = (after?.result ?? after)?.conversations ?? after?.conversations ?? [];
+      const conversation = afterConversations.find((item) => item.referenceId === created.referenceId);
+      assert.equal(afterConversations.length, beforeConversations.length + 1);
+      assert.equal(conversation?.displayName, 'Fictional scale Conversation 1');
+      assert.equal(typeof conversation?.sessionId, 'string');
+      const navigationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, referenceId: created.referenceId }, signal });
+      const navigation = navigationResponse?.result ?? navigationResponse;
+      assert.equal(navigation?.sessionId, conversation.sessionId);
+      assert.equal(typeof navigation?.sessionKey, 'string');
+      releaseState.singleScaleConversation = Object.freeze({ ...created, sessionId: navigation.sessionId, sessionKey: navigation.sessionKey, authoritativeCount: afterConversations.length });
+      return releaseState.singleScaleConversation;
+    });
+    await collectScenario('session-create-idempotent-replay', async (signal) => {
+      const original = releaseState.singleScaleConversation;
+      assert.ok(original, 'single Session creation evidence must be independently available for replay');
+      const replayed = await createScaleConversationThroughAuthenticatedRoute(signal);
+      assert.deepEqual(replayed, { logicalOperationId: original.logicalOperationId, referenceId: original.referenceId });
+      const readback = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
+      const conversations = (readback?.result ?? readback)?.conversations ?? readback?.conversations ?? [];
+      assert.equal(conversations.length, original.authoritativeCount);
+      const exact = conversations.filter((item) => item.referenceId === original.referenceId);
+      assert.equal(exact.length, 1);
+      assert.equal(exact[0].sessionId, original.sessionId);
+      return { logicalOperationId: original.logicalOperationId, authoritativeCount: conversations.length, replayed: true };
+    });
+    await collectScenario('migrated-scale-conversation-seeding', async (signal) => ensureScaleConversationFixture(signal));
     await collectScenario('desktop-primary-journey', async () => {
       assert.ok(frame && page && releaseState.projectionRoot, 'desktop scenario requires its mounted fixture state');
       desktopJourney = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project', keyboard: true, projectionRoot: releaseState.projectionRoot });
@@ -2312,6 +2403,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         scenarioResult('startup-authenticated-history');
         scenarioResult('startup-imported-history-text');
         scenarioResult('startup-imported-history-provenance');
+        scenarioResult('session-create-catalog-readback');
+        scenarioResult('session-create-idempotent-replay');
         scenarioResult('migrated-scale-conversation-seeding');
         scenarioResult('startup-projection-recovery');
         scenarioResult('malformed-topic-route-rejection');

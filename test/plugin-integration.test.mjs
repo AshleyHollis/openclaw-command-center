@@ -222,11 +222,13 @@ test('isolated source availability produces observable Degraded reads and reject
     assert.ok(status.unavailableCapabilities.includes('scheduler'));
     const topics = await host.authenticatedGatewayRequest('command-center.v1.topics.list', { schemaVersion: 1 });
     assert.ok(JSON.stringify(topics).includes('fictional-degraded-source-topic'));
+    const blockedOperationId = randomUUID();
     await assert.rejects(() => host.authenticatedGatewayRequest('command-center.v1.sessions.create', {
       schemaVersion: 1,
       topicId: 'fictional-degraded-source-topic',
-      logicalOperationId: randomUUID(),
-      label: 'Blocked source mutation'
+      logicalOperationId: blockedOperationId,
+      label: 'Blocked source mutation',
+      authoritativeSession: { key: 'agent:main:blocked-source', sessionId: 'blocked-source-session', revision: '1', idempotencyKey: blockedOperationId, label: 'Blocked source mutation' }
     }), (error) => error?.code === 'capability-unavailable' && error?.details?.status === 'unavailable');
   } finally {
     await host.services[0]?.stop?.();

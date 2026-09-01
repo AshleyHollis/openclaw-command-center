@@ -65,8 +65,11 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   assert.match(source, /release preparation: pinned host launch/u);
   for (const category of ['bootstrap-http-', 'bootstrap-invalid-response', 'metadata-not-ready']) assert.match(source, new RegExp(category, 'u'));
   assert.match(source, /api\/topics\/actions`.*, \{ method: 'POST'/u);
-  assert.equal(source.match(/runSequentialAcceptanceBatch\(/gu)?.length, 2, 'both real-host 100-Conversation fixtures must seed with concurrency one');
+  assert.equal(source.match(/collectSequentialAcceptanceBatch\(/gu)?.length, 2, 'both real-host 100-Conversation fixtures must collect every concurrency-one mutation result');
   assert.doesNotMatch(source, /runSettledAcceptanceBatch/u);
+  assert.match(source, /session-create-catalog-readback/u);
+  assert.match(source, /session-create-idempotent-replay/u);
+  assert.match(source, /migrated-scale-conversation-seeding/u);
   assert.match(source, /Fresh scale Conversation \$\{index\}.*logicalOperationId: releaseScaleConversationOperationId\(index\)/u);
   assert.doesNotMatch(source, /ensureVerifiedActivityFixture|createAttentionService/u);
   assert.match(source, /data-activity-receipt/u);

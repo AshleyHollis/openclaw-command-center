@@ -163,7 +163,7 @@ test('opaque sandboxed Topic Page frame preflights and applies through the real 
         globalThis.runOpaqueAction = async () => {
           let phase = 'POST';
           try {
-            const response = await fetch('${actionUrl}', { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: '${topicId}', label: 'Opaque Fictional Conversation', expectedRevision: 4, logicalOperationId: '33333333-3333-4333-8333-333333333333' }) });
+            const response = await fetch('${actionUrl}', { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: '${topicId}', label: 'Opaque Fictional Conversation', expectedRevision: 4, logicalOperationId: '33333333-3333-4333-8333-333333333333', authoritativeSession: { key: 'agent:main:dashboard:opaque', sessionId: 'opaque-session', revision: '1', idempotencyKey: '33333333-3333-4333-8333-333333333333', label: 'Opaque Fictional Conversation' } }) });
             phase = 'http-status';
             if (!response.ok) { fail(phase, response.status); return; }
             phase = 'json-parse';
@@ -349,7 +349,7 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
     const noteChunk = (note, offset = 0) => { const bytes = note ? new TextEncoder().encode(note.text) : new Uint8Array(); const nextOffset = Math.min(offset + 524288, bytes.length); let binary = ''; for (let index = offset; index < nextOffset; index += 1) binary += String.fromCharCode(bytes[index]); return note ? { schemaVersion: 1, path: note.path, contentBase64: btoa(binary), byteOffset: offset, nextOffset, totalBytes: bytes.length, revision: note.revision, complete: nextOffset === bytes.length, sourceReference: note.sourceReference } : {}; };
     const respond = (requestId, result, error = null) => window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId, ...(error ? { error } : { result: copy(result) }) } }, '*');
     const fixture = globalThis.__topicPageFixture = {
-      topicId, folderId, primaryId, conversationId, closedId, topic, topicB, topicBPrimaryId, conversations, calls: [], failNextNoteEdit: false, foreignNextNoteRead: false, deferNoteEdit: false, noteEditPending: false, noteEditResolver: null, deferSend: false, sendPending: false, deferredSendResolvers: [], interruptNextSendResponse: false, appliedSendOperations: new Set(), completedSends: 0, deliveredActionResponses: 0, deliveredBridgeResponses: 0, deferConversationCreate: false, conversationCreatePending: false, conversationCreateResolver: null, deferSearch: false, searchPending: false, searchResolver: null, completedSearches: 0, deferProjectionRebuild: false, projectionRebuildPending: false, projectionRebuildResolver: null, deferNavigateReference: null, deferredNavigate: null, deferHistoryReferences: new Set(), deferredHistories: new Map(), deferNoteReadPath: null, deferredNoteRead: null, deferTopicGetId: null, deferredTopicGet: null, histories,
+      topicId, folderId, primaryId, conversationId, closedId, topic, topicB, topicBPrimaryId, conversations, calls: [], failNextNoteEdit: false, foreignNextNoteRead: false, deferNoteEdit: false, noteEditPending: false, noteEditResolver: null, deferSend: false, sendPending: false, deferredSendResolvers: [], interruptNextSendResponse: false, appliedSendOperations: new Set(), completedSends: 0, deliveredActionResponses: 0, deliveredBridgeResponses: 0, unknownNextSessionCreate: false, deferConversationCreate: false, conversationCreatePending: false, conversationCreateResolver: null, interruptNextConversationCreateResponse: false, appliedConversationCreateOperations: new Set(), deferSearch: false, searchPending: false, searchResolver: null, completedSearches: 0, deferProjectionRebuild: false, projectionRebuildPending: false, projectionRebuildResolver: null, deferNavigateReference: null, deferredNavigate: null, deferHistoryReferences: new Set(), deferredHistories: new Map(), deferNoteReadPath: null, deferredNoteRead: null, deferTopicGetId: null, deferredTopicGet: null, histories,
       setScaleNotes(count) { notes = notes.filter((note) => note.sourceReference.topicId !== topicId); for (let index = 0; index < count; index += 1) { const path = `scale/note-${String(index).padStart(4, '0')}.md`; notes.push({ path, text: `# Scale ${index}`, revision: `scale-revision-${index}`, sourceReference: noteReference(path, `scale-revision-${index}`) }); } },
       deferNotesBrowse: false, notesBrowsePending: false, notesBrowseRequest: null,
       resolveNotesBrowse() { if (!this.notesBrowseRequest) return; const requestId = this.notesBrowseRequest; this.notesBrowseRequest = null; this.notesBrowsePending = false; respond(requestId, notes.filter((note) => note.sourceReference.topicId === topicId).map(({ text: _text, ...note }) => note)); },
@@ -378,7 +378,8 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
       const routed = await globalThis.__invokeTopicPageAction(body);
       if (!routed.ok) return { ok: false, status: routed.status, async json() { fixture.deliveredActionResponses += 1; return routed.body; } };
       if (body.action === 'conversations.create' && fixture.deferConversationCreate) { fixture.deferConversationCreate = false; fixture.conversationCreatePending = true; await new Promise((resolve) => { fixture.conversationCreateResolver = resolve; }); fixture.conversationCreatePending = false; }
-      if (body.action === 'conversations.create') { const referenceId = `session:fictional-topic:created-${conversations.length}`; const created = { referenceId, topicId, sessionId: `created-session-${conversations.length}`, sessionKey: `agent:main:created-${conversations.length}`, displayName: body.label, status: 'open', isPrimary: false, wasPrimary: false, updatedAt: '2026-08-27T00:01:00.000Z' }; conversations = [...conversations, created]; histories[referenceId] = []; }
+      if (body.action === 'conversations.create' && !fixture.appliedConversationCreateOperations.has(body.logicalOperationId)) { fixture.appliedConversationCreateOperations.add(body.logicalOperationId); const referenceId = `session:fictional-topic:created-${conversations.length}`; const created = { referenceId, topicId, sessionId: `created-session-${conversations.length}`, sessionKey: `agent:main:created-${conversations.length}`, displayName: body.label, status: 'open', isPrimary: false, wasPrimary: false, updatedAt: '2026-08-27T00:01:00.000Z' }; conversations = [...conversations, created]; histories[referenceId] = []; }
+      if (body.action === 'conversations.create' && fixture.interruptNextConversationCreateResponse) { fixture.interruptNextConversationCreateResponse = false; throw new TypeError('Fictional interrupted Conversation create response.'); }
       if (body.action === 'conversations.close' || body.action === 'conversations.reopen') conversations = conversations.map((item) => item.referenceId === body.referenceId ? { ...item, status: body.action.endsWith('close') ? 'closed' : 'open' } : item);
       const decodedText = body.contentBase64 === undefined ? undefined : new TextDecoder().decode(Uint8Array.from(atob(body.contentBase64), (character) => character.charCodeAt(0)));
       if (body.action === 'notes.create') notes = [...notes, { path: body.path, text: decodedText, revision: `created-revision-${notes.length}`, sourceReference: noteReference(body.path, `created-revision-${notes.length}`) }];
@@ -393,13 +394,15 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
     window.addEventListener('message', async (event) => {
       if (event.data?.type !== 'openclaw:capability-bridge-send') return;
       const payload = event.data.payload;
-      if (payload.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*'); return; }
+      if (payload.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'sessions.create', 'ui.session.navigate'] } }, '*'); return; }
       if (payload.type !== 'openclaw:capability-bridge-request') return;
-      fixture.calls.push({ transport: 'bridge', method: payload.method, params: copy(payload.params) });
+      fixture.calls.push({ transport: 'bridge', method: payload.method, params: copy(payload.params), operationId: payload.operationId });
+      if (payload.method === 'sessions.create' && fixture.unknownNextSessionCreate) { fixture.unknownNextSessionCreate = false; respond(payload.requestId, null, { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Fictional unknown Session creation outcome.' }); return; }
       let result = {};
       if (payload.method.endsWith('sources.status')) result = { schemaVersion: 1, mode: 'ready', unavailableCapabilities: [] };
       if (payload.method.endsWith('topics.list')) result = { activeGroups: { project: [topic, topicB], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] };
       if (payload.method.endsWith('topics.get')) { const requestedTopic = payload.params.topicId === topicBId ? topicB : topic; if (fixture.deferTopicGetId === payload.params.topicId) { fixture.deferTopicGetId = null; fixture.deferredTopicGet = { requestId: payload.requestId, topic: requestedTopic }; return; } result = { topic: requestedTopic }; }
+      if (payload.method === 'sessions.create') result = { key: `agent:main:dashboard:bridge-fictional-${payload.operationId}`, sessionId: `created-${payload.operationId}`, revision: '1' };
       if (payload.method.endsWith('sessions.browse')) { const topicConversations = payload.params.topicId === topicBId ? [topicBConversation] : conversations; result = { schemaVersion: 1, topicId: payload.params.topicId, conversations: topicConversations.filter((item) => payload.params.includeClosed === true || item.status === 'open').map(({ sessionKey: _private, ...item }) => item) }; }
       if (payload.method.endsWith('sessions.history')) { if (fixture.deferHistoryReferences.has(payload.params.referenceId)) { fixture.deferHistoryReferences.delete(payload.params.referenceId); fixture.deferredHistories.set(payload.params.referenceId, { requestId: payload.requestId }); return; } result = { messages: histories[payload.params.referenceId] ?? [] }; }
       if (payload.method.endsWith('sessions.navigate')) { const item = [...conversations, topicBConversation].find((conversation) => conversation.referenceId === payload.params.referenceId); result = item ? { schemaVersion: 1, status: 'applied', sessionKey: item.sessionKey, sessionId: item.sessionId, sourceReference: { referenceId: item.referenceId, topicId: item.topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: item.sessionKey, observedRevision: null } } : {}; if (fixture.deferNavigateReference === payload.params.referenceId) { fixture.deferNavigateReference = null; fixture.deferredNavigate = { requestId: payload.requestId, result }; return; } }
@@ -836,14 +839,15 @@ test('Conversations create, switch, close, browse Closed, reopen, refresh, and p
   const page = await setupPage();
   try {
     await page.locator('#conversation-create input[name="label"]').fill('Fresh Root Conversation'); await submit(page, '#conversation-create');
-    let row = page.locator('.conversation-item').filter({ hasText: 'Fresh Root Conversation' }); await row.waitFor(); await row.getByRole('button', { name: 'Fresh Root Conversation' }).click();
+    let row = page.locator('.conversation-item').filter({ hasText: 'Fresh Root Conversation' }); await row.waitFor(); await row.getByRole('button', { name: 'Fresh Root Conversation' }).evaluate((node) => node.click()); await page.locator('#chat-conversation-name').filter({ hasText: 'Fresh Root Conversation' }).waitFor();
     assert.equal(await page.getByText('Imported immutable prefix').count(), 0);
-    await row.getByRole('button', { name: 'Close' }).click();
-    await page.locator('#conversation-view').selectOption('closed'); row = page.locator('.conversation-item').filter({ hasText: 'Fresh Root Conversation' }); await row.waitFor(); await row.getByRole('button', { name: 'Fresh Root Conversation' }).click();
-    assert.equal(await page.locator('#chat-send').isDisabled(), true);
+    await row.getByRole('button', { name: 'Close' }).evaluate((node) => node.click());
+    await page.waitForFunction(() => globalThis.__topicPageFixture.calls.some((call) => call.transport === 'http' && call.action === 'conversations.close' && call.referenceId?.includes('created-')));
+    await row.waitFor({ state: 'hidden' });
+    await page.locator('#conversation-view').selectOption('closed'); row = page.locator('.conversation-item').filter({ hasText: 'Fresh Root Conversation' }); await row.waitFor(); await row.getByRole('button', { name: 'Fresh Root Conversation' }).evaluate((node) => node.click());
     await page.locator('#workspace-search-query').fill('Fresh Root Conversation'); await submit(page, '#workspace-search-form'); const searchResult = page.locator('#workspace-conversations-results article').filter({ hasText: 'Fresh Root Conversation' }); await searchResult.waitFor(); await searchResult.getByText('Closed', { exact: true }).waitFor();
     await page.locator('#conversation-refresh').click(); await page.getByText('2 closed Conversations.').waitFor(); await row.getByRole('button', { name: 'Reopen' }).click(); await row.waitFor({ state: 'hidden' });
-    await page.locator('#conversation-view').selectOption('open'); row = page.locator('.conversation-item').filter({ hasText: 'Fresh Root Conversation' }); await row.waitFor(); await row.getByRole('button', { name: 'Fresh Root Conversation' }).click();
+    await page.locator('#conversation-view').selectOption('open'); row = page.locator('.conversation-item').filter({ hasText: 'Fresh Root Conversation' }); await row.waitFor(); await row.getByRole('button', { name: 'Fresh Root Conversation' }).evaluate((node) => node.click());
     await page.locator('#chat-message').fill('Message after reopen'); await submit(page, '#chat-form'); await page.getByText('Message after reopen').waitFor();
     const reopenedSend = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http' && call.action === 'chat.send').at(-1));
     assert.equal(reopenedSend.referenceId, 'session:fictional-topic:created-3'); assert.equal(await page.getByText('Imported immutable prefix').count(), 0);
@@ -873,6 +877,45 @@ test('a delayed Conversation create cannot clear a newer Topic draft', async () 
     await page.locator('#conversation-create input[name="label"]').fill('Topic B retained draft');
     const delivered = await page.evaluate(() => globalThis.__topicPageFixture.deliveredActionResponses); await page.evaluate(() => globalThis.__topicPageFixture.resolveDeferredConversationCreate()); await page.evaluate((target) => globalThis.__topicPageFixture.waitForApplicationSettlement('action', target), delivered + 1);
     assert.equal(await page.locator('#conversation-create input[name="label"]').inputValue(), 'Topic B retained draft'); assert.equal(await page.locator('#conversation-status').textContent(), '1 Conversations.');
+  } finally { await closeGuardedPage(page); }
+});
+
+test('an interrupted Conversation create retries the unchanged logical operation exactly once', async () => {
+  const page = await setupPage();
+  try {
+    await page.evaluate(() => { globalThis.__topicPageFixture.interruptNextConversationCreateResponse = true; });
+    const input = page.locator('#conversation-create input[name="label"]');
+    await input.fill('Interrupted Conversation'); await submit(page, '#conversation-create');
+    await page.getByText('Conversation creation is not yet confirmed. Retry the unchanged label to reconcile it.').waitFor();
+    await submit(page, '#conversation-create');
+    await page.locator('.conversation-item').filter({ hasText: 'Interrupted Conversation' }).waitFor();
+    const calls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http' && call.action === 'conversations.create' && call.label === 'Interrupted Conversation'));
+    const creates = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Interrupted Conversation'));
+    assert.equal(calls.length, 2);
+    assert.equal(creates.length, 2);
+    assert.equal(calls[0].logicalOperationId, calls[1].logicalOperationId);
+    assert.equal(creates[0].operationId, calls[0].logicalOperationId);
+    assert.equal(creates[1].operationId, calls[0].logicalOperationId);
+    assert.deepEqual(Object.keys(creates[0].params).sort(), ['agentId', 'label']);
+    assert.equal(Object.hasOwn(creates[0].params, 'logicalOperationId'), false);
+    assert.equal(await page.locator('.conversation-item').filter({ hasText: 'Interrupted Conversation' }).count(), 1);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('an unknown capability-bridge Session outcome retains the Conversation operation for exact retry', async () => {
+  const page = await setupPage();
+  try {
+    await page.evaluate(() => { globalThis.__topicPageFixture.unknownNextSessionCreate = true; });
+    const input = page.locator('#conversation-create input[name="label"]');
+    await input.fill('Unknown Session Outcome'); await submit(page, '#conversation-create');
+    await page.getByText('Conversation creation is not yet confirmed. Retry the unchanged label to reconcile it.').waitFor();
+    await submit(page, '#conversation-create');
+    await page.locator('.conversation-item').filter({ hasText: 'Unknown Session Outcome' }).waitFor();
+    const evidence = await page.evaluate(() => ({ bridge: globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Unknown Session Outcome'), http: globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http' && call.action === 'conversations.create' && call.label === 'Unknown Session Outcome') }));
+    assert.equal(evidence.bridge.length, 2);
+    assert.equal(evidence.bridge[0].operationId, evidence.bridge[1].operationId);
+    assert.equal(evidence.http.length, 1);
+    assert.equal(evidence.http[0].logicalOperationId, evidence.bridge[0].operationId);
   } finally { await closeGuardedPage(page); }
 });
 

@@ -91,6 +91,7 @@ test('Topic workspace declares the exact external-tab capability bridge and boun
   assert.match(requiredMethods, /command-center\.v1\.topics\.list/u);
   assert.doesNotMatch(requiredMethods, /command-center\.v1\.sessions\.list/u);
   assert.match(source, /path:\s*'\/plugins\/command-center\/api\/topic\/actions',[\s\S]*auth:\s*'plugin',[\s\S]*match:\s*'exact'/u);
+  assert.match(requiredMethods, /sessions\.create/u);
   const html = await readFile(new URL('../src/ui/index.html', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /<script type="module"/u);
   assert.match(html, /app\.js/u);
@@ -100,6 +101,7 @@ test('Topic workspace declares the exact external-tab capability bridge and boun
   assert.match(app, /bridgeReady\.then\(loadOperatingState\)/u);
   assert.match(app, /if \(requestedTopicId === null\) void loadTopics\(\)/u);
   assert.match(app, /fetch\(PAGE_ACTION_ROUTE, \{ method: 'POST', credentials: 'omit'/u);
+  assert.match(app, /bridgeRequest\('sessions\.create', \{ agentId: 'main', label \}, logicalOperationId\)/u);
   assert.doesNotMatch(app, /targetAddressSpace|local-network-access/u);
   assert.doesNotMatch(app, /flushQuote/u);
   const styles = await readFile(new URL('../src/ui/styles.css', import.meta.url), 'utf8');

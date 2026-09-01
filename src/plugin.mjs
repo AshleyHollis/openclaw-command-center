@@ -11,7 +11,6 @@ import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandl
 import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
 import { createTopicPageActionsHandler } from './topics/page-http.mjs';
 import { createSearchRebuildHttpHandler, searchRebuildRoute } from './search/http-route.mjs';
-import { createRequestScopedGatewayRequest } from './bridge/gateway-method-dispatch.mjs';
 
 export { runNoteMaintenance } from './plugin-service.mjs';
 
@@ -120,6 +119,7 @@ export default definePluginEntry({
           'command-center.v1.notes.browse',
           'command-center.v1.notes.read',
           'command-center.v1.search.query',
+          'sessions.create',
           'ui.session.navigate'
         ],
         optionalMethods: []
@@ -155,13 +155,13 @@ export default definePluginEntry({
       path: '/plugins/command-center/api/topics/actions',
       auth: 'plugin',
       match: 'exact',
-      handler: gateControlUiMutation(createTopicsHttpHandler(serviceProxy, { gatewayRequestFactory: createRequestScopedGatewayRequest }), controlUiMutationsAllowed)
+      handler: gateControlUiMutation(createTopicsHttpHandler(serviceProxy), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topic/actions',
       auth: 'plugin',
       match: 'exact',
-      handler: gateControlUiMutation(createTopicPageActionsHandler(serviceProxy, { gatewayRequestFactory: createRequestScopedGatewayRequest }), controlUiMutationsAllowed)
+      handler: gateControlUiMutation(createTopicPageActionsHandler(serviceProxy), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: searchRebuildRoute,

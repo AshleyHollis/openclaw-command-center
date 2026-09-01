@@ -11,6 +11,7 @@ const markdownModule = import('./markdown.js');
 const requestedTopicId = new URLSearchParams(window.location.search).get('topicId');
 let currentDestination = { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] };
 let topicCreatePending = false;
+let topicCreateOperation = null;
 const DASHBOARD_ROUTE = '/plugins/command-center/api/dashboard';
 const ATTENTION_ROUTE = '/plugins/command-center/api/attention/actions';
 const DASHBOARD_ACTIONS_ROUTE = '/plugins/command-center/api/dashboard/actions';
@@ -283,16 +284,16 @@ window.addEventListener('message', (event) => {
   const pending = pendingBridgeRequests.get(message.requestId);
   if (!pending) return;
   pendingBridgeRequests.delete(message.requestId);
-  if (message.error) pending.reject(Object.assign(new Error(message.error.message || 'Capability bridge request failed.'), { code: message.error.code }));
+  if (message.error) pending.reject(Object.assign(new Error(message.error.message || 'Capability bridge request failed.'), { code: message.error.code, terminal: !['MUTATION_OUTCOME_UNKNOWN', 'MUTATION_RECONCILIATION_REQUIRED', 'TIMEOUT', 'RATE_LIMITED'].includes(message.error.code) }));
   else pending.resolve(message.result);
 });
-async function bridgeRequest(method, params) {
+async function bridgeRequest(method, params, mutationOperationId = params?.logicalOperationId) {
   await bridgeReady;
   const requestId = operationId();
   return await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pendingBridgeRequests.delete(requestId); reject(new Error('Capability bridge request exceeded 30 seconds.')); }, 30_000);
+    const timer = setTimeout(() => { pendingBridgeRequests.delete(requestId); reject(Object.assign(new Error('Capability bridge request exceeded 30 seconds.'), { code: 'TIMEOUT', terminal: false })); }, 30_000);
     pendingBridgeRequests.set(requestId, { resolve(value) { clearTimeout(timer); resolve(value); }, reject(error) { clearTimeout(timer); reject(error); } });
-    sendBridge({ type: 'openclaw:capability-bridge-request', requestId, method, params });
+    sendBridge({ type: 'openclaw:capability-bridge-request', requestId, method, params, ...(typeof mutationOperationId === 'string' ? { operationId: mutationOperationId } : {}) });
   });
 }
 const STATIC_MUTATION_SELECTORS = Object.freeze(['#topic-create', '#notification-settings-form', '#topic-analysis-schedule', '#topic-review-snooze', '#topic-review-checkpoint', '#topic-search-rebuild', '#conversation-create', '#chat-form', '#note-new', '#note-save', '#note-rename', '#note-move', '#note-action-submit', '#workspace-search-rebuild']);
@@ -334,9 +335,16 @@ async function read(view = 'destination') {
 }
 async function mutate(action, input) {
   requireReadyMutation();
-  const response = await fetch(HTTP_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: input.logicalOperationId ?? operationId(), ...input }) });
-  const value = await response.json();
-  if (!response.ok || value.status === 'error') throw Object.assign(new Error(value.message || 'Topic action failed.'), { destination: value.result?.destination });
+  const logicalOperationId = input.logicalOperationId ?? operationId();
+  const request = action === 'create'
+    ? { ...input, topicId: input.topicId, authoritativeSession: await createAuthoritativeSession(input.name, logicalOperationId) }
+    : input;
+  let response; let value;
+  try {
+    response = await fetch(HTTP_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId, ...request }) });
+    value = await response.json();
+  } catch (error) { throw Object.assign(error instanceof Error ? error : new Error('The Topic action response was unavailable.'), { terminal: false }); }
+  if (!response.ok || value.status === 'error') throw Object.assign(new Error(value.message || 'Topic action failed.'), { code: value.code, terminal: !['unknown', 'unavailable'].includes(value.code), destination: value.result?.destination });
   return value;
 }
 function validateTopicNameInput() {
@@ -396,7 +404,7 @@ function renderDestination(value) {
   const select = document.querySelector('#topic-search-topic-id'); const selected = select.value; select.replaceChildren(...[...(groups?.project ?? []), ...(groups?.area ?? []), ...(groups?.resource ?? []), ...(value.archived ?? [])].map((topic) => { const option = document.createElement('option'); option.value = topic.topicId; option.textContent = topic.name; return option; })); if ([...select.options].some((item) => item.value === selected)) select.value = selected;
 }
 async function loadTopics(message = '') { if (!hasTopicsDestination) return; try { renderDestination(await read('destination')); statusNode.textContent = message || 'Topics are current.'; } catch (error) { statusNode.textContent = error.message; } }
-async function createTopic(event) { event.preventDefault(); if (topicCreatePending) return; validateTopicNameInput(); if (!topicCreateForm.reportValidity()) return; topicCreatePending = true; topicCreateSubmit.disabled = true; statusNode.textContent = 'Creating Topic…'; try { await runAction('create', { name: topicNameInput.value.trim().normalize('NFC'), paraCategory: topicCreateForm.elements.paraCategory.value }, 'Topic created and verified.'); topicCreateForm.reset(); } finally { topicCreatePending = false; topicCreateSubmit.disabled = false; } }
+async function createTopic(event) { event.preventDefault(); if (topicCreatePending) return; validateTopicNameInput(); if (!topicCreateForm.reportValidity()) return; const intent = { name: topicNameInput.value.trim().normalize('NFC'), paraCategory: topicCreateForm.elements.paraCategory.value }; if (topicCreateOperation && (topicCreateOperation.name !== intent.name || topicCreateOperation.paraCategory !== intent.paraCategory)) { statusNode.textContent = 'The previous Topic creation is not yet confirmed. Retry its unchanged name and category first.'; return; } topicCreateOperation ??= { ...intent, topicId: crypto.randomUUID(), logicalOperationId: operationId() }; topicCreatePending = true; topicCreateSubmit.disabled = true; statusNode.textContent = 'Creating Topic…'; try { const result = await mutate('create', { ...intent, topicId: topicCreateOperation.topicId, logicalOperationId: topicCreateOperation.logicalOperationId }); currentDestination = result.result?.value?.destination ?? result.result?.destination ?? currentDestination; renderDestination(currentDestination); statusNode.textContent = 'Topic created and verified.'; topicCreateOperation = null; topicCreateForm.reset(); } catch (error) { if (error.destination) currentDestination = error.destination; renderDestination(currentDestination); if (error.terminal !== false) topicCreateOperation = null; statusNode.textContent = error.terminal === false ? 'Topic creation is not yet confirmed. Retry the unchanged name and category to reconcile it.' : `Topic action failed: ${error.message}`; } finally { topicCreatePending = false; topicCreateSubmit.disabled = false; } }
 topicNameInput?.addEventListener('input', validateTopicNameInput); topicCreateForm?.addEventListener('submit', createTopic);
 
 function renderSearch(id, results) { const target = document.querySelector(`#${id}`); target.replaceChildren(...(results ?? []).map((result) => { const row = document.createElement('article'); const heading = document.createElement('strong'); heading.textContent = result.heading || result.conversationName || result.path || 'Result'; const snippet = document.createElement('p'); snippet.textContent = result.snippet || ''; const open = button(result.navigation?.kind === 'conversation' ? 'Open Conversation' : 'Open Note', () => openResult(result)); row.append(heading, snippet, open); return row; })); }
@@ -420,7 +428,7 @@ document.querySelector('#topic-search-rebuild')?.addEventListener('click', async
 
 const workspace = {
   topic: null, generation: 0, conversations: [], selected: null, selectionGeneration: 0, historyGeneration: 0, chatSendGeneration: 0, chatSendOperations: new Map(),
-  conversationPage: 0, notes: [], notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
+  conversationCreateOperations: new Map(), conversationPage: 0, notes: [], notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
 };
 const CONVERSATION_PAGE_SIZE = 50;
 const NOTE_PAGE_SIZE = 100;
@@ -563,7 +571,8 @@ document.querySelector('#chat-form')?.addEventListener('submit', async (event) =
   catch (error) { operation.pending = false; if (error.terminal !== false && workspace.chatSendOperations.get(operation.entryId) === operation) workspace.chatSendOperations.delete(operation.entryId); if (isCurrent()) chatStatus.textContent = error.terminal === false ? 'Message delivery is not yet confirmed. Retry the unchanged message to reconcile it.' : error.message; }
   finally { if (isCurrent()) syncSelectedConversationControls(); }
 });
-document.querySelector('#conversation-create')?.addEventListener('submit', async (event) => { event.preventDefault(); const input = event.currentTarget.elements.label; const label = input.value.trim(); const generation = workspace.generation; const topic = workspace.topic; try { await pageAction('conversations.create', { topicId: topic.topicId, label, expectedRevision: topic.revision }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; if (input.value.trim() === label) input.value = ''; await loadConversations({ generation }); } catch (error) { if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) conversationStatus.textContent = error.message || 'Conversation creation was refused.'; } });
+async function createAuthoritativeSession(label, logicalOperationId) { const created = unwrap(await bridgeRequest('sessions.create', { agentId: 'main', label }, logicalOperationId)); const key = created?.key ?? created?.sessionKey; const sessionId = created?.sessionId ?? created?.entry?.sessionId; const revision = created?.revision ?? created?.updatedAt ?? created?.entry?.updatedAt; if (typeof key !== 'string' || typeof sessionId !== 'string' || revision === undefined || revision === null) throw new Error('The authoritative Session creation response was incomplete.'); return { key, sessionId, revision: String(revision), idempotencyKey: logicalOperationId, label }; }
+document.querySelector('#conversation-create')?.addEventListener('submit', async (event) => { event.preventDefault(); const input = event.currentTarget.elements.label; const label = input.value.trim(); const generation = workspace.generation; const topic = workspace.topic; const intentKey = `${topic.topicId}:${label}`; let operation = workspace.conversationCreateOperations.get(intentKey); if (operation?.pending) return; if (!operation) { operation = { logicalOperationId: operationId(), pending: false }; workspace.conversationCreateOperations.set(intentKey, operation); } operation.pending = true; try { const authoritativeSession = await createAuthoritativeSession(label, operation.logicalOperationId); await pageAction('conversations.create', { topicId: topic.topicId, label, expectedRevision: topic.revision, logicalOperationId: operation.logicalOperationId, authoritativeSession }); workspace.conversationCreateOperations.delete(intentKey); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; if (input.value.trim() === label) input.value = ''; await loadConversations({ generation }); } catch (error) { operation.pending = false; if (error.terminal !== false) workspace.conversationCreateOperations.delete(intentKey); if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) conversationStatus.textContent = error.terminal === false ? 'Conversation creation is not yet confirmed. Retry the unchanged label to reconcile it.' : error.message || 'Conversation creation was refused.'; } });
 document.querySelector('#conversation-refresh')?.addEventListener('click', () => loadConversations());
 document.querySelector('#conversation-view')?.addEventListener('change', () => { workspace.conversationPage = 0; void loadConversations(); });
 document.querySelector('#conversation-previous')?.addEventListener('click', () => { if (workspace.conversationPage > 0) { workspace.conversationPage -= 1; renderConversations(); } });

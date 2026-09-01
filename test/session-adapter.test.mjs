@@ -21,7 +21,7 @@ function metadataFixture() {
   };
 }
 
-function pluginSessionBoundary({ completions, onDeferred } = {}) {
+function pluginSessionBoundary({ completions, onDeferred, keyPrefix = 'agent:main:dashboard:command-center-' } = {}) {
   const entries = new Map();
   const keysByIdempotency = new Map();
   let ordinal = 0;
@@ -30,7 +30,7 @@ function pluginSessionBoundary({ completions, onDeferred } = {}) {
       const create = () => {
         const existingKey = keysByIdempotency.get(params.idempotencyKey);
         if (existingKey) return { key: existingKey, entry: entries.get(existingKey) };
-        const key = `agent:main:dashboard:command-center-${++ordinal}`;
+        const key = keyPrefix.includes('dashboard:bridge-') ? `${keyPrefix}${params.idempotencyKey}` : `${keyPrefix}${++ordinal}`;
         const entry = { sessionId: randomUUID(), updatedAt: Date.now(), label: params.label, category: null, pluginOwnerId: 'command-center' };
         entries.set(key, entry);
         keysByIdempotency.set(params.idempotencyKey, key);
@@ -166,6 +166,36 @@ test('Session creation preserves the pinned ownership refusal without inventing 
     } }
   });
   await assert.rejects(() => adapter.create({ logicalOperationId: randomUUID(), label: 'Refused Session' }), (error) => error.code === 'unavailable');
+  assert.deepEqual(metadata.refs, []);
+});
+
+test('Session adoption accepts the pinned create envelope only after exact catalog readback', async () => {
+  const metadata = metadataFixture();
+  const boundary = pluginSessionBoundary({ keyPrefix: 'agent:main:dashboard:bridge-fictional-' });
+  const logicalOperationId = randomUUID();
+  const created = await boundary.gateway.request('sessions.create', { agentId: 'main', label: 'Adopted Session', idempotencyKey: logicalOperationId });
+  const adapter = createSessionAdapter({ metadata, gateway: { async request(method, params) {
+    assert.equal(method, 'sessions.list');
+    return boundary.gateway.request(method, params);
+  } }, topicId: 'topic-adopted-session' });
+  const result = await adapter.create({ logicalOperationId, label: 'Adopted Session' }, { authoritativeSession: { key: created.key, sessionId: created.entry.sessionId, revision: String(created.entry.updatedAt), idempotencyKey: logicalOperationId, label: 'Adopted Session' } });
+  assert.equal(result.value.key, created.key);
+  assert.equal(result.value.sessionId, created.entry.sessionId);
+  assert.equal(metadata.refs.length, 1);
+});
+
+test('Session adoption refuses mismatched operation, label, and catalog identity without persistence', async () => {
+  const metadata = metadataFixture();
+  const boundary = pluginSessionBoundary({ keyPrefix: 'agent:main:dashboard:bridge-fictional-' });
+  const logicalOperationId = randomUUID();
+  const created = await boundary.gateway.request('sessions.create', { agentId: 'main', label: 'Exact Label', idempotencyKey: logicalOperationId });
+  const adapter = createSessionAdapter({ metadata, gateway: boundary.gateway, topicId: 'topic-refused-adoption' });
+  const envelope = { key: created.key, sessionId: created.entry.sessionId, revision: String(created.entry.updatedAt), idempotencyKey: logicalOperationId, label: 'Exact Label' };
+  await assert.rejects(() => adapter.create({ logicalOperationId: randomUUID(), label: 'Exact Label' }, { authoritativeSession: envelope }), (error) => error.code === 'intent-mismatch');
+  await assert.rejects(() => adapter.create({ logicalOperationId, label: 'Changed Label' }, { authoritativeSession: envelope }), (error) => error.code === 'intent-mismatch');
+  await assert.rejects(() => adapter.create({ logicalOperationId, label: 'Exact Label' }, { authoritativeSession: { ...envelope, sessionId: 'different-session' } }), (error) => error.code === 'conflict');
+  await assert.rejects(() => adapter.create({ logicalOperationId, label: 'Exact Label' }, { authoritativeSession: { ...envelope, key: 'agent:main:operator-owned' } }), (error) => error.code === 'source-recovery');
+  await assert.rejects(() => adapter.create({ logicalOperationId, label: 'Exact Label' }, { authoritativeSession: { ...envelope, key: 'agent:main:dashboard:bridge-fictional-different-operation' } }), (error) => error.code === 'intent-mismatch');
   assert.deepEqual(metadata.refs, []);
 });
 
