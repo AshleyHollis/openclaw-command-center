@@ -24,7 +24,7 @@ import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapU
 import { assertPerformanceObservationWithinBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
-import { createAcceptanceScenarioCoordinator, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
+import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice, runSequentialAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
 import { readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence } from '../src/acceptance-migration.mjs';
 
 const COMMITTED_SEARCH_PROJECTION_FILES = Object.freeze([
@@ -127,13 +127,6 @@ async function fetchWithDeadline(url, options = {}, label = 'HTTP operation', ti
     if (timedOut) throw new HarnessFailure('transport-timeout', `${label} exceeded its ${timeoutMs} ms deadline`);
     throw error;
   } finally { clearTimeout(timer); parentSignal?.removeEventListener('abort', abortFromParent); }
-}
-
-async function requireBoundedMutationResponse(response, label) {
-  const body = await response.json().catch(() => undefined);
-  const bodyKeys = body && typeof body === 'object' ? Object.keys(body).slice(0, 30) : [];
-  if (!response.ok) throw new Error(`${label} failed with status ${response.status}; bodyKeys=${JSON.stringify(bodyKeys)}`);
-  return { status: response.status, bodyKeys };
 }
 
 function routeGrant(config) {
@@ -808,9 +801,10 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.equal(initialCount, 1, 'fresh imported scale Topic must start with one authoritative Primary Conversation');
         for (let offset = initialCount; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
           const indexes = Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batch) => offset + batch);
-          await runSettledAcceptanceBatch(indexes, {
+          await runSequentialAcceptanceBatch(indexes, {
+            signal,
             identify: (index) => `fresh-scale-${index}`,
-            run: async (index) => requireBoundedMutationResponse(await fetchWithDeadline(`${scenarioWorld.gateway.url}/plugins/command-center/api/topic/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: `Fresh scale Conversation ${index}`, expectedRevision: scaleTopic.revision, logicalOperationId: randomUUID() }) }, 'fresh scale Session creation'), 'fresh scale Session creation')
+            run: async (index, _batchIndex, requestSignal) => requireBoundedMutationResponse(await fetchWithDeadline(`${scenarioWorld.gateway.url}/plugins/command-center/api/topic/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: scaleTopicId, label: `Fresh scale Conversation ${index}`, expectedRevision: scaleTopic.revision, logicalOperationId: releaseScaleConversationOperationId(index) }), signal: requestSignal }, 'fresh scale Session creation'), 'fresh scale Session creation', requestSignal)
           });
         }
         const sessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
@@ -1661,15 +1655,16 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       for (let offset = 1; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
         signal?.throwIfAborted();
         const indexes = Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => offset + batchIndex);
-        await withDeadline(`Session fixture batch ${Math.floor(offset / 10) + 1}`, () => runSettledAcceptanceBatch(indexes, {
+        await withDeadline(`Session fixture batch ${Math.floor(offset / 10) + 1}`, (batchSignal) => runSequentialAcceptanceBatch(indexes, {
+          signal: batchSignal,
           identify: (index) => `migrated-scale-${index}`,
-          run: async (index) => requireBoundedMutationResponse(await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/topic/actions`, {
+          run: async (index, _batchIndex, requestSignal) => requireBoundedMutationResponse(await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/topic/actions`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: RELEASE_SCALE_TOPIC_ID, label: `Fictional scale Conversation ${index}`, expectedRevision: scaleTopic.revision, logicalOperationId: releaseScaleConversationOperationId(index) }),
-            signal
-          }, 'plugin-scoped Session fixture creation'), 'plugin-scoped Session fixture creation')
-        }));
+            signal: requestSignal
+          }, 'plugin-scoped Session fixture creation'), 'plugin-scoped Session fixture creation', requestSignal)
+        }), EXTERNAL_OPERATION_TIMEOUT_MS, signal);
         reportProgress(testContext, 'fixture:session-batch', { completed: Math.min(offset + 10, RELEASE_FIXTURE_COUNTS.conversations), total: RELEASE_FIXTURE_COUNTS.conversations });
       }
       const seeded = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });

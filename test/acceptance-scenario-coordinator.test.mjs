@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAcceptanceScenarioCoordinator, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
+import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices, runSequentialAcceptanceBatch, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
 
 test('scenario coordinator records an early failure and still completes later independent siblings', async () => {
   const progress = [];
@@ -74,6 +74,82 @@ test('mutation batches wait for every concurrent operation before reporting boun
     assert.ok(error.failures[0].error.length <= 300);
     return true;
   });
+});
+
+test('release fixture mutations execute sequentially with explicit concurrency one', async () => {
+  let active = 0;
+  let peak = 0;
+  const started = [];
+  const completed = [];
+  const result = await runSequentialAcceptanceBatch([1, 2, 3], {
+    identify: (id) => `conversation-${id}`,
+    run: async (id) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      started.push(id);
+      await new Promise((resolve) => setImmediate(resolve));
+      completed.push(id);
+      active -= 1;
+      return id * 2;
+    }
+  });
+  assert.equal(peak, 1);
+  assert.deepEqual(started, [1, 2, 3]);
+  assert.deepEqual(completed, [1, 2, 3]);
+  assert.deepEqual(result, [2, 4, 6]);
+});
+
+test('cancelled sequential fixture mutation settles the active item and never starts later items', async () => {
+  const controller = new AbortController();
+  const started = [];
+  const batch = runSequentialAcceptanceBatch([1, 2, 3], {
+    signal: controller.signal,
+    identify: (id) => `conversation-${id}`,
+    run: async (id, _index, signal) => {
+      started.push(id);
+      await new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(new Error('sequential fixture deadline'));
+  await assert.rejects(batch, /sequential fixture deadline/u);
+  assert.deepEqual(started, [1]);
+});
+
+test('bounded mutation rejection reports status, body keys, and code without response content', async () => {
+  const privateContent = 'fictional private response detail';
+  await assert.rejects(
+    requireBoundedMutationResponse({ ok: false, status: 422, async json() { return { status: 'error', code: 'session-capacity', message: privateContent }; } }, 'Session fixture creation'),
+    (error) => {
+      assert.match(error.message, /status 422/u);
+      assert.match(error.message, /code=session-capacity/u);
+      assert.match(error.message, /bodyKeys=\["status","code","message"\]/u);
+      assert.doesNotMatch(error.message, new RegExp(privateContent, 'u'));
+      return true;
+    }
+  );
+});
+
+test('mutation response parsing cancels a deferred body and settles before later sequential items start', async () => {
+  const controller = new AbortController();
+  const started = [];
+  let cancelled = false;
+  const response = new Response(new ReadableStream({
+    start(stream) { stream.enqueue(new TextEncoder().encode('{"status":"pending"')); },
+    cancel() { cancelled = true; }
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+  const batch = runSequentialAcceptanceBatch([1, 2], {
+    signal: controller.signal,
+    run: async (item, _index, signal) => {
+      started.push(item);
+      return requireBoundedMutationResponse(response, 'deferred mutation response', signal);
+    }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(new Error('response body deadline'));
+  await assert.rejects(batch, /response body deadline/u);
+  assert.equal(cancelled, true);
+  assert.deepEqual(started, [1]);
 });
 
 test('bounded slices cancel and await cleanup below the controller inactivity boundary', async () => {
