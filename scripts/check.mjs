@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { assertDeclarativeMirror } from '../src/compatibility.mjs';
 import { build, distRoot } from '../src/build.mjs';
 import { scanRepositorySafety } from '../src/safety.mjs';
-import { validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
+import { validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { runIndependentCheckPhases } from './check-phases.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -33,7 +33,7 @@ if (!pluginManifest.configSchema || typeof pluginManifest.configSchema !== 'obje
 const buildReceipt = await build();
 await runIndependentCheckPhases([
   { id: 'performance-baseline', run: async () => {
-    const performanceBaseline = validateReleasePerformanceBaselineSeed(JSON.parse(await readFile(path.join(root, 'test', 'fixtures', 'release-performance-baseline.v1.json'), 'utf8')));
+    const performanceBaseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(path.join(root, 'test', 'fixtures', 'release-performance-baseline.v1.json'), 'utf8')));
     if (performanceBaseline.pluginBuildDigest !== `sha256:${buildReceipt.digest}`) throw new Error('Release performance baseline is not bound to the current plugin build digest');
   } },
   { id: 'generated-artifact-safety', run: async () => await scanRepositorySafety(root, { generated: [distRoot] }) }

@@ -8,11 +8,11 @@
     "executableDigest": "sha256:e7864937c006d7cc098417370661307694352bc8768482806f7b8064fb734b00",
     "contractDigest": "sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6"
   },
-  "pluginBuildDigest": "sha256:1fc0d2ed93955fa305157a2a526a8af75d0a0c2b84902373f619fafab940b12a",
+  "pluginBuildDigest": "sha256:ed05a64ee3c4270e3657f3ff7a1e04c41050c2da6813a8d8293d55adc70f26be",
   "browser": {
     "engine": "chromium",
     "playwrightVersion": "1.62.1",
-    "version": "evaluator-pinned-chromium"
+    "version": "151.0.7922.34"
   },
   "viewport": { "width": 1440, "height": 900 },
   "fixtureIdentity": "sha256:bfcec92b9d27f43d94018e4cb6114a3eff0fff847f49ffdbf96d0499bf6ccedf",
@@ -24,8 +24,34 @@
     "indexedNotes": 5000,
     "indexedConversationMessages": 5000
   },
+  "observations": {
+    "startupReadinessMs": 1943,
+    "dashboardLoadMs": 812,
+    "topicOpenCreateMs": 1367,
+    "chatSendMs": 944,
+    "conversationLifecycleMs": 2741,
+    "largeNoteLifecycleMs": 9128,
+    "indexedSearchMs": 1846,
+    "activityNextPageMs": 427,
+    "topicReviewApplyMs": 1538,
+    "mobileReflowMs": 693
+  },
+  "thresholds": {
+    "startupReadinessMs": 1943,
+    "dashboardLoadMs": 812,
+    "topicOpenCreateMs": 1367,
+    "chatSendMs": 944,
+    "conversationLifecycleMs": 2741,
+    "largeNoteLifecycleMs": 9128,
+    "indexedSearchMs": 1846,
+    "activityNextPageMs": 427,
+    "topicReviewApplyMs": 1538,
+    "mobileReflowMs": 693
+  },
   "capture": {
     "policy": "first-successful-pinned-harness-observation",
-    "successfulRunOrdinal": null
+    "successfulRunOrdinal": 1,
+    "identityDigest": "sha256:c349e46be56398a56213c872300f06ed70554e632942f9ab0074fcc874a153a3",
+    "observationsDigest": "sha256:236772be3c4f65215aafaa30f1b673a5149f050a7d0b903924bb99f465bca3d3"
   }
 }

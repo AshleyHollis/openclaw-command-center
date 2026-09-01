@@ -1,4 +1,4 @@
-import { RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from './performance-baseline.mjs';
+import { RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from './performance-baseline.mjs';
 
 export const ACCEPTANCE_REPORT_VERSION = 1;
 export const RELEASE_ROW_IDS = Object.freeze(['pinned-host-startup', 'desktop-primary-journey', 'mobile-accessibility-journey', 'scale-performance', 'degraded-bridge-grants', 'degraded-source-availability', 'recovery-only-compatibility', 'destructive-migration-restoration', 'privacy-artifact-output']);
@@ -6,6 +6,12 @@ export const FINALIZATION_PHASES = Object.freeze(['browser-close', 'host-stop', 
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const MAX_EVIDENCE_BYTES = 32_768;
+
+function deepFreeze(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const nested of Object.values(value)) deepFreeze(nested);
+  return Object.freeze(value);
+}
 
 function boundedError(error) {
   return String(error?.message || error || 'unknown failure')
@@ -30,7 +36,7 @@ function exactMap(value, expected, label) {
   for (const [key, expectedValue] of Object.entries(expected)) if (value[key] !== expectedValue) invalid(`${label}.${key} does not match the frozen identity`);
 }
 
-function validatePassedEvidence(id, evidence, buildDigest) {
+function validatePassedEvidence(id, evidence, buildDigest, performanceBaseline) {
   let encoded;
   try { encoded = JSON.stringify(evidence); } catch { invalid(`${id} is not serializable`); }
   if (!encoded || Buffer.byteLength(encoded) > MAX_EVIDENCE_BYTES) invalid(`${id} is empty or unbounded`);
@@ -72,9 +78,11 @@ function validatePassedEvidence(id, evidence, buildDigest) {
       exactMap(evidence.fixtureCounts, RELEASE_FIXTURE_COUNTS, `${id}.fixtureCounts`);
       closed(evidence.observations, RELEASE_MEASUREMENTS, `${id}.observations`);
       closed(evidence.thresholds, RELEASE_MEASUREMENTS, `${id}.thresholds`);
+      exactMap(evidence.thresholds, performanceBaseline.thresholds, `${id}.thresholds`);
       for (const metric of RELEASE_MEASUREMENTS) {
         const observed = evidence.observations[metric];
-        if (typeof observed !== 'number' || !Number.isFinite(observed) || observed <= 0 || evidence.thresholds[metric] !== Math.max(1, Math.ceil(observed))) invalid(`${id}.${metric} is not an exact first-observation ceiling`);
+        const threshold = evidence.thresholds[metric];
+        if (typeof observed !== 'number' || !Number.isFinite(observed) || observed <= 0 || !Number.isSafeInteger(threshold) || threshold < 1 || observed > threshold) invalid(`${id}.${metric} exceeds its immutable first-observation ceiling`);
       }
       closed(evidence.activityPage, ['firstPageCount', 'secondPageCount', 'unique', 'orderPreserved'], `${id}.activityPage`);
       if (evidence.activityPage.firstPageCount !== 50 || evidence.activityPage.secondPageCount !== 1) invalid(`${id}.activityPage is incomplete`);
@@ -125,6 +133,28 @@ function validatePassedEvidence(id, evidence, buildDigest) {
     }
     default: invalid(`unknown row ${id}`);
   }
+}
+
+function validateStoredAcceptanceReport(report) {
+  closed(report, ['schemaVersion', 'buildDigest', 'outcome', 'performanceBaseline', 'rows', 'finalization'], 'report');
+  if (report.schemaVersion !== ACCEPTANCE_REPORT_VERSION) invalid('report.schemaVersion is unsupported');
+  if (typeof report.buildDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(report.buildDigest)) invalid('report.buildDigest is invalid');
+  const baseline = validateReleasePerformanceBaseline(report.performanceBaseline);
+  if (baseline.pluginBuildDigest !== `sha256:${report.buildDigest}`) invalid('report.performanceBaseline is not bound to the exact build digest');
+  if (!Array.isArray(report.rows) || report.rows.length !== RELEASE_ROW_IDS.length || report.rows.some((row, index) => row.id !== RELEASE_ROW_IDS[index])) invalid('report.rows are not in canonical order');
+  for (const row of report.rows) {
+    closed(row, row.outcome === 'passed' ? ['id', 'outcome', 'evidence'] : ['id', 'outcome', 'error'], `row.${row.id}`);
+    if (row.outcome === 'passed') validatePassedEvidence(row.id, row.evidence, report.buildDigest, baseline);
+    else if (row.outcome !== 'failed' || typeof row.error !== 'string' || row.error.length < 1 || row.error.length > 300) invalid(`row.${row.id} has an invalid failure`);
+  }
+  if (!Array.isArray(report.finalization) || report.finalization.length !== FINALIZATION_PHASES.length || report.finalization.some((entry, index) => entry.phase !== FINALIZATION_PHASES[index])) invalid('report.finalization is not in canonical order');
+  for (const entry of report.finalization) {
+    closed(entry, entry.outcome === 'passed' ? ['phase', 'outcome'] : ['phase', 'outcome', 'error'], `finalization.${entry.phase}`);
+    if (entry.outcome !== 'passed' && (entry.outcome !== 'failed' || typeof entry.error !== 'string' || entry.error.length < 1 || entry.error.length > 300)) invalid(`finalization.${entry.phase} has an invalid outcome`);
+  }
+  const expectedOutcome = report.rows.every((row) => row.outcome === 'passed') && report.finalization.every((entry) => entry.outcome === 'passed') ? 'passed' : 'failed';
+  if (report.outcome !== expectedOutcome) invalid('report.outcome does not match its evidence');
+  return deepFreeze(report);
 }
 
 class RowCancellationFailure extends Error {}
@@ -204,12 +234,14 @@ export async function runAcceptanceRows(rows, { timeoutMs = 120_000, cleanupTime
   return Object.freeze(results);
 }
 
-export function createAcceptanceReport({ buildDigest, rows, finalization }) {
+export function createAcceptanceReport({ buildDigest, rows, finalization, performanceBaseline }) {
   if (typeof buildDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(buildDigest)) throw new TypeError('Acceptance report requires the exact build digest.');
+  const validatedBaseline = validateReleasePerformanceBaseline(performanceBaseline);
+  if (validatedBaseline.pluginBuildDigest !== `sha256:${buildDigest}`) throw new TypeError('Acceptance report baseline is not bound to the exact build digest.');
   if (!Array.isArray(rows) || rows.length !== RELEASE_ROW_IDS.length || rows.some((row, index) => row.id !== RELEASE_ROW_IDS[index])) throw new TypeError('Acceptance report requires all release rows in canonical order.');
   for (const row of rows) {
     closed(row, row.outcome === 'passed' ? ['id', 'outcome', 'evidence'] : ['id', 'outcome', 'error'], `row.${row.id}`);
-    if (row.outcome === 'passed') validatePassedEvidence(row.id, row.evidence, buildDigest);
+    if (row.outcome === 'passed') validatePassedEvidence(row.id, row.evidence, buildDigest, validatedBaseline);
     else if (row.outcome !== 'failed' || typeof row.error !== 'string' || row.error.length > 300) invalid(`row.${row.id} has an invalid failure`);
   }
   if (!Array.isArray(finalization) || finalization.length !== FINALIZATION_PHASES.length || finalization.some((entry, index) => entry.phase !== FINALIZATION_PHASES[index])) throw new TypeError('Acceptance report requires every finalization phase in canonical order.');
@@ -218,12 +250,13 @@ export function createAcceptanceReport({ buildDigest, rows, finalization }) {
     return Object.freeze({ phase, outcome: error ? 'failed' : 'passed', ...(error ? { error: boundedError(error) } : {}) });
   });
   const passed = rows.every((row) => row.outcome === 'passed') && finalizationResults.every((result) => result.outcome === 'passed');
-  return Object.freeze({ schemaVersion: ACCEPTANCE_REPORT_VERSION, buildDigest, outcome: passed ? 'passed' : 'failed', rows: Object.freeze([...rows]), finalization: Object.freeze(finalizationResults) });
+  return validateStoredAcceptanceReport({ schemaVersion: ACCEPTANCE_REPORT_VERSION, buildDigest, outcome: passed ? 'passed' : 'failed', performanceBaseline: structuredClone(validatedBaseline), rows: structuredClone(rows), finalization: structuredClone(finalizationResults) });
 }
 
 export function assertAcceptanceReportPassed(report) {
-  if (report.outcome !== 'passed') {
-    const failures = [...report.rows.filter((row) => row.outcome !== 'passed').map((row) => row.id), ...report.finalization.filter((row) => row.outcome !== 'passed').map((row) => row.phase)];
+  const validated = validateStoredAcceptanceReport(report);
+  if (validated.outcome !== 'passed') {
+    const failures = [...validated.rows.filter((row) => row.outcome !== 'passed').map((row) => row.id), ...validated.finalization.filter((row) => row.outcome !== 'passed').map((row) => row.phase)];
     throw new Error(`Release acceptance failed in: ${failures.join(', ')}`);
   }
   return true;

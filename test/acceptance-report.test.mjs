@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { assertAcceptanceReportPassed, createAcceptanceReport, FINALIZATION_PHASES, RELEASE_ROW_IDS, runAcceptanceRows } from '../src/acceptance-report.mjs';
-import { RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../src/performance-baseline.mjs';
+import { assertAcceptanceReportPassed, createAcceptanceReport as createAcceptanceReportBase, FINALIZATION_PHASES, RELEASE_ROW_IDS, runAcceptanceRows } from '../src/acceptance-report.mjs';
+import { captureFirstReleasePerformanceBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 
 const BUILD = 'a'.repeat(64);
 const observations = Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map((name, index) => [name, index + 0.25])));
 const thresholds = Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map((name) => [name, Math.ceil(observations[name])])));
+const performanceBaseline = captureFirstReleasePerformanceBaseline({ schemaVersion: 1, hostVersion: releasePerformanceIdentity.hostVersion, hostReceipt: releasePerformanceIdentity.hostReceipt, pluginBuildDigest: `sha256:${BUILD}`, browser: { engine: 'chromium', playwrightVersion: releasePerformanceIdentity.playwrightVersion, version: '151.0.7922.34' }, viewport: releasePerformanceIdentity.viewport, fixtureIdentity: RELEASE_FIXTURE_IDENTITY, fixtureCounts: RELEASE_FIXTURE_COUNTS, capture: { policy: 'first-successful-pinned-harness-observation', successfulRunOrdinal: null } }, observations);
+const createAcceptanceReport = (input) => createAcceptanceReportBase({ ...input, performanceBaseline: input.performanceBaseline ?? performanceBaseline });
 const finalization = () => FINALIZATION_PHASES.map((phase) => ({ phase }));
 
 function validEvidence(id) {
@@ -45,18 +47,20 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   const isolatedCompletion = source.indexOf("await Promise.all([...isolatedSlices.keys()]");
   const finalization = source.indexOf('const finalizationErrors = await finalizeAcceptanceJourney', isolatedCompletion);
   const privacyPreflight = source.indexOf('await scanRepositorySafety', finalization);
-  const baselineCapture = source.indexOf('candidateBaseline = captureFirstReleasePerformanceBaseline', privacyPreflight);
+  const baselineComparison = source.indexOf('for (const name of RELEASE_MEASUREMENTS) assertPerformanceObservationWithinBaseline', privacyPreflight);
   const reportRows = source.indexOf('const rows = await runAcceptanceRows', finalization);
   const reportValidation = source.indexOf('assertAcceptanceReportPassed(report)', reportRows);
   const capturedOutputScan = source.indexOf('scanPublicEvidence([JSON.stringify(report)', reportValidation);
-  const baselineCommit = source.indexOf('releaseState.baseline = baseline', capturedOutputScan);
-  assert.ok(isolatedCompletion > 0 && isolatedCompletion < finalization && finalization < privacyPreflight && privacyPreflight < baselineCapture && baselineCapture < reportRows && reportRows < reportValidation && reportValidation < capturedOutputScan && capturedOutputScan < baselineCommit, 'all isolated slices, finalization, privacy, report validation, and captured-output scanning must precede baseline commitment');
+  const baselineCommit = source.indexOf('releaseState.baseline = qualifiedBaseline', capturedOutputScan);
+  assert.ok(isolatedCompletion > 0 && isolatedCompletion < finalization && finalization < privacyPreflight && privacyPreflight < baselineComparison && baselineComparison < reportRows && reportRows < reportValidation && reportValidation < capturedOutputScan && capturedOutputScan < baselineCommit, 'all isolated slices, finalization, privacy, immutable baseline comparison, report validation, and captured-output scanning must precede baseline commitment');
+  assert.doesNotMatch(source, /captureFirstReleasePerformanceBaseline/u);
   assert.doesNotMatch(source, /const passed = await (?:testContext\.test|isolatedRunPromises)/u);
   assert.doesNotMatch(source, /withDeadline\(`isolated release slice/u);
   assert.match(source, /isolated-slice-timeout/u);
   assert.match(source, /signal\?\.addEventListener\('abort', abortCleanup/u);
   assert.match(source, /api\/topics\/actions`.*, \{ method: 'POST'/u);
   assert.match(source, /performanceBaseline: emittedBaseline/u);
+  assert.match(source, /browser\.version\(\), baseline\.browser\.version/u);
   assert.match(sessionSource, /overlapping Session creates preserve every distinct plugin-owned key/u);
   assert.match(bridgeSource, /registered Session create bridge preserves independent durable identities under reversed completion/u);
 });
@@ -132,6 +136,23 @@ test('release report binds closed evidence and finalization to one build digest'
   assert.equal(report.outcome, 'passed');
   assert.equal(assertAcceptanceReportPassed(report), true);
   assert.equal(report.rows.length, 9);
+  assert.equal(report.performanceBaseline.capture.identityDigest, performanceBaseline.capture.identityDigest);
+  assert.equal(Object.isFrozen(report.rows[3].evidence.thresholds), true);
+  assert.throws(() => { report.rows[3].evidence.thresholds.dashboardLoadMs += 1; }, /read only|Cannot assign/iu);
+  assert.equal(assertAcceptanceReportPassed(report), true);
+  const reloaded = JSON.parse(JSON.stringify(report));
+  assert.equal(assertAcceptanceReportPassed(reloaded), true);
+  assert.equal(Object.isFrozen(reloaded.rows[3].evidence.thresholds), true);
+  const widened = JSON.parse(JSON.stringify(report));
+  widened.rows[3].evidence.observations.dashboardLoadMs += 10;
+  widened.rows[3].evidence.thresholds.dashboardLoadMs += 10;
+  assert.throws(() => assertAcceptanceReportPassed(widened), /frozen identity/u);
+  const staleBuild = JSON.parse(JSON.stringify(report));
+  staleBuild.buildDigest = 'b'.repeat(64);
+  assert.throws(() => assertAcceptanceReportPassed(staleBuild), /exact build digest/u);
+  const forgedOutcome = JSON.parse(JSON.stringify(report));
+  forgedOutcome.rows[0] = { id: RELEASE_ROW_IDS[0], outcome: 'failed', error: 'fictional failure' };
+  assert.throws(() => assertAcceptanceReportPassed(forgedOutcome), /does not match its evidence/u);
   assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows: rows.slice(1), finalization: finalization() }), /all release rows/u);
   assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization().slice(1) }), /every finalization phase/u);
 });
@@ -140,6 +161,24 @@ test('release report rejects a different scale fixture identity', async () => {
   const rows = await validRows();
   rows.find((row) => row.id === 'scale-performance').evidence.fixtureIdentity = `sha256:${'b'.repeat(64)}`;
   assert.throws(() => createAcceptanceReport({ rows, buildDigest: BUILD, finalization: finalization() }), /fixtureIdentity/u);
+});
+
+test('release report accepts faster subsequent observations and rejects immutable-threshold regressions', async () => {
+  const fasterRows = await validRows();
+  const scale = fasterRows.find((row) => row.id === 'scale-performance').evidence;
+  scale.observations.dashboardLoadMs = Math.max(0.25, scale.thresholds.dashboardLoadMs - 0.5);
+  assert.equal(createAcceptanceReport({ rows: fasterRows, buildDigest: BUILD, finalization: finalization() }).outcome, 'passed');
+
+  const slowerRows = await validRows();
+  const slowerScale = slowerRows.find((row) => row.id === 'scale-performance').evidence;
+  slowerScale.observations.dashboardLoadMs = slowerScale.thresholds.dashboardLoadMs + 0.01;
+  assert.throws(() => createAcceptanceReport({ rows: slowerRows, buildDigest: BUILD, finalization: finalization() }), /immutable first-observation ceiling/u);
+
+  const widenedRows = await validRows();
+  const widenedScale = widenedRows.find((row) => row.id === 'scale-performance').evidence;
+  widenedScale.observations.dashboardLoadMs = widenedScale.thresholds.dashboardLoadMs + 10;
+  widenedScale.thresholds.dashboardLoadMs += 10;
+  assert.throws(() => createAcceptanceReport({ rows: widenedRows, buildDigest: BUILD, finalization: finalization() }), /frozen identity/u);
 });
 
 test('every passing release row rejects missing, open, stale, or unbounded evidence', async () => {

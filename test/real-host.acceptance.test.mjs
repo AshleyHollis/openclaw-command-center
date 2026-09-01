@@ -21,7 +21,7 @@ import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
 import { createAttentionService } from '../src/attention/service.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
-import { captureFirstReleasePerformanceBaseline, RELEASE_FIXTURE_COUNTS, releasePerformanceIdentity, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
+import { assertPerformanceObservationWithinBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
 import { createAcceptanceScenarioCoordinator, runSettledAcceptanceBatch } from '../src/acceptance-scenario-coordinator.mjs';
@@ -1316,6 +1316,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   const descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
   const buildReceipt = await withDeadline('candidate build', () => build(), 120_000);
   await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
+  const baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
+  assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
   reportProgress(testContext, 'build:passed');
   const isolatedEvidence = new Map();
   let isolatedActive = 0;
@@ -1485,7 +1487,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const browserGuard = new TrafficGuard();
     const evidence = { console: [], errors: [], requests: [], responses: [], bootstrapStatus: undefined, parentBootstrapBodyKeys: [], routeGrant: false, parentBootstrap: false, cookieProbe: false, cookieProbeStatus: undefined, frame: false, readinessAttempts: [] };
     const releaseState = { startup: false, desktop: undefined, mobile: undefined, restored: false, forgedMutationRejected: false, projectionRoot: undefined, baseline: undefined, activityPaged: false, reviewApplied: false, missingProjectionRebuilt: false, staleProjectionRebuilt: false, realizedScaleSeed };
-    let managedBrowser, browser, page, iframe, frame, baseline, candidateBaseline, baselineSeed, desktopJourney, scaleJourney, mobileJourney, reviewJourney, pluginDocument;
+    let managedBrowser, browser, page, iframe, frame, qualifiedBaseline, desktopJourney, scaleJourney, mobileJourney, reviewJourney, pluginDocument;
     let failure;
     const scenarioCoordinator = createAcceptanceScenarioCoordinator({
       execute: async (id, run) => {
@@ -1663,6 +1665,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.staleManifestPath = staleManifestPath;
       managedBrowser = await withDeadline('primary browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       browser = managedBrowser.browser;
+      assert.equal(browser.version(), baseline.browser.version, 'Running Chromium version must match the measured baseline identity');
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
       const parentBootstrap = observeBrowserResponse(
@@ -1728,10 +1731,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // Keep missing-projection recovery distinct: the next public journey
       // query must detect absence and perform its own closed POST rebuild.
       await Promise.all(COMMITTED_SEARCH_PROJECTION_FILES.map((name) => unlink(path.join(projectionRoot, name))));
-      baselineSeed = validateReleasePerformanceBaselineSeed(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
       releaseState.startup = true;
       releaseState.startupInteractiveMs = Math.max(1, Date.now() - startupInteractiveStartedAt);
-      assert.equal(baselineSeed.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant };
     });
     await collectScenario('desktop-primary-journey', async () => {
@@ -2145,11 +2146,12 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), redactBrowserEvidence(failure?.message || '')]);
       privacyEvidence = { schemaVersion: 1, repository: true, generated: true, capturedOutput: true, browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: finalizationErrors.length === 0 };
       if (scenarioFailures.length === 0 && finalizationErrors.length === 0) {
-        assert.ok(scaleJourney && mobileJourney && releaseState.reviewApplied, 'baseline capture requires every independently collected release phase');
-        assert.equal(isolatedEvidence.size, isolatedSlices.size, 'baseline capture requires every independent runtime slice');
+        assert.ok(scaleJourney && mobileJourney && releaseState.reviewApplied, 'baseline qualification requires every independently collected release phase');
+        assert.equal(isolatedEvidence.size, isolatedSlices.size, 'baseline qualification requires every independent runtime slice');
         scaleJourney.measurement.topicReviewApplyMs = releaseState.topicReviewApplyMs;
         scaleJourney.measurement.mobileReflowMs = mobileJourney.measurement.mobileReflowMs;
-        candidateBaseline = captureFirstReleasePerformanceBaseline(baselineSeed, scaleJourney.measurement);
+        for (const name of RELEASE_MEASUREMENTS) assertPerformanceObservationWithinBaseline(name, scaleJourney.measurement[name], baseline);
+        qualifiedBaseline = baseline;
       }
     } catch (error) {
       scenarioFailures.push({ id: 'release-preflight', error: new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || error)) });
@@ -2185,8 +2187,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         scenarioResult('scale-performance');
         assert.equal((await isolatedResult('fresh-scale')).assertionsCompleted, true);
         assert.deepEqual((await readdir(releaseState.projectionRoot)).sort(), COMMITTED_SEARCH_PROJECTION_FILES);
-        if (!candidateBaseline) throw new HarnessFailure('performance-baseline-pending', 'Performance baseline capture remains pending until every release preflight succeeds');
-        return { schemaVersion: 1, fixtureIdentity: candidateBaseline.fixtureIdentity, fixtureCounts: { ...candidateBaseline.fixtureCounts }, observations: { ...candidateBaseline.observations }, thresholds: { ...candidateBaseline.thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: releaseState.missingProjectionRebuilt, staleProjectionRebuilt: releaseState.staleProjectionRebuilt, indexedQuery: true } };
+        if (!qualifiedBaseline) throw new HarnessFailure('performance-baseline-unverified', 'Performance baseline comparison remains pending until every release preflight succeeds');
+        return { schemaVersion: 1, fixtureIdentity: qualifiedBaseline.fixtureIdentity, fixtureCounts: { ...qualifiedBaseline.fixtureCounts }, observations: { ...scaleJourney.measurement }, thresholds: { ...qualifiedBaseline.thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: releaseState.missingProjectionRebuilt, staleProjectionRebuilt: releaseState.staleProjectionRebuilt, indexedQuery: true } };
       } },
       { id: 'degraded-bridge-grants', run: async () => isolatedResult('degraded-bridge-grants') },
       { id: 'degraded-source-availability', run: async () => {
@@ -2222,7 +2224,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     ], { timeoutMs: 240_000, onProgress: ({ id, phase }) => reportProgress(testContext, `row:${id}:${phase}`) });
     assert.deepEqual(rows.map((row) => row.id), RELEASE_ROW_IDS);
     const finalizationPhases = ['browser-close', 'host-stop', 'browser-traffic', 'host-traffic', 'child-traffic', 'build-digest'].map((phase) => ({ phase, error: finalizationErrors.find((entry) => entry.phase === phase)?.error }));
-    const report = createAcceptanceReport({ buildDigest: buildReceipt.digest, rows, finalization: finalizationPhases });
+    const report = createAcceptanceReport({ buildDigest: buildReceipt.digest, rows, finalization: finalizationPhases, performanceBaseline: baseline });
     if (!failure && finalizationErrors.length > 0) failure = finalizationErrors[0].error;
     let reportPassed = false;
     if (!failure) {
@@ -2239,13 +2241,12 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       acceptanceReport: report,
       failure: failure ? redactBrowserEvidence(failure.message || failure) : undefined
     };
-    try { scanPublicEvidence([JSON.stringify(report), JSON.stringify(diagnosticPayload), JSON.stringify(candidateBaseline)]); }
+    try { scanPublicEvidence([JSON.stringify(report), JSON.stringify(diagnosticPayload), JSON.stringify(qualifiedBaseline)]); }
     catch (error) { failure ??= error; }
     if (!failure && reportPassed) {
-      baseline = candidateBaseline;
-      emittedBaseline = baseline;
-      releaseState.baseline = baseline;
-      scenarioEvidence.set('performance-baseline-capture', { checkpointCount: Object.keys(baseline.observations).length, successfulRunOrdinal: baseline.capture.successfulRunOrdinal });
+      emittedBaseline = qualifiedBaseline;
+      releaseState.baseline = qualifiedBaseline;
+      scenarioEvidence.set('performance-baseline-comparison', { checkpointCount: Object.keys(qualifiedBaseline.observations).length, successfulRunOrdinal: qualifiedBaseline.capture.successfulRunOrdinal });
     }
     if (failure) {
       failure.diagnostics = { ...(failure.diagnostics || {}), ...diagnosticPayload };
