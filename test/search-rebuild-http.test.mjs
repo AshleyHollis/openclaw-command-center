@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import test from 'node:test';
 import { createSearchRebuildHttpHandler, searchRebuildRoute } from '../src/search/http-route.mjs';
 
@@ -32,4 +33,26 @@ test('public search rebuild rejects non-canonical identities and non-opaque orig
   const service = { async searchRebuild() { throw new Error('must not run'); } };
   assert.equal((await invoke(service, { body: { schemaVersion: 1, topicId: 'topic', logicalOperationId: randomUUID() } })).statusCode, 400);
   assert.equal((await invoke(service, { headers: { 'content-type': 'application/json', origin: 'https://fictional.invalid' }, body: { schemaVersion: 1, topicId, logicalOperationId: randomUUID() } })).statusCode, 403);
+});
+
+test('public search rebuild reads the pinned host IncomingMessage body stream', async () => {
+  const logicalOperationId = randomUUID();
+  const calls = [];
+  const request = Readable.from([JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId })]);
+  request.method = 'POST';
+  request.headers = { 'content-type': 'application/json' };
+  const response = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(value) { this.body = value; } };
+  await createSearchRebuildHttpHandler({ async searchRebuild(input) { calls.push(input); return { topicIds: [topicId] }; } })(request, response);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(calls, [{ schemaVersion: 1, topicId, logicalOperationId }]);
+});
+
+test('public search rebuild accepts a bounded body buffer supplied by host middleware', async () => {
+  const logicalOperationId = randomUUID();
+  const calls = [];
+  const applied = await invoke({ async searchRebuild(input) { calls.push(input); return { topicIds: [topicId] }; } }, {
+    body: Buffer.from(JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId }))
+  });
+  assert.equal(applied.statusCode, 200);
+  assert.deepEqual(calls, [{ schemaVersion: 1, topicId, logicalOperationId }]);
 });

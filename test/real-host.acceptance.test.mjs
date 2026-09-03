@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, copyFile, cp, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, cp, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -7,6 +7,7 @@ import test from 'node:test';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import 'playwright-core';
+import { fetchWithRuntimeDispatcher as fetch } from 'openclaw/plugin-sdk/runtime-fetch';
 import { finalizeAcceptanceJourney } from '../src/acceptance-finalization.mjs';
 import { assertAcceptanceReportPassed, createAcceptanceReport, RELEASE_ROW_IDS, runAcceptanceRows } from '../src/acceptance-report.mjs';
 import { hasSuccessfulBrowserResponse, observeBrowserResponse, observedBrowserResponseStatus, recordBounded } from '../src/browser-evidence.mjs';
@@ -21,7 +22,7 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
-import { assertPerformanceObservationWithinBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
+import { assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
 import { collectSequentialAcceptanceBatch, createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice } from '../src/acceptance-scenario-coordinator.mjs';
@@ -32,6 +33,9 @@ const acceptanceSignalContext = new AsyncLocalStorage();
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
+const READY_CAPABILITIES = Object.freeze(Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'analysis', 'attention', 'search'].map((name) => [name, true])));
+const capturePerformanceBaseline = process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE === '1';
+const capturedPerformanceBaselinePath = '/tmp/command-center-release-performance-baseline.v1.json';
 
 function releaseScaleConversationOperationId(index) {
   assert.ok(Number.isInteger(index) && index > 0 && index < RELEASE_FIXTURE_COUNTS.conversations);
@@ -85,7 +89,7 @@ function delayWithSignal(delayMs, signal) {
 }
 
 async function launchManagedBrowser(options) {
-  const server = await chromium.launchServer(options);
+  const server = await chromium.launchServer({ ...options, args: ['--no-proxy-server', ...(options?.args ?? [])] });
   try {
     const browser = await chromium.connect(server.wsEndpoint());
     return { browser, server, close: async () => { await browser.close(); await server.close().catch(() => {}); } };
@@ -167,10 +171,14 @@ async function waitForNotificationEmission(databasePath, { attempts = 100, statu
   throw new HarnessFailure('notification-reconciliation-timeout', `Closed-tab notification emission did not reach durable ${status} state`);
 }
 
-async function mountedPluginFrame(page, pluginDocument) {
+async function mountedPluginFrame(page, pluginDocument, evidence) {
   const iframe = page.locator('iframe.plugin-tab-embed__frame');
   try {
     await iframe.waitFor({ state: 'attached', timeout: 10_000 });
+    await page.waitForFunction(() => {
+      const candidate = document.querySelector('iframe.plugin-tab-embed__frame');
+      return candidate?.getAttribute('sandbox') === 'allow-scripts' && typeof candidate.getAttribute('srcdoc') === 'string' && candidate.getAttribute('srcdoc').length > 0;
+    }, undefined, { timeout: 10_000 });
   } catch {
     throw new HarnessFailure('missing-plugin-frame', 'Command Center external tab did not attach its iframe');
   }
@@ -182,11 +190,48 @@ async function mountedPluginFrame(page, pluginDocument) {
   }
   const body = await pluginDocument.value.body();
   if (body.byteLength === 0 || body.byteLength > 2_000_000) throw new HarnessFailure('plugin-document-mismatch', 'Command Center plugin document response was empty or unbounded');
-  const handle = await iframe.elementHandle();
-  const frame = await handle?.contentFrame();
-  if (!frame) throw new HarnessFailure('missing-plugin-frame', 'Command Center external tab iframe had no attached document');
-  if (frame.url() !== 'about:srcdoc') throw new HarnessFailure('plugin-frame-url-mismatch', 'Command Center capability frame was not mounted through the pinned host srcdoc boundary');
-  await frame.waitForFunction(() => Boolean(window.CommandCenterTopics && window.CommandCenterSearch), undefined, { timeout: 10_000 });
+  const srcdoc = await iframe.getAttribute('srcdoc');
+  const src = await iframe.getAttribute('src');
+  if (typeof srcdoc !== 'string' || srcdoc.length === 0 || srcdoc.length > 2_100_000 || (src !== null && src !== '')) throw new HarnessFailure('plugin-frame-url-mismatch', `Command Center capability frame was not mounted through the pinned host srcdoc boundary (srcdocLength=${typeof srcdoc === 'string' ? srcdoc.length : -1}; directSrc=${src !== null && src !== ''})`);
+  let frame;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const handle = await iframe.elementHandle();
+    const candidate = await handle?.contentFrame();
+    if (candidate) {
+      try {
+        if (await candidate.evaluate(() => Boolean(window.CommandCenterTopics && window.CommandCenterSearch))) {
+          frame = candidate;
+          break;
+        }
+      } catch {
+        // The host may replace the srcdoc browsing context while binding its
+        // authenticated MessagePort. Reacquire the current frame on retry.
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!frame) {
+    const handle = await iframe.elementHandle();
+    const currentFrame = await handle?.contentFrame();
+    if (!currentFrame) throw new HarnessFailure('missing-plugin-frame', 'Command Center external tab iframe had no attached document');
+    const state = await currentFrame.evaluate(() => ({
+      readyState: document.readyState,
+      scriptPaths: Array.from(document.scripts, (script) => {
+        try { return new URL(script.src, document.baseURI).pathname; } catch { return ''; }
+      }).filter(Boolean).slice(0, 10),
+      hasTopics: Boolean(window.CommandCenterTopics),
+      hasSearch: Boolean(window.CommandCenterSearch),
+      hasMarkdown: Boolean(window.CommandCenterMarkdown),
+      scriptLengths: Array.from(document.scripts, (script) => script.textContent?.length ?? 0),
+      bodyChildren: document.body?.children.length ?? -1
+    }));
+    const recentErrors = Array.isArray(evidence?.errors) ? evidence.errors.slice(-5) : [];
+    const recentConsole = Array.isArray(evidence?.console) ? evidence.console.slice(-5) : [];
+    const shellResponses = Array.isArray(evidence?.responses)
+      ? evidence.responses.filter((entry) => typeof entry === 'string' && entry.includes('/plugins/command-center')).slice(-10)
+      : [];
+    throw new HarnessFailure('plugin-script-timeout', `Command Center script did not publish its bounded shell markers: ${JSON.stringify({ state, recentErrors, recentConsole, shellResponses })}`);
+  }
   const provenance = await frame.evaluate(async () => {
     await Promise.all([window.CommandCenterTopics.ready, window.CommandCenterSearch.ready]);
     return {
@@ -239,23 +284,25 @@ async function waitForCommittedSearchProjections(projectionRoot, { attempts = 10
   throw new HarnessFailure('search-rebuild-timeout', 'Search rebuild did not publish an integrity-checked committed projection set');
 }
 
-async function rebuildSearchThroughAuthenticatedPost({ gatewayUrl, topicId, signal, label }) {
+async function rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential, topicId, signal, label }) {
+  const logicalOperationId = randomUUID();
+  await requestAuthenticatedGateway({ gatewayUrl, credential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.search.prepare-rebuild', params: { schemaVersion: 1, topicId, logicalOperationId }, responseTimeoutMs: 180_000, signal });
   const response = await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/search/rebuild`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId: randomUUID() }),
+    body: JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId }),
     signal
-  }, label, 60_000);
-  assert.equal(response.status, 200);
+  }, label, 180_000);
   const body = await response.json();
+  assert.equal(response.status, 200, `${label} returned ${response.status} (${body?.code ?? 'unknown'})`);
   assert.equal(body?.status, 'applied');
   assert.equal(body?.result?.topicId, topicId);
   return body;
 }
 
 async function verifyReleaseSearchResults({ gatewayUrl, credential, projectionRoot, signal }) {
-  const notesResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, query: 'Fictional scale search phrase', limit: 50 }, signal });
-  const conversationsResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, query: 'Fictional indexed conversation phrase', limit: 50 }, signal });
+  const notesResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, query: 'Fictional scale search phrase', limit: 50 }, responseTimeoutMs: 60_000, signal });
+  const conversationsResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, query: 'Fictional indexed conversation phrase', limit: 50 }, responseTimeoutMs: 60_000, signal });
   const notes = (notesResponse?.result ?? notesResponse)?.notes?.results ?? [];
   const conversations = (conversationsResponse?.result ?? conversationsResponse)?.conversations?.results ?? [];
   assert.equal(notes.length, 50);
@@ -288,7 +335,7 @@ async function verifyReleaseSearchResults({ gatewayUrl, credential, projectionRo
   assert.equal(messageIds.size, conversations.length);
   assert.equal(sessionReferences.size, 1, 'all imported scale messages must retain one exact authoritative Session binding');
 
-  const exactNoteResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, query: 'Fictional exact Note sentinel', limit: 50 }, signal });
+  const exactNoteResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, query: 'Fictional exact Note sentinel', limit: 50 }, responseTimeoutMs: 60_000, signal });
   const exactNotes = (exactNoteResponse?.result ?? exactNoteResponse)?.notes?.results ?? [];
   assert.deepEqual(exactNotes.map((result) => result.path), ['indexed-4242.md']);
   const exactNote = exactNotes[0];
@@ -298,7 +345,7 @@ async function verifyReleaseSearchResults({ gatewayUrl, credential, projectionRo
   assert.equal(authoritativeNote?.path, 'indexed-4242.md');
   assert.match(Buffer.from(authoritativeNote.contentBase64, 'base64').toString('utf8'), /Fictional exact Note sentinel\./u);
 
-  const exactConversationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, query: 'Fictional exact Conversation sentinel', limit: 50 }, signal });
+  const exactConversationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID, query: 'Fictional exact Conversation sentinel', limit: 50 }, responseTimeoutMs: 60_000, signal });
   const exactConversations = (exactConversationResponse?.result ?? exactConversationResponse)?.conversations?.results ?? [];
   assert.deepEqual(exactConversations.map((result) => result.messageId), ['fictional-scale-message-4242']);
   const exactConversation = exactConversations[0];
@@ -321,8 +368,22 @@ async function verifyReleaseSearchResults({ gatewayUrl, credential, projectionRo
 }
 
 async function restoreReleaseSearchBaseline({ gatewayUrl, credential, projectionRoot, signal, label }) {
-  await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: `${label} Alpha baseline rebuild` });
-  await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, topicId: RELEASE_SCALE_TOPIC_ID, signal, label: `${label} scale baseline rebuild` });
+  try {
+    await waitForCommittedSearchProjections(projectionRoot, {
+      attempts: 1200,
+      signal,
+      requiredTopicIds: [RELEASE_ALPHA_TOPIC_ID, RELEASE_SCALE_TOPIC_ID],
+      expectedTopicRowCounts: {
+        notes: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedNotes },
+        conversations: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
+      }
+    });
+    return verifyReleaseSearchResults({ gatewayUrl, credential, projectionRoot, signal });
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error?.category !== 'search-rebuild-timeout') throw error;
+  }
+  await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: `${label} Alpha baseline rebuild` });
   return verifyReleaseSearchResults({ gatewayUrl, credential, projectionRoot, signal });
 }
 
@@ -349,24 +410,25 @@ async function prepareRestoredRuntimeState(stateDir, topicId) {
     seed.exec(metadataSchemaV1Sql);
     seed.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(topicId, 'area', 'active', '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z');
   } finally { seed.close(); }
-  const migrated = openCommandCenterMetadataService({ stateDir });
+  const migrated = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
   try { assert.equal(migrated.getOperatingStatus().mode, 'ready'); }
   finally { migrated.close(); }
   const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(stateDir);
   const manifest = JSON.parse(await readFile(path.join(recoveryDirectory, 'manifest.json'), 'utf8'));
   const currentBytes = await readFile(databasePath);
-  const verifier = openCommandCenterMetadataService({ stateDir });
+  const verifier = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
   try {
     const verification = verifier.verifyRollbackSnapshot({ snapshotId: manifest.snapshotId, priorRelease: expectedRollbackRelease(stateDir) });
     assert.equal(verification.snapshotId, manifest.snapshotId);
   } finally { verifier.close(); }
   await copyFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot'), databasePath);
-  const restored = openCommandCenterMetadataService({ stateDir });
+  const restored = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
   try {
     assert.equal(restored.getOperatingStatus().mode, 'recovery-only');
   } finally { restored.close(); }
+  await chmod(databasePath, 0o600);
   await writeFile(databasePath, currentBytes);
-  const revalidated = openCommandCenterMetadataService({ stateDir });
+  const revalidated = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
   try { assert.equal(revalidated.getOperatingStatus().mode, 'ready'); }
   finally { revalidated.close(); }
   return databasePath;
@@ -393,6 +455,7 @@ async function exerciseRestorationMatrix({ stateDir, descriptor, buildReceipt, w
   try {
   const interrupted = openCommandCenterMetadataService({
     stateDir,
+    capabilities: READY_CAPABILITIES,
     [migrationHooks]: { beforeCommit() { throw new Error('fictional before-commit interruption'); } }
   });
   assert.equal(interrupted.getOperatingStatus().mode, 'recovery-only');
@@ -400,10 +463,13 @@ async function exerciseRestorationMatrix({ stateDir, descriptor, buildReceipt, w
   assert.deepEqual(await readFile(databasePath), beforeInterruptedMigration, 'pre-commit destructive migration failure must preserve exact database bytes');
   const afterCommitState = `${stateDir}-after-commit`;
   await seedV1(afterCommitState, 'fictional-after-commit-topic');
-  assert.throws(() => openCommandCenterMetadataService({
+  const interruptedAfterCommit = openCommandCenterMetadataService({
     stateDir: afterCommitState,
+    capabilities: READY_CAPABILITIES,
     [migrationHooks]: { afterDatabaseCommit() { throw new Error('fictional post-commit interruption'); } }
-  }), /fictional post-commit interruption/iu);
+  });
+  assert.equal(interruptedAfterCommit.getOperatingStatus().mode, 'recovery-only');
+  interruptedAfterCommit.close();
   const afterCommitDatabase = resolveCommandCenterDatabasePath(afterCommitState);
   const afterCommitRecovery = resolveCommandCenterRecoveryMigrationPath(afterCommitState);
   const committedBytes = await readFile(afterCommitDatabase);
@@ -411,7 +477,7 @@ async function exerciseRestorationMatrix({ stateDir, descriptor, buildReceipt, w
   const committedManifest = JSON.parse(await readFile(path.join(afterCommitRecovery, 'manifest.json'), 'utf8'));
   const committedRecoveryEntries = (await readdir(afterCommitRecovery)).sort();
   const committedSidecars = (await readdir(path.dirname(afterCommitDatabase))).filter((name) => name.startsWith(`${path.basename(afterCommitDatabase)}-`)).sort();
-  const reconciled = openCommandCenterMetadataService({ stateDir: afterCommitState });
+  const reconciled = openCommandCenterMetadataService({ stateDir: afterCommitState, capabilities: READY_CAPABILITIES });
   assert.equal(reconciled.getOperatingStatus().mode, 'ready');
   assert.equal(reconciled.getTopic('fictional-after-commit-topic').topicId, 'fictional-after-commit-topic');
   reconciled.close();
@@ -422,24 +488,25 @@ async function exerciseRestorationMatrix({ stateDir, descriptor, buildReceipt, w
   const reconciledManifest = JSON.parse(await readFile(path.join(afterCommitRecovery, 'manifest.json'), 'utf8'));
   assert.equal(reconciledManifest.snapshotId, committedManifest.snapshotId);
   assert.deepEqual(reconciledManifest.snapshot, committedManifest.snapshot);
-  const migrated = openCommandCenterMetadataService({ stateDir });
-  assert.equal(migrated.getOperatingStatus().mode, 'ready');
-  migrated.close();
   const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(stateDir);
   const manifest = JSON.parse(await readFile(path.join(recoveryDirectory, 'manifest.json'), 'utf8'));
+  const migrated = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
+  try {
+    assert.equal(migrated.getOperatingStatus().mode, 'ready');
+    const verification = migrated.verifyRollbackSnapshot({ snapshotId: manifest.snapshotId, priorRelease: expectedRollbackRelease(stateDir) });
+    assert.equal(verification.snapshotId, manifest.snapshotId);
+  } finally { migrated.close(); }
   const currentDatabase = `${databasePath}.current`;
   await copyFile(databasePath, currentDatabase);
   await copyFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot'), databasePath);
-  const restored = openCommandCenterMetadataService({ stateDir });
+  const restored = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
   try {
     assert.equal(restored.getOperatingStatus().mode, 'recovery-only');
     assert.throws(() => restored.createTopic({ topicId: 'blocked-before-validation', paraCategory: 'project', lifecycle: 'active' }), (error) => error.code === 'recovery-only');
-    const priorRelease = expectedRollbackRelease(stateDir);
-    const verification = restored.verifyRollbackSnapshot({ snapshotId: manifest.snapshotId, priorRelease });
-    assert.equal(verification.snapshotId, manifest.snapshotId);
   } finally { restored.close(); }
+  await chmod(databasePath, 0o600);
   await copyFile(currentDatabase, databasePath);
-  const validatedCurrent = openCommandCenterMetadataService({ stateDir });
+  const validatedCurrent = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
   try {
     validatedCurrent.createTopic({ topicId: 'validated-post-restore-topic', paraCategory: 'project', lifecycle: 'active' });
     assert.equal(validatedCurrent.getTopic('validated-post-restore-topic').topicId, 'validated-post-restore-topic');
@@ -515,7 +582,7 @@ async function assertPluginFrameUnavailable({ world, label }) {
 async function exerciseDegradedSourceRow({ descriptor, buildReceipt, combined = false, signal }) {
   return withIsolatedWorld(async (sourceWorld) => {
     const stateDir = path.join(sourceWorld.root, '.openclaw');
-    const seeded = openCommandCenterMetadataService({ stateDir });
+    const seeded = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
     try { seeded.createTopic({ topicId: 'fictional-source-degraded-topic', paraCategory: 'resource', lifecycle: 'active' }); }
     finally { seeded.close(); }
     const config = JSON.parse(await readFile(sourceWorld.manifest.configPath, 'utf8'));
@@ -683,7 +750,7 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
       assert.ok(safeRead && typeof safeRead === 'object');
       const blockedRecoveryOperationId = randomUUID();
       await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, topicId: randomUUID(), name: 'Blocked Recovery Topic', paraCategory: 'resource', logicalOperationId: blockedRecoveryOperationId, authoritativeSession: { key: 'agent:main:blocked-recovery', sessionId: 'blocked-recovery-session', revision: '1', idempotencyKey: blockedRecoveryOperationId, label: 'Blocked Recovery Topic' } } }), /recovery-only/iu);
-      assert.equal(releasePerformanceIdentity.hostReceipt.commit, '6d542e6a0c5743a22a19c3226e754bf94cbf35b1', 'the launched runtime must be the controller-pinned compatible host, not the older recovery tuple');
+      assert.equal(releasePerformanceIdentity.hostReceipt.commit, '19686a23834910173df0fd1f77bd762ffcda2afd', 'the launched runtime must be the controller-pinned compatible host, not the older recovery tuple');
       assert.equal(runtimeCapability.schemaVersion, 1, 'the active bootstrap must expose the supported bridge protocol');
       const recoveryDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try { assert.equal(recoveryDatabase.prepare('PRAGMA user_version').get().user_version, 99); }
@@ -703,14 +770,15 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
 
 async function exerciseSecureHostVariant({ descriptor, buildReceipt, signal }) {
   return withIsolatedWorld(async (secureWorld) => {
-    const config = JSON.parse(await readFile(secureWorld.manifest.configPath, 'utf8'));
-    config.gateway.tls = { enabled: true, autoGenerate: true };
-    await writeFile(secureWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
-    const secureHost = await withDeadline('secure-origin host launch', (launchSignal) => launchPinnedHost({ descriptor, world: secureWorld, buildReceipt, signal: launchSignal }), 120_000, signal);
-    const removeAbortCleanup = stopHostOnAbort(signal, secureHost);
     const numericSecureUrl = new URL(secureWorld.gateway.url.replace(/^http:/u, 'https:'));
     const fictionalTailnetHost = 'command-center.fictional.ts.net';
     const secureUrl = `https://${fictionalTailnetHost}:${numericSecureUrl.port}`;
+    const config = JSON.parse(await readFile(secureWorld.manifest.configPath, 'utf8'));
+    config.gateway.tls = { enabled: true, autoGenerate: true };
+    config.gateway.controlUi = { allowedOrigins: [secureUrl] };
+    await writeFile(secureWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
+    const secureHost = await withDeadline('secure-origin host launch', (launchSignal) => launchPinnedHost({ descriptor, world: secureWorld, buildReceipt, signal: launchSignal }), 120_000, signal);
+    const removeAbortCleanup = stopHostOnAbort(signal, secureHost);
     let managedBrowser;
     let browser;
     const secureBrowserGuard = new TrafficGuard();
@@ -853,7 +921,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       config.plugins.entries['command-center'].config.legacyDiscordMigration = { schemaVersion: 1, exportPath, channels: [{ channelId: 'fictional-fresh-scale-channel', topicId: scaleTopicId, paraCategory: 'resource', noteFolderPath: migrationFolder }] };
       await writeFile(scenarioWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
       const stateDir = path.join(scenarioWorld.root, '.openclaw');
-      const activity = openCommandCenterMetadataService({ stateDir });
+      const activity = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
       try {
         activity.createTopic({ topicId: 'fictional-fresh-scale-activity', paraCategory: 'resource', lifecycle: 'active' });
         for (let index = 0; index < RELEASE_FIXTURE_COUNTS.activityRecords; index += 1) {
@@ -921,8 +989,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
 
         await Promise.all(COMMITTED_SEARCH_PROJECTION_FILES.map((name) => unlink(path.join(scaleProjectionRoot, name))));
         assert.deepEqual(await readdir(scaleProjectionRoot), [], 'fresh scale query must begin with a missing disposable projection');
-        const missingRebuild = await fetchWithDeadline(`${scenarioWorld.gateway.url}/plugins/command-center/api/search/rebuild`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, topicId: scaleTopicId, logicalOperationId: randomUUID() }) }, 'fresh missing Search projection rebuild', 60_000);
-        assert.equal(missingRebuild.status, 200);
+        await rebuildSearchThroughAuthenticatedPost({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: scaleTopicId, signal, label: 'fresh missing Search projection rebuild' });
         await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: scaleTopicId, query: 'Fictional indexed scale phrase', limit: 50 } });
         await waitForCommittedSearchProjections(scaleProjectionRoot);
         const notesProjection = new DatabaseSync(path.join(scaleProjectionRoot, 'topic-search-notes.sqlite'), { readOnly: true });
@@ -935,8 +1002,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const staleManifest = JSON.parse(await readFile(staleManifestPath, 'utf8'));
         await writeFile(staleManifestPath, `${JSON.stringify({ ...staleManifest, generation: 'fictional-fresh-stale-generation' })}\n`);
         await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: scaleTopicId, query: 'Fictional indexed scale phrase', limit: 50 } }), /capability-unavailable|projection/iu);
-        const staleRebuild = await fetchWithDeadline(`${scenarioWorld.gateway.url}/plugins/command-center/api/search/rebuild`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, topicId: scaleTopicId, logicalOperationId: randomUUID() }) }, 'fresh stale Search projection rebuild', 60_000);
-        assert.equal(staleRebuild.status, 200);
+        await rebuildSearchThroughAuthenticatedPost({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: scaleTopicId, signal, label: 'fresh stale Search projection rebuild' });
         await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: scaleTopicId, query: 'Fictional indexed scale phrase', limit: 50 } });
         await waitForCommittedSearchProjections(scaleProjectionRoot);
         const repairedManifest = JSON.parse(await readFile(staleManifestPath, 'utf8'));
@@ -1010,7 +1076,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
   }, { candidateRoot: process.cwd() });
 }
 
-async function requestAuthenticatedGateway({ gatewayUrl, credential, method, params = {}, scopes = ['operator.read'], signal }) {
+async function requestAuthenticatedGateway({ gatewayUrl, credential, method, params = {}, scopes = ['operator.read'], responseTimeoutMs = 10_000, signal }) {
   signal ??= acceptanceSignalContext.getStore();
   signal?.throwIfAborted();
   const socket = new WebSocket(gatewayUrl.replace(/^http/u, 'ws'));
@@ -1052,8 +1118,11 @@ async function requestAuthenticatedGateway({ gatewayUrl, credential, method, par
     if (!connected.ok) throw new Error(`Authenticated Gateway connect failed: ${connected.error?.code ?? 'unknown'}`);
     const requestId = `command-center-acceptance-${randomUUID()}`;
     socket.send(JSON.stringify({ type: 'req', id: requestId, method, params }));
-    const response = await waitForFrame((frame) => frame?.type === 'res' && frame.id === requestId);
-    if (!response.ok) throw new Error(`Authenticated ${method} failed: ${response.error?.code ?? 'unknown'}`);
+    const response = await waitForFrame((frame) => frame?.type === 'res' && frame.id === requestId, responseTimeoutMs);
+    if (!response.ok) {
+      const detail = redactBrowserEvidence(response.error?.message ?? 'no bounded detail');
+      throw new Error(`Authenticated ${method} failed: ${response.error?.code ?? 'unknown'} (${detail})`);
+    }
     return response.payload;
   } finally { signal?.removeEventListener('abort', abortSocket); socket.close(); }
 }
@@ -1221,7 +1290,11 @@ async function chooseOption(locator, value, keyboard = false) {
 }
 
 async function submitFrameForm(frame, selector, keyboard = false) {
-  if (keyboard) await activate(frame.locator(`${selector} button[type="submit"]`), true);
+  if (keyboard) {
+    const form = frame.locator(selector);
+    assert.equal(await form.evaluate((node) => node.checkValidity()), true, `${selector} must be valid before keyboard submission`);
+    await activate(form.locator('button[type="submit"]'), true, 'Space');
+  }
   else await frame.locator(selector).evaluate((form) => form.requestSubmit());
 }
 
@@ -1561,14 +1634,16 @@ async function assertKeyboardAccessibility(frame, page) {
 }
 
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 900_000, concurrency: true }, async (testContext) => {
-  let descriptor, buildReceipt, baseline;
+  let descriptor, buildReceipt, baseline, baselineSeed;
   await testContext.test('release preparation: candidate build and authenticated descriptor', async () => {
     reportProgress(testContext, 'build:started');
     descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
     buildReceipt = await withDeadline('candidate build', () => build(), 120_000);
     await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
-    baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
-    assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
+    if (!capturePerformanceBaseline) {
+      baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
+      assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
+    }
     reportProgress(testContext, 'build:passed');
   });
   const isolatedEvidence = new Map();
@@ -1703,7 +1778,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       }
     };
     await writeFile(world.manifest.configPath, `${JSON.stringify(configured)}\n`);
-    const activityFixture = openCommandCenterMetadataService({ stateDir: resolvedStateDir });
+    const activityFixture = openCommandCenterMetadataService({ stateDir: resolvedStateDir, capabilities: READY_CAPABILITIES });
     try {
       activityFixture.createTopic({ topicId: RELEASE_ACTIVITY_TOPIC_ID, paraCategory: 'resource', lifecycle: 'active' });
       for (let index = 0; index < RELEASE_FIXTURE_COUNTS.activityRecords - 1; index += 1) {
@@ -1757,7 +1832,12 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         return result;
       },
       onProgress: ({ id, status }) => reportProgress(testContext, `scenario:${id}:${status}`),
-      normalizeFailure: (id, error) => new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || `Scenario ${id} failed without unbounded diagnostics`))
+      normalizeFailure: (id, error) => {
+        const message = redactBrowserEvidence(error?.message || `Scenario ${id} failed without bounded diagnostics`);
+        reportProgress(testContext, `scenario:${id}:failure`, { error: message });
+        process.stderr.write(`release-scenario-failure=${JSON.stringify({ schemaVersion: 1, id, error: message })}\n`);
+        return new HarnessFailure('release-row-failed', message);
+      }
     });
     const { failures: scenarioFailures, evidence: scenarioEvidence, collect: collectScenario } = scenarioCoordinator;
     const scenarioResult = (id) => {
@@ -1912,6 +1992,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         startupDatabase.close();
       }
       host.diagnostics.guard.assert('127.0.0.1', 'startup projection completion verification');
+      await restoreReleaseSearchBaseline({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal, label: 'startup' });
       await waitForCommittedSearchProjections(projectionRoot, {
         attempts: 1200,
         signal,
@@ -1942,8 +2023,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         /capability-unavailable|projection/iu
       );
       assert.deepEqual(captureSearchProjectionEvidence({ projectionRoot, metadataDatabasePath: databasePath }), before, 'invalidated read must remain side-effect free');
-      await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'invalidated Alpha Search projection rebuild' });
-      await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, topicId: RELEASE_SCALE_TOPIC_ID, signal, label: 'invalidated scale Search projection rebuild' });
+      await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'invalidated Alpha Search projection rebuild' });
       const verified = await verifyReleaseSearchResults({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal });
       assert.equal((await readdir(projectionRoot)).includes('.topic-search.invalidated.json'), false);
       return { recovered: true, rowCounts: verified.rowCounts };
@@ -1958,8 +2038,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         /capability-unavailable|projection/iu
       );
       assert.deepEqual(captureSearchProjectionEvidence({ projectionRoot, metadataDatabasePath: databasePath }), before, 'missing projection read must remain side-effect free');
-      await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'missing Alpha Search projection rebuild' });
-      await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, topicId: RELEASE_SCALE_TOPIC_ID, signal, label: 'missing scale Search projection rebuild' });
+      await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'missing Alpha Search projection rebuild' });
       const verified = await verifyReleaseSearchResults({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal });
       releaseState.missingProjectionRebuilt = true;
       return { recovered: true, rowCounts: verified.rowCounts };
@@ -2007,7 +2086,19 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.projectionRoot = projectionRoot;
       managedBrowser = await withDeadline('primary browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       browser = managedBrowser.browser;
-      assert.equal(browser.version(), baseline.browser.version, 'Running Chromium version must match the measured baseline identity');
+      if (capturePerformanceBaseline) {
+        baselineSeed = {
+          schemaVersion: 1,
+          hostVersion: releasePerformanceIdentity.hostVersion,
+          hostReceipt: releasePerformanceIdentity.hostReceipt,
+          pluginBuildDigest: `sha256:${buildReceipt.digest}`,
+          browser: { engine: 'chromium', playwrightVersion: releasePerformanceIdentity.playwrightVersion, version: browser.version() },
+          viewport: releasePerformanceIdentity.viewport,
+          fixtureIdentity: RELEASE_FIXTURE_IDENTITY,
+          fixtureCounts: RELEASE_FIXTURE_COUNTS,
+          capture: { policy: 'first-successful-pinned-harness-observation', successfulRunOrdinal: null }
+        };
+      } else assert.equal(browser.version(), baseline.browser.version, 'Running Chromium version must match the measured baseline identity');
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
       const parentBootstrap = observeBrowserResponse(
@@ -2055,7 +2146,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.cookieProbeStatus = observedBrowserResponseStatus(observedCookieProbe);
       evidence.cookieProbe = hasSuccessfulBrowserResponse(observedCookieProbe);
       if (!evidence.cookieProbe) throw new HarnessFailure('failed-cookie-probe', 'Sandbox cookie probe was not observed');
-      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
+      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       evidence.frame = true;
       const sandbox = await iframe.getAttribute('sandbox');
       if (sandbox !== 'allow-scripts') throw new HarnessFailure('sandbox-mismatch', 'External tab iframe is not scripts-only');
@@ -2080,7 +2171,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       );
       assert.equal(await readFile(staleManifestPath, 'utf8'), staleManifest, 'stale projection read must not repair the manifest');
       assert.deepEqual(captureSearchProjectionEvidence({ projectionRoot, metadataDatabasePath: databasePath }), before, 'stale projection read must remain side-effect free');
-      await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'stale Alpha Search projection rebuild' });
+      await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'stale Alpha Search projection rebuild' });
       const verified = await verifyReleaseSearchResults({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal });
       assert.notEqual(verified.generations['topic-search-notes'], 'fictional-stale-generation');
       releaseState.staleProjectionRebuilt = true;
@@ -2152,7 +2243,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await configureEvidencePage(page, browserGuard, evidence);
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
+      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       scaleJourney = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Scale Journey Topic', category: 'resource', keyboard: true, projectionRoot: releaseState.projectionRoot });
       scaleJourney.measurement.startupReadinessMs = releaseState.startupReadinessMs;
       const scaleSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
@@ -2266,7 +2357,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(routeGrant(reopenedConfig), true);
       assert.equal(evidence.revokedMutationRejected, true);
       assert.doesNotMatch(JSON.stringify(reopenedConfig), /tokenHash/iu);
-      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
+      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       assert.equal(await iframe.getAttribute('sandbox'), 'allow-scripts');
       await waitForDashboard(frame);
       const restoredTopic = frame.locator(`.topic-row[data-topic-id="${scaleJourney.topicId}"]`);
@@ -2368,7 +2459,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await configureEvidencePage(page, browserGuard, evidence);
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }), (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
+      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
       mobileJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional Mobile Journey Topic', category: 'project', keyboard: true });
       releaseState.mobile = mobileJourney;
@@ -2380,7 +2471,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       }
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.reload({ waitUntil: 'domcontentloaded' });
-      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
+      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await waitForDashboard(frame);
       const mobileCards = frame.locator('#attention-cards .attention-card').filter({ hasText: 'Fictional Keyboard' });
       await mobileCards.nth(1).waitFor({ state: 'visible' });
@@ -2428,7 +2519,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await configureEvidencePage(page, browserGuard, evidence);
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument));
+      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
       reviewJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional Review Journey Topic', category: 'area', keyboard: true });
       // These prompt responses seed two deterministic review proposals before
@@ -2537,8 +2628,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         assert.equal(isolatedEvidence.size, isolatedSlices.size, 'baseline qualification requires every independent runtime slice');
         scaleJourney.measurement.topicReviewApplyMs = releaseState.topicReviewApplyMs;
         scaleJourney.measurement.mobileReflowMs = mobileJourney.measurement.mobileReflowMs;
-        for (const name of RELEASE_MEASUREMENTS) assertPerformanceObservationWithinBaseline(name, scaleJourney.measurement[name], baseline);
-        qualifiedBaseline = baseline;
+        if (capturePerformanceBaseline) {
+          assert.ok(baselineSeed, 'baseline capture requires the launched browser identity');
+          qualifiedBaseline = captureFirstReleasePerformanceBaseline(baselineSeed, scaleJourney.measurement);
+          baseline = qualifiedBaseline;
+        } else {
+          for (const name of RELEASE_MEASUREMENTS) assertPerformanceObservationWithinBaseline(name, scaleJourney.measurement[name], baseline);
+          qualifiedBaseline = baseline;
+        }
       }
     } catch (error) {
       scenarioFailures.push({ id: 'release-preflight', error: new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || error)) });
@@ -2652,6 +2749,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       emittedBaseline = qualifiedBaseline;
       releaseState.baseline = qualifiedBaseline;
       scenarioEvidence.set('performance-baseline-comparison', { checkpointCount: Object.keys(qualifiedBaseline.observations).length, successfulRunOrdinal: qualifiedBaseline.capture.successfulRunOrdinal });
+      if (capturePerformanceBaseline) await writeFile(capturedPerformanceBaselinePath, `${JSON.stringify(qualifiedBaseline, null, 2)}\n`, { flag: 'wx' });
     }
     if (failure) {
       failure.diagnostics = { ...(failure.diagnostics || {}), ...diagnosticPayload };

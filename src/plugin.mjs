@@ -95,6 +95,7 @@ export default definePluginEntry({
         if (property === 'analysisRunner') return service.topicAnalysisRunner;
         if (property === 'topicAnalysisRunner') return service.topicAnalysisRunner;
         if (property === 'searchRebuild') return (input) => service.searchRebuild(input);
+        if (property === 'searchPrepareRebuild') return (input, runtime) => service.searchPrepareRebuild(input, runtime);
         if (property === 'review') return service.topicReview;
         if (property === 'topicReview') return service.topicReview;
         return sourceProxy[property];
@@ -119,6 +120,7 @@ export default definePluginEntry({
           'command-center.v1.notes.browse',
           'command-center.v1.notes.read',
           'command-center.v1.search.query',
+          'command-center.v1.search.prepare-rebuild',
           'sessions.create',
           'ui.session.navigate'
         ],
@@ -128,7 +130,7 @@ export default definePluginEntry({
     for (const path of assets.keys()) {
       api.registerHttpRoute({
         path,
-        auth: 'gateway',
+        auth: path === pluginPath ? 'gateway' : 'plugin',
         match: 'exact',
         handler: serveShell
       });

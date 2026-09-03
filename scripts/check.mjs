@@ -23,9 +23,9 @@ if (pluginManifest.id !== 'command-center' || pluginManifest.controlUi?.routeId 
 if (pluginManifest.activation?.onStartup !== true) throw new Error('Route-registering plugin must activate at Gateway startup');
 if (pluginManifest.controlUi?.sandbox !== 'allow-scripts') throw new Error('Plugin must retain the scripts-only sandbox');
 if (!Array.isArray(packageJson.openclaw?.extensions) || !packageJson.openclaw.extensions.includes('./dist/plugin.mjs')) throw new Error('OpenClaw extension discovery must name the built plugin entry');
-const pinnedPackageVersion = '2026.8.1';
+const pinnedPackageVersion = '2026.8.2';
 if (packageJson.dependencies?.openclaw !== pinnedPackageVersion) throw new Error('OpenClaw host package must be pinned exactly');
-if (packageJson.openclaw?.compat?.pluginApi !== `=${pinnedPackageVersion}`) throw new Error('OpenClaw plugin API must match the pinned host package');
+if (packageJson.openclaw?.compat?.pluginApi !== '=2026.8.2') throw new Error('OpenClaw plugin API must match the current authenticated host exactly');
 if (packageLock.packages?.['']?.dependencies?.openclaw !== pinnedPackageVersion || packageLock.packages?.['node_modules/openclaw']?.version !== pinnedPackageVersion) throw new Error('OpenClaw lockfile package must match the pinned host package');
 if (packageLock.packages?.['node_modules/openclaw']?.dependencies?.['@openclaw/ai'] !== pinnedPackageVersion || packageLock.packages?.['node_modules/@openclaw/ai']?.version !== pinnedPackageVersion) throw new Error('OpenClaw lockfile dependency graph must match the stable host package');
 for (const [name, version] of Object.entries(packageLock.packages['node_modules/openclaw'].dependencies)) if (packageLock.packages[`node_modules/${name}`]?.version !== version) throw new Error(`OpenClaw lockfile dependency ${name} does not match the stable host package`);

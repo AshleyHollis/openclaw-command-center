@@ -56,6 +56,11 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       startupSearchRebuildController = new AbortController();
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
+      // Current hosts expose a lazily loaded request-context probe. Entering
+      // that runtime while plugin services are activating creates a loader
+      // cycle, so activation must finish before any Gateway runtime call.
+      const gatewayDefersUntilBinding = gatewayAvailable && typeof api.runtime.gateway.isAvailable === 'function';
+      const gatewayActiveAtStartup = gatewayAvailable && !gatewayDefersUntilBinding;
       const configuredSourceCapabilities = api.pluginConfig?.sourceCapabilities ?? {};
       const topicAnalyzer = topicAnalyzerFactory?.();
       const analysisUsable = typeof topicAnalyzer === 'function' || typeof topicAnalyzer?.analyze === 'function';
@@ -119,6 +124,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
         api,
         gateway: api.runtime?.gateway,
         noteAdapterFactory: (topicId) => sourceService.forTopic(topicId).notes,
+        transcriptReader: readVisibleSessionTranscriptMessageEntries,
         requireAuthorizedPreparation: true
       });
       searchService = createTopicSearchService({
@@ -136,7 +142,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       contextPolicy = createTopicContextPolicy({ metadata: metadataService, searchService });
       const migrationResult = await migrationService.start();
       await reconcileTopicSearchBookkeeping({ stateDir, metadata: metadataService });
-      if (gatewayAvailable) {
+      if (gatewayActiveAtStartup) {
         try { await sourceService.refreshReminderAttention(); }
         catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
       }
@@ -188,14 +194,16 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       };
       topicAnalysisSchedule = createTopicAnalysisScheduleService({ metadata: metadataService, notificationService, gateway: api.runtime?.gateway, now: () => Date.now(), runAnalysis: runAndRefreshTopicReview });
       topicAnalysisSchedule.getSettings();
-      if (gatewayAvailable) {
+      if (gatewayActiveAtStartup) {
         try { await topicAnalysisSchedule.reconcile(); }
         catch { api.logger?.warn?.('Command Center Topic Analysis scheduling remains pending until its exact Cron declaration can be reconciled.'); }
       }
-      try { await topicAnalysisSchedule.startupCatchUp(); }
-      catch { api.logger?.warn?.('Command Center Topic Analysis catch-up remains pending after a bounded startup attempt.'); }
-      try { await notificationService.reconcile(); }
-      catch { api.logger?.warn?.('Command Center notification reconciliation remains pending until an authenticated operator binding is available.'); }
+      if (gatewayActiveAtStartup) {
+        try { await topicAnalysisSchedule.startupCatchUp(); }
+        catch { api.logger?.warn?.('Command Center Topic Analysis catch-up remains pending after a bounded startup attempt.'); }
+        try { await notificationService.reconcile(); }
+        catch { api.logger?.warn?.('Command Center notification reconciliation remains pending until an authenticated operator binding is available.'); }
+      }
       notificationTimer = setInterval(() => {
         Promise.resolve(sourceService?.refreshReminderAttention?.())
           .then(() => notificationService?.reconcile?.())
@@ -208,10 +216,12 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       // Search projections are disposable and publish atomically. Schedule
       // their replacement only after every activation-critical await has
       // completed, and retain a prior generation until publication succeeds.
-      startupSearchRebuildTask = new Promise((resolve) => setImmediate(resolve)).then(async () => {
-        if (stopping) return;
-        await searchService.rebuild({ signal: startupSearchRebuildController.signal });
-      }).catch(() => { api.logger?.warn?.('Command Center Topic Search remains unavailable until its authoritative sources can be rebuilt.'); });
+      startupSearchRebuildTask = gatewayAvailable && !gatewayActiveAtStartup
+        ? Promise.resolve()
+        : new Promise((resolve) => setImmediate(resolve)).then(async () => {
+            if (stopping) return;
+            await searchService.rebuild({ signal: startupSearchRebuildController.signal });
+          }).catch(() => { api.logger?.warn?.('Command Center Topic Search remains unavailable until its authoritative sources can be rebuilt.'); });
       return migrationResult;
     },
     stop() {
@@ -293,6 +303,10 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
     async searchRebuild(input) {
       if (!searchService?.rebuildPrepared) throw new Error('Command Center Topic Search rebuild is not ready.');
       return searchService.rebuildPrepared(input);
+    },
+    async searchPrepareRebuild(input) {
+      if (!searchRebuildService?.prepareAuthorized) throw new Error('Command Center Topic Search rebuild preparation is not ready.');
+      return searchRebuildService.prepareAuthorized(input);
     }
   };
 }

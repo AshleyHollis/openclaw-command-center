@@ -17,13 +17,12 @@ test('plugin uses the published entry and external-tab descriptor seams', async 
   assert.doesNotMatch(source, /registerControlUiExternalTab/);
 });
 
-test('plugin registers exact authenticated shell and plugin mutation routes', async () => {
+test('plugin registers an authenticated shell with credentialless immutable subresources and plugin mutation routes', async () => {
   const source = await pluginSource();
-  assert.match(source, /for \(const path of assets\.keys\(\)\)[\s\S]*?path,[\s\S]*?auth:\s*'gateway',[\s\S]*?match:\s*'exact'/);
+  assert.match(source, /for \(const path of assets\.keys\(\)\)[\s\S]*?path,[\s\S]*?auth:\s*path === pluginPath \? 'gateway' : 'plugin',[\s\S]*?match:\s*'exact'/);
   assert.doesNotMatch(source, /auth:\s*'gateway',[\s\S]*?match:\s*'prefix'/);
   assert.doesNotMatch(source, /\[`\$\{pluginPath\}\/`, \['index\.html'/);
   assert.match(source, /api\.registerHttpRoute\(/);
-  assert.match(source, /auth:\s*'gateway'/);
   assert.match(source, /path:\s*'\/plugins\/command-center\/api\/attention\/actions',[\s\S]*?auth:\s*'plugin',[\s\S]*?match:\s*'exact'/);
   assert.doesNotMatch(source, /\/command-center\/v1\/attention\/actions/);
   assert.doesNotMatch(source, /\/plugins\/command-center\/actions/);
@@ -35,6 +34,7 @@ test('plugin service retains runtime state and source capability wiring', async 
   assert.match(source, /id:\s*'command-center-metadata'/);
   assert.match(source, /api\.runtime\.state\.resolveStateDir\(process\.env\)/);
   assert.match(source, /gatewayAvailable = typeof api\.runtime\?\.gateway\?\.request === 'function'/);
+  assert.match(source, /typeof api\.runtime\.gateway\.isAvailable === 'function'/);
   assert.match(source, /sessions: gatewayAvailable && configuredSourceCapabilities\.sessions !== false/);
   assert.match(source, /scheduler: gatewayAvailable && configuredSourceCapabilities\.scheduler !== false/);
 });
@@ -49,7 +49,7 @@ test('plugin retains tools, search, maintenance, and bounded asset serving', asy
   assert.match(source, /api\.registerTool\(topicContextToolFactory/);
   assert.match(source, /name:\s*'command_center_topic_context',\s*optional:\s*true/);
   assert.match(source, /searchRebuildServiceFactory = createSearchRebuildService/);
-  assert.match(source, /startupSearchRebuildTask = new Promise\(\(resolve\) => setImmediate\(resolve\)\)\.then/);
+  assert.match(source, /new Promise\(\(resolve\) => setImmediate\(resolve\)\)\.then/);
   assert.match(source, /stopPromise = Promise\.resolve\(startupSearchRebuildTask\)/);
   assert.match(source, /createNoteMaintenanceService\(/);
   assert.match(source, /maintenanceService/);

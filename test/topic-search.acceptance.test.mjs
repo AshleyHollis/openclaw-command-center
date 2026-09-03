@@ -40,6 +40,31 @@ test('an empty authoritative workspace publishes both empty projection generatio
   }
 });
 
+test('global rebuild includes every search-bound Topic and excludes active Topics without a Note Folder', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-bound-'));
+  const calls = [];
+  const bound = { ...topic, topicId: 'topic-bound' };
+  const activityOnly = { ...topic, topicId: 'topic-activity-only' };
+  try {
+    const rebuild = createSearchRebuildService({
+      stateDir,
+      metadata: {
+        listTopics: () => [activityOnly, bound],
+        listSourceReferences: (topicId) => topicId === bound.topicId ? [{ ...folder, topicId: bound.topicId }] : []
+      },
+      sourceSnapshotFactory: async ({ topicId }) => {
+        calls.push(topicId);
+        return { notes: [], conversations: [], note: { sourceRevision: `notes-${topicId}` }, conversation: { sourceRevision: `sessions-${topicId}` } };
+      }
+    });
+    const result = await rebuild.rebuild();
+    assert.deepEqual(calls, [bound.topicId]);
+    assert.deepEqual(result.topicIds, [bound.topicId]);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('concurrent authenticated rebuild replay converges while changed intent fails closed', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-concurrent-'));
   let release;

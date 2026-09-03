@@ -66,7 +66,8 @@ const handlerMap = Object.freeze({
   'command-center.v1.activity.list': (service, params) => service.activityList(params),
   'command-center.v1.activity.get': (service, params) => service.activityGet(params),
   'command-center.v1.dashboard.get': (service, params) => service.dashboardGet(params),
-  'command-center.v1.search.query': (service, params) => service.searchQuery(params)
+  'command-center.v1.search.query': (service, params) => service.searchQuery(params),
+  'command-center.v1.search.prepare-rebuild': (service, params) => service.searchPrepareRebuild(params)
 });
 
 export async function invokeBridgeMethod(service, method, params, requestId = null, authenticatedOperatorId = null, runtime = {}) {

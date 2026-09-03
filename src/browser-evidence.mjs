@@ -2,7 +2,7 @@
  * Attach failure handling immediately so a browser teardown cannot turn a
  * missing response into an unhandled rejection before diagnostics are read.
  */
-export function observeBrowserResponse(response, recordFailure) {
+export function observeBrowserResponse(response, recordFailure = () => {}) {
   return Promise.resolve(response).then(
     (value) => ({ observed: true, value }),
     (error) => {

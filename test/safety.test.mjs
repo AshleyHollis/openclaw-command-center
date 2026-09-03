@@ -61,11 +61,8 @@ test('keeps the authenticated historical commit parseable without a raw token-sh
     readFile(path.join(root, 'test', 'real-host.acceptance.test.mjs'), 'utf8')
   ]);
   assert.equal(JSON.parse(packageSource).commandCenter.compatibilityTuple.priorRelease.host.commit, historicalCommit);
-  assert.equal(JSON.parse(packageSource).commandCenter.compatibilityTuple.host.commit, historicalCommit);
   assert.equal(JSON.parse(lockSource).packages[''].commandCenter.compatibilityTuple.priorRelease.host.commit, historicalCommit);
-  assert.equal(JSON.parse(lockSource).packages[''].commandCenter.compatibilityTuple.host.commit, historicalCommit);
   assert.equal(JSON.parse(tupleSource).priorRelease.host.commit, historicalCommit);
-  assert.equal(JSON.parse(tupleSource).host.commit, historicalCommit);
   for (const source of [packageSource, lockSource, tupleSource, acceptanceSource]) assert.equal(source.includes(historicalCommit), false);
 });
 

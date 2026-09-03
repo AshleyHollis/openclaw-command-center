@@ -316,7 +316,9 @@ async function loadOperatingState() {
 function requireReadyMutation() { if (!mutationsAvailable()) throw new Error(`Mutations are unavailable in ${operatingState.mode} mode.`); }
 async function rebuildTopicSearchProjection(topicId) {
   requireReadyMutation();
-  const response = await fetch(SEARCH_REBUILD_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId: operationId() }) });
+  const logicalOperationId = operationId();
+  await bridgeRequest('command-center.v1.search.prepare-rebuild', { schemaVersion: 1, topicId, logicalOperationId });
+  const response = await fetch(SEARCH_REBUILD_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId }) });
   const value = await response.json();
   if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Search rebuild was refused.');
   return value;

@@ -29,9 +29,20 @@ function send(res, statusCode, value) {
   res.end(body);
 }
 
-function parse(req) {
+async function parse(req) {
   if (!/^application\/json(?:\s*;|$)/iu.test(String(req.headers?.['content-type'] ?? ''))) throw invalid('JSON content type is required.');
-  const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+  let body = req.body;
+  if (typeof body === 'string') body = JSON.parse(body);
+  else if (Buffer.isBuffer(body) || body instanceof Uint8Array) body = JSON.parse(Buffer.from(body).toString('utf8'));
+  else if (body === undefined && typeof req?.readBody === 'function') body = JSON.parse(await req.readBody());
+  else if (body === undefined && req && typeof req[Symbol.asyncIterator] === 'function') {
+    let encoded = '';
+    for await (const chunk of req) {
+      encoded += chunk;
+      if (Buffer.byteLength(encoded) > 2048) throw invalid('Search rebuild request is too large.');
+    }
+    body = JSON.parse(encoded || '{}');
+  }
   if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => !fields.includes(key))) throw invalid('A closed Search rebuild request is required.');
   if (body.schemaVersion !== 1 || !isCanonicalUuid(body.topicId) || !isCanonicalUuid(body.logicalOperationId)) throw invalid('Schema version 1 and canonical Topic and operation IDs are required.');
   return body;
@@ -43,7 +54,7 @@ export function createSearchRebuildHttpHandler(service) {
     if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return true; }
     if (req.method !== 'POST') { send(res, 405, { schemaVersion: 1, status: 'error', code: 'method-not-allowed', message: 'Search rebuild is POST-only.' }); return true; }
     try {
-      const body = parse(req);
+      const body = await parse(req);
       if (Buffer.byteLength(JSON.stringify(body)) > 2048) throw invalid('Search rebuild request is too large.');
       const result = await service.searchRebuild(body);
       const projections = [result?.notes?.projectionId, result?.conversations?.projectionId].filter((value) => typeof value === 'string').sort();

@@ -55,7 +55,9 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   const capturedOutputScan = source.indexOf('scanPublicEvidence([JSON.stringify(report)', reportValidation);
   const baselineCommit = source.indexOf('releaseState.baseline = qualifiedBaseline', capturedOutputScan);
   assert.ok(isolatedCompletion > 0 && isolatedCompletion < finalization && finalization < privacyPreflight && privacyPreflight < baselineComparison && baselineComparison < reportRows && reportRows < reportValidation && reportValidation < capturedOutputScan && capturedOutputScan < baselineCommit, 'all isolated slices, finalization, privacy, immutable baseline comparison, report validation, and captured-output scanning must precede baseline commitment');
-  assert.doesNotMatch(source, /captureFirstReleasePerformanceBaseline/u);
+  assert.match(source, /capturePerformanceBaseline = process\.env\.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE === '1'/u);
+  assert.match(source, /captureFirstReleasePerformanceBaseline\(baselineSeed, scaleJourney\.measurement\)/u);
+  assert.match(source, /writeFile\(capturedPerformanceBaselinePath,[\s\S]*\{ flag: 'wx' \}\)/u);
   assert.doesNotMatch(source, /const passed = await (?:testContext\.test|isolatedRunPromises)/u);
   assert.doesNotMatch(source, /withDeadline\(`isolated release slice/u);
   assert.match(source, /runBoundedAcceptanceSlice/u);
@@ -63,6 +65,7 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   assert.match(source, /release preparation: candidate build and authenticated descriptor/u);
   assert.match(source, /release preparation: deterministic source fixtures/u);
   assert.match(source, /release preparation: pinned host launch/u);
+  assert.match(source, /fetchWithRuntimeDispatcher as fetch/u);
   for (const category of ['bootstrap-http-', 'bootstrap-invalid-response', 'metadata-not-ready']) assert.match(source, new RegExp(category, 'u'));
   assert.match(source, /api\/topics\/actions`.*, \{ method: 'POST'/u);
   assert.equal(source.match(/collectSequentialAcceptanceBatch\(/gu)?.length, 2, 'both real-host 100-Conversation fixtures must collect every concurrency-one mutation result');

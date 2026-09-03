@@ -47,6 +47,8 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.read', { schemaVersion: 1, topicId: 42, referenceId: 'note:a', path: 'a.md', offset: 0 }), /topicId.*string/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.schedules.set-enabled', { schemaVersion: 1, topicId: 'topic', referenceId: 'schedule', expectedConfigRevision: 'revision', enabled: 'false', logicalOperationId: randomUUID() }), /enabled.*boolean/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.search.query', { schemaVersion: 1, topicId: 'topic', query: 'fictional', limit: 0 }), /limit/i);
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.search.prepare-rebuild', { schemaVersion: 1, topicId: randomUUID(), logicalOperationId: randomUUID() }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.search.prepare-rebuild', { schemaVersion: 1, topicId: randomUUID(), logicalOperationId: randomUUID(), credential: 'forbidden' }), /unsupported.*credential/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.metadata.read', { schemaVersion: 1, referenceId: 'foreign-reference' }), /topicId/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.history', { schemaVersion: 1, topicId: 'topic', referenceId: 'session', sessionId: 'foreign-session' }), /unsupported.*sessionId/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic' }));
@@ -84,6 +86,14 @@ test('handlers preserve authenticated request context and echo request and logic
   await statusHandler({ req: { id: 'gateway-frame-1' }, params: { schemaVersion: 1 }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
   assert.deepEqual(response[1], { schemaVersion: 1, status: 'applied', requestId: 'gateway-frame-1', logicalOperationId: null, result: { mode: 'ready' } });
+});
+
+test('authenticated Search rebuild preparation exposes only bounded operation evidence', async () => {
+  const logicalOperationId = randomUUID();
+  const result = await invokeBridgeMethod({
+    searchPrepareRebuild: async () => ({ schemaVersion: 1, status: 'prepared', topicIds: ['fictional-topic'] })
+  }, 'command-center.v1.search.prepare-rebuild', { schemaVersion: 1, topicId: 'fictional-topic', logicalOperationId });
+  assert.deepEqual(result, { schemaVersion: 1, status: 'prepared', topicIds: ['fictional-topic'] });
 });
 
 test('registered Session create bridge preserves independent durable identities under reversed completion', async () => {

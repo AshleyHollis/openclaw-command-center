@@ -20,6 +20,11 @@ test('settles a failed browser response observation without an unhandled rejecti
   assert.deepEqual(recorded, [failure]);
 });
 
+test('settles a failed browser response when diagnostics are intentionally omitted', async () => {
+  const observed = await observeBrowserResponse(Promise.reject(new Error('fictional browser response failed')));
+  assert.deepEqual(observed, { observed: false, value: undefined });
+});
+
 test('caps browser evidence and leaves a single truncation marker', () => {
   const evidence = [];
   for (const value of ['one', 'two', 'three', 'four']) recordBounded(evidence, value, 3);

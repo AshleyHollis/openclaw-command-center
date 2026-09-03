@@ -2,16 +2,17 @@ import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { fetchWithRuntimeDispatcher } from 'openclaw/plugin-sdk/runtime-fetch';
 import { assertBuiltDigest } from './build.mjs';
 import { fixtureEnvironment } from './fixtures.mjs';
 import { boundedTrafficEvidence, describeTrafficEvidence, TrafficGuard } from './isolation.mjs';
 
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 export const pinnedHost = Object.freeze({
-  // The evaluator checkout package is the stable 2026.8.1 host build. The
-  // beta.3 product/plugin compatibility range remains a separate contract.
-  packageVersion: '2026.8.1',
-  commit: '6d542e6a0c5743a22a19c3226e754bf94cbf35b1',
+  // The evaluator checkout is the current authenticated host. The beta.3
+  // ticket pin remains a separate, exact prior-release compatibility row.
+  packageVersion: '2026.8.2',
+  commit: '19686a23834910173df0fd1f77bd762ffcda2afd',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
@@ -309,7 +310,7 @@ export async function waitForConsecutiveReadiness(observe, earlyExit, { required
     : `Host did not produce consecutive readiness observations within ${deadlineMs} ms`);
 }
 
-export async function fetchJsonWithDeadline(url, options = {}, { label = 'HTTP operation', timeoutMs = 10_000, fetchImpl = fetch } = {}) {
+export async function fetchJsonWithDeadline(url, options = {}, { label = 'HTTP operation', timeoutMs = 10_000, fetchImpl = fetchWithRuntimeDispatcher } = {}) {
   const controller = new AbortController();
   const parentSignal = options.signal;
   let timedOut = false;

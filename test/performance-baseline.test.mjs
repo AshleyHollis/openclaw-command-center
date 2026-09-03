@@ -10,12 +10,12 @@ async function readReleasePerformanceBaseline() {
 test('release performance baseline pins the measured corpus and immutable first successful capture', async () => {
   const baseline = await readReleasePerformanceBaseline();
   assert.deepEqual(baseline.viewport, { width: 1440, height: 900 });
-  assert.deepEqual(baseline.fixtureCounts, { largeNoteBytes: 8388609, conversations: 100, activityRecords: 51, actionCards: 2, indexedNotes: 5000, indexedConversationMessages: 5000 });
+  assert.deepEqual(baseline.fixtureCounts, { largeNoteBytes: 8388609, conversations: 101, activityRecords: 51, actionCards: 2, indexedNotes: 5000, indexedConversationMessages: 5000 });
   assert.deepEqual(RELEASE_MEASUREMENTS, ['startupReadinessMs', 'dashboardLoadMs', 'topicOpenCreateMs', 'chatSendMs', 'conversationLifecycleMs', 'largeNoteLifecycleMs', 'indexedSearchMs', 'activityNextPageMs', 'topicReviewApplyMs', 'mobileReflowMs']);
   assert.equal(baseline.fixtureIdentity, RELEASE_FIXTURE_IDENTITY);
   assert.equal(baseline.capture.successfulRunOrdinal, 1);
   assert.equal(baseline.browser.version, '151.0.7922.34');
-  assert.equal(baseline.hostReceipt.commit, '6d542e6a0c5743a22a19c3226e754bf94cbf35b1');
+  assert.equal(baseline.hostReceipt.commit, '19686a23834910173df0fd1f77bd762ffcda2afd');
   assert.deepEqual(baseline.thresholds, deriveReleaseThresholds(baseline.observations));
   assert.throws(() => validateReleasePerformanceBaselineSeed(baseline), /unsupported field|seed/u);
   for (const name of RELEASE_MEASUREMENTS) {
@@ -47,7 +47,7 @@ test('release performance baseline rejects receipt drift, widened ceilings, zero
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostReceipt: { ...baseline.hostReceipt, contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }), /pinned host identity/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, browser: { ...baseline.browser, version: '' } }), /browser identity/u);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, thresholds: { ...baseline.thresholds, dashboardLoadMs: 999999 } }), /first observation/);
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 101 } }), /conversations must be 100/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 100 } }), /conversations must be 101/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, activityRecords: 52 } }), /activityRecords must be 51/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: 0 } }), /first positive/);
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: undefined } }), /first positive/);

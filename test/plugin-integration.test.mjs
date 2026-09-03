@@ -147,6 +147,57 @@ test('plugin readiness precedes deferred Search rebuild and shutdown settles the
   }
 });
 
+test('plugin Search commit passes through verified freshness publication', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-search-freshness-'));
+  let commits = 0;
+  const service = createMetadataService({ runtime: { state: { resolveStateDir: () => stateDir } }, logger: {}, pluginConfig: {} }, {
+    searchRebuildServiceFactory: () => ({
+      async prepareAuthorized(input) { return { schemaVersion: 1, status: 'prepared', topicIds: [input.topicId] }; },
+      async rebuildPrepared() { commits += 1; return { topicIds: [] }; }
+    })
+  });
+  try {
+    await service.start();
+    await service.searchPrepareRebuild({ topicId: 'fictional-topic', logicalOperationId: randomUUID() });
+    await assert.rejects(service.searchRebuild({ topicId: 'fictional-topic', logicalOperationId: randomUUID() }), (error) => error?.code === 'projection-unavailable');
+    assert.equal(commits, 1, 'the prepared publisher must run before freshness verification rejects incomplete artifacts');
+  } finally {
+    await service.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('plugin startup does not dispatch Gateway work before the host request context is active', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-gateway-bind-'));
+  let requests = 0;
+  let availabilityChecks = 0;
+  let rebuilds = 0;
+  const api = {
+    runtime: {
+      state: { resolveStateDir: () => stateDir },
+      gateway: {
+        isAvailable: async () => { availabilityChecks += 1; return false; },
+        request: async () => { requests += 1; throw new Error('pre-bind Gateway dispatch'); }
+      }
+    },
+    logger: {},
+    pluginConfig: {}
+  };
+  const service = createMetadataService(api, {
+    searchRebuildServiceFactory: () => ({ async rebuild() { rebuilds += 1; } })
+  });
+  try {
+    await service.start();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(availabilityChecks, 0, 'activation must not enter the lazily loaded Gateway runtime before binding');
+    assert.equal(requests, 0);
+    assert.equal(rebuilds, 0);
+  } finally {
+    await service.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('plugin shutdown aborts a deferred Search rebuild before closing owned state', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-cancel-search-'));
   const events = [];
@@ -182,6 +233,9 @@ test('real plugin registers one required emitter and reconciles in the backgroun
     assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sessions.browse'));
     assert.equal(host.services.length, 1);
     assert.equal(host.routes.some((route) => route.path === '/plugins/command-center' && route.auth === 'gateway'), true);
+    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/app.js' && route.auth === 'plugin'), true);
+    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/styles.css' && route.auth === 'plugin'), true);
+    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/markdown.js' && route.auth === 'plugin'), true);
     assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/api/search/rebuild' && route.auth === 'plugin' && route.match === 'exact'), true);
     const service = host.services[0];
     await service.start();

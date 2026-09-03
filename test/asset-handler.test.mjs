@@ -39,6 +39,7 @@ test('serves a validated built shell asset', async () => {
     assert.equal(await serveShellAsset({ method: 'GET', url: '/plugins/command-center' }, res, { assetRoot, assets }), true);
     assert.equal(res.statusCode, 200);
     assert.equal(res.headers.get('content-type'), 'text/html; charset=utf-8');
+    assert.equal(res.headers.get('access-control-allow-origin'), 'null');
     assert.equal(String(res.body), '<safe shell>');
   });
 });

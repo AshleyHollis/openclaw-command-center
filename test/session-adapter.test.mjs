@@ -82,6 +82,26 @@ function pinnedSanitizedSessionBoundary() {
   };
 }
 
+test('Session navigation accepts the host transport request identity without exposing it', async () => {
+  const metadata = metadataFixture();
+  const reference = { version: 1, referenceId: 'session:navigate', topicId: 'topic-session', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:command-center:navigate', observedRevision: null };
+  metadata.refs.push(reference);
+  metadata.setSessionState({ referenceId: reference.referenceId, sessionId: 'fictional-navigation-session', status: 'open', isPrimary: false });
+  const adapter = createSessionAdapter({
+    topicId: 'topic-session',
+    metadata,
+    gateway: { request: async () => ({}) },
+    sessionStore: { listSessionEntries: () => [{ sessionKey: reference.externalSourceId, entry: { sessionId: 'fictional-navigation-session' } }] }
+  });
+  assert.deepEqual(await adapter.navigate({ schemaVersion: 1, referenceId: reference.referenceId, requestId: 'transport-request' }), {
+    schemaVersion: 1,
+    status: 'applied',
+    sessionKey: reference.externalSourceId,
+    sessionId: 'fictional-navigation-session',
+    sourceReference: reference
+  });
+});
+
 test('Session create/history/send use exact linked keys without transcript inheritance', async () => {
   const metadata = metadataFixture();
   const calls = [];

@@ -83,6 +83,17 @@ test('Note source snapshot indexes sections and preserves null headings with sta
   assert.equal(calls[1].referenceId, noteReference.referenceId);
 });
 
+test('Note source snapshot reuses content from the authoritative stable browse when supplied', async () => {
+  const calls = [];
+  const entry = { path: 'one.md', text: '# Heading\n\nalpha', revision: 'sha256:one', sourceReference: noteReference };
+  const snapshot = await readNoteSourceSnapshot({ topicId: topic.topicId, metadata: metadata(), noteAdapter: {
+    browse: async (input) => { calls.push(input); return [entry]; },
+    read: async () => { throw new Error('stable browse content must not be read twice'); }
+  } });
+  assert.equal(snapshot.notes[0].text, '# Heading\n\nalpha');
+  assert.deepEqual(calls, [{ observe: true, includeText: true }, { observe: false }]);
+});
+
 test('production Note snapshot registers the exact authoritative Note identity for navigation', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-search-note-state-'));
   const vault = path.join(stateDir, 'vault');
@@ -127,8 +138,27 @@ test('Conversation snapshot uses exact public transcript identities and preserve
   assert.equal(calls.filter((call) => call.method === 'chat.history').length, 2, 'a stable verification read is required');
   assert.equal(snapshot.conversations.length, 2);
   assert.ok(snapshot.conversations.every((row) => row.closed));
-  assert.equal(snapshot.conversations.find((row) => row.provenance === 'imported').importedFrom, 'legacy-discord-v1');
+  const imported = snapshot.conversations.find((row) => row.provenance === 'imported');
+  assert.equal(imported.importedFrom, 'legacy-discord-v1');
+  assert.equal(imported.messageId, 'fictional-imported-message');
   assert.equal(snapshot.conversations[0].contextAfter, 'imported message');
+});
+
+test('Conversation snapshot uses the published exact-identity transcript reader without trusted Gateway authority', async () => {
+  const calls = [];
+  const snapshot = await readConversationSourceSnapshot({
+    topicId: topic.topicId,
+    metadata: metadata(),
+    transcriptReader: async (identity) => {
+      calls.push(identity);
+      return [{ entryId: 'reader-message', createdAt: '2026-08-23T00:02:00.000Z', message: { role: 'user', content: 'published reader message' } }];
+    },
+    gateway: { request: async () => { throw new Error('trusted Gateway authority must not be requested'); } }
+  });
+  assert.equal(calls.length, 2, 'the published transcript reader must receive a stable verification read');
+  assert.deepEqual(calls[0], { agentId: 'main', sessionKey: sessionReference.externalSourceId, sessionId: 'session-one' });
+  assert.equal(snapshot.conversations[0].messageId, 'reader-message');
+  assert.equal(snapshot.conversations[0].text, 'published reader message');
 });
 
 test('Conversation snapshot rejects missing, resetting, malformed, and changing transcript pages', async () => {

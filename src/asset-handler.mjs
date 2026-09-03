@@ -79,6 +79,7 @@ export async function serveShellAsset(req, res, { assetRoot = defaultAssetRoot, 
   }
   res.statusCode = 200;
   res.setHeader('content-type', asset[1]);
+  res.setHeader('access-control-allow-origin', 'null');
   res.setHeader('cache-control', 'no-store');
   res.setHeader('x-content-type-options', 'nosniff');
   if (req.method === 'HEAD') res.end();

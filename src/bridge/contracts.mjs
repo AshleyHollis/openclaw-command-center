@@ -70,7 +70,8 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.schedules.run',
   'command-center.v1.metadata.write',
   'command-center.v1.attention.act',
-  'command-center.v1.analysis.run'
+  'command-center.v1.analysis.run',
+  'command-center.v1.search.prepare-rebuild'
 ]);
 
 const common = ['schemaVersion'];
@@ -196,7 +197,8 @@ function actionResultSchema(method) {
     comingUp: Object.freeze({ type: 'array' }),
     activityOffset: Object.freeze({ type: 'integer' }),
     activityLimit: Object.freeze({ type: 'integer' }),
-    notificationSettings: Object.freeze({ type: 'object' })
+    notificationSettings: Object.freeze({ type: 'object' }),
+    topicIds: Object.freeze({ type: 'array' })
   };
   const arrayResult = method.endsWith('notes.browse') || method.endsWith('reminders.list') || method.endsWith('schedules.list');
   const allowed = method.includes('.migration.')
@@ -217,6 +219,8 @@ function actionResultSchema(method) {
     ? ['schemaVersion', 'topic', 'topics', 'sourceReferences', 'preferences', 'activity', 'version', 'referenceId', 'topicId', 'sourceSystem', 'sourceKind', 'externalSourceId', 'observedRevision', 'createdAt', 'updatedAt']
     : method.endsWith('search.query')
     ? ['schemaVersion', 'query', 'limit', 'results']
+    : method.endsWith('search.prepare-rebuild')
+    ? ['schemaVersion', 'status', 'topicIds']
     : method.endsWith('topics.list')
     ? ['schemaVersion', 'activeGroups', 'provisioning', 'recovery', 'archived', 'retired']
     : method.endsWith('topics.get')
@@ -308,6 +312,7 @@ const required = Object.freeze({
   'command-center.v1.analysis.run': ['topicId', 'input'],
   'command-center.v1.attention.act': ['topicId', 'sourceReferenceId', 'episodeId', 'expectedEpisodeRevision', 'expectedSourceRevision', 'actionId'],
   'command-center.v1.search.query': ['topicId', 'query'],
+  'command-center.v1.search.prepare-rebuild': ['topicId', 'logicalOperationId'],
   'command-center.v1.metadata.write': ['operation', 'value'],
   'command-center.v1.attention.list': [],
   'command-center.v1.attention.get': ['episodeId'],
@@ -376,6 +381,7 @@ const fields = Object.freeze({
   'command-center.v1.analysis.run': ['topicId', 'input', 'logicalOperationId'],
   'command-center.v1.attention.act': ['topicId', 'sourceCapabilityId', 'stableSubjectId', 'episodeId', 'expectedEpisodeRevision', 'expectedSourceRevision', 'sourceReferenceId', 'actionId', 'input', 'approvalId', 'logicalOperationId'],
   'command-center.v1.search.query': ['topicId', 'query', 'limit'],
+  'command-center.v1.search.prepare-rebuild': ['topicId', 'logicalOperationId'],
   'command-center.v1.attention.list': ['topicId', 'limit'],
   'command-center.v1.attention.get': ['episodeId'],
   'command-center.v1.activity.list': ['topicId', 'episodeId', 'offset', 'limit'],

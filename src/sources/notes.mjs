@@ -313,7 +313,13 @@ export class NoteAdapter {
           const revision = revisionForBytes(bytes);
           const candidateReference = this.noteReference(root, childRelative, revision);
           const sourceReference = input.observe === false ? candidateReference : await this.observe(candidateReference);
-          notes.push(Object.freeze({ schemaVersion: 1, path: childRelative, revision, sourceReference }));
+          notes.push(Object.freeze({
+            schemaVersion: 1,
+            path: childRelative,
+            revision,
+            sourceReference,
+            ...(input.includeText === true ? { text: bytes.toString('utf8') } : {})
+          }));
         } else if (!stat.isFile()) {
           throw sourceError('unsafe-path', 'The Note Folder contains a non-regular entry.');
         }

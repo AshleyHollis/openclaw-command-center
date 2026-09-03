@@ -13,7 +13,10 @@ function topicIds(metadata, requested) {
     ? (metadata?.listUsableTopics?.() ?? metadata?.listTopics?.()?.filter((topic) => topic.lifecycle === 'active'))
     : metadata?.listTopics?.();
   if (Array.isArray(topics)) {
-    const ids = topics.map((topic) => topic.topicId).sort((left, right) => left.localeCompare(right));
+    const globallySearchable = requested === undefined && typeof metadata?.listSourceReferences === 'function'
+      ? topics.filter((topic) => metadata.listSourceReferences(topic.topicId).filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder').length === 1)
+      : topics;
+    const ids = globallySearchable.map((topic) => topic.topicId).sort((left, right) => left.localeCompare(right));
     if (requested !== undefined) {
       if (!ids.includes(String(requested))) throw sourceError('source-recovery', 'The requested Topic does not exist.');
       const topic = topics.find((item) => item.topicId === String(requested));
@@ -26,7 +29,7 @@ function topicIds(metadata, requested) {
   throw sourceError('source-recovery', 'Topic ownership metadata is unavailable.');
 }
 
-export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory, noteAdapter, api, gateway, topicId, authoritativeSources, sourceSnapshotFactory = readTopicSourceSnapshot, onProgress, signal } = {}) {
+export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory, noteAdapter, api, gateway, transcriptReader, topicId, authoritativeSources, sourceSnapshotFactory = readTopicSourceSnapshot, onProgress, signal } = {}) {
   const topics = topicIds(metadata, topicId);
   const notes = [];
   const conversations = [];
@@ -39,7 +42,7 @@ export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory,
   for (const id of topics) {
     signal?.throwIfAborted();
     const snapshot = await suppliedFactory({
-      topicId: id, metadata, api, gateway,
+      topicId: id, metadata, api, gateway, transcriptReader,
       noteAdapter: noteAdapterFactory ? await noteAdapterFactory(id) : noteAdapter,
       signal,
     });

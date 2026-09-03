@@ -294,7 +294,7 @@ export class SessionAdapter {
   }
 
   async navigate(input = {}) {
-    assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId'], 'Session navigation request');
+    assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId', 'requestId'], 'Session navigation request');
     const reference = this.resolveReference(input);
     const { state } = await this.resolveStableState(reference.referenceId);
     return Object.freeze({ schemaVersion: 1, status: 'applied', sessionKey: reference.externalSourceId, sessionId: state.sessionId, sourceReference: reference });
