@@ -984,8 +984,9 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
 
         const firstActivity = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 0, activityLimit: 50 });
         const secondActivity = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 50, activityLimit: 50 });
-        assert.deepEqual([firstActivity.activity.records.length, secondActivity.activity.records.length], [50, 1]);
-        assert.equal(new Set([...firstActivity.activity.records, ...secondActivity.activity.records].map((record) => record.activityId)).size, RELEASE_FIXTURE_COUNTS.activityRecords);
+        const thirdActivity = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 100, activityLimit: 50 });
+        assert.deepEqual([firstActivity.activity.records.length, secondActivity.activity.records.length, thirdActivity.activity.records.length], [50, 50, 1]);
+        assert.equal(new Set([...firstActivity.activity.records, ...secondActivity.activity.records, ...thirdActivity.activity.records].map((record) => record.activityId)).size, RELEASE_FIXTURE_COUNTS.activityRecords);
 
         await Promise.all(COMMITTED_SEARCH_PROJECTION_FILES.map((name) => unlink(path.join(scaleProjectionRoot, name))));
         assert.deepEqual(await readdir(scaleProjectionRoot), [], 'fresh scale query must begin with a missing disposable projection');
@@ -1784,7 +1785,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       for (let index = 0; index < RELEASE_FIXTURE_COUNTS.activityRecords - 1; index += 1) {
         // Keep the exact frozen Activity corpus at the head of the global
         // Dashboard feed so migration/journey records cannot change its
-        // required 50/1 pagination boundary once the verified navigation
+        // required 50/50/1 pagination boundary once the verified navigation
         // record is added through the authoritative source service.
         const createdAt = new Date(Date.UTC(2099, 7, 29, 12, 0, 0) + index).toISOString();
         activityFixture.recordActivity({
@@ -2424,19 +2425,23 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const firstActivityPage = await readDashboard(gatewayUrl, { activityOffset: 0, activityLimit: 50 });
       const firstActivityIds = firstActivityPage.activity.records.map((record) => record.activityId);
       await activate(loadMoreActivity, true);
-      await frame.waitForFunction(() => document.querySelectorAll('#activity .activity-row').length >= 51, undefined, { timeout: 10_000 });
+      await frame.waitForFunction(() => document.querySelectorAll('#activity .activity-row').length >= 100, undefined, { timeout: 10_000 });
       const secondActivityPage = await readDashboard(gatewayUrl, { activityOffset: 50, activityLimit: 50 });
       const secondActivityIds = secondActivityPage.activity.records.map((record) => record.activityId);
-      assert.deepEqual([firstActivityIds.length, secondActivityIds.length], [50, 1]);
-      realizedActivityRecords = firstActivityIds.length + secondActivityIds.length;
+      await activate(loadMoreActivity, true);
+      await frame.waitForFunction(() => document.querySelectorAll('#activity .activity-row').length >= 101, undefined, { timeout: 10_000 });
+      const thirdActivityPage = await readDashboard(gatewayUrl, { activityOffset: 100, activityLimit: 50 });
+      const thirdActivityIds = thirdActivityPage.activity.records.map((record) => record.activityId);
+      assert.deepEqual([firstActivityIds.length, secondActivityIds.length, thirdActivityIds.length], [50, 50, 1]);
+      realizedActivityRecords = firstActivityIds.length + secondActivityIds.length + thirdActivityIds.length;
       assert.equal(realizedActivityRecords, RELEASE_FIXTURE_COUNTS.activityRecords);
-      assert.equal([...firstActivityIds, ...secondActivityIds].includes(releaseState.verifiedActivity.activityId), true);
-      assert.equal(new Set([...firstActivityIds, ...secondActivityIds]).size, firstActivityIds.length + secondActivityIds.length, 'Activity pagination must not duplicate identities');
+      assert.equal([...firstActivityIds, ...secondActivityIds, ...thirdActivityIds].includes(releaseState.verifiedActivity.activityId), true);
+      assert.equal(new Set([...firstActivityIds, ...secondActivityIds, ...thirdActivityIds]).size, realizedActivityRecords, 'Activity pagination must not duplicate identities');
       const renderedActivityIds = await frame.locator('#activity .activity-row').evaluateAll((rows) => rows.map((row) => row.dataset.activityId).filter(Boolean));
       assert.deepEqual(renderedActivityIds.slice(0, firstActivityIds.length), firstActivityIds, 'Activity page append must not replace or reorder page one');
-      await assertNoFrameOverflow(frame, '1440px 51-record Activity');
+      await assertNoFrameOverflow(frame, '1440px 101-record Activity');
       await page.setViewportSize({ width: 320, height: 900 });
-      await assertNoFrameOverflow(frame, '320px 51-record Activity');
+      await assertNoFrameOverflow(frame, '320px 101-record Activity');
       await page.setViewportSize({ width: 1440, height: 900 });
       const verifiedActivityRow = frame.locator(`#activity .activity-row[data-activity-id="${releaseState.verifiedActivity.activityId}"]`);
       await verifiedActivityRow.waitFor({ state: 'visible' });
@@ -2690,7 +2695,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           requiredTopicIds: [RELEASE_ALPHA_TOPIC_ID, RELEASE_SCALE_TOPIC_ID]
         });
         if (!qualifiedBaseline) throw new HarnessFailure('performance-baseline-unverified', 'Performance baseline comparison remains pending until every release preflight succeeds');
-        return { schemaVersion: 1, fixtureIdentity: qualifiedBaseline.fixtureIdentity, fixtureCounts: { ...qualifiedBaseline.fixtureCounts }, observations: { ...scaleJourney.measurement }, thresholds: { ...qualifiedBaseline.thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: releaseState.missingProjectionRebuilt, staleProjectionRebuilt: releaseState.staleProjectionRebuilt, indexedQuery: true } };
+        return { schemaVersion: 1, fixtureIdentity: qualifiedBaseline.fixtureIdentity, fixtureCounts: { ...qualifiedBaseline.fixtureCounts }, observations: { ...scaleJourney.measurement }, thresholds: { ...qualifiedBaseline.thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: releaseState.missingProjectionRebuilt, staleProjectionRebuilt: releaseState.staleProjectionRebuilt, indexedQuery: true } };
       } },
       { id: 'degraded-bridge-grants', run: async () => isolatedResult('degraded-bridge-grants') },
       { id: 'degraded-source-availability', run: async () => {

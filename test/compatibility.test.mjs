@@ -10,7 +10,8 @@ const supportedOpenClaw = Object.freeze({
   version: '2026.8.1-beta.3',
   commit: ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('')
 });
-const controllerIntegrationCommit = '19686a23834910173df0fd1f77bd762ffcda2afd';
+const controllerIntegrationCommit = '9cb8c01b49be33464174bb40d512ca2b42ce089c';
+const upstreamCompatibilityCommit = '19686a23834910173df0fd1f77bd762ffcda2afd';
 const controllerPackageVersion = '2026.8.2';
 const publishedSdkVersion = controllerPackageVersion;
 
@@ -24,7 +25,7 @@ test('keeps product compatibility distinct from the controller package boundary'
   assert.equal(canonical.priorRelease.host.range, `=${supportedOpenClaw.version}`);
   assert.equal(canonical.priorRelease.host.commit, supportedOpenClaw.commit);
   assert.equal(canonical.host.range, `=${controllerPackageVersion}`);
-  assert.equal(canonical.host.commit, controllerIntegrationCommit);
+  assert.equal(canonical.host.commit, upstreamCompatibilityCommit);
   assert.equal(canonical.pluginApi.range, `=${controllerPackageVersion}`);
   assert.equal(packageJson.dependencies.openclaw, publishedSdkVersion);
   assert.equal(packageJson.openclaw.compat.pluginApi, `=${controllerPackageVersion}`);
@@ -37,7 +38,8 @@ test('keeps product compatibility distinct from the controller package boundary'
   }
   assert.equal(pinnedHost.packageVersion, controllerPackageVersion);
   assert.equal(pinnedHost.commit, controllerIntegrationCommit);
-  assert.equal(pinnedHost.commit, canonical.host.commit);
+  assert.equal(canonical.host.commit, upstreamCompatibilityCommit);
+  assert.notEqual(pinnedHost.commit, canonical.host.commit);
 });
 
 for (const [name, mutate] of [

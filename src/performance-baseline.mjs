@@ -5,7 +5,7 @@ export const RELEASE_PERFORMANCE_BASELINE_VERSION = 1;
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
   largeNoteBytes: 8_388_609,
   conversations: 101,
-  activityRecords: 51,
+  activityRecords: 101,
   actionCards: 2,
   indexedNotes: 5_000,
   indexedConversationMessages: 5_000
@@ -181,6 +181,13 @@ export function assertPerformanceObservationWithinBaseline(name, observation, ba
   positiveInteger(observation, `observation.${name}`);
   const validated = validateReleasePerformanceBaseline(baseline);
   if (observation > validated.thresholds[name]) throw new Error(`Release performance baseline: ${name} exceeded ${validated.thresholds[name]} ms`);
+  return true;
+}
+
+export function assertPerformanceBaselineBuildIdentity(baseline, expectedBuildDigest) {
+  const validated = validateReleasePerformanceBaseline(baseline);
+  digest(expectedBuildDigest, 'expectedBuildDigest');
+  if (validated.pluginBuildDigest !== expectedBuildDigest) invalid('pluginBuildDigest does not match the final build');
   return true;
 }
 
