@@ -1,4 +1,5 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
+import { allowOpaqueFrameRequest } from '../http/opaque-frame-cors.mjs';
 
 const MAX_BODY = 64 * 1024;
 function response(res, status, value) { const body = JSON.stringify(value); if (body.length > 256 * 1024) return response(res, 500, { status: 'error', code: 'bounded-response', message: 'Topic Analysis response exceeded its bound.' }); res.statusCode = status; res.setHeader?.('content-type', 'application/json; charset=utf-8'); res.end(body); }
@@ -12,6 +13,8 @@ function failure(error) {
 
 export function createTopicAnalysisReadHttpHandler(service) {
   return async function topicAnalysisRead(req, res) {
+    if (!allowOpaqueFrameRequest(req, res, { method: 'GET' })) return response(res, 403, { status: 'error', code: 'origin-not-allowed' });
+    if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('cache-control', 'no-store'); return res.end(); }
     if (req.method !== 'GET') return response(res, 405, { status: 'error', code: 'method-not-allowed' });
     try {
       const schedule = service.topicAnalysisSchedule?.peekSettings?.() ?? service.analysisSchedule?.peekSettings?.() ?? service.getTopicAnalysisSettings?.() ?? null;
@@ -24,8 +27,11 @@ export function createTopicAnalysisReadHttpHandler(service) {
 
 export function createTopicAnalysisActionsHttpHandler(service) {
   return async function topicAnalysisActions(req, res) {
+    if (!allowOpaqueFrameRequest(req, res, { method: 'POST', headers: ['Content-Type'] })) return response(res, 403, { status: 'error', code: 'origin-not-allowed' });
+    if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('cache-control', 'no-store'); return res.end(); }
     if (req.method !== 'POST') return response(res, 405, { status: 'error', code: 'method-not-allowed' });
     try {
+      if (!/^application\/json(?:\s*;|$)/iu.test(String(req.headers?.['content-type'] ?? ''))) throw Object.assign(new Error('JSON content type is required.'), { code: 'invalid-request' });
       const input = await body(req); closed(input, ['schemaVersion', 'action', 'logicalOperationId', 'expectedRevision', 'settings', 'trigger', 'proposalId', 'expectedProposalRevision', 'adjustment', 'reviewId', 'expectedReviewRevision', 'snoozedUntil', 'applicationId', 'planRevision', 'confirm', 'approvedProposalRevisions']);
       if (input.schemaVersion !== 1 || typeof input.action !== 'string' || !isCanonicalUuid(input.logicalOperationId)) throw Object.assign(new Error('Closed Topic Analysis action fields are required.'), { code: 'invalid-request' });
       let result;

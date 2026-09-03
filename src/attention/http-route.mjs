@@ -1,4 +1,5 @@
 import { sanitizeBridgeResult, validateBridgeRequest } from '../bridge/contracts.mjs';
+import { allowOpaqueFrameRequest } from '../http/opaque-frame-cors.mjs';
 
 async function readJsonBody(req) {
   if (req?.body && typeof req.body === 'object') { if (JSON.stringify(req.body).length > 32768) throw new Error('request body is too large'); return req.body; }
@@ -23,8 +24,11 @@ async function readJsonBody(req) {
 
 export function createAttentionActionHandler(service) {
   return async (req, res) => {
+    if (!allowOpaqueFrameRequest(req, res, { method: 'POST', headers: ['Content-Type'] })) { res.statusCode = 403; res.setHeader?.('content-type', 'application/json'); res.end?.(JSON.stringify({ schemaVersion: 1, status: 'unavailable', code: 'origin-not-allowed' })); return; }
+    if (req?.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('cache-control', 'no-store'); res.end?.(); return; }
     if (req?.method !== 'POST') { res.statusCode = 405; res.end?.(); return; }
     try {
+      if (!/^application\/json(?:\s*;|$)/iu.test(String(req.headers?.['content-type'] ?? ''))) throw new Error('JSON content type is required');
       const body = await readJsonBody(req);
       validateBridgeRequest('command-center.v1.attention.act', body);
       if (typeof body.sourceCapabilityId !== 'string' || body.sourceCapabilityId.trim() === '' || typeof body.stableSubjectId !== 'string' || body.stableSubjectId.trim() === '') throw new Error('exact source identity is required');

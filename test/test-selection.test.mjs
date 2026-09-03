@@ -1,7 +1,22 @@
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { ordinaryTestArgv, ordinaryTestLanes, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
+import { ordinaryTestArgv, ordinaryTestLanes, resolveRealHostAcceptancePlan, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
+
+test('real-host acceptance defaults to the complete release plan', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan(), { kind: 'release', scenarioIds: null });
+  assert.deepEqual(resolveRealHostAcceptancePlan('  '), { kind: 'release', scenarioIds: null });
+});
+
+test('real-host acceptance exposes one closed authenticated mount dependency plan', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('authenticated-control-ui-mount'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'startup-projection-recovery', 'authenticated-control-ui-mount']
+  });
+  for (const value of ['unknown', '*', 'authenticated-control-ui-mount,scale-performance']) {
+    assert.throws(() => resolveRealHostAcceptancePlan(value), /Unsupported real-host acceptance scenario/u);
+  }
+});
 
 test('ordinary suite excludes only the separately invoked real-host receipt test', () => {
   assert.deepEqual(selectOrdinaryTestFiles([

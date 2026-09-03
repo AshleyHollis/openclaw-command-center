@@ -28,6 +28,7 @@ import { compatibilityTuple } from '../src/compatibility.mjs';
 import { collectSequentialAcceptanceBatch, createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice } from '../src/acceptance-scenario-coordinator.mjs';
 import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence } from '../src/acceptance-migration.mjs';
 import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
+import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
 const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
 const acceptanceSignalContext = new AsyncLocalStorage();
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
@@ -36,6 +37,8 @@ const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
 const READY_CAPABILITIES = Object.freeze(Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'analysis', 'attention', 'search'].map((name) => [name, true])));
 const capturePerformanceBaseline = process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE === '1';
 const capturedPerformanceBaselinePath = '/tmp/command-center-release-performance-baseline.v1.json';
+const acceptancePlan = resolveRealHostAcceptancePlan(process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO);
+if (acceptancePlan.kind === 'focused' && capturePerformanceBaseline) throw new Error('Focused real-host acceptance cannot capture a performance baseline.');
 
 function releaseScaleConversationOperationId(index) {
   assert.ok(Number.isInteger(index) && index > 0 && index < RELEASE_FIXTURE_COUNTS.conversations);
@@ -1641,7 +1644,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
     buildReceipt = await withDeadline('candidate build', () => build(), 120_000);
     await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
-    if (!capturePerformanceBaseline) {
+    if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
       baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
       assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
     }
@@ -1840,7 +1843,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         return new HarnessFailure('release-row-failed', message);
       }
     });
-    const { failures: scenarioFailures, evidence: scenarioEvidence, collect: collectScenario } = scenarioCoordinator;
+    const { failures: scenarioFailures, evidence: scenarioEvidence, collect: collectPlannedScenario } = scenarioCoordinator;
+    const focusedScenarioIds = acceptancePlan.kind === 'focused' ? new Set(acceptancePlan.scenarioIds) : null;
+    const collectScenario = (id, run) => focusedScenarioIds && !focusedScenarioIds.has(id) ? Promise.resolve() : collectPlannedScenario(id, run);
     const scenarioResult = (id) => {
       try { return scenarioCoordinator.result(id); }
       catch { throw new HarnessFailure('release-row-missing', `Release scenario produced no evidence for ${id}`); }
@@ -2099,7 +2104,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           fixtureCounts: RELEASE_FIXTURE_COUNTS,
           capture: { policy: 'first-successful-pinned-harness-observation', successfulRunOrdinal: null }
         };
-      } else assert.equal(browser.version(), baseline.browser.version, 'Running Chromium version must match the measured baseline identity');
+      } else if (acceptancePlan.kind === 'release') assert.equal(browser.version(), baseline.browser.version, 'Running Chromium version must match the measured baseline identity');
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
       const parentBootstrap = observeBrowserResponse(
@@ -2598,12 +2603,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await assertResponsiveFrame(frame, page, 320);
       return { planRevision: frozenPlan.planRevision, appliedProposalCount: durableProposals.length };
     });
-    await Promise.all([...isolatedSlices.keys()].map(async (id) => {
-      try { await isolatedResult(id); }
-      catch (error) {
-        scenarioFailures.push({ id: `isolated:${id}`, error: new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || error)) });
-      }
-    }));
+    if (acceptancePlan.kind === 'release') {
+      await Promise.all([...isolatedSlices.keys()].map(async (id) => {
+        try { await isolatedResult(id); }
+        catch (error) {
+          scenarioFailures.push({ id: `isolated:${id}`, error: new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || error)) });
+        }
+      }));
+    }
     const finalizationErrors = await finalizeAcceptanceJourney({
       closeBrowser: async (signal) => await closeManagedBrowser(managedBrowser, signal),
       stopHost: async () => {
@@ -2628,7 +2635,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });
       scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), redactBrowserEvidence(failure?.message || '')]);
       privacyEvidence = { schemaVersion: 1, repository: true, generated: true, capturedOutput: true, browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: finalizationErrors.length === 0 };
-      if (scenarioFailures.length === 0 && finalizationErrors.length === 0) {
+      if (acceptancePlan.kind === 'release' && scenarioFailures.length === 0 && finalizationErrors.length === 0) {
         assert.ok(scaleJourney && mobileJourney && releaseState.reviewApplied, 'baseline qualification requires every independently collected release phase');
         assert.equal(isolatedEvidence.size, isolatedSlices.size, 'baseline qualification requires every independent runtime slice');
         scaleJourney.measurement.topicReviewApplyMs = releaseState.topicReviewApplyMs;
@@ -2646,6 +2653,16 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       scenarioFailures.push({ id: 'release-preflight', error: new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || error)) });
     }
     if (scenarioFailures.length > 0) failure = new AggregateError(scenarioFailures.map(({ error }) => error), `Release scenarios failed: ${scenarioFailures.map(({ id }) => id).join(', ')}`);
+    if (acceptancePlan.kind === 'focused') {
+      try {
+        for (const id of acceptancePlan.scenarioIds) scenarioResult(id);
+        if (finalizationErrors.length > 0) throw finalizationErrors[0].error;
+        scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), JSON.stringify(privacyEvidence)]);
+      } catch (error) { failure ??= error; }
+      if (failure) throw failure;
+      testContext.diagnostic(`acceptance-scenario-result=${JSON.stringify({ schemaVersion: 1, outcome: 'passed', scenario: 'authenticated-control-ui-mount', scenarioIds: acceptancePlan.scenarioIds, buildDigest: buildReceipt.digest, performanceQualified: false })}`);
+      return;
+    }
     const rows = await runAcceptanceRows([
       { id: 'pinned-host-startup', run: async () => {
         scenarioResult('pinned-host-startup');

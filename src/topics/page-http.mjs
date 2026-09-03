@@ -1,4 +1,5 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
+import { allowOpaqueFrameRequest } from '../http/opaque-frame-cors.mjs';
 
 const ROUTE = '/plugins/command-center/api/topic/actions';
 const MAX_NOTE_BYTES = 8 * 1024 * 1024 + 1;
@@ -75,23 +76,6 @@ function sendJson(res, statusCode, value) {
   res.setHeader?.('Content-Type', 'application/json; charset=utf-8');
   res.setHeader?.('Cache-Control', 'no-store');
   res.end(body);
-}
-
-function allowOpaqueFrame(req, res) {
-  const origin = req.headers?.origin;
-  const allowedOrigin = origin === 'null' || origin === undefined;
-  const requestedMethod = String(req.headers?.['access-control-request-method'] ?? '').toUpperCase();
-  const requestedHeaders = String(req.headers?.['access-control-request-headers'] ?? '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean);
-  const validPreflight = req.method !== 'OPTIONS' || (requestedMethod === 'POST' && requestedHeaders.length === 1 && requestedHeaders[0] === 'content-type');
-  if (allowedOrigin && validPreflight) {
-    res.setHeader?.('Access-Control-Allow-Origin', 'null');
-    res.setHeader?.('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader?.('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') res.setHeader?.('Access-Control-Allow-Private-Network', 'true');
-    res.setHeader?.('Vary', 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers, Access-Control-Request-Private-Network');
-    return true;
-  }
-  return req.method !== 'OPTIONS' && origin === undefined;
 }
 
 function topic(service, topicId) {
@@ -213,7 +197,7 @@ async function execute(service, body, runtime = {}) {
 
 export function createTopicPageActionsHandler(service) {
   return async (req, res) => {
-    if (!allowOpaqueFrame(req, res)) { sendJson(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed', message: 'Topic Page action origin is not allowed.' }); return true; }
+    if (!allowOpaqueFrameRequest(req, res, { method: 'POST', headers: ['Content-Type'] })) { sendJson(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed', message: 'Topic Page action origin is not allowed.' }); return true; }
     if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('Cache-Control', 'no-store'); res.end(); return true; }
     if (req.method !== 'POST') { sendJson(res, 405, { schemaVersion: 1, status: 'error', code: 'method-not-allowed', message: 'Topic Page actions are POST-only.' }); return true; }
     try {

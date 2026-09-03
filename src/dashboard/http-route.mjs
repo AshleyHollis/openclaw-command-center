@@ -1,5 +1,6 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { normalizeNotificationSettings } from '../notifications/settings.mjs';
+import { allowOpaqueFrameRequest } from '../http/opaque-frame-cors.mjs';
 
 const MAX_BODY = 32_768;
 function send(res, status, value) {
@@ -17,18 +18,10 @@ async function readBody(req) {
   for await (const chunk of req ?? []) { body += chunk; if (Buffer.byteLength(body) > MAX_BODY) throw new Error('request body is too large'); }
   return JSON.parse(body || '{}');
 }
-function allowFrame(req, res) {
-  const origin = req.headers?.origin;
-  if (origin === undefined) return true;
-  if (origin !== 'null') return false;
-  res.setHeader?.('access-control-allow-origin', 'null');
-  res.setHeader?.('access-control-allow-credentials', 'true');
-  return true;
-}
-
 export function createDashboardReadHttpHandler(service) {
   return async (req, res) => {
-    if (!allowFrame(req, res)) { send(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed' }); return true; }
+    if (!allowOpaqueFrameRequest(req, res, { method: 'GET' })) { send(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed' }); return true; }
+    if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('cache-control', 'no-store'); res.end?.(); return true; }
     if (req.method !== 'GET') { send(res, 405, { schemaVersion: 1, status: 'error', code: 'method-not-allowed' }); return true; }
     try {
       const url = new URL(req.url ?? '/', 'http://command-center.invalid');
@@ -43,7 +36,8 @@ export function createDashboardReadHttpHandler(service) {
 
 export function createDashboardActionsHttpHandler(service) {
   return async (req, res) => {
-    if (!allowFrame(req, res)) { send(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed' }); return true; }
+    if (!allowOpaqueFrameRequest(req, res, { method: 'POST', headers: ['Content-Type'] })) { send(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed' }); return true; }
+    if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('cache-control', 'no-store'); res.end?.(); return true; }
     if (req.method !== 'POST') { send(res, 405, { schemaVersion: 1, status: 'error', code: 'method-not-allowed' }); return true; }
     try {
       if (!/^application\/json(?:\s*;|$)/iu.test(String(req.headers?.['content-type'] ?? ''))) throw new Error('JSON content type is required');

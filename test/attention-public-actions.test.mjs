@@ -28,6 +28,37 @@ function responseRecorder() {
   return { statusCode: 0, headers: {}, body: '', setHeader(name, value) { this.headers[name] = value; }, end(value = '') { this.body = value; } };
 }
 
+test('Attention action route admits only exact opaque-frame JSON preflights', async () => {
+  let calls = 0;
+  const handler = createAttentionActionHandler({ attentionGet() { calls += 1; }, attentionAct() { calls += 1; } });
+  const accepted = responseRecorder();
+  await handler({ method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type', 'access-control-request-private-network': 'true' } }, accepted);
+  assert.equal(accepted.statusCode, 204);
+  assert.equal(accepted.body, '');
+  assert.equal(accepted.headers['Access-Control-Allow-Origin'], 'null');
+  assert.equal(accepted.headers['Access-Control-Allow-Methods'], 'POST, OPTIONS');
+  assert.equal(accepted.headers['Access-Control-Allow-Headers'], 'Content-Type');
+  assert.equal(accepted.headers['Access-Control-Allow-Private-Network'], 'true');
+  assert.equal(accepted.headers['Access-Control-Allow-Credentials'], undefined);
+  for (const headers of [
+    { origin: 'https://example.invalid', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' },
+    { origin: 'null', 'access-control-request-method': 'GET', 'access-control-request-headers': 'content-type' },
+    { origin: 'null', 'access-control-request-method': 'POST' },
+    { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization, content-type' }
+  ]) {
+    const rejected = responseRecorder();
+    await handler({ method: 'OPTIONS', headers }, rejected);
+    assert.equal(rejected.statusCode, 403);
+  }
+  const nonJson = responseRecorder();
+  await handler({ method: 'POST', headers: { origin: 'null', 'content-type': 'text/plain' }, body: {} }, nonJson);
+  assert.equal(nonJson.statusCode, 400);
+  const nonNullOrigin = responseRecorder();
+  await handler({ method: 'POST', headers: { origin: 'https://example.invalid', 'content-type': 'application/json' }, body: {} }, nonNullOrigin);
+  assert.equal(nonNullOrigin.statusCode, 403);
+  assert.equal(calls, 0);
+});
+
 test('registered source ingestion and the exact POST route complete a Reminder with authoritative verification', async () => {
   await fixture(async ({ metadata }) => {
     const calls = [];
@@ -46,17 +77,17 @@ test('registered source ingestion and the exact POST route complete a Reminder w
     const body = { schemaVersion: 1, logicalOperationId: '71111111-1111-4111-8111-111111111111', sourceCapabilityId: 'reminders', stableSubjectId: 'subject-public', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'config-1', topicId: 'topic-public', sourceReferenceId: 'source-public', actionId: 'reminder.complete', input: { expectedConfigRevision: 'config-1' } };
     for (const wrongIdentity of [{ sourceCapabilityId: 'other-capability' }, { stableSubjectId: 'other-subject' }]) {
       const rejected = responseRecorder();
-      await handler({ method: 'POST', body: { ...body, ...wrongIdentity } }, rejected);
+      await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { ...body, ...wrongIdentity } }, rejected);
       assert.equal(rejected.statusCode, 400);
       assert.equal(calls.length, 0);
     }
     const response = responseRecorder();
-    await handler({ method: 'POST', body }, response);
+    await handler({ method: 'POST', headers: { origin: 'null', 'content-type': 'application/json' }, body }, response);
     assert.equal(response.statusCode, 200, response.body);
     assert.equal(JSON.parse(response.body).result.episode.state, 'Resolved');
     assert.equal(calls[0].parameters.expectedConfigRevision, 'config-1');
     const replay = responseRecorder();
-    await handler({ method: 'POST', body }, replay);
+    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body }, replay);
     assert.equal(replay.statusCode, 200);
     assert.equal(JSON.parse(replay.body).result.activity.activityId, JSON.parse(response.body).result.activity.activityId);
     assert.equal(calls.length, 1);
@@ -67,7 +98,7 @@ test('registered source ingestion and the exact POST route complete a Reminder w
     await handler({ body }, missingMethod);
     assert.equal(missingMethod.statusCode, 405);
     const openBody = responseRecorder();
-    await handler({ method: 'POST', body: { ...body, logicalOperationId: '72222222-2222-4222-8222-222222222222', credential: 'forbidden' } }, openBody);
+    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { ...body, logicalOperationId: '72222222-2222-4222-8222-222222222222', credential: 'forbidden' } }, openBody);
     assert.equal(openBody.statusCode, 400);
     attention.close();
   });
@@ -89,7 +120,7 @@ test('the plugin POST route cannot fabricate an operator for approval-required m
     const created = await attention.ingest(occurrence('approval-route', 'approval-route-1'));
     const handler = createAttentionActionHandler({ attentionAct: (input) => attention.act(input), attentionGet: (input) => attention.get(input.episodeId) });
     const response = responseRecorder();
-    await handler({ method: 'POST', body: { schemaVersion: 1, logicalOperationId: '70111111-1111-4111-8111-111111111111', sourceCapabilityId: 'approval-route', stableSubjectId: 'subject-public', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'unversioned', topicId: 'topic-public', sourceReferenceId: 'source-public', actionId: 'monitor.change', input: {} } }, response);
+    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { schemaVersion: 1, logicalOperationId: '70111111-1111-4111-8111-111111111111', sourceCapabilityId: 'approval-route', stableSubjectId: 'subject-public', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'unversioned', topicId: 'topic-public', sourceReferenceId: 'source-public', actionId: 'monitor.change', input: {} } }, response);
     assert.equal(response.statusCode, 400);
     assert.equal(dispatches, 0);
     assert.equal(attention.get(created.episode.episodeId).episode.state, 'Active');
@@ -272,7 +303,7 @@ test('a snoozed Reminder refreshes its authoritative revision before the next pu
     const created = attention.list({ schemaVersion: 1 }).episodes[0];
     const common = { schemaVersion: 1, sourceCapabilityId: 'reminders', stableSubjectId: 'job-recurrence', episodeId: created.episodeId, topicId: 'topic-public', sourceReferenceId: 'reminder-recurrence' };
     const snoozeResponse = responseRecorder();
-    await handler({ method: 'POST', body: { ...common, logicalOperationId: '78911111-1111-4111-8111-111111111111', expectedEpisodeRevision: created.revision, expectedSourceRevision: 'config-1', actionId: 'reminder.snooze', input: { until: '2026-08-23T00:02:00.000Z', expectedConfigRevision: 'config-1' } } }, snoozeResponse);
+    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { ...common, logicalOperationId: '78911111-1111-4111-8111-111111111111', expectedEpisodeRevision: created.revision, expectedSourceRevision: 'config-1', actionId: 'reminder.snooze', input: { until: '2026-08-23T00:02:00.000Z', expectedConfigRevision: 'config-1' } } }, snoozeResponse);
     assert.equal(snoozeResponse.statusCode, 200, snoozeResponse.body);
 
     clock = '2026-08-23T00:03:00.000Z';
@@ -281,7 +312,7 @@ test('a snoozed Reminder refreshes its authoritative revision before the next pu
     assert.equal(ready.episodeId, created.episodeId);
     assert.equal(ready.sourceRevision, 'config-2');
     const completeResponse = responseRecorder();
-    await handler({ method: 'POST', body: { ...common, logicalOperationId: '78922222-2222-4222-8222-222222222222', expectedEpisodeRevision: ready.revision, expectedSourceRevision: 'config-2', actionId: 'reminder.complete', input: { expectedConfigRevision: 'config-2' } } }, completeResponse);
+    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { ...common, logicalOperationId: '78922222-2222-4222-8222-222222222222', expectedEpisodeRevision: ready.revision, expectedSourceRevision: 'config-2', actionId: 'reminder.complete', input: { expectedConfigRevision: 'config-2' } } }, completeResponse);
     assert.equal(completeResponse.statusCode, 200, completeResponse.body);
     assert.equal(JSON.parse(completeResponse.body).result.episode.state, 'Resolved');
     assert.equal(job.configRevision, 'config-3');

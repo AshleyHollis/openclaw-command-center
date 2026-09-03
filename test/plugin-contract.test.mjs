@@ -97,7 +97,7 @@ test('Topic workspace declares the exact external-tab capability bridge and boun
   assert.match(html, /app\.js/u);
   for (const id of ['topic-workspace', 'chat-pane', 'conversations-pane', 'notes-pane', 'workspace-search-pane', 'note-action-dialog']) assert.match(html, new RegExp(`id="${id}"`, 'u'));
   const app = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
-  assert.match(app, /import\('\.\/markdown\.js'\)/u);
+  assert.match(app, /import\('\/plugins\/command-center\/markdown\.js'\)/u);
   assert.match(app, /bridgeReady\.then\(loadOperatingState\)/u);
   assert.match(app, /if \(requestedTopicId === null\) void loadTopics\(\)/u);
   assert.match(app, /fetch\(PAGE_ACTION_ROUTE, \{ method: 'POST', credentials: 'omit'/u);

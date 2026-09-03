@@ -17,7 +17,7 @@ async function invoke(handler, { method = 'GET', body, headers = {} } = {}) {
   Object.assign(request, { method, headers });
   const response = makeResponse();
   await handler(request, response);
-  return { statusCode: response.statusCode, body: JSON.parse(response.body) };
+  return { statusCode: response.statusCode, headers: response.headers, body: response.body ? JSON.parse(response.body) : null };
 }
 
 test('Topic Review HTTP contracts are closed, POST-only, revision-aware, and read-only GET has no initialization side effect', async () => {
@@ -48,6 +48,39 @@ test('Topic Review HTTP contracts are closed, POST-only, revision-aware, and rea
   assert.equal((await invoke(createTopicAnalysisActionsHttpHandler(service), { method: 'POST', body: { schemaVersion: 1, action: 'review.snooze', logicalOperationId: uuid, reviewId: 'topic-review:global', expectedReviewRevision: 2, snoozedUntil: '2026-08-31T07:00:00.000Z' }, headers: { 'content-type': 'application/json' } })).statusCode, 200);
   assert.equal((await invoke(createTopicAnalysisActionsHttpHandler(service), { method: 'POST', body: { schemaVersion: 1, action: 'review.apply', logicalOperationId: uuid, reviewId: 'topic-review:global', applicationId: 'application-fictional', confirm: false }, headers: { 'content-type': 'application/json' } })).statusCode, 200);
   assert.deepEqual(calls.map(([name]) => name), ['analysis.run', 'snooze', 'checkpoint']);
+});
+
+test('Topic Analysis routes admit only exact opaque-frame CORS preflights', async () => {
+  let calls = 0;
+  const service = {
+    topicAnalysisSchedule: { peekSettings() { calls += 1; }, update() { calls += 1; } },
+    topicAnalysisRunner: { metadata: { listTopicAnalysisRuns() { calls += 1; return []; } }, run() { calls += 1; } },
+    topicReview: { get() { calls += 1; } }
+  };
+  const privateNetwork = { origin: 'null', 'access-control-request-private-network': 'true' };
+  const read = await invoke(createTopicAnalysisReadHttpHandler(service), { method: 'OPTIONS', headers: { ...privateNetwork, 'access-control-request-method': 'GET' } });
+  assert.equal(read.statusCode, 204);
+  assert.equal(read.headers['Access-Control-Allow-Origin'], 'null');
+  assert.equal(read.headers['Access-Control-Allow-Methods'], 'GET, OPTIONS');
+  assert.equal(read.headers['Access-Control-Allow-Headers'], undefined);
+  const action = await invoke(createTopicAnalysisActionsHttpHandler(service), { method: 'OPTIONS', headers: { ...privateNetwork, 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } });
+  assert.equal(action.statusCode, 204);
+  assert.equal(action.headers['Access-Control-Allow-Origin'], 'null');
+  assert.equal(action.headers['Access-Control-Allow-Methods'], 'POST, OPTIONS');
+  assert.equal(action.headers['Access-Control-Allow-Headers'], 'Content-Type');
+  assert.equal(action.headers['Access-Control-Allow-Private-Network'], 'true');
+  assert.equal(action.headers['Access-Control-Allow-Credentials'], undefined);
+  for (const request of [
+    { handler: createTopicAnalysisReadHttpHandler(service), headers: { origin: 'https://example.invalid', 'access-control-request-method': 'GET' } },
+    { handler: createTopicAnalysisReadHttpHandler(service), headers: { origin: 'null', 'access-control-request-method': 'POST' } },
+    { handler: createTopicAnalysisActionsHttpHandler(service), headers: { origin: 'null', 'access-control-request-method': 'POST' } },
+    { handler: createTopicAnalysisActionsHttpHandler(service), headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization, content-type' } }
+  ]) assert.equal((await invoke(request.handler, { method: 'OPTIONS', headers: request.headers })).statusCode, 403);
+  const nonJson = await invoke(createTopicAnalysisActionsHttpHandler(service), { method: 'POST', headers: { origin: 'null', 'content-type': 'text/plain' }, body: {} });
+  assert.equal(nonJson.statusCode, 400);
+  const nonNullOrigin = await invoke(createTopicAnalysisActionsHttpHandler(service), { method: 'POST', headers: { origin: 'https://example.invalid', 'content-type': 'application/json' }, body: {} });
+  assert.equal(nonNullOrigin.statusCode, 403);
+  assert.equal(calls, 0);
 });
 
 test('Topic Review UI exposes schedule, evidence/consequences, independent decisions, snooze, and final Apply confirmation', () => {

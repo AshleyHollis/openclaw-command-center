@@ -30,6 +30,22 @@ const issue32TicketTests = new Set([
   'test-selection.test.mjs'
 ]);
 
+const focusedRealHostScenarios = Object.freeze({
+  'authenticated-control-ui-mount': Object.freeze([
+    'pinned-host-startup',
+    'startup-projection-recovery',
+    'authenticated-control-ui-mount'
+  ])
+});
+
+export function resolveRealHostAcceptancePlan(value) {
+  const selected = typeof value === 'string' ? value.trim() : '';
+  if (selected === '') return Object.freeze({ kind: 'release', scenarioIds: null });
+  const scenarioIds = focusedRealHostScenarios[selected];
+  if (!scenarioIds) throw new Error(`Unsupported real-host acceptance scenario: ${selected}`);
+  return Object.freeze({ kind: 'focused', scenarioIds });
+}
+
 /**
  * Select the ordinary repository suite. Controller-owned receipt tests retain
  * their exact paths and fail-closed setup, but run only through their dedicated

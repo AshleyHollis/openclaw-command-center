@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -42,6 +42,12 @@ test('serves a validated built shell asset', async () => {
     assert.equal(res.headers.get('access-control-allow-origin'), 'null');
     assert.equal(String(res.body), '<safe shell>');
   });
+});
+
+test('opaque srcdoc shell loads markdown from the absolute plugin asset route', async () => {
+  const app = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
+  assert.match(app, /import\('\/plugins\/command-center\/markdown\.js'\)/u);
+  assert.doesNotMatch(app, /import\('\.\/markdown\.js'\)/u);
 });
 
 test('handler rejects final and intermediate asset symlinks before serving content', async () => {

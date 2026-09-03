@@ -7,7 +7,18 @@ import { createDashboardActionsHttpHandler, createDashboardReadHttpHandler } fro
 function response() { return { statusCode: 0, headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(value = '') { this.body = value; } }; }
 async function invoke(handler, { method = 'GET', url = '/', body, headers = {} } = {}) {
   const req = Readable.from(body === undefined ? [] : [JSON.stringify(body)]); Object.assign(req, { method, url, headers });
-  const res = response(); await handler(req, res); return { statusCode: res.statusCode, body: JSON.parse(res.body) };
+  const res = response(); await handler(req, res); return { statusCode: res.statusCode, headers: res.headers, body: res.body ? JSON.parse(res.body) : null };
+}
+
+function assertOpaquePreflight(result, method, headers) {
+  assert.equal(result.statusCode, 204);
+  assert.equal(result.body, null);
+  assert.equal(result.headers['Access-Control-Allow-Origin'], 'null');
+  assert.equal(result.headers['Access-Control-Allow-Methods'], `${method}, OPTIONS`);
+  assert.equal(result.headers['Access-Control-Allow-Headers'], headers);
+  assert.equal(result.headers['Access-Control-Allow-Private-Network'], 'true');
+  assert.equal(result.headers['Access-Control-Allow-Credentials'], undefined);
+  assert.equal(result.headers.Vary, 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers, Access-Control-Request-Private-Network');
 }
 
 test('Dashboard read is bounded and mutation settings use only the closed POST contract', async () => {
@@ -22,4 +33,21 @@ test('Dashboard read is bounded and mutation settings use only the closed POST c
   assert.equal(update.action, undefined);
   assert.equal((await invoke(createDashboardActionsHttpHandler(service), { method: 'POST', headers: { 'content-type': 'application/json' }, body: { schemaVersion: 1, action: 'settings.update', logicalOperationId: operation, expectedRevision: 1, settings: { dueReminders: false }, extra: true } })).statusCode, 400);
   assert.equal((await invoke(createDashboardActionsHttpHandler(service), { method: 'GET' })).statusCode, 405);
+});
+
+test('Dashboard routes admit only exact opaque-frame CORS preflights', async () => {
+  let calls = 0;
+  const service = { dashboard: { async get() { calls += 1; return {}; } }, async dashboardUpdateSettings() { calls += 1; return {}; } };
+  const privateNetwork = { origin: 'null', 'access-control-request-private-network': 'true' };
+  assertOpaquePreflight(await invoke(createDashboardReadHttpHandler(service), { method: 'OPTIONS', headers: { ...privateNetwork, 'access-control-request-method': 'GET' } }), 'GET', undefined);
+  assertOpaquePreflight(await invoke(createDashboardActionsHttpHandler(service), { method: 'OPTIONS', headers: { ...privateNetwork, 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } }), 'POST', 'Content-Type');
+  for (const request of [
+    { handler: createDashboardReadHttpHandler(service), headers: { origin: 'https://example.invalid', 'access-control-request-method': 'GET' } },
+    { handler: createDashboardReadHttpHandler(service), headers: { origin: 'null', 'access-control-request-method': 'POST' } },
+    { handler: createDashboardActionsHttpHandler(service), headers: { origin: 'null', 'access-control-request-method': 'POST' } },
+    { handler: createDashboardActionsHttpHandler(service), headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization, content-type' } }
+  ]) assert.equal((await invoke(request.handler, { method: 'OPTIONS', headers: request.headers })).statusCode, 403);
+  assert.equal((await invoke(createDashboardReadHttpHandler(service), { headers: { origin: 'https://example.invalid' } })).statusCode, 403);
+  assert.equal((await invoke(createDashboardActionsHttpHandler(service), { method: 'POST', headers: { origin: 'https://example.invalid', 'content-type': 'application/json' }, body: {} })).statusCode, 403);
+  assert.equal(calls, 0);
 });
