@@ -7,7 +7,7 @@ const statusNode = document.querySelector('#topic-status');
 const hasTopicsDestination = Boolean(topicCreateForm && statusNode);
 const PAGE_ACTION_ROUTE = '/plugins/command-center/api/topic/actions';
 const SEARCH_REBUILD_ROUTE = '/plugins/command-center/api/search/rebuild';
-const markdownModuleUrl = document.baseURI ? new URL('/plugins/command-center/markdown.js', document.baseURI).href : '/plugins/command-center/markdown.js';
+const markdownModuleUrl = /^https?:/u.test(document.baseURI) ? new URL('/plugins/command-center/markdown.js', document.baseURI).href : '/plugins/command-center/markdown.js';
 let markdownModule;
 function loadMarkdownModule() { return markdownModule ??= import(markdownModuleUrl); }
 const SCRIPTED_FORM_IDS = new Set(['topic-analysis-schedule', 'notification-settings-form', 'topic-create', 'topic-search-form', 'chat-form', 'conversation-create', 'note-action-form', 'workspace-search-form']);
@@ -23,7 +23,6 @@ let currentDestination = { activeGroups: { project: [], area: [], resource: [] }
 let topicCreatePending = false;
 let topicCreateOperation = null;
 const DASHBOARD_ROUTE = '/plugins/command-center/api/dashboard';
-const ATTENTION_ROUTE = '/plugins/command-center/api/attention/actions';
 const DASHBOARD_ACTIONS_ROUTE = '/plugins/command-center/api/dashboard/actions';
 const TOPIC_ANALYSIS_ROUTE = '/plugins/command-center/api/topic-analysis';
 const TOPIC_ANALYSIS_ACTIONS_ROUTE = '/plugins/command-center/api/topic-analysis/actions';
@@ -139,12 +138,11 @@ async function saveNotificationSettings(event) {
 document.querySelector('#notification-settings-form')?.addEventListener('submit', saveNotificationSettings);
 async function dashboardMutate(episode, action, input = {}) {
   requireReadyMutation();
-  const response = await fetch(ATTENTION_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+  const value = await bridgeRequest('command-center.v1.attention.act', {
     schemaVersion: 1, logicalOperationId: operationId(), sourceCapabilityId: episode.sourceCapabilityId, stableSubjectId: episode.stableSubjectId, episodeId: episode.episodeId,
     expectedEpisodeRevision: episode.revision, expectedSourceRevision: episode.sourceRevision ?? undefined, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actionId: action, input
-  }) });
-  const value = await response.json();
-  if (!response.ok || value.status === 'unavailable' || value.status === 'error') throw new Error(value.message || 'Action was refused.');
+  });
+  if (value?.status !== 'applied' && value?.status !== 'approval-required') throw Object.assign(new Error('Action delivery is not yet confirmed. Retry the unchanged action to reconcile it.'), { terminal: false });
   return value;
 }
 async function openTopic(topicId) {
@@ -270,7 +268,14 @@ async function loadDashboard() {
   } catch (error) { document.querySelector('#dashboard-feedback').textContent = error.message || 'Dashboard is unavailable.'; }
 }
 
-function operationId() { return crypto.randomUUID(); }
+function operationId() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const value = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+}
 function unwrap(value) { while (value?.result !== undefined || value?.value !== undefined) value = value.result ?? value.value; return value; }
 const pendingBridgeRequests = new Map();
 let advertisedBridgeMethods = new Set();

@@ -119,6 +119,7 @@ export default definePluginEntry({
           'command-center.v1.sessions.history',
           'command-center.v1.sessions.navigate',
           'command-center.v1.sessions.send',
+          'command-center.v1.attention.act',
           'command-center.v1.notes.browse',
           'command-center.v1.notes.read',
           'command-center.v1.search.query',

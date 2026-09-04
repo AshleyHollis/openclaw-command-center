@@ -8,6 +8,7 @@
   --accent: #75d2bc;
 }
 * { box-sizing: border-box; min-width: 0; }
+[hidden] { display: none !important; }
 html { overflow-x: hidden; }
 body { margin: 0; background: radial-gradient(circle at 15% 0, #173248, var(--bg) 42%); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
 main { width: min(1180px, 100%); margin: auto; padding: clamp(18px, 4vw, 48px); overflow-wrap: anywhere; }

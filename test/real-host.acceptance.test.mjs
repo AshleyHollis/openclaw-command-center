@@ -1287,12 +1287,16 @@ async function readDashboard(gatewayUrl, { activityOffset = 0, activityLimit = 5
   return (await response.json()).result;
 }
 
-async function completeReminder(gatewayUrl, episode) {
-  const response = await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/attention/actions`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(reminderActionRequest(episode))
-  }, 'attention action');
-  assert.equal(response.status, 200);
-  const payload = await response.json();
+async function completeReminder(gatewayUrl, episode, { credential, signal, deviceIdentity } = {}) {
+  const payload = await requestAuthenticatedGateway({
+    gatewayUrl,
+    credential,
+    scopes: ['operator.read', 'operator.write', 'operator.admin'],
+    method: 'command-center.v1.attention.act',
+    params: reminderActionRequest(episode),
+    signal,
+    deviceIdentity
+  });
   if (payload?.status !== 'applied' || payload?.result?.episode?.state !== 'Resolved') {
     throw new HarnessFailure('reminder-completion-not-applied', `Reminder completion did not reach its durable terminal state: ${JSON.stringify({ status: payload?.status ?? null, episodeState: payload?.result?.episode?.state ?? null, attemptState: payload?.result?.attempt?.state ?? null, attemptOutcome: payload?.result?.attempt?.outcome ?? null, verificationRevision: payload?.result?.attempt?.verificationRevision ?? null, evidenceFacts: payload?.result?.episode?.evidenceFacts ?? null })}`);
   }
@@ -2527,7 +2531,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.dashboard.get', params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, signal, deviceIdentity });
       const emission = await waitForNotificationEmission(databasePath, { status: 'sent' });
       assert.equal(notificationReceiver.deliveries.some((delivery) => delivery.method === 'POST' && delivery.bytes > 0), true);
-      await completeReminder(gatewayUrl, reminder);
+      await completeReminder(gatewayUrl, reminder, { credential: world.gatewayCredential, signal, deviceIdentity });
       const cleared = await waitForNotificationEmission(databasePath, { status: 'cleared' });
       assert.equal(notificationReceiver.deliveries.filter((delivery) => delivery.method === 'POST' && delivery.bytes > 0).length >= 2, true);
       return { closedTabNotificationStatus: emission.status, closedTabNotificationCleared: cleared.status === 'cleared' };
@@ -2871,7 +2875,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const closedDashboard = await readDashboard(gatewayUrl);
       const closedEpisode = closedDashboard.attention.find((episode) => episode.sourceCapabilityId === 'reminders' && episode.actions.some((action) => action.actionId === 'reminder.complete'));
       assert.ok(closedEpisode?.episodeId && closedEpisode?.sourceReferenceId);
-      await completeReminder(gatewayUrl, closedEpisode);
+      await completeReminder(gatewayUrl, closedEpisode, { credential: world.gatewayCredential, signal, deviceIdentity: notificationDeviceIdentity });
       const clearedEmission = await waitForNotificationEmission(databasePath, { status: 'cleared' });
       evidence.closedTabNotificationCleared = true;
       await requestAuthenticatedGateway({

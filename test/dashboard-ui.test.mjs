@@ -27,6 +27,8 @@ test('Dashboard markup keeps the required first-class regions and narrow flow la
   assert.match(app, /workspace\.conversations\.slice\(start, start \+ CONVERSATION_PAGE_SIZE\)/u);
   assert.doesNotMatch(app, /workspace\.conversationPage = selectedIndex/u);
   assert.match(app, /command-center\.v1\.topics\.get/u);
+  assert.match(app, /bridgeRequest\('command-center\.v1\.attention\.act'/u);
+  assert.doesNotMatch(app, /fetch\(ATTENTION_ROUTE/u);
   assert.match(app, /data-topic-id|dataset\.topicId/u);
   assert.match(app, /credentials: 'omit'/u);
   assert.match(app, /loadDashboard\(\)/u);
@@ -74,12 +76,18 @@ test('wide and narrow Topic launchers and topic.open actions open the exact veri
         window.__topicRequests = [];
         window.addEventListener('message', (event) => {
           const payload = event.data?.payload;
-          if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
+          if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.attention.act', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
           if (payload?.type !== 'openclaw:capability-bridge-request') return;
           window.__topicRequests.push(payload.method);
-          const result = payload.method === 'command-center.v1.topics.get'
-            ? { topic }
-            : { activeGroups: { project: [topic], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] };
+          if (payload.method === 'command-center.v1.attention.act') {
+            window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result: { schemaVersion: 1, status: 'applied', result: { navigation: { topicId: topic.topicId }, activity: { activityId: 'activity-ui-source-action', episodeId: 'episode-ui', logicalOperationId: 'operation-ui', topicId: topic.topicId, sourceReferenceId: 'source-ui', operationKind: 'topic.open', outcome: 'applied', verificationRevision: 'revision-ui', occurredAt: '2026-08-27T12:00:01.000Z' } } } } }, '*');
+            return;
+          }
+          const result = payload.method === 'command-center.v1.sources.status'
+            ? { schemaVersion: 1, mode: 'ready', unavailableCapabilities: [] }
+            : payload.method === 'command-center.v1.topics.get'
+              ? { topic }
+              : { activeGroups: { project: [topic], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] };
           window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result: { result } } }, '*');
         });
       });
@@ -90,7 +98,7 @@ test('wide and narrow Topic launchers and topic.open actions open the exact veri
       await page.getByText('Fictional Topic opened.').waitFor();
       assert.equal(await page.evaluate(() => document.activeElement?.dataset?.topicId), 'topic-ui');
       const before = await page.evaluate(() => window.__topicRequests.filter((method) => method === 'command-center.v1.topics.get').length);
-      await page.getByRole('button', { name: 'Open Topic' }).click();
+      await page.locator('#attention-cards').getByRole('button', { name: 'Open Topic' }).click();
       await page.waitForFunction((count) => window.__topicRequests.filter((method) => method === 'command-center.v1.topics.get').length > count, before);
       assert.equal(await page.evaluate(() => document.activeElement?.dataset?.topicId), 'topic-ui');
       assert.deepEqual(JSON.parse(await page.locator('#dashboard-feedback').getAttribute('data-activity-receipt')), { activityId: 'activity-ui-source-action', episodeId: 'episode-ui', logicalOperationId: 'operation-ui', topicId: 'topic-ui', sourceReferenceId: 'source-ui', operationKind: 'topic.open', outcome: 'applied', verificationRevision: 'revision-ui', occurredAt: '2026-08-27T12:00:01.000Z' });
@@ -123,9 +131,9 @@ test('Dashboard is keyboard-usable at 320px and opens a scrollable evidence dial
     assert.equal(await page.getByRole('dialog').getAttribute('open'), '');
     assert.equal(await page.locator('.evidence-scroll').evaluate((node) => getComputedStyle(node).overflowY), 'auto');
     await page.getByRole('button', { name: 'Close' }).click();
-    assert.equal(await page.getByRole('dialog').getAttribute('open'), null);
+    assert.equal(await page.locator('#evidence-dialog').getAttribute('open'), null);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= 320), true);
-    assert.equal(await page.locator('button').evaluateAll((nodes) => nodes.filter((node) => getComputedStyle(node).display !== 'none').every((node) => node.getBoundingClientRect().height >= 44)), true);
+    assert.equal(await page.locator('button').evaluateAll((nodes) => nodes.filter((node) => node.getClientRects().length > 0).every((node) => node.getBoundingClientRect().height >= 44)), true);
   } finally { await browser.close(); }
 });
 
@@ -161,7 +169,7 @@ test('authenticated operating modes preserve safe reads and suppress unsupported
       }, variant);
       await page.addScriptTag({ content: app });
       await page.getByText(variant.mode === 'ready' ? 'Ready' : variant.mode === 'degraded' ? 'Degraded · safe reads only' : 'Recovery-only · diagnostics and safe reads only', { exact: true }).waitFor();
-      await page.getByText('Fictional Mode Topic').first().waitFor();
+      await page.locator('.topic-row').filter({ hasText: 'Fictional Mode Topic' }).first().waitFor();
       assert.equal(await page.getByRole('button', { name: 'Open Topic' }).isVisible(), true, `${variant.mode} must retain safe Topic reads`);
       assert.equal(await page.locator('#topic-search-form button[type="submit"]').isVisible(), true, `${variant.mode} must retain safe indexed reads`);
       for (const selector of ['#topic-create', '#notification-settings-form', '#topic-analysis-schedule', '#topic-search-rebuild']) assert.equal(await page.locator(selector).isVisible(), variant.mutations, `${variant.mode} mutation visibility mismatch for ${selector}`);

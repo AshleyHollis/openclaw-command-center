@@ -67,6 +67,7 @@ test('Control UI descriptor grants the operating-status read used to unlock muta
     plugin.register(host.api);
     assert.equal(host.descriptors.length, 1);
     assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sources.status'));
+    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.attention.act'));
   } finally { await rm(stateDir, { recursive: true, force: true }); }
 });
 
