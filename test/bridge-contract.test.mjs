@@ -90,6 +90,58 @@ test('handlers preserve authenticated request context and echo request and logic
   assert.deepEqual(response[1], { schemaVersion: 1, status: 'applied', requestId: 'gateway-frame-1', logicalOperationId: null, result: { mode: 'ready' } });
 });
 
+test('registered Session send preserves the live authenticated host turn principal', async () => {
+  const registrations = [];
+  const dispatched = [];
+  const logicalOperationId = randomUUID();
+  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
+    sessionsSend: async (input, runtime) => ({
+      schemaVersion: 1,
+      status: 'applied',
+      logicalOperationId: input.logicalOperationId,
+      value: await runtime.agentTurnDispatch({
+        sessionKey: 'agent:main:dashboard:bridge-fictional',
+        sessionId: 'fictional-session-id',
+        message: input.message,
+        runId: input.logicalOperationId
+      })
+    })
+  });
+  const handler = registrations.find(([method]) => method === 'command-center.v1.sessions.send')[1];
+  let response;
+  const client = { authenticatedUserId: 'fictional-operator' };
+  const isWebchatConnect = () => false;
+  await handler({
+    req: { id: 'gateway-send-1' },
+    params: { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'session:fictional', message: 'Fictional authenticated message', logicalOperationId },
+    client,
+    isWebchatConnect,
+    context: {
+      authenticated: true,
+      getGatewayMethodRegistry: () => ({
+        getHandler: (method) => {
+          assert.equal(method, 'sessions.send');
+          return async (request) => {
+            assert.equal(request.client, client);
+            assert.equal(request.isWebchatConnect, isWebchatConnect);
+            dispatched.push(request);
+            request.respond(true, { runId: logicalOperationId, status: 'started' });
+          };
+        }
+      })
+    },
+    respond: (...args) => { response = args; }
+  });
+  assert.equal(response[0], true);
+  assert.deepEqual(dispatched[0].params, {
+    key: 'agent:main:dashboard:bridge-fictional',
+    agentId: 'main',
+    message: 'Fictional authenticated message',
+    idempotencyKey: logicalOperationId
+  });
+  assert.equal(response[1].result.value.runId, logicalOperationId);
+});
+
 test('authenticated Search rebuild preparation exposes only bounded operation evidence', async () => {
   const logicalOperationId = randomUUID();
   const result = await invokeBridgeMethod({

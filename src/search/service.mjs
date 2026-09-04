@@ -103,7 +103,7 @@ function noteResult(result) {
 }
 
 function conversationResult(result) {
-  if (typeof result.messageId !== 'string' || result.messageId.length === 0) return null;
+  if (result.messageId !== null && (typeof result.messageId !== 'string' || result.messageId.length === 0)) return null;
   const sourceReference = exactSourceReference(result.sourceReference);
   const snippet = boundedUnit(result.snippet, 240);
   const remaining = 600 - Array.from(snippet).length;

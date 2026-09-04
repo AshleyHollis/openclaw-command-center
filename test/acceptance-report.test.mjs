@@ -68,12 +68,15 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   assert.match(source, /fetchWithRuntimeDispatcher as fetch/u);
   for (const category of ['bootstrap-http-', 'bootstrap-invalid-response', 'metadata-not-ready']) assert.match(source, new RegExp(category, 'u'));
   assert.match(source, /api\/topics\/actions`.*, \{ method: 'POST'/u);
-  assert.equal(source.match(/collectSequentialAcceptanceBatch\(/gu)?.length, 2, 'both real-host 100-Conversation fixtures must collect every concurrency-one mutation result');
+  assert.equal(source.match(/await seedAuthoritativeSessionCatalog\(/gu)?.length, 2, 'both real-host 100-Conversation fixtures must use the bounded authoritative seeding path');
+  assert.match(source, /const batch = await Promise\.all\(indexes\.map/u);
+  assert.match(source, /metadata\.setSessionState\(/u);
   assert.doesNotMatch(source, /runSettledAcceptanceBatch/u);
   assert.match(source, /session-create-catalog-readback/u);
   assert.match(source, /session-create-idempotent-replay/u);
   assert.match(source, /migrated-scale-conversation-seeding/u);
-  assert.match(source, /Fresh scale Conversation \$\{index\}.*logicalOperationId: releaseScaleConversationOperationId\(index\)/u);
+  assert.match(source, /const key = `agent:main:command-center:acceptance-scale:\$\{topicId\}:\$\{index\}`/u);
+  assert.match(source, /params: \{ agentId: 'main', key, label \}/u);
   assert.doesNotMatch(source, /ensureVerifiedActivityFixture|createAttentionService/u);
   assert.match(source, /data-activity-receipt/u);
   assert.match(source, /method: 'command-center\.v1\.activity\.get'.*activityId: actionReceipt\.activityId/u);

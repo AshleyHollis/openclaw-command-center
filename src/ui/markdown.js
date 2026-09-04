@@ -35,7 +35,7 @@ function inline(value) {
   return text.replace(/\u0000(\d+)\u0000/gu, (_, index) => tokens[Number(index)]);
 }
 
-function renderLines(source) {
+function renderLines(source, { headingOffset = 0 } = {}) {
   const lines = String(source ?? '').replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
   const output = [];
   let paragraph = [];
@@ -74,7 +74,7 @@ function renderLines(source) {
     const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/u.exec(line);
     if (heading) {
       flushParagraph(); flushList();
-      const level = heading[1].length;
+      const level = Math.min(6, heading[1].length + Math.max(0, headingOffset));
       output.push(`<h${level}>${inline(heading[2])}</h${level}>`);
       continue;
     }
@@ -95,13 +95,13 @@ function renderLines(source) {
   return output.join('');
 }
 
-export function renderMarkdown(markdown) {
-  return renderLines(markdown);
+export function renderMarkdown(markdown, options) {
+  return renderLines(markdown, options);
 }
 
-export function renderMarkdownInto(element, markdown) {
+export function renderMarkdownInto(element, markdown, options) {
   if (!element) return;
-  element.innerHTML = renderMarkdown(markdown);
+  element.innerHTML = renderMarkdown(markdown, options);
 }
 
 globalThis.CommandCenterMarkdown = { renderMarkdown, renderMarkdownInto };

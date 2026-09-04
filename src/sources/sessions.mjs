@@ -61,31 +61,6 @@ export class SessionAdapter {
     this.now = now ?? (() => new Date().toISOString());
   }
 
-  async runEmbeddedMessage({ sessionKey, sessionId, message, runId }) {
-    const runtime = this.api?.runtime;
-    if (typeof runtime?.agent?.runEmbeddedAgent !== 'function' || typeof runtime?.config?.current !== 'function') return null;
-    const cfg = runtime.config.current();
-    const agentId = 'main';
-    const storePath = this.sessionStore?.resolveStorePath?.(cfg.session?.store, { agentId });
-    const workspaceDir = runtime.agent.resolveAgentWorkspaceDir(cfg, agentId);
-    const result = await runtime.agent.runEmbeddedAgent({
-      sessionId,
-      sessionKey,
-      ...(storePath ? { sessionTarget: { agentId, sessionId, sessionKey, storePath } } : {}),
-      agentId,
-      runId,
-      sessionPersistence: 'durable',
-      trigger: 'user',
-      messageChannel: 'webchat',
-      workspaceDir,
-      config: cfg,
-      timeoutMs: runtime.agent.resolveAgentTimeoutMs(cfg),
-      prompt: message,
-      transcriptPrompt: message
-    });
-    return { runId, result };
-  }
-
   references() {
     return (this.metadata?.listSourceReferences?.(this.topicId) ?? []).filter((reference) => reference.topicId === this.topicId && reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session');
   }
@@ -230,7 +205,7 @@ export class SessionAdapter {
     return result;
   }
 
-  async send(input = {}) {
+  async send(input = {}, runtime = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId', 'requestId', 'logicalOperationId', 'message'], 'Session send request');
     const reference = this.resolveReference(input);
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
@@ -238,8 +213,9 @@ export class SessionAdapter {
     const execute = async ({ requestId }) => {
       const { state, exact } = await this.resolveStableState(reference.referenceId);
       if (state?.status === 'closed') throw sourceError('conflict', 'A Closed Conversation is read-only and cannot receive Chat messages.');
-      const result = await this.runEmbeddedMessage({ sessionKey: exact.sessionKey, sessionId: exact.sessionId, message: input.message, runId: logicalOperationId })
-        ?? await this.request('chat.send', { sessionKey: exact.sessionKey, message: input.message, idempotencyKey: logicalOperationId }, { requestId });
+      const result = typeof runtime.agentTurnDispatch === 'function'
+        ? await runtime.agentTurnDispatch({ sessionKey: exact.sessionKey, sessionId: exact.sessionId, message: input.message, runId: logicalOperationId })
+        : await this.request('chat.send', { sessionKey: exact.sessionKey, message: input.message, idempotencyKey: logicalOperationId }, { requestId });
       if (result?.runId !== logicalOperationId) throw sourceError('unavailable', 'chat.send returned an unexpected idempotency result.');
       return result;
     };

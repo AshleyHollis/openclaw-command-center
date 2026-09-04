@@ -54,6 +54,7 @@ pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
 .topic-workspace { width: min(1440px, 100%); max-width: 100%; }
 .workspace-header, .workspace-header-actions, .pane-heading, .pane-tools, .note-pages, .note-editor-heading, .note-mode-buttons, .note-actions, .dialog-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .workspace-header-actions { justify-content: flex-end; }
+.pane-close { min-width: 44px; min-height: 44px; flex: 0 0 44px; }
 .workspace-sections { display: none; gap: 6px; margin-bottom: 12px; }
 .workspace-layout { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(360px, 1.6fr) minmax(260px, 1fr); gap: 12px; align-items: stretch; }
 .workspace-layout > [data-pane] { min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 14px; transition: border-color .15s ease; }

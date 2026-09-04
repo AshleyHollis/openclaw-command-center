@@ -1125,6 +1125,13 @@ async function requestAuthenticatedGateway({ gatewayUrl, credential, method, par
   } finally { signal?.removeEventListener('abort', abortSocket); socket.close(); }
 }
 
+function authenticatedList(response, property) {
+  const value = response?.result ?? response;
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.[property])) return value[property];
+  return Array.isArray(response?.[property]) ? response[property] : [];
+}
+
 async function seedAuthoritativeSessionCatalog({ gatewayUrl, credential, stateDir, topicId, initialCount, labelPrefix, signal, onBatch }) {
   const createdSessions = [];
   for (let offset = initialCount; offset < RELEASE_FIXTURE_COUNTS.conversations; offset += 10) {
@@ -1501,7 +1508,7 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   await selectWorkspaceSection(frame, 'notes', width, keyboard);
   const noteNew = frame.locator('#note-new');
   await activate(noteNew, keyboard);
-  const noteDialog = frame.getByRole('dialog', { name: 'Create Note' });
+  const noteDialog = frame.locator('#note-action-dialog');
   await noteDialog.waitFor();
   await audit(`${width}px Create Note dialog`);
   const notePath = `journey-${width}.md`;
@@ -2402,13 +2409,18 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const ordinarySession = ((desktopSessions?.result ?? desktopSessions)?.conversations ?? desktopSessions?.conversations ?? []).find((session) => session.displayName === desktopJourney.conversationName);
       assert.ok(ordinarySession?.referenceId && ordinarySession?.sessionId);
       const desktopNotes = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: desktopJourney.topicId } });
-      const movedNote = ((desktopNotes?.result ?? desktopNotes)?.notes ?? desktopNotes?.notes ?? []).find((note) => note.path === desktopJourney.movedPath);
+      const movedNote = authenticatedList(desktopNotes, 'notes').find((note) => note.path === desktopJourney.movedPath);
       assert.ok(movedNote?.sourceReference?.referenceId && movedNote?.revision);
       releaseState.durableWorkspace = {
         conversation: { referenceId: ordinarySession.referenceId, sessionId: ordinarySession.sessionId },
         note: { referenceId: movedNote.sourceReference.referenceId, revision: movedNote.revision, path: movedNote.path }
       };
-      assert.deepEqual((await readdir(releaseState.projectionRoot)).sort(), COMMITTED_SEARCH_PROJECTION_FILES);
+      const projectionDirectoryFiles = (await readdir(releaseState.projectionRoot)).sort();
+      const committedProjectionFiles = projectionDirectoryFiles.filter((name) => COMMITTED_SEARCH_PROJECTION_FILES.includes(name));
+      const durableRebuildReceipts = projectionDirectoryFiles.filter((name) => !COMMITTED_SEARCH_PROJECTION_FILES.includes(name));
+      assert.deepEqual(committedProjectionFiles, COMMITTED_SEARCH_PROJECTION_FILES);
+      assert.ok(durableRebuildReceipts.length <= 8, 'authenticated rebuild receipts must remain bounded');
+      assert.equal(durableRebuildReceipts.every((name) => /^rebuild-operation-[0-9a-f-]{36}\.json$/u.test(name)), true, 'projection directory may contain only committed artifacts and durable rebuild receipts');
       await assertResponsiveFrame(frame, page, 1440);
       return { topicId: desktopJourney.topicId, primarySessionId: releaseState.primarySession.sessionId };
     });
@@ -2429,7 +2441,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.ok(scalePrimary?.referenceId && scalePrimary?.sessionId && scaleOrdinary?.referenceId && scaleOrdinary?.sessionId);
       releaseState.primarySession = scalePrimary;
       const scaleNotes = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
-      const scaleNote = ((scaleNotes?.result ?? scaleNotes)?.notes ?? scaleNotes?.notes ?? []).find((note) => note.path === scaleJourney.movedPath);
+      const scaleNote = authenticatedList(scaleNotes, 'notes').find((note) => note.path === scaleJourney.movedPath);
       assert.ok(scaleNote?.sourceReference?.referenceId && scaleNote?.revision);
       releaseState.durableWorkspace = { conversation: { referenceId: scaleOrdinary.referenceId, sessionId: scaleOrdinary.sessionId }, note: { referenceId: scaleNote.sourceReference.referenceId, revision: scaleNote.revision, path: scaleNote.path } };
       const realizedConversationCount = releaseState.realizedConversationCount;
@@ -2552,7 +2564,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await selectWorkspaceSection(frame, 'notes', 1440);
       await frame.locator('#notes-tree').getByRole('button', { name: scaleJourney.movedPath, exact: true }).waitFor();
       const reopenedNotes = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
-      const reopenedNote = ((reopenedNotes?.result ?? reopenedNotes)?.notes ?? reopenedNotes?.notes ?? []).find((note) => note.path === scaleJourney.movedPath);
+      const reopenedNote = authenticatedList(reopenedNotes, 'notes').find((note) => note.path === scaleJourney.movedPath);
       assert.deepEqual({ referenceId: reopenedNote?.sourceReference?.referenceId, revision: reopenedNote?.revision, path: reopenedNote?.path }, releaseState.durableWorkspace.note);
       await selectWorkspaceSection(frame, 'search', 1440);
       await enterText(frame.locator('#workspace-search-query'), 'Edited fictional journey evidence', true);

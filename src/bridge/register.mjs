@@ -43,7 +43,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.sessions.browse': (service, params) => service.sessionsList(params),
   'command-center.v1.sessions.navigate': (service, params) => service.sessionsNavigate(params),
   'command-center.v1.sessions.create': (service, params) => { const { authoritativeSession, ...input } = params; return service.sessionsCreate(input, { authoritativeSession }); },
-  'command-center.v1.sessions.send': (service, params) => service.sessionsSend(params),
+  'command-center.v1.sessions.send': (service, params, runtime) => service.sessionsSend(params, runtime),
   'command-center.v1.sessions.close': (service, params) => service.sessionsClose(params),
   'command-center.v1.sessions.reopen': (service, params) => service.sessionsReopen(params),
   'command-center.v1.reminders.list': (service, params) => service.remindersList(params),
@@ -87,7 +87,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
   for (const method of [...READ_METHODS, ...WRITE_METHODS]) {
     const contract = BRIDGE_CONTRACTS[method];
     const handler = handlerMap[method];
-    api.registerGatewayMethod(method, async ({ req, params, client, context, respond }) => {
+    api.registerGatewayMethod(method, async ({ req, params, client, context, respond, isWebchatConnect, sessionMutationAuthorization, signal }) => {
       const requestId = req?.id ?? null;
       try {
         if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
@@ -95,7 +95,28 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         service.notificationCaptureBinding?.();
         if (method === 'command-center.v1.attention.act' && (typeof client?.authenticatedUserId !== 'string' || client.authenticatedUserId.trim() === '')) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
         const operatorId = method.startsWith('command-center.v1.attention.') && typeof client?.authenticatedUserId === 'string' ? client.authenticatedUserId : null;
-        const result = await invokeBridgeMethod(handlerService, method, params, requestId, operatorId);
+        let runtime = {};
+        const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;
+        if (method === 'command-center.v1.sessions.send' && client && typeof coreSessionSend === 'function') {
+          runtime = {
+            agentTurnDispatch: ({ sessionKey, message, runId }) => new Promise((resolve, reject) => {
+              let settled = false;
+              const params = { key: sessionKey, agentId: 'main', message, idempotencyKey: runId };
+              const finish = (ok, payload, error) => {
+                if (settled) return;
+                settled = true;
+                if (ok) resolve(payload);
+                else reject(new SourceServiceError('unavailable', error?.message || 'The authenticated Session turn was refused.'));
+              };
+              Promise.resolve(coreSessionSend({ req: { ...req, method: 'sessions.send', params }, params, client, context, isWebchatConnect, respond: finish, ...(signal ? { signal } : {}) }))
+                .then(() => { if (!settled) finish(false, null, { message: 'The authenticated Session turn completed without an acknowledgement.' }); }, reject);
+            })
+          };
+        } else if (method === 'command-center.v1.sessions.send' && client && typeof context.createAgentTurnFacade === 'function') {
+          const agentTurn = await context.createAgentTurnFacade({ client, isWebchatConnect, assertContextCurrent: sessionMutationAuthorization?.assertCurrent });
+          runtime = { agentTurnDispatch: ({ sessionKey, sessionId, message, runId }) => agentTurn.dispatch({ message, agentId: 'main', sessionKey, sessionId, expectedExistingSessionId: sessionId, channel: 'webchat', deliver: false, idempotencyKey: runId }, { signal }) };
+        }
+        const result = await invokeBridgeMethod(handlerService, method, params, requestId, operatorId, runtime);
         const logicalOperationId = params.logicalOperationId ?? null;
         respond(true, { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId, result });
       } catch (error) {

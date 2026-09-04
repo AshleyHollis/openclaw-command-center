@@ -91,6 +91,25 @@ test('search service returns separate independently ranked groups and exact navi
   await assert.rejects(() => service.navigate({ ...result.notes.results[0].navigation, extra: true }), /unsupported/i);
 });
 
+test('search service preserves navigation for an empty Conversation metadata result', async () => {
+  const projected = conversationStore.query()[0];
+  const metadataOnlyStore = {
+    query: () => [{
+      ...projected,
+      messageId: null,
+      name: 'Empty Conversation',
+      snippet: 'Empty Conversation',
+      role: 'metadata',
+      navigation: { ...projected.navigation, messageId: null }
+    }]
+  };
+  const service = createTopicSearchService({ metadata, noteStore: { query: () => [] }, conversationStore: metadataOnlyStore });
+  const result = await service.query({ schemaVersion: 1, topicId: 'topic-one', query: 'Empty Conversation', limit: 1 });
+  assert.equal(result.conversations.results.length, 1);
+  assert.equal(result.conversations.results[0].messageId, null);
+  assert.equal(result.conversations.results[0].navigation.messageId, null);
+});
+
 test('search withholds stale and foreign projected identities', async () => {
   const staleMetadata = { ...metadata, getSourceReference: (id) => id === 'session:one' ? { ...sessionReference, externalSourceId: 'agent:main:changed' } : references[id] ?? null };
   const result = await createTopicSearchService({ metadata: staleMetadata, noteStore, conversationStore }).query({ schemaVersion: 1, topicId: 'topic-one', query: 'alpha' });

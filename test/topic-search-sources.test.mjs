@@ -144,6 +144,45 @@ test('Conversation snapshot uses exact public transcript identities and preserve
   assert.equal(snapshot.conversations[0].contextAfter, 'imported message');
 });
 
+test('Conversation snapshot indexes an empty Session by its authoritative display name', async () => {
+  const emptyMetadata = {
+    ...metadata(),
+    getSessionState: (id) => id === sessionReference.referenceId ? {
+      referenceId: id,
+      sessionId: 'session-one',
+      status: 'closed',
+      isPrimary: false,
+      displayName: 'Empty Fictional Conversation',
+      updatedAt: '2026-08-23T00:03:00.000Z'
+    } : null
+  };
+  const snapshot = await readConversationSourceSnapshot({
+    topicId: topic.topicId,
+    metadata: emptyMetadata,
+    gateway: visibleGateway([])
+  });
+  assert.equal(snapshot.conversations.length, 1);
+  assert.deepEqual(snapshot.conversations[0], {
+    topicId: topic.topicId,
+    sourceReference: sessionReference,
+    sessionKey: sessionReference.externalSourceId,
+    sessionId: 'session-one',
+    messageId: null,
+    name: 'Fictional conversation',
+    date: '2026-08-23T00:03:00.000Z',
+    originatingTopicId: null,
+    role: 'metadata',
+    historyProvenance: 'ordinary',
+    closed: true,
+    primaryState: 'ordinary',
+    provenance: 'native',
+    importedFrom: null,
+    text: 'Fictional conversation',
+    contextBefore: '',
+    contextAfter: ''
+  });
+});
+
 test('Conversation snapshot uses the published exact-identity transcript reader without trusted Gateway authority', async () => {
   const calls = [];
   const snapshot = await readConversationSourceSnapshot({

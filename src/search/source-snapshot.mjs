@@ -242,6 +242,7 @@ export async function readConversationSourceSnapshot({ topicId, metadata, gatewa
     const messages = history.messages;
     const name = conversationName(described, reference);
     const primaryState = state?.isPrimary ? 'primary' : state?.wasPrimary ? 'former-primary' : 'ordinary';
+    let searchableMessages = 0;
     for (let index = 0; index < messages.length; index += 1) {
       signal?.throwIfAborted();
       const message = messages[index];
@@ -260,10 +261,37 @@ export async function readConversationSourceSnapshot({ topicId, metadata, gatewa
       const row = { topicId, sourceReference: reference, sessionKey: reference.externalSourceId, sessionId: state.sessionId, messageId: id, name: name ?? reference.externalSourceId, date, originatingTopicId: originatingTopicId(message, reference), role: String(message?.role ?? 'unknown'), historyProvenance: imported ? 'imported-primary' : primaryState, closed: state?.status === 'closed', primaryState, provenance: imported ? 'imported' : 'native', importedFrom: imported, text, ...contextAround(messages, index) };
       const existing = dedupe.get(identity);
       if (!existing || (existing.provenance === 'native' && row.provenance === 'imported')) dedupe.set(identity, row);
+      searchableMessages += 1;
+    }
+    if (searchableMessages === 0) {
+      const date = typeof state.updatedAt === 'string' && !Number.isNaN(Date.parse(state.updatedAt))
+        ? new Date(state.updatedAt).toISOString()
+        : null;
+      if (date === null || date !== state.updatedAt) throw sourceError('source-incomplete', 'An empty Session is missing an authoritative update date.');
+      const identity = `${reference.referenceId}\u0000metadata`;
+      dedupe.set(identity, {
+        topicId,
+        sourceReference: reference,
+        sessionKey: reference.externalSourceId,
+        sessionId: state.sessionId,
+        messageId: null,
+        name: name ?? reference.externalSourceId,
+        date,
+        originatingTopicId: null,
+        role: 'metadata',
+        historyProvenance: primaryState,
+        closed: state?.status === 'closed',
+        primaryState,
+        provenance: 'native',
+        importedFrom: null,
+        text: name ?? reference.externalSourceId,
+        contextBefore: '',
+        contextAfter: ''
+      });
     }
   }
   conversations.push(...dedupe.values());
-  conversations.sort((left, right) => `${left.date ?? ''}\u0000${left.messageId}`.localeCompare(`${right.date ?? ''}\u0000${right.messageId}`));
+  conversations.sort((left, right) => `${left.date ?? ''}\u0000${left.messageId ?? ''}`.localeCompare(`${right.date ?? ''}\u0000${right.messageId ?? ''}`));
   return Object.freeze({ topicId, conversations: Object.freeze(conversations), sourceRevision: digest(conversations.map(({ sessionKey, messageId, date }) => ({ sessionKey, messageId, date }))) });
 }
 
