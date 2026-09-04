@@ -2388,6 +2388,34 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.startup = true;
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant, bridgeRead: true };
     });
+    if (focusedScenarioIds?.has('focused-reminder-create')) await collectScenario('focused-reminder-create', async (signal) => {
+      try {
+        const response = await requestAuthenticatedGateway({
+          gatewayUrl,
+          credential: world.gatewayCredential,
+          scopes: ['operator.read', 'operator.write'],
+          method: 'command-center.v1.reminders.create',
+          params: {
+            schemaVersion: 1,
+            topicId: RELEASE_ALPHA_TOPIC_ID,
+            logicalOperationId: randomUUID(),
+            declaration: {
+              name: 'Fictional focused reminder',
+              enabled: true,
+              deleteAfterRun: false,
+              schedule: { kind: 'at', at: new Date(Date.now() + 3_600_000).toISOString() },
+              payload: { kind: 'systemEvent', text: 'Fictional focused reminder' },
+              sessionTarget: 'main',
+              wakeMode: 'next-heartbeat'
+            }
+          },
+          signal
+        });
+        return { created: Boolean((response?.result ?? response)?.value?.job?.id) };
+      } catch (error) {
+        throw new Error(`${error.message}; host stdout: ${host.diagnostics.stdout}; host stderr: ${host.diagnostics.stderr}`);
+      }
+    });
     const runFocusedProjectionRecovery = async (kind, signal) => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');
       await restoreReleaseSearchBaseline({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal, label: `focused ${kind} recovery` });
