@@ -1832,7 +1832,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
       if (acceptancePlan.kind === 'focused') {
         const focusedScale = acceptancePlan.scenarioIds.includes('focused-scale-session-seeding');
-        const focusedFullCorpus = acceptancePlan.scenarioIds.includes('focused-invalidated-projection-recovery');
+        const focusedFullCorpus = acceptancePlan.scenarioIds.includes('focused-invalidated-projection-recovery') || acceptancePlan.scenarioIds.includes('focused-full-corpus-fixture');
         const focusedHeavyCorpus = acceptancePlan.scenarioIds.includes('focused-heavy-corpus-mutation-journey') || acceptancePlan.scenarioIds.includes('focused-heavy-corpus-fixture') || focusedFullCorpus;
         const focusedUiState = acceptancePlan.scenarioIds.includes('focused-ui-state-regression');
         const focusedScaleFolderPath = path.join(world.paths.vault, 'fictional-scale');
@@ -2201,7 +2201,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         const rebuildStartedAt = Date.now();
         await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'focused Control UI Search baseline rebuild' });
         const rebuildMs = Date.now() - rebuildStartedAt;
-        const heavyCorpus = focusedScenarioIds.has('focused-heavy-corpus-mutation-journey') || focusedScenarioIds.has('focused-heavy-corpus-fixture') || focusedScenarioIds.has('focused-invalidated-projection-recovery');
+        const fullCorpus = focusedScenarioIds.has('focused-invalidated-projection-recovery') || focusedScenarioIds.has('focused-full-corpus-fixture');
+        const heavyCorpus = focusedScenarioIds.has('focused-heavy-corpus-mutation-journey') || focusedScenarioIds.has('focused-heavy-corpus-fixture') || fullCorpus;
         const verified = await waitForCommittedSearchProjections(projectionRoot, {
           attempts: 1200,
           signal,
@@ -2209,7 +2210,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           ...(heavyCorpus ? {
             expectedTopicRowCounts: {
               notes: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedNotes },
-              conversations: { [RELEASE_SCALE_TOPIC_ID]: 1 }
+              conversations: { [RELEASE_SCALE_TOPIC_ID]: fullCorpus ? RELEASE_FIXTURE_COUNTS.indexedConversationMessages : 1 }
             }
           } : {})
         });
@@ -2219,6 +2220,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       });
       scenarioResult('focused-control-ui-search-projection');
       if (focusedScenarioIds.has('focused-heavy-corpus-fixture')) await collectScenario('focused-heavy-corpus-fixture', async () => ({ indexedNotes: releaseState.realizedScaleSeed?.indexedNotes, rebuildMs: releaseState.focusedSearchRebuildMs }));
+      if (focusedScenarioIds.has('focused-full-corpus-fixture')) await collectScenario('focused-full-corpus-fixture', async () => ({ indexedNotes: releaseState.realizedScaleSeed?.indexedNotes, indexedConversationMessages: RELEASE_FIXTURE_COUNTS.indexedConversationMessages, rebuildMs: releaseState.focusedSearchRebuildMs }));
     }
     await collectScenario('authenticated-control-ui-mount', async (signal) => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');
