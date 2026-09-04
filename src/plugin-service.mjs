@@ -15,7 +15,6 @@ import { createTopicAnalysisProvider } from './topics/analysis-provider.mjs';
 import { createProductionTopicAnalyzer } from './topics/production-analyzer.mjs';
 import { createTopicAnalysisScheduleService } from './topics/analysis-schedule.mjs';
 import { createTopicReviewService } from './topics/review.mjs';
-import { createGatewayRequestWorker } from './gateway-request-worker.mjs';
 
 let activeMaintenanceService;
 
@@ -45,7 +44,6 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
   let topicAnalysisRunner;
   let topicAnalysisSchedule;
   let topicReview;
-  let schedulerGatewayWorker;
   let startupSearchRebuildTask = Promise.resolve();
   let startupSearchRebuildController;
   let stopPromise;
@@ -58,10 +56,6 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       startupSearchRebuildController = new AbortController();
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
-      // This worker is started while the trusted plugin lifecycle owns the
-      // runtime context. Calls queued by a browser request therefore cannot
-      // accidentally inherit and narrow the browser's operator.write scope.
-      schedulerGatewayWorker = gatewayAvailable ? createGatewayRequestWorker({ gateway: api.runtime.gateway }) : null;
       // Current hosts expose a lazily loaded request-context probe. Entering
       // that runtime while plugin services are activating creates a loader
       // cycle, so activation must finish before any Gateway runtime call.
@@ -86,10 +80,10 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
         host: runtimeHostIdentity(stateDir),
         timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC',
         sourceActions: {
-          complete: ({ episode, parameters, logicalOperationId }) => sourceService.forTopic(episode.topicId).reminders.complete({ schemaVersion: 1, referenceId: episode.sourceReferenceId, expectedConfigRevision: parameters.expectedConfigRevision, logicalOperationId }),
-          snooze: ({ episode, parameters, logicalOperationId }) => sourceService.forTopic(episode.topicId).reminders.snooze({ schemaVersion: 1, referenceId: episode.sourceReferenceId, expectedConfigRevision: parameters.expectedConfigRevision, logicalOperationId, patch: { schedule: { kind: 'at', at: parameters.until } } }),
+          complete: ({ episode, parameters, logicalOperationId }) => sourceService.remindersComplete({ schemaVersion: 1, topicId: episode.topicId, referenceId: episode.sourceReferenceId, expectedConfigRevision: parameters.expectedConfigRevision, logicalOperationId }),
+          snooze: ({ episode, parameters, logicalOperationId }) => sourceService.remindersSnooze({ schemaVersion: 1, topicId: episode.topicId, referenceId: episode.sourceReferenceId, expectedConfigRevision: parameters.expectedConfigRevision, logicalOperationId, patch: { schedule: { kind: 'at', at: parameters.until } } }),
           verify: async ({ episode, actionId, parameters }) => {
-            const rows = await sourceService.forTopic(episode.topicId).reminders.list({ schemaVersion: 1 });
+            const rows = await sourceService.remindersList({ schemaVersion: 1, topicId: episode.topicId });
             const row = rows.find((item) => item.sourceReference?.referenceId === episode.sourceReferenceId);
             if (actionId === 'reminder.complete') return row?.job?.enabled === false;
             return row?.job?.schedule?.kind === 'at' && row.job.schedule.at === parameters.until;
@@ -122,7 +116,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       // pinned host still supplies the transcript reader before service start.
       const { readVisibleSessionTranscriptMessageEntries } = await import('openclaw/plugin-sdk/session-transcript-runtime');
       const analysisProvider = analysisUsable ? createTopicAnalysisProvider({ getRunner: () => topicAnalysisRunner, metadata: metadataService, onCompleted: () => topicReview?.refresh?.() }) : null;
-      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, schedulerGateway: schedulerGatewayWorker, capabilities, attentionService, migration: migrationService, searchProvider, analysisProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
+      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider, analysisProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
       searchRebuildService = searchRebuildServiceFactory({
         stateDir,
@@ -238,8 +232,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       notificationTimer = undefined;
       stopPromise = Promise.all([
         Promise.resolve(startupSearchRebuildTask).catch(() => {}),
-        Promise.resolve(sourceService?.settleSearchRefresh?.()).catch(() => {}),
-        Promise.resolve(schedulerGatewayWorker?.close?.()).catch(() => {})
+        Promise.resolve(sourceService?.settleSearchRefresh?.()).catch(() => {})
       ]).then(() => {
         notificationService?.close?.();
         sourceService?.close?.();
@@ -257,7 +250,6 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
         topicAnalysisRunner = undefined;
         topicAnalysisSchedule = undefined;
         topicReview = undefined;
-        schedulerGatewayWorker = undefined;
         maintenanceService = undefined;
         activeMaintenanceService = undefined;
       });
@@ -291,18 +283,20 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
     topicReviewSnooze(input) { return topicReview.snooze(input); },
     topicReviewCheckpoint(input) { return topicReview.checkpoint(input); },
     topicReviewApply(input) { return topicReview.apply(input); },
-    async dashboardGet(input) {
+    async dashboardGet(input, runtime = {}) {
       if (!dashboardService) throw new Error('Command Center Dashboard is not ready.');
-      try { await sourceService?.refreshReminderAttention?.(); } catch { /* the projection omits unavailable scheduler rows */ }
-      await notificationService?.reconcile?.();
-      return dashboardService.get(input);
+      return sourceService.withSchedulerGateway(runtime, async () => {
+        try { await sourceService?.refreshReminderAttention?.(); } catch { /* the projection omits unavailable scheduler rows */ }
+        await notificationService?.reconcile?.();
+        return dashboardService.get(input);
+      });
     },
     dashboardUpdateSettings(input) {
       if (!notificationService) throw new Error('Command Center notification settings are not ready.');
       return notificationService.updateSettings(input);
     },
-    notificationReconcile() {
-      return Promise.resolve(sourceService?.refreshReminderAttention?.()).catch(() => undefined).then(() => notificationService?.reconcile?.());
+    notificationReconcile(runtime = {}) {
+      return sourceService.withSchedulerGateway(runtime, () => Promise.resolve(sourceService?.refreshReminderAttention?.()).catch(() => undefined).then(() => notificationService?.reconcile?.()));
     },
     notificationCaptureBinding() {
       return notificationService?.captureCurrentOperatorBinding?.() ?? false;

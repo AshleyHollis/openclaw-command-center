@@ -80,14 +80,7 @@ export class SchedulerAdapter {
   }
 
   async request(method, params, options) {
-    try {
-      return await this.gateway.request(method, params, { ...options, scopes: ['operator.admin'] });
-    } catch (error) {
-      const code = typeof error?.code === 'string' ? error.code : 'unclassified';
-      const message = String(error?.message ?? error ?? 'unknown').replace(/[\r\n]+/gu, ' ').slice(0, 300);
-      this.logger?.warn?.(`Command Center scheduler ${method} request rejected [${code}]: ${message}`);
-      throw error;
-    }
+    return this.gateway.request(method, params, options);
   }
 
   async read(input = {}) {

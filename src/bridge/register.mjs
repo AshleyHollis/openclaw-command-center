@@ -1,6 +1,61 @@
 import { BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, sanitizeBridgeResult, validateBridgeRequest } from './contracts.mjs';
 import { errorResult, SourceServiceError } from '../sources/errors.mjs';
 
+const schedulerRuntimeMethods = new Set([
+  'command-center.v1.reminders.list',
+  'command-center.v1.reminders.create',
+  'command-center.v1.reminders.snooze',
+  'command-center.v1.reminders.complete',
+  'command-center.v1.schedules.get',
+  'command-center.v1.schedules.list',
+  'command-center.v1.schedules.create',
+  'command-center.v1.schedules.update',
+  'command-center.v1.schedules.set-enabled',
+  'command-center.v1.schedules.run',
+  'command-center.v1.attention.act',
+  'command-center.v1.dashboard.get'
+]);
+
+function gatewayError(error, method) {
+  const rawCode = String(error?.code ?? '').toUpperCase();
+  const code = rawCode === 'INVALID_REQUEST' ? 'invalid-request'
+    : rawCode === 'NOT_FOUND' ? 'not-found'
+      : ['CONFLICT', 'CRON_JOB_CHANGED'].includes(rawCode) ? 'conflict'
+        : 'unavailable';
+  return new SourceServiceError(code, error?.message || `The authenticated ${method} request was refused.`);
+}
+
+export function createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) {
+  return Object.freeze({
+    request(method, params, options = {}) {
+      if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some((key) => key !== 'requestId')) throw new SourceServiceError('invalid-request', 'Gateway request options are closed.');
+      const handler = context?.getGatewayMethodRegistry?.()?.getHandler?.(method);
+      if (typeof handler !== 'function') throw new SourceServiceError('capability-unavailable', `The authenticated ${method} method is unavailable.`);
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (ok, payload, error) => {
+          if (settled) return;
+          settled = true;
+          if (ok) resolve(payload);
+          else reject(gatewayError(error, method));
+        };
+        Promise.resolve(handler({
+          req: { ...req, ...(options.requestId ? { id: options.requestId } : {}), method, params },
+          params,
+          client,
+          context,
+          isWebchatConnect,
+          respond: finish,
+          ...(signal ? { signal } : {})
+        })).then(
+          () => { if (!settled) finish(false, null, { message: `The authenticated ${method} request completed without an acknowledgement.` }); },
+          (error) => { if (!settled) { settled = true; reject(gatewayError(error, method)); } }
+        );
+      });
+    }
+  });
+}
+
 const handlerMap = Object.freeze({
   'command-center.v1.sources.status': (service) => service.status(),
   'command-center.v1.migration.status': (service) => service.migrationStatus(),
@@ -46,26 +101,26 @@ const handlerMap = Object.freeze({
   'command-center.v1.sessions.send': (service, params, runtime) => service.sessionsSend(params, runtime),
   'command-center.v1.sessions.close': (service, params) => service.sessionsClose(params),
   'command-center.v1.sessions.reopen': (service, params) => service.sessionsReopen(params),
-  'command-center.v1.reminders.list': (service, params) => service.remindersList(params),
-  'command-center.v1.reminders.create': (service, params) => service.remindersCreate(params),
-  'command-center.v1.reminders.snooze': async (service, params) => { const result = await service.remindersSnooze(params); await service.notificationReconcile?.(); return result; },
-  'command-center.v1.reminders.complete': async (service, params) => { const result = await service.remindersComplete(params); await service.notificationReconcile?.(); return result; },
-  'command-center.v1.schedules.get': (service, params) => service.schedulesGet(params),
-  'command-center.v1.schedules.list': (service, params) => service.schedulesList(params),
-  'command-center.v1.schedules.create': (service, params) => service.schedulesCreate(params),
-  'command-center.v1.schedules.update': (service, params) => service.schedulesUpdate(params),
-  'command-center.v1.schedules.set-enabled': (service, params) => service.schedulesSetEnabled(params),
-  'command-center.v1.schedules.run': (service, params) => service.schedulesRun(params),
+  'command-center.v1.reminders.list': (service, params, runtime) => service.remindersList(params, runtime),
+  'command-center.v1.reminders.create': (service, params, runtime) => service.remindersCreate(params, runtime),
+  'command-center.v1.reminders.snooze': async (service, params, runtime) => { const result = await service.remindersSnooze(params, runtime); await service.notificationReconcile?.(runtime); return result; },
+  'command-center.v1.reminders.complete': async (service, params, runtime) => { const result = await service.remindersComplete(params, runtime); await service.notificationReconcile?.(runtime); return result; },
+  'command-center.v1.schedules.get': (service, params, runtime) => service.schedulesGet(params, runtime),
+  'command-center.v1.schedules.list': (service, params, runtime) => service.schedulesList(params, runtime),
+  'command-center.v1.schedules.create': (service, params, runtime) => service.schedulesCreate(params, runtime),
+  'command-center.v1.schedules.update': (service, params, runtime) => service.schedulesUpdate(params, runtime),
+  'command-center.v1.schedules.set-enabled': (service, params, runtime) => service.schedulesSetEnabled(params, runtime),
+  'command-center.v1.schedules.run': (service, params, runtime) => service.schedulesRun(params, runtime),
   'command-center.v1.metadata.read': (service, params) => service.metadataRead(params),
   'command-center.v1.metadata.write': (service, params) => service.metadataWrite(params),
   'command-center.v1.analysis.read': (service, params) => service.analysisRead(params),
   'command-center.v1.analysis.run': (service, params) => service.analysisRun(params),
-  'command-center.v1.attention.act': async (service, params) => { const result = await service.attentionAct(params); await service.notificationReconcile?.(); return result; },
+  'command-center.v1.attention.act': async (service, params, runtime) => { const result = await service.attentionAct(params, runtime); await service.notificationReconcile?.(runtime); return result; },
   'command-center.v1.attention.list': (service, params) => service.attentionList(params),
   'command-center.v1.attention.get': (service, params) => service.attentionGet(params),
   'command-center.v1.activity.list': (service, params) => service.activityList(params),
   'command-center.v1.activity.get': (service, params) => service.activityGet(params),
-  'command-center.v1.dashboard.get': (service, params) => service.dashboardGet(params),
+  'command-center.v1.dashboard.get': (service, params, runtime) => service.dashboardGet(params, runtime),
   'command-center.v1.search.query': (service, params) => service.searchQuery(params),
   'command-center.v1.search.prepare-rebuild': (service, params) => service.searchPrepareRebuild(params)
 });
@@ -96,6 +151,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         if (method === 'command-center.v1.attention.act' && (typeof client?.authenticatedUserId !== 'string' || client.authenticatedUserId.trim() === '')) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
         const operatorId = method.startsWith('command-center.v1.attention.') && typeof client?.authenticatedUserId === 'string' ? client.authenticatedUserId : null;
         let runtime = {};
+        if (schedulerRuntimeMethods.has(method) && client) runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;
         if (method === 'command-center.v1.sessions.send' && client && typeof coreSessionSend === 'function') {
           runtime = {

@@ -52,7 +52,7 @@ test('plugin retains tools, search, maintenance, and bounded asset serving', asy
   assert.match(source, /new Promise\(\(resolve\) => setImmediate\(resolve\)\)\.then/);
   assert.match(source, /stopPromise = Promise\.all\(\[/);
   assert.match(source, /Promise\.resolve\(startupSearchRebuildTask\)\.catch/);
-  assert.match(source, /Promise\.resolve\(schedulerGatewayWorker\?\.close\?\.\(\)\)\.catch/);
+  assert.doesNotMatch(source, /schedulerGatewayWorker|createGatewayRequestWorker/);
   assert.match(source, /createNoteMaintenanceService\(/);
   assert.match(source, /maintenanceService/);
   assert.match(source, /export function runNoteMaintenance\(input\)/);

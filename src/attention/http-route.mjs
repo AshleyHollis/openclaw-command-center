@@ -1,5 +1,6 @@
 import { sanitizeBridgeResult, validateBridgeRequest } from '../bridge/contracts.mjs';
 import { allowOpaqueFrameRequest } from '../http/opaque-frame-cors.mjs';
+import { createRequestScopedGatewayRequest } from '../bridge/gateway-method-dispatch.mjs';
 
 async function readJsonBody(req) {
   if (req?.body && typeof req.body === 'object') { if (JSON.stringify(req.body).length > 32768) throw new Error('request body is too large'); return req.body; }
@@ -36,8 +37,9 @@ export function createAttentionActionHandler(service) {
       const current = await service.attentionGet({ schemaVersion: 1, episodeId: body.episodeId });
       if (!current?.episode || current.episode.sourceCapabilityId !== body.sourceCapabilityId || current.episode.stableSubjectId !== body.stableSubjectId) throw new Error('source identity does not match the episode');
       const { sourceCapabilityId: _sourceCapabilityId, stableSubjectId: _stableSubjectId, ...action } = body;
-      const result = await service.attentionAct(action);
-      await service.notificationReconcile?.();
+      const runtime = { gateway: Object.freeze({ request: createRequestScopedGatewayRequest() }) };
+      const result = await service.attentionAct(action, runtime);
+      await service.notificationReconcile?.(runtime);
       const bounded = sanitizeBridgeResult('command-center.v1.attention.act', result);
       const payload = JSON.stringify({ schemaVersion: 1, status: result?.status ?? 'applied', result: bounded });
       if (payload.length > 32768) throw new Error('response is too large');

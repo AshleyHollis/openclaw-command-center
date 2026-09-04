@@ -83,10 +83,10 @@ export default definePluginEntry({
           };
         };
         if (property === 'topics') return service.topicService;
-        if (property === 'dashboard') return { get: (input) => service.dashboardGet(input) };
-        if (property === 'dashboardGet') return (input) => service.dashboardGet(input);
+        if (property === 'dashboard') return { get: (input, runtime) => service.dashboardGet(input, runtime) };
+        if (property === 'dashboardGet') return (input, runtime) => service.dashboardGet(input, runtime);
         if (property === 'dashboardUpdateSettings') return (input) => service.dashboardUpdateSettings(input);
-        if (property === 'notificationReconcile') return () => service.notificationReconcile();
+        if (property === 'notificationReconcile') return (runtime) => service.notificationReconcile(runtime);
         if (property === 'notificationCaptureBinding') return () => service.notificationCaptureBinding();
         if (property === 'topicAnalysis') return { get: () => service.topicAnalysisRead() };
         if (property === 'topicAnalysisRun') return (input) => service.topicAnalysisRun(input);

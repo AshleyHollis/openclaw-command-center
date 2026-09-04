@@ -1,6 +1,7 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { normalizeNotificationSettings } from '../notifications/settings.mjs';
 import { allowOpaqueFrameRequest } from '../http/opaque-frame-cors.mjs';
+import { createRequestScopedGatewayRequest } from '../bridge/gateway-method-dispatch.mjs';
 
 const MAX_BODY = 32_768;
 function send(res, status, value) {
@@ -27,7 +28,8 @@ export function createDashboardReadHttpHandler(service) {
       const url = new URL(req.url ?? '/', 'http://command-center.invalid');
       const allowed = new Set(['activityOffset', 'activityLimit']);
       if ([...url.searchParams.keys()].some((field) => !allowed.has(field) || field === 'now' || field === 'currentTime')) throw new Error('closed dashboard query required');
-      const result = await service.dashboard.get({ schemaVersion: 1, activityOffset: Number(url.searchParams.get('activityOffset') ?? 0), activityLimit: Number(url.searchParams.get('activityLimit') ?? 50) });
+      const runtime = { gateway: Object.freeze({ request: createRequestScopedGatewayRequest() }) };
+      const result = await service.dashboard.get({ schemaVersion: 1, activityOffset: Number(url.searchParams.get('activityOffset') ?? 0), activityLimit: Number(url.searchParams.get('activityLimit') ?? 50) }, runtime);
       send(res, 200, { schemaVersion: 1, status: 'applied', result });
     } catch { send(res, 400, { schemaVersion: 1, status: 'error', code: 'invalid-request', message: 'Dashboard read failed.' }); }
     return true;

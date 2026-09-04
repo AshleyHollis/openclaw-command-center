@@ -74,6 +74,19 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.search.prepare-rebuild'
 ]);
 
+// The pinned host protects Cron mutations with operator.admin. These bridge
+// methods can reach that boundary and therefore must require the same scope.
+export const ADMIN_METHODS = Object.freeze([
+  'command-center.v1.reminders.create',
+  'command-center.v1.reminders.snooze',
+  'command-center.v1.reminders.complete',
+  'command-center.v1.schedules.create',
+  'command-center.v1.schedules.update',
+  'command-center.v1.schedules.set-enabled',
+  'command-center.v1.schedules.run',
+  'command-center.v1.attention.act'
+]);
+
 const common = ['schemaVersion'];
 const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId']);
 const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession']);
@@ -407,7 +420,7 @@ export const BRIDGE_CONTRACTS = Object.freeze(Object.fromEntries([...READ_METHOD
   return [method, Object.freeze({
     method,
     version: 1,
-    scope: READ_METHODS.includes(method) ? 'operator.read' : 'operator.write',
+    scope: READ_METHODS.includes(method) ? 'operator.read' : ADMIN_METHODS.includes(method) ? 'operator.admin' : 'operator.write',
     closed: true,
     fields: Object.freeze(contractFields),
     paramsSchema: Object.freeze({

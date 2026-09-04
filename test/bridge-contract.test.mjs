@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, validateBridgeRequest } from '../src/bridge/contracts.mjs';
+import { ADMIN_METHODS, BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, validateBridgeRequest } from '../src/bridge/contracts.mjs';
 import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/register.mjs';
 import { randomUUID } from 'node:crypto';
 import { AuthoritativeSourceService } from '../src/sources/service.mjs';
@@ -13,7 +13,7 @@ test('registers the complete closed versioned bridge inventory with least-privil
   assert.deepEqual(registered, [...READ_METHODS, ...WRITE_METHODS]);
   assert.deepEqual(registrations.map(([method, , options]) => [method, options.scope]), [
     ...READ_METHODS.map((method) => [method, 'operator.read']),
-    ...WRITE_METHODS.map((method) => [method, 'operator.write'])
+    ...WRITE_METHODS.map((method) => [method, ADMIN_METHODS.includes(method) ? 'operator.admin' : 'operator.write'])
   ]);
   for (const method of registered) {
     assert.equal(BRIDGE_CONTRACTS[method].closed, true);
@@ -201,6 +201,30 @@ test('Reminder creation uses the authenticated scheduler declaration boundary wi
   await handler({ req: { id: 'gateway-reminder-create' }, params: { schemaVersion: 1, topicId: 'topic-fictional', declaration: { name: 'Fictional reminder', enabled: true, schedule: { kind: 'at', at: '2026-08-30T00:00:00.000Z' }, payload: { kind: 'systemEvent', text: 'Fictional reminder' } }, logicalOperationId }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
   assert.equal(calls[0].topicId, 'topic-fictional');
+  assert.equal(response[1].result.value.job.id, 'fictional-reminder');
+});
+
+test('registered Reminder creation dispatches Cron through the authenticated core gateway context', async () => {
+  const registrations = [];
+  const dispatched = [];
+  const logicalOperationId = randomUUID();
+  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
+    remindersCreate: async (input, runtime) => ({ schemaVersion: 1, status: 'applied', logicalOperationId, value: await runtime.gateway.request('cron.add', input.declaration, { requestId: input.logicalOperationId }) })
+  });
+  const handler = registrations.find(([method]) => method === 'command-center.v1.reminders.create')[1];
+  const client = { authenticatedUserId: 'fictional-operator' };
+  let response;
+  await handler({
+    req: { id: 'gateway-reminder-create' },
+    params: { schemaVersion: 1, topicId: 'topic-fictional', declaration: { name: 'Fictional reminder', enabled: true, schedule: { kind: 'at', at: '2026-08-30T00:00:00.000Z' }, payload: { kind: 'systemEvent', text: 'Fictional reminder' } }, logicalOperationId },
+    client,
+    context: { authenticated: true, getGatewayMethodRegistry: () => ({ getHandler: (method) => async (request) => { dispatched.push({ method, request }); request.respond(true, { job: { id: 'fictional-reminder' } }); } }) },
+    respond: (...args) => { response = args; }
+  });
+  assert.equal(response[0], true);
+  assert.equal(dispatched[0].method, 'cron.add');
+  assert.equal(dispatched[0].request.client, client);
+  assert.equal(dispatched[0].request.req.id, logicalOperationId);
   assert.equal(response[1].result.value.job.id, 'fictional-reminder');
 });
 
