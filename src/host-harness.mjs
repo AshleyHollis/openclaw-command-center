@@ -293,7 +293,13 @@ export async function waitForConsecutiveReadiness(observe, earlyExit, { required
     const probeSignal = probeController?.signal ?? signal;
     let result;
     try {
-      result = await withAbort(Promise.race([Promise.resolve().then(() => observe(probeSignal)), earlyExit.then((error) => { throw error; })]), probeSignal);
+      const observation = Promise.resolve().then(() => observe(probeSignal)).catch((error) => {
+        probeSignal?.throwIfAborted();
+        // A newly launched listener may not have bound its port yet. This is not readiness.
+        if ((error?.cause?.code ?? error?.code) === 'ECONNREFUSED') return false;
+        throw error;
+      });
+      result = await withAbort(Promise.race([observation, earlyExit.then((error) => { throw error; })]), probeSignal);
     } finally {
       if (probeTimer) clearTimeout(probeTimer);
       signal?.removeEventListener('abort', abortProbe);

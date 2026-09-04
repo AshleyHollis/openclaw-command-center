@@ -71,6 +71,18 @@ test('requires consecutive readiness and notices flapping', async () => {
   await assert.rejects(waitForConsecutiveReadiness(() => false, new Promise(() => {}), { attempts: 2 }), (error) => error.category === 'readiness-flapping');
 });
 
+test('startup readiness retries only refused connections and still requires consecutive successful probes', async () => {
+  const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('socket not listening'), { code: 'ECONNREFUSED' }) });
+  const observations = [refused, true, refused, true, true];
+  let calls = 0;
+  await waitForConsecutiveReadiness(() => { calls += 1; const next = observations.shift(); if (next instanceof Error) throw next; return next; }, new Promise(() => {}), { attempts: 5, wait: async () => {} });
+  assert.equal(calls, 5);
+  for (const failure of [new Error('invalid authenticated response'), Object.assign(new Error('certificate rejected'), { code: 'CERT_HAS_EXPIRED' })]) {
+    await assert.rejects(waitForConsecutiveReadiness(() => { throw failure; }, new Promise(() => {})), (error) => error === failure);
+  }
+  await assert.rejects(waitForConsecutiveReadiness(() => false, Promise.resolve(refused)), (error) => error === refused);
+});
+
 test('elapsed readiness deadlines allow late success and reject flapping without real sleeps', async () => {
   let clock = 0;
   const wait = async (delayMs) => { clock += delayMs; };
