@@ -237,12 +237,13 @@ async function mountedPluginFrame(page, pluginDocument, evidence) {
   }
   const provenance = await frame.evaluate(async () => {
     await Promise.all([window.CommandCenterTopics.ready, window.CommandCenterSearch.ready]);
+    await window.CommandCenterTopics.loadTopics();
     return {
       baseURI: document.baseURI,
       title: document.title,
       heading: document.querySelector('h1')?.textContent,
       shell: typeof window.CommandCenterTopics.loadTopics === 'function' && typeof window.CommandCenterSearch.search === 'function',
-      bridgeReady: !document.querySelector('#topic-status')?.textContent?.includes('Loading')
+      bridgeReady: !document.querySelector('#topic-status')?.textContent?.includes('Loading') && Boolean(document.querySelector('#topic-search-topic-id option[value]:not([value=""])'))
     };
   });
   if (!isControlUiPluginUrl(provenance.baseURI, { gatewayUrl: page.url(), pluginId: 'command-center', routeId: 'command-center' }) || provenance.title !== 'Command Center' || provenance.heading !== 'Dashboard' || !provenance.shell || !provenance.bridgeReady) {
