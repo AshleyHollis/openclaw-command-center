@@ -106,9 +106,9 @@ export class NoteAdapter {
 
   noteReference(root, relativePath, revision, referencesByExternalSourceId = null) {
     const externalSourceId = `${root}/${relativePath}`;
-    const matches = referencesByExternalSourceId?.get(externalSourceId)
-      ?? this.metadata?.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note' && reference.externalSourceId === externalSourceId)
-      ?? [];
+    const matches = referencesByExternalSourceId === null
+      ? this.metadata?.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note' && reference.externalSourceId === externalSourceId) ?? []
+      : referencesByExternalSourceId.get(externalSourceId) ?? [];
     if (matches.length > 1) throw sourceError('source-recovery', 'The Note Source Reference is ambiguous.');
     return createSourceReference({
       referenceId: matches[0]?.referenceId ?? `note:${randomUUID()}`,
