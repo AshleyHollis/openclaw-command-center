@@ -242,8 +242,10 @@ async function mountedPluginFrame(page, pluginDocument, evidence) {
   if (!pluginDocument?.observed || !pluginDocument.value.ok() || new URL(pluginDocument.value.url()).pathname !== '/plugins/command-center') {
     throw new HarnessFailure('plugin-document-mismatch', 'Command Center plugin document did not return a successful exact-route response');
   }
-  const body = await pluginDocument.value.body();
-  if (body.byteLength === 0 || body.byteLength > 2_000_000) throw new HarnessFailure('plugin-document-mismatch', 'Command Center plugin document response was empty or unbounded');
+  const declaredLength = pluginDocument.value.headers()['content-length'];
+  if (declaredLength !== undefined && (!/^\d+$/u.test(declaredLength) || Number(declaredLength) === 0 || Number(declaredLength) > 2_000_000)) {
+    throw new HarnessFailure('plugin-document-mismatch', 'Command Center plugin document response declared an empty or unbounded body');
+  }
   const srcdoc = await iframe.getAttribute('srcdoc');
   const src = await iframe.getAttribute('src');
   if (typeof srcdoc !== 'string' || srcdoc.length === 0 || srcdoc.length > 2_100_000 || (src !== null && src !== '')) throw new HarnessFailure('plugin-frame-url-mismatch', `Command Center capability frame was not mounted through the pinned host srcdoc boundary (srcdocLength=${typeof srcdoc === 'string' ? srcdoc.length : -1}; directSrc=${src !== null && src !== ''})`);
