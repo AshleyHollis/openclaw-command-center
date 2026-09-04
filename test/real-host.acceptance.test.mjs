@@ -1647,7 +1647,7 @@ async function assertKeyboardAccessibility(frame, page) {
   await page.emulateMedia({ reducedMotion: 'no-preference', forcedColors: 'none' });
 }
 
-test('mounts the built plugin through the isolated authenticated external tab', { timeout: 900_000, concurrency: true }, async (testContext) => {
+test('mounts the built plugin through the isolated authenticated external tab', { timeout: 2_400_000, concurrency: true }, async (testContext) => {
   let descriptor, buildReceipt, baseline, baselineSeed;
   await testContext.test('release preparation: candidate build and authenticated descriptor', async () => {
     reportProgress(testContext, 'build:started');

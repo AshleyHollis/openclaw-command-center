@@ -45,7 +45,7 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   assert.match(source, /isolatedResult\('degraded-source-availability'\)/u);
   assert.doesNotMatch(source, /requireScenario\(/u);
   assert.match(source, /testContext\.diagnostic\(/u);
-  assert.match(source, /timeout: 900_000/u);
+  assert.match(source, /timeout: 2_400_000/u);
   const isolatedCompletion = source.indexOf("await Promise.all([...isolatedSlices.keys()]");
   const finalization = source.indexOf('const finalizationErrors = await finalizeAcceptanceJourney', isolatedCompletion);
   const privacyPreflight = source.indexOf('await scanRepositorySafety', finalization);
