@@ -1832,7 +1832,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
       if (acceptancePlan.kind === 'focused') {
         const focusedScale = acceptancePlan.scenarioIds.includes('focused-scale-session-seeding');
-        const focusedHeavyCorpus = acceptancePlan.scenarioIds.includes('focused-heavy-corpus-mutation-journey');
+        const focusedHeavyCorpus = acceptancePlan.scenarioIds.includes('focused-heavy-corpus-mutation-journey') || acceptancePlan.scenarioIds.includes('focused-invalidated-projection-recovery');
         const focusedUiState = acceptancePlan.scenarioIds.includes('focused-ui-state-regression');
         const focusedScaleFolderPath = path.join(world.paths.vault, 'fictional-scale');
         await Promise.all([mkdir(migrationFolderPath, { recursive: true }), ...(focusedScale || focusedHeavyCorpus || focusedUiState ? [mkdir(focusedScaleFolderPath, { recursive: true })] : [])]);
@@ -2198,7 +2198,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         const rebuildStartedAt = Date.now();
         await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'focused Control UI Search baseline rebuild' });
         const rebuildMs = Date.now() - rebuildStartedAt;
-        const heavyCorpus = focusedScenarioIds.has('focused-heavy-corpus-mutation-journey');
+        const heavyCorpus = focusedScenarioIds.has('focused-heavy-corpus-mutation-journey') || focusedScenarioIds.has('focused-invalidated-projection-recovery');
         const verified = await waitForCommittedSearchProjections(projectionRoot, {
           attempts: 1200,
           signal,
@@ -2337,6 +2337,49 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.startup = true;
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant, bridgeRead: true };
     });
+    const runFocusedProjectionRecovery = async (kind, signal) => {
+      const projectionRoot = path.join(path.dirname(databasePath), 'projections');
+      await restoreReleaseSearchBaseline({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal, label: `focused ${kind} recovery` });
+      if (kind === 'stale') {
+        const manifestPath = path.join(projectionRoot, 'topic-search-notes.json');
+        const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+        await writeFile(manifestPath, `${JSON.stringify({ ...manifest, generation: 'fictional-focused-stale-generation' })}\n`);
+      } else {
+        await Promise.all(COMMITTED_SEARCH_PROJECTION_FILES.map(async (name) => {
+          try { await unlink(path.join(projectionRoot, name)); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+        }));
+        if (kind === 'invalidated') await writeFile(path.join(projectionRoot, '.topic-search.invalidated.json'), `${JSON.stringify({ schemaVersion: 1, state: 'invalidated' })}\n`);
+      }
+      const before = captureSearchProjectionEvidence({ projectionRoot, metadataDatabasePath: databasePath });
+      await assert.rejects(
+        requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, query: 'Fictional scale search phrase', limit: 50 }, signal }),
+        /capability-unavailable|projection/iu
+      );
+      assert.deepEqual(captureSearchProjectionEvidence({ projectionRoot, metadataDatabasePath: databasePath }), before, `focused ${kind} projection read must remain side-effect free`);
+      const startedAt = Date.now();
+      await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: `focused ${kind} Search projection rebuild` });
+      const verified = await verifyReleaseSearchResults({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal });
+      return { recovered: true, rebuildMs: Date.now() - startedAt, rowCounts: verified.rowCounts };
+    };
+    if (focusedScenarioIds?.has('focused-invalidated-projection-recovery')) await collectScenario('focused-invalidated-projection-recovery', (signal) => runFocusedProjectionRecovery('invalidated', signal));
+    if (focusedScenarioIds?.has('focused-missing-projection-recovery')) await collectScenario('focused-missing-projection-recovery', (signal) => runFocusedProjectionRecovery('missing', signal));
+    if (focusedScenarioIds?.has('focused-stale-projection-recovery')) await collectScenario('focused-stale-projection-recovery', (signal) => runFocusedProjectionRecovery('stale', signal));
+    if (focusedScenarioIds?.has('focused-session-create-after-recovery')) {
+      await collectScenario('focused-session-create-after-recovery', async (signal) => {
+        frame = await remountPluginFrame(page);
+        const before = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
+        const beforeConversations = (before?.result ?? before)?.conversations ?? before?.conversations ?? [];
+        const original = await createScaleConversationThroughAuthenticatedRoute(signal);
+        const after = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
+        const afterConversations = (after?.result ?? after)?.conversations ?? after?.conversations ?? [];
+        const conversation = afterConversations.find((item) => item.referenceId === original.referenceId);
+        assert.equal(afterConversations.length, beforeConversations.length + 1);
+        assert.equal(typeof conversation?.sessionId, 'string');
+        const replay = await createSessionThroughAuthenticatedFrame(frame, { topicId: RELEASE_SCALE_TOPIC_ID, logicalOperationId: original.logicalOperationId, label: 'Fictional scale Conversation 1', authoritativeSession: original.authoritativeSession, signal });
+        assert.equal(replay.result?.referenceId, original.referenceId);
+        return { referenceId: original.referenceId, authoritativeCount: afterConversations.length, replayed: true };
+      });
+    }
     if (focusedScenarioIds?.has('focused-session-create-idempotent-replay')) {
       await collectScenario('focused-session-create-idempotent-replay', async (signal) => {
         frame = await remountPluginFrame(page);
