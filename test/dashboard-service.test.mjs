@@ -14,6 +14,7 @@ test('dashboard partitions current and future Reminder occurrences and pages Act
           { episodeId: 'attention-1', sourceCapabilityId: 'monitor', stableSubjectId: 'subject-1', state: 'Active', severity: 'High', topicId: 'topic-one', sourceReferenceId: 'source-attention', actions: [{ actionId: 'one' }, { actionId: 'two' }, { actionId: 'three' }, { actionId: 'four' }] },
           { episodeId: 'attention-2', sourceCapabilityId: 'monitor', stableSubjectId: 'subject-2', state: 'Active', severity: 'High', topicId: 'topic-one', sourceReferenceId: 'source-attention-2', actions: [{ actionId: 'one' }] },
           { episodeId: 'reminder-due', sourceCapabilityId: 'reminders', stableSubjectId: 'reminder-1', state: 'Active', severity: 'Reminder', topicId: 'topic-one', sourceReferenceId: 'source-due', actions: [] },
+          { episodeId: 'topic-review', sourceCapabilityId: 'topic-review', stableSubjectId: 'topic-review:global', state: 'Active', severity: 'Routine', actions: [] },
           { episodeId: 'routine', sourceCapabilityId: 'monitor', stableSubjectId: 'routine', state: 'Active', severity: 'Routine', topicId: 'topic-one', sourceReferenceId: 'source-routine' }
         ],
         inProgress: [{ episodeId: 'running', state: 'Action running', severity: 'High', topicId: 'topic-one', actions: [{ actionId: 'ignored' }] }]
@@ -30,12 +31,13 @@ test('dashboard partitions current and future Reminder occurrences and pages Act
     }
   };
   const result = await projectDashboard({ sourceService, metadata: { listUsableTopics: () => topics }, now: () => serverTime, activityOffset: 0, activityLimit: 50 });
-  assert.equal(result.attention.length, 3);
+  assert.equal(result.attention.length, 4);
+  assert.equal(result.attention.some((item) => item.episodeId === 'topic-review'), true);
   assert.equal(result.attention.some((item) => item.episodeId === 'reminder-due'), true);
   assert.equal(result.comingUp.length, 1);
   assert.equal(result.comingUp[0].context, 'Fictional Topic');
   assert.equal(result.inProgress.length, 1);
-  assert.equal(result.attentionBadgeCount, 3);
+  assert.equal(result.attentionBadgeCount, 4);
   assert.equal(result.attention[0].actions.length <= 3, true);
   assert.equal(result.activity.records.length, 50);
   assert.equal(result.activity.nextOffset, 50);

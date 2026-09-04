@@ -98,7 +98,7 @@ export async function projectDashboard({ sourceService, attentionService, metada
   const attentionResult = typeof sourceService?.attentionList === 'function'
     ? await sourceService.attentionList({ schemaVersion: 1 })
     : attentionService?.list?.({ schemaVersion: 1 }) ?? { episodes: [], inProgress: [] };
-  const active = asArray(attentionResult?.episodes).filter((episode) => episode?.state === 'Active' && (episode.severity !== 'Routine' || episode.sourceCapabilityId === 'reminders' && episode.evidenceFacts?.reminderDue === true)).map(compactEpisode);
+  const active = asArray(attentionResult?.episodes).filter((episode) => episode?.state === 'Active' && (episode.severity !== 'Routine' || episode.sourceCapabilityId === 'topic-review' || episode.sourceCapabilityId === 'reminders' && episode.evidenceFacts?.reminderDue === true)).map(compactEpisode);
   const inProgress = asArray(attentionResult?.inProgress).filter((episode) => episode?.state === 'Action running').map((episode) => Object.freeze({ ...compactEpisode(episode), actions: [] }));
   const topicById = new Map(topics.map((topic) => [topic.topicId, topic]));
   const reminders = await listReminderRows({ sourceService, metadata, topics });
