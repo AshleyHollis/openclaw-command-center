@@ -1588,6 +1588,20 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   return { topicId, conversationName, movedPath, primaryMessage, measurement, accessibilityStates, focusRestorations, announcementTransitions };
 }
 
+async function locatePaginatedNote(frame, pathName) {
+  await frame.waitForFunction(() => /^[0-9]+ Notes\.$/u.test(document.querySelector('#notes-status')?.textContent ?? ''));
+  const note = frame.locator('#notes-tree').getByRole('button', { name: pathName, exact: true });
+  const next = frame.locator('#note-next');
+  for (let page = 0; page < 100; page += 1) {
+    if (await note.count()) return note;
+    if (await next.isDisabled()) break;
+    const previousStatus = await frame.locator('#note-page-status').textContent();
+    await next.click();
+    await frame.waitForFunction((status) => document.querySelector('#note-page-status')?.textContent !== status, previousStatus);
+  }
+  throw new Error(`The paginated Notes catalog omitted ${pathName}.`);
+}
+
 async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId = RELEASE_SCALE_TOPIC_ID }) {
   const lifecycleStarted = Date.now();
   const importedTopic = frame.locator('.topic-row').filter({ hasText: 'Fictional Scale Corpus' });
@@ -1596,8 +1610,9 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   await selectWorkspaceSection(frame, 'notes', 1440);
   const measurements = {};
   for (const [pathName, edit] of [['large-note.md', true]]) {
+    const note = await locatePaginatedNote(frame, pathName);
     const started = Date.now();
-    await frame.locator('#notes-tree').getByRole('button', { name: pathName, exact: true }).click();
+    await note.click();
     await frame.locator('#note-editor').waitFor({ state: 'visible' });
     const bytes = await frame.locator('#note-content').inputValue().then((value) => Buffer.byteLength(value));
     assert.equal(bytes, RELEASE_FIXTURE_COUNTS.largeNoteBytes);
@@ -1624,7 +1639,7 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
       await enterText(frame.locator('#note-action-path'), 'measured/large-note.md', true);
       await activate(frame.locator('#note-action-submit'), true);
       await frame.locator('#note-action-dialog').waitFor({ state: 'hidden' });
-      await frame.locator('#notes-tree').getByRole('button', { name: 'measured/large-note.md', exact: true }).waitFor();
+      await locatePaginatedNote(frame, 'measured/large-note.md');
       measurements.largeNoteMoveMs = Math.max(1, Date.now() - moveStarted);
     }
     await assertNoFrameOverflow(frame, `large Note ${pathName}`);
