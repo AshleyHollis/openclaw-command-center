@@ -1287,7 +1287,8 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
       const style = getComputedStyle(node);
       return !node.disabled && node.tabIndex >= 0 && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
     };
-    const tabbables = [...document.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')].filter(visible);
+    const tabbable = (node) => visible(node) && (node.matches('button,input,select,textarea,a[href],[tabindex]') || node.scrollHeight > node.clientHeight && ['auto', 'scroll'].includes(getComputedStyle(node).overflowY));
+    const tabbables = [...document.querySelectorAll('*')].filter(tabbable);
     return {
       count: tabbables.length,
       current: tabbables.indexOf(document.activeElement),
@@ -1316,7 +1317,8 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
         const style = getComputedStyle(node);
         return !node.disabled && node.tabIndex >= 0 && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
       };
-      const tabbables = [...document.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')].filter(visible);
+      const tabbable = (node) => visible(node) && (node.matches('button,input,select,textarea,a[href],[tabindex]') || node.scrollHeight > node.clientHeight && ['auto', 'scroll'].includes(getComputedStyle(node).overflowY));
+      const tabbables = [...document.querySelectorAll('*')].filter(tabbable);
       const active = document.activeElement;
       const nativeComposite = active instanceof HTMLInputElement && ['date', 'datetime-local', 'month', 'time', 'week'].includes(active.type);
       return { index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: Boolean(active?.closest?.('[hidden], [inert]')) || active?.getClientRects?.().length === 0, outline: active ? getComputedStyle(active).outlineStyle : 'none', nativeComposite, escapedDialog: Boolean(target.closest('dialog[open]')) && !active?.closest?.('dialog[open]') };
