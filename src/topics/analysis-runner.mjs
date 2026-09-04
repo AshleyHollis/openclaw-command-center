@@ -5,7 +5,7 @@ import { canonicalJson, materialEvidenceDigest } from './analysis-evidence.mjs';
 const locks = new WeakMap();
 const MAX_SOURCES = 100;
 function nowIso(now) { const value = typeof now === 'function' ? now() : now; return new Date(typeof value === 'number' ? value : Date.parse(value)).toISOString(); }
-function sourceRevision(metadata, source) { return source.observedRevision ?? metadata.getSourceLocator?.(source.referenceId)?.observedRevision ?? `unobserved:${source.referenceId}`; }
+function sourceRevision(metadata, source) { return metadata.getSourceLocator?.(source.referenceId)?.observedRevision ?? source.observedRevision ?? `unobserved:${source.referenceId}`; }
 function freeze(value) { return Object.freeze(value); }
 function publicFailure(error) { return error?.code === 'conflict' ? 'Topic Analysis was blocked by a source revision conflict.' : 'Topic Analysis could not complete.'; }
 function withoutCaptureTimes(value) {
