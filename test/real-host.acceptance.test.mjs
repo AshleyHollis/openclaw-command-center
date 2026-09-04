@@ -1750,6 +1750,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     let migrationFixtureEvidence;
     await testContext.test('release preparation: deterministic source fixtures', async () => withDeadline('deterministic release fixture preparation', async () => {
       reportProgress(testContext, 'fixture:started');
+      if (acceptancePlan.kind === 'focused') {
+        const focusedFixture = openCommandCenterMetadataService({ stateDir: resolvedStateDir, capabilities: READY_CAPABILITIES });
+        try {
+          focusedFixture.createTopic({ topicId: RELEASE_ALPHA_TOPIC_ID, paraCategory: 'project', lifecycle: 'active' });
+        } finally { focusedFixture.close(); }
+        reportProgress(testContext, 'fixture:passed');
+        return;
+      }
       const migrationExportPath = path.join(world.tempRoot, 'legacy-discord-export.v1.json');
       const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
       const scaleMigrationFolderPath = path.join(world.paths.vault, 'fictional-scale');
@@ -2090,10 +2098,38 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.forgedMutationRejected = true;
       return { rejected: true };
     });
-    await collectScenario('authenticated-control-ui-mount', async () => {
+    await collectScenario('authenticated-control-ui-mount', async (signal) => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');
-      await verifyReleaseSearchResults({ gatewayUrl, credential: world.gatewayCredential, projectionRoot });
-      releaseState.projectionRoot = projectionRoot;
+      if (acceptancePlan.kind === 'focused') {
+        try {
+          await waitForConsecutiveReadiness(async () => {
+            const observation = { attempt: ++readinessAttempt, url: `${gatewayUrl}${runtimeCapability.bootstrap.path}`, status: null, error: null, bodyKeys: [] };
+            try {
+              host.diagnostics.guard.assert('127.0.0.1', 'focused Control UI readiness probe');
+              const { response, body, parseError } = await fetchJsonWithDeadline(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal }, { label: 'focused Control UI readiness probe', timeoutMs: 3_000 });
+              observation.status = response.status;
+              observation.bodyKeys = body && typeof body === 'object' ? Object.keys(body).slice(0, 30) : [];
+              if (!response.ok) observation.error = `bootstrap-http-${response.status}`;
+              else if (parseError || !body || typeof body !== 'object' || Array.isArray(body)) observation.error = 'bootstrap-invalid-response';
+              else if (!isCommandCenterMetadataReady(databasePath)) observation.error = 'metadata-not-ready';
+              else if (!routeGrant(body)) observation.error = 'route-grant-not-ready';
+              recordReadinessObservation(observation);
+              return observation.error === null;
+            } catch (error) {
+              if (signal.aborted) throw signal.reason ?? error;
+              observation.error = redactBrowserEvidence(error?.message ?? error);
+              recordReadinessObservation(observation);
+              return false;
+            }
+          }, host.earlyExit, { deadlineMs: 220_000, delayMs: 250, signal });
+        } catch (error) {
+          const observations = redact(JSON.stringify(evidence.readinessAttempts.slice(-5)), 1_500);
+          throw new HarnessFailure(error.category || 'readiness-timeout', `${error.message}; last readiness observations: ${observations}; host stdout: ${host.diagnostics.stdout}; host stderr: ${host.diagnostics.stderr}`);
+        }
+      } else {
+        await verifyReleaseSearchResults({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal });
+        releaseState.projectionRoot = projectionRoot;
+      }
       managedBrowser = await withDeadline('primary browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       browser = managedBrowser.browser;
       if (capturePerformanceBaseline) {
@@ -2161,11 +2197,15 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const sandbox = await iframe.getAttribute('sandbox');
       if (sandbox !== 'allow-scripts') throw new HarnessFailure('sandbox-mismatch', 'External tab iframe is not scripts-only');
       await chooseOption(frame.locator('#topic-search-topic-id'), RELEASE_ALPHA_TOPIC_ID, true);
-      await enterText(frame.locator('#topic-search-query'), 'Fictional', true);
-      await submitFrameForm(frame, '#topic-search-form', true);
-      await frame.waitForFunction(() => /Notes.*Conversations/u.test(document.querySelector('#topic-search-status')?.textContent ?? ''), undefined, { timeout: 60_000 });
+      if (acceptancePlan.kind === 'release') {
+        await enterText(frame.locator('#topic-search-query'), 'Fictional', true);
+        await submitFrameForm(frame, '#topic-search-form', true);
+        await frame.waitForFunction(() => /Notes.*Conversations/u.test(document.querySelector('#topic-search-status')?.textContent ?? ''), undefined, { timeout: 60_000 });
+      } else {
+        assert.equal(await frame.locator('#topic-search-topic-id').inputValue(), RELEASE_ALPHA_TOPIC_ID, 'capability bridge-backed Topic read did not populate the authenticated shell');
+      }
       releaseState.startup = true;
-      return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant };
+      return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant, bridgeRead: true };
     });
     await collectScenario('stale-projection-recovery', async (signal) => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');
