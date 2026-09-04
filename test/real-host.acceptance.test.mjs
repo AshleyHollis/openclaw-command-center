@@ -1932,6 +1932,21 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     if (!isolatedEvidence.has(id)) throw new HarnessFailure('release-row-missing', `Independent release slice produced no evidence for ${id}`);
     return isolatedEvidence.get(id);
   };
+  if (acceptancePlan.isolatedSliceIds) {
+    const failures = [];
+    // Each external job owns one sequential subsystem lane; qualification remains exclusive.
+    for (const id of acceptancePlan.isolatedSliceIds) {
+      try { await isolatedResult(id); }
+      catch (error) { failures.push(error); if (error?.fatalAcceptanceCleanup) break; }
+    }
+    await assertBuiltDigest(buildReceipt);
+    await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });
+    scanPublicEvidence([JSON.stringify([...isolatedEvidence])]);
+    if (failures.length) throw new AggregateError(failures, 'Independent diagnostic slices failed');
+    assert.equal(isolatedEvidence.size, acceptancePlan.isolatedSliceIds.length);
+    testContext.diagnostic(`acceptance-scenario-result=${JSON.stringify({ schemaVersion: 1, outcome: 'passed', scenario: process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO, isolatedSliceIds: [...isolatedEvidence.keys()], buildDigest: buildReceipt.digest, performanceQualified: false })}`);
+    return;
+  }
   let emittedBaseline;
   await withIsolatedWorld(async (world) => {
     const resolvedStateDir = path.join(world.root, '.openclaw');

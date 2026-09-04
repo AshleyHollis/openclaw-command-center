@@ -3,6 +3,18 @@ import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 import { ordinaryTestArgv, ordinaryTestLanes, resolveRealHostAcceptancePlan, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
 
+test('two non-performance diagnostic lanes partition every independent real-host slice', async () => {
+  const plans = ['diagnostic-ui-data', 'diagnostic-security-recovery'].map(resolveRealHostAcceptancePlan);
+  const ids = plans.flatMap((plan) => plan.isolatedSliceIds);
+  for (const plan of plans) { assert.equal(plan.kind, 'focused'); assert.deepEqual(plan.scenarioIds, []); }
+  assert.equal(new Set(ids).size, ids.length);
+  const source = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
+  const registered = [...source.matchAll(/\['([^']+)', startIsolatedSlice\(/gu)].map((match) => match[1]);
+  assert.deepEqual(ids.sort(), registered.sort());
+  assert.equal(ids.includes('scale-performance'), false);
+  assert.match(source, /if \(acceptancePlan\.kind === 'focused' && capturePerformanceBaseline\) throw/u);
+});
+
 test('real-host acceptance defaults to the complete release plan', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan(), { kind: 'release', scenarioIds: null });
   assert.deepEqual(resolveRealHostAcceptancePlan('  '), { kind: 'release', scenarioIds: null });

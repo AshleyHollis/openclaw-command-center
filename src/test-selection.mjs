@@ -50,9 +50,15 @@ const focusedRealHostScenarios = Object.freeze({
   'ui-state-regression': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-ui-state-regression'])
 });
 
+const diagnosticSliceLanes = Object.freeze({
+  'diagnostic-ui-data': Object.freeze(['fresh-desktop', 'fresh-scale', 'fresh-scale-analysis', 'fresh-mobile', 'fresh-review']),
+  'diagnostic-security-recovery': Object.freeze(['host-tuple-refusal', 'build-variant', 'plugin-api-variant', 'bridge-protocol-variant', 'binding-mismatch', 'foreign-database-restoration', 'secure-origin', 'degraded-bridge-grants', 'degraded-source-availability', 'combined-degraded', 'recovery-only-compatibility', 'destructive-migration-restoration'])
+});
+
 export function resolveRealHostAcceptancePlan(value) {
   const selected = typeof value === 'string' ? value.trim() : '';
   if (selected === '') return Object.freeze({ kind: 'release', scenarioIds: null });
+  if (diagnosticSliceLanes[selected]) return Object.freeze({ kind: 'focused', scenarioIds: Object.freeze([]), isolatedSliceIds: diagnosticSliceLanes[selected] });
   const scenarioIds = focusedRealHostScenarios[selected];
   if (!scenarioIds) throw new Error(`Unsupported real-host acceptance scenario: ${selected}`);
   return Object.freeze({ kind: 'focused', scenarioIds });
