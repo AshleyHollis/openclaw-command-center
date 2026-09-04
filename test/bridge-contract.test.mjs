@@ -53,6 +53,8 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.history', { schemaVersion: 1, topicId: 'topic', referenceId: 'session', sessionId: 'foreign-session' }), /unsupported.*sessionId/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic' }));
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic', includeClosed: true }));
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.create', { schemaVersion: 1, topicId: 'topic', label: 'Plugin-owned Conversation', isPrimary: false, logicalOperationId: randomUUID() }));
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.create', { schemaVersion: 1, topicId: randomUUID(), name: 'Plugin-owned Topic', paraCategory: 'project', logicalOperationId: randomUUID() }));
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic', includeClosed: 'true' }), /includeClosed.*boolean/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.list', { schemaVersion: 1, topicId: 'topic' }), /unsupported.*bridge method/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.structural-change.confirm', { schemaVersion: 1, topicId: randomUUID(), structuralChangeId: randomUUID(), paraCategory: 'area', previewDigest: 'sha256:preview', expectedRevision: 4, expectedRevisions: [], logicalOperationId: randomUUID() }));
