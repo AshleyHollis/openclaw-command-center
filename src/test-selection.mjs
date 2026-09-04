@@ -35,7 +35,8 @@ const focusedRealHostScenarios = Object.freeze({
   'session-create-idempotent-replay': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-session-create-idempotent-replay']),
   'migrated-scale-conversation-seeding': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding']),
   'desktop-primary-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey']),
-  'heavy-corpus-mutation-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-heavy-corpus-mutation-journey'])
+  'heavy-corpus-mutation-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-heavy-corpus-mutation-journey']),
+  'ui-state-regression': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-ui-state-regression'])
 });
 
 export function resolveRealHostAcceptancePlan(value) {

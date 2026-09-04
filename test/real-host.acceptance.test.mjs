@@ -260,6 +260,7 @@ async function remountPluginFrame(page) {
 
 async function waitForMigrationCompletion(databasePath, topicId, { attempts = 100, delayMs = 100, signal } = {}) {
   signal ??= acceptanceSignalContext.getStore();
+  let lastState = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     signal?.throwIfAborted();
     let database;
@@ -267,13 +268,14 @@ async function waitForMigrationCompletion(databasePath, topicId, { attempts = 10
       database = new DatabaseSync(databasePath, { readOnly: true });
       const completion = readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId });
       if (completion) return completion;
+      lastState = database.prepare("SELECT phase, failure_code AS failureCode, failure_summary AS failureSummary FROM migration_state WHERE state_id = 'legacy-discord-v1'").get() ?? lastState;
     } catch (error) {
       const pendingDatabase = error?.code === 'SQLITE_BUSY' || error?.errcode === 14 || /database is locked|unable to open database file/iu.test(error?.message ?? '');
       if (!pendingDatabase) throw error;
     } finally { database?.close(); }
     await delayWithSignal(delayMs, signal);
   }
-  throw new HarnessFailure('migration-incomplete', 'Pinned-host startup did not durably complete the configured legacy migration');
+  throw new HarnessFailure('migration-incomplete', `Pinned-host startup did not durably complete the configured legacy migration; durable state=${redact(JSON.stringify(lastState), 1_000)}`);
 }
 
 async function waitForCommittedSearchProjections(projectionRoot, { attempts = 100, signal, requiredTopicIds = [], expectedRowCounts, expectedTopicRowCounts } = {}) {
@@ -1831,10 +1833,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       if (acceptancePlan.kind === 'focused') {
         const focusedScale = acceptancePlan.scenarioIds.includes('focused-scale-session-seeding');
         const focusedHeavyCorpus = acceptancePlan.scenarioIds.includes('focused-heavy-corpus-mutation-journey');
+        const focusedUiState = acceptancePlan.scenarioIds.includes('focused-ui-state-regression');
         const focusedScaleFolderPath = path.join(world.paths.vault, 'fictional-scale');
-        await Promise.all([mkdir(migrationFolderPath, { recursive: true }), ...(focusedScale || focusedHeavyCorpus ? [mkdir(focusedScaleFolderPath, { recursive: true })] : [])]);
+        await Promise.all([mkdir(migrationFolderPath, { recursive: true }), ...(focusedScale || focusedHeavyCorpus || focusedUiState ? [mkdir(focusedScaleFolderPath, { recursive: true })] : [])]);
         const migrationExport = JSON.parse(await readFile(new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url), 'utf8'));
-        if (focusedScale || focusedHeavyCorpus) migrationExport.channels.push({
+        if (focusedScale || focusedHeavyCorpus || focusedUiState) migrationExport.channels.push({
           channelId: 'fictional-channel-scale',
           displayName: 'Fictional Scale Corpus',
           messages: [{ messageId: 'fictional-focused-scale-message', displayOrder: 0, author: { id: 'fictional-scale-user', displayName: 'Fictional Scale User' }, timestamp: '2026-08-21T00:00:00.000Z', text: 'Fictional focused scale source message.', edits: [], replyToMessageId: null, thread: null, reactions: [], attachments: [] }]
@@ -1850,7 +1853,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
             exportPath: migrationExportPath,
             channels: [
               { channelId: 'fictional-channel-alpha', topicId: RELEASE_ALPHA_TOPIC_ID, paraCategory: 'project', noteFolderPath: migrationFolderPath },
-              ...(focusedScale || focusedHeavyCorpus ? [{ channelId: 'fictional-channel-scale', topicId: RELEASE_SCALE_TOPIC_ID, paraCategory: 'resource', noteFolderPath: focusedScaleFolderPath }] : [])
+              ...(focusedScale || focusedHeavyCorpus || focusedUiState ? [{ channelId: 'fictional-channel-scale', topicId: RELEASE_SCALE_TOPIC_ID, paraCategory: 'resource', noteFolderPath: focusedScaleFolderPath }] : [])
             ]
           }
         };
@@ -2361,6 +2364,41 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         assert.ok(releaseState.focusedSearchRebuildMs > 10_000, `heavy-corpus Search rebuild must exceed the UI send deadline; observed ${releaseState.focusedSearchRebuildMs} ms`);
         const journey = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Heavy Corpus Mutation Topic', category: 'project', keyboard: true, projectionRoot: releaseState.projectionRoot });
         return { topicId: journey.topicId, primaryMessage: journey.primaryMessage, conversationMessage: journey.conversationMessage, rebuildMs: releaseState.focusedSearchRebuildMs };
+      });
+    }
+    if (focusedScenarioIds?.has('focused-ui-state-regression')) {
+      await collectScenario('focused-ui-state-regression', async () => {
+        assert.ok(frame && page, 'UI state regression requires its authenticated mounted fixture');
+        const destinationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 } });
+        const destination = destinationResponse?.result ?? destinationResponse;
+        const destinationSummary = Object.fromEntries(Object.entries({ ...(destination?.activeGroups ?? {}), provisioning: destination?.provisioning, recovery: destination?.recovery, archived: destination?.archived }).map(([kind, topics]) => [kind, (topics ?? []).map((topic) => ({ topicId: topic.topicId, name: topic.name, lifecycle: topic.lifecycle, usable: topic.usable }))]));
+        assert.ok((destination?.activeGroups?.resource ?? []).some((topic) => topic.topicId === RELEASE_SCALE_TOPIC_ID), `authoritative destination omitted the active scale Topic: ${JSON.stringify(destinationSummary)}`);
+        await frame.evaluate(() => window.CommandCenterTopics.loadTopics());
+        const renderedTopicNames = await frame.locator('.topic-row strong').allTextContents();
+        assert.ok(renderedTopicNames.includes('Fictional Scale Corpus'), `Control UI omitted the authoritative scale Topic: ${JSON.stringify({ destinationSummary, renderedTopicNames, status: await frame.locator('#topic-status').textContent() })}`);
+        const importedTopic = frame.locator('.topic-row').filter({ hasText: 'Fictional Scale Corpus' });
+        await importedTopic.getByRole('button', { name: 'Open Topic', exact: true }).waitFor();
+        await activate(importedTopic.getByRole('button', { name: 'Open Topic', exact: true }), true);
+        await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
+        await activate(frame.locator('#workspace-back'), true);
+        await waitForDashboard(frame);
+        await importedTopic.getByRole('button', { name: 'Open Topic', exact: true }).waitFor();
+        assert.equal(await frame.evaluate(() => document.activeElement?.id), 'topics-heading');
+        await page.setViewportSize({ width: 320, height: 900 });
+        await activate(importedTopic.getByRole('button', { name: 'Open Topic', exact: true }), true);
+        await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
+        await selectWorkspaceSection(frame, 'conversations', 320, true);
+        const conversationName = 'Fictional UI State Mobile Conversation';
+        await enterText(frame.locator('#conversation-create input[name="label"]'), conversationName, true);
+        await submitFrameForm(frame, '#conversation-create', true);
+        const conversation = frame.locator('.conversation-item').filter({ hasText: conversationName });
+        await activate(conversation.getByRole('button', { name: conversationName, exact: true }), true);
+        await waitForFrameText(frame, '#chat-conversation-name', conversationName);
+        await activate(conversation.getByRole('button', { name: 'Close', exact: true }), true);
+        await chooseOption(frame.locator('#conversation-view'), 'closed', true);
+        await frame.locator('.conversation-item').filter({ hasText: conversationName }).getByText('Closed', { exact: true }).waitFor();
+        await auditDynamicAccessibilityState(frame, page, 320, '320px closed Conversation', true);
+        return { topicId: RELEASE_SCALE_TOPIC_ID, conversationName, focus: await frame.evaluate(() => document.activeElement?.textContent?.trim() || document.activeElement?.id || '') };
       });
     }
     await collectScenario('stale-projection-recovery', async (signal) => {

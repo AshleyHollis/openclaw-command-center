@@ -455,7 +455,11 @@ test('queryless external tab browses Topics and opens the selected workspace', a
     const row = page.locator('.topic-row').filter({ hasText: 'Fictional Topic with a deliberately long responsive workspace name' });
     await row.getByRole('button', { name: 'Open Topic' }).click();
     await page.getByText('Topic workspace ready.').waitFor();
-    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.method === 'command-center.v1.topics.list')), true);
+    const listCalls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.method === 'command-center.v1.topics.list').length);
+    await page.locator('#workspace-back').click();
+    await page.waitForFunction((previous) => globalThis.__topicPageFixture.calls.filter((call) => call.method === 'command-center.v1.topics.list').length > previous, listCalls);
+    await page.locator('#dashboard').waitFor({ state: 'visible' });
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'topics-heading');
   } finally { await closeGuardedPage(page); }
 });
 
@@ -873,7 +877,11 @@ test('closing the selected Conversation immediately makes Chat read-only', async
   const page = await setupPage();
   try {
     await page.getByRole('button', { name: 'Independent Conversation', exact: true }).click(); await page.getByText('Independent transcript only').waitFor();
-    const row = page.locator('.conversation-item').filter({ hasText: 'Independent Conversation' }); await row.getByRole('button', { name: 'Close' }).click(); await row.waitFor({ state: 'hidden' });
+    let row = page.locator('.conversation-item').filter({ hasText: 'Independent Conversation' });
+    const close = row.getByRole('button', { name: 'Close' }); await close.focus(); await close.press('Enter');
+    const view = page.locator('#conversation-view'); await view.focus(); await view.selectOption('closed');
+    row = page.locator('.conversation-item').filter({ hasText: 'Independent Conversation' }); await row.getByText('Closed', { exact: true }).waitFor();
+    await page.waitForFunction(() => document.activeElement !== document.body && getComputedStyle(document.activeElement).outlineStyle !== 'none');
     assert.equal(await page.locator('#chat-conversation-name').textContent(), 'Independent Conversation');
     assert.equal(await page.locator('#chat-message').isDisabled(), true); assert.equal(await page.locator('#chat-send').isDisabled(), true);
   } finally { await closeGuardedPage(page); }

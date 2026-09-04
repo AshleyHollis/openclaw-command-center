@@ -529,7 +529,12 @@ async function loadConversations({ selectPrimary = false, generation = workspace
   }
 }
 function renderConversations() {
-  const target = document.querySelector('#conversation-list'); target.replaceChildren();
+  const target = document.querySelector('#conversation-list');
+  const active = document.activeElement;
+  const focusedRow = active?.closest?.('.conversation-item');
+  const focusedReferenceId = focusedRow?.dataset.referenceId;
+  const focusedLabel = focusedReferenceId && active instanceof HTMLButtonElement ? active.textContent : null;
+  target.replaceChildren();
   const pageCount = Math.max(1, Math.ceil(workspace.conversations.length / CONVERSATION_PAGE_SIZE));
   workspace.conversationPage = Math.min(workspace.conversationPage, pageCount - 1);
   const start = workspace.conversationPage * CONVERSATION_PAGE_SIZE;
@@ -543,6 +548,11 @@ function renderConversations() {
   const previous = document.querySelector('#conversation-previous'); const next = document.querySelector('#conversation-next');
   previous.disabled = workspace.conversationPage === 0; next.disabled = workspace.conversationPage >= pageCount - 1;
   document.querySelector('#conversation-page-status').textContent = `Page ${workspace.conversationPage + 1} of ${pageCount}`;
+  if (focusedReferenceId) {
+    const replacementRow = [...target.querySelectorAll('.conversation-item')].find((row) => row.dataset.referenceId === focusedReferenceId);
+    const replacement = [...(replacementRow?.querySelectorAll('button') ?? [])].find((control) => control.textContent === focusedLabel) ?? replacementRow?.querySelector('button');
+    (replacement ?? document.querySelector('#conversation-view'))?.focus();
+  }
 }
 function sameConversation(left, right) { return left?.topicId === right?.topicId && left?.referenceId === right?.referenceId && left?.sessionId === right?.sessionId; }
 function syncSelectedConversationControls() { const closed = workspace.selected?.status === 'closed'; document.querySelector('#chat-send').disabled = closed; document.querySelector('#chat-message').disabled = closed; }
@@ -687,7 +697,7 @@ function selectMobileSection(name) { workspace.mobileSection = name; if (name ==
 function updateResponsivePanes() { const mobile = typeof matchMedia === 'function' && matchMedia('(max-width: 47.99rem)').matches; for (const pane of selectAll('.workspace-layout > [data-pane]')) { const visible = mobile ? pane.dataset.pane === workspace.mobileSection : !['conversations', 'notes'].includes(pane.dataset.pane) || workspace.panes[pane.dataset.pane]; pane.style.display = visible ? '' : 'none'; pane.inert = !visible; } }
 function revealWorkspaceTarget(name) { if (typeof matchMedia === 'function' && matchMedia('(max-width: 47.99rem)').matches) { selectMobileSection(name); focusPane(name); } else if (name === 'notes' || name === 'conversations') setPaneOpen(name, true); else focusPane(name, false); }
 for (const control of selectAll('.workspace-sections button')) control.addEventListener('click', () => selectMobileSection(control.dataset.section)); if (typeof matchMedia === 'function') matchMedia('(max-width: 47.99rem)').addEventListener?.('change', updateResponsivePanes); updateResponsivePanes();
-document.querySelector('#workspace-back')?.addEventListener('click', () => { ++workspace.generation; setWorkspaceVisible(false); document.querySelector('#topics-heading')?.focus(); if (hasDashboardDestination) void loadDashboard(); });
+document.querySelector('#workspace-back')?.addEventListener('click', async () => { ++workspace.generation; if (hasTopicsDestination) await loadTopics(); setWorkspaceVisible(false); document.querySelector('#topics-heading')?.focus(); if (hasDashboardDestination) void loadDashboard(); });
 
 window.CommandCenterTopics = Object.freeze({ loadTopics, renderDestination, mutate, read, openResult, openTopic: openTopicWorkspace, routes: { HTTP_ROUTE, PAGE_ACTION_ROUTE, SHELL_ROUTE }, view: 'destination', searchView: 'search', get ready() { return bridgeReady; } });
 window.CommandCenterSearch = Object.freeze({

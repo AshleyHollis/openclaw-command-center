@@ -323,7 +323,7 @@ export class LegacyDiscordMigrationService {
       let topicCreated = false;
       if (!topic) {
         if (typeof this.metadata.createMigrationTopicBinding !== 'function') throw Object.assign(new Error('Atomic migration Topic binding persistence is unavailable.'), { code: 'destination-corrupt', channelId: channel.channelId });
-        this.metadata.createMigrationTopicBinding({ topic: { topicId: mapping.topicId, paraCategory: mapping.paraCategory, lifecycle: 'provisioning', createdAt: this.now(), updatedAt: this.now() }, reference: { version: 1, referenceId: `migration:folder:${channel.channelId}`, topicId: mapping.topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: mapping.noteFolderPath, observedRevision: `legacy-discord-owner:${configDigest}`, createdAt: this.now(), updatedAt: this.now() } });
+        this.metadata.createMigrationTopicBinding({ topic: { topicId: mapping.topicId, name: channel.displayName.trim() || mapping.topicId, paraCategory: mapping.paraCategory, lifecycle: 'provisioning', createdAt: this.now(), updatedAt: this.now() }, reference: { version: 1, referenceId: `migration:folder:${channel.channelId}`, topicId: mapping.topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: mapping.noteFolderPath, observedRevision: `legacy-discord-owner:${configDigest}`, createdAt: this.now(), updatedAt: this.now() } });
         topicCreated = true;
         references = this.metadata.listSourceReferences(mapping.topicId);
         phaseHook(this.hooks, 'afterTopicBinding', { channelId: channel.channelId, topicId: mapping.topicId });

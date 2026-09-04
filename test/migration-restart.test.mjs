@@ -54,11 +54,13 @@ test('an interruption after a durable checkpoint converges without duplicate eve
     const service = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined, hooks: { afterAppend() { if (interrupted) { interrupted = false; throw new Error('fictional interruption'); } } } });
     assert.equal((await service.start()).complete, false);
     assert.equal(metadata.getMigrationState().phase, 'review');
+    assert.equal(metadata.getTopicName('fictional-topic-restart'), 'Fictional Alpha');
     const checkpoint = metadata.listMigrationOccurrences('fictional-channel-alpha')[0];
     assert.equal(checkpoint.destinationMessageId, checkpoint.occurrenceId);
     assert.equal(checkpoint.destinationAnchor.entryId, checkpoint.destinationMessageId);
     assert.equal('storePath' in checkpoint.destinationAnchor, false);
     assert.equal((await service.resume({ logicalOperationId: randomUUID(), expectedMigrationRevision: metadata.getMigrationState().revision })).complete, true);
+    assert.equal(metadata.getTopicName('fictional-topic-restart'), 'Fictional Alpha');
     const reference = metadata.listSourceReferences('fictional-topic-restart').find((item) => item.sourceKind === 'session');
     const events = transcripts.sessions.get(reference.externalSourceId);
     assert.equal(events.length, 2);
