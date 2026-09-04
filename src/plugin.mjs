@@ -3,7 +3,7 @@ import { serveShellAsset } from './asset-handler.mjs';
 import { registerBridgeMethods } from './bridge/register.mjs';
 import { legacyDiscordMigrationConfigSchema } from './migration/config.mjs';
 import { createAttentionActionHandler } from './attention/http-route.mjs';
-import { createMetadataService } from './plugin-service.mjs';
+import { createMetadataService, resolveOwnPluginConfig } from './plugin-service.mjs';
 import { topicContextToolFactory } from './search/tool.mjs';
 import { createTopicsHttpHandler } from './topics/http.mjs';
 import { createDashboardReadHttpHandler, createDashboardActionsHttpHandler } from './dashboard/http-route.mjs';
@@ -50,7 +50,8 @@ export default definePluginEntry({
   configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema, topics: { type: 'object', properties: { noteRoot: { type: 'string', minLength: 1, pattern: '\\S' } }, required: ['noteRoot'], additionalProperties: false }, sourceCapabilities: { type: 'object', properties: Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'search', 'analysis', 'attention'].map((name) => [name, { const: false }])), additionalProperties: false }, controlUiGrant: { const: false } }, additionalProperties: false },
   /** @param {OpenClawPluginApi} api */
   register(api) {
-    const controlUiMutationsAllowed = api.pluginConfig?.controlUiGrant !== false;
+    const pluginConfig = resolveOwnPluginConfig(api);
+    const controlUiMutationsAllowed = pluginConfig.controlUiGrant !== false;
     if (typeof api.notifications?.registerEmitter !== 'function') throw new Error('Command Center requires the published notification emitter API.');
     const notificationEmitter = api.notifications.registerEmitter({
       version: 1,
@@ -74,7 +75,7 @@ export default definePluginEntry({
       get(_target, property) {
         if (property === 'status') return async () => {
           const status = await sourceProxy.status();
-          if (api.pluginConfig?.controlUiGrant !== false || status.mode === 'recovery-only') return status;
+          if (pluginConfig.controlUiGrant !== false || status.mode === 'recovery-only') return status;
           return {
             ...status,
             mode: 'degraded',
@@ -103,7 +104,7 @@ export default definePluginEntry({
     });
     // This public SDK seam asks Control UI to render the route in its default
     // scripts-only frame. Gateway auth makes the host mint a frame grant.
-    if (api.pluginConfig?.controlUiGrant !== false) api.session.controls.registerControlUiDescriptor({
+    if (pluginConfig.controlUiGrant !== false) api.session.controls.registerControlUiDescriptor({
       surface: 'tab',
       id: routeId,
       label: 'Command Center',

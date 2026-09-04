@@ -24,6 +24,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     async clear() { return { status: 'cleared', attempted: 1, cleared: 1, failed: 0, ambiguous: 0 }; }
   };
   const api = {
+    id: 'command-center',
     config: { agents: { defaults: { userTimezone: 'UTC' } } },
     pluginConfig,
     logger: { warn() {} },
