@@ -75,14 +75,25 @@ export class TopicReviewService {
     return Object.freeze({ schemaVersion: 1, reviewId: 'topic-review:global', subject: 'topic-review:global', sourceCapabilityId: 'topic-review', severity: 'Routine', notification: false, episodeRevision: stored?.episodeRevision ?? 0, state: currentSnooze && actionable.length ? 'Snoozed' : actionable.length ? 'Active' : 'Resolved', snoozedUntil: currentSnooze, groups: Object.freeze(groups), proposals: Object.freeze(proposals), retainedBlockers: Object.freeze(proposals.flatMap((proposal) => proposal.blockers ?? [])), applicationSummary: stored?.applicationSummary ?? { applied: 0, failed: 0, blocked: 0, recovery: 0 } });
   }
 
-  refresh({ applicationSummary = undefined } = {}) {
+  #refresh({ applicationSummary = undefined } = {}) {
     const view = this.get(); const old = this.metadata.getTopicReview?.();
-    if (!old && view.proposals.length === 0) return view;
+    if (!old && view.proposals.length === 0) return { result: view, synchronize: false };
     const now = clockIso(this.now);
     const saved = this.metadata.saveTopicReview({ schemaVersion: 1, episodeRevision: (old?.episodeRevision ?? 0) + 1, state: view.state, snoozedUntil: view.snoozedUntil, groups: view.groups, retainedBlockers: view.retainedBlockers, applicationSummary: applicationSummary ?? view.applicationSummary, updatedAt: now });
     const result = Object.freeze({ ...view, ...saved, groups: view.groups, proposals: view.proposals });
-    void this.syncAttention(result);
-    return result;
+    return { result, synchronize: true };
+  }
+
+  refresh(options = {}) {
+    const refreshed = this.#refresh(options);
+    if (refreshed.synchronize) void this.syncAttention(refreshed.result);
+    return refreshed.result;
+  }
+
+  async refreshAndSync(options = {}) {
+    const refreshed = this.#refresh(options);
+    if (refreshed.synchronize) await this.syncAttention(refreshed.result);
+    return refreshed.result;
   }
 
   #find(input) {

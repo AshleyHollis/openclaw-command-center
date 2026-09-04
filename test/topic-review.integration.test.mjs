@@ -91,8 +91,7 @@ test('the review projection registers one Routine Attention item and resolves it
     try {
       const proposal = persist(metadata, makeProposal('archive'));
       const review = createTopicReviewService({ metadata, attentionService: attention, now: () => Date.parse('2026-08-24T08:00:00Z') });
-      review.refresh();
-      await new Promise((resolve) => setImmediate(resolve));
+      await review.refreshAndSync();
       const listed = attention.list({ schemaVersion: 1 });
       assert.equal(listed.episodes.length, 1); assert.equal(listed.episodes[0].stableSubjectId, 'topic-review:global'); assert.equal(listed.episodes[0].severity, 'Routine');
       const snoozed = review.snooze({ schemaVersion: 1, logicalOperationId: 'snooze-attention-projection', reviewId: 'topic-review:global', expectedRevision: review.get().episodeRevision, snoozedUntil: '2026-08-25T08:00:00.000Z' });

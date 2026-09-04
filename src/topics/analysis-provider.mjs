@@ -25,7 +25,7 @@ export function createTopicAnalysisProvider({ getRunner, metadata, onCompleted }
       // journal remains available to scheduler/tool callers, but must not
       // compete for the same logical operation record at this boundary.
       const result = publicResult(await runner.run({ trigger: input.trigger ?? 'manual', topicId: input.topicId, logicalOperationId: providerOperationId(input.logicalOperationId) }));
-      onCompleted?.(result);
+      await onCompleted?.(result);
       return result;
     },
     async status() {
@@ -44,7 +44,7 @@ export function createTopicAnalysisProvider({ getRunner, metadata, onCompleted }
       try {
         const result = operation?.resultIdentity ? publicResult(JSON.parse(operation.resultIdentity)) : committedRun ? publicResult(committedRun) : null;
         if (!result) return null;
-        onCompleted?.(result);
+        void Promise.resolve(onCompleted?.(result)).catch(() => {});
         return result;
       } catch { return null; }
     }

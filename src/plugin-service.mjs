@@ -115,7 +115,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       // for shell/build inspection without resolving host-only packages; the
       // pinned host still supplies the transcript reader before service start.
       const { readVisibleSessionTranscriptMessageEntries } = await import('openclaw/plugin-sdk/session-transcript-runtime');
-      const analysisProvider = analysisUsable ? createTopicAnalysisProvider({ getRunner: () => topicAnalysisRunner, metadata: metadataService, onCompleted: () => topicReview?.refresh?.() }) : null;
+      const analysisProvider = analysisUsable ? createTopicAnalysisProvider({ getRunner: () => topicAnalysisRunner, metadata: metadataService, onCompleted: () => topicReview?.refreshAndSync?.() }) : null;
       sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider, analysisProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
       searchRebuildService = searchRebuildServiceFactory({

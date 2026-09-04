@@ -29,6 +29,22 @@ function fakeMetadata() {
   };
 }
 
+test('analysis provider waits for its completed downstream projection', async () => {
+  let releaseProjection;
+  const projection = new Promise((resolve) => { releaseProjection = resolve; });
+  let returned = false;
+  const provider = createTopicAnalysisProvider({
+    getRunner: () => ({ run: async () => ({ runId: 'analysis-projection-order', outcome: 'success' }) }),
+    metadata: { listTopicAnalysisRuns: () => [] },
+    onCompleted: () => projection
+  });
+  const pending = provider.run({ topicId: 'topic-projection-order' }).then((result) => { returned = true; return result; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(returned, false);
+  releaseProjection();
+  assert.equal((await pending).analysisId, 'analysis-projection-order');
+});
+
 test('Topic Analysis defaults to Monday at quiet-hours end and calculates the next real slot', () => {
   assert.equal(nextAnalysisSlot({ now: '2026-08-23T06:59:00Z', weekday: 1, localTime: '07:00', timeZone: 'UTC' }), monday);
   assert.equal(nextAnalysisSlot({ now: '2026-08-24T07:00:00Z', weekday: 1, localTime: '07:00', timeZone: 'UTC' }), '2026-08-31T07:00:00.000Z');
