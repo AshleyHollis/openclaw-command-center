@@ -1431,7 +1431,15 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   const topicMutationResponse = await topicMutation;
   if (!topicMutationResponse.ok()) {
     const body = await topicMutationResponse.json().catch(() => ({}));
-    throw new Error(`Topic creation HTTP ${topicMutationResponse.status()} code=${String(body?.code ?? 'unavailable').slice(0, 80)}`);
+    let durableStep = null;
+    if (projectionRoot) {
+      const metadata = new DatabaseSync(path.join(path.dirname(projectionRoot), 'metadata.sqlite'), { readOnly: true });
+      try {
+        const operation = metadata.prepare("SELECT state, current_step, result_json FROM topic_operations WHERE operation_kind = 'topics.create' ORDER BY updated_at DESC LIMIT 1").get();
+        durableStep = operation ? { state: operation.state, currentStep: operation.current_step, result: JSON.parse(operation.result_json ?? '{}') } : null;
+      } finally { metadata.close(); }
+    }
+    throw new Error(`Topic creation HTTP ${topicMutationResponse.status()} code=${String(body?.code ?? 'unavailable').slice(0, 80)} durableStep=${JSON.stringify(durableStep)}`);
   }
   await waitForFrameText(frame, '#topic-status', 'Topic created and verified.');
   const topicCreateMs = Math.max(1, Date.now() - topicCreateStarted);
