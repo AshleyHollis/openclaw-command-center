@@ -2216,7 +2216,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           query: document.querySelector('#topic-search-query')?.value ?? '',
           active: document.activeElement?.id || document.activeElement?.getAttribute?.('aria-label') || document.activeElement?.tagName || 'unknown'
         }));
-        throw new HarnessFailure('control-ui-search-timeout', `Authenticated Control UI search did not settle: ${redactBrowserEvidence(JSON.stringify({ browserState, console: evidence.console.slice(-5), errors: evidence.errors.slice(-5) }))}; ${error.message}`);
+        const diagnostic = { schemaVersion: 1, browserState, errors: evidence.errors.slice(-5), console: evidence.console.slice(-5) };
+        process.stderr.write(`control-ui-search-diagnostic=${JSON.stringify(diagnostic)}\n`);
+        throw new HarnessFailure('control-ui-search-timeout', `Authenticated Control UI search did not settle; page errors: ${redactBrowserEvidence(JSON.stringify(diagnostic.errors))}; state: ${redactBrowserEvidence(JSON.stringify(browserState))}; ${error.message}`);
       }
       releaseState.startup = true;
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant, bridgeRead: true };
