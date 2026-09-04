@@ -220,7 +220,8 @@ async function waitForNotificationEmission(databasePath, { attempts = 100, statu
       emissions: database.prepare('SELECT emission_id, episode_id, status, emitted_at_ms, updated_at_ms FROM notification_emissions ORDER BY updated_at_ms DESC LIMIT 5').all(),
       clears: database.prepare('SELECT logical_operation_id, episode_id, status, attempt_count, updated_at_ms FROM notification_clear_operations ORDER BY updated_at_ms DESC LIMIT 5').all(),
       slots: database.prepare('SELECT episode_id, slot_kind, status, due_at_ms, emitted_at_ms FROM notification_slots ORDER BY due_at_ms DESC LIMIT 8').all(),
-      episodes: database.prepare('SELECT episode_id, source_capability_id, state, severity, attention_since, updated_at FROM attention_episodes ORDER BY updated_at DESC LIMIT 5').all()
+      episodes: database.prepare('SELECT episode_id, source_capability_id, state, severity, evidence_json, attention_since, updated_at FROM attention_episodes ORDER BY updated_at DESC LIMIT 5').all(),
+      attempts: database.prepare('SELECT attempt_id, episode_id, action_id, expected_source_revision, state, outcome, verification_revision, retry_count, updated_at FROM attention_attempts ORDER BY updated_at DESC LIMIT 5').all()
     };
   } finally { database.close(); }
   throw new HarnessFailure('notification-reconciliation-timeout', `Closed-tab notification emission did not reach durable ${status} state: ${JSON.stringify(diagnostics)}`);
@@ -1291,7 +1292,11 @@ async function completeReminder(gatewayUrl, episode) {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(reminderActionRequest(episode))
   }, 'attention action');
   assert.equal(response.status, 200);
-  return response.json();
+  const payload = await response.json();
+  if (payload?.status !== 'applied' || payload?.result?.episode?.state !== 'Resolved') {
+    throw new HarnessFailure('reminder-completion-not-applied', `Reminder completion did not reach its durable terminal state: ${JSON.stringify({ status: payload?.status ?? null, episodeState: payload?.result?.episode?.state ?? null, attemptState: payload?.result?.attempt?.state ?? null, attemptOutcome: payload?.result?.attempt?.outcome ?? null, verificationRevision: payload?.result?.attempt?.verificationRevision ?? null, evidenceFacts: payload?.result?.episode?.evidenceFacts ?? null })}`);
+  }
+  return payload;
 }
 
 async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey, signal }) {
