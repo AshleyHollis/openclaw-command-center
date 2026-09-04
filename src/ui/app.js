@@ -9,6 +9,14 @@ const PAGE_ACTION_ROUTE = '/plugins/command-center/api/topic/actions';
 const SEARCH_REBUILD_ROUTE = '/plugins/command-center/api/search/rebuild';
 const markdownModuleUrl = new URL('/plugins/command-center/markdown.js', document.baseURI).href;
 const markdownModule = import(markdownModuleUrl);
+const SCRIPTED_FORM_IDS = new Set(['topic-analysis-schedule', 'notification-settings-form', 'topic-create', 'topic-search-form', 'chat-form', 'conversation-create', 'note-action-form', 'workspace-search-form']);
+document.addEventListener('click', (event) => {
+  const submitter = event.target?.closest?.('button[type="submit"],input[type="submit"]');
+  const form = submitter?.form;
+  if (!form || !SCRIPTED_FORM_IDS.has(form.id) || event.defaultPrevented) return;
+  event.preventDefault();
+  form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter }));
+});
 const requestedTopicId = new URLSearchParams(window.location.search).get('topicId');
 let currentDestination = { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] };
 let topicCreatePending = false;

@@ -52,6 +52,12 @@ test('opaque srcdoc shell resolves markdown against the inherited authenticated 
   assert.doesNotMatch(app, /import\('\.\/markdown\.js'\)/u);
 });
 
+test('scripts-only shell converts scripted submit-button clicks into cancellable submit events', async () => {
+  const app = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
+  assert.match(app, /SCRIPTED_FORM_IDS\.has\(form\.id\)/u);
+  assert.match(app, /event\.preventDefault\(\);\s*form\.dispatchEvent\(new SubmitEvent\('submit', \{ bubbles: true, cancelable: true, submitter \}\)\)/u);
+});
+
 test('handler rejects final and intermediate asset symlinks before serving content', async () => {
   await withAssets(async ({ root, assetRoot }) => {
     const outside = path.join(root, 'outside.html');
