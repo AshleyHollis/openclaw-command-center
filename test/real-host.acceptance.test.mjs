@@ -2427,7 +2427,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const analysis = await analysisResponse.json();
       const dashboard = await readDashboard(gatewayUrl);
       const cards = dashboard.attention.filter((episode) => episode.sourceCapabilityId === 'topic-review');
-      if (cards.length !== 1) throw new Error(`Focused Topic Review projection mismatch: ${JSON.stringify({ analysisStatus: analysisResponse.status, reviewState: analysis.review?.state, proposalCount: analysis.review?.proposals?.length ?? null, runOutcomes: analysis.runs?.slice(-2).map((run) => ({ outcome: run.outcome, proposalCount: run.proposalCount, baseline: run.baseline })) ?? [], dashboardSources: dashboard.attention.map((episode) => episode.sourceCapabilityId) })}`);
+      if (cards.length !== 1) throw new Error(`Focused Topic Review projection mismatch: ${JSON.stringify({ analysisStatus: analysisResponse.status, reviewState: analysis.review?.state, proposalCount: analysis.review?.proposals?.length ?? null, runOutcomes: analysis.runs?.slice(-2).map((run) => ({ outcome: run.outcome, proposalCount: run.proposalCount, baseline: run.baseline, error: run.error })) ?? [], dashboardSources: dashboard.attention.map((episode) => episode.sourceCapabilityId) })}`);
       return { projected: true, proposalCount: analysis.review.proposals.length, cardCount: cards.length };
     });
     const runFocusedProjectionRecovery = async (kind, signal) => {
