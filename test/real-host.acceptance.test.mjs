@@ -1426,7 +1426,13 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   await chooseOption(frame.locator('#topic-create select[name="paraCategory"]'), category, keyboard);
   const topicStatusBefore = await statusText('#topic-status');
   const topicCreateStarted = Date.now();
+  const topicMutation = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/plugins/command-center/api/topics/actions', { timeout: 10_000 });
   await submitFrameForm(frame, '#topic-create', keyboard);
+  const topicMutationResponse = await topicMutation;
+  if (!topicMutationResponse.ok()) {
+    const body = await topicMutationResponse.json().catch(() => ({}));
+    throw new Error(`Topic creation HTTP ${topicMutationResponse.status()} code=${String(body?.code ?? 'unavailable').slice(0, 80)}`);
+  }
   await waitForFrameText(frame, '#topic-status', 'Topic created and verified.');
   const topicCreateMs = Math.max(1, Date.now() - topicCreateStarted);
   await recordAnnouncement('#topic-status', topicStatusBefore, `${width}px Topic creation`);
