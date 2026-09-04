@@ -1832,7 +1832,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
       if (acceptancePlan.kind === 'focused') {
         const focusedScale = acceptancePlan.scenarioIds.includes('focused-scale-session-seeding');
-        const focusedHeavyCorpus = acceptancePlan.scenarioIds.includes('focused-heavy-corpus-mutation-journey') || acceptancePlan.scenarioIds.includes('focused-invalidated-projection-recovery');
+        const focusedFullCorpus = acceptancePlan.scenarioIds.includes('focused-invalidated-projection-recovery');
+        const focusedHeavyCorpus = acceptancePlan.scenarioIds.includes('focused-heavy-corpus-mutation-journey') || focusedFullCorpus;
         const focusedUiState = acceptancePlan.scenarioIds.includes('focused-ui-state-regression');
         const focusedScaleFolderPath = path.join(world.paths.vault, 'fictional-scale');
         await Promise.all([mkdir(migrationFolderPath, { recursive: true }), ...(focusedScale || focusedHeavyCorpus || focusedUiState ? [mkdir(focusedScaleFolderPath, { recursive: true })] : [])]);
@@ -1840,7 +1841,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         if (focusedScale || focusedHeavyCorpus || focusedUiState) migrationExport.channels.push({
           channelId: 'fictional-channel-scale',
           displayName: 'Fictional Scale Corpus',
-          messages: [{ messageId: 'fictional-focused-scale-message', displayOrder: 0, author: { id: 'fictional-scale-user', displayName: 'Fictional Scale User' }, timestamp: '2026-08-21T00:00:00.000Z', text: 'Fictional focused scale source message.', edits: [], replyToMessageId: null, thread: null, reactions: [], attachments: [] }]
+          messages: focusedFullCorpus
+            ? Array.from({ length: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }, (_, index) => ({ messageId: `fictional-focused-scale-${index}`, displayOrder: index, author: { id: 'fictional-scale-user', displayName: 'Fictional Scale User' }, timestamp: new Date(Date.UTC(2026, 7, 21) + index).toISOString(), text: `Fictional indexed conversation phrase ${index}.${index === 4242 ? ' Fictional exact Conversation sentinel.' : ''}`, edits: [], replyToMessageId: null, thread: null, reactions: [], attachments: [] }))
+            : [{ messageId: 'fictional-focused-scale-message', displayOrder: 0, author: { id: 'fictional-scale-user', displayName: 'Fictional Scale User' }, timestamp: '2026-08-21T00:00:00.000Z', text: 'Fictional focused scale source message.', edits: [], replyToMessageId: null, thread: null, reactions: [], attachments: [] }]
         });
         if (focusedHeavyCorpus) realizedScaleSeed = await seedReleaseNoteCorpus(focusedScaleFolderPath, ({ completed, total }) => reportProgress(testContext, 'fixture:note-batch', { completed, total }));
         migrationFixtureEvidence = retainPreparedMigrationFixtureEvidence(migrationExport);
