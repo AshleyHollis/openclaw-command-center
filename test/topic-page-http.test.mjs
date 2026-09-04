@@ -43,11 +43,11 @@ function fixtureService() {
   return service;
 }
 
-async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json' } } = {}) {
+async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json' }, dispatchGatewayMethod } = {}) {
   const request = Readable.from([Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]);
   Object.assign(request, { method, headers });
   const response = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(value) { this.body = value; } };
-  await createTopicPageActionsHandler(service)(request, response);
+  await createTopicPageActionsHandler(service, { dispatchGatewayMethod })(request, response);
   return { statusCode: response.statusCode, headers: response.headers, body: response.body ? JSON.parse(response.body) : null };
 }
 
@@ -298,9 +298,26 @@ test('Conversation close uses the exact Source Reference and rejects disallowed 
 test('Session send dispatches the exact selected Source Reference without a Topic revision', async () => {
   const service = fixtureService();
   const logicalOperationId = randomUUID();
-  const applied = await invoke(service, { body: { schemaVersion: 1, action: 'chat.send', topicId, referenceId: sessionId, message: 'Exact fictional message', logicalOperationId } });
+  const dispatched = [];
+  service.sessionsSend = async (input, runtime) => {
+    service.calls.push(['sessionsSend', input]);
+    await runtime.gatewayRequest('chat.send', { sessionKey: 'agent:main:fictional', message: input.message, idempotencyKey: input.logicalOperationId }, { requestId: input.logicalOperationId });
+    return { status: 'applied' };
+  };
+  const applied = await invoke(service, {
+    body: { schemaVersion: 1, action: 'chat.send', topicId, referenceId: sessionId, message: 'Exact fictional message', logicalOperationId },
+    dispatchGatewayMethod: async (method, params, options) => {
+      dispatched.push({ method, params, options });
+      return { ok: true, payload: { runId: logicalOperationId } };
+    }
+  });
   assert.equal(applied.statusCode, 200);
   assert.deepEqual(service.calls, [['sessionsSend', { schemaVersion: 1, topicId, referenceId: sessionId, message: 'Exact fictional message', logicalOperationId }]]);
+  assert.deepEqual(dispatched, [{
+    method: 'chat.send',
+    params: { sessionKey: 'agent:main:fictional', message: 'Exact fictional message', idempotencyKey: logicalOperationId },
+    options: { expectFinal: true, timeoutMs: 45_000 }
+  }]);
   assert.equal((await invoke(service, { body: { schemaVersion: 1, action: 'chat.send', topicId, referenceId: sessionId, message: 'Exact fictional message', logicalOperationId, expectedRevision: 4 } })).statusCode, 400);
 });
 

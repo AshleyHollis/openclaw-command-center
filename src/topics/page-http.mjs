@@ -1,5 +1,6 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { allowOpaqueFrameRequest } from '../http/opaque-frame-cors.mjs';
+import { createRequestScopedGatewayRequest } from '../bridge/gateway-method-dispatch.mjs';
 
 const ROUTE = '/plugins/command-center/api/topic/actions';
 const MAX_NOTE_BYTES = 8 * 1024 * 1024 + 1;
@@ -182,7 +183,7 @@ async function execute(service, body, runtime = {}) {
   }
   if (action === 'chat.send') {
     assertConversationReference(service, body);
-    return service.sessionsSend({ schemaVersion: 1, topicId: body.topicId, referenceId: body.referenceId, message: body.message, logicalOperationId: body.logicalOperationId });
+    return service.sessionsSend({ schemaVersion: 1, topicId: body.topicId, referenceId: body.referenceId, message: body.message, logicalOperationId: body.logicalOperationId }, runtime);
   }
   assertTopicRevision(service, body.topicId, body.action.startsWith('notes.') ? body.expectedTopicRevision : body.expectedRevision);
   if (action === 'conversations.close' || action === 'conversations.reopen') {
@@ -195,7 +196,8 @@ async function execute(service, body, runtime = {}) {
   return service[method]({ schemaVersion: 1, topicId: body.topicId, referenceId: body.referenceId, path: body.path, ...(text === undefined ? {} : { text }), ...(body.destinationPath === undefined ? {} : { destinationPath: body.destinationPath }), ...(body.expectedRevision === undefined ? {} : { expectedRevision: body.expectedRevision }), logicalOperationId: body.logicalOperationId });
 }
 
-export function createTopicPageActionsHandler(service) {
+export function createTopicPageActionsHandler(service, { dispatchGatewayMethod } = {}) {
+  const gatewayRequest = createRequestScopedGatewayRequest(dispatchGatewayMethod);
   return async (req, res) => {
     if (!allowOpaqueFrameRequest(req, res, { method: 'POST', headers: ['Content-Type'] })) { sendJson(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed', message: 'Topic Page action origin is not allowed.' }); return true; }
     if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('Cache-Control', 'no-store'); res.end(); return true; }
@@ -205,7 +207,7 @@ export function createTopicPageActionsHandler(service) {
       const request = await readJson(req);
       const body = validateBody(request.body);
       assertRequestBounds(body, request.bytes);
-      const result = await execute(service, body);
+      const result = await execute(service, body, { gatewayRequest });
       sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...mutationValue(result) } });
     } catch (error) {
       const code = String(error?.code ?? 'invalid-request');

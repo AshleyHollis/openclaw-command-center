@@ -205,15 +205,19 @@ export class SessionAdapter {
     return result;
   }
 
-  async send(input = {}) {
+  async send(input = {}, runtime = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId', 'requestId', 'logicalOperationId', 'message'], 'Session send request');
     const reference = this.resolveReference(input);
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     nonBlank(input.message, 'message');
+    const gatewayRequest = typeof runtime.gatewayRequest === 'function'
+      ? runtime.gatewayRequest
+      : this.gateway?.request?.bind(this.gateway);
     const execute = async ({ requestId }) => {
       const { state, exact } = await this.resolveStableState(reference.referenceId);
       if (state?.status === 'closed') throw sourceError('conflict', 'A Closed Conversation is read-only and cannot receive Chat messages.');
-      const result = await this.request('chat.send', { sessionKey: exact.sessionKey, message: input.message, idempotencyKey: logicalOperationId }, { requestId });
+      if (!gatewayRequest) throw sourceError('capability-unavailable', 'Authenticated request-scoped Chat send is unavailable.', { capability: 'sessions' });
+      const result = await gatewayRequest('chat.send', { sessionKey: exact.sessionKey, message: input.message, idempotencyKey: logicalOperationId }, { requestId });
       if (result?.runId !== logicalOperationId) throw sourceError('unavailable', 'chat.send returned an unexpected idempotency result.');
       return result;
     };
