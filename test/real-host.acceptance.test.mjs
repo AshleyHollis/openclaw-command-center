@@ -1676,7 +1676,7 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   await activate(frame.locator('#conversation-next'), true);
   await frame.locator('#conversation-page-status').getByText(`Page 2 of ${conversationPageCount}`, { exact: true }).waitFor();
   assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 50);
-  const pageTwoConversation = frame.locator('#conversation-list .conversation-item button:first-child');
+  const pageTwoConversation = frame.locator('#conversation-list .conversation-item button:first-child').first();
   const pageTwoRow = frame.locator('#conversation-list .conversation-item').first();
   const pageTwoName = await pageTwoConversation.textContent();
   assert.equal(firstPageReferences.includes(pageTwoName), false);
