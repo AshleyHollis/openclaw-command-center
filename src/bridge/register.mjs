@@ -148,8 +148,13 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
         if (!mutationsAllowed && WRITE_METHODS.includes(method)) throw new SourceServiceError('capability-unavailable', 'Control UI mutation grant is unavailable.');
         service.notificationCaptureBinding?.();
-        if (method === 'command-center.v1.attention.act' && (typeof client?.authenticatedUserId !== 'string' || client.authenticatedUserId.trim() === '')) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
-        const operatorId = method.startsWith('command-center.v1.attention.') && typeof client?.authenticatedUserId === 'string' ? client.authenticatedUserId : null;
+        const authenticatedOperatorId = typeof client?.authenticatedOperatorId === 'string' && client.authenticatedOperatorId.trim() !== ''
+          ? client.authenticatedOperatorId
+          : typeof client?.authenticatedUserId === 'string' && client.authenticatedUserId.trim() !== ''
+            ? client.authenticatedUserId
+            : null;
+        if (method === 'command-center.v1.attention.act' && authenticatedOperatorId === null) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
+        const operatorId = method.startsWith('command-center.v1.attention.') ? authenticatedOperatorId : null;
         let runtime = {};
         if (schedulerRuntimeMethods.has(method) && client) runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;

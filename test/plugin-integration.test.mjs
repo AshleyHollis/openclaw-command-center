@@ -49,7 +49,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
       currentBindingAvailable = true;
       let response;
       try {
-        await handler({ req: { id: 'fictional-request' }, params, client: { authenticatedUserId: 'fictional-operator' }, context: { authenticated: true }, respond(ok, result, error) { response = { ok, result, error }; } });
+        await handler({ req: { id: 'fictional-request' }, params, client: { authenticatedOperatorId: 'fictional-operator' }, context: { authenticated: true }, respond(ok, result, error) { response = { ok, result, error }; } });
       } finally { currentBindingAvailable = false; }
       if (!response?.ok) throw response?.error ?? new Error('Fake authenticated Gateway request failed');
       return response.result;

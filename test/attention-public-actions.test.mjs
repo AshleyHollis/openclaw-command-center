@@ -195,7 +195,7 @@ test('authenticated Gateway actions expose and consume approval decisions throug
       activityList: (input) => attention.listActivity(input), activityGet: (input) => ({ schemaVersion: 1, record: attention.getActivity(input.activityId) })
     });
     const handler = registrations.find(([method]) => method === 'command-center.v1.attention.act')[1];
-    const invoke = (params, authenticated = true, authenticatedOperatorId = 'gateway-operator') => new Promise((resolve) => handler({ req: { id: params.logicalOperationId }, params, client: { authenticatedUserId: authenticatedOperatorId }, context: { authenticated }, respond: (...args) => resolve(args) }));
+    const invoke = (params, authenticated = true, authenticatedOperatorId = 'gateway-operator') => new Promise((resolve) => handler({ req: { id: params.logicalOperationId }, params, client: { authenticatedOperatorId }, context: { authenticated }, respond: (...args) => resolve(args) }));
     const common = { schemaVersion: 1, episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'unversioned', topicId: 'topic-public', sourceReferenceId: 'source-public', input: {} };
     const pending = await invoke({ ...common, logicalOperationId: '73333333-3333-4333-8333-333333333333', actionId: 'monitor.change' });
     assert.equal(pending[0], true, JSON.stringify(pending));
