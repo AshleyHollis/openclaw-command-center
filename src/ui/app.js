@@ -505,9 +505,16 @@ async function openTopicWorkspace(topicOrId) {
   const topic = value?.topic;
   if (!topic || topic.topicId !== topicId || topic.lifecycle !== 'active' || topic.usable === false) throw new Error('The authoritative Topic is not available as a workspace.');
   workspace.topic = topic; document.querySelector('#topic-workspace-heading').textContent = topic.name; document.querySelector('#topic-search-topic-id').value = topicId; document.querySelector('#workspace-search-query').disabled = false; document.querySelector('#workspace-search-form button[type="submit"]').disabled = false;
-  await Promise.all([loadConversations({ selectPrimary: true, generation }), loadNotes({ generation })]);
-  if (generation !== workspace.generation) return null;
-  workspaceStatus.textContent = 'Topic workspace ready.'; focusPane('chat', false); return topic;
+  conversationStatus.textContent = 'Loading Conversations…'; notesStatus.textContent = 'Loading Notes…';
+  // The authoritative Topic makes the workspace shell usable. Each pane owns
+  // its potentially expensive catalog hydration and reports its own status,
+  // so one slow source cannot make the entire workspace appear unavailable.
+  workspaceStatus.textContent = 'Topic workspace ready.'; focusPane('chat', false);
+  await Promise.all([
+    loadConversations({ selectPrimary: true, generation }).catch((error) => { if (generation === workspace.generation) conversationStatus.textContent = error.message || 'Conversations are unavailable.'; }),
+    loadNotes({ generation }).catch((error) => { if (generation === workspace.generation) notesStatus.textContent = error.message || 'Notes are unavailable.'; })
+  ]);
+  return generation === workspace.generation ? topic : null;
 }
 async function loadConversations({ selectPrimary = false, generation = workspace.generation } = {}) {
   const view = document.querySelector('#conversation-view').value;
@@ -632,7 +639,7 @@ document.querySelector('#conversation-next')?.addEventListener('click', () => { 
 
 async function loadNotes({ generation = workspace.generation } = {}) {
   const value = unwrap(await bridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: workspace.topic.topicId }));
-  if (generation !== workspace.generation) return; workspace.notes = Array.isArray(value) ? value : value?.notes ?? []; workspace.notePage = Math.min(workspace.notePage, Math.max(0, Math.ceil(workspace.notes.length / NOTE_PAGE_SIZE) - 1)); renderNotes();
+  if (generation !== workspace.generation) return; workspace.notes = Array.isArray(value) ? value : value?.notes ?? []; workspace.notePage = Math.min(workspace.notePage, Math.max(0, Math.ceil(workspace.notes.length / NOTE_PAGE_SIZE) - 1)); renderNotes(); notesStatus.textContent = `${workspace.notes.length} Notes.`;
 }
 function renderNotes() {
   const target = document.querySelector('#notes-tree'); target.replaceChildren();

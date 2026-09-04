@@ -478,6 +478,21 @@ test('workspace readiness does not wait for initial Primary history', async () =
   } finally { await closeGuardedPage(page); }
 });
 
+test('workspace shell readiness does not wait for independent Notes hydration', async () => {
+  const page = await setupPage({ queryless: true });
+  try {
+    await page.evaluate(() => { globalThis.__topicPageFixture.deferNotesBrowse = true; });
+    const row = page.locator('.topic-row').filter({ hasText: 'Fictional Topic with a deliberately long responsive workspace name' });
+    await row.getByRole('button', { name: 'Open Topic' }).click();
+    await page.waitForFunction(() => globalThis.__topicPageFixture.notesBrowsePending === true);
+    await page.getByText('Topic workspace ready.').waitFor({ timeout: 1_000 });
+    await page.getByText('Loading Notes…', { exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelector('#chat-conversation-name')?.textContent === 'Primary Conversation');
+    await page.evaluate(() => globalThis.__topicPageFixture.resolveNotesBrowse());
+    await page.getByText('2 Notes.', { exact: true }).waitFor();
+  } finally { await closeGuardedPage(page); }
+});
+
 test('Conversation pane keeps a 51-record authoritative catalog in a bounded 50-row window', async () => {
   const page = await setupPage();
   try {
