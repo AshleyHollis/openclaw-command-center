@@ -1851,7 +1851,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       catch { throw new HarnessFailure('release-row-missing', `Release scenario produced no evidence for ${id}`); }
     };
     const ensureMigrationBinding = async (signal) => {
-      const completed = await waitForMigrationCompletion(databasePath, RELEASE_ALPHA_TOPIC_ID, { signal });
+      // The release fixture imports 5,000 conversation messages before plugin
+      // registration and search projections become authoritative. Keep this
+      // poll within the scenario's 240-second boundary instead of treating the
+      // old 10-second unit-sized default as a durable startup failure.
+      const completed = await waitForMigrationCompletion(databasePath, RELEASE_ALPHA_TOPIC_ID, { attempts: 1_800, delayMs: 100, signal });
       releaseState.migrationBinding = Object.freeze({ ...completed.binding });
       return completed;
     };
