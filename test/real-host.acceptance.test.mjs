@@ -2255,6 +2255,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     });
     if (focusedScenarioIds?.has('focused-session-create-idempotent-replay')) {
       await collectScenario('focused-session-create-idempotent-replay', async (signal) => {
+        frame = await remountPluginFrame(page);
         const before = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID }, signal });
         const beforeConversations = (before?.result ?? before)?.conversations ?? before?.conversations ?? [];
         const logicalOperationId = '55555555-5555-4555-8555-555555555555';
@@ -2291,6 +2292,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       return { recovered: true, rowCounts: verified.rowCounts };
     });
     await collectScenario('session-create-catalog-readback', async (signal) => {
+      frame = await remountPluginFrame(page);
       const before = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
       const beforeConversations = (before?.result ?? before)?.conversations ?? before?.conversations ?? [];
       const created = await createScaleConversationThroughAuthenticatedRoute(signal);
