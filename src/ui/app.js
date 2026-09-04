@@ -525,7 +525,10 @@ async function loadConversations({ selectPrimary = false, generation = workspace
   if (selectPrimary) {
     const primary = (value?.conversations ?? []).find((item) => item.isPrimary);
     if (!primary) throw new Error('The Topic Primary Session is unavailable.');
-    await selectConversation(primary);
+    // Catalog and Note readiness make the workspace usable. Primary history
+    // is independent content and may be large or temporarily unavailable, so
+    // let its generation-safe renderer settle without blocking the shell.
+    void selectConversation(primary);
   }
 }
 function renderConversations() {

@@ -463,6 +463,21 @@ test('queryless external tab browses Topics and opens the selected workspace', a
   } finally { await closeGuardedPage(page); }
 });
 
+test('workspace readiness does not wait for initial Primary history', async () => {
+  const page = await setupPage({ queryless: true });
+  try {
+    await page.evaluate(() => globalThis.__topicPageFixture.deferHistoryReferences.add(globalThis.__topicPageFixture.primaryId));
+    const row = page.locator('.topic-row').filter({ hasText: 'Fictional Topic with a deliberately long responsive workspace name' });
+    await row.getByRole('button', { name: 'Open Topic' }).click();
+    await page.waitForFunction(() => globalThis.__topicPageFixture.deferredHistories.has(globalThis.__topicPageFixture.primaryId));
+    await page.getByText('Topic workspace ready.').waitFor({ timeout: 1_000 });
+    assert.equal(await page.locator('#chat-conversation-name').textContent(), 'Primary Conversation');
+    assert.equal(await page.locator('#chat-messages .chat-message').count(), 0);
+    await page.evaluate(() => globalThis.__topicPageFixture.resolveDeferredHistory(globalThis.__topicPageFixture.primaryId));
+    await page.getByText('Imported immutable prefix').waitFor();
+  } finally { await closeGuardedPage(page); }
+});
+
 test('Conversation pane keeps a 51-record authoritative catalog in a bounded 50-row window', async () => {
   const page = await setupPage();
   try {
