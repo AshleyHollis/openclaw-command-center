@@ -1590,7 +1590,7 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
 
 async function locatePaginatedNote(frame, pathName) {
   try {
-    await frame.waitForFunction(() => /^[0-9]+ Notes\.$/u.test(document.querySelector('#notes-status')?.textContent ?? ''), null, { timeout: 120_000 });
+    await frame.waitForFunction(() => /^[0-9]+ Notes\.$/u.test(document.querySelector('#notes-status')?.textContent ?? ''), null, { timeout: 130_000 });
   } catch (error) {
     const state = await frame.evaluate(() => ({
       notesStatus: document.querySelector('#notes-status')?.textContent ?? null,

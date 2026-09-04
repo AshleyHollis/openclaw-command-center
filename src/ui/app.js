@@ -300,8 +300,9 @@ window.addEventListener('message', (event) => {
 async function bridgeRequest(method, params, mutationOperationId = params?.logicalOperationId) {
   await bridgeReady;
   const requestId = operationId();
+  const timeoutMs = method === 'command-center.v1.notes.browse' ? 120_000 : 30_000;
   return await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pendingBridgeRequests.delete(requestId); reject(Object.assign(new Error('Capability bridge request exceeded 30 seconds.'), { code: 'TIMEOUT', terminal: false })); }, 30_000);
+    const timer = setTimeout(() => { pendingBridgeRequests.delete(requestId); reject(Object.assign(new Error(`Capability bridge request exceeded ${timeoutMs / 1_000} seconds.`), { code: 'TIMEOUT', terminal: false })); }, timeoutMs);
     pendingBridgeRequests.set(requestId, { resolve(value) { clearTimeout(timer); resolve(value); }, reject(error) { clearTimeout(timer); reject(error); } });
     sendBridge({ type: 'openclaw:capability-bridge-request', requestId, method, params, ...(typeof mutationOperationId === 'string' ? { operationId: mutationOperationId } : {}) });
   });
