@@ -60,6 +60,16 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
   };
 }
 
+test('Control UI descriptor grants the operating-status read used to unlock mutations', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-descriptor-'));
+  try {
+    const host = fakePublishedApi(stateDir);
+    plugin.register(host.api);
+    assert.equal(host.descriptors.length, 1);
+    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sources.status'));
+  } finally { await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('production plugin exposes Ready analysis and replays its durable bridge result without redispatch', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-analysis-'));
   const topicId = 'fictional-production-analysis-topic';
@@ -230,6 +240,7 @@ test('real plugin registers one required emitter and reconciles in the backgroun
     assert.equal(host.descriptors.length, 1);
     assert.deepEqual({ ...host.descriptors[0], capabilityBridge: undefined }, { surface: 'tab', id: 'command-center', label: 'Command Center', group: 'control', path: '/plugins/command-center', capabilityBridge: undefined });
     assert.equal(host.descriptors[0].capabilityBridge.protocolVersion, 1);
+    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sources.status'));
     assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sessions.browse'));
     assert.equal(host.services.length, 1);
     assert.equal(host.routes.some((route) => route.path === '/plugins/command-center' && route.auth === 'gateway'), true);
