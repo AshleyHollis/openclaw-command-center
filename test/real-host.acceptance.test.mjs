@@ -1834,11 +1834,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       execute: async (id, run) => {
         let result;
         await testContext.test(`release scenario: ${id}`, async () => {
-          const timeoutMs = acceptancePlan.kind === 'focused' && id === 'authenticated-control-ui-mount' ? 420_000 : 240_000;
           result = await runBoundedAcceptanceSlice(id, (signal) => runAbortableAcceptanceBoundary(
             () => acceptanceSignalContext.run(signal, () => run(signal)),
             { signal, onAbort: () => { if (page && !page.isClosed()) void page.close(); } }
-          ), { timeoutMs, cleanupTimeoutMs: 15_000 });
+          ), { timeoutMs: 240_000, cleanupTimeoutMs: 15_000 });
         });
         return result;
       },
@@ -2097,6 +2096,18 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.forgedMutationRejected = true;
       return { rejected: true };
     });
+    if (acceptancePlan.kind === 'focused') {
+      await collectScenario('focused-control-ui-migration-readiness', async (signal) => {
+        const completed = await ensureMigrationBinding(signal);
+        return { completionId: completed.completion.completion_id, referenceId: completed.binding.referenceId };
+      });
+      await collectScenario('focused-control-ui-search-projection', async (signal) => {
+        const projectionRoot = path.join(path.dirname(databasePath), 'projections');
+        const verified = await restoreReleaseSearchBaseline({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal, label: 'focused Control UI Search baseline' });
+        releaseState.projectionRoot = projectionRoot;
+        return { rowCounts: verified.rowCounts };
+      });
+    }
     await collectScenario('authenticated-control-ui-mount', async (signal) => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');
       if (acceptancePlan.kind === 'focused') {
@@ -2125,9 +2136,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           const observations = redact(JSON.stringify(evidence.readinessAttempts.slice(-5)), 1_500);
           throw new HarnessFailure(error.category || 'readiness-timeout', `${error.message}; last readiness observations: ${observations}; host stdout: ${host.diagnostics.stdout}; host stderr: ${host.diagnostics.stderr}`);
         }
-        await ensureMigrationBinding(signal);
-        await restoreReleaseSearchBaseline({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal, label: 'focused Control UI Search baseline' });
-        releaseState.projectionRoot = projectionRoot;
       } else {
         await verifyReleaseSearchResults({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal });
         releaseState.projectionRoot = projectionRoot;

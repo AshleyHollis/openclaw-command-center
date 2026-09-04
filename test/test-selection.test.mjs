@@ -11,7 +11,7 @@ test('real-host acceptance defaults to the complete release plan', () => {
 test('real-host acceptance exposes one closed authenticated mount dependency plan', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('authenticated-control-ui-mount'), {
     kind: 'focused',
-    scenarioIds: ['authenticated-control-ui-mount']
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount']
   });
   for (const value of ['unknown', '*', 'authenticated-control-ui-mount,scale-performance']) {
     assert.throws(() => resolveRealHostAcceptancePlan(value), /Unsupported real-host acceptance scenario/u);
