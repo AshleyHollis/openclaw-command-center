@@ -325,7 +325,7 @@ window.addEventListener('message', (event) => {
   const pending = pendingBridgeRequests.get(message.requestId);
   if (!pending) return;
   pendingBridgeRequests.delete(message.requestId);
-  if (message.error) pending.reject(Object.assign(new Error(message.error.message || 'Capability bridge request failed.'), { code: message.error.code, terminal: !['MUTATION_OUTCOME_UNKNOWN', 'MUTATION_RECONCILIATION_REQUIRED', 'TIMEOUT', 'RATE_LIMITED'].includes(message.error.code) }));
+  if (message.error) pending.reject(Object.assign(new Error(message.error.code === 'MUTATION_RECONCILIATION_REQUIRED' ? 'The host no longer retains this action outcome. Inspect Activity and the source before taking another action.' : message.error.message || 'Capability bridge request failed.'), { code: message.error.code, terminal: !['MUTATION_OUTCOME_UNKNOWN', 'TIMEOUT', 'RATE_LIMITED'].includes(message.error.code) }));
   else pending.resolve(message.result);
 });
 async function bridgeRequest(method, params, mutationOperationId = params?.logicalOperationId) {

@@ -28,7 +28,8 @@ test('mounted approval retries preserve exact intent and block a competing actio
         const response = { type: 'openclaw:capability-bridge-response', requestId: payload.requestId };
         if (payload.method === 'command-center.v1.attention.act') {
           window.__actions.push(payload);
-          if (window.__actions.length === 1) send({ ...response, error: { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Acknowledgement was lost.' } });
+          if (window.__expiredOperation) send({ ...response, error: { code: 'MUTATION_RECONCILIATION_REQUIRED', message: 'The host outcome expired.' } });
+          else if (window.__actions.length === 1) send({ ...response, error: { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Acknowledgement was lost.' } });
           else send({ ...response, result: { status: 'applied', result: { episode: { state: 'Resolved' } } } });
           return;
         }
@@ -58,5 +59,9 @@ test('mounted approval retries preserve exact intent and block a competing actio
     assert.equal(actions[0].params.stableSubjectId, 'subject-approval');
     assert.equal(actions[0].params.expectedSourceRevision, 'config-1');
     assert.equal(actions[0].params.actionId, 'approval.approve');
+    await page.evaluate(() => { window.__expiredOperation = true; });
+    await page.getByRole('button', { name: 'Approve', exact: true }).click();
+    await page.getByText('The host no longer retains this action outcome. Inspect Activity and the source before taking another action.', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Reconcile action', exact: true }).count(), 0);
   } finally { await browser.close(); }
 });
