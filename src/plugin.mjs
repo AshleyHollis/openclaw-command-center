@@ -123,6 +123,7 @@ export default definePluginEntry({
           'command-center.v1.search.query',
           'command-center.v1.search.prepare-rebuild',
           'sessions.create',
+          'chat.send',
           'ui.session.navigate'
         ],
         optionalMethods: []

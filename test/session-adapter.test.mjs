@@ -174,36 +174,6 @@ test('Session creation uses authenticated request-scoped dispatch when the detac
   assert.deepEqual(calls, ['sessions.create', 'sessions.list']);
 });
 
-test('Session send uses authenticated request-scoped dispatch when the detached plugin Gateway is unavailable', async () => {
-  const metadata = metadataFixture();
-  const logicalOperationId = randomUUID();
-  const reference = { version: 1, referenceId: 'session:request-scoped-send', topicId: 'topic-request-scoped-send', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:dashboard:request-scoped-send', observedRevision: null };
-  metadata.refs.push(reference);
-  metadata.setSessionState({ referenceId: reference.referenceId, sessionId: 'request-scoped-send-id', status: 'open', isPrimary: true });
-  const detachedCalls = [];
-  const scopedCalls = [];
-  const adapter = createSessionAdapter({
-    metadata,
-    topicId: reference.topicId,
-    gateway: { async request(method) { detachedCalls.push(method); throw Object.assign(new Error('detached unavailable'), { code: 'unavailable' }); } },
-    sessionStore: { listSessionEntries: () => [{ sessionKey: reference.externalSourceId, entry: { sessionId: 'request-scoped-send-id' } }] }
-  });
-  const result = await adapter.send(
-    { referenceId: reference.referenceId, message: 'Request-scoped message', logicalOperationId },
-    { gatewayRequest: async (method, params, options) => {
-      scopedCalls.push({ method, params, options });
-      return { runId: params.idempotencyKey, status: 'started' };
-    } }
-  );
-  assert.equal(result.status, 'applied');
-  assert.deepEqual(detachedCalls, []);
-  assert.deepEqual(scopedCalls, [{
-    method: 'chat.send',
-    params: { sessionKey: reference.externalSourceId, message: 'Request-scoped message', idempotencyKey: logicalOperationId },
-    options: { requestId: logicalOperationId }
-  }]);
-});
-
 test('Session creation preserves the pinned ownership refusal without inventing catalog state', async () => {
   const metadata = metadataFixture();
   const adapter = createSessionAdapter({

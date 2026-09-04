@@ -1459,13 +1459,7 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   await enterText(frame.locator('#chat-message'), primaryMessage, keyboard);
   const chatStatusBefore = await statusText('#chat-status');
   const chatStarted = Date.now();
-  const chatMutation = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/plugins/command-center/api/topic/actions', { timeout: 10_000 });
   await submitFrameForm(frame, '#chat-form', keyboard);
-  const chatMutationResponse = await chatMutation;
-  if (!chatMutationResponse.ok()) {
-    const body = await chatMutationResponse.json().catch(() => ({}));
-    throw new Error(`Primary Chat HTTP ${chatMutationResponse.status()} code=${String(body?.code ?? 'unavailable').slice(0, 80)}`);
-  }
   await waitForFrameText(frame, '#chat-status', 'Message sent.');
   measurement.chatSendMs = Math.max(1, Date.now() - chatStarted);
   await recordAnnouncement('#chat-status', chatStatusBefore, `${width}px Primary Chat`);

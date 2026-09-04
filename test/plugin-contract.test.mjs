@@ -84,10 +84,11 @@ test('Topics UI preserves Topic Search capability navigation and uses the dedica
 
 test('Topic workspace declares the exact external-tab capability bridge and bounded mutation route', async () => {
   const source = await readFile(new URL('../src/plugin.mjs', import.meta.url), 'utf8');
-  for (const method of ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate']) assert.match(source, new RegExp(method.replaceAll('.', '\\.'), 'u'));
+  for (const method of ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'chat.send', 'ui.session.navigate']) assert.match(source, new RegExp(method.replaceAll('.', '\\.'), 'u'));
   assert.match(source, /capabilityBridge:[\s\S]*protocolVersion:\s*1/u);
   const requiredMethods = /requiredMethods:\s*\[([\s\S]*?)\]/u.exec(source)?.[1] ?? '';
   assert.doesNotMatch(requiredMethods, /command-center\.v1\.sessions\.send/u);
+  assert.match(requiredMethods, /chat\.send/u);
   assert.match(requiredMethods, /command-center\.v1\.topics\.list/u);
   assert.doesNotMatch(requiredMethods, /command-center\.v1\.sessions\.list/u);
   assert.match(source, /path:\s*'\/plugins\/command-center\/api\/topic\/actions',[\s\S]*auth:\s*'plugin',[\s\S]*match:\s*'exact'/u);
@@ -97,11 +98,15 @@ test('Topic workspace declares the exact external-tab capability bridge and boun
   assert.match(html, /app\.js/u);
   for (const id of ['topic-workspace', 'chat-pane', 'conversations-pane', 'notes-pane', 'workspace-search-pane', 'note-action-dialog']) assert.match(html, new RegExp(`id="${id}"`, 'u'));
   const app = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
-  assert.match(app, /import\('\/plugins\/command-center\/markdown\.js'\)/u);
+  assert.match(app, /new URL\('\/plugins\/command-center\/markdown\.js', document\.baseURI\)\.href/u);
+  assert.match(app, /import\(markdownModuleUrl\)/u);
   assert.match(app, /bridgeReady\.then\(loadOperatingState\)/u);
   assert.match(app, /if \(requestedTopicId === null\) void loadTopics\(\)/u);
   assert.match(app, /fetch\(PAGE_ACTION_ROUTE, \{ method: 'POST', credentials: 'omit'/u);
   assert.match(app, /bridgeRequest\('sessions\.create', \{ agentId: 'main', label \}, logicalOperationId\)/u);
+  assert.match(app, /bridgeRequest\('command-center\.v1\.sessions\.navigate', \{ schemaVersion: 1, topicId, referenceId \}\)/u);
+  assert.match(app, /bridgeRequest\('chat\.send', \{ sessionKey: exact\.sessionKey, message: operation\.intent\.message, idempotencyKey: operation\.logicalOperationId \}, operation\.logicalOperationId\)/u);
+  assert.doesNotMatch(app, /pageAction\('chat\.send'/u);
   assert.doesNotMatch(app, /targetAddressSpace|local-network-access/u);
   assert.doesNotMatch(app, /flushQuote/u);
   const styles = await readFile(new URL('../src/ui/styles.css', import.meta.url), 'utf8');
