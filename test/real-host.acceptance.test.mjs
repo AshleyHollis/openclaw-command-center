@@ -1239,27 +1239,31 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
       return !node.disabled && node.tabIndex >= 0 && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
     };
     const tabbables = [...document.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')].filter(visible);
-    return { current: tabbables.indexOf(document.activeElement), target: tabbables.indexOf(target), inDialog: Boolean(target.closest('dialog[open]')) };
+    return { count: tabbables.length, current: tabbables.indexOf(document.activeElement), target: tabbables.indexOf(target), inDialog: Boolean(target.closest('dialog[open]')) };
   });
   assert.notEqual(order.target, -1, 'Requested keyboard target is absent from the sequential focus order.');
   if (order.current === order.target) return;
   if (order.current < 0) await locator.evaluate((target) => target.ownerDocument.defaultView.focus());
   const backwards = reverse || (order.current >= 0 && order.target < order.current);
-  const steps = order.current < 0 ? order.target + 1 : Math.abs(order.target - order.current);
-  assert.ok(steps <= limit, 'Sequential keyboard traversal exceeded its bounded focus path.');
-  for (let step = 1; step <= steps; step += 1) {
+  assert.ok(order.count <= limit, 'Sequential keyboard traversal exceeded its bounded focus path.');
+  const visited = new Set();
+  let previous = order.current;
+  for (let step = 1; step <= order.count + 1; step += 1) {
     await page.keyboard.press(backwards ? 'Shift+Tab' : 'Tab');
-    const expected = order.current < 0 ? step - 1 : order.current + (backwards ? -step : step);
-    const state = await locator.evaluate((target, expectedIndex) => {
+    const state = await locator.evaluate((target) => {
       const visible = (node) => {
         const style = getComputedStyle(node);
         return !node.disabled && node.tabIndex >= 0 && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
       };
       const tabbables = [...document.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')].filter(visible);
       const active = document.activeElement;
-      return { expected: active === tabbables[expectedIndex], target: active === target, hidden: Boolean(active?.closest?.('[hidden], [inert]')), outline: active ? getComputedStyle(active).outlineStyle : 'none', escapedDialog: Boolean(target.closest('dialog[open]')) && !active?.closest?.('dialog[open]') };
-    }, expected);
-    assert.equal(state.expected, true, 'Sequential focus order skipped or wrapped around an intermediate control.');
+      return { index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: Boolean(active?.closest?.('[hidden], [inert]')) || active?.getClientRects?.().length === 0, outline: active ? getComputedStyle(active).outlineStyle : 'none', escapedDialog: Boolean(target.closest('dialog[open]')) && !active?.closest?.('dialog[open]') };
+    });
+    assert.notEqual(state.index, -1, `Sequential keyboard focus left the mounted shell at ${state.name}.`);
+    assert.equal(visited.has(state.index), false, `Sequential keyboard focus wrapped before reaching the target at ${state.name}.`);
+    if (previous >= 0) assert.equal(backwards ? state.index < previous : state.index > previous, true, `Sequential keyboard focus reversed before reaching the target at ${state.name}.`);
+    visited.add(state.index);
+    previous = state.index;
     assert.equal(state.hidden, false, 'Sequential keyboard focus entered hidden or inert content.');
     assert.notEqual(state.outline, 'none', 'Sequential keyboard focus must remain visible.');
     assert.equal(state.escapedDialog, false, 'Sequential keyboard focus escaped an open modal dialog.');
