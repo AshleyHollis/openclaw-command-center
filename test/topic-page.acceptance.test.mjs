@@ -407,10 +407,10 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
         if (!item) { respond(payload.requestId, null, { code: 'INVALID_REQUEST', message: 'Fictional unknown Session key.' }); return; }
         const defer = fixture.deferSend === true || Number.isInteger(fixture.deferSend) && fixture.deferSend > 0;
         if (defer) { fixture.deferSend = fixture.deferSend === true ? false : fixture.deferSend - 1; fixture.sendPending = true; await new Promise((resolve) => { fixture.deferredSendResolvers.push(resolve); }); fixture.sendPending = fixture.deferredSendResolvers.length > 0; }
-        if (!fixture.appliedSendOperations.has(payload.params.idempotencyKey)) { fixture.appliedSendOperations.add(payload.params.idempotencyKey); histories[item.referenceId].push({ role: 'user', content: payload.params.message }); }
+        if (!fixture.appliedSendOperations.has(payload.operationId)) { fixture.appliedSendOperations.add(payload.operationId); histories[item.referenceId].push({ role: 'user', content: payload.params.message }); }
         fixture.completedSends += 1;
         if (fixture.interruptNextSendResponse) { fixture.interruptNextSendResponse = false; respond(payload.requestId, null, { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Fictional interrupted send response.' }); return; }
-        result = { runId: payload.params.idempotencyKey, status: 'started' };
+        result = { runId: `bridge:${payload.operationId}`, status: 'started' };
       }
       if (payload.method.endsWith('sessions.browse')) { const topicConversations = payload.params.topicId === topicBId ? [topicBConversation] : conversations; result = { schemaVersion: 1, topicId: payload.params.topicId, conversations: topicConversations.filter((item) => payload.params.includeClosed === true || item.status === 'open').map(({ sessionKey: _private, ...item }) => item) }; }
       if (payload.method.endsWith('sessions.history')) { if (fixture.deferHistoryReferences.has(payload.params.referenceId)) { fixture.deferHistoryReferences.delete(payload.params.referenceId); fixture.deferredHistories.set(payload.params.referenceId, { requestId: payload.requestId }); return; } result = { messages: histories[payload.params.referenceId] ?? [] }; }
@@ -546,9 +546,9 @@ test('Primary Chat phase: completed send resolves the exact Primary Session befo
     assert.equal(await page.locator('#chat-send').isEnabled(), true);
     const evidence = await page.evaluate(() => { const calls = globalThis.__topicPageFixture.calls; const sendIndex = calls.findLastIndex((call) => call.transport === 'bridge' && call.method === 'chat.send'); return { send: calls[sendIndex], resolve: calls.slice(0, sendIndex).findLast((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.navigate') }; });
     assert.deepEqual(evidence.resolve.params, { schemaVersion: 1, topicId: '11111111-1111-4111-8111-111111111111', referenceId: 'session:fictional-topic:primary' });
-    assert.deepEqual(Object.keys(evidence.send.params).sort(), ['idempotencyKey', 'message', 'sessionKey'].sort());
+    assert.deepEqual(Object.keys(evidence.send.params).sort(), ['message', 'sessionKey'].sort());
     assert.equal(evidence.send.params.sessionKey, 'agent:main:primary');
-    assert.equal(evidence.send.operationId, evidence.send.params.idempotencyKey);
+    assert.match(evidence.send.operationId, /^[0-9a-f-]{36}$/u);
     assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.method === 'command-center.v1.sessions.send')), false);
   } finally { await closeGuardedPage(page); }
 });

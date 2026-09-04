@@ -105,7 +105,7 @@ test('Topic workspace declares the exact external-tab capability bridge and boun
   assert.match(app, /fetch\(PAGE_ACTION_ROUTE, \{ method: 'POST', credentials: 'omit'/u);
   assert.match(app, /bridgeRequest\('sessions\.create', \{ agentId: 'main', label \}, logicalOperationId\)/u);
   assert.match(app, /bridgeRequest\('command-center\.v1\.sessions\.navigate', \{ schemaVersion: 1, topicId, referenceId \}\)/u);
-  assert.match(app, /bridgeRequest\('chat\.send', \{ sessionKey: exact\.sessionKey, message: operation\.intent\.message, idempotencyKey: operation\.logicalOperationId \}, operation\.logicalOperationId\)/u);
+  assert.match(app, /bridgeRequest\('chat\.send', \{ sessionKey: exact\.sessionKey, message: operation\.intent\.message \}, operation\.logicalOperationId\)/u);
   assert.doesNotMatch(app, /pageAction\('chat\.send'/u);
   assert.doesNotMatch(app, /targetAddressSpace|local-network-access/u);
   assert.doesNotMatch(app, /flushQuote/u);
