@@ -2204,12 +2204,19 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       if (sandbox !== 'allow-scripts') throw new HarnessFailure('sandbox-mismatch', 'External tab iframe is not scripts-only');
       await waitForDashboard(frame);
       await chooseOption(frame.locator('#topic-search-topic-id'), RELEASE_ALPHA_TOPIC_ID, true);
-      if (acceptancePlan.kind === 'release') {
-        await enterText(frame.locator('#topic-search-query'), 'Fictional', true);
-        await submitFrameForm(frame, '#topic-search-form', true);
+      assert.equal(await frame.locator('#topic-search-topic-id').inputValue(), RELEASE_ALPHA_TOPIC_ID, 'capability bridge-backed Topic read did not populate the authenticated shell');
+      await enterText(frame.locator('#topic-search-query'), 'Fictional', true);
+      await submitFrameForm(frame, '#topic-search-form', true);
+      try {
         await frame.waitForFunction(() => /Notes.*Conversations/u.test(document.querySelector('#topic-search-status')?.textContent ?? ''), undefined, { timeout: 60_000 });
-      } else {
-        assert.equal(await frame.locator('#topic-search-topic-id').inputValue(), RELEASE_ALPHA_TOPIC_ID, 'capability bridge-backed Topic read did not populate the authenticated shell');
+      } catch (error) {
+        const browserState = await frame.evaluate(() => ({
+          status: document.querySelector('#topic-search-status')?.textContent ?? '',
+          topicId: document.querySelector('#topic-search-topic-id')?.value ?? '',
+          query: document.querySelector('#topic-search-query')?.value ?? '',
+          active: document.activeElement?.id || document.activeElement?.getAttribute?.('aria-label') || document.activeElement?.tagName || 'unknown'
+        }));
+        throw new HarnessFailure('control-ui-search-timeout', `Authenticated Control UI search did not settle: ${redactBrowserEvidence(JSON.stringify({ browserState, console: evidence.console.slice(-5), errors: evidence.errors.slice(-5) }))}; ${error.message}`);
       }
       releaseState.startup = true;
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant, bridgeRead: true };
