@@ -1761,6 +1761,23 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       reportProgress(testContext, 'fixture:started');
       const migrationExportPath = path.join(world.tempRoot, 'legacy-discord-export.v1.json');
       const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
+      if (acceptancePlan.kind === 'focused') {
+        await mkdir(migrationFolderPath, { recursive: true });
+        const migrationExport = JSON.parse(await readFile(new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url), 'utf8'));
+        migrationFixtureEvidence = retainPreparedMigrationFixtureEvidence(migrationExport);
+        await writeFile(migrationExportPath, `${JSON.stringify(migrationExport)}\n`);
+        const configured = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
+        configured.plugins.entries[world.manifest.candidate.id].config = {
+          legacyDiscordMigration: {
+            schemaVersion: 1,
+            exportPath: migrationExportPath,
+            channels: [{ channelId: 'fictional-channel-alpha', topicId: RELEASE_ALPHA_TOPIC_ID, paraCategory: 'project', noteFolderPath: migrationFolderPath }]
+          }
+        };
+        await writeFile(world.manifest.configPath, `${JSON.stringify(configured)}\n`);
+        reportProgress(testContext, 'fixture:passed');
+        return;
+      }
       const scaleMigrationFolderPath = path.join(world.paths.vault, 'fictional-scale');
     await Promise.all([mkdir(migrationFolderPath, { recursive: true }), mkdir(scaleMigrationFolderPath, { recursive: true })]);
     const migrationExport = JSON.parse(await readFile(new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url), 'utf8'));
@@ -2106,7 +2123,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       });
       await collectScenario('focused-control-ui-search-projection', async (signal) => {
         const projectionRoot = path.join(path.dirname(databasePath), 'projections');
-        const verified = await restoreReleaseSearchBaseline({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal, label: 'focused Control UI Search baseline' });
+        await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'focused Control UI Search baseline rebuild' });
+        const verified = await waitForCommittedSearchProjections(projectionRoot, { attempts: 1200, signal, requiredTopicIds: [RELEASE_ALPHA_TOPIC_ID] });
         releaseState.projectionRoot = projectionRoot;
         return { rowCounts: verified.rowCounts };
       });
