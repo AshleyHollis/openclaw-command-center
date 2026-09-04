@@ -43,7 +43,7 @@ const focusedRealHostScenarios = Object.freeze({
   'heavy-corpus-mutation-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-heavy-corpus-mutation-journey']),
   'repeated-recovery-session-create': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-invalidated-projection-recovery', 'focused-missing-projection-recovery', 'focused-stale-projection-recovery', 'focused-session-create-after-recovery']),
   'scale-workspace-readiness': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'focused-scale-workspace-readiness']),
-  'scale-performance': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'scale-performance']),
+  'scale-performance': Object.freeze(['pinned-host-startup', 'startup-authenticated-topic-analysis', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'scale-performance']),
   'ui-state-regression': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-ui-state-regression'])
 });
 
