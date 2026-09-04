@@ -1235,7 +1235,7 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
   const order = await locator.evaluate((target) => {
     const visible = (node) => {
       const style = getComputedStyle(node);
-      return !node.disabled && node.tabIndex >= 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
+      return !node.disabled && node.tabIndex >= 0 && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
     };
     const tabbables = [...document.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')].filter(visible);
     return { current: tabbables.indexOf(document.activeElement), target: tabbables.indexOf(target), inDialog: Boolean(target.closest('dialog[open]')) };
@@ -1251,7 +1251,7 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
     const state = await locator.evaluate((target, expectedIndex) => {
       const visible = (node) => {
         const style = getComputedStyle(node);
-        return !node.disabled && node.tabIndex >= 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
+        return !node.disabled && node.tabIndex >= 0 && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
       };
       const tabbables = [...document.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')].filter(visible);
       const active = document.activeElement;
