@@ -1234,7 +1234,16 @@ async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey, si
 }
 
 async function waitForFrameText(frame, selector, expected, timeout = 10_000) {
-  await frame.waitForFunction(({ selector: target, expectedText }) => document.querySelector(target)?.textContent?.includes(expectedText), { selector, expectedText: expected }, { timeout });
+  try {
+    await frame.waitForFunction(({ selector: target, expectedText }) => document.querySelector(target)?.textContent?.includes(expectedText), { selector, expectedText: expected }, { timeout });
+  } catch (error) {
+    const state = await frame.evaluate((target) => ({
+      text: document.querySelector(target)?.textContent?.trim().slice(0, 500) ?? null,
+      operatingMode: document.documentElement.dataset.operatingMode ?? null,
+      active: document.activeElement?.id || document.activeElement?.getAttribute?.('name') || document.activeElement?.tagName || null
+    }), selector).catch(() => null);
+    throw new Error(`${selector} did not include ${JSON.stringify(expected)}; state=${JSON.stringify(state)}; ${error.message}`);
+  }
 }
 
 async function waitForDashboard(frame, timeout = 10_000) {
