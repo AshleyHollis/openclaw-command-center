@@ -1830,14 +1830,16 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
       if (acceptancePlan.kind === 'focused') {
         const focusedScale = acceptancePlan.scenarioIds.includes('focused-scale-session-seeding');
+        const focusedHeavyCorpus = acceptancePlan.scenarioIds.includes('focused-heavy-corpus-mutation-journey');
         const focusedScaleFolderPath = path.join(world.paths.vault, 'fictional-scale');
-        await Promise.all([mkdir(migrationFolderPath, { recursive: true }), ...(focusedScale ? [mkdir(focusedScaleFolderPath, { recursive: true })] : [])]);
+        await Promise.all([mkdir(migrationFolderPath, { recursive: true }), ...(focusedScale || focusedHeavyCorpus ? [mkdir(focusedScaleFolderPath, { recursive: true })] : [])]);
         const migrationExport = JSON.parse(await readFile(new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url), 'utf8'));
-        if (focusedScale) migrationExport.channels.push({
+        if (focusedScale || focusedHeavyCorpus) migrationExport.channels.push({
           channelId: 'fictional-channel-scale',
           displayName: 'Fictional Scale Corpus',
           messages: [{ messageId: 'fictional-focused-scale-message', displayOrder: 0, author: { id: 'fictional-scale-user', displayName: 'Fictional Scale User' }, timestamp: '2026-08-21T00:00:00.000Z', text: 'Fictional focused scale source message.', edits: [], replyToMessageId: null, thread: null, reactions: [], attachments: [] }]
         });
+        if (focusedHeavyCorpus) realizedScaleSeed = await seedReleaseNoteCorpus(focusedScaleFolderPath, ({ completed, total }) => reportProgress(testContext, 'fixture:note-batch', { completed, total }));
         migrationFixtureEvidence = retainPreparedMigrationFixtureEvidence(migrationExport);
         await writeFile(migrationExportPath, `${JSON.stringify(migrationExport)}\n`);
         const configured = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
@@ -1848,7 +1850,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
             exportPath: migrationExportPath,
             channels: [
               { channelId: 'fictional-channel-alpha', topicId: RELEASE_ALPHA_TOPIC_ID, paraCategory: 'project', noteFolderPath: migrationFolderPath },
-              ...(focusedScale ? [{ channelId: 'fictional-channel-scale', topicId: RELEASE_SCALE_TOPIC_ID, paraCategory: 'resource', noteFolderPath: focusedScaleFolderPath }] : [])
+              ...(focusedScale || focusedHeavyCorpus ? [{ channelId: 'fictional-channel-scale', topicId: RELEASE_SCALE_TOPIC_ID, paraCategory: 'resource', noteFolderPath: focusedScaleFolderPath }] : [])
             ]
           }
         };
@@ -2190,10 +2192,24 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       scenarioResult('focused-control-ui-migration-readiness');
       await collectScenario('focused-control-ui-search-projection', async (signal) => {
         const projectionRoot = path.join(path.dirname(databasePath), 'projections');
+        const rebuildStartedAt = Date.now();
         await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'focused Control UI Search baseline rebuild' });
-        const verified = await waitForCommittedSearchProjections(projectionRoot, { attempts: 1200, signal, requiredTopicIds: [RELEASE_ALPHA_TOPIC_ID] });
+        const rebuildMs = Date.now() - rebuildStartedAt;
+        const heavyCorpus = focusedScenarioIds.has('focused-heavy-corpus-mutation-journey');
+        const verified = await waitForCommittedSearchProjections(projectionRoot, {
+          attempts: 1200,
+          signal,
+          requiredTopicIds: heavyCorpus ? [RELEASE_ALPHA_TOPIC_ID, RELEASE_SCALE_TOPIC_ID] : [RELEASE_ALPHA_TOPIC_ID],
+          ...(heavyCorpus ? {
+            expectedTopicRowCounts: {
+              notes: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedNotes },
+              conversations: { [RELEASE_SCALE_TOPIC_ID]: 1 }
+            }
+          } : {})
+        });
         releaseState.projectionRoot = projectionRoot;
-        return { rowCounts: verified.rowCounts };
+        releaseState.focusedSearchRebuildMs = rebuildMs;
+        return { rowCounts: verified.rowCounts, rebuildMs };
       });
       scenarioResult('focused-control-ui-search-projection');
     }
@@ -2338,6 +2354,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     }
     if (focusedScenarioIds?.has('focused-scale-session-seeding')) {
       await collectScenario('focused-scale-session-seeding', async (signal) => ensureScaleConversationFixture(signal));
+    }
+    if (focusedScenarioIds?.has('focused-heavy-corpus-mutation-journey')) {
+      await collectScenario('focused-heavy-corpus-mutation-journey', async () => {
+        assert.ok(frame && page && releaseState.projectionRoot, 'heavy-corpus mutation scenario requires its authenticated mounted fixture');
+        assert.ok(releaseState.focusedSearchRebuildMs > 10_000, `heavy-corpus Search rebuild must exceed the UI send deadline; observed ${releaseState.focusedSearchRebuildMs} ms`);
+        const journey = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Heavy Corpus Mutation Topic', category: 'project', keyboard: true, projectionRoot: releaseState.projectionRoot });
+        return { topicId: journey.topicId, primaryMessage: journey.primaryMessage, conversationMessage: journey.conversationMessage, rebuildMs: releaseState.focusedSearchRebuildMs };
+      });
     }
     await collectScenario('stale-projection-recovery', async (signal) => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');

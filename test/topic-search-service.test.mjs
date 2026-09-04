@@ -262,6 +262,27 @@ test('disposable projection maintenance failures cannot fail an authoritative mu
   assert.deepEqual(calls, [['invalidate', {}], ['rebuild', {}]]);
 });
 
+test('authoritative Session send invalidates Search without starting derived work', async () => {
+  const events = [];
+  const sourceService = new AuthoritativeSourceService({
+    metadata: {
+      getTopic: (topicId) => ({ topicId, paraCategory: 'project', lifecycle: 'active' }),
+      listSourceRecovery: () => []
+    },
+    capabilities: { sessions: true },
+    gateway: { request: async () => { throw new Error('fixture Gateway must not be used'); } },
+    searchProvider: {
+      async invalidate(input) { events.push(['invalidate', input]); },
+      async rebuild(input) { events.push(['rebuild', input]); }
+    }
+  });
+  sourceService.forTopic = () => ({ sessions: { async send() { events.push(['send']); return { schemaVersion: 1, status: 'applied' }; } } });
+
+  await sourceService.sessionsSend({ topicId: 'topic-one', referenceId: 'session:one', message: 'fictional', logicalOperationId: '11111111-1111-4111-8111-111111111111' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, [['send'], ['invalidate', { preserveCommittedProjection: true }]]);
+});
+
 test('authoritative mutation refresh republishes complete Topic coverage after global invalidation', async () => {
   let publishedTopics = new Set(['topic-one', 'topic-two']);
   const sourceService = new AuthoritativeSourceService({
@@ -306,6 +327,45 @@ test('overlapping authoritative refreshes cannot publish an older snapshot last'
   releaseFirst();
   await Promise.all([older, newer]);
   assert.deepEqual(calls, ['invalidate-1', 'rebuild-1', 'invalidate-2', 'rebuild-2']);
+});
+
+test('mutation invalidation preserves committed artifacts for a scoped rebuild', async () => {
+  let deletes = 0;
+  const checkpoints = new Map();
+  const service = createTopicSearchService({
+    metadata: {
+      ...metadata,
+      setProjectionBookkeepingBatch(rows) { for (const row of rows) checkpoints.set(row.projectionId, row); },
+      getProjectionBookkeeping(projectionId) { return checkpoints.get(projectionId) ?? null; }
+    },
+    noteStore: { ...noteStore, delete() { deletes += 1; return true; } },
+    conversationStore: { ...conversationStore, delete() { deletes += 1; return true; } }
+  });
+
+  await service.invalidate({ preserveCommittedProjection: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(deletes, 0);
+  assert.equal([...checkpoints.values()].every(({ sourceRevision, inputDigest }) => sourceRevision === 'invalidated' && inputDigest === 'invalidated'), true);
+});
+
+test('durable invalidation does not wait behind an active projection rebuild', async () => {
+  const { service, starts, completions } = controlledProjectionRace();
+  const rebuilding = service.rebuild({ topicId: 'topic-one' });
+  await starts[0].promise;
+
+  let invalidated = false;
+  const invalidation = service.invalidate().then((value) => { invalidated = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    assert.equal(invalidated, true, 'durable denial must not inherit the active rebuild latency');
+    await assert.rejects(
+      service.query({ schemaVersion: 1, topicId: 'topic-one', query: 'alpha' }),
+      (error) => error.code === 'capability-unavailable'
+    );
+  } finally {
+    completions[0].resolve('older');
+    await Promise.all([rebuilding, invalidation]);
+  }
 });
 
 test('an older rebuild completion cannot clear a newer invalidation epoch', async () => {

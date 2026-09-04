@@ -231,25 +231,32 @@ export class AuthoritativeSourceService {
       }
     });
   }
-  async refreshSearch(_topicId) {
+  async invalidateSearch(input = {}) {
     if (typeof this.searchProvider?.rebuild !== 'function') return;
-    const refresh = async () => {
-      // Projection invalidation deletes the coherent generation, so its
-      // replacement must cover every Topic rather than only the one mutated.
-      try {
-        if (typeof this.searchProvider.invalidate === 'function') await this.searchProvider.invalidate({});
-      } catch { /* Durable source writes are not failed by disposable projection maintenance. */ }
-      try { await this.searchProvider.rebuild({}); }
+    try {
+      if (typeof this.searchProvider.invalidate === 'function') await this.searchProvider.invalidate(input);
+    } catch { /* Durable source writes are not failed by disposable projection maintenance. */ }
+  }
+  async refreshSearchAfterMutation(_topicId) {
+    await this.invalidateSearch({ preserveCommittedProjection: true });
+  }
+  async refreshSearch(_topicId) {
+    const rebuild = async () => {
+      await this.invalidateSearch();
+      try { return await this.searchProvider.rebuild({}); }
       catch { /* Authored source mutations remain authoritative when a disposable rebuild is unavailable. */ }
     };
-    const queued = this.searchRefresh.then(refresh, refresh);
+    const queued = this.searchRefresh.then(rebuild, rebuild);
     this.searchRefresh = queued.catch(() => {});
     return queued;
   }
-  async notesCreate(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.create', 'create'); await this.refreshSearch(input.topicId); return result; }
-  async notesEdit(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.edit', 'edit'); await this.refreshSearch(input.topicId); return result; }
-  async notesRename(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.rename', 'rename'); await this.refreshSearch(input.topicId); return result; }
-  async notesMove(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.move', 'move'); await this.refreshSearch(input.topicId); return result; }
+  async settleSearchRefresh() {
+    await this.searchRefresh;
+  }
+  async notesCreate(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.create', 'create'); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async notesEdit(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.edit', 'edit'); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async notesRename(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.rename', 'rename'); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async notesMove(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.move', 'move'); await this.refreshSearchAfterMutation(input.topicId); return result; }
   async sessionsHistory(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); return service.sessions.history(adapterInput(input)); }
   async sessionsList(input = {}) {
     const service = this.requireTopicService(input);
@@ -281,10 +288,10 @@ export class AuthoritativeSourceService {
       throw sourceError('source-recovery', 'The exact Primary Session is unavailable; Source Recovery is required before creating a conversation.');
     }
   }
-  async sessionsCreate(input = {}, runtime = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); await this.verifyPrimarySessionForCreate(input.topicId, service.sessions); const result = await service.sessions.create(adapterInput(input), runtime); await this.refreshSearch(input.topicId); return result; }
-  async sessionsSend(input = {}, runtime = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); const result = await service.sessions.send(adapterInput(input), runtime); await this.refreshSearch(input.topicId); return result; }
-  async sessionsClose(input = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); const result = await service.sessions.close(adapterInput(input)); await this.refreshSearch(input.topicId); return result; }
-  async sessionsReopen(input = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); const result = await service.sessions.reopen(adapterInput(input)); await this.refreshSearch(input.topicId); return result; }
+  async sessionsCreate(input = {}, runtime = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); await this.verifyPrimarySessionForCreate(input.topicId, service.sessions); const result = await service.sessions.create(adapterInput(input), runtime); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async sessionsSend(input = {}, runtime = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); const result = await service.sessions.send(adapterInput(input), runtime); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async sessionsClose(input = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); const result = await service.sessions.close(adapterInput(input)); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async sessionsReopen(input = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); const result = await service.sessions.reopen(adapterInput(input)); await this.refreshSearchAfterMutation(input.topicId); return result; }
   async migrationStatus() { return this.migration ? this.migration.status() : { schemaVersion: 1, enabled: false, phase: 'disabled', complete: true, actions: [], channels: [], failures: [] }; }
   async migrationReview() { return this.migration ? this.migration.review() : this.migrationStatus(); }
   async migrationResume(input = {}) {

@@ -80,7 +80,7 @@ export async function publishTopicSearchSnapshot({ stateDir, prepared, metadata,
       sourceRevision: projection.sourceRevision,
       inputDigest: projection.inputDigest
     })));
-    return Object.freeze({ notes: notesResult, conversations: conversationsResult, topicIds: prepared.topicIds });
+    return Object.freeze({ notes: notesResult, conversations: conversationsResult, topicIds: notesResult.topicIds });
   });
 }
 
@@ -170,6 +170,18 @@ function reserveReceiptSlot(stateDir) {
   if (receipts.length >= MAX_DURABLE_REBUILD_RECEIPTS) throw sourceError('source-unavailable', 'Too many durable rebuild operations are pending.');
 }
 
+async function hasReusableProjectionSet(stateDir) {
+  try {
+    const [notes, conversations] = await Promise.all([
+      openProjectionStore({ stateDir, kind: 'note' }),
+      openProjectionStore({ stateDir, kind: 'conversation' })
+    ]);
+    const manifests = [notes.manifest(), conversations.manifest()];
+    return manifests.every(Boolean)
+      && JSON.stringify(manifests[0].topicIds) === JSON.stringify(manifests[1].topicIds);
+  } catch { return false; }
+}
+
 export function createSearchRebuildService(options = {}) {
   const operations = new Map();
   const preparedTtlMs = 30_000;
@@ -200,15 +212,17 @@ export function createSearchRebuildService(options = {}) {
       }
       if (!existing && operations.size >= 8) throw sourceError('source-unavailable', 'Too many authenticated rebuild operations are active.');
       const operation = { topicId, intentDigest, status: 'preparing', expiresAt: Number.POSITIVE_INFINITY, prepared: null, result: null, promise: null };
-      // The requested Topic remains the authorization and idempotency intent,
-      // while publication snapshots every active Topic so a rebuild can never
-      // narrow the globally committed projection set.
-      operation.promise = prepareTopicSearchSnapshot({ ...options, topicId: undefined, gateway }).then((prepared) => {
+      // Reuse an intact committed set for a Topic-scoped replacement. If no
+      // complete set exists, rebuild every active Topic so recovery can never
+      // narrow global coverage.
+      operation.promise = hasReusableProjectionSet(options.stateDir)
+        .then((reusable) => prepareTopicSearchSnapshot({ ...options, topicId: reusable ? topicId : undefined, gateway }))
+        .then((prepared) => {
         operation.prepared = prepared;
         operation.status = 'prepared';
         operation.expiresAt = clock() + preparedTtlMs;
         return prepared;
-      }).catch((error) => {
+        }).catch((error) => {
         operations.delete(operationId);
         throw error;
       });

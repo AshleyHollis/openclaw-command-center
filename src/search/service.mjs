@@ -217,7 +217,7 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
   const service = {
     rebuild: rebuild ? queueRebuild : undefined,
     rebuildPrepared: preparedRebuild ? (input = {}) => queueRebuildOperation(preparedRebuild, input) : undefined,
-    async invalidate() {
+    async invalidate(input = {}) {
       freshnessEpoch += 1;
       invalidated = true;
       let markerWritten = false;
@@ -231,7 +231,10 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
         })));
         checkpointWritten = typeof metadata?.setProjectionBookkeepingBatch === 'function';
       } catch { /* The independent marker and artifact deletion are still attempted. */ }
-      return enqueueMaintenance(async () => {
+      if (input?.preserveCommittedProjection === true && (markerWritten || checkpointWritten)) {
+        return Object.freeze({ notes: false, conversations: false });
+      }
+      const disposal = enqueueMaintenance(async () => {
         let opened;
         try { opened = await stores(); }
         catch {
@@ -246,6 +249,14 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
         if (!markerWritten && !checkpointWritten && (!result.notes || !result.conversations)) throw sourceError('projection-unavailable', 'Topic Search invalidation could not be persisted.');
         return result;
       });
+      if (markerWritten || checkpointWritten) {
+        // The marker/checkpoints already deny every stale read. Artifact
+        // disposal retains queue order, but authoritative mutations must not
+        // inherit the latency of an older global rebuild.
+        void disposal.catch(() => {});
+        return Object.freeze({ notes: false, conversations: false });
+      }
+      return disposal;
     },
     async query(input = {}) {
       const request = validateSearchRequest(input);

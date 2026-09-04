@@ -70,11 +70,12 @@ test('concurrent authenticated rebuild replay converges while changed intent fai
   let release;
   const deferred = new Promise((resolve) => { release = resolve; });
   const operationId = randomUUID();
+  const snapshotCalls = [];
   const metadata = { listTopics: () => [{ ...topic, topicId: 'topic-a' }, { ...topic, topicId: 'topic-b' }] };
   const rebuild = createSearchRebuildService({
     stateDir,
     metadata,
-    sourceSnapshotFactory: async ({ topicId }) => { await deferred; return { notes: [], conversations: [], note: { sourceRevision: `notes-${topicId}` }, conversation: { sourceRevision: `sessions-${topicId}` } }; },
+    sourceSnapshotFactory: async ({ topicId }) => { snapshotCalls.push(topicId); await deferred; return { notes: [], conversations: [], note: { sourceRevision: `notes-${topicId}` }, conversation: { sourceRevision: `sessions-${topicId}` } }; },
     requireAuthorizedPreparation: true
   });
   try {
@@ -89,6 +90,7 @@ test('concurrent authenticated rebuild replay converges while changed intent fai
     await rebuild.prepareAuthorized({ topicId: 'topic-b', logicalOperationId: secondOperationId });
     const secondCommitted = await rebuild.rebuildPrepared({ topicId: 'topic-b', logicalOperationId: secondOperationId });
     assert.deepEqual(secondCommitted.topicIds, ['topic-a', 'topic-b']);
+    assert.deepEqual(snapshotCalls, ['topic-a', 'topic-b', 'topic-b'], 'an intact committed set permits one scoped authoritative refresh');
     const noteProjection = await openProjectionStore({ stateDir, kind: 'note' });
     const conversationProjection = await openProjectionStore({ stateDir, kind: 'conversation' });
     assert.deepEqual(noteProjection.manifest().topicIds, ['topic-a', 'topic-b']);

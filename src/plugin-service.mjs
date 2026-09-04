@@ -230,7 +230,10 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       startupSearchRebuildController?.abort(new Error('Command Center is stopping.'));
       if (notificationTimer) clearInterval(notificationTimer);
       notificationTimer = undefined;
-      stopPromise = Promise.resolve(startupSearchRebuildTask).catch(() => {}).then(() => {
+      stopPromise = Promise.all([
+        Promise.resolve(startupSearchRebuildTask).catch(() => {}),
+        Promise.resolve(sourceService?.settleSearchRefresh?.()).catch(() => {})
+      ]).then(() => {
         notificationService?.close?.();
         sourceService?.close?.();
         attentionService?.close?.();
