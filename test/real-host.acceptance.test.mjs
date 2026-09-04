@@ -2358,6 +2358,24 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     if (focusedScenarioIds?.has('focused-scale-session-seeding')) {
       await collectScenario('focused-scale-session-seeding', async (signal) => ensureScaleConversationFixture(signal));
     }
+    if (focusedScenarioIds?.has('focused-scale-workspace-readiness')) {
+      await collectScenario('focused-scale-workspace-readiness', async (signal) => {
+        assert.ok(frame && page, 'scale workspace readiness requires its authenticated mounted fixture');
+        const browseStarted = Date.now();
+        const response = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
+        const conversations = (response?.result ?? response)?.conversations ?? response?.conversations ?? [];
+        const browseMs = Math.max(1, Date.now() - browseStarted);
+        assert.equal(conversations.length, RELEASE_FIXTURE_COUNTS.conversations);
+        await frame.evaluate(() => window.CommandCenterTopics.loadTopics());
+        const importedTopic = frame.locator('.topic-row').filter({ hasText: 'Fictional Scale Corpus' });
+        const workspaceStarted = Date.now();
+        await activate(importedTopic.getByRole('button', { name: 'Open Topic', exact: true }), true);
+        await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
+        const workspaceMs = Math.max(1, Date.now() - workspaceStarted);
+        assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 50);
+        return { conversations: conversations.length, browseMs, workspaceMs };
+      });
+    }
     if (focusedScenarioIds?.has('focused-heavy-corpus-mutation-journey')) {
       await collectScenario('focused-heavy-corpus-mutation-journey', async () => {
         assert.ok(frame && page && releaseState.projectionRoot, 'heavy-corpus mutation scenario requires its authenticated mounted fixture');

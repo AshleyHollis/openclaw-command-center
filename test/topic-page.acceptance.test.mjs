@@ -1125,6 +1125,31 @@ test('keyboard Note dialog is semantic, traps focus, and restores its invoker', 
   } finally { await closeGuardedPage(page); }
 });
 
+test('successful mobile Note creation restores focus after authoritative refresh', async () => {
+  const page = await setupPage({ width: 320 });
+  try {
+    await page.getByRole('button', { name: 'Notes', exact: true }).click();
+    const newNote = page.getByRole('button', { name: 'New Note' });
+    await newNote.focus(); await newNote.press('Enter');
+    await page.locator('#note-action-path').fill('mobile-focus.md'); await page.locator('#note-action-text').fill('# Mobile focus'); await submit(page, '#note-action-form');
+    await page.getByRole('heading', { name: 'mobile-focus.md', exact: true }).waitFor();
+    assert.equal(await newNote.evaluate((node) => document.activeElement === node), true);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('successful mobile Note rename restores focus after authoritative refresh', async () => {
+  const page = await setupPage({ width: 320 });
+  try {
+    await page.getByRole('button', { name: 'Notes', exact: true }).click();
+    await page.getByRole('button', { name: 'nested/brief.md', exact: true }).click();
+    await page.getByRole('heading', { name: 'nested/brief.md', exact: true }).waitFor();
+    const rename = page.getByRole('button', { name: 'Rename', exact: true });
+    await rename.focus(); await rename.press('Enter'); await page.locator('#note-action-path').fill('mobile-focus-renamed.md'); await submit(page, '#note-action-form');
+    await page.getByRole('heading', { name: 'mobile-focus-renamed.md', exact: true }).waitFor();
+    assert.equal(await rename.evaluate((node) => document.activeElement === node), true);
+  } finally { await closeGuardedPage(page); }
+});
+
 test('mobile section navigation keeps inactive panes inert and keyboard focus visible', async () => {
   const page = await setupPage({ width: 320 });
   try {

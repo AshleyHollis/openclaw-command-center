@@ -461,12 +461,16 @@ test('Session list returns exact Topic-linked records with open default and expl
     { sessionKey: closed.externalSourceId, entry: { sessionId: 'closed-id' } },
     { sessionKey: foreign.externalSourceId, entry: { sessionId: 'foreign-id' } }
   ];
-  const adapter = createSessionAdapter({ topicId: 'topic-list', metadata, sessionStore: { listSessionEntries: () => entries } });
+  let catalogReads = 0;
+  const adapter = createSessionAdapter({ topicId: 'topic-list', metadata, sessionStore: { listSessionEntries: () => { catalogReads += 1; return entries; } } });
   const open = await adapter.list({ schemaVersion: 1 });
+  assert.equal(catalogReads, 1);
   assert.deepEqual(open.conversations.map((item) => item.referenceId), [primary.referenceId, secondary.referenceId]);
   const closedView = await adapter.list({ schemaVersion: 1, status: 'closed' });
+  assert.equal(catalogReads, 2);
   assert.deepEqual(closedView.conversations.map((item) => item.referenceId), [closed.referenceId]);
   const all = await adapter.list({ schemaVersion: 1, status: 'all' });
+  assert.equal(catalogReads, 3);
   assert.deepEqual(all.conversations.map((item) => item.referenceId), [primary.referenceId, closed.referenceId, secondary.referenceId]);
   assert.deepEqual(all.conversations.map((item) => item.displayName), ['Primary', 'Closed', 'Secondary']);
   assert.equal(all.conversations.every((item) => !('name' in item)), true);

@@ -239,8 +239,9 @@ export class SessionAdapter {
     const status = input.status ?? 'open';
     if (!['open', 'closed', 'all'].includes(status)) throw sourceError('invalid-request', 'Session list status must be open, closed, or all.');
     const conversations = [];
+    const catalogRows = await this.authoritativeRows();
     for (const reference of this.references()) {
-      const { state } = await this.resolveStableState(reference.referenceId);
+      const { state } = await this.resolveStableState(reference.referenceId, { catalogRows });
       if (typeof state.updatedAt !== 'string' || state.updatedAt.trim() === '') throw sourceError('source-recovery', 'A linked Conversation has incomplete persisted presentation state.');
       if (status !== 'all' && state.status !== status) continue;
       conversations.push({
@@ -302,23 +303,27 @@ export class SessionAdapter {
     return Object.freeze({ schemaVersion: 1, status: 'applied', sessionKey: reference.externalSourceId, sessionId: state.sessionId, sourceReference: reference });
   }
 
-  async resolveStableState(referenceId) {
-    const exact = await this.resolveExact({ referenceId });
+  async resolveStableState(referenceId, options) {
+    const exact = await this.resolveExact({ referenceId }, options);
     const state = this.metadata?.getSessionState?.(referenceId);
     if (!state || typeof state.sessionId !== 'string' || state.sessionId.trim() === '' || !['open', 'closed'].includes(state.status)) throw sourceError('source-recovery', 'The linked Session state is missing or incomplete.');
     if (state.sessionId !== exact.sessionId) throw sourceError('source-recovery', 'The exact persisted Session identity changed during authoritative resolution.');
     return { state, exact };
   }
 
-  async resolveExact(input = {}) {
+  async authoritativeRows() {
+    const listing = this.sessionStore?.listSessionEntries
+      ? this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true }).map((row) => ({ sessionKey: row.sessionKey, ...(row.entry ?? {}) }))
+      : await this.request('sessions.list', {});
+    return Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
+  }
+
+  async resolveExact(input = {}, { catalogRows } = {}) {
     const reference = this.resolveReference(input);
     const state = this.metadata?.getSessionState?.(reference.referenceId);
     const sessionKey = this.metadata?.getSourceLocator?.(reference.referenceId)?.locator ?? reference.externalSourceId;
     if (!state?.sessionId) throw sourceError('source-recovery', 'The linked Session does not have an exact persisted identity.');
-    const listing = this.sessionStore?.listSessionEntries
-      ? this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true }).map((row) => ({ sessionKey: row.sessionKey, ...(row.entry ?? {}) }))
-      : await this.request('sessions.list', {});
-    const rows = Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
+    const rows = catalogRows ?? await this.authoritativeRows();
     const matches = rows.filter((row) => responseKey(row) === sessionKey && responseSessionId(row) === state.sessionId);
     if (matches.length !== 1) throw sourceError('source-recovery', 'The exact authoritative Session is missing or replaced.');
     return { sessionKey, sessionId: state.sessionId, row: matches[0] };
