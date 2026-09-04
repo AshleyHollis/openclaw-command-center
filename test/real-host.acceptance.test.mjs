@@ -1270,9 +1270,23 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
       return !node.disabled && node.tabIndex >= 0 && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
     };
     const tabbables = [...document.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')].filter(visible);
-    return { count: tabbables.length, current: tabbables.indexOf(document.activeElement), target: tabbables.indexOf(target), inDialog: Boolean(target.closest('dialog[open]')) };
+    return {
+      count: tabbables.length,
+      current: tabbables.indexOf(document.activeElement),
+      target: tabbables.indexOf(target),
+      inDialog: Boolean(target.closest('dialog[open]')),
+      targetState: {
+        name: target.id || target.getAttribute('aria-label') || target.getAttribute('name') || target.tagName,
+        disabled: Boolean(target.disabled),
+        tabIndex: target.tabIndex,
+        rects: target.getClientRects().length,
+        hiddenAncestor: target.closest('[hidden], [inert]')?.id || target.closest('[hidden], [inert]')?.tagName || null,
+        display: getComputedStyle(target).display,
+        visibility: getComputedStyle(target).visibility
+      }
+    };
   });
-  assert.notEqual(order.target, -1, 'Requested keyboard target is absent from the sequential focus order.');
+  assert.notEqual(order.target, -1, `Requested keyboard target is absent from the sequential focus order: ${JSON.stringify(order.targetState)}`);
   if (order.current === order.target) return;
   if (order.current < 0) await locator.evaluate((target) => target.ownerDocument.defaultView.focus());
   const backwards = reverse || (order.current >= 0 && order.target < order.current);
