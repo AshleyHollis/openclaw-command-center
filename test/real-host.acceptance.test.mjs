@@ -1589,7 +1589,16 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
 }
 
 async function locatePaginatedNote(frame, pathName) {
-  await frame.waitForFunction(() => /^[0-9]+ Notes\.$/u.test(document.querySelector('#notes-status')?.textContent ?? ''));
+  try {
+    await frame.waitForFunction(() => /^[0-9]+ Notes\.$/u.test(document.querySelector('#notes-status')?.textContent ?? ''), null, { timeout: 120_000 });
+  } catch (error) {
+    const state = await frame.evaluate(() => ({
+      notesStatus: document.querySelector('#notes-status')?.textContent ?? null,
+      pageStatus: document.querySelector('#note-page-status')?.textContent ?? null,
+      renderedNotes: document.querySelectorAll('#notes-tree .note-tree-item').length
+    }));
+    throw new Error(`${error.message}; Notes hydration state=${JSON.stringify(state)}`);
+  }
   const note = frame.locator('#notes-tree').getByRole('button', { name: pathName, exact: true });
   const next = frame.locator('#note-next');
   for (let page = 0; page < 100; page += 1) {
