@@ -46,8 +46,8 @@ test('serves a validated built shell asset', async () => {
 
 test('opaque srcdoc shell resolves markdown against the inherited authenticated parent URL', async () => {
   const app = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
-  assert.match(app, /new URL\('\/plugins\/command-center\/markdown\.js', document\.baseURI\)\.href/u);
-  assert.match(app, /import\(markdownModuleUrl\)/u);
+  assert.match(app, /document\.baseURI \? new URL\('\/plugins\/command-center\/markdown\.js', document\.baseURI\)\.href/u);
+  assert.match(app, /function loadMarkdownModule\(\) \{ return markdownModule \?\?= import\(markdownModuleUrl\); \}/u);
   assert.doesNotMatch(app, /import\('\/plugins\/command-center\/markdown\.js'\)/u);
   assert.doesNotMatch(app, /import\('\.\/markdown\.js'\)/u);
 });

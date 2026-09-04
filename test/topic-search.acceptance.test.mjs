@@ -323,6 +323,7 @@ test('groups and opens authoritative Topic Search results', async () => {
   globalThis.window = fakeWindow;
   globalThis.document = {
     body: { dataset: {} },
+    addEventListener() {},
     querySelector(selector) { return elements[selector.slice(1)] ?? null; },
     createElement() { return new Element(); },
     createTextNode(text) { return { textContent: text }; }

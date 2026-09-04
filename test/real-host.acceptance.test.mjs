@@ -2208,7 +2208,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await enterText(frame.locator('#topic-search-query'), 'Fictional', true);
       await submitFrameForm(frame, '#topic-search-form', true);
       try {
-        await frame.waitForFunction(() => /Notes.*Conversations/u.test(document.querySelector('#topic-search-status')?.textContent ?? ''), undefined, { timeout: 60_000 });
+        await frame.waitForFunction(() => /Notes.*Conversations|^Topic Search failed/u.test(document.querySelector('#topic-search-status')?.textContent ?? ''), undefined, { timeout: 60_000 });
+        const status = await frame.locator('#topic-search-status').textContent();
+        assert.match(status ?? '', /Notes.*Conversations/u, status ?? 'Topic Search produced no status');
       } catch (error) {
         const browserState = await frame.evaluate(() => ({
           status: document.querySelector('#topic-search-status')?.textContent ?? '',

@@ -7,8 +7,9 @@ const statusNode = document.querySelector('#topic-status');
 const hasTopicsDestination = Boolean(topicCreateForm && statusNode);
 const PAGE_ACTION_ROUTE = '/plugins/command-center/api/topic/actions';
 const SEARCH_REBUILD_ROUTE = '/plugins/command-center/api/search/rebuild';
-const markdownModuleUrl = new URL('/plugins/command-center/markdown.js', document.baseURI).href;
-const markdownModule = import(markdownModuleUrl);
+const markdownModuleUrl = document.baseURI ? new URL('/plugins/command-center/markdown.js', document.baseURI).href : '/plugins/command-center/markdown.js';
+let markdownModule;
+function loadMarkdownModule() { return markdownModule ??= import(markdownModuleUrl); }
 const SCRIPTED_FORM_IDS = new Set(['topic-analysis-schedule', 'notification-settings-form', 'topic-create', 'topic-search-form', 'chat-form', 'conversation-create', 'note-action-form', 'workspace-search-form']);
 document.addEventListener('click', (event) => {
   const submitter = event.target?.closest?.('button[type="submit"],input[type="submit"]');
@@ -434,7 +435,18 @@ async function openResult(result) {
     detail.textContent = decodeText(value.contentBase64);
   } catch (error) { detail.textContent = error.message || 'Authoritative navigation was refused.'; }
 }
-document.querySelector('#topic-search-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const value = await queryTopicSearch({ schemaVersion: 1, topicId: document.querySelector('#topic-search-topic-id').value, query: document.querySelector('#topic-search-query').value.trim(), limit: 50 }); renderSearch('notes-results', value.notes?.results); renderSearch('conversations-results', value.conversations?.results); document.querySelector('#topic-search-status').textContent = `${value.notes?.results?.length ?? 0} Notes · ${value.conversations?.results?.length ?? 0} Conversations`; });
+document.querySelector('#topic-search-form')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const status = document.querySelector('#topic-search-status');
+  try {
+    const value = await queryTopicSearch({ schemaVersion: 1, topicId: document.querySelector('#topic-search-topic-id').value, query: document.querySelector('#topic-search-query').value.trim(), limit: 50 });
+    renderSearch('notes-results', value.notes?.results);
+    renderSearch('conversations-results', value.conversations?.results);
+    status.textContent = `${value.notes?.results?.length ?? 0} Notes · ${value.conversations?.results?.length ?? 0} Conversations`;
+  } catch (error) {
+    status.textContent = `Topic Search failed (${error?.code || 'unknown'}): ${error?.message || 'The search request was rejected.'}`;
+  }
+});
 document.querySelector('#topic-search-rebuild')?.addEventListener('click', async () => { const status = document.querySelector('#topic-search-status'); status.textContent = 'Rebuilding Topic Search…'; try { await rebuildTopicSearchProjection(document.querySelector('#topic-search-topic-id').value); status.textContent = 'Topic Search index rebuilt from authoritative sources.'; } catch (error) { status.textContent = error.message || 'Topic Search rebuild failed.'; } });
 
 const workspace = {
@@ -631,7 +643,7 @@ async function saveNote() {
   catch (error) { if (generation === workspace.generation && workspace.topic?.topicId === topicId) notesStatus.textContent = error.message; }
 }
 document.querySelector('#note-save')?.addEventListener('click', saveNote);
-async function renderNotePreview(text) { const target = document.querySelector('#note-preview'); const generation = workspace.generation; const noteGeneration = workspace.noteGeneration; const draftId = workspace.note?.draftId; target.textContent = 'Rendering preview…'; try { const markdown = await markdownModule; if (generation === workspace.generation && noteGeneration === workspace.noteGeneration && workspace.note?.draftId === draftId && !target.hidden) markdown.renderMarkdownInto(target, text); } catch { if (generation === workspace.generation && noteGeneration === workspace.noteGeneration && workspace.note?.draftId === draftId && !target.hidden) { target.replaceChildren(); notesStatus.textContent = 'Markdown preview is unavailable.'; } } }
+async function renderNotePreview(text) { const target = document.querySelector('#note-preview'); const generation = workspace.generation; const noteGeneration = workspace.noteGeneration; const draftId = workspace.note?.draftId; target.textContent = 'Rendering preview…'; try { const markdown = await loadMarkdownModule(); if (generation === workspace.generation && noteGeneration === workspace.noteGeneration && workspace.note?.draftId === draftId && !target.hidden) markdown.renderMarkdownInto(target, text); } catch { if (generation === workspace.generation && noteGeneration === workspace.noteGeneration && workspace.note?.draftId === draftId && !target.hidden) { target.replaceChildren(); notesStatus.textContent = 'Markdown preview is unavailable.'; } } }
 async function setNoteMode(preview) { const editor = document.querySelector('#note-content'); const target = document.querySelector('#note-preview'); editor.hidden = preview; target.hidden = !preview; document.querySelector('#note-edit-mode').setAttribute('aria-pressed', String(!preview)); document.querySelector('#note-preview-mode').setAttribute('aria-pressed', String(preview)); if (!preview) { target.replaceChildren(); return; } await renderNotePreview(editor.value); }
 document.querySelector('#note-edit-mode')?.addEventListener('click', () => setNoteMode(false)); document.querySelector('#note-preview-mode')?.addEventListener('click', () => setNoteMode(true));
 
