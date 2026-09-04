@@ -9,11 +9,9 @@ import { boundedTrafficEvidence, describeTrafficEvidence, TrafficGuard } from '.
 
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 export const pinnedHost = Object.freeze({
-  // The evaluator checkout identity is controller-owned and intentionally
-  // distinct from both the upstream compatibility tuple and performance
-  // validator receipt identities.
-  packageVersion: '2026.8.2',
-  commit: '9cb8c01b49be33464174bb40d512ca2b42ce089c',
+  // The evaluator checkout is the exact signed stable-release source commit.
+  packageVersion: '2026.9.1',
+  commit: 'ad6fe23aecb9b833d68139b0ddc9f239b894d2f1',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
