@@ -41,6 +41,10 @@ test('real-host acceptance exposes one closed authenticated mount dependency pla
     kind: 'focused',
     scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']
   });
+  assert.deepEqual(resolveRealHostAcceptancePlan('full-prefix-to-second-topic'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'startup-projection-recovery', 'invalidated-projection-recovery', 'missing-projection-recovery', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'stale-projection-recovery', 'session-create-catalog-readback', 'session-create-idempotent-replay', 'migrated-scale-conversation-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']
+  });
   assert.deepEqual(resolveRealHostAcceptancePlan('repeated-recovery-session-create'), {
     kind: 'focused',
     scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-invalidated-projection-recovery', 'focused-missing-projection-recovery', 'focused-stale-projection-recovery', 'focused-session-create-after-recovery']
