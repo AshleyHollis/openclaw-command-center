@@ -79,7 +79,7 @@ export class SchedulerAdapter {
   }
 
   async request(method, params, options) {
-    return this.gateway.request(method, params, options);
+    return this.gateway.request(method, params, { ...options, scopes: ['operator.admin'] });
   }
 
   async read(input = {}) {

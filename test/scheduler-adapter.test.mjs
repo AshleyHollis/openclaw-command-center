@@ -15,10 +15,11 @@ function metadataFixture() {
 test('Reminder creation is declarative and scheduler reads resolve exact job IDs', async () => {
   const metadata = metadataFixture();
   const calls = [];
-  const gateway = { request: async (method, params) => { calls.push({ method, params }); if (method === 'cron.add') return { id: 'job-fictional', configRevision: 'sha256:revision-1', declarationKey: params.declarationKey }; if (method === 'cron.get') return { id: params.id, configRevision: 'sha256:revision-1', enabled: true }; return { jobs: [] }; } };
+  const gateway = { request: async (method, params, options) => { calls.push({ method, params, options }); if (method === 'cron.add') return { id: 'job-fictional', configRevision: 'sha256:revision-1', declarationKey: params.declarationKey }; if (method === 'cron.get') return { id: params.id, configRevision: 'sha256:revision-1', enabled: true }; return { jobs: [] }; } };
   const adapter = createSchedulerAdapter({ topicId: 'topic-scheduler', metadata, gateway });
   const created = await adapter.createReminder({ logicalOperationId: randomUUID(), declaration: { schedule: { kind: 'every', everyMs: 60_000 }, payload: { kind: 'systemEvent', text: 'fictional' } } });
   assert.equal(calls[0].method, 'cron.add');
+  assert.deepEqual(calls[0].options?.scopes, ['operator.admin']);
   assert.match(calls[0].params.declarationKey, /^command-center:reminder:/);
   assert.equal(created.value.sourceReference.externalSourceId, 'job-fictional');
   const read = await adapter.read({ referenceId: created.value.sourceReference.referenceId });
