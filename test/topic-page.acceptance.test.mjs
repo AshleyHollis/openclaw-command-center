@@ -553,6 +553,9 @@ test('large Notes loading and bounded transcript rendering yield to unrelated co
     await page.locator('#note-next').click();
     await page.getByText(/5000 Notes · Page 2 of 50/u).waitFor();
     assert.equal(await page.locator('#notes-tree .note-tree-item').count(), 100);
+    await page.locator('#note-last').click();
+    await page.getByText(/5000 Notes · Page 50 of 50/u).waitFor();
+    assert.equal(await page.locator('#notes-tree .note-tree-item').first().textContent(), 'scale/note-4900.md');
 
     const browseBefore = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.method?.endsWith('sessions.browse')).length);
     await page.getByRole('button', { name: 'Primary Conversation', exact: true }).click();

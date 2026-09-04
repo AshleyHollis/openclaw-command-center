@@ -1601,6 +1601,13 @@ async function locatePaginatedNote(frame, pathName) {
   }
   const note = frame.locator('#notes-tree').getByRole('button', { name: pathName, exact: true });
   const next = frame.locator('#note-next');
+  const last = frame.locator('#note-last');
+  if (!await note.count() && await last.count() && !await last.isDisabled()) {
+    const previousStatus = await frame.locator('#note-page-status').textContent();
+    await last.click();
+    await frame.waitForFunction((status) => document.querySelector('#note-page-status')?.textContent !== status, previousStatus);
+    if (await note.count()) return note;
+  }
   for (let page = 0; page < 100; page += 1) {
     if (await note.count()) return note;
     if (await next.isDisabled()) break;
