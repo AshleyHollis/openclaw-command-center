@@ -188,7 +188,7 @@ function drainStream(stream) {
   });
 }
 
-export async function launchPinnedHost({ descriptor, world, buildReceipt, onOutput = () => {}, signal }) {
+export async function launchPinnedHost({ descriptor, world, buildReceipt, onOutput = () => {}, signal, notificationCaPath }) {
   signal?.throwIfAborted();
   const host = await verifyHost(descriptor);
   signal?.throwIfAborted();
@@ -204,12 +204,13 @@ export async function launchPinnedHost({ descriptor, world, buildReceipt, onOutp
   const guardModule = new URL('./isolated-child-guard.mjs', import.meta.url);
   const executable = host.runtimeExecutable || host.wrapper;
   const arguments_ = host.runtimeExecutable ? [host.wrapper, ...pinnedHost.args] : pinnedHost.args;
+  if (notificationCaPath && !under(world.root, path.resolve(notificationCaPath))) throw new HarnessFailure('endpoint-isolation', 'Notification CA path escapes the isolated world');
   const child = spawn(executable, arguments_, {
     cwd: host.checkout,
     // Preserve only the executable search path needed by the controller's
     // `#!/usr/bin/env node` wrapper. Fixture/configuration state remains
     // explicitly rooted in the disposable world.
-    env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot, COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.pathname}` },
+    env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot, COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.pathname}`, ...(notificationCaPath ? { NODE_EXTRA_CA_CERTS: path.resolve(notificationCaPath) } : {}) },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   const abortHost = () => { void stopPinnedHost(child); };

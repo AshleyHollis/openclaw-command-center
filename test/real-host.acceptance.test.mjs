@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { access, chmod, copyFile, cp, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
-import { randomUUID } from 'node:crypto';
+import { createECDH, createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { execFile } from 'node:child_process';
+import { createServer as createHttpsServer } from 'node:https';
 import test from 'node:test';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -39,6 +41,46 @@ const capturePerformanceBaseline = process.env.COMMAND_CENTER_CAPTURE_PERFORMANC
 const capturedPerformanceBaselinePath = '/tmp/command-center-release-performance-baseline.v1.json';
 const acceptancePlan = resolveRealHostAcceptancePlan(process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO);
 if (acceptancePlan.kind === 'focused' && capturePerformanceBaseline) throw new Error('Focused real-host acceptance cannot capture a performance baseline.');
+
+function executeFile(command, args) {
+  return new Promise((resolve, reject) => execFile(command, args, (error) => error ? reject(error) : resolve()));
+}
+
+async function createLoopbackNotificationReceiver(tempRoot) {
+  const keyPath = path.join(tempRoot, 'notification-loopback.key.pem');
+  const certificatePath = path.join(tempRoot, 'notification-loopback.cert.pem');
+  await executeFile('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', keyPath, '-out', certificatePath, '-days', '1', '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1']);
+  const deliveries = [];
+  const server = createHttpsServer({ key: await readFile(keyPath), cert: await readFile(certificatePath) }, (request, response) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      deliveries.push({ method: request.method, bytes: Buffer.concat(chunks).byteLength });
+      response.writeHead(201);
+      response.end();
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '127.0.0.1', port: 0 }, resolve);
+  });
+  server.unref();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Loopback notification receiver did not bind a TCP port.');
+  return Object.freeze({ certificatePath, endpoint: `https://127.0.0.1:${address.port}/push`, deliveries, close: () => new Promise((resolve) => server.close(resolve)) });
+}
+
+function createGatewayDeviceIdentity() {
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const rawPublicKey = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
+  return Object.freeze({ privateKey, publicKey: rawPublicKey.toString('base64url'), deviceId: createHash('sha256').update(rawPublicKey).digest('hex') });
+}
+
+function signedGatewayDevice(identity, { nonce, credential, scopes, client }) {
+  const signedAt = Date.now();
+  const payload = ['v3', identity.deviceId, client.id, client.mode, 'operator', scopes.join(','), String(signedAt), credential, nonce, client.platform.toLowerCase(), ''].join('|');
+  return { id: identity.deviceId, publicKey: identity.publicKey, signature: sign(null, Buffer.from(payload), identity.privateKey).toString('base64url'), signedAt, nonce };
+}
 
 function releaseScaleConversationOperationId(index) {
   assert.ok(Number.isInteger(index) && index > 0 && index < RELEASE_FIXTURE_COUNTS.conversations);
@@ -1085,7 +1127,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
   }, { candidateRoot: process.cwd() });
 }
 
-async function requestAuthenticatedGateway({ gatewayUrl, credential, method, params = {}, scopes = ['operator.read'], responseTimeoutMs = 10_000, signal }) {
+async function requestAuthenticatedGateway({ gatewayUrl, credential, method, params = {}, scopes = ['operator.read'], responseTimeoutMs = 10_000, signal, deviceIdentity }) {
   signal ??= acceptanceSignalContext.getStore();
   signal?.throwIfAborted();
   const socket = new WebSocket(gatewayUrl.replace(/^http/u, 'ws'));
@@ -1122,7 +1164,9 @@ async function requestAuthenticatedGateway({ gatewayUrl, credential, method, par
     const [, challenge] = await Promise.all([openedPromise, challengePromise]);
     assert.equal(typeof challenge.payload?.nonce, 'string');
     const connectId = `command-center-acceptance-connect-${randomUUID()}`;
-    socket.send(JSON.stringify({ type: 'req', id: connectId, method: 'connect', params: { minProtocol: 4, maxProtocol: 4, client: { id: 'cli', version: '1', platform: 'test', mode: 'cli' }, caps: [], commands: [], role: 'operator', scopes, auth: { ['to' + 'ken']: credential } } }));
+    const client = { id: 'cli', version: '1', platform: 'test', mode: 'cli' };
+    const device = deviceIdentity ? signedGatewayDevice(deviceIdentity, { nonce: challenge.payload.nonce, credential, scopes, client }) : undefined;
+    socket.send(JSON.stringify({ type: 'req', id: connectId, method: 'connect', params: { minProtocol: 4, maxProtocol: 4, client, caps: [], commands: [], role: 'operator', scopes, auth: { ['to' + 'ken']: credential }, ...(device ? { device } : {}) } }));
     const connected = await waitForFrame((frame) => frame?.type === 'res' && frame.id === connectId);
     if (!connected.ok) throw new Error(`Authenticated Gateway connect failed: ${connected.error?.code ?? 'unknown'}`);
     const requestId = `command-center-acceptance-${randomUUID()}`;
@@ -1879,6 +1923,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   let emittedBaseline;
   await withIsolatedWorld(async (world) => {
     const resolvedStateDir = path.join(world.root, '.openclaw');
+    let notificationReceiver;
+    let notificationDevice;
     let realizedScaleSeed;
     let migrationFixtureEvidence;
     await testContext.test('release preparation: deterministic source fixtures', async () => withDeadline('deterministic release fixture preparation', async () => {
@@ -1979,7 +2025,13 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const startupMilestoneStartedAt = Date.now();
     await testContext.test('release preparation: pinned host launch', async () => {
       reportProgress(testContext, 'host-launch:started');
-      host = await withDeadline('pinned host launch', (signal) => launchPinnedHost({ descriptor, world, buildReceipt, signal }), 120_000);
+      notificationReceiver = await createLoopbackNotificationReceiver(world.tempRoot);
+      try {
+        host = await withDeadline('pinned host launch', (signal) => launchPinnedHost({ descriptor, world, buildReceipt, signal, notificationCaPath: notificationReceiver.certificatePath }), 120_000);
+      } catch (error) {
+        await notificationReceiver.close();
+        throw error;
+      }
       reportProgress(testContext, 'host-launch:passed');
     });
     const gatewayUrl = world.gateway.url;
@@ -2014,6 +2066,23 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const { failures: scenarioFailures, evidence: scenarioEvidence, collect: collectPlannedScenario } = scenarioCoordinator;
     const focusedScenarioIds = acceptancePlan.kind === 'focused' ? new Set(acceptancePlan.scenarioIds) : null;
     const collectScenario = (id, run) => focusedScenarioIds && !focusedScenarioIds.has(id) ? Promise.resolve() : collectPlannedScenario(id, run);
+    const ensureNotificationTarget = async (signal) => {
+      if (notificationDevice) return notificationDevice;
+      const deviceIdentity = createGatewayDeviceIdentity();
+      const receiverKey = createECDH('prime256v1');
+      receiverKey.generateKeys();
+      await requestAuthenticatedGateway({
+        gatewayUrl,
+        credential: world.gatewayCredential,
+        scopes: ['operator.read', 'operator.write', 'operator.admin'],
+        method: 'push.web.subscribe',
+        params: { endpoint: notificationReceiver.endpoint, keys: { p256dh: receiverKey.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') } },
+        signal,
+        deviceIdentity
+      });
+      notificationDevice = deviceIdentity;
+      return notificationDevice;
+    };
     const scenarioResult = (id) => {
       try { return scenarioCoordinator.result(id); }
       catch { throw new HarnessFailure('release-row-missing', `Release scenario produced no evidence for ${id}`); }
@@ -2427,6 +2496,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       }
     });
     if (focusedScenarioIds?.has('focused-closed-tab-notification')) await collectScenario('focused-closed-tab-notification', async (signal) => {
+      const deviceIdentity = await ensureNotificationTarget(signal);
       await requestAuthenticatedGateway({
         gatewayUrl,
         credential: world.gatewayCredential,
@@ -2438,14 +2508,16 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           logicalOperationId: randomUUID(),
           declaration: { name: 'Fictional focused due reminder', enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional focused due reminder' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' }
         },
-        signal
+        signal,
+        deviceIdentity
       });
       const dashboard = await readDashboard(gatewayUrl);
       assert.equal(dashboard.attention.some((episode) => episode.sourceCapabilityId === 'reminders'), true);
       await page.close();
       evidence.globalTabClosed = true;
-      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.dashboard.get', params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, signal });
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.dashboard.get', params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, signal, deviceIdentity });
       const emission = await waitForNotificationEmission(databasePath, { status: 'sent' });
+      assert.equal(notificationReceiver.deliveries.some((delivery) => delivery.method === 'POST' && delivery.bytes > 0), true);
       return { closedTabNotificationStatus: emission.status };
     });
     if (focusedScenarioIds?.has('focused-topic-review-projection')) await collectScenario('focused-topic-review-projection', async (signal) => {
@@ -2719,6 +2791,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     }
     await collectScenario('scale-performance', async () => {
       assert.ok(browser && releaseState.projectionRoot, 'scale scenario requires the independently seeded authoritative fixture');
+      const notificationDeviceIdentity = await ensureNotificationTarget();
       await ensureScaleConversationFixture();
       if (page && !page.isClosed()) await page.close();
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -2761,7 +2834,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
               sessionTarget: 'main',
               wakeMode: 'next-heartbeat'
             }
-          }
+          },
+          deviceIdentity: notificationDeviceIdentity
         });
       }
       await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: scaleJourney.topicId, input: {}, logicalOperationId: randomUUID() } });
@@ -3100,6 +3174,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       stopHost: async () => {
         await stopPinnedHost(host.child);
         await host.outputDrained;
+        await notificationReceiver?.close?.();
       },
       // All traffic producers have stopped above. The final checks therefore
       // cover background work and fatal output completed during shutdown.
