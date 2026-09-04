@@ -171,7 +171,16 @@ async function waitForNotificationEmission(databasePath, { attempts = 100, statu
     } finally { database.close(); }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new HarnessFailure('notification-reconciliation-timeout', `Closed-tab notification emission did not reach durable ${status} state`);
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  let diagnostics;
+  try {
+    diagnostics = {
+      emissions: database.prepare('SELECT emission_id, episode_id, status, emitted_at_ms, updated_at_ms FROM notification_emissions ORDER BY updated_at_ms DESC LIMIT 5').all(),
+      slots: database.prepare('SELECT episode_id, slot_kind, status, due_at_ms, emitted_at_ms FROM notification_slots ORDER BY due_at_ms DESC LIMIT 8').all(),
+      episodes: database.prepare('SELECT episode_id, source_capability_id, state, severity, attention_since, updated_at FROM attention_episodes ORDER BY updated_at DESC LIMIT 5').all()
+    };
+  } finally { database.close(); }
+  throw new HarnessFailure('notification-reconciliation-timeout', `Closed-tab notification emission did not reach durable ${status} state: ${JSON.stringify(diagnostics)}`);
 }
 
 async function mountedPluginFrame(page, pluginDocument, evidence) {
@@ -2416,6 +2425,28 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       } catch (error) {
         throw new Error(`${error.message}; host stdout: ${host.diagnostics.stdout}; host stderr: ${host.diagnostics.stderr}`);
       }
+    });
+    if (focusedScenarioIds?.has('focused-closed-tab-notification')) await collectScenario('focused-closed-tab-notification', async (signal) => {
+      await requestAuthenticatedGateway({
+        gatewayUrl,
+        credential: world.gatewayCredential,
+        scopes: ['operator.read', 'operator.write', 'operator.admin'],
+        method: 'command-center.v1.reminders.create',
+        params: {
+          schemaVersion: 1,
+          topicId: RELEASE_ALPHA_TOPIC_ID,
+          logicalOperationId: randomUUID(),
+          declaration: { name: 'Fictional focused due reminder', enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional focused due reminder' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' }
+        },
+        signal
+      });
+      const dashboard = await readDashboard(gatewayUrl);
+      assert.equal(dashboard.attention.some((episode) => episode.sourceCapabilityId === 'reminders'), true);
+      await page.close();
+      evidence.globalTabClosed = true;
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.dashboard.get', params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, signal });
+      const emission = await waitForNotificationEmission(databasePath, { status: 'sent' });
+      return { closedTabNotificationStatus: emission.status };
     });
     if (focusedScenarioIds?.has('focused-topic-review-projection')) await collectScenario('focused-topic-review-projection', async (signal) => {
       await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, input: {}, logicalOperationId: randomUUID() }, signal });
