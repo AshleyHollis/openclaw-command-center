@@ -18,15 +18,6 @@ import { createTopicReviewService } from './topics/review.mjs';
 
 let activeMaintenanceService;
 
-function record(value) {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-}
-
-export function resolveOwnPluginConfig(api) {
-  const configured = record(api?.config?.plugins?.entries?.[api?.id]?.config);
-  return Object.freeze({ ...configured, ...record(api?.pluginConfig) });
-}
-
 export function runtimeHostIdentity(stateDir) {
   const value = String(stateDir ?? '').trim();
   if (!value) throw new TypeError('Runtime host identity requires a resolved state directory.');
@@ -39,7 +30,6 @@ export function runNoteMaintenance(input) {
 }
 
 export function createMetadataService(api, { notificationEmitter, searchRebuildServiceFactory = createSearchRebuildService, topicAnalyzerFactory = createProductionTopicAnalyzer } = {}) {
-  const pluginConfig = resolveOwnPluginConfig(api);
   let metadataService;
   let sourceService;
   let attentionService;
@@ -71,7 +61,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       // cycle, so activation must finish before any Gateway runtime call.
       const gatewayDefersUntilBinding = gatewayAvailable && typeof api.runtime.gateway.isAvailable === 'function';
       const gatewayActiveAtStartup = gatewayAvailable && !gatewayDefersUntilBinding;
-      const configuredSourceCapabilities = pluginConfig.sourceCapabilities ?? {};
+      const configuredSourceCapabilities = api.pluginConfig?.sourceCapabilities ?? {};
       const topicAnalyzer = topicAnalyzerFactory?.();
       const analysisUsable = typeof topicAnalyzer === 'function' || typeof topicAnalyzer?.analyze === 'function';
       const capabilities = {
@@ -84,7 +74,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
         attention: configuredSourceCapabilities.attention !== false
       };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
-      const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: pluginConfig.legacyDiscordMigration, logger: api.logger });
+      const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: api.pluginConfig?.legacyDiscordMigration, logger: api.logger });
       attentionService = createAttentionService({
         metadata: metadataService,
         host: runtimeHostIdentity(stateDir),
@@ -127,7 +117,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       const { readVisibleSessionTranscriptMessageEntries } = await import('openclaw/plugin-sdk/session-transcript-runtime');
       const analysisProvider = analysisUsable ? createTopicAnalysisProvider({ getRunner: () => topicAnalysisRunner, metadata: metadataService, onCompleted: () => topicReview?.refresh?.() }) : null;
       sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider, analysisProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
-      topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: pluginConfig.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
+      topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
       searchRebuildService = searchRebuildServiceFactory({
         stateDir,
         metadata: metadataService,

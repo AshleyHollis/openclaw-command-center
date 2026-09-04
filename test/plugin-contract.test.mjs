@@ -3,19 +3,9 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createMetadataService, resolveOwnPluginConfig, runtimeHostIdentity } from '../src/plugin-service.mjs';
+import { createMetadataService, runtimeHostIdentity } from '../src/plugin-service.mjs';
 
 const pluginSource = async () => `${await readFile(new URL('../src/plugin.mjs', import.meta.url), 'utf8')}\n${await readFile(new URL('../src/plugin-service.mjs', import.meta.url), 'utf8')}`;
-
-test('plugin resolves its own non-secret configured entry when the activation snapshot omits pluginConfig', () => {
-  const api = {
-    id: 'command-center',
-    pluginConfig: {},
-    config: { plugins: { entries: { 'command-center': { config: { topics: { noteRoot: '/fictional/vault' }, controlUiGrant: false } } } } }
-  };
-  assert.deepEqual(resolveOwnPluginConfig(api), { topics: { noteRoot: '/fictional/vault' }, controlUiGrant: false });
-  assert.deepEqual(resolveOwnPluginConfig({ ...api, pluginConfig: { controlUiGrant: true } }), { topics: { noteRoot: '/fictional/vault' }, controlUiGrant: true });
-});
 
 test('plugin uses the published entry and external-tab descriptor seams', async () => {
   const source = await pluginSource();

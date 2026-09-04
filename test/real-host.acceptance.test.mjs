@@ -1835,6 +1835,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         await writeFile(migrationExportPath, `${JSON.stringify(migrationExport)}\n`);
         const configured = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
         configured.plugins.entries[world.manifest.candidate.id].config = {
+          ...configured.plugins.entries[world.manifest.candidate.id].config,
           legacyDiscordMigration: {
             schemaVersion: 1,
             exportPath: migrationExportPath,
@@ -1868,6 +1869,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     await writeFile(migrationExportPath, `${JSON.stringify(migrationExport)}\n`);
     const configured = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
     configured.plugins.entries[world.manifest.candidate.id].config = {
+      ...configured.plugins.entries[world.manifest.candidate.id].config,
       legacyDiscordMigration: {
         schemaVersion: 1,
         exportPath: migrationExportPath,
