@@ -116,7 +116,7 @@ test('Topic Page actions are POST-only, closed, bounded, and content-free', asyn
   assert.equal(Buffer.byteLength(JSON.stringify(oversizedResponse.body)) < 32 * 1024, true);
 });
 
-test('Conversation creation remains on the service-owned plugin Gateway boundary', async () => {
+test('Conversation creation adopts only the authenticated external-tab Session envelope', async () => {
   const service = fixtureService();
   let receivedRuntime = 'not-called';
   service.sessionsCreate = async (input, runtime) => {
@@ -124,9 +124,9 @@ test('Conversation creation remains on the service-owned plugin Gateway boundary
     return { status: 'applied', referenceId: 'session:new' };
   };
   const logicalOperationId = randomUUID();
-  const response = await invoke(service, { body: base('conversations.create', { label: 'Plugin Scoped Conversation', expectedRevision: 4, logicalOperationId }) });
+  const response = await invoke(service, { body: conversationCreate({ label: 'Authenticated Conversation', logicalOperationId }) });
   assert.equal(response.statusCode, 200);
-  assert.equal(receivedRuntime, undefined);
+  assert.deepEqual(receivedRuntime, { authoritativeSession: { key: `agent:main:dashboard:${logicalOperationId}`, sessionId: `session-${logicalOperationId}`, revision: '1', idempotencyKey: logicalOperationId, label: 'Authenticated Conversation' } });
 });
 
 test('a migrated canonical scale Topic creates 99 Conversations through the public route and authoritatively totals 100', async () => {

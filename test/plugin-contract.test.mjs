@@ -103,6 +103,7 @@ test('Topic workspace declares the exact external-tab capability bridge and boun
   assert.match(app, /bridgeReady\.then\(loadOperatingState\)/u);
   assert.match(app, /if \(requestedTopicId === null\) void loadTopics\(\)/u);
   assert.match(app, /fetch\(PAGE_ACTION_ROUTE, \{ method: 'POST', credentials: 'omit'/u);
+  assert.match(app, /bridgeRequest\('sessions\.create', \{ agentId: 'main', label \}, logicalOperationId\)/u);
   assert.match(app, /bridgeRequest\('command-center\.v1\.sessions\.navigate', \{ schemaVersion: 1, topicId, referenceId \}\)/u);
   assert.match(app, /bridgeRequest\('command-center\.v1\.sessions\.send', \{ schemaVersion: 1, topicId, referenceId, message: operation\.intent\.message, logicalOperationId: operation\.logicalOperationId \}, operation\.logicalOperationId\)/u);
   assert.doesNotMatch(app, /pageAction\('chat\.send'/u);

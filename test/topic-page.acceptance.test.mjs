@@ -902,24 +902,30 @@ test('an interrupted Conversation create retries the unchanged logical operation
     await submit(page, '#conversation-create');
     await page.locator('.conversation-item').filter({ hasText: 'Interrupted Conversation' }).waitFor();
     const calls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http' && call.action === 'conversations.create' && call.label === 'Interrupted Conversation'));
+    const creates = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Interrupted Conversation'));
     assert.equal(calls.length, 2);
+    assert.equal(creates.length, 1);
     assert.equal(calls[0].logicalOperationId, calls[1].logicalOperationId);
-    assert.equal(Object.hasOwn(calls[0], 'authoritativeSession'), false);
-    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Interrupted Conversation')), false);
+    assert.equal(creates[0].operationId, calls[0].logicalOperationId);
+    assert.deepEqual(Object.keys(creates[0].params).sort(), ['agentId', 'label']);
     assert.equal(await page.locator('.conversation-item').filter({ hasText: 'Interrupted Conversation' }).count(), 1);
   } finally { await closeGuardedPage(page); }
 });
 
-test('Conversation creation delegates Session ownership to the plugin service', async () => {
+test('an unknown capability-bridge Session outcome retains the Conversation operation for exact retry', async () => {
   const page = await setupPage();
   try {
+    await page.evaluate(() => { globalThis.__topicPageFixture.unknownNextSessionCreate = true; });
     const input = page.locator('#conversation-create input[name="label"]');
-    await input.fill('Plugin Owned Conversation'); await submit(page, '#conversation-create');
-    await page.locator('.conversation-item').filter({ hasText: 'Plugin Owned Conversation' }).waitFor();
-    const evidence = await page.evaluate(() => ({ bridge: globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Plugin Owned Conversation'), http: globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http' && call.action === 'conversations.create' && call.label === 'Plugin Owned Conversation') }));
-    assert.equal(evidence.bridge.length, 0);
+    await input.fill('Unknown Session Outcome'); await submit(page, '#conversation-create');
+    await page.getByText('Conversation creation is not yet confirmed. Retry the unchanged label to reconcile it.').waitFor();
+    await submit(page, '#conversation-create');
+    await page.locator('.conversation-item').filter({ hasText: 'Unknown Session Outcome' }).waitFor();
+    const evidence = await page.evaluate(() => ({ bridge: globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Unknown Session Outcome'), http: globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http' && call.action === 'conversations.create' && call.label === 'Unknown Session Outcome') }));
+    assert.equal(evidence.bridge.length, 2);
+    assert.equal(evidence.bridge[0].operationId, evidence.bridge[1].operationId);
     assert.equal(evidence.http.length, 1);
-    assert.equal(Object.hasOwn(evidence.http[0], 'authoritativeSession'), false);
+    assert.equal(evidence.http[0].logicalOperationId, evidence.bridge[0].operationId);
   } finally { await closeGuardedPage(page); }
 });
 

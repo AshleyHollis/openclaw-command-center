@@ -425,6 +425,36 @@ test('Session history withholds an explicitly mismatched authoritative identity'
   }
 });
 
+test('Session send uses the public embedded-agent runtime for an exact authenticated Conversation', async () => {
+  const metadata = metadataFixture();
+  const reference = { version: 1, referenceId: 'session:embedded', topicId: 'topic-embedded', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:dashboard:bridge-fictional-embedded', observedRevision: null };
+  metadata.refs.push(reference);
+  metadata.setSessionState({ referenceId: reference.referenceId, sessionId: 'embedded-session-id', status: 'open', isPrimary: true, displayName: 'Primary', updatedAt: '2026-09-04T00:00:00.000Z' });
+  const calls = [];
+  const cfg = { session: { store: 'fictional-store' } };
+  const sessionStore = {
+    listSessionEntries: () => [{ sessionKey: reference.externalSourceId, entry: { sessionId: 'embedded-session-id', updatedAt: 1 } }],
+    resolveStorePath: (store, { agentId }) => { assert.equal(store, cfg.session.store); assert.equal(agentId, 'main'); return '/fictional/session-store'; }
+  };
+  const api = { runtime: {
+    config: { current: () => cfg },
+    agent: {
+      resolveAgentWorkspaceDir: (value, agentId) => { assert.equal(value, cfg); assert.equal(agentId, 'main'); return '/fictional/workspace'; },
+      resolveAgentTimeoutMs: (value) => { assert.equal(value, cfg); return 12_345; },
+      runEmbeddedAgent: async (params) => { calls.push(params); return { meta: { stopReason: 'stop' }, payloads: [{ text: 'Fictional response' }] }; },
+      session: sessionStore
+    }
+  } };
+  const adapter = createSessionAdapter({ api, gateway: { request: async () => { throw new Error('detached gateway must not be used'); } }, sessionStore, metadata, topicId: 'topic-embedded', coordinator: null });
+  const logicalOperationId = randomUUID();
+  const result = await adapter.send({ referenceId: reference.referenceId, message: 'Hello from the authenticated frame', logicalOperationId });
+  assert.equal(result.value.runId, logicalOperationId);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].sessionTarget, { agentId: 'main', sessionId: 'embedded-session-id', sessionKey: reference.externalSourceId, storePath: '/fictional/session-store' });
+  assert.equal(calls[0].sessionPersistence, 'durable');
+  assert.equal(calls[0].transcriptPrompt, 'Hello from the authenticated frame');
+});
+
 test('Session list returns exact Topic-linked records with open default and explicit Closed filters', async () => {
   const metadata = metadataFixture();
   const primary = { version: 1, referenceId: 'session:list-primary', topicId: 'topic-list', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:primary', observedRevision: null };
