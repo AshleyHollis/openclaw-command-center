@@ -533,8 +533,7 @@ async function loadConversations({ selectPrimary = false, generation = workspace
     return !current || ['referenceId', 'topicId', 'sessionKey', 'sessionId', 'displayName', 'status', 'isPrimary', 'wasPrimary'].some((field) => current[field] !== item[field]);
   });
   workspace.conversations = nextConversations;
-  const selectedIndex = workspace.conversations.findIndex((item) => item.referenceId === workspace.selected?.referenceId);
-  workspace.conversationPage = selectedIndex >= 0 ? Math.floor(selectedIndex / CONVERSATION_PAGE_SIZE) : Math.min(workspace.conversationPage, Math.max(0, Math.ceil(workspace.conversations.length / CONVERSATION_PAGE_SIZE) - 1));
+  workspace.conversationPage = Math.min(workspace.conversationPage, Math.max(0, Math.ceil(workspace.conversations.length / CONVERSATION_PAGE_SIZE) - 1));
   if (listChanged) renderConversations(); conversationStatus.textContent = `${workspace.conversations.length} ${view === 'closed' ? 'closed ' : ''}Conversations.`;
   if (selectPrimary) {
     const primary = (value?.conversations ?? []).find((item) => item.isPrimary);

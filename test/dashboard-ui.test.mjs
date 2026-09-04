@@ -25,6 +25,7 @@ test('Dashboard markup keeps the required first-class regions and narrow flow la
   for (const id of ['conversation-previous', 'conversation-next', 'conversation-page-status']) assert.match(index, new RegExp(`id="${id}"`, 'u'));
   assert.match(app, /CONVERSATION_PAGE_SIZE = 50/u);
   assert.match(app, /workspace\.conversations\.slice\(start, start \+ CONVERSATION_PAGE_SIZE\)/u);
+  assert.doesNotMatch(app, /workspace\.conversationPage = selectedIndex/u);
   assert.match(app, /command-center\.v1\.topics\.get/u);
   assert.match(app, /data-topic-id|dataset\.topicId/u);
   assert.match(app, /credentials: 'omit'/u);
