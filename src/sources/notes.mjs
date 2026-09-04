@@ -6,6 +6,8 @@ import { createSourceReference, revisionForBytes } from './reference.mjs';
 import { SourceServiceError, sourceError, nonBlank } from './errors.mjs';
 import { assertSafeDirectory, assertSafeNotePath, isWithin, normalizeNotePath } from './note-path.mjs';
 
+const NOTE_BROWSE_CONCURRENCY = 32;
+
 function bytesForText(value, field = 'text') {
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) return Buffer.from(value);
   if (typeof value !== 'string') throw sourceError('invalid-request', `${field} must be Markdown text`);
@@ -283,7 +285,7 @@ export class NoteAdapter {
     const visit = async (directoryHandle, relative = '', chain = [{ namedPath: root, stat: rootStat }]) => {
       const entries = await readdir(this.descriptorPath(directoryHandle), { withFileTypes: true });
       entries.sort((left, right) => left.name.localeCompare(right.name));
-      for (const entry of entries) {
+      const visitEntry = async (entry) => {
         const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
         await this.beforePathIo?.({ operation: 'browse', path: childRelative });
         const child = this.descriptorPath(directoryHandle, entry.name);
@@ -323,12 +325,20 @@ export class NoteAdapter {
         } else if (!stat.isFile()) {
           throw sourceError('unsafe-path', 'The Note Folder contains a non-regular entry.');
         }
+      };
+      if (this.beforePathIo) {
+        for (const entry of entries) await visitEntry(entry);
+      } else {
+        for (let offset = 0; offset < entries.length; offset += NOTE_BROWSE_CONCURRENCY) {
+          await Promise.all(entries.slice(offset, offset + NOTE_BROWSE_CONCURRENCY).map(visitEntry));
+        }
       }
     };
     try {
       await visit(rootHandle);
       await this.assertChainStable([{ namedPath: root, stat: rootStat }]);
     } finally { await rootHandle.close(); }
+    notes.sort((left, right) => left.path.localeCompare(right.path));
     return Object.freeze(notes);
   }
 
