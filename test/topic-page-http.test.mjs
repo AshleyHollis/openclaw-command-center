@@ -123,9 +123,10 @@ test('Conversation creation remains on the service-owned plugin Gateway boundary
     receivedRuntime = runtime;
     return { status: 'applied', referenceId: 'session:new' };
   };
-  const response = await invoke(service, { body: conversationCreate({ label: 'Plugin Scoped Conversation' }) });
+  const logicalOperationId = randomUUID();
+  const response = await invoke(service, { body: base('conversations.create', { label: 'Plugin Scoped Conversation', expectedRevision: 4, logicalOperationId }) });
   assert.equal(response.statusCode, 200);
-  assert.equal(receivedRuntime.authoritativeSession.label, 'Plugin Scoped Conversation');
+  assert.equal(receivedRuntime, undefined);
 });
 
 test('a migrated canonical scale Topic creates 99 Conversations through the public route and authoritatively totals 100', async () => {

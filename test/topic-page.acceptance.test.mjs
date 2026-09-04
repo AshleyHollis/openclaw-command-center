@@ -393,7 +393,7 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
     window.addEventListener('message', async (event) => {
       if (event.data?.type !== 'openclaw:capability-bridge-send') return;
       const payload = event.data.payload;
-      if (payload.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'sessions.create', 'chat.send', 'ui.session.navigate'] } }, '*'); return; }
+      if (payload.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'sessions.create', 'ui.session.navigate'] } }, '*'); return; }
       if (payload.type !== 'openclaw:capability-bridge-request') return;
       fixture.calls.push({ transport: 'bridge', method: payload.method, params: copy(payload.params), operationId: payload.operationId });
       if (payload.method === 'sessions.create' && fixture.unknownNextSessionCreate) { fixture.unknownNextSessionCreate = false; respond(payload.requestId, null, { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Fictional unknown Session creation outcome.' }); return; }
@@ -402,15 +402,15 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
       if (payload.method.endsWith('topics.list')) result = { activeGroups: { project: [topic, topicB], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] };
       if (payload.method.endsWith('topics.get')) { const requestedTopic = payload.params.topicId === topicBId ? topicB : topic; if (fixture.deferTopicGetId === payload.params.topicId) { fixture.deferTopicGetId = null; fixture.deferredTopicGet = { requestId: payload.requestId, topic: requestedTopic }; return; } result = { topic: requestedTopic }; }
       if (payload.method === 'sessions.create') result = { key: `agent:main:dashboard:bridge-fictional-${payload.operationId}`, sessionId: `created-${payload.operationId}`, revision: '1' };
-      if (payload.method === 'chat.send') {
-        const item = [...conversations, topicBConversation].find((conversation) => conversation.sessionKey === payload.params.sessionKey);
-        if (!item) { respond(payload.requestId, null, { code: 'INVALID_REQUEST', message: 'Fictional unknown Session key.' }); return; }
+      if (payload.method === 'command-center.v1.sessions.send') {
+        const item = [...conversations, topicBConversation].find((conversation) => conversation.referenceId === payload.params.referenceId && conversation.topicId === payload.params.topicId);
+        if (!item) { respond(payload.requestId, null, { code: 'INVALID_REQUEST', message: 'Fictional unknown Session reference.' }); return; }
         const defer = fixture.deferSend === true || Number.isInteger(fixture.deferSend) && fixture.deferSend > 0;
         if (defer) { fixture.deferSend = fixture.deferSend === true ? false : fixture.deferSend - 1; fixture.sendPending = true; await new Promise((resolve) => { fixture.deferredSendResolvers.push(resolve); }); fixture.sendPending = fixture.deferredSendResolvers.length > 0; }
         if (!fixture.appliedSendOperations.has(payload.operationId)) { fixture.appliedSendOperations.add(payload.operationId); histories[item.referenceId].push({ role: 'user', content: payload.params.message }); }
         fixture.completedSends += 1;
         if (fixture.interruptNextSendResponse) { fixture.interruptNextSendResponse = false; respond(payload.requestId, null, { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Fictional interrupted send response.' }); return; }
-        result = { runId: `bridge:${payload.operationId}`, status: 'started' };
+        result = { schemaVersion: 1, status: 'applied', logicalOperationId: payload.operationId };
       }
       if (payload.method.endsWith('sessions.browse')) { const topicConversations = payload.params.topicId === topicBId ? [topicBConversation] : conversations; result = { schemaVersion: 1, topicId: payload.params.topicId, conversations: topicConversations.filter((item) => payload.params.includeClosed === true || item.status === 'open').map(({ sessionKey: _private, ...item }) => item) }; }
       if (payload.method.endsWith('sessions.history')) { if (fixture.deferHistoryReferences.has(payload.params.referenceId)) { fixture.deferHistoryReferences.delete(payload.params.referenceId); fixture.deferredHistories.set(payload.params.referenceId, { requestId: payload.requestId }); return; } result = { messages: histories[payload.params.referenceId] ?? [] }; }
@@ -544,12 +544,12 @@ test('Primary Chat phase: completed send resolves the exact Primary Session befo
     assert.equal(await page.locator('#chat-status').textContent(), 'Message sent.');
     assert.equal(await page.locator('#chat-message').inputValue(), '');
     assert.equal(await page.locator('#chat-send').isEnabled(), true);
-    const evidence = await page.evaluate(() => { const calls = globalThis.__topicPageFixture.calls; const sendIndex = calls.findLastIndex((call) => call.transport === 'bridge' && call.method === 'chat.send'); return { send: calls[sendIndex], resolve: calls.slice(0, sendIndex).findLast((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.navigate') }; });
+    const evidence = await page.evaluate(() => { const calls = globalThis.__topicPageFixture.calls; const sendIndex = calls.findLastIndex((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send'); return { send: calls[sendIndex], resolve: calls.slice(0, sendIndex).findLast((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.navigate') }; });
     assert.deepEqual(evidence.resolve.params, { schemaVersion: 1, topicId: '11111111-1111-4111-8111-111111111111', referenceId: 'session:fictional-topic:primary' });
-    assert.deepEqual(Object.keys(evidence.send.params).sort(), ['message', 'sessionKey'].sort());
-    assert.equal(evidence.send.params.sessionKey, 'agent:main:primary');
+    assert.deepEqual(Object.keys(evidence.send.params).sort(), ['logicalOperationId', 'message', 'referenceId', 'schemaVersion', 'topicId'].sort());
+    assert.equal(evidence.send.params.referenceId, 'session:fictional-topic:primary');
     assert.match(evidence.send.operationId, /^[0-9a-f-]{36}$/u);
-    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.method === 'command-center.v1.sessions.send')), false);
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.method === 'chat.send')), false);
   } finally { await closeGuardedPage(page); }
 });
 
@@ -559,18 +559,18 @@ test('Primary Chat retains one logical send across duplicate and changed-intent 
     await page.evaluate(() => { globalThis.__topicPageFixture.deferSend = true; });
     await page.locator('#chat-message').fill('one retained logical message'); await submit(page, '#chat-form');
     await page.waitForFunction(() => globalThis.__topicPageFixture.sendPending === true);
-    const first = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').at(-1));
+    const first = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').at(-1));
     await submit(page, '#chat-form');
     await page.locator('#chat-message').fill('changed message must not dispatch'); await submit(page, '#chat-form');
     assert.equal(await page.locator('#chat-status').textContent(), 'A different Chat send is already settling and was not sent.');
-    const pendingCalls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send'));
+    const pendingCalls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send'));
     assert.equal(pendingCalls.length, 1); assert.equal(pendingCalls[0].operationId, first.operationId);
     const completedSends = await page.evaluate(() => globalThis.__topicPageFixture.completedSends);
     const deliveredActions = await page.evaluate(() => globalThis.__topicPageFixture.deliveredBridgeResponses);
     await page.evaluate(() => globalThis.__topicPageFixture.resolveDeferredSend());
     await page.waitForFunction((count) => globalThis.__topicPageFixture.completedSends === count, completedSends + 1);
     await page.evaluate((target) => globalThis.__topicPageFixture.waitForApplicationSettlement('bridge', target), deliveredActions + 1);
-    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').length), 1);
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').length), 1);
     assert.equal(await page.locator('#chat-message').inputValue(), 'changed message must not dispatch');
     assert.equal(await page.locator('#chat-status').textContent(), 'Message sent; the current draft was retained.');
   } finally { await closeGuardedPage(page); }
@@ -582,10 +582,10 @@ test('Primary Chat retries an interrupted response with the retained logical ope
     await page.evaluate(() => { globalThis.__topicPageFixture.interruptNextSendResponse = true; });
     await page.locator('#chat-message').fill('retry this exact logical message'); await submit(page, '#chat-form');
     await page.getByText('Message delivery is not yet confirmed. Retry the unchanged message to reconcile it.', { exact: true }).waitFor();
-    const first = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').at(-1));
+    const first = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').at(-1));
     assert.equal(await page.locator('#chat-message').inputValue(), 'retry this exact logical message');
     await submit(page, '#chat-form'); await page.getByText('Message sent.', { exact: true }).waitFor();
-    const attempts = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send'));
+    const attempts = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send'));
     assert.equal(attempts.length, 2); assert.equal(attempts[0].operationId, first.operationId); assert.equal(attempts[1].operationId, first.operationId);
     assert.equal(await page.getByText('retry this exact logical message', { exact: true }).count(), 1);
   } finally { await closeGuardedPage(page); }
@@ -597,10 +597,10 @@ test('equivalent retry keeps its logical operation after switching away and back
     await page.evaluate(() => { globalThis.__topicPageFixture.interruptNextSendResponse = true; });
     await page.locator('#chat-message').fill('retry after Conversation switch'); await submit(page, '#chat-form');
     await page.getByText('Message delivery is not yet confirmed. Retry the unchanged message to reconcile it.', { exact: true }).waitFor();
-    const first = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').at(-1));
+    const first = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').at(-1));
     await page.getByRole('button', { name: 'Independent Conversation', exact: true }).click(); await page.getByText('Independent transcript only').waitFor(); await page.getByRole('button', { name: 'Primary Conversation', exact: true }).click(); await page.getByText('Imported immutable prefix').waitFor();
     await submit(page, '#chat-form'); await page.getByText('Message sent.', { exact: true }).waitFor();
-    const attempts = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send'));
+    const attempts = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send'));
     assert.equal(attempts.length, 2); assert.equal(attempts[1].operationId, first.operationId); assert.equal(await page.getByText('retry after Conversation switch', { exact: true }).count(), 1);
   } finally { await closeGuardedPage(page); }
 });
@@ -614,7 +614,7 @@ test('a late Topic send retires only its operation while the newer Topic send re
     await page.evaluate(() => window.CommandCenterTopics.openTopic(globalThis.__topicPageFixture.topicB)); await page.getByText('Topic workspace ready.').waitFor();
     await page.locator('#chat-message').fill('Topic B pending send'); await submit(page, '#chat-form');
     await page.waitForFunction(() => globalThis.__topicPageFixture.deferredSendResolvers.length === 2);
-    const initialCalls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send'));
+    const initialCalls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send'));
     assert.equal(initialCalls.length, 2); assert.notEqual(initialCalls[0].operationId, initialCalls[1].operationId);
     const firstCompleted = await page.evaluate(() => globalThis.__topicPageFixture.completedSends);
     const firstDelivered = await page.evaluate(() => globalThis.__topicPageFixture.deliveredBridgeResponses);
@@ -623,7 +623,7 @@ test('a late Topic send retires only its operation while the newer Topic send re
     await page.evaluate((target) => globalThis.__topicPageFixture.waitForApplicationSettlement('bridge', target), firstDelivered + 1);
     assert.equal(await page.locator('#chat-message').inputValue(), 'Topic B pending send'); assert.equal(await page.locator('#chat-status').textContent(), 'Sending message…'); assert.equal(await page.locator('#chat-send').isDisabled(), true);
     await submit(page, '#chat-form');
-    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').length), 2);
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').length), 2);
     const secondCompleted = await page.evaluate(() => globalThis.__topicPageFixture.completedSends);
     const secondDelivered = await page.evaluate(() => globalThis.__topicPageFixture.deliveredBridgeResponses);
     await page.evaluate(() => globalThis.__topicPageFixture.resolveDeferredSend());
@@ -642,8 +642,8 @@ test('different Conversations can keep independently captured sends pending', as
     await page.getByRole('button', { name: 'Independent Conversation', exact: true }).click(); await page.getByText('Independent transcript only').waitFor();
     await page.locator('#chat-message').fill('Independent pending send'); await submit(page, '#chat-form');
     await page.waitForFunction(() => globalThis.__topicPageFixture.deferredSendResolvers.length === 2);
-    const sends = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send'));
-    assert.deepEqual(sends.map((send) => send.params.sessionKey), ['agent:main:primary', 'agent:main:conversation']);
+    const sends = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send'));
+    assert.deepEqual(sends.map((send) => send.params.referenceId), ['session:fictional-topic:primary', 'session:fictional-topic:conversation']);
     assert.notEqual(sends[0].operationId, sends[1].operationId);
     const firstCompleted = await page.evaluate(() => globalThis.__topicPageFixture.completedSends); const firstDelivered = await page.evaluate(() => globalThis.__topicPageFixture.deliveredBridgeResponses);
     await page.evaluate(() => globalThis.__topicPageFixture.resolveDeferredSend()); await page.waitForFunction((count) => globalThis.__topicPageFixture.completedSends === count, firstCompleted + 1); await page.evaluate((target) => globalThis.__topicPageFixture.waitForApplicationSettlement('bridge', target), firstDelivered + 1);
@@ -668,7 +668,7 @@ test('same-Conversation reselection cannot turn a pending send into a duplicate'
     await page.evaluate((target) => globalThis.__topicPageFixture.waitForApplicationSettlement('bridge', target), delivered + 1);
     assert.equal(await page.locator('#chat-message').inputValue(), ''); assert.equal(await page.locator('#chat-status').textContent(), 'Message sent.');
     await submit(page, '#chat-form');
-    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').length), 1);
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').length), 1);
     assert.equal(await page.getByText('one send across harmless reselection', { exact: true }).count(), 1);
   } finally { await closeGuardedPage(page); }
 });
@@ -723,13 +723,13 @@ test('a retained-operation retry supersedes an earlier rejected history status',
     await page.evaluate(() => { globalThis.__topicPageFixture.interruptNextSendResponse = true; });
     await page.locator('#chat-message').fill('retry while history settles'); await submit(page, '#chat-form');
     await page.getByText('Message delivery is not yet confirmed. Retry the unchanged message to reconcile it.', { exact: true }).waitFor();
-    const firstCall = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').at(-1));
+    const firstCall = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').at(-1));
     await page.evaluate(() => globalThis.__topicPageFixture.deferHistoryReferences.add(globalThis.__topicPageFixture.primaryId));
     await page.getByRole('button', { name: 'Primary Conversation', exact: true }).click();
     await page.waitForFunction(() => globalThis.__topicPageFixture.deferredHistories.has(globalThis.__topicPageFixture.primaryId));
     await page.evaluate(() => { globalThis.__topicPageFixture.deferSend = true; }); await submit(page, '#chat-form');
     await page.waitForFunction(() => globalThis.__topicPageFixture.deferredSendResolvers.length === 1);
-    const retryCall = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').at(-1));
+    const retryCall = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').at(-1));
     assert.equal(retryCall.operationId, firstCall.operationId);
     const delivered = await page.evaluate(() => globalThis.__topicPageFixture.deliveredBridgeResponses);
     await page.evaluate(() => { const fixture = globalThis.__topicPageFixture; fixture.deferHistoryReferences.delete(fixture.primaryId); fixture.rejectDeferredHistory(fixture.primaryId); });
@@ -768,8 +768,8 @@ test('Primary Chat switch race reports each integration boundary', async (contex
     });
     await context.test('switch phase: post-race send targets Independent and excludes Primary transcript', async () => {
       await submitChatAndWaitForCompletion(page, 'message after delayed failure');
-      const send = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').at(-1));
-      assert.equal(send.params.sessionKey, 'agent:main:conversation');
+      const send = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').at(-1));
+      assert.equal(send.params.referenceId, 'session:fictional-topic:conversation');
       assert.equal(await page.getByText('ordinary primary message').count(), 0);
     });
   } finally { await closeGuardedPage(page); }
@@ -786,10 +786,10 @@ test('a delayed Topic open cannot replace the newer visible Topic identity or se
     await page.evaluate(async () => { globalThis.__topicPageFixture.resolveDeferredTopicGet(); await new Promise((resolve) => requestAnimationFrame(resolve)); });
     assert.equal(await page.locator('#topic-workspace-heading').textContent(), 'Second Fictional Topic');
     await page.locator('#chat-message').fill('Second Topic message'); await submit(page, '#chat-form'); await page.getByText('Second Topic message').waitFor();
-    const evidence = await page.evaluate(() => { const calls = globalThis.__topicPageFixture.calls; const sendIndex = calls.findLastIndex((call) => call.transport === 'bridge' && call.method === 'chat.send'); return { send: calls[sendIndex], resolve: calls.slice(0, sendIndex).findLast((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.navigate') }; });
+    const evidence = await page.evaluate(() => { const calls = globalThis.__topicPageFixture.calls; const sendIndex = calls.findLastIndex((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send'); return { send: calls[sendIndex], resolve: calls.slice(0, sendIndex).findLast((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.navigate') }; });
     assert.equal(evidence.resolve.params.topicId, '22222222-2222-4222-8222-222222222222');
     assert.equal(evidence.resolve.params.referenceId, 'session:fictional-topic-b:primary');
-    assert.equal(evidence.send.params.sessionKey, 'agent:main:topic-b-primary');
+    assert.equal(evidence.send.params.referenceId, 'session:fictional-topic-b:primary');
   } finally { await closeGuardedPage(page); }
 });
 
@@ -808,7 +808,7 @@ test('late send and Search completions cannot clear or populate a newer Topic wo
     assert.equal(await page.locator('#chat-send').isDisabled(), false);
 
     await page.evaluate(() => { globalThis.__topicPageFixture.deferSend = true; }); await submit(page, '#chat-form'); await page.waitForFunction(() => globalThis.__topicPageFixture.sendPending === true);
-    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').at(-1).params.sessionKey), 'agent:main:conversation');
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').at(-1).params.referenceId), 'session:fictional-topic:conversation');
     await page.evaluate(() => window.CommandCenterTopics.openTopic(globalThis.__topicPageFixture.topicB)); await page.getByRole('heading', { name: 'Second Fictional Topic', exact: true }).waitFor(); await page.locator('#chat-message').fill('New Topic unsent draft');
     assert.equal(await page.locator('#chat-status').textContent(), ''); assert.equal(await page.locator('#chat-send').isDisabled(), false); assert.equal(await page.locator('#chat-message').isDisabled(), false);
     const secondCompletedSends = await page.evaluate(() => globalThis.__topicPageFixture.completedSends);
@@ -861,8 +861,8 @@ test('Conversations create, switch, close, browse Closed, reopen, refresh, and p
     await page.locator('#conversation-refresh').click(); await page.getByText('2 closed Conversations.').waitFor(); await row.getByRole('button', { name: 'Reopen' }).click(); await row.waitFor({ state: 'hidden' });
     await page.locator('#conversation-view').selectOption('open'); row = page.locator('.conversation-item').filter({ hasText: 'Fresh Root Conversation' }); await row.waitFor(); await row.getByRole('button', { name: 'Fresh Root Conversation' }).evaluate((node) => node.click());
     await page.locator('#chat-message').fill('Message after reopen'); await submit(page, '#chat-form'); await page.getByText('Message after reopen').waitFor();
-    const reopenedSend = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'chat.send').at(-1));
-    assert.equal(reopenedSend.params.sessionKey, 'agent:main:created-3'); assert.equal(await page.getByText('Imported immutable prefix').count(), 0);
+    const reopenedSend = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'command-center.v1.sessions.send').at(-1));
+    assert.equal(reopenedSend.params.referenceId, 'session:fictional-topic:created-3'); assert.equal(await page.getByText('Imported immutable prefix').count(), 0);
     assert.equal(await page.locator('.conversation-item').filter({ hasText: 'Primary Conversation' }).getByRole('button', { name: 'Close' }).count(), 0);
     const actions = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http').map((call) => call.action));
     assert.ok(actions.includes('conversations.create') && actions.includes('conversations.close') && actions.includes('conversations.reopen'));
@@ -902,31 +902,24 @@ test('an interrupted Conversation create retries the unchanged logical operation
     await submit(page, '#conversation-create');
     await page.locator('.conversation-item').filter({ hasText: 'Interrupted Conversation' }).waitFor();
     const calls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http' && call.action === 'conversations.create' && call.label === 'Interrupted Conversation'));
-    const creates = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Interrupted Conversation'));
     assert.equal(calls.length, 2);
-    assert.equal(creates.length, 1);
     assert.equal(calls[0].logicalOperationId, calls[1].logicalOperationId);
-    assert.equal(creates[0].operationId, calls[0].logicalOperationId);
-    assert.deepEqual(Object.keys(creates[0].params).sort(), ['agentId', 'label']);
-    assert.equal(Object.hasOwn(creates[0].params, 'logicalOperationId'), false);
+    assert.equal(Object.hasOwn(calls[0], 'authoritativeSession'), false);
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Interrupted Conversation')), false);
     assert.equal(await page.locator('.conversation-item').filter({ hasText: 'Interrupted Conversation' }).count(), 1);
   } finally { await closeGuardedPage(page); }
 });
 
-test('an unknown capability-bridge Session outcome retains the Conversation operation for exact retry', async () => {
+test('Conversation creation delegates Session ownership to the plugin service', async () => {
   const page = await setupPage();
   try {
-    await page.evaluate(() => { globalThis.__topicPageFixture.unknownNextSessionCreate = true; });
     const input = page.locator('#conversation-create input[name="label"]');
-    await input.fill('Unknown Session Outcome'); await submit(page, '#conversation-create');
-    await page.getByText('Conversation creation is not yet confirmed. Retry the unchanged label to reconcile it.').waitFor();
-    await submit(page, '#conversation-create');
-    await page.locator('.conversation-item').filter({ hasText: 'Unknown Session Outcome' }).waitFor();
-    const evidence = await page.evaluate(() => ({ bridge: globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Unknown Session Outcome'), http: globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http' && call.action === 'conversations.create' && call.label === 'Unknown Session Outcome') }));
-    assert.equal(evidence.bridge.length, 2);
-    assert.equal(evidence.bridge[0].operationId, evidence.bridge[1].operationId);
+    await input.fill('Plugin Owned Conversation'); await submit(page, '#conversation-create');
+    await page.locator('.conversation-item').filter({ hasText: 'Plugin Owned Conversation' }).waitFor();
+    const evidence = await page.evaluate(() => ({ bridge: globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Plugin Owned Conversation'), http: globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http' && call.action === 'conversations.create' && call.label === 'Plugin Owned Conversation') }));
+    assert.equal(evidence.bridge.length, 0);
     assert.equal(evidence.http.length, 1);
-    assert.equal(evidence.http[0].logicalOperationId, evidence.bridge[0].operationId);
+    assert.equal(Object.hasOwn(evidence.http[0], 'authoritativeSession'), false);
   } finally { await closeGuardedPage(page); }
 });
 

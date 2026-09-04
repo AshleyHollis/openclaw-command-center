@@ -133,10 +133,12 @@ function validateBody(body) {
     if (!Number.isInteger(body.expectedRevision) || body.expectedRevision < 0) throw invalid('A non-negative expected Topic revision is required.');
     if (body.label !== undefined) nonBlank(body.label, 'label');
     const session = body.authoritativeSession;
-    const allowed = ['key', 'sessionId', 'revision', 'idempotencyKey', 'label'];
-    if (!session || typeof session !== 'object' || Array.isArray(session) || Object.keys(session).some((key) => !allowed.includes(key))) throw invalid('A closed authoritative Session result is required.');
-    for (const key of allowed) nonBlank(session[key], `authoritativeSession.${key}`);
-    if (session.idempotencyKey !== body.logicalOperationId || session.label !== body.label) throw invalid('The authoritative Session result must match the exact Conversation operation and label.');
+    if (session !== undefined) {
+      const allowed = ['key', 'sessionId', 'revision', 'idempotencyKey', 'label'];
+      if (!session || typeof session !== 'object' || Array.isArray(session) || Object.keys(session).some((key) => !allowed.includes(key))) throw invalid('A closed authoritative Session result is required when provided.');
+      for (const key of allowed) nonBlank(session[key], `authoritativeSession.${key}`);
+      if (session.idempotencyKey !== body.logicalOperationId || session.label !== body.label) throw invalid('The authoritative Session result must match the exact Conversation operation and label.');
+    }
   } else if (body.action === 'chat.send') {
     nonBlank(body.referenceId, 'referenceId');
     nonBlank(body.message, 'message');
@@ -178,7 +180,7 @@ async function execute(service, body) {
   const { action } = body;
   if (action === 'conversations.create') {
     assertTopicRevision(service, body.topicId, body.expectedRevision);
-    return service.sessionsCreate({ schemaVersion: 1, topicId: body.topicId, ...(body.label === undefined ? {} : { label: body.label }), isPrimary: false, logicalOperationId: body.logicalOperationId }, { authoritativeSession: body.authoritativeSession });
+    return service.sessionsCreate({ schemaVersion: 1, topicId: body.topicId, ...(body.label === undefined ? {} : { label: body.label }), isPrimary: false, logicalOperationId: body.logicalOperationId }, body.authoritativeSession === undefined ? undefined : { authoritativeSession: body.authoritativeSession });
   }
   if (action === 'chat.send') {
     assertConversationReference(service, body);
