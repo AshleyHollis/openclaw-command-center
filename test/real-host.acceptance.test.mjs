@@ -1363,14 +1363,14 @@ async function selectWorkspaceSection(frame, name, width, keyboard = false) {
 
 async function auditDynamicAccessibilityState(frame, page, width, label, keyboard) {
   const responsive = await assertResponsiveFrame(frame, page, width);
-  const state = await frame.evaluate(() => {
+  const state = await frame.evaluate((keyboardMode) => {
     const modal = [...document.querySelectorAll('[role="dialog"]')].find((node) => node instanceof HTMLDialogElement && node.open);
     const active = document.activeElement;
     const style = active instanceof HTMLElement ? getComputedStyle(active) : null;
     return {
       modalLabelled: !modal || (modal.getAttribute('aria-modal') === 'true' && Boolean(modal.getAttribute('aria-labelledby') || modal.getAttribute('aria-label'))),
       focusInModal: !modal || modal.contains(active),
-      focusVisible: !keyboard || (active instanceof HTMLElement && active !== document.body && style?.outlineStyle !== 'none'),
+      focusVisible: !keyboardMode || (active instanceof HTMLElement && active !== document.body && style?.outlineStyle !== 'none'),
       liveRegions: [...document.querySelectorAll('[role="status"], [role="alert"], [aria-live]')].map((node) => node.textContent?.trim() ?? ''),
       colorIndependent: [...document.querySelectorAll('[aria-selected], [aria-current], [aria-checked], [data-status]')].filter((node) => {
         const nodeStyle = getComputedStyle(node);
@@ -1389,7 +1389,7 @@ async function auditDynamicAccessibilityState(frame, page, width, label, keyboar
         })
         .map((node) => Number(node.tagName.slice(1)))
     };
-  });
+  }, keyboard);
   assert.equal(state.modalLabelled, true, `${label} dialog is not labelled`);
   assert.equal(state.focusInModal, true, `${label} focus escaped its modal dialog`);
   assert.equal(state.focusVisible, true, `${label} has no visible keyboard focus`);
