@@ -1668,12 +1668,13 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   }
   await selectWorkspaceSection(frame, 'conversations', 1440);
   await chooseOption(frame.locator('#conversation-view'), 'all', true);
-  await frame.locator('#conversation-page-status').getByText('Page 1 of 2', { exact: true }).waitFor();
+  const conversationPageCount = Math.ceil(RELEASE_FIXTURE_COUNTS.conversations / 50);
+  await frame.locator('#conversation-page-status').getByText(`Page 1 of ${conversationPageCount}`, { exact: true }).waitFor();
   assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 50);
-  await assertNoFrameOverflow(frame, '1440px 100-Conversation page one');
+  await assertNoFrameOverflow(frame, `1440px ${RELEASE_FIXTURE_COUNTS.conversations}-Conversation page one`);
   const firstPageReferences = await frame.locator('#conversation-list .conversation-item button:first-child').allTextContents();
   await activate(frame.locator('#conversation-next'), true);
-  await frame.locator('#conversation-page-status').getByText('Page 2 of 2', { exact: true }).waitFor();
+  await frame.locator('#conversation-page-status').getByText(`Page 2 of ${conversationPageCount}`, { exact: true }).waitFor();
   assert.equal(await frame.locator('#conversation-list .conversation-item').count(), 50);
   const pageTwoConversation = frame.locator('#conversation-list .conversation-item button:first-child');
   const pageTwoRow = frame.locator('#conversation-list .conversation-item').first();
@@ -1689,10 +1690,10 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   const navigationResponse = await requestAuthenticatedGateway({ gatewayUrl, credential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId, referenceId: pageTwoIdentity.referenceId } });
   const navigation = navigationResponse?.result ?? navigationResponse;
   assert.deepEqual({ referenceId: navigation.sourceReference?.referenceId, sessionId: navigation.sessionId, sessionKeyPresent: Boolean(navigation.sessionKey) }, { referenceId: pageTwoIdentity.referenceId, sessionId: pageTwoIdentity.sessionId, sessionKeyPresent: true });
-  await assertNoFrameOverflow(frame, '1440px 100-Conversation page two');
+  await assertNoFrameOverflow(frame, `1440px ${RELEASE_FIXTURE_COUNTS.conversations}-Conversation page two`);
   await frame.page().setViewportSize({ width: 320, height: 900 });
   await selectWorkspaceSection(frame, 'conversations', 320, true);
-  await assertNoFrameOverflow(frame, '320px 100-Conversation page two');
+  await assertNoFrameOverflow(frame, `320px ${RELEASE_FIXTURE_COUNTS.conversations}-Conversation page two`);
   await frame.page().setViewportSize({ width: 1440, height: 900 });
   await activate(frame.locator('#workspace-back'), true);
   await waitForDashboard(frame);
