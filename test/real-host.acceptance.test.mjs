@@ -1830,7 +1830,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       reportProgress(testContext, 'fixture:started');
       const migrationExportPath = path.join(world.tempRoot, 'legacy-discord-export.v1.json');
       const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
-      if (acceptancePlan.kind === 'focused') {
+      if (acceptancePlan.kind === 'focused' && !acceptancePlan.scenarioIds.includes('focused-full-corpus-fixture')) {
         const focusedScale = acceptancePlan.scenarioIds.includes('focused-scale-session-seeding');
         const focusedFullCorpus = acceptancePlan.scenarioIds.includes('focused-invalidated-projection-recovery') || acceptancePlan.scenarioIds.includes('focused-full-corpus-fixture');
         const focusedHeavyCorpus = acceptancePlan.scenarioIds.includes('focused-heavy-corpus-mutation-journey') || acceptancePlan.scenarioIds.includes('focused-heavy-corpus-fixture') || focusedFullCorpus;
