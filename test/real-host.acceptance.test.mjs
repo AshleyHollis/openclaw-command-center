@@ -1136,11 +1136,11 @@ async function requestAuthenticatedGateway({ gatewayUrl, credential, method, par
   } finally { signal?.removeEventListener('abort', abortSocket); socket.close(); }
 }
 
-async function createSessionThroughAuthenticatedFrame(frame, { topicId, label, logicalOperationId, signal }) {
+async function createSessionThroughAuthenticatedFrame(frame, { topicId, label, logicalOperationId, authoritativeSession = null, signal }) {
   signal?.throwIfAborted();
-  const evaluation = frame.evaluate(async ({ topicId: exactTopicId, label: exactLabel, logicalOperationId: operation }) => {
-    const requestId = crypto.randomUUID();
-    const created = await new Promise((resolve, reject) => {
+  const evaluation = frame.evaluate(async ({ topicId: exactTopicId, label: exactLabel, logicalOperationId: operation, retainedAuthoritativeSession }) => {
+    const created = retainedAuthoritativeSession ?? await new Promise((resolve, reject) => {
+      const requestId = crypto.randomUUID();
       const timeout = setTimeout(() => { cleanup(); reject(new Error('mounted capability bridge sessions.create timed out')); }, 10_000);
       const cleanup = () => { clearTimeout(timeout); window.removeEventListener('message', receive); };
       const receive = (event) => {
@@ -1160,8 +1160,8 @@ async function createSessionThroughAuthenticatedFrame(frame, { topicId, label, l
     if (typeof key !== 'string' || typeof sessionId !== 'string' || revision === undefined || revision === null) throw new Error('mounted sessions.create returned an incomplete authoritative identity');
     const exactSession = { key, sessionId, revision: String(revision), idempotencyKey: operation, label: exactLabel };
     const mutationResponse = await fetch('/plugins/command-center/api/topic/actions', { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: exactTopicId, label: exactLabel, expectedRevision: 1, logicalOperationId: operation, authoritativeSession: exactSession }) });
-    return { status: mutationResponse.status, body: await mutationResponse.json() };
-  }, { topicId, label, logicalOperationId });
+    return { status: mutationResponse.status, body: await mutationResponse.json(), authoritativeSession: exactSession };
+  }, { topicId, label, logicalOperationId, retainedAuthoritativeSession: authoritativeSession });
   let abortEvaluation;
   const aborted = signal && new Promise((_, reject) => { abortEvaluation = () => reject(signal.reason ?? new Error('mounted Session creation aborted')); signal.addEventListener('abort', abortEvaluation, { once: true }); });
   let response;
@@ -1169,7 +1169,7 @@ async function createSessionThroughAuthenticatedFrame(frame, { topicId, label, l
   finally { if (abortEvaluation) signal.removeEventListener('abort', abortEvaluation); }
   signal?.throwIfAborted();
   if (response.status !== 200) throw new Error(`authenticated Session creation failed with status ${response.status}; code=${response.body?.code ?? 'unavailable'}`);
-  return response.body;
+  return { ...response.body, authoritativeSession: response.authoritativeSession };
 }
 
 function reminderActionRequest(episode) {
@@ -1910,7 +1910,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(accepted?.logicalOperationId, logicalOperationId);
       assert.equal(accepted?.result?.topicId, RELEASE_SCALE_TOPIC_ID);
       assert.equal(typeof accepted?.result?.referenceId, 'string');
-      return { logicalOperationId, referenceId: accepted.result.referenceId };
+      return { logicalOperationId, referenceId: accepted.result.referenceId, authoritativeSession: accepted.authoritativeSession };
     };
     let readinessAttempt = 0;
     const recordReadinessObservation = (observation) => {
@@ -2253,6 +2253,23 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.startup = true;
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant, bridgeRead: true };
     });
+    if (focusedScenarioIds?.has('focused-session-create-idempotent-replay')) {
+      await collectScenario('focused-session-create-idempotent-replay', async (signal) => {
+        const before = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID }, signal });
+        const beforeConversations = (before?.result ?? before)?.conversations ?? before?.conversations ?? [];
+        const logicalOperationId = '55555555-5555-4555-8555-555555555555';
+        const label = 'Fictional retained Session replay';
+        const created = await createSessionThroughAuthenticatedFrame(frame, { topicId: RELEASE_ALPHA_TOPIC_ID, label, logicalOperationId, signal });
+        const replayed = await createSessionThroughAuthenticatedFrame(frame, { topicId: RELEASE_ALPHA_TOPIC_ID, label, logicalOperationId, authoritativeSession: created.authoritativeSession, signal });
+        assert.equal(replayed.logicalOperationId, logicalOperationId);
+        assert.equal(replayed.result?.referenceId, created.result?.referenceId);
+        const after = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID }, signal });
+        const afterConversations = (after?.result ?? after)?.conversations ?? after?.conversations ?? [];
+        assert.equal(afterConversations.length, beforeConversations.length + 1);
+        assert.equal(afterConversations.filter((item) => item.referenceId === created.result?.referenceId).length, 1);
+        return { logicalOperationId, referenceId: created.result?.referenceId, authoritativeCount: afterConversations.length, replayed: true };
+      });
+    }
     await collectScenario('stale-projection-recovery', async (signal) => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');
       await restoreReleaseSearchBaseline({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal, label: 'stale recovery' });
@@ -2288,12 +2305,13 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(navigation?.sessionId, conversation.sessionId);
       assert.equal(typeof navigation?.sessionKey, 'string');
       releaseState.singleScaleConversation = Object.freeze({ ...created, sessionId: navigation.sessionId, sessionKey: navigation.sessionKey, authoritativeCount: afterConversations.length });
-      return releaseState.singleScaleConversation;
+      return { logicalOperationId: created.logicalOperationId, referenceId: created.referenceId, sessionId: navigation.sessionId, sessionKey: navigation.sessionKey, authoritativeCount: afterConversations.length };
     });
     await collectScenario('session-create-idempotent-replay', async (signal) => {
       const original = releaseState.singleScaleConversation;
       assert.ok(original, 'single Session creation evidence must be independently available for replay');
-      const replayed = await createScaleConversationThroughAuthenticatedRoute(signal);
+      const replayResponse = await createSessionThroughAuthenticatedFrame(frame, { topicId: RELEASE_SCALE_TOPIC_ID, logicalOperationId: original.logicalOperationId, label: 'Fictional scale Conversation 1', authoritativeSession: original.authoritativeSession, signal });
+      const replayed = { logicalOperationId: replayResponse.logicalOperationId, referenceId: replayResponse.result?.referenceId };
       assert.deepEqual(replayed, { logicalOperationId: original.logicalOperationId, referenceId: original.referenceId });
       const readback = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: RELEASE_SCALE_TOPIC_ID }, signal });
       const conversations = (readback?.result ?? readback)?.conversations ?? readback?.conversations ?? [];
@@ -2750,7 +2768,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), JSON.stringify(privacyEvidence)]);
       } catch (error) { failure ??= error; }
       if (failure) throw failure;
-      testContext.diagnostic(`acceptance-scenario-result=${JSON.stringify({ schemaVersion: 1, outcome: 'passed', scenario: 'authenticated-control-ui-mount', scenarioIds: acceptancePlan.scenarioIds, buildDigest: buildReceipt.digest, performanceQualified: false })}`);
+      testContext.diagnostic(`acceptance-scenario-result=${JSON.stringify({ schemaVersion: 1, outcome: 'passed', scenario: process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO, scenarioIds: acceptancePlan.scenarioIds, buildDigest: buildReceipt.digest, performanceQualified: false })}`);
       return;
     }
     const rows = await runAcceptanceRows([

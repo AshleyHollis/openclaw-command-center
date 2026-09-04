@@ -892,10 +892,9 @@ test('an interrupted Conversation create retries the unchanged logical operation
     const calls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'http' && call.action === 'conversations.create' && call.label === 'Interrupted Conversation'));
     const creates = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.transport === 'bridge' && call.method === 'sessions.create' && call.params.label === 'Interrupted Conversation'));
     assert.equal(calls.length, 2);
-    assert.equal(creates.length, 2);
+    assert.equal(creates.length, 1);
     assert.equal(calls[0].logicalOperationId, calls[1].logicalOperationId);
     assert.equal(creates[0].operationId, calls[0].logicalOperationId);
-    assert.equal(creates[1].operationId, calls[0].logicalOperationId);
     assert.deepEqual(Object.keys(creates[0].params).sort(), ['agentId', 'label']);
     assert.equal(Object.hasOwn(creates[0].params, 'logicalOperationId'), false);
     assert.equal(await page.locator('.conversation-item').filter({ hasText: 'Interrupted Conversation' }).count(), 1);

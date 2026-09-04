@@ -31,7 +31,8 @@ const issue32TicketTests = new Set([
 ]);
 
 const focusedRealHostScenarios = Object.freeze({
-  'authenticated-control-ui-mount': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount'])
+  'authenticated-control-ui-mount': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount']),
+  'session-create-idempotent-replay': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-session-create-idempotent-replay'])
 });
 
 export function resolveRealHostAcceptancePlan(value) {
