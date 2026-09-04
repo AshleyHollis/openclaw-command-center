@@ -17,6 +17,10 @@ test('real-host acceptance exposes one closed authenticated mount dependency pla
     kind: 'focused',
     scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-session-create-idempotent-replay']
   });
+  assert.deepEqual(resolveRealHostAcceptancePlan('migrated-scale-conversation-seeding'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding']
+  });
   for (const value of ['unknown', '*', 'authenticated-control-ui-mount,scale-performance']) {
     assert.throws(() => resolveRealHostAcceptancePlan(value), /Unsupported real-host acceptance scenario/u);
   }
