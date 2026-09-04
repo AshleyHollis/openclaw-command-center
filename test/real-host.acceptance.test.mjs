@@ -218,6 +218,7 @@ async function waitForNotificationEmission(databasePath, { attempts = 100, statu
   try {
     diagnostics = {
       emissions: database.prepare('SELECT emission_id, episode_id, status, emitted_at_ms, updated_at_ms FROM notification_emissions ORDER BY updated_at_ms DESC LIMIT 5').all(),
+      clears: database.prepare('SELECT logical_operation_id, episode_id, status, attempt_count, updated_at_ms FROM notification_clear_operations ORDER BY updated_at_ms DESC LIMIT 5').all(),
       slots: database.prepare('SELECT episode_id, slot_kind, status, due_at_ms, emitted_at_ms FROM notification_slots ORDER BY due_at_ms DESC LIMIT 8').all(),
       episodes: database.prepare('SELECT episode_id, source_capability_id, state, severity, attention_since, updated_at FROM attention_episodes ORDER BY updated_at DESC LIMIT 5').all()
     };
@@ -2514,13 +2515,17 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         deviceIdentity
       });
       const dashboard = await readDashboard(gatewayUrl);
-      assert.equal(dashboard.attention.some((episode) => episode.sourceCapabilityId === 'reminders'), true);
+      const reminder = dashboard.attention.find((episode) => episode.sourceCapabilityId === 'reminders' && episode.actions.some((action) => action.actionId === 'reminder.complete'));
+      assert.ok(reminder?.episodeId && reminder?.sourceReferenceId);
       await page.close();
       evidence.globalTabClosed = true;
       await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.dashboard.get', params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, signal, deviceIdentity });
       const emission = await waitForNotificationEmission(databasePath, { status: 'sent' });
       assert.equal(notificationReceiver.deliveries.some((delivery) => delivery.method === 'POST' && delivery.bytes > 0), true);
-      return { closedTabNotificationStatus: emission.status };
+      await completeReminder(gatewayUrl, reminder);
+      const cleared = await waitForNotificationEmission(databasePath, { status: 'cleared' });
+      assert.equal(notificationReceiver.deliveries.filter((delivery) => delivery.method === 'POST' && delivery.bytes > 0).length >= 2, true);
+      return { closedTabNotificationStatus: emission.status, closedTabNotificationCleared: cleared.status === 'cleared' };
     });
     if (focusedScenarioIds?.has('focused-topic-review-projection')) await collectScenario('focused-topic-review-projection', async (signal) => {
       await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, input: {}, logicalOperationId: randomUUID() }, signal });
