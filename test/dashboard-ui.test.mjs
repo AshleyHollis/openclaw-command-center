@@ -45,9 +45,14 @@ test('deferred shell initialization exposes both bridge globals before readiness
     await page.setContent(index);
     await page.evaluate(() => {
       globalThis.fetch = async () => ({ ok: true, async json() { return { schemaVersion: 1, status: 'applied', result: { serverTime: '2026-08-30T00:00:00.000Z', attentionBadgeCount: 0, attention: [], inProgress: [], comingUp: [], topics: [], activity: { records: [], nextOffset: null, hasMore: false } } }; } });
-      window.addEventListener('message', (event) => {
+      window.addEventListener('message', async (event) => {
         const payload = event.data?.payload;
-        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
+        if (payload?.type === 'openclaw:capability-bridge-request' && payload.method === 'command-center.v1.dashboard.get') {
+          const result = await (await globalThis.fetch('/plugins/command-center/api/dashboard')).json();
+          window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result } }, '*');
+          return;
+        }
+        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.dashboard.get', 'command-center.v1.attention.act', 'command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
       });
     });
     const readiness = page.waitForFunction(async () => {
@@ -74,9 +79,14 @@ test('wide and narrow Topic launchers and topic.open actions open the exact veri
           return { ok: true, async json() { return { schemaVersion: 1, status: 'applied', result: { serverTime: '2026-08-27T12:00:00.000Z', attentionBadgeCount: 1, attention: [{ episodeId: 'episode-ui', sourceCapabilityId: 'monitor', stableSubjectId: 'subject-ui', topicId: topic.topicId, revision: 1, severity: 'High', sourceKind: 'monitor', context: 'A fictional item', evidence: {}, actions: [{ actionId: 'topic.open', label: 'Open Topic', kind: 'navigation' }], eligibleSnoozeChoices: [] }], inProgress: [], comingUp: [], topics: [topic], activity: { records: [], nextOffset: null, hasMore: false }, activityOffset: 0, activityLimit: 50 } }; } };
         };
         window.__topicRequests = [];
-        window.addEventListener('message', (event) => {
+        window.addEventListener('message', async (event) => {
           const payload = event.data?.payload;
-          if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.attention.act', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
+        if (payload?.type === 'openclaw:capability-bridge-request' && payload.method === 'command-center.v1.dashboard.get') {
+          const result = await (await globalThis.fetch('/plugins/command-center/api/dashboard')).json();
+          window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result } }, '*');
+          return;
+        }
+          if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.dashboard.get', 'command-center.v1.attention.act', 'command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.attention.act', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
           if (payload?.type !== 'openclaw:capability-bridge-request') return;
           window.__topicRequests.push(payload.method);
           if (payload.method === 'command-center.v1.attention.act') {
@@ -119,9 +129,14 @@ test('Dashboard is keyboard-usable at 320px and opens a scrollable evidence dial
         const result = { schemaVersion: 1, status: 'applied', result: { serverTime: '2026-08-27T12:00:00.000Z', attentionBadgeCount: 1, attention: [{ episodeId: 'episode-ui', notificationRecordId: 'record-ui', sourceCapabilityId: 'monitor', stableSubjectId: 'subject-ui', topicId: 'topic-ui', sourceReferenceId: 'source-ui', revision: 1, severity: 'High', sourceKind: 'monitor', context: 'A fictional item', evidence: { context: 'A fictional item', explanation: 'A long but safe explanation '.repeat(30) }, actions: [], eligibleSnoozeChoices: [] }], inProgress: [], comingUp: [], topics: [{ topicId: 'topic-ui', name: 'Fictional Topic' }], activity: { records: [], nextOffset: null, hasMore: false }, activityOffset: 0, activityLimit: 50 } };
         return { ok: true, async json() { return result; } };
       };
-      window.addEventListener('message', (event) => {
+      window.addEventListener('message', async (event) => {
         const payload = event.data?.payload;
-        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
+        if (payload?.type === 'openclaw:capability-bridge-request' && payload.method === 'command-center.v1.dashboard.get') {
+          const result = await (await globalThis.fetch('/plugins/command-center/api/dashboard')).json();
+          window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result } }, '*');
+          return;
+        }
+        if (payload?.type === 'openclaw:capability-bridge-hello') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.dashboard.get', 'command-center.v1.attention.act', 'command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*');
         if (payload?.type === 'openclaw:capability-bridge-request') window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result: { result: { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] } } } }, '*');
       });
     });
@@ -159,9 +174,14 @@ test('authenticated operating modes preserve safe reads and suppress unsupported
           if (url.endsWith('/api/topic-analysis')) return { ok: true, async json() { return { status: 'ok', result: { schedule: null, review: null } }; } };
           return { ok: false, async json() { return { status: 'error', message: 'Mutation refused by fixture.' }; } };
         };
-        window.addEventListener('message', (event) => {
+        window.addEventListener('message', async (event) => {
           const payload = event.data?.payload;
-          if (payload?.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*'); return; }
+        if (payload?.type === 'openclaw:capability-bridge-request' && payload.method === 'command-center.v1.dashboard.get') {
+          const result = await (await globalThis.fetch('/plugins/command-center/api/dashboard')).json();
+          window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result } }, '*');
+          return;
+        }
+          if (payload?.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.dashboard.get', 'command-center.v1.attention.act', 'command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } }, '*'); return; }
           if (payload?.type !== 'openclaw:capability-bridge-request') return;
           const result = payload.method.endsWith('sources.status') ? { schemaVersion: 1, mode, unavailableCapabilities } : payload.method.endsWith('topics.list') ? { activeGroups: { project: [topic], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] } : payload.method.endsWith('topics.get') ? { topic } : {};
           window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result: { result } } }, '*');

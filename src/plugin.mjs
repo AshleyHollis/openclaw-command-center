@@ -113,6 +113,7 @@ export default definePluginEntry({
         protocolVersion: 1,
         requiredMethods: [
           'command-center.v1.sources.status',
+          'command-center.v1.dashboard.get',
           'command-center.v1.topics.list',
           'command-center.v1.topics.get',
           'command-center.v1.sessions.browse',

@@ -28,6 +28,13 @@ function responseRecorder() {
   return { statusCode: 0, headers: {}, body: '', setHeader(name, value) { this.headers[name] = value; }, end(value = '') { this.body = value; } };
 }
 
+function authenticatedAction(attention) {
+  const registrations = [];
+  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, { attentionAct: (input) => attention.act(input) });
+  const handler = registrations.find(([method]) => method === 'command-center.v1.attention.act')[1];
+  return (params) => new Promise((resolve) => handler({ req: { id: params.logicalOperationId }, params, client: { authenticatedOperatorId: 'gateway-operator' }, context: { authenticated: true }, respond: (...args) => resolve(args) }));
+}
+
 test('Attention action route admits only exact opaque-frame JSON preflights', async () => {
   let calls = 0;
   const handler = createAttentionActionHandler({ attentionGet() { calls += 1; }, attentionAct() { calls += 1; } });
@@ -59,7 +66,7 @@ test('Attention action route admits only exact opaque-frame JSON preflights', as
   assert.equal(calls, 0);
 });
 
-test('registered source ingestion and the exact POST route complete a Reminder with authoritative verification', async () => {
+test('registered source ingestion and authenticated bridge complete a Reminder with authoritative verification', async () => {
   await fixture(async ({ metadata }) => {
     const calls = [];
     const attention = createAttentionService({
@@ -73,33 +80,23 @@ test('registered source ingestion and the exact POST route complete a Reminder w
     const sources = createSourceCapabilityRegistry({ attention });
     sources.register({ sourceCapabilityId: 'reminders', sourceKind: 'reminder', deriveEvidence: (value) => value.evidenceFacts, actions: [] });
     const created = await sources.ingest(occurrence('reminders', 'reminder-public-1', { occurrenceVersion: 'config-1' }));
-    const handler = createAttentionActionHandler({ attentionAct: (input) => attention.act(input), attentionGet: (input) => attention.get(input.episodeId) });
+    const invoke = authenticatedAction(attention);
     const body = { schemaVersion: 1, logicalOperationId: '71111111-1111-4111-8111-111111111111', sourceCapabilityId: 'reminders', stableSubjectId: 'subject-public', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'config-1', topicId: 'topic-public', sourceReferenceId: 'source-public', actionId: 'reminder.complete', input: { expectedConfigRevision: 'config-1' } };
     for (const wrongIdentity of [{ sourceCapabilityId: 'other-capability' }, { stableSubjectId: 'other-subject' }]) {
-      const rejected = responseRecorder();
-      await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { ...body, ...wrongIdentity } }, rejected);
-      assert.equal(rejected.statusCode, 400);
+      const rejected = await invoke({ ...body, ...wrongIdentity });
+      assert.equal(rejected[0], false);
       assert.equal(calls.length, 0);
     }
-    const response = responseRecorder();
-    await handler({ method: 'POST', headers: { origin: 'null', 'content-type': 'application/json' }, body }, response);
-    assert.equal(response.statusCode, 200, response.body);
-    assert.equal(JSON.parse(response.body).result.episode.state, 'Resolved');
+    const response = await invoke(body);
+    assert.equal(response[0], true, JSON.stringify(response));
+    assert.equal(response[1].result.episode.state, 'Resolved');
     assert.equal(calls[0].parameters.expectedConfigRevision, 'config-1');
-    const replay = responseRecorder();
-    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body }, replay);
-    assert.equal(replay.statusCode, 200);
-    assert.equal(JSON.parse(replay.body).result.activity.activityId, JSON.parse(response.body).result.activity.activityId);
+    const replay = await invoke(body);
+    assert.equal(replay[0], true);
+    assert.equal(replay[1].result.activity.activityId, response[1].result.activity.activityId);
     assert.equal(calls.length, 1);
-    const getResponse = responseRecorder();
-    await handler({ method: 'GET', body }, getResponse);
-    assert.equal(getResponse.statusCode, 405);
-    const missingMethod = responseRecorder();
-    await handler({ body }, missingMethod);
-    assert.equal(missingMethod.statusCode, 405);
-    const openBody = responseRecorder();
-    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { ...body, logicalOperationId: '72222222-2222-4222-8222-222222222222', credential: 'forbidden' } }, openBody);
-    assert.equal(openBody.statusCode, 400);
+    const openBody = await invoke({ ...body, logicalOperationId: '72222222-2222-4222-8222-222222222222', credential: 'forbidden' });
+    assert.equal(openBody[0], false);
     attention.close();
   });
 });
@@ -121,7 +118,8 @@ test('the plugin POST route cannot fabricate an operator for approval-required m
     const handler = createAttentionActionHandler({ attentionAct: (input) => attention.act(input), attentionGet: (input) => attention.get(input.episodeId) });
     const response = responseRecorder();
     await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { schemaVersion: 1, logicalOperationId: '70111111-1111-4111-8111-111111111111', sourceCapabilityId: 'approval-route', stableSubjectId: 'subject-public', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'unversioned', topicId: 'topic-public', sourceReferenceId: 'source-public', actionId: 'monitor.change', input: {} } }, response);
-    assert.equal(response.statusCode, 400);
+    assert.equal(response.statusCode, 403);
+    assert.equal(JSON.parse(response.body).code, 'authenticated-bridge-required');
     assert.equal(dispatches, 0);
     assert.equal(attention.get(created.episode.episodeId).episode.state, 'Active');
     attention.close();
@@ -197,10 +195,13 @@ test('authenticated Gateway actions expose and consume approval decisions throug
     const handler = registrations.find(([method]) => method === 'command-center.v1.attention.act')[1];
     const invoke = (params, authenticated = true, authenticatedOperatorId = 'gateway-operator') => new Promise((resolve) => handler({ req: { id: params.logicalOperationId }, params, client: { authenticatedOperatorId }, context: { authenticated }, respond: (...args) => resolve(args) }));
     const common = { schemaVersion: 1, episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'unversioned', topicId: 'topic-public', sourceReferenceId: 'source-public', input: {} };
-    const pending = await invoke({ ...common, logicalOperationId: '73333333-3333-4333-8333-333333333333', actionId: 'monitor.change' });
+    const pending = await invoke({ ...common, sourceCapabilityId: created.episode.sourceCapabilityId, stableSubjectId: created.episode.stableSubjectId, logicalOperationId: '73333333-3333-4333-8333-333333333333', actionId: 'monitor.change' });
     assert.equal(pending[0], true, JSON.stringify(pending));
     assert.equal(pending[1].result.approval.operatorId, 'gateway-operator');
     assert.equal(pending[1].result.approval.actionId, 'monitor.change');
+    const projectedApproval = attention.get(created.episode.episodeId).episode.actions.find((action) => action.actionId === 'approval.approve');
+    assert.equal(projectedApproval.target.approvalId, pending[1].result.approval.approvalId);
+    assert.deepEqual(projectedApproval.target.disclosure.sideEffects, ['Changes the fictional monitor.']);
     assert.deepEqual(attention.get(created.episode.episodeId).episode.actions.map((action) => action.actionId), ['approval.approve', 'approval.reject', 'topic.open']);
     const unauthenticated = await invoke({ ...common, logicalOperationId: '74444444-4444-4444-8444-444444444444', actionId: 'approval.approve', approvalId: pending[1].result.approval.approvalId }, false);
     assert.equal(unauthenticated[0], false);
@@ -297,24 +298,22 @@ test('a snoozed Reminder refreshes its authoritative revision before the next pu
     });
     attention.registerSourceCapability({ sourceCapabilityId: 'reminders', sourceKind: 'reminder', deriveEvidence: (value) => value.evidenceFacts, verifyTransition: (value) => value.transitionEvidence?.verifiedSource === 'scheduler-readback' && value.transitionEvidence?.version === value.occurrenceVersion, actions: [] });
     const sourceService = createAuthoritativeSourceService({ metadata, capabilities, attentionService: attention, now: () => clock, gateway: { request: async () => ({ jobs: [job] }) } });
-    const handler = createAttentionActionHandler({ attentionAct: (input) => attention.act(input), attentionGet: (input) => attention.get(input.episodeId) });
+    const invoke = authenticatedAction(attention);
 
     await sourceService.remindersList({ schemaVersion: 1, topicId: 'topic-public' });
     const created = attention.list({ schemaVersion: 1 }).episodes[0];
     const common = { schemaVersion: 1, sourceCapabilityId: 'reminders', stableSubjectId: 'job-recurrence', episodeId: created.episodeId, topicId: 'topic-public', sourceReferenceId: 'reminder-recurrence' };
-    const snoozeResponse = responseRecorder();
-    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { ...common, logicalOperationId: '78911111-1111-4111-8111-111111111111', expectedEpisodeRevision: created.revision, expectedSourceRevision: 'config-1', actionId: 'reminder.snooze', input: { until: '2026-08-23T00:02:00.000Z', expectedConfigRevision: 'config-1' } } }, snoozeResponse);
-    assert.equal(snoozeResponse.statusCode, 200, snoozeResponse.body);
+    const snoozeResponse = await invoke({ ...common, logicalOperationId: '78911111-1111-4111-8111-111111111111', expectedEpisodeRevision: created.revision, expectedSourceRevision: 'config-1', actionId: 'reminder.snooze', input: { until: '2026-08-23T00:02:00.000Z', expectedConfigRevision: 'config-1' } });
+    assert.equal(snoozeResponse[0], true, JSON.stringify(snoozeResponse));
 
     clock = '2026-08-23T00:03:00.000Z';
     await sourceService.remindersList({ schemaVersion: 1, topicId: 'topic-public' });
     const ready = attention.list({ schemaVersion: 1 }).episodes[0];
     assert.equal(ready.episodeId, created.episodeId);
     assert.equal(ready.sourceRevision, 'config-2');
-    const completeResponse = responseRecorder();
-    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { ...common, logicalOperationId: '78922222-2222-4222-8222-222222222222', expectedEpisodeRevision: ready.revision, expectedSourceRevision: 'config-2', actionId: 'reminder.complete', input: { expectedConfigRevision: 'config-2' } } }, completeResponse);
-    assert.equal(completeResponse.statusCode, 200, completeResponse.body);
-    assert.equal(JSON.parse(completeResponse.body).result.episode.state, 'Resolved');
+    const completeResponse = await invoke({ ...common, logicalOperationId: '78922222-2222-4222-8222-222222222222', expectedEpisodeRevision: ready.revision, expectedSourceRevision: 'config-2', actionId: 'reminder.complete', input: { expectedConfigRevision: 'config-2' } });
+    assert.equal(completeResponse[0], true, JSON.stringify(completeResponse));
+    assert.equal(completeResponse[1].result.episode.state, 'Resolved');
     assert.equal(job.configRevision, 'config-3');
     sourceService.close();
     attention.close();

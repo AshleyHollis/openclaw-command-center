@@ -22,7 +22,6 @@ const requestedTopicId = new URLSearchParams(window.location.search).get('topicI
 let currentDestination = { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] };
 let topicCreatePending = false;
 let topicCreateOperation = null;
-const DASHBOARD_ROUTE = '/plugins/command-center/api/dashboard';
 const DASHBOARD_ACTIONS_ROUTE = '/plugins/command-center/api/dashboard/actions';
 const TOPIC_ANALYSIS_ROUTE = '/plugins/command-center/api/topic-analysis';
 const TOPIC_ANALYSIS_ACTIONS_ROUTE = '/plugins/command-center/api/topic-analysis/actions';
@@ -36,10 +35,7 @@ let topicReviewState = null;
 let operatingState = Object.freeze({ mode: 'recovery-only', unavailableCapabilities: ['operating-mode-unverified'] });
 
 async function dashboardRead(offset = 0) {
-  const response = await fetch(`${DASHBOARD_ROUTE}?activityOffset=${encodeURIComponent(offset)}&activityLimit=50`, { credentials: 'omit', headers: { accept: 'application/json' } });
-  const value = await response.json();
-  if (!response.ok || value.status === 'error') throw new Error(value.message || 'Dashboard is unavailable.');
-  return value.result ?? value;
+  return unwrap(await bridgeRequest('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: offset, activityLimit: 50 }));
 }
 function dashboardButton(label, action, { mutation = true } = {}) { const node = mutation ? mutationButton(label, action) : button(label, action); node.className = 'dashboard-action'; return node; }
 function displayEvidence(value) {
@@ -136,14 +132,33 @@ async function saveNotificationSettings(event) {
   } catch (error) { feedback.textContent = error.message || 'Notification settings were refused.'; }
 }
 document.querySelector('#notification-settings-form')?.addEventListener('submit', saveNotificationSettings);
+const dashboardOperations = new Map();
 async function dashboardMutate(episode, action, input = {}) {
   requireReadyMutation();
-  const value = await bridgeRequest('command-center.v1.attention.act', {
+  const approvalId = episode.actions?.find((item) => item.actionId === action)?.target?.approvalId;
+  const intent = JSON.stringify({ action, input, approvalId });
+  let operation = dashboardOperations.get(episode.episodeId);
+  if (operation && operation.intent !== intent) throw new Error('The previous action is not yet confirmed. Reconcile that action before choosing another.');
+  operation ??= { intent, params: {
     schemaVersion: 1, logicalOperationId: operationId(), sourceCapabilityId: episode.sourceCapabilityId, stableSubjectId: episode.stableSubjectId, episodeId: episode.episodeId,
-    expectedEpisodeRevision: episode.revision, expectedSourceRevision: episode.sourceRevision ?? undefined, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actionId: action, input
-  });
-  if (value?.status !== 'applied' && value?.status !== 'approval-required') throw Object.assign(new Error('Action delivery is not yet confirmed. Retry the unchanged action to reconcile it.'), { terminal: false });
-  return value;
+    expectedEpisodeRevision: episode.revision, expectedSourceRevision: episode.sourceRevision ?? undefined, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actionId: action, input: structuredClone(input), ...(approvalId ? { approvalId } : {})
+  } };
+  dashboardOperations.set(episode.episodeId, operation);
+  if (operation.pending) return operation.pending;
+  operation.pending = (async () => {
+    try {
+      const value = await bridgeRequest('command-center.v1.attention.act', operation.params);
+      if (!['applied', 'approval-required'].includes(value?.status)) {
+        throw new Error(`Action outcome: ${value?.status ?? 'unavailable'}. Inspect Activity and the source before taking another action.`);
+      }
+      dashboardOperations.delete(episode.episodeId);
+      return value;
+    } catch (error) {
+      if (error.terminal !== false) dashboardOperations.delete(episode.episodeId);
+      throw error;
+    } finally { operation.pending = null; }
+  })();
+  return operation.pending;
 }
 async function openTopic(topicId) {
   const feedback = document.querySelector('#dashboard-feedback') ?? statusNode;
@@ -178,7 +193,11 @@ async function runDashboardAction(episode, action, input, label) {
     feedback.textContent = label;
     await loadDashboard();
   }
-  catch (error) { feedback.textContent = error.message || 'Action was refused by the authoritative source.'; }
+  catch (error) {
+    feedback.textContent = error.terminal === false ? 'Action is not yet confirmed. Reconcile the same action to check its outcome.' : error.message || 'Action was refused by the authoritative source.';
+    const operation = dashboardOperations.get(episode.episodeId);
+    if (operation) feedback.append(dashboardButton('Reconcile action', () => runDashboardAction(episode, operation.params.actionId, operation.params.input, 'Action reconciled.')));
+  }
 }
 function snoozeControl(episode) {
   const choices = Array.isArray(episode.eligibleSnoozeChoices) ? episode.eligibleSnoozeChoices : [];
@@ -204,11 +223,18 @@ function renderAttentionCard(episode) {
   const card = document.createElement('article'); card.className = 'attention-card'; card.dataset.notificationRecord = episode.notificationRecordId ?? '';
   const heading = document.createElement('h4'); heading.textContent = episode.context || 'Attention item';
   const meta = document.createElement('p'); meta.className = 'card-meta'; meta.textContent = `${episode.severity || 'Attention'} · ${episode.sourceKind || 'Source'}`;
+  card.append(heading, meta);
   const actions = document.createElement('div'); actions.className = 'card-actions';
+  const disclosure = episode.actions?.find((action) => action.actionId === 'approval.approve')?.target?.disclosure;
+  if (disclosure) {
+    for (const [label, value] of [['Pending approval', disclosure.actionId], ['Target', disclosure.target], ['Parameters', disclosure.parameters], ['Side effects', disclosure.sideEffects], ['Expires', disclosure.expiresAt]]) {
+      const details = document.createElement('p'); details.textContent = `${label}: ${typeof value === 'string' ? value : JSON.stringify(value ?? null)}`; card.append(details);
+    }
+  }
   for (const action of (episode.actions ?? []).filter((item) => !['attention.snooze', 'reminder.snooze'].includes(item.actionId)).slice(0, 3)) actions.append(dashboardButton(action.label || 'Open', () => runDashboardAction(episode, action.actionId, action.actionId === 'reminder.complete' ? { expectedConfigRevision: episode.sourceRevision } : {}, `${action.label || 'Action'} accepted.`)));
   const snooze = snoozeControl(episode); if (snooze) actions.append(snooze);
   const evidence = dashboardButton('View evidence', () => showEvidence(episode, evidence), { mutation: false }); actions.append(evidence);
-  card.append(heading, meta, actions); return card;
+  card.append(actions); return card;
 }
 function fillTopicLaunchers(topics) {
   for (const id of ['header-topic-selector', 'flow-topic-launcher']) {

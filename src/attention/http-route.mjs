@@ -1,6 +1,5 @@
-import { sanitizeBridgeResult, validateBridgeRequest } from '../bridge/contracts.mjs';
+import { validateBridgeRequest } from '../bridge/contracts.mjs';
 import { allowOpaqueFrameRequest } from '../http/opaque-frame-cors.mjs';
-import { createRequestScopedGatewayRequest } from '../bridge/gateway-method-dispatch.mjs';
 
 async function readJsonBody(req) {
   if (req?.body && typeof req.body === 'object') { if (JSON.stringify(req.body).length > 32768) throw new Error('request body is too large'); return req.body; }
@@ -23,7 +22,7 @@ async function readJsonBody(req) {
   return {};
 }
 
-export function createAttentionActionHandler(service) {
+export function createAttentionActionHandler() {
   return async (req, res) => {
     if (!allowOpaqueFrameRequest(req, res, { method: 'POST', headers: ['Content-Type'] })) { res.statusCode = 403; res.setHeader?.('content-type', 'application/json'); res.end?.(JSON.stringify({ schemaVersion: 1, status: 'unavailable', code: 'origin-not-allowed' })); return; }
     if (req?.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('cache-control', 'no-store'); res.end?.(); return; }
@@ -34,16 +33,10 @@ export function createAttentionActionHandler(service) {
       validateBridgeRequest('command-center.v1.attention.act', body);
       if (typeof body.sourceCapabilityId !== 'string' || body.sourceCapabilityId.trim() === '' || typeof body.stableSubjectId !== 'string' || body.stableSubjectId.trim() === '') throw new Error('exact source identity is required');
       if (['approval.approve', 'approval.reject'].includes(body.actionId) && (typeof body.approvalId !== 'string' || body.approvalId.trim() === '')) throw new Error('approvalId is required for approval decisions');
-      const current = await service.attentionGet({ schemaVersion: 1, episodeId: body.episodeId });
-      if (!current?.episode || current.episode.sourceCapabilityId !== body.sourceCapabilityId || current.episode.stableSubjectId !== body.stableSubjectId) throw new Error('source identity does not match the episode');
-      const { sourceCapabilityId: _sourceCapabilityId, stableSubjectId: _stableSubjectId, ...action } = body;
-      const runtime = { gateway: Object.freeze({ request: createRequestScopedGatewayRequest() }) };
-      const result = await service.attentionAct(action, runtime);
-      await service.notificationReconcile?.(runtime);
-      const bounded = sanitizeBridgeResult('command-center.v1.attention.act', result);
-      const payload = JSON.stringify({ schemaVersion: 1, status: result?.status ?? 'applied', result: bounded });
-      if (payload.length > 32768) throw new Error('response is too large');
-      res.statusCode = 200; res.setHeader?.('content-type', 'application/json'); res.end?.(payload);
+      // HTTP frame authorization cannot supply an authenticated operator or core Gateway scope.
+      res.statusCode = 403;
+      res.setHeader?.('content-type', 'application/json');
+      res.end?.(JSON.stringify({ schemaVersion: 1, status: 'unavailable', code: 'authenticated-bridge-required' }));
     } catch {
       res.statusCode = 400; res.setHeader?.('content-type', 'application/json'); res.end?.(JSON.stringify({ schemaVersion: 1, status: 'unavailable' }));
     }

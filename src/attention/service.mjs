@@ -184,7 +184,7 @@ function presentationSnoozeDescriptor() {
 }
 
 function approvalDecisionDescriptors(approval) {
-  const target = () => ({ approvalId: approval.approvalId, attemptId: approval.attemptId });
+  const target = () => ({ approvalId: approval.approvalId, attemptId: approval.attemptId, disclosure: { actionId: approval.actionId, target: approval.target, parameters: approval.parameters, sideEffects: approval.sideEffects, expiresAt: approval.expiresAt } });
   const decision = (actionId, label, sideEffects) => ({ actionId, label, kind: 'mutation', targetResolver: target, parameterSchema: { type: 'object', properties: {}, additionalProperties: false }, sideEffects, approvalMode: 'never', idempotency: { idempotent: true, transientRetryable: false }, executor: async () => ({}), authoritativeVerifier: async () => ({ outcome: 'applied' }), successTransition: async () => 'Active' });
   return [
     decision('approval.approve', 'Approve', ['Consumes the exact disclosed approval attempt and executes it.']),
@@ -793,9 +793,14 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
   async function act(input = {}) {
     assertWritable();
     const value = object(input, 'Attention action request');
-    const allowed = ['schemaVersion', 'logicalOperationId', 'episodeId', 'expectedEpisodeRevision', 'expectedSourceRevision', 'topicId', 'sourceReferenceId', 'actionId', 'input', 'approvalId', 'requestId', 'authenticatedOperatorId'];
+    const allowed = ['schemaVersion', 'logicalOperationId', 'episodeId', 'expectedEpisodeRevision', 'expectedSourceRevision', 'topicId', 'sourceReferenceId', 'sourceCapabilityId', 'stableSubjectId', 'actionId', 'input', 'approvalId', 'requestId', 'authenticatedOperatorId'];
     if (Object.keys(value).some((key) => !allowed.includes(key))) fail('invalid-request', 'Attention action request contains unsupported field');
     if (value.schemaVersion !== ATTENTION_SCHEMA_VERSION) fail('unsupported-version', 'schemaVersion must be 1');
+    const episode = findById(nonBlank(value.episodeId, 'episodeId'));
+    if (!episode) fail('not-found', 'Attention episode was not found.');
+    for (const field of ['sourceCapabilityId', 'stableSubjectId']) {
+      if (value[field] !== undefined && value[field] !== episode[field]) fail('invalid-request', 'Attention source identity does not match the episode.');
+    }
     const logicalOperationId = nonBlank(value.logicalOperationId, 'logicalOperationId');
     const authenticatedOperatorId = value.authenticatedOperatorId === undefined ? operatorId : nonBlank(value.authenticatedOperatorId, 'authenticatedOperatorId');
     if (!isCanonicalUuid(logicalOperationId)) fail('invalid-request', 'logicalOperationId must be a canonical UUID.');
@@ -867,8 +872,6 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       }
       return Object.freeze({ status: existingAttempt.state === 'applied' ? 'applied' : existingAttempt.state, episode: findById(existingAttempt.episodeId), attempt: existingAttempt, activity: activityForAttempt(existingAttempt) });
     }
-    const episode = findById(nonBlank(value.episodeId, 'episodeId'));
-    if (!episode) fail('not-found', 'Attention episode was not found.');
     if (value.expectedEpisodeRevision !== episode.revision) fail('conflict', 'Attention episode revision is stale.', { currentRevision: episode.revision, expectedRevision: value.expectedEpisodeRevision });
     if (episode.topicId && value.topicId === undefined) fail('invalid-request', 'Attention action requires the exact Topic identity.');
     if (value.topicId !== undefined && value.topicId !== episode.topicId) fail('conflict', 'Attention Topic identity is stale.');
