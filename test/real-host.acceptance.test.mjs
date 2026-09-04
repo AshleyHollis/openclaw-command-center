@@ -1606,7 +1606,11 @@ async function locatePaginatedNote(frame, pathName) {
     if (await next.isDisabled()) break;
     const previousStatus = await frame.locator('#note-page-status').textContent();
     await next.click();
-    await frame.waitForFunction((status) => document.querySelector('#note-page-status')?.textContent !== status, previousStatus);
+    try { await frame.waitForFunction((status) => document.querySelector('#note-page-status')?.textContent !== status, previousStatus); }
+    catch (error) {
+      const state = await frame.evaluate(() => ({ notesStatus: document.querySelector('#notes-status')?.textContent ?? null, pageStatus: document.querySelector('#note-page-status')?.textContent ?? null, nextDisabled: document.querySelector('#note-next')?.disabled ?? null }));
+      throw new Error(`${error.message}; Notes page transition state=${JSON.stringify(state)}`);
+    }
   }
   throw new Error(`The paginated Notes catalog omitted ${pathName}.`);
 }
