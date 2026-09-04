@@ -104,9 +104,11 @@ export class NoteAdapter {
     return this.fsSafeRoot.rootReal;
   }
 
-  noteReference(root, relativePath, revision) {
+  noteReference(root, relativePath, revision, referencesByExternalSourceId = null) {
     const externalSourceId = `${root}/${relativePath}`;
-    const matches = this.metadata?.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note' && reference.externalSourceId === externalSourceId) ?? [];
+    const matches = referencesByExternalSourceId?.get(externalSourceId)
+      ?? this.metadata?.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note' && reference.externalSourceId === externalSourceId)
+      ?? [];
     if (matches.length > 1) throw sourceError('source-recovery', 'The Note Source Reference is ambiguous.');
     return createSourceReference({
       referenceId: matches[0]?.referenceId ?? `note:${randomUUID()}`,
@@ -280,6 +282,13 @@ export class NoteAdapter {
   async browse(input = {}) {
     const root = await this.resolveRoot();
     const notes = [];
+    const referencesByExternalSourceId = new Map();
+    for (const reference of this.metadata?.listSourceReferences?.(this.topicId) ?? []) {
+      if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note') continue;
+      const matches = referencesByExternalSourceId.get(reference.externalSourceId) ?? [];
+      matches.push(reference);
+      referencesByExternalSourceId.set(reference.externalSourceId, matches);
+    }
     const rootStat = this.rootStat;
     const rootHandle = await this.duplicateRootHandle();
     const visit = async (directoryHandle, relative = '', chain = [{ namedPath: root, stat: rootStat }]) => {
@@ -313,15 +322,14 @@ export class NoteAdapter {
           } finally { await file.close(); }
           await this.assertChainStable(chain);
           const revision = revisionForBytes(bytes);
-          const candidateReference = this.noteReference(root, childRelative, revision);
-          const sourceReference = input.observe === false ? candidateReference : await this.observe(candidateReference);
-          notes.push(Object.freeze({
+          const sourceReference = this.noteReference(root, childRelative, revision, referencesByExternalSourceId);
+          notes.push({
             schemaVersion: 1,
             path: childRelative,
             revision,
             sourceReference,
             ...(input.includeText === true ? { text: bytes.toString('utf8') } : {})
-          }));
+          });
         } else if (!stat.isFile()) {
           throw sourceError('unsafe-path', 'The Note Folder contains a non-regular entry.');
         }
@@ -339,7 +347,13 @@ export class NoteAdapter {
       await this.assertChainStable([{ namedPath: root, stat: rootStat }]);
     } finally { await rootHandle.close(); }
     notes.sort((left, right) => left.path.localeCompare(right.path));
-    return Object.freeze(notes);
+    if (input.observe !== false) {
+      const observed = typeof this.metadata?.observeSourceReferences === 'function'
+        ? this.metadata.observeSourceReferences(notes.map((note) => note.sourceReference))
+        : await Promise.all(notes.map((note) => this.observe(note.sourceReference)));
+      for (let index = 0; index < notes.length; index += 1) notes[index].sourceReference = observed[index];
+    }
+    return Object.freeze(notes.map((note) => Object.freeze(note)));
   }
 
   async create(input = {}) {

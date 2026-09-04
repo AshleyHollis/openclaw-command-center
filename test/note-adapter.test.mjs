@@ -31,6 +31,30 @@ test('nested Note browse/create/read/edit/rename/move stays within one Topic roo
   });
 });
 
+test('Note browse resolves identities once and batches durable observations', async () => {
+  await withRoot(async (root) => {
+    await writeFile(path.join(root, 'existing.md'), 'existing');
+    await writeFile(path.join(root, 'new.md'), 'new');
+    const folder = { version: 1, referenceId: 'folder:batch', topicId: 'topic-batch', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: root };
+    const existing = { version: 1, referenceId: 'note:existing', topicId: 'topic-batch', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${root}/existing.md`, observedRevision: 'old' };
+    let listCalls = 0;
+    let observed = null;
+    const metadata = {
+      listSourceReferences: () => { listCalls += 1; return [folder, existing]; },
+      getSourceReference: (id) => id === folder.referenceId ? folder : null,
+      getSourceLocator: () => null,
+      setSourceLocator: () => {},
+      observeSourceReferences: (references) => { observed = references; return references; }
+    };
+    const adapter = new NoteAdapter({ fsSafeRootFactory, metadata, topicId: folder.topicId, noteFolderReferenceId: folder.referenceId });
+    const notes = await adapter.browse();
+    assert.equal(listCalls, 1);
+    assert.equal(observed.length, 2);
+    assert.equal(notes.find(({ path: notePath }) => notePath === 'existing.md').sourceReference.referenceId, existing.referenceId);
+    adapter.close();
+  });
+});
+
 test('a bound Note adapter refreshes its versioned folder locator after explicit replacement', async () => {
   const first = await mkdtemp(path.join(os.tmpdir(), 'command-center-note-locator-first-'));
   const second = await mkdtemp(path.join(os.tmpdir(), 'command-center-note-locator-second-'));

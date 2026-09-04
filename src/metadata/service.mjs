@@ -872,6 +872,27 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     return mutate(capabilityForSourceSystem(value.sourceSystem), (db) => insertSourceReference(db, value, timestamp(undefined, 'createdAt')));
   };
 
+  service.observeSourceReferences = (inputs = []) => {
+    if (!Array.isArray(inputs)) throw new CommandCenterMetadataError('invalid-value', 'Source Reference observations must be an array.');
+    const values = inputs.map(referenceInput);
+    return mutate(null, (db) => {
+      const now = timestamp(undefined, 'updatedAt');
+      return values.map((value) => {
+        const current = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(value.referenceId);
+        if (!current) {
+          mutateCapabilityInsideTransaction(value.sourceSystem);
+          return insertSourceReference(db, value, now);
+        }
+        for (const [field, column] of [['topicId', 'topic_id'], ['sourceSystem', 'source_system'], ['sourceKind', 'source_kind'], ['externalSourceId', 'external_source_id']]) {
+          if (value[field] !== current[column]) throw new CommandCenterMetadataError('identity-change', 'Source Reference identity is immutable.');
+        }
+        mutateCapabilityInsideTransaction(current.source_system);
+        db.prepare('UPDATE source_references SET last_observed_revision = ?, updated_at = ? WHERE reference_id = ?').run(value.observedRevision, value.updatedAt ?? now, value.referenceId);
+        return mapSourceReference(db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(value.referenceId));
+      });
+    });
+  };
+
   service.createMigrationTopicBinding = ({ topic: topicInputValue, reference: referenceInputValue } = {}) => {
     const topic = topicInput(topicInputValue);
     const reference = referenceInput(referenceInputValue);
