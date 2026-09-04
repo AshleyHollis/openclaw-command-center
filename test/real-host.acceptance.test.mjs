@@ -268,7 +268,8 @@ async function waitForMigrationCompletion(databasePath, topicId, { attempts = 10
       const completion = readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId });
       if (completion) return completion;
     } catch (error) {
-      if (error?.code !== 'SQLITE_BUSY' && !/database is locked/iu.test(error?.message ?? '')) throw error;
+      const pendingDatabase = error?.code === 'SQLITE_BUSY' || error?.errcode === 14 || /database is locked|unable to open database file/iu.test(error?.message ?? '');
+      if (!pendingDatabase) throw error;
     } finally { database?.close(); }
     await delayWithSignal(delayMs, signal);
   }
@@ -2121,6 +2122,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         const completed = await ensureMigrationBinding(signal);
         return { completionId: completed.completion.completion_id, referenceId: completed.binding.referenceId };
       });
+      scenarioResult('focused-control-ui-migration-readiness');
       await collectScenario('focused-control-ui-search-projection', async (signal) => {
         const projectionRoot = path.join(path.dirname(databasePath), 'projections');
         await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: 'focused Control UI Search baseline rebuild' });
@@ -2128,6 +2130,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         releaseState.projectionRoot = projectionRoot;
         return { rowCounts: verified.rowCounts };
       });
+      scenarioResult('focused-control-ui-search-projection');
     }
     await collectScenario('authenticated-control-ui-mount', async (signal) => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');
