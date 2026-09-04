@@ -10,6 +10,22 @@ export function controlUiPluginUrl({ gatewayUrl, pluginId, routeId, fragmentPara
   return url.toString();
 }
 
+/** Match the exact authenticated Control UI parent route inherited by a srcdoc frame. */
+export function isControlUiPluginUrl(value, { gatewayUrl, pluginId, routeId }) {
+  try {
+    const candidate = new URL(value);
+    const gateway = new URL(gatewayUrl);
+    return candidate.origin === gateway.origin &&
+      candidate.pathname === '/plugin' &&
+      candidate.hash === '' &&
+      [...candidate.searchParams].length === 2 &&
+      candidate.searchParams.get('plugin') === pluginId &&
+      candidate.searchParams.get('id') === routeId;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Match the Control UI bootstrap response emitted by the pinned host.
  *

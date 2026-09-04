@@ -21,7 +21,7 @@ import { COMMAND_CENTER_SCHEMA_VERSION, metadataSchemaV1Sql } from '../src/metad
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
-import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
+import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl, isControlUiPluginUrl } from '../src/acceptance-readiness.mjs';
 import { assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
@@ -245,8 +245,8 @@ async function mountedPluginFrame(page, pluginDocument, evidence) {
       bridgeReady: !document.querySelector('#topic-status')?.textContent?.includes('Loading')
     };
   });
-  if (new URL(provenance.baseURI).pathname !== '/plugins/command-center' || provenance.title !== 'Command Center' || provenance.heading !== 'Dashboard' || !provenance.shell || !provenance.bridgeReady) {
-    throw new HarnessFailure('plugin-document-mismatch', `Command Center srcdoc did not retain the exact route base, shell markers, and ready capability bridge: ${redactBrowserEvidence(JSON.stringify(provenance))}`);
+  if (!isControlUiPluginUrl(provenance.baseURI, { gatewayUrl: page.url(), pluginId: 'command-center', routeId: 'command-center' }) || provenance.title !== 'Command Center' || provenance.heading !== 'Dashboard' || !provenance.shell || !provenance.bridgeReady) {
+    throw new HarnessFailure('plugin-document-mismatch', `Command Center srcdoc did not retain the authenticated parent route, shell markers, and ready capability bridge: ${redactBrowserEvidence(JSON.stringify(provenance))}`);
   }
   return { iframe, frame };
 }

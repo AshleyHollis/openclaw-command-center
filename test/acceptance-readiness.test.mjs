@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
-import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl } from '../src/acceptance-readiness.mjs';
+import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl, isControlUiPluginUrl } from '../src/acceptance-readiness.mjs';
 
 test('the authenticated external tab uses the pinned Control UI plugin route and token fragment', () => {
   assert.equal(controlUiPluginUrl({
@@ -14,6 +14,16 @@ test('the authenticated external tab uses the pinned Control UI plugin route and
     fragmentParameter: 'to' + 'ken',
     credential: 'fictional-gateway-credential'
   }), `http://127.0.0.1:32123/plugin?plugin=command-center&id=command-center#${'to' + 'ken'}=fictional-gateway-credential`);
+});
+
+test('mounted srcdoc provenance accepts only the exact authenticated Control UI parent route', () => {
+  const options = { gatewayUrl: 'http://127.0.0.1:32123', pluginId: 'command-center', routeId: 'command-center' };
+  assert.equal(isControlUiPluginUrl('http://127.0.0.1:32123/plugin?plugin=command-center&id=command-center', options), true);
+  assert.equal(isControlUiPluginUrl('http://127.0.0.1:32123/plugins/command-center', options), false);
+  assert.equal(isControlUiPluginUrl('http://127.0.0.1:32123/plugin?plugin=command-center&id=other', options), false);
+  assert.equal(isControlUiPluginUrl('http://127.0.0.1:32124/plugin?plugin=command-center&id=command-center', options), false);
+  assert.equal(isControlUiPluginUrl('http://127.0.0.1:32123/plugin?plugin=command-center&id=command-center&extra=true', options), false);
+  assert.equal(isControlUiPluginUrl('not a URL', options), false);
 });
 
 test('browser bootstrap matching accepts only the pinned same-origin canonical path or root resource alias', () => {
