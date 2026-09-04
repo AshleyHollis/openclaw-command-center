@@ -2719,7 +2719,15 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           }
         });
       }
-      const seededDashboard = await readDashboard(gatewayUrl);
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: scaleJourney.topicId, input: {}, logicalOperationId: randomUUID() } });
+      let seededDashboard = await readDashboard(gatewayUrl);
+      if (!seededDashboard.attention.some((episode) => episode.sourceCapabilityId === 'topic-review')) {
+        const topicResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
+        const topic = (topicResponse?.result ?? topicResponse)?.topic;
+        await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.rename', params: { schemaVersion: 1, topicId: scaleJourney.topicId, name: 'Area: Fictional Scale Journey Topic Revised', expectedRevision: topic.revision, logicalOperationId: randomUUID() } });
+        await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: scaleJourney.topicId, input: {}, logicalOperationId: randomUUID() } });
+        seededDashboard = await readDashboard(gatewayUrl);
+      }
       const seededReminders = seededDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'reminders' && episode.actions.some((action) => action.actionId === 'reminder.complete'));
       const seededTopicReviews = seededDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'topic-review');
       assert.equal(seededReminders.length, 1);
