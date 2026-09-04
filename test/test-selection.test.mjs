@@ -66,6 +66,13 @@ test('real-host acceptance exposes one closed authenticated mount dependency pla
   }
 });
 
+test('real-host acceptance exposes a focused Topic Review projection plan', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('topic-review-projection'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-topic-review-projection']
+  });
+});
+
 test('real-host acceptance exposes a closed full-corpus scale performance plan', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('scale-performance'), {
     kind: 'focused',

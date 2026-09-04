@@ -2417,6 +2417,19 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         throw new Error(`${error.message}; host stdout: ${host.diagnostics.stdout}; host stderr: ${host.diagnostics.stderr}`);
       }
     });
+    if (focusedScenarioIds?.has('focused-topic-review-projection')) await collectScenario('focused-topic-review-projection', async (signal) => {
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, input: {}, logicalOperationId: randomUUID() }, signal });
+      const topicResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID }, signal });
+      const topic = (topicResponse?.result ?? topicResponse)?.topic;
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.rename', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, name: 'Area: Fictional Focused Review Topic', expectedRevision: topic.revision, logicalOperationId: randomUUID() }, signal });
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, input: {}, logicalOperationId: randomUUID() }, signal });
+      const analysisResponse = await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/topic-analysis`, {}, 'focused Topic Review readback');
+      const analysis = await analysisResponse.json();
+      const dashboard = await readDashboard(gatewayUrl);
+      const cards = dashboard.attention.filter((episode) => episode.sourceCapabilityId === 'topic-review');
+      if (cards.length !== 1) throw new Error(`Focused Topic Review projection mismatch: ${JSON.stringify({ analysisStatus: analysisResponse.status, reviewState: analysis.review?.state, proposalCount: analysis.review?.proposals?.length ?? null, runOutcomes: analysis.runs?.slice(-2).map((run) => ({ outcome: run.outcome, proposalCount: run.proposalCount, baseline: run.baseline })) ?? [], dashboardSources: dashboard.attention.map((episode) => episode.sourceCapabilityId) })}`);
+      return { projected: true, proposalCount: analysis.review.proposals.length, cardCount: cards.length };
+    });
     const runFocusedProjectionRecovery = async (kind, signal) => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');
       await restoreReleaseSearchBaseline({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal, label: `focused ${kind} recovery` });
