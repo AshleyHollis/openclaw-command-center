@@ -138,6 +138,7 @@ function actionResultSchema(method) {
     path: Object.freeze({ type: 'string' }),
     text: Object.freeze({ type: 'string' }),
     contentBase64: Object.freeze({ type: 'string' }),
+    contentEncoding: Object.freeze({ enum: ['identity', 'gzip'] }),
     byteOffset: Object.freeze({ type: 'integer' }),
     totalBytes: Object.freeze({ type: 'integer' }),
     complete: Object.freeze({ type: 'boolean' }),
@@ -215,7 +216,7 @@ function actionResultSchema(method) {
     : method.endsWith('sources.status')
     ? ['schemaVersion', 'mode', 'metadataSchemaVersion', 'diagnostics', 'unavailableCapabilities']
     : method.endsWith('notes.read')
-    ? ['schemaVersion', 'path', 'contentBase64', 'byteOffset', 'nextOffset', 'totalBytes', 'revision', 'complete', 'sourceReference']
+    ? ['schemaVersion', 'path', 'contentBase64', 'contentEncoding', 'byteOffset', 'nextOffset', 'totalBytes', 'revision', 'complete', 'sourceReference']
     : method.endsWith('sessions.history')
     ? ['sessionKey', 'sessionId', 'messages', 'offset', 'nextOffset', 'hasMore', 'totalMessages', 'completeSnapshot', 'defaults', 'sessionInfo', 'thinkingLevel', 'fastMode', 'toolOverrides', 'verboseLevel', 'inFlightRun', 'agentsList', 'metadata']
     : method.endsWith('sessions.browse')

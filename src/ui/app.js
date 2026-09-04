@@ -669,12 +669,22 @@ document.querySelector('#note-last')?.addEventListener('click', () => { const to
 function encodeText(text) { const bytes = new TextEncoder().encode(text); let binary = ''; for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)); return btoa(binary); }
 function decodeBase64Bytes(value) { return Uint8Array.from(atob(value), (character) => character.charCodeAt(0)); }
 function decodeText(value) { return new TextDecoder('utf-8', { fatal: true }).decode(decodeBase64Bytes(value)); }
+async function decodeNoteChunkBytes(value) {
+  const bytes = decodeBase64Bytes(value.contentBase64);
+  if (value.contentEncoding !== 'gzip') return bytes;
+  if (typeof DecompressionStream !== 'function') throw new Error('Compressed authoritative Note retrieval is unavailable in this browser.');
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
 async function readNoteChunks(descriptor) {
   let offset = 0; let text = ''; let revision = descriptor.observedRevision; let sourceReference; const decoder = new TextDecoder('utf-8', { fatal: true });
   for (;;) {
     const value = unwrap(await bridgeRequest('command-center.v1.notes.read', { schemaVersion: 1, topicId: descriptor.topicId, referenceId: descriptor.referenceId, path: descriptor.path, observedRevision: descriptor.observedRevision, offset }));
     if (!value || value.path !== descriptor.path || value.revision !== revision || value.sourceReference?.referenceId !== descriptor.referenceId || value.sourceReference?.topicId !== descriptor.topicId) throw new Error(offset === 0 && value?.revision === descriptor.observedRevision ? 'The authoritative Note changed after this reference was created.' : 'The authoritative Note changed during retrieval.');
-    sourceReference = value.sourceReference; text += decoder.decode(decodeBase64Bytes(value.contentBase64), { stream: !value.complete }); if (value.complete) return { text, revision, sourceReference }; if (!Number.isInteger(value.nextOffset) || value.nextOffset <= offset) throw new Error('The authoritative Note changed during retrieval.'); offset = value.nextOffset;
+    if (!Number.isInteger(value.nextOffset) || value.nextOffset <= offset || !Number.isInteger(value.totalBytes) || value.nextOffset > value.totalBytes) throw new Error('The authoritative Note changed during retrieval.');
+    const chunk = await decodeNoteChunkBytes(value);
+    if (chunk.byteLength !== value.nextOffset - offset) throw new Error('The authoritative Note chunk length was invalid.');
+    sourceReference = value.sourceReference; text += decoder.decode(chunk, { stream: !value.complete }); if (value.complete) return { text, revision, sourceReference }; offset = value.nextOffset;
   }
 }
 async function openAuthoritativeNote(descriptor, { referenceError = false, moveFocus = true } = {}) {

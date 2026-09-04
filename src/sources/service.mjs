@@ -1,3 +1,4 @@
+import { gzipSync } from 'node:zlib';
 import { createActivityService } from '../activity/service.mjs';
 import { createAnalysisAdapter } from './analysis.mjs';
 import { createAttentionAdapter } from './attention.mjs';
@@ -170,11 +171,16 @@ export class AuthoritativeSourceService {
     const bytes = Buffer.from(note.text, 'utf8');
     if (bytes.length > 8_388_609) throw sourceError('invalid-request', 'The authoritative Note exceeds the bounded Topic Page size.');
     if (input.offset > bytes.length) throw sourceError('invalid-request', 'The Note byte offset exceeds its authoritative length.');
-    const nextOffset = Math.min(input.offset + 524_288, bytes.length);
+    const remaining = bytes.subarray(input.offset);
+    const compressed = remaining.length > 1_048_576 ? gzipSync(remaining) : null;
+    const contentEncoding = compressed && compressed.length <= 524_288 ? 'gzip' : 'identity';
+    const contentBytes = contentEncoding === 'gzip' ? compressed : bytes.subarray(input.offset, Math.min(input.offset + 524_288, bytes.length));
+    const nextOffset = contentEncoding === 'gzip' ? bytes.length : input.offset + contentBytes.length;
     return {
       schemaVersion: 1,
       path: note.path,
-      contentBase64: bytes.subarray(input.offset, nextOffset).toString('base64'),
+      contentBase64: contentBytes.toString('base64'),
+      contentEncoding,
       byteOffset: input.offset,
       nextOffset,
       totalBytes: bytes.length,
