@@ -1010,7 +1010,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.notEqual(repairedManifest.generation, 'fictional-fresh-stale-generation');
         return Object.freeze({ kind, topicId: journey.topicId, freshWorld: scenarioWorld.root, assertionsCompleted: true, scale: { largeNoteBytes: RELEASE_FIXTURE_COUNTS.largeNoteBytes, conversations: RELEASE_FIXTURE_COUNTS.conversations, activityRecords: RELEASE_FIXTURE_COUNTS.activityRecords, actionCards: RELEASE_FIXTURE_COUNTS.actionCards, indexedNotes: RELEASE_FIXTURE_COUNTS.indexedNotes, indexedConversationMessages: RELEASE_FIXTURE_COUNTS.indexedConversationMessages, largeNoteLifecycleMs: largeNote.largeNoteLifecycleMs, missingProjectionRebuilt: true, staleProjectionRebuilt: true } });
       } else if (kind === 'scale-analysis') {
-        await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'command-center.v1.reminders.create', params: { schemaVersion: 1, topicId: journey.topicId, logicalOperationId: randomUUID(), declaration: { name: 'Fictional fresh scale analysis reminder', enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 60_000).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional fresh scale analysis reminder' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } } });
+        await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'command-center.v1.reminders.create', params: { schemaVersion: 1, topicId: journey.topicId, logicalOperationId: randomUUID(), declaration: { name: 'Fictional fresh scale analysis reminder', enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional fresh scale analysis reminder' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } } });
         await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: journey.topicId, input: {}, logicalOperationId: randomUUID() } });
         let cards = (await readDashboard(scenarioWorld.gateway.url, { activityOffset: 0, activityLimit: 50 })).attention;
         if (!cards.some((card) => card.sourceCapabilityId === 'topic-review')) {
@@ -2711,7 +2711,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
               name: `Fictional due reminder ${index}`,
               enabled: true,
               deleteAfterRun: false,
-              schedule: { kind: 'at', at: new Date(Date.now() - 60_000 - index).toISOString() },
+              schedule: { kind: 'at', at: new Date(Date.now() - 30_000 - index).toISOString() },
               payload: { kind: 'systemEvent', text: `Fictional release journey reminder ${index}` },
               sessionTarget: 'main',
               wakeMode: 'next-heartbeat'
@@ -2737,7 +2737,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.closedTabNotificationCleared = true;
       await requestAuthenticatedGateway({
         gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'command-center.v1.reminders.create',
-        params: { schemaVersion: 1, topicId: scaleJourney.topicId, logicalOperationId: randomUUID(), declaration: { name: 'Fictional replacement due reminder', enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 120_000).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional replacement release reminder' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } }
+        params: { schemaVersion: 1, topicId: scaleJourney.topicId, logicalOperationId: randomUUID(), declaration: { name: 'Fictional replacement due reminder', enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional replacement release reminder' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } }
       });
       // Revoke the exact authoritative Primary Session binding while the tab
       // is closed. The following mutation is otherwise current and valid; its
@@ -2907,7 +2907,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       for (const label of ['Keyboard source action', 'Keyboard snooze']) {
         await requestAuthenticatedGateway({
           gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'command-center.v1.reminders.create',
-          params: { schemaVersion: 1, topicId: mobileJourney.topicId, logicalOperationId: randomUUID(), declaration: { name: `Fictional ${label}`, enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 60_000).toISOString() }, payload: { kind: 'systemEvent', text: `Fictional ${label} reminder` }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } }
+          params: { schemaVersion: 1, topicId: mobileJourney.topicId, logicalOperationId: randomUUID(), declaration: { name: `Fictional ${label}`, enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: `Fictional ${label} reminder` }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } }
         });
       }
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
