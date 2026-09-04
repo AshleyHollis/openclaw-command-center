@@ -1659,7 +1659,7 @@ async function assertResponsiveFrame(frame, page, width) {
   await assertNoFrameOverflow(frame, `${width}px responsive frame`);
   const interactive = await frame.locator('button, input, select, textarea, a').evaluateAll((nodes) => nodes.filter((node) => {
     const style = getComputedStyle(node);
-    return style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
+    return style.display !== 'none' && style.visibility !== 'hidden' && node.getClientRects().length > 0 && !node.closest('[hidden], [inert]');
   }).map((node) => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height, name: node.getAttribute('aria-label') || node.labels?.[0]?.textContent?.trim() || node.textContent?.trim().slice(0, 80) || node.getAttribute('title') })));
   for (const node of interactive) {
     assert.ok(node.name, `${width}px interactive target has no observable name`);
