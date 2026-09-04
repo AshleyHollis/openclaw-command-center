@@ -285,10 +285,13 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
     topicReviewApply(input) { return topicReview.apply(input); },
     async dashboardGet(input, runtime = {}) {
       if (!dashboardService) throw new Error('Command Center Dashboard is not ready.');
+      const request = { ...input };
+      delete request.requestId;
+      delete request.authenticatedOperatorId;
       return sourceService.withSchedulerGateway(runtime, async () => {
         try { await sourceService?.refreshReminderAttention?.(); } catch { /* the projection omits unavailable scheduler rows */ }
         await notificationService?.reconcile?.();
-        return dashboardService.get(input);
+        return dashboardService.get(request);
       });
     },
     dashboardUpdateSettings(input) {
