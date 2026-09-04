@@ -333,10 +333,13 @@ async function rebuildTopicSearchProjection(topicId) {
   if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Search rebuild was refused.');
   return value;
 }
+function searchProjectionUnavailable(error) {
+  return error?.code === 'capability-unavailable' || (error?.code === 'INVALID_PARAMS' && error?.message === 'Gateway rejected bridge request');
+}
 async function queryTopicSearch(params) {
   try { return unwrap(await bridgeRequest('command-center.v1.search.query', params)); }
   catch (error) {
-    if (error?.code !== 'capability-unavailable') throw error;
+    if (!searchProjectionUnavailable(error)) throw error;
     await rebuildTopicSearchProjection(params.topicId);
     return unwrap(await bridgeRequest('command-center.v1.search.query', params));
   }
