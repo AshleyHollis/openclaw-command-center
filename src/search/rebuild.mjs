@@ -98,13 +98,20 @@ export async function reconcileTopicSearchBookkeeping({ stateDir, metadata } = {
     if (error?.code === 'ENOENT') return false;
     throw error;
   }
-  const notes = await openProjectionStore({ stateDir, kind: 'note' });
-  const conversations = await openProjectionStore({ stateDir, kind: 'conversation' });
-  const manifests = [notes.manifest(), conversations.manifest()];
-  if (manifests.every((manifest) => manifest === null)) return false;
-  if (manifests.some((manifest) => manifest === null)) return false;
-  metadata.setProjectionBookkeepingBatch(manifests.map((manifest) => ({ projectionId: manifest.projectionId, sourceRevision: manifest.sourceRevision, inputDigest: manifest.inputDigest })));
-  return true;
+  let notes;
+  let conversations;
+  try {
+    notes = await openProjectionStore({ stateDir, kind: 'note' });
+    conversations = await openProjectionStore({ stateDir, kind: 'conversation' });
+    const manifests = [notes.manifest(), conversations.manifest()];
+    if (manifests.every((manifest) => manifest === null)) return false;
+    if (manifests.some((manifest) => manifest === null)) return false;
+    metadata.setProjectionBookkeepingBatch(manifests.map((manifest) => ({ projectionId: manifest.projectionId, sourceRevision: manifest.sourceRevision, inputDigest: manifest.inputDigest })));
+    return true;
+  } finally {
+    notes?.close();
+    conversations?.close();
+  }
 }
 
 export async function rebuildTopicSearchProjections(options = {}) {
@@ -171,15 +178,19 @@ function reserveReceiptSlot(stateDir) {
 }
 
 async function hasReusableProjectionSet(stateDir) {
+  let notes;
+  let conversations;
   try {
-    const [notes, conversations] = await Promise.all([
-      openProjectionStore({ stateDir, kind: 'note' }),
-      openProjectionStore({ stateDir, kind: 'conversation' })
-    ]);
+    notes = await openProjectionStore({ stateDir, kind: 'note' });
+    conversations = await openProjectionStore({ stateDir, kind: 'conversation' });
     const manifests = [notes.manifest(), conversations.manifest()];
     return manifests.every(Boolean)
       && JSON.stringify(manifests[0].topicIds) === JSON.stringify(manifests[1].topicIds);
   } catch { return false; }
+  finally {
+    notes?.close();
+    conversations?.close();
+  }
 }
 
 export function createSearchRebuildService(options = {}) {
