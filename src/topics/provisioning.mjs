@@ -101,7 +101,11 @@ export class TopicProvisioningService {
       this.metadata.completeTopicProvisioning({ logicalOperationId, topicId, intent, result: { topicId, folderReferenceId: folder.referenceId, sessionReferenceId: session.referenceId }, expectedRevision: current.revision, updatedAt: this.now() });
       return this.result(logicalOperationId);
     } catch (error) {
-      this.metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.create', state: error?.code === 'conflict' ? 'conflict' : 'unknown', currentStep: this.metadata.getTopicOperation(logicalOperationId)?.currentStep ?? operation.currentStep, intent, result: { error: String(error?.code ?? error?.message ?? 'provisioning-failed').slice(0, 120) }, updatedAt: this.now() });
+      const errorCode = String(error?.code ?? error?.message ?? 'provisioning-failed').slice(0, 120);
+      const diagnostic = error?.code === 'capability-unavailable'
+        ? String(error?.message ?? 'Required provisioning capability is unavailable.').slice(0, 180)
+        : undefined;
+      this.metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.create', state: error?.code === 'conflict' ? 'conflict' : 'unknown', currentStep: this.metadata.getTopicOperation(logicalOperationId)?.currentStep ?? operation.currentStep, intent, result: { error: errorCode, ...(diagnostic ? { diagnostic } : {}) }, updatedAt: this.now() });
       error.topicId = topicId;
       error.logicalOperationId = logicalOperationId;
       throw error;
