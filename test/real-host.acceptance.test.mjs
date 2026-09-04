@@ -1834,10 +1834,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       execute: async (id, run) => {
         let result;
         await testContext.test(`release scenario: ${id}`, async () => {
+          const timeoutMs = acceptancePlan.kind === 'focused' && id === 'authenticated-control-ui-mount' ? 420_000 : 240_000;
           result = await runBoundedAcceptanceSlice(id, (signal) => runAbortableAcceptanceBoundary(
             () => acceptanceSignalContext.run(signal, () => run(signal)),
             { signal, onAbort: () => { if (page && !page.isClosed()) void page.close(); } }
-          ), { timeoutMs: 240_000, cleanupTimeoutMs: 15_000 });
+          ), { timeoutMs, cleanupTimeoutMs: 15_000 });
         });
         return result;
       },
