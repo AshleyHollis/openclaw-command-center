@@ -129,6 +129,7 @@ test('Topics destination uses the authenticated POST lifecycle seam', () => {
   assert.match(app, /if \(topicCreatePending\) return;[\s\S]*validateTopicNameInput\(\);[\s\S]*if \(!topicCreateForm\.reportValidity\(\)\) return/);
   assert.match(app, /topicCreateSubmit\.disabled = true/);
   assert.match(app, /finally \{[\s\S]*topicCreatePending = false;[\s\S]*topicCreateSubmit\.disabled = false/su);
+  assert.match(app, /restoreSubmitFocus[\s\S]*topicCreateSubmit\.focus\(\)/u);
   assert.match(app, /reportValidity\(\)/);
   assert.match(app, /Category:.*→/);
   assert.match(app, /Note Folder location: unchanged \(customized\)/);
@@ -188,11 +189,13 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
     await page.getByText('Active Topic').waitFor();
     await page.getByText('Session session:missing: exact Primary Session identity; exact-session-missing (recovery-required). Blocked: messages, new conversations, and Session changes. Actions: verify exact source, relink Session, or replace Primary Session.').waitFor();
     await page.locator('#topic-create input[name="name"]').fill('Created Topic');
+    await page.locator('#topic-create-submit').focus();
     await page.locator('#topic-create').evaluate((form) => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     });
     await page.getByText('Topic created and verified').waitFor();
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'topic-create-submit');
     for (const label of ['Retry', 'Roll back', 'Rename', 'Move to area', 'Archive', 'Restore to project', 'Search archive', 'Verify exact source', 'Relink Session', 'Replace Primary Session']) await page.getByRole('button', { name: label }).first().click();
     await page.locator('#topic-search-query').fill('fictional');
     await page.locator('#topic-search-form').evaluate((form) => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
