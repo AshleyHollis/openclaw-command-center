@@ -56,6 +56,7 @@ function publicTopic(value = {}) {
     lifecycle: value.lifecycle,
     health: value.health,
     usable: value.usable === true,
+    ...(value.noteFolderReferenceId ? { noteFolderReferenceId: value.noteFolderReferenceId } : {}),
     recovery: (Array.isArray(value.recovery) ? value.recovery : []).slice(0, 4).map(publicRecovery),
     ...(value.provisioningOperationId ? { provisioningOperationId: value.provisioningOperationId } : {})
   };

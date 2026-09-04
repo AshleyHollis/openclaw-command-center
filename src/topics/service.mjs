@@ -44,6 +44,7 @@ function topicView(metadata, topic, detectedRecovery = []) {
 }
 
 function destinationTopic(topic) {
+  const noteFolderReferenceId = topic.sourceReferences?.find((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder')?.referenceId;
   return Object.freeze({
     topicId: topic.topicId,
     name: topic.name,
@@ -52,6 +53,7 @@ function destinationTopic(topic) {
     lifecycle: topic.lifecycle,
     health: topic.health,
     usable: topic.usable,
+    ...(noteFolderReferenceId ? { noteFolderReferenceId } : {}),
     provisioningOperationId: topic.provisioningOperationId,
     recovery: topic.recovery.map(({ recoveryId, topicId, referenceId, sourceKind, state, diagnostics, expectedRevision, createdAt, updatedAt }) => ({ recoveryId, topicId, referenceId, sourceKind, state, diagnostics: (diagnostics?.length ? diagnostics : [{}]).map((diagnostic) => publicRecoveryDiagnostic({ topicId, referenceId, sourceKind, state }, diagnostic)), expectedRevision, createdAt, updatedAt }))
   });

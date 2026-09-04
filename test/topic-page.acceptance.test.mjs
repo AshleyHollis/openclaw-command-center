@@ -326,6 +326,10 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
     ] };
     const topicBNote = noteReference('topic-b.md', 'topic-b-note-revision', 'note:fictional-topic-b:brief'); topicBNote.topicId = topicBId; topicBNote.externalSourceId = 'fictional-topic-b/topic-b.md';
     const topicB = { topicId: topicBId, name: 'Second Fictional Topic', revision: 2, paraCategory: 'area', lifecycle: 'active', usable: true, health: 'ready', recovery: [], sourceReferences: [{ referenceId: 'note-folder:fictional-topic-b', topicId: topicBId, sourceSystem: 'obsidian', sourceKind: 'note_folder', observedRevision: 'folder-b-revision' }, topicBNote, { referenceId: topicBPrimaryId, topicId: topicBId, sourceSystem: 'openclaw', sourceKind: 'session', observedRevision: null }] };
+    const destinationTopic = (value) => {
+      const { sourceReferences: _privateReferences, ...publicTopic } = value;
+      return { ...publicTopic, noteFolderReferenceId: value.sourceReferences.find((reference) => reference.sourceKind === 'note_folder').referenceId };
+    };
     const topicBConversation = { referenceId: topicBPrimaryId, topicId: topicBId, sessionId: 'topic-b-primary-session-id', sessionKey: 'agent:main:topic-b-primary', displayName: 'Second Topic Primary', status: 'open', isPrimary: true, wasPrimary: false, updatedAt: '2026-08-27T00:00:00.000Z' };
     let conversations = [
       { referenceId: primaryId, topicId, sessionId: 'primary-session-id', sessionKey: 'agent:main:primary', displayName: 'Primary Conversation', status: 'open', isPrimary: true, wasPrimary: false, updatedAt: '2026-08-27T00:00:00.000Z' },
@@ -399,7 +403,7 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
       if (payload.method === 'sessions.create' && fixture.unknownNextSessionCreate) { fixture.unknownNextSessionCreate = false; respond(payload.requestId, null, { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Fictional unknown Session creation outcome.' }); return; }
       let result = {};
       if (payload.method.endsWith('sources.status')) result = { schemaVersion: 1, mode: 'ready', unavailableCapabilities: [] };
-      if (payload.method.endsWith('topics.list')) result = { activeGroups: { project: [topic, topicB], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] };
+      if (payload.method.endsWith('topics.list')) result = { activeGroups: { project: [destinationTopic(topic), destinationTopic(topicB)], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] };
       if (payload.method.endsWith('topics.get')) { const requestedTopic = payload.params.topicId === topicBId ? topicB : topic; if (fixture.deferTopicGetId === payload.params.topicId) { fixture.deferTopicGetId = null; fixture.deferredTopicGet = { requestId: payload.requestId, topic: requestedTopic }; return; } result = { topic: requestedTopic }; }
       if (payload.method === 'sessions.create') result = { key: `agent:main:dashboard:bridge-fictional-${payload.operationId}`, sessionId: `created-${payload.operationId}`, revision: '1' };
       if (payload.method === 'command-center.v1.sessions.send') {
@@ -455,6 +459,16 @@ test('queryless external tab browses Topics and opens the selected workspace', a
     const row = page.locator('.topic-row').filter({ hasText: 'Fictional Topic with a deliberately long responsive workspace name' });
     await row.getByRole('button', { name: 'Open Topic' }).click();
     await page.getByText('Topic workspace ready.').waitFor();
+    await page.getByRole('button', { name: 'New Note' }).click();
+    await page.locator('#note-action-path').fill('queryless-created.md');
+    await page.locator('#note-action-text').fill('# Queryless creation');
+    await submit(page, '#note-action-form');
+    await page.getByRole('heading', { name: 'queryless-created.md', exact: true }).waitFor();
+    const openEvidence = await page.evaluate(() => ({
+      topicGets: globalThis.__topicPageFixture.calls.filter((call) => call.method === 'command-center.v1.topics.get').length,
+      createReferenceId: globalThis.__topicPageFixture.calls.find((call) => call.action === 'notes.create' && call.path === 'queryless-created.md')?.referenceId
+    }));
+    assert.deepEqual(openEvidence, { topicGets: 0, createReferenceId: 'note-folder:fictional-topic' });
     const listCalls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.method === 'command-center.v1.topics.list').length);
     await page.locator('#workspace-back').click();
     await page.waitForFunction((previous) => globalThis.__topicPageFixture.calls.filter((call) => call.method === 'command-center.v1.topics.list').length > previous, listCalls);

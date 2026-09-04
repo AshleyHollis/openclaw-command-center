@@ -109,6 +109,10 @@ test('Topic provisioning is durable, grouped only when usable, and preserves ide
     const referenceIds = metadata.listSourceReferences(topicId).map((item) => item.referenceId).sort();
     assert.equal(topics.listGrouped().project.length, 1);
     assert.equal(topics.listGrouped().area.length, 0);
+    const destinationTopic = topics.listDestination().activeGroups.project[0];
+    assert.equal(destinationTopic.noteFolderReferenceId, metadata.listSourceReferences(topicId).find((item) => item.sourceKind === 'note_folder').referenceId);
+    assert.equal(destinationTopic.sourceReferences, undefined);
+    assert.equal(destinationTopic.locators, undefined);
     const before = topics.get(topicId);
     assert.equal(Number.isInteger(before.revision), true);
     const initialLocatorVersion = before.locators.find((item) => item.referenceId.startsWith('note-folder:')).locatorVersion;

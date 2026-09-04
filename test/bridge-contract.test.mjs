@@ -297,10 +297,13 @@ test('generic Topic-owned metadata writes honor archived read-only policy', asyn
 });
 
 test('Topics list sanitizes active, provisioning, recovery, archived, and retired collections', async () => {
-  const topic = { topicId: 'topic-list', name: 'Fictional', revision: 'r1', paraCategory: 'project', lifecycle: 'active', activatedAt: '2026-08-30T12:00:00.000Z', usable: true, recovery: [], sourceReferences: [], locators: [], privateField: 'withheld' };
+  const topic = { topicId: 'topic-list', name: 'Fictional', revision: 'r1', paraCategory: 'project', lifecycle: 'active', activatedAt: '2026-08-30T12:00:00.000Z', usable: true, noteFolderReferenceId: 'note-folder:fictional', recovery: [], sourceReferences: [], locators: [], privateField: 'withheld' };
   const result = await invokeBridgeMethod({ topics: { listDestination: () => ({ activeGroups: { project: [topic], area: [], resource: [] }, provisioning: [topic], recovery: [topic], archived: [topic], retired: [topic] }) } }, 'command-center.v1.topics.list', { schemaVersion: 1 });
   assert.deepEqual(Object.keys(result).sort(), ['activeGroups', 'archived', 'provisioning', 'recovery', 'retired']);
-  for (const publicTopic of [result.activeGroups.project[0], result.provisioning[0], result.recovery[0], result.archived[0], result.retired[0]]) assert.equal(publicTopic.activatedAt, topic.activatedAt);
+  for (const publicTopic of [result.activeGroups.project[0], result.provisioning[0], result.recovery[0], result.archived[0], result.retired[0]]) {
+    assert.equal(publicTopic.activatedAt, topic.activatedAt);
+    assert.equal(publicTopic.noteFolderReferenceId, topic.noteFolderReferenceId);
+  }
   assert.equal(result.archived[0].privateField, undefined);
   assert.equal(result.retired[0].privateField, undefined);
 });
