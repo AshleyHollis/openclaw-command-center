@@ -262,11 +262,14 @@ async function waitForMigrationCompletion(databasePath, topicId, { attempts = 10
   signal ??= acceptanceSignalContext.getStore();
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     signal?.throwIfAborted();
-    const database = new DatabaseSync(databasePath, { readOnly: true });
+    let database;
     try {
+      database = new DatabaseSync(databasePath, { readOnly: true });
       const completion = readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId });
       if (completion) return completion;
-    } finally { database.close(); }
+    } catch (error) {
+      if (error?.code !== 'SQLITE_BUSY' && !/database is locked/iu.test(error?.message ?? '')) throw error;
+    } finally { database?.close(); }
     await delayWithSignal(delayMs, signal);
   }
   throw new HarnessFailure('migration-incomplete', 'Pinned-host startup did not durably complete the configured legacy migration');
