@@ -11,7 +11,7 @@ export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 export const pinnedHost = Object.freeze({
   // The evaluator checkout is the exact signed stable-release source commit.
   packageVersion: '2026.9.1',
-  commit: 'd2029431bae4d92f3549de90885d304274774658',
+  commit: '30151991a85d11c2dc53984c7a92dff76f06f37e',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
