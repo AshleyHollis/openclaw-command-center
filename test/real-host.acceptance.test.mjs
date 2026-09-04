@@ -246,7 +246,7 @@ async function mountedPluginFrame(page, pluginDocument, evidence) {
     };
   });
   if (new URL(provenance.baseURI).pathname !== '/plugins/command-center' || provenance.title !== 'Command Center' || provenance.heading !== 'Dashboard' || !provenance.shell || !provenance.bridgeReady) {
-    throw new HarnessFailure('plugin-document-mismatch', 'Command Center srcdoc did not retain the exact route base, shell markers, and ready capability bridge');
+    throw new HarnessFailure('plugin-document-mismatch', `Command Center srcdoc did not retain the exact route base, shell markers, and ready capability bridge: ${redactBrowserEvidence(JSON.stringify(provenance))}`);
   }
   return { iframe, frame };
 }
