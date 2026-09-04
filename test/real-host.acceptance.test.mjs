@@ -2558,6 +2558,44 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await assertResponsiveFrame(frame, page, 1440);
       return { topicId: desktopJourney.topicId, primarySessionId: releaseState.primarySession.sessionId };
     });
+    if (focusedScenarioIds?.has('focused-second-topic-journey')) {
+      await collectScenario('focused-second-topic-journey', async (signal) => {
+        if (page && !page.isClosed()) await page.close();
+        page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+        await configureEvidencePage(page, browserGuard, evidence);
+        pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
+        await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
+        const name = 'Fictional Second Journey Topic';
+        try {
+          const journey = await runUiJourney(frame, { page, width: 1440, name, category: 'resource', keyboard: true, projectionRoot: releaseState.projectionRoot });
+          return { topicId: journey.topicId, topicOpenCreateMs: journey.measurement.topicOpenCreateMs };
+        } catch (error) {
+          const state = await frame.evaluate((topicName) => {
+            const row = [...document.querySelectorAll('.topic-row')].find((candidate) => candidate.textContent?.includes(topicName));
+            return {
+              topicId: row?.dataset.topicId ?? null,
+              workspace: document.querySelector('#workspace-status')?.textContent ?? null,
+              conversations: document.querySelector('#conversation-status')?.textContent ?? null,
+              notes: document.querySelector('#notes-status')?.textContent ?? null,
+              heading: document.querySelector('#topic-workspace-heading')?.textContent ?? null,
+              active: document.activeElement?.id || document.activeElement?.tagName || null
+            };
+          }, name);
+          const probe = async (method, params) => {
+            const startedAt = Date.now();
+            try { await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method, params, signal }); return { method, ms: Date.now() - startedAt, outcome: 'passed' }; }
+            catch (probeError) { return { method, ms: Date.now() - startedAt, outcome: 'failed', error: redactBrowserEvidence(probeError?.message ?? probeError) }; }
+          };
+          const probes = state.topicId ? await Promise.all([
+            probe('command-center.v1.topics.get', { schemaVersion: 1, topicId: state.topicId }),
+            probe('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: state.topicId }),
+            probe('command-center.v1.notes.browse', { schemaVersion: 1, topicId: state.topicId })
+          ]) : [];
+          throw new Error(`${error.message}; second-topic-diagnostic=${JSON.stringify({ state, probes, pageErrors: evidence.errors.slice(-5) })}`);
+        }
+      });
+    }
     await collectScenario('scale-performance', async () => {
       assert.ok(browser && releaseState.projectionRoot, 'scale scenario requires the independently seeded authoritative fixture');
       await ensureScaleConversationFixture();
