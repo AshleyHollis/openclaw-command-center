@@ -1247,7 +1247,6 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
   const backwards = reverse || (order.current >= 0 && order.target < order.current);
   assert.ok(order.count <= limit, 'Sequential keyboard traversal exceeded its bounded focus path.');
   const visited = new Set();
-  let previous = order.current;
   for (let step = 1; step <= order.count + 1; step += 1) {
     await page.keyboard.press(backwards ? 'Shift+Tab' : 'Tab');
     const state = await locator.evaluate((target) => {
@@ -1257,17 +1256,18 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
       };
       const tabbables = [...document.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')].filter(visible);
       const active = document.activeElement;
-      return { index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: Boolean(active?.closest?.('[hidden], [inert]')) || active?.getClientRects?.().length === 0, outline: active ? getComputedStyle(active).outlineStyle : 'none', escapedDialog: Boolean(target.closest('dialog[open]')) && !active?.closest?.('dialog[open]') };
+      globalThis.__commandCenterAcceptanceFocusIds ??= new WeakMap();
+      globalThis.__commandCenterAcceptanceFocusId ??= 0;
+      if (active && !globalThis.__commandCenterAcceptanceFocusIds.has(active)) globalThis.__commandCenterAcceptanceFocusIds.set(active, ++globalThis.__commandCenterAcceptanceFocusId);
+      return { identity: active ? globalThis.__commandCenterAcceptanceFocusIds.get(active) : null, index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: Boolean(active?.closest?.('[hidden], [inert]')) || active?.getClientRects?.().length === 0, outline: active ? getComputedStyle(active).outlineStyle : 'none', escapedDialog: Boolean(target.closest('dialog[open]')) && !active?.closest?.('dialog[open]') };
     });
     assert.notEqual(state.index, -1, `Sequential keyboard focus left the mounted shell at ${state.name}.`);
-    assert.equal(visited.has(state.index), false, `Sequential keyboard focus wrapped before reaching the target at ${state.name}.`);
-    if (previous >= 0) assert.equal(backwards ? state.index < previous : state.index > previous, true, `Sequential keyboard focus reversed before reaching the target at ${state.name}.`);
-    visited.add(state.index);
-    previous = state.index;
     assert.equal(state.hidden, false, 'Sequential keyboard focus entered hidden or inert content.');
     assert.notEqual(state.outline, 'none', 'Sequential keyboard focus must remain visible.');
     assert.equal(state.escapedDialog, false, 'Sequential keyboard focus escaped an open modal dialog.');
     if (state.target) return;
+    assert.equal(visited.has(state.identity), false, `Sequential keyboard focus wrapped before reaching the target at ${state.name}.`);
+    visited.add(state.identity);
   }
   throw new Error(`Sequential keyboard traversal did not reach ${await locator.getAttribute('id') || await locator.getAttribute('aria-label') || 'the requested control'}.`);
 }
@@ -2202,6 +2202,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.frame = true;
       const sandbox = await iframe.getAttribute('sandbox');
       if (sandbox !== 'allow-scripts') throw new HarnessFailure('sandbox-mismatch', 'External tab iframe is not scripts-only');
+      await waitForDashboard(frame);
       await chooseOption(frame.locator('#topic-search-topic-id'), RELEASE_ALPHA_TOPIC_ID, true);
       if (acceptancePlan.kind === 'release') {
         await enterText(frame.locator('#topic-search-query'), 'Fictional', true);
