@@ -255,8 +255,13 @@ export function createSearchRebuildService(options = {}) {
       }
       const operation = existing ?? { topicId, intentDigest, status: 'prepared', expiresAt: Number.POSITIVE_INFINITY, prepared: null, result: null, promise: null };
       operation.status = 'committing';
-      operation.promise = (operation.prepared
-        ? publishTopicSearchSnapshot({ stateDir: options.stateDir, prepared: operation.prepared, metadata: options.metadata })
+      const prepared = operation.prepared;
+      // Publication owns the snapshot through its local promise chain. Drop
+      // the operation-map reference immediately so a completed heavy rebuild
+      // cannot retain the full authoritative corpus until the replay TTL.
+      operation.prepared = null;
+      operation.promise = (prepared
+        ? publishTopicSearchSnapshot({ stateDir: options.stateDir, prepared, metadata: options.metadata })
         : rebuildTopicSearchProjections({ ...options, topicId })).then((result) => {
         operation.result = result;
         operation.status = 'applied';

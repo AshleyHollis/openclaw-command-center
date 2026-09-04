@@ -2361,7 +2361,15 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.deepEqual(captureSearchProjectionEvidence({ projectionRoot, metadataDatabasePath: databasePath }), before, `focused ${kind} projection read must remain side-effect free`);
       const startedAt = Date.now();
       await rebuildSearchThroughAuthenticatedPost({ gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ALPHA_TOPIC_ID, signal, label: `focused ${kind} Search projection rebuild` });
-      const verified = await verifyReleaseSearchResults({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal });
+      const verified = await waitForCommittedSearchProjections(projectionRoot, {
+        attempts: 1200,
+        signal,
+        requiredTopicIds: [RELEASE_ALPHA_TOPIC_ID, RELEASE_SCALE_TOPIC_ID],
+        expectedTopicRowCounts: {
+          notes: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedNotes },
+          conversations: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
+        }
+      });
       return { recovered: true, rebuildMs: Date.now() - startedAt, rowCounts: verified.rowCounts };
     };
     if (focusedScenarioIds?.has('focused-invalidated-projection-recovery')) await collectScenario('focused-invalidated-projection-recovery', (signal) => runFocusedProjectionRecovery('invalidated', signal));
