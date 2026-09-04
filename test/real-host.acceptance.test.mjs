@@ -1132,12 +1132,13 @@ async function seedAuthoritativeSessionCatalog({ gatewayUrl, credential, stateDi
     const indexes = Array.from({ length: Math.min(10, RELEASE_FIXTURE_COUNTS.conversations - offset) }, (_, batchIndex) => offset + batchIndex);
     const batch = await Promise.all(indexes.map(async (index) => {
       const label = `${labelPrefix} ${index}`;
+      const key = `agent:main:command-center:acceptance-scale:${topicId}:${index}`;
       const response = await requestAuthenticatedGateway({
         gatewayUrl,
         credential,
         scopes: ['operator.read', 'operator.write'],
         method: 'sessions.create',
-        params: { agentId: 'main', label, idempotencyKey: releaseScaleConversationOperationId(index) },
+        params: { agentId: 'main', key, label },
         signal
       });
       const value = response?.result ?? response;
