@@ -72,6 +72,7 @@ export async function build() {
   await mkdir(distRoot, { recursive: true });
   await cp(path.join(sourceRoot, 'src', 'plugin.mjs'), path.join(distRoot, 'plugin.mjs'));
   await cp(path.join(sourceRoot, 'src', 'plugin-service.mjs'), path.join(distRoot, 'plugin-service.mjs'));
+  await cp(path.join(sourceRoot, 'src', 'gateway-request-worker.mjs'), path.join(distRoot, 'gateway-request-worker.mjs'));
   await cp(path.join(sourceRoot, 'src', 'asset-handler.mjs'), path.join(distRoot, 'asset-handler.mjs'));
   await cp(path.join(sourceRoot, 'src', 'metadata'), path.join(distRoot, 'metadata'), { recursive: true, verbatimSymlinks: true });
   for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'search', 'topics', 'dashboard', 'notifications', 'http']) {

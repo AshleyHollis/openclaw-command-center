@@ -22,6 +22,7 @@ export class AuthoritativeSourceService {
     if (!this.metadata) throw sourceError('recovery-only', 'Authoritative-source metadata is unavailable.');
     this.api = options.api;
     this.gateway = options.gateway ?? options.api?.runtime?.gateway;
+    this.schedulerGateway = options.schedulerGateway ?? this.gateway;
     this.capabilities = normalizeSourceCapabilities(options.capabilities ?? {});
     this.searchProvider = options.searchProvider;
     this.analysisProvider = options.analysisProvider;
@@ -48,13 +49,14 @@ export class AuthoritativeSourceService {
       const options = { ...this.defaults, ...extra, metadata: this.metadata, api: this.api, gateway: this.gateway, topicId: id, coordinator: this.coordinator };
       const notes = this.capabilities.notes?.available === false ? null : createNoteAdapter(options);
       const sessions = this.capabilities.sessions?.available === false || !this.gateway?.request ? null : createSessionAdapter(options);
-      const scheduler = this.capabilities.scheduler?.available === false || !this.gateway?.request ? null : createSchedulerAdapter(options);
+      const schedulerOptions = { ...options, gateway: this.schedulerGateway };
+      const scheduler = this.capabilities.scheduler?.available === false || !this.schedulerGateway?.request ? null : createSchedulerAdapter(schedulerOptions);
       const search = this.capabilities.search?.available === false || !this.searchProvider ? null : createSearchAdapter({ provider: this.searchProvider });
       const service = Object.freeze({
         notes,
         sessions,
         scheduler,
-        reminders: scheduler ? createReminderAdapter({ ...options, metadata: this.metadata, api: this.api, gateway: this.gateway, topicId: id, coordinator: this.coordinator }) : null,
+        reminders: scheduler ? createReminderAdapter({ ...schedulerOptions, metadata: this.metadata, api: this.api, topicId: id, coordinator: this.coordinator }) : null,
         search,
         activity: this.activity,
         analysis: this.capabilities.analysis?.available === false || !this.analysisProvider ? null : createAnalysisAdapter({ provider: this.analysisProvider, topicId: id }),

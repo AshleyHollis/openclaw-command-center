@@ -15,6 +15,7 @@ import { createTopicAnalysisProvider } from './topics/analysis-provider.mjs';
 import { createProductionTopicAnalyzer } from './topics/production-analyzer.mjs';
 import { createTopicAnalysisScheduleService } from './topics/analysis-schedule.mjs';
 import { createTopicReviewService } from './topics/review.mjs';
+import { createGatewayRequestWorker } from './gateway-request-worker.mjs';
 
 let activeMaintenanceService;
 
@@ -44,6 +45,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
   let topicAnalysisRunner;
   let topicAnalysisSchedule;
   let topicReview;
+  let schedulerGatewayWorker;
   let startupSearchRebuildTask = Promise.resolve();
   let startupSearchRebuildController;
   let stopPromise;
@@ -56,6 +58,10 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       startupSearchRebuildController = new AbortController();
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
+      // This worker is started while the trusted plugin lifecycle owns the
+      // runtime context. Calls queued by a browser request therefore cannot
+      // accidentally inherit and narrow the browser's operator.write scope.
+      schedulerGatewayWorker = gatewayAvailable ? createGatewayRequestWorker({ gateway: api.runtime.gateway }) : null;
       // Current hosts expose a lazily loaded request-context probe. Entering
       // that runtime while plugin services are activating creates a loader
       // cycle, so activation must finish before any Gateway runtime call.
@@ -116,7 +122,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       // pinned host still supplies the transcript reader before service start.
       const { readVisibleSessionTranscriptMessageEntries } = await import('openclaw/plugin-sdk/session-transcript-runtime');
       const analysisProvider = analysisUsable ? createTopicAnalysisProvider({ getRunner: () => topicAnalysisRunner, metadata: metadataService, onCompleted: () => topicReview?.refresh?.() }) : null;
-      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider, analysisProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
+      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, schedulerGateway: schedulerGatewayWorker, capabilities, attentionService, migration: migrationService, searchProvider, analysisProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
       searchRebuildService = searchRebuildServiceFactory({
         stateDir,
@@ -232,7 +238,8 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       notificationTimer = undefined;
       stopPromise = Promise.all([
         Promise.resolve(startupSearchRebuildTask).catch(() => {}),
-        Promise.resolve(sourceService?.settleSearchRefresh?.()).catch(() => {})
+        Promise.resolve(sourceService?.settleSearchRefresh?.()).catch(() => {}),
+        Promise.resolve(schedulerGatewayWorker?.close?.()).catch(() => {})
       ]).then(() => {
         notificationService?.close?.();
         sourceService?.close?.();
@@ -250,6 +257,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
         topicAnalysisRunner = undefined;
         topicAnalysisSchedule = undefined;
         topicReview = undefined;
+        schedulerGatewayWorker = undefined;
         maintenanceService = undefined;
         activeMaintenanceService = undefined;
       });
