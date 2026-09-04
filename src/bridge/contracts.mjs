@@ -110,6 +110,15 @@ function actionResultSchema(method) {
     const group = (items) => Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ results: { type: 'array', items } }), required: ['results'] });
     return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, topicId: { type: 'string' }, query: { type: 'string' }, notes: group(note), conversations: group(conversation) }), required: ['schemaVersion', 'topicId', 'query', 'notes', 'conversations'] });
   }
+  if (method === 'command-center.v1.notes.browse') {
+    const sourceReference = Object.freeze({ type: 'object' });
+    const note = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, path: { type: 'string' }, revision: { type: 'string' }, sourceReference }), required: ['schemaVersion', 'path', 'revision', 'sourceReference'] });
+    return Object.freeze({
+      type: 'object', additionalProperties: false,
+      properties: Object.freeze({ schemaVersion: { const: 1 }, notes: { type: 'array', items: note }, total: { type: 'integer' }, offset: { type: 'integer' }, nextOffset: { type: ['integer', 'null'] }, hasMore: { type: 'boolean' }, cursor: { type: 'string' } }),
+      required: ['schemaVersion', 'notes', 'total', 'offset', 'nextOffset', 'hasMore', 'cursor']
+    });
+  }
   const properties = {
     schemaVersion: Object.freeze({ const: 1 }),
     status: Object.freeze({ type: 'string' }),
@@ -200,7 +209,7 @@ function actionResultSchema(method) {
     notificationSettings: Object.freeze({ type: 'object' }),
     topicIds: Object.freeze({ type: 'array' })
   };
-  const arrayResult = method.endsWith('notes.browse') || method.endsWith('reminders.list') || method.endsWith('schedules.list');
+  const arrayResult = method.endsWith('reminders.list') || method.endsWith('schedules.list');
   const allowed = method.includes('.migration.')
     ? ['schemaVersion', 'enabled', 'phase', 'complete', 'actions', 'channels', 'failures', 'completion', 'migrationRevision']
     : method.endsWith('sources.status')
@@ -352,7 +361,7 @@ const fields = Object.freeze({
   'command-center.v1.topics.recovery.relink': ['topicId', 'referenceId', 'sessionKey', 'sessionId', 'expectedRevision', 'expectedSourceRevision'],
   'command-center.v1.topics.recovery.replace': ['topicId', 'referenceId', 'replacementLocator', 'sessionKey', 'sessionId', 'expectedRevision', 'expectedSourceRevision'],
   'command-center.v1.sources.status': [],
-  'command-center.v1.notes.browse': ['topicId'],
+  'command-center.v1.notes.browse': ['topicId', 'limit', 'offset', 'cursor'],
   'command-center.v1.notes.read': ['topicId', 'referenceId', 'path', 'notePath', 'offset', 'observedRevision'],
   'command-center.v1.notes.create': ['topicId', 'referenceId', 'path', 'notePath', 'text', 'content', 'logicalOperationId'],
   'command-center.v1.notes.edit': ['topicId', 'referenceId', 'path', 'notePath', 'text', 'content', 'expectedRevision', 'logicalOperationId'],
@@ -627,6 +636,7 @@ export function sanitizeBridgeResult(method, result) {
   if (sanitized?.preview !== undefined) sanitized.preview = sanitizePreview(sanitized.preview);
   if (sanitized?.recovery !== undefined && !Array.isArray(sanitized.recovery)) sanitized.recovery = sanitizeRecovery(sanitized.recovery);
   if (sanitized?.sourceReference !== undefined) sanitized.sourceReference = sanitizeSourceReference(sanitized.sourceReference);
+  if (method === 'command-center.v1.notes.browse' && Array.isArray(sanitized?.notes)) sanitized.notes = sanitized.notes.map(sanitizeNote);
   if (sanitized?.note !== undefined) sanitized.note = sanitizeNote(sanitized.note);
   if (sanitized?.job !== undefined) sanitized.job = sanitizeJob(sanitized.job);
   if (sanitized?.value !== undefined) sanitized.value = sanitizeMutationValue(method, sanitized.value);

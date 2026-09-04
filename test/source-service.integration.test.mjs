@@ -233,7 +233,7 @@ test('external Note reads persist current observations across metadata restart',
     let service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
     const observed = await service.notesRead({ schemaVersion: 1, topicId: 'topic-observed-note', path: 'external.md' });
     await writeFile(path.join(vault, 'browsed.md'), 'browse observation');
-    const browsed = (await service.notesBrowse({ schemaVersion: 1, topicId: 'topic-observed-note' })).find((note) => note.path === 'browsed.md');
+    const browsed = (await service.notesBrowse({ schemaVersion: 1, topicId: 'topic-observed-note' })).notes.find((note) => note.path === 'browsed.md');
     metadata.close();
 
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });

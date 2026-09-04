@@ -47,9 +47,12 @@ test('Note browse resolves identities once and batches durable observations', as
       observeSourceReferences: (references) => { observed = references; return references; }
     };
     const adapter = new NoteAdapter({ fsSafeRootFactory, metadata, topicId: folder.topicId, noteFolderReferenceId: folder.referenceId });
-    const notes = await adapter.browse();
+    const first = await adapter.browsePage({ limit: 1, offset: 0 });
+    const second = await adapter.browsePage({ limit: 1, offset: 1, cursor: first.cursor });
+    const notes = [...first.notes, ...second.notes];
     assert.equal(listCalls, 1);
     assert.equal(observed.length, 2);
+    assert.deepEqual({ total: first.total, nextOffset: first.nextOffset, hasMore: first.hasMore }, { total: 2, nextOffset: 1, hasMore: true });
     assert.equal(notes.find(({ path: notePath }) => notePath === 'existing.md').sourceReference.referenceId, existing.referenceId);
     adapter.close();
   });

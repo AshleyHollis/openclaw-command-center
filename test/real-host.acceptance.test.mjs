@@ -2569,7 +2569,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.primarySession = { ...primarySession, sessionKey: primaryTarget.sessionKey };
       const ordinarySession = ((desktopSessions?.result ?? desktopSessions)?.conversations ?? desktopSessions?.conversations ?? []).find((session) => session.displayName === desktopJourney.conversationName);
       assert.ok(ordinarySession?.referenceId && ordinarySession?.sessionId);
-      const desktopNotes = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: desktopJourney.topicId } });
+      const desktopNotes = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: desktopJourney.topicId, limit: 100, offset: 0 } });
       const movedNote = authenticatedList(desktopNotes, 'notes').find((note) => note.path === desktopJourney.movedPath);
       assert.ok(movedNote?.sourceReference?.referenceId && movedNote?.revision);
       releaseState.durableWorkspace = {
@@ -2617,7 +2617,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           const probes = state.topicId ? await Promise.all([
             probe('command-center.v1.topics.get', { schemaVersion: 1, topicId: state.topicId }),
             probe('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: state.topicId }),
-            probe('command-center.v1.notes.browse', { schemaVersion: 1, topicId: state.topicId })
+            probe('command-center.v1.notes.browse', { schemaVersion: 1, topicId: state.topicId, limit: 100, offset: 0 })
           ]) : [];
           throw new Error(`${error.message}; second-topic-diagnostic=${JSON.stringify({ state, probes, pageErrors: evidence.errors.slice(-5) })}`);
         }
@@ -2639,7 +2639,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const scaleOrdinary = ((scaleSessions?.result ?? scaleSessions)?.conversations ?? scaleSessions?.conversations ?? []).find((session) => session.displayName === scaleJourney.conversationName);
       assert.ok(scalePrimary?.referenceId && scalePrimary?.sessionId && scaleOrdinary?.referenceId && scaleOrdinary?.sessionId);
       releaseState.primarySession = scalePrimary;
-      const scaleNotes = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
+      const scaleNotes = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId, limit: 100, offset: 0 } });
       const scaleNote = authenticatedList(scaleNotes, 'notes').find((note) => note.path === scaleJourney.movedPath);
       assert.ok(scaleNote?.sourceReference?.referenceId && scaleNote?.revision);
       releaseState.durableWorkspace = { conversation: { referenceId: scaleOrdinary.referenceId, sessionId: scaleOrdinary.sessionId }, note: { referenceId: scaleNote.sourceReference.referenceId, revision: scaleNote.revision, path: scaleNote.path } };
@@ -2762,7 +2762,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.deepEqual({ referenceId: reopenedOrdinary?.referenceId, sessionId: reopenedOrdinary?.sessionId }, releaseState.durableWorkspace.conversation);
       await selectWorkspaceSection(frame, 'notes', 1440);
       await frame.locator('#notes-tree').getByRole('button', { name: scaleJourney.movedPath, exact: true }).waitFor();
-      const reopenedNotes = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
+      const reopenedNotes = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId, limit: 100, offset: 0 } });
       const reopenedNote = authenticatedList(reopenedNotes, 'notes').find((note) => note.path === scaleJourney.movedPath);
       assert.deepEqual({ referenceId: reopenedNote?.sourceReference?.referenceId, revision: reopenedNote?.revision, path: reopenedNote?.path }, releaseState.durableWorkspace.note);
       await selectWorkspaceSection(frame, 'search', 1440);

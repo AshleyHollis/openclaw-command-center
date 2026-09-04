@@ -455,7 +455,7 @@ document.querySelector('#topic-search-rebuild')?.addEventListener('click', async
 
 const workspace = {
   topic: null, generation: 0, conversations: [], selected: null, selectionGeneration: 0, historyGeneration: 0, chatSendGeneration: 0, chatSendOperations: new Map(),
-  conversationCreateOperations: new Map(), conversationPage: 0, notes: [], notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
+  conversationCreateOperations: new Map(), conversationPage: 0, notes: [], notesTotal: 0, notesCursor: null, notesServerPaged: false, notesLoadGeneration: 0, notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
 };
 const AUTHORITATIVE_LIST_TOPIC = Symbol('authoritative-list-topic');
 const CONVERSATION_PAGE_SIZE = 50;
@@ -487,8 +487,8 @@ async function pageAction(action, input) {
   return value.result ?? value;
 }
 function resetWorkspacePresentation() {
-  workspace.topic = null; workspace.conversations = []; workspace.selected = null; workspace.conversationPage = 0; workspace.notes = []; workspace.notePage = 0; workspace.note = null; workspace.drafts = new Map();
-  workspace.selectionGeneration += 1; workspace.historyGeneration += 1; workspace.noteGeneration += 1; workspace.searchGeneration += 1;
+  workspace.topic = null; workspace.conversations = []; workspace.selected = null; workspace.conversationPage = 0; workspace.notes = []; workspace.notesTotal = 0; workspace.notesCursor = null; workspace.notesServerPaged = false; workspace.notePage = 0; workspace.note = null; workspace.drafts = new Map();
+  workspace.selectionGeneration += 1; workspace.historyGeneration += 1; workspace.notesLoadGeneration += 1; workspace.noteGeneration += 1; workspace.searchGeneration += 1;
   document.querySelector('#conversation-list')?.replaceChildren(); document.querySelector('#chat-messages')?.replaceChildren(); document.querySelector('#notes-tree')?.replaceChildren();
   document.querySelector('#workspace-notes-results')?.replaceChildren(); document.querySelector('#workspace-conversations-results')?.replaceChildren();
   document.querySelector('#note-editor').hidden = true; document.querySelector('#note-preview')?.replaceChildren(); document.querySelector('#chat-conversation-name').textContent = 'Loading…';
@@ -644,18 +644,26 @@ document.querySelector('#conversation-view')?.addEventListener('change', () => {
 document.querySelector('#conversation-previous')?.addEventListener('click', () => { if (workspace.conversationPage > 0) { workspace.conversationPage -= 1; renderConversations(); } });
 document.querySelector('#conversation-next')?.addEventListener('click', () => { if ((workspace.conversationPage + 1) * CONVERSATION_PAGE_SIZE < workspace.conversations.length) { workspace.conversationPage += 1; renderConversations(); } });
 
-async function loadNotes({ generation = workspace.generation } = {}) {
-  const value = unwrap(await bridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: workspace.topic.topicId }));
-  if (generation !== workspace.generation) return; workspace.notes = Array.isArray(value) ? value : value?.notes ?? []; workspace.notePage = Math.min(workspace.notePage, Math.max(0, Math.ceil(workspace.notes.length / NOTE_PAGE_SIZE) - 1)); renderNotes(); notesStatus.textContent = `${workspace.notes.length} Notes.`;
+async function loadNotes({ generation = workspace.generation, preserveSnapshot = false } = {}) {
+  const notesLoadGeneration = ++workspace.notesLoadGeneration;
+  const value = unwrap(await bridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: workspace.topic.topicId, limit: NOTE_PAGE_SIZE, offset: workspace.notePage * NOTE_PAGE_SIZE, ...(preserveSnapshot && workspace.notesCursor ? { cursor: workspace.notesCursor } : {}) }));
+  if (generation !== workspace.generation || notesLoadGeneration !== workspace.notesLoadGeneration) return;
+  workspace.notesServerPaged = !Array.isArray(value);
+  workspace.notes = Array.isArray(value) ? value : value?.notes ?? [];
+  workspace.notesTotal = Array.isArray(value) ? value.length : value?.total ?? workspace.notes.length;
+  workspace.notesCursor = Array.isArray(value) ? null : value?.cursor ?? null;
+  workspace.notePage = Array.isArray(value) ? Math.min(workspace.notePage, Math.max(0, Math.ceil(workspace.notes.length / NOTE_PAGE_SIZE) - 1)) : Math.floor((value?.offset ?? 0) / NOTE_PAGE_SIZE);
+  renderNotes(); notesStatus.textContent = `${workspace.notesTotal} Notes.`;
 }
 function renderNotes() {
   const target = document.querySelector('#notes-tree'); target.replaceChildren();
-  const pageCount = Math.max(1, Math.ceil(workspace.notes.length / NOTE_PAGE_SIZE)); workspace.notePage = Math.min(workspace.notePage, pageCount - 1); const start = workspace.notePage * NOTE_PAGE_SIZE;
-  for (const note of workspace.notes.slice(start, start + NOTE_PAGE_SIZE)) { const source = note.sourceReference ?? exactTopicReference(workspace.topic, 'note', note.referenceId); const open = button(note.path, () => openAuthoritativeNote({ kind: 'note', topicId: workspace.topic.topicId, referenceId: source?.referenceId, path: note.path, observedRevision: note.revision ?? source?.observedRevision })); open.className = 'note-tree-item'; target.append(open); }
-  document.querySelector('#note-previous').disabled = workspace.notePage === 0; document.querySelector('#note-next').disabled = workspace.notePage >= pageCount - 1; document.querySelector('#note-page-status').textContent = `${workspace.notes.length} Notes · Page ${workspace.notePage + 1} of ${pageCount}`;
+  const total = workspace.notesServerPaged ? workspace.notesTotal : workspace.notes.length; const pageCount = Math.max(1, Math.ceil(total / NOTE_PAGE_SIZE)); workspace.notePage = Math.min(workspace.notePage, pageCount - 1); const start = workspace.notePage * NOTE_PAGE_SIZE;
+  const visibleNotes = workspace.notesServerPaged ? workspace.notes : workspace.notes.slice(start, start + NOTE_PAGE_SIZE);
+  for (const note of visibleNotes) { const source = note.sourceReference ?? exactTopicReference(workspace.topic, 'note', note.referenceId); const open = button(note.path, () => openAuthoritativeNote({ kind: 'note', topicId: workspace.topic.topicId, referenceId: source?.referenceId, path: note.path, observedRevision: note.revision ?? source?.observedRevision })); open.className = 'note-tree-item'; target.append(open); }
+  document.querySelector('#note-previous').disabled = workspace.notePage === 0; document.querySelector('#note-next').disabled = workspace.notePage >= pageCount - 1; document.querySelector('#note-page-status').textContent = `${total} Notes · Page ${workspace.notePage + 1} of ${pageCount}`;
 }
-document.querySelector('#note-previous')?.addEventListener('click', () => { if (workspace.notePage > 0) { workspace.notePage -= 1; renderNotes(); } });
-document.querySelector('#note-next')?.addEventListener('click', () => { if ((workspace.notePage + 1) * NOTE_PAGE_SIZE < workspace.notes.length) { workspace.notePage += 1; renderNotes(); } });
+document.querySelector('#note-previous')?.addEventListener('click', () => { if (workspace.notePage > 0) { workspace.notePage -= 1; if (workspace.notesServerPaged) void loadNotes({ preserveSnapshot: true }); else renderNotes(); } });
+document.querySelector('#note-next')?.addEventListener('click', () => { const total = workspace.notesServerPaged ? workspace.notesTotal : workspace.notes.length; if ((workspace.notePage + 1) * NOTE_PAGE_SIZE < total) { workspace.notePage += 1; if (workspace.notesServerPaged) void loadNotes({ preserveSnapshot: true }); else renderNotes(); } });
 function encodeText(text) { const bytes = new TextEncoder().encode(text); let binary = ''; for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)); return btoa(binary); }
 function decodeBase64Bytes(value) { return Uint8Array.from(atob(value), (character) => character.charCodeAt(0)); }
 function decodeText(value) { return new TextDecoder('utf-8', { fatal: true }).decode(decodeBase64Bytes(value)); }

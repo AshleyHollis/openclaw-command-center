@@ -53,6 +53,8 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.history', { schemaVersion: 1, topicId: 'topic', referenceId: 'session', sessionId: 'foreign-session' }), /unsupported.*sessionId/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic' }));
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic', includeClosed: true }));
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: 'topic', limit: 100, offset: 0, cursor: 'opaque-snapshot' }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: 'topic', limit: 101, offset: 0 }), /limit/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.create', { schemaVersion: 1, topicId: 'topic', label: 'Authenticated Conversation', isPrimary: false, logicalOperationId: randomUUID() }), /authoritativeSession/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.topics.create', { schemaVersion: 1, topicId: randomUUID(), name: 'Authenticated Topic', paraCategory: 'project', logicalOperationId: randomUUID() }), /authoritativeSession/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic', includeClosed: 'true' }), /includeClosed.*boolean/i);
@@ -88,6 +90,14 @@ test('handlers preserve authenticated request context and echo request and logic
   await statusHandler({ req: { id: 'gateway-frame-1' }, params: { schemaVersion: 1 }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
   assert.deepEqual(response[1], { schemaVersion: 1, status: 'applied', requestId: 'gateway-frame-1', logicalOperationId: null, result: { mode: 'ready' } });
+});
+
+test('Note browse bridge exposes only one bounded opaque catalog page', async () => {
+  const reference = { version: 1, referenceId: 'note:page', topicId: 'topic-page', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/vault/page.md', observedRevision: 'sha256:page', createdAt: '2026-09-05T00:00:00.000Z', updatedAt: '2026-09-05T00:00:00.000Z' };
+  const result = await invokeBridgeMethod({
+    notesBrowse: async () => ({ schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'page.md', revision: 'sha256:page', sourceReference: reference, privateField: 'withheld' }], total: 5_001, offset: 0, nextOffset: 100, hasMore: true, cursor: 'opaque-page-snapshot', privateField: 'withheld' })
+  }, 'command-center.v1.notes.browse', { schemaVersion: 1, topicId: 'topic-page', limit: 100, offset: 0 });
+  assert.deepEqual(result, { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'page.md', revision: 'sha256:page', sourceReference: reference }], total: 5_001, offset: 0, nextOffset: 100, hasMore: true, cursor: 'opaque-page-snapshot' });
 });
 
 test('registered Session send preserves the live authenticated host turn principal', async () => {

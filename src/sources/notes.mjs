@@ -7,6 +7,7 @@ import { SourceServiceError, sourceError, nonBlank } from './errors.mjs';
 import { assertSafeDirectory, assertSafeNotePath, isWithin, normalizeNotePath } from './note-path.mjs';
 
 const NOTE_BROWSE_CONCURRENCY = 32;
+const NOTE_CATALOG_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 
 function bytesForText(value, field = 'text') {
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) return Buffer.from(value);
@@ -45,6 +46,8 @@ export class NoteAdapter {
     this.afterRootResolved = options.afterRootResolved;
     this.fsSafeRootFactory = options.fsSafeRootFactory;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.nowMs = options.nowMs ?? (() => Date.now());
+    this.catalogSnapshot = null;
   }
 
   async resolveRoot() {
@@ -137,6 +140,7 @@ export class NoteAdapter {
   }
 
   close() {
+    this.catalogSnapshot = null;
     if (this.rootDescriptor === undefined) return;
     closeSync(this.rootDescriptor);
     this.rootDescriptor = undefined;
@@ -354,6 +358,29 @@ export class NoteAdapter {
       for (let index = 0; index < notes.length; index += 1) notes[index].sourceReference = observed[index];
     }
     return Object.freeze(notes.map((note) => Object.freeze(note)));
+  }
+
+  async browsePage(input = {}) {
+    const limit = input.limit ?? 100;
+    const requestedOffset = input.offset ?? 0;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw sourceError('invalid-request', 'The Note page limit must be between 1 and 100.');
+    if (!Number.isInteger(requestedOffset) || requestedOffset < 0) throw sourceError('invalid-request', 'The Note page offset must be non-negative.');
+    let snapshot = this.catalogSnapshot;
+    if (input.cursor !== undefined) {
+      if (!snapshot || snapshot.cursor !== input.cursor || snapshot.expiresAt <= this.nowMs()) {
+        this.catalogSnapshot = null;
+        throw sourceError('conflict', 'The Note catalog snapshot expired; refresh it before continuing.');
+      }
+    } else {
+      const notes = await this.browse({ observe: input.observe, includeText: input.includeText });
+      snapshot = { cursor: randomUUID(), expiresAt: this.nowMs() + NOTE_CATALOG_SNAPSHOT_TTL_MS, notes };
+      this.catalogSnapshot = snapshot;
+    }
+    const total = snapshot.notes.length;
+    const offset = Math.min(requestedOffset, Math.max(0, Math.floor(Math.max(0, total - 1) / limit) * limit));
+    const notes = snapshot.notes.slice(offset, offset + limit);
+    const nextOffset = offset + notes.length < total ? offset + notes.length : null;
+    return Object.freeze({ schemaVersion: 1, notes, total, offset, nextOffset, hasMore: nextOffset !== null, cursor: snapshot.cursor });
   }
 
   async create(input = {}) {

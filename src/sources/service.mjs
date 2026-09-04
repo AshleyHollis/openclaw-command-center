@@ -157,7 +157,7 @@ export class AuthoritativeSourceService {
     if (configured && durableRow?.phase !== 'complete') throw sourceError('source-recovery', 'The migrated Topic has not completed destination verification.');
   }
 
-  async notesBrowse(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'notes'); return service.notes.browse(adapterInput(input)); }
+  async notesBrowse(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'notes'); return service.notes.browsePage(adapterInput(input)); }
   async notesRead(input = {}) {
     const service = this.requireTopicService(input);
     requireCapability(this.capabilities, 'notes');
