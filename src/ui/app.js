@@ -405,7 +405,7 @@ function topicRow(topic, kind) {
       row.append(mutationButton('Relink Note Folder', () => runAction('recovery.verify', { topicId: topic.topicId, referenceId: recovery.referenceId, replacementLocator: prompt('Exact Note Folder path'), expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Note Folder relinked.')));
     }
   } else {
-    row.append(button('Open Topic', () => openTopicWorkspace(topic)));
+    row.append(button('Open Topic', () => openTopicWorkspace(topic, AUTHORITATIVE_LIST_TOPIC)));
     row.append(mutationButton('Rename', () => runAction('rename', { topicId: topic.topicId, name: prompt('New Topic name', topic.name), expectedRevision: topic.revision }, 'Topic renamed.')));
     const target = topic.paraCategory === 'project' ? 'area' : 'project'; row.append(mutationButton(`Move to ${target}`, async () => { const preview = await mutate('recategorize.preview', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision }); if (confirm(`Category: ${topic.paraCategory} → ${target}\n${preview.result.preview.changes?.length ? 'Move managed Note Folder' : 'Note Folder location: unchanged (customized)'}`)) await runAction('recategorize.apply', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic moved.'); }));
     row.append(mutationButton('Archive', async () => { const preview = await mutate('archive.preview', { topicId: topic.topicId, expectedRevision: topic.revision }); if (confirm(`Disable and retain every active Reminder and scheduled operation (${preview.result.preview.commitments?.filter((item) => item.enabled).length ?? 0} active of ${preview.result.preview.commitments?.length ?? 0} commitment(s))`)) await runAction('archive.apply', { topicId: topic.topicId, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic archived.'); }));
@@ -456,6 +456,7 @@ const workspace = {
   topic: null, generation: 0, conversations: [], selected: null, selectionGeneration: 0, historyGeneration: 0, chatSendGeneration: 0, chatSendOperations: new Map(),
   conversationCreateOperations: new Map(), conversationPage: 0, notes: [], notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
 };
+const AUTHORITATIVE_LIST_TOPIC = Symbol('authoritative-list-topic');
 const CONVERSATION_PAGE_SIZE = 50;
 const NOTE_PAGE_SIZE = 100;
 const HISTORY_RENDER_BATCH_SIZE = 50;
@@ -495,12 +496,17 @@ function resetWorkspacePresentation() {
   if (noteDialog?.open) { noteDialogReturnFocus = null; noteDialogAction = null; noteDialog.close(); }
   chatStatus.textContent = ''; conversationStatus.textContent = ''; notesStatus.textContent = ''; workspaceSearchStatus.textContent = '';
 }
-async function openTopicWorkspace(topicOrId) {
+async function openTopicWorkspace(topicOrId, authority) {
   const topicId = typeof topicOrId === 'string' ? topicOrId : topicOrId?.topicId;
   if (!topicId) throw new Error('A Topic identity is required.');
   const generation = ++workspace.generation;
   setWorkspaceVisible(true); resetWorkspacePresentation(); workspaceStatus.textContent = 'Loading workspace…';
-  const value = unwrap(await bridgeRequest('command-center.v1.topics.get', { schemaVersion: 1, topicId }));
+  // Rendered rows originate from the authenticated, sanitized Topics list and
+  // already carry the authoritative identity. Direct URL/programmatic opens
+  // still require an exact topics.get read before any workspace is exposed.
+  const value = authority === AUTHORITATIVE_LIST_TOPIC && typeof topicOrId === 'object'
+    ? { topic: topicOrId }
+    : unwrap(await bridgeRequest('command-center.v1.topics.get', { schemaVersion: 1, topicId }));
   if (generation !== workspace.generation) return null;
   const topic = value?.topic;
   if (!topic || topic.topicId !== topicId || topic.lifecycle !== 'active' || topic.usable === false) throw new Error('The authoritative Topic is not available as a workspace.');

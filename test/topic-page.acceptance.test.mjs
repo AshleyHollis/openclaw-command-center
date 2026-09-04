@@ -481,10 +481,11 @@ test('workspace readiness does not wait for initial Primary history', async () =
 test('workspace shell readiness does not wait for independent Notes hydration', async () => {
   const page = await setupPage({ queryless: true });
   try {
-    await page.evaluate(() => { globalThis.__topicPageFixture.deferNotesBrowse = true; });
+    await page.evaluate(() => { const fixture = globalThis.__topicPageFixture; fixture.deferNotesBrowse = true; fixture.deferTopicGetId = fixture.topicId; });
     const row = page.locator('.topic-row').filter({ hasText: 'Fictional Topic with a deliberately long responsive workspace name' });
     await row.getByRole('button', { name: 'Open Topic' }).click();
     await page.waitForFunction(() => globalThis.__topicPageFixture.notesBrowsePending === true);
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.deferredTopicGet), null);
     await page.getByText('Topic workspace ready.').waitFor({ timeout: 1_000 });
     await page.getByText('Loading Notes…', { exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelector('#chat-conversation-name')?.textContent === 'Primary Conversation');
