@@ -512,14 +512,14 @@ async function openTopicWorkspace(topicOrId, authority) {
   if (!topic || topic.topicId !== topicId || topic.lifecycle !== 'active' || topic.usable === false) throw new Error('The authoritative Topic is not available as a workspace.');
   workspace.topic = topic; document.querySelector('#topic-workspace-heading').textContent = topic.name; document.querySelector('#topic-search-topic-id').value = topicId; document.querySelector('#workspace-search-query').disabled = false; document.querySelector('#workspace-search-form button[type="submit"]').disabled = false;
   conversationStatus.textContent = 'Loading Conversations…'; notesStatus.textContent = 'Loading Notes…';
-  // The authoritative Topic makes the workspace shell usable. Each pane owns
-  // its potentially expensive catalog hydration and reports its own status,
-  // so one slow source cannot make the entire workspace appear unavailable.
+  // Notes can be large, so hydrate them independently. Readiness waits only
+  // for the bounded Conversation catalog and Primary selection required to
+  // make the default Chat pane usable.
+  const notesHydration = loadNotes({ generation }).catch((error) => { if (generation === workspace.generation) notesStatus.textContent = error.message || 'Notes are unavailable.'; });
+  await loadConversations({ selectPrimary: true, generation }).catch((error) => { if (generation === workspace.generation) conversationStatus.textContent = error.message || 'Conversations are unavailable.'; });
+  if (generation !== workspace.generation) return null;
   workspaceStatus.textContent = 'Topic workspace ready.'; focusPane('chat', false);
-  await Promise.all([
-    loadConversations({ selectPrimary: true, generation }).catch((error) => { if (generation === workspace.generation) conversationStatus.textContent = error.message || 'Conversations are unavailable.'; }),
-    loadNotes({ generation }).catch((error) => { if (generation === workspace.generation) notesStatus.textContent = error.message || 'Notes are unavailable.'; })
-  ]);
+  await notesHydration;
   return generation === workspace.generation ? topic : null;
 }
 async function loadConversations({ selectPrimary = false, generation = workspace.generation } = {}) {
