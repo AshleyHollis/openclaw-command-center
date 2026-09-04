@@ -39,7 +39,7 @@ test('real-host acceptance exposes one closed authenticated mount dependency pla
   });
   assert.deepEqual(resolveRealHostAcceptancePlan('full-corpus-desktop-to-scale-transition'), {
     kind: 'focused',
-    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']
+    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']
   });
   assert.deepEqual(resolveRealHostAcceptancePlan('repeated-recovery-session-create'), {
     kind: 'focused',
