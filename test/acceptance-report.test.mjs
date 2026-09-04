@@ -45,6 +45,7 @@ test('real-host aggregate reports scenario children and Session interleaving cov
   assert.match(source, /isolatedResult\('degraded-source-availability'\)/u);
   assert.doesNotMatch(source, /requireScenario\(/u);
   assert.match(source, /testContext\.diagnostic\(/u);
+  assert.match(source, /if \(acceptancePlan\.kind !== 'release'\) return;\s+assert\.ok\(emittedBaseline,[^;]+;\s+testContext\.diagnostic\(`acceptance-result=/u, 'focused diagnostics must not claim complete release acceptance');
   assert.match(source, /timeout: 2_400_000/u);
   const isolatedCompletion = source.indexOf("await Promise.all([...isolatedSlices.keys()]");
   const finalization = source.indexOf('const finalizationErrors = await finalizeAcceptanceJourney', isolatedCompletion);

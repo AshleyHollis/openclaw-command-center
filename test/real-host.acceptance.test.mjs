@@ -3353,6 +3353,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       throw failure;
     }
   }, { candidateRoot: process.cwd() });
+  // A diagnostic slice must never emit the canonical complete-release receipt.
+  if (acceptancePlan.kind !== 'release') return;
+  assert.ok(emittedBaseline, 'a complete release receipt requires the coherently qualified baseline');
   testContext.diagnostic(`acceptance-result=${JSON.stringify({
     schemaVersion: 1,
     outcome: 'passed',
