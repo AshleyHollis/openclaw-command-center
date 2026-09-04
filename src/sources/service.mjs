@@ -367,7 +367,8 @@ export class AuthoritativeSourceService {
     requireCapability(this.capabilities, 'scheduler');
     if (!service.scheduler) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' });
     const result = await service.scheduler.createReminder({ ...adapterInput(input), logicalOperationId: input.logicalOperationId });
-    await this.remindersList({ schemaVersion: 1, topicId: input.topicId });
+    if (!result?.value?.job || !result?.value?.sourceReference) throw sourceError('unavailable', 'Reminder creation returned no authoritative scheduler result.');
+    await this.ingestReminderRows(input.topicId, [result.value]);
     return result;
   }
   async refreshReminderAttention() {

@@ -369,29 +369,30 @@ test('authoritative creates reject a missing Topic before provider dispatch', as
   assert.deepEqual(calls, []);
 });
 
-test('Reminder creation uses the exact scheduler declaration and refreshes durable Attention observations', async () => {
+test('Reminder creation ingests its exact scheduler result without a redundant readback', async () => {
   const topicId = 'topic-reminder-create';
   const logicalOperationId = randomUUID();
   const calls = [];
+  const observations = [];
+  const sourceReference = { referenceId: 'reminder:fictional-reminder', externalSourceId: 'fictional-reminder', observedRevision: 'revision-1' };
+  const job = { id: 'fictional-reminder', enabled: true, configRevision: 'revision-1', schedule: { kind: 'at', at: '2026-08-29T23:59:00.000Z' } };
   const metadata = {
     getTopic: (requestedTopicId) => requestedTopicId === topicId ? { topicId, lifecycle: 'active', paraCategory: 'project' } : null
   };
   const scheduler = {
     async createReminder(input) {
       calls.push(['create', input]);
-      return { schemaVersion: 1, status: 'applied', logicalOperationId, value: { job: { id: 'fictional-reminder' } } };
+      return { schemaVersion: 1, status: 'applied', logicalOperationId, value: { job, sourceReference } };
     }
   };
-  const reminders = { async list(input) { calls.push(['list', input]); return []; } };
-  const service = createAuthoritativeSourceService({ metadata, capabilities: { scheduler: true } });
-  service.forTopic = () => ({ scheduler, reminders });
-  const declaration = { name: 'Fictional reminder', enabled: true, schedule: { kind: 'every', everyMs: 60_000 }, payload: { kind: 'systemEvent', text: 'Fictional reminder payload' } };
+  const attentionService = { async ingest(input) { observations.push(input); }, sourceOccurrenceContext: () => null, allEpisodes: () => [] };
+  const service = createAuthoritativeSourceService({ metadata, attentionService, now: () => '2026-08-30T00:00:00.000Z', capabilities: { scheduler: true } });
+  service.forTopic = () => ({ scheduler });
+  const declaration = { name: 'Fictional reminder', enabled: true, schedule: job.schedule, payload: { kind: 'systemEvent', text: 'Fictional reminder payload' } };
   const result = await service.remindersCreate({ schemaVersion: 1, topicId, logicalOperationId, declaration });
   assert.equal(result.logicalOperationId, logicalOperationId);
-  assert.deepEqual(calls, [
-    ['create', { schemaVersion: 1, logicalOperationId, declaration }],
-    ['list', { schemaVersion: 1 }]
-  ]);
+  assert.deepEqual(calls, [['create', { schemaVersion: 1, logicalOperationId, declaration }]]);
+  assert.deepEqual(observations.map((observation) => ({ stableSubjectId: observation.stableSubjectId, sourceReferenceId: observation.sourceReferenceId, reminderDue: observation.evidenceFacts.reminderDue })), [{ stableSubjectId: job.id, sourceReferenceId: sourceReference.referenceId, reminderDue: true }]);
 });
 
 test('migration-configured Topics require exact authoritative bindings and completion before normal admission', () => {
