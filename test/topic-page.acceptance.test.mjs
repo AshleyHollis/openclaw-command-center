@@ -489,7 +489,7 @@ test('workspace shell readiness does not wait for independent Notes hydration', 
     await page.getByText('Loading Notes…', { exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelector('#chat-conversation-name')?.textContent === 'Primary Conversation');
     await page.evaluate(() => globalThis.__topicPageFixture.resolveNotesBrowse());
-    await page.getByText('2 Notes.', { exact: true }).waitFor();
+    await page.getByText('3 Notes.', { exact: true }).waitFor();
   } finally { await closeGuardedPage(page); }
 });
 
@@ -1020,7 +1020,7 @@ test('delayed Note reads and saves cannot replace a newer Note or discard its dr
     await page.evaluate(() => { globalThis.__topicPageFixture.deferNoteEdit = true; }); await page.getByRole('button', { name: 'Save Note' }).click(); await page.waitForFunction(() => globalThis.__topicPageFixture.noteEditPending === true);
     await page.evaluate(() => window.CommandCenterTopics.openTopic(globalThis.__topicPageFixture.topicB)); await page.getByText('Topic workspace ready.').waitFor();
     await page.evaluate(() => globalThis.__topicPageFixture.resolveDeferredNoteEdit()); await page.waitForFunction(() => globalThis.__topicPageFixture.noteEditPending === false);
-    assert.equal(await page.locator('#notes-status').textContent(), ''); assert.equal(await page.locator('#note-editor').isHidden(), true);
+    assert.equal(await page.locator('#notes-status').textContent(), '1 Notes.'); assert.equal(await page.locator('#note-editor').isHidden(), true);
   } finally { await closeGuardedPage(page); }
 });
 
