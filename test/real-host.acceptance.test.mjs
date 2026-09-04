@@ -1756,14 +1756,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     let migrationFixtureEvidence;
     await testContext.test('release preparation: deterministic source fixtures', async () => withDeadline('deterministic release fixture preparation', async () => {
       reportProgress(testContext, 'fixture:started');
-      if (acceptancePlan.kind === 'focused') {
-        const focusedFixture = openCommandCenterMetadataService({ stateDir: resolvedStateDir, capabilities: READY_CAPABILITIES });
-        try {
-          focusedFixture.createTopic({ topicId: RELEASE_ALPHA_TOPIC_ID, paraCategory: 'project', lifecycle: 'active' });
-        } finally { focusedFixture.close(); }
-        reportProgress(testContext, 'fixture:passed');
-        return;
-      }
       const migrationExportPath = path.join(world.tempRoot, 'legacy-discord-export.v1.json');
       const migrationFolderPath = path.join(world.paths.vault, 'fictional-alpha');
       const scaleMigrationFolderPath = path.join(world.paths.vault, 'fictional-scale');
@@ -2132,6 +2124,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           const observations = redact(JSON.stringify(evidence.readinessAttempts.slice(-5)), 1_500);
           throw new HarnessFailure(error.category || 'readiness-timeout', `${error.message}; last readiness observations: ${observations}; host stdout: ${host.diagnostics.stdout}; host stderr: ${host.diagnostics.stderr}`);
         }
+        await ensureMigrationBinding(signal);
+        await restoreReleaseSearchBaseline({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal, label: 'focused Control UI Search baseline' });
+        releaseState.projectionRoot = projectionRoot;
       } else {
         await verifyReleaseSearchResults({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal });
         releaseState.projectionRoot = projectionRoot;
