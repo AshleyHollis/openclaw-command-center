@@ -101,6 +101,32 @@ test('concurrent authenticated rebuild replay converges while changed intent fai
   }
 });
 
+test('completed authenticated rebuilds do not consume active preparation capacity', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-capacity-'));
+  let snapshotCalls = 0;
+  const rebuild = createSearchRebuildService({
+    stateDir,
+    metadata: { listTopics: () => [topic] },
+    sourceSnapshotFactory: async ({ topicId }) => {
+      snapshotCalls += 1;
+      return { notes: [], conversations: [], note: { sourceRevision: `notes-${topicId}-${snapshotCalls}` }, conversation: { sourceRevision: `sessions-${topicId}-${snapshotCalls}` } };
+    },
+    requireAuthorizedPreparation: true,
+    now: () => 1_800_000_000_000
+  });
+  try {
+    for (let index = 0; index < 9; index += 1) {
+      const logicalOperationId = randomUUID();
+      await rebuild.prepareAuthorized({ topicId: topic.topicId, logicalOperationId });
+      const result = await rebuild.rebuildPrepared({ topicId: topic.topicId, logicalOperationId });
+      assert.deepEqual(result.topicIds, [topic.topicId]);
+    }
+    assert.equal(snapshotCalls, 9);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('temporary authoritative fixtures rebuild equivalent grouped Topic Search results', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-acceptance-'));
   const authoritative = JSON.stringify({ markdown: '# Readme\n\nalpha phrase', session: 'closed conversation alpha phrase', metadata: 'Topic metadata' });

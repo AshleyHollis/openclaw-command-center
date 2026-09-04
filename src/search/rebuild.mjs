@@ -267,6 +267,10 @@ export function createSearchRebuildService(options = {}) {
         operation.status = 'applied';
         operation.expiresAt = clock() + preparedTtlMs;
         writeReceipt(options.stateDir, { schemaVersion: 1, logicalOperationId: operationId, topicId, intentDigest, state: 'applied', result, createdAt, updatedAt: new Date(clock()).toISOString() });
+        // The durable applied receipt is now the replay authority. Keeping the
+        // settled promise in the active map needlessly retains its publication
+        // closure and counts completed work against the active-operation cap.
+        operations.delete(operationId);
         return result;
       }).catch((error) => {
         operations.delete(operationId);
