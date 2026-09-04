@@ -1307,7 +1307,14 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
   });
   assert.notEqual(order.target, -1, `Requested keyboard target is absent from the sequential focus order: ${JSON.stringify(order.targetState)}`);
   if (order.current === order.target) return;
-  if (order.current < 0) await locator.evaluate((target) => target.ownerDocument.defaultView.focus());
+  if (order.current < 0) await locator.evaluate((target) => {
+    const body = target.ownerDocument.body;
+    const previousTabIndex = body.getAttribute('tabindex');
+    body.setAttribute('tabindex', '-1');
+    body.focus({ preventScroll: true });
+    if (previousTabIndex === null) body.removeAttribute('tabindex');
+    else body.setAttribute('tabindex', previousTabIndex);
+  });
   const backwards = reverse || (order.current >= 0 && order.target < order.current);
   assert.ok(order.count <= limit, 'Sequential keyboard traversal exceeded its bounded focus path.');
   for (let step = 1; step <= limit; step += 1) {
