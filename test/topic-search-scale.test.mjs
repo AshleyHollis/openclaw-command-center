@@ -36,9 +36,13 @@ test('large repeated Topic queries use the FTS virtual-table index without autho
     const plan = store.explainQueryPlan(request).map((row) => String(row.detail)).join('\n');
     assert.match(plan, /VIRTUAL TABLE INDEX/iu);
     assert.match(plan, /note_documents_topic_idx/iu);
+    assert.match(plan.split('\n')[0], /SCAN note_documents_fts VIRTUAL TABLE INDEX/iu, 'FTS matches must drive keyed document lookups, not one FTS scan per Topic document');
+    assert.match(plan, /topic_id=\? AND rowid=\?/u);
     const conversationPlan = conversationStore.explainQueryPlan(request).map((row) => String(row.detail)).join('\n');
     assert.match(conversationPlan, /VIRTUAL TABLE INDEX/iu);
     assert.match(conversationPlan, /conversation_documents_topic_idx/iu);
+    assert.match(conversationPlan.split('\n')[0], /SCAN conversation_documents_fts VIRTUAL TABLE INDEX/iu);
+    assert.match(conversationPlan, /topic_id=\? AND rowid=\?/u);
     assert.ok(projectionDigestReads > 0, 'opening a committed projection performs one full integrity validation');
     projectionDigestReads = 0;
     const references = new Map([[folderReference.referenceId, folderReference], [sessionReference.referenceId, sessionReference], ...noteReferences.map((reference) => [reference.referenceId, reference])]);

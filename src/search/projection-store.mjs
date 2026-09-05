@@ -497,7 +497,9 @@ export async function openProjectionStore({ stateDir, root: suppliedRoot, projec
     }
     return db;
   };
-  const querySql = `SELECT d.*, bm25(${config.fts}) AS rank, snippet(${config.fts}, 1, '${MATCH_START}', '${MATCH_END}', ' … ', 32) AS matched_snippet FROM ${config.fts} JOIN ${config.table} d INDEXED BY ${config.table}_topic_idx ON d.row_id = ${config.fts}.rowid WHERE ${config.fts} MATCH ? AND d.topic_id = ? ORDER BY rank, d.row_id LIMIT ?`;
+  // SQLite 3.51 can otherwise drive this join from every Topic document and
+  // rerun MATCH per row. Keep FTS first, then seek the exact Topic/rowid pair.
+  const querySql = `SELECT d.*, bm25(${config.fts}) AS rank, snippet(${config.fts}, 1, '${MATCH_START}', '${MATCH_END}', ' … ', 32) AS matched_snippet FROM ${config.fts} CROSS JOIN ${config.table} d INDEXED BY ${config.table}_topic_idx ON d.row_id = ${config.fts}.rowid WHERE ${config.fts} MATCH ? AND d.topic_id = ? ORDER BY rank, d.row_id LIMIT ?`;
   const scopedMatch = (request) => `topic_id : "${request.topicId.replaceAll('"', '""')}" AND content : (${buildFtsQuery(request.tokens)})`;
 
   const store = {
