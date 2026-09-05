@@ -123,6 +123,12 @@ A half-second browser reproduction with the actual product stylesheet showed the
 
 The Linux build passed 56 checks and sealed new production digest `sha256:a398327cf913a9cd98057062f278c767f588d7b64b0db27dbf637429df2870f2`. The affected full mobile and desktop/review journeys run in `ticket32-mobile-frontier-7595397` and `ticket32-review-journey-7595397`. Their results are pending; prior slice passes remain historical evidence for the earlier digest. All three original remaining frontiers and the final coherent release/evaluation/publication/live gates remain open.
 
+## Final keyboard fixture and exclusive scale diagnostic — 20:09 AEST
+
+`ticket32-review-journey-7595397` passed original desktop and review on production digest `a398327cf913a9cd98057062f278c767f588d7b64b0db27dbf637429df2870f2`. The mobile job passed the native time-picker focus audit, then failed its requirement to reach View evidence after both of its Reminder fixtures had deliberately left Attention. Harness-only `f777a9fbff708f78c86cfd2dcc6627f209f197c7` gives the final audit a separate active Reminder, verifies its exact episode through the public Dashboard readback and requires its Evidence action to be visible. Both original Snooze/Complete tests and the final keyboard/dialog/reflow assertions remain. The correction is not yet real-host-qualified.
+
+After verifying both diagnostic lanes terminal and no competing worker pods active, `ticket32-scale-frontier-7595397` runs alone against the unchanged sealed production bytes. It includes exact dependent Activity readback. The successor builder/mobile/security manifests are only prepared; they must not start until this exclusive diagnostic ends. Three original frontiers still remain and no complete capture has run.
+
 ## Not yet release-qualified
 
 The original 211-test snapshot above was focused integration evidence. The later sealed diagnostic candidate is **not a final acceptance capture or release-qualified build**. No unique final release acceptance boundary was closed by these focused or diagnostic passes.
