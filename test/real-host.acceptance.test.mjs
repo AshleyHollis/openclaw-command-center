@@ -1091,7 +1091,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           try { return (await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, `${kind} fresh readiness`, 10_000)).ok; }
           catch (error) { if (error?.category === 'transport-timeout') { observeMigration(); return false; } throw error; }
         }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
-      } catch (error) { observeMigration(); error.message += `; durableStartupProgress=${JSON.stringify(readinessProgress)}`; throw error; }
+      } catch (error) { observeMigration(); throw new Error(`Host transport readiness failed; durableStartupProgress=${JSON.stringify(readinessProgress)}`, { cause: error }); }
       if (kind === 'scale') {
         let lastMigrationStatus;
         try {
@@ -1652,10 +1652,21 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   const focusRestorations = [];
   const announcementTransitions = [];
   const audit = async (label) => { accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, width, label, keyboard)); };
-  const statusText = (selector) => frame.locator(selector).textContent().then((value) => value?.trim() ?? '');
+  const statusText = (selector) => frame.evaluate((target) => {
+    window.__acceptanceStatusTransitions ??= new Map();
+    window.__acceptanceStatusTransitions.get(target)?.observer.disconnect();
+    const node = document.querySelector(target);
+    const state = { samples: [], observer: new MutationObserver(() => { if (state.samples.length < 20) state.samples.push(node.textContent.trim()); }) };
+    state.observer.observe(node, { childList: true, characterData: true, subtree: true });
+    window.__acceptanceStatusTransitions.set(target, state);
+    return node.textContent.trim();
+  }, selector);
   const recordAnnouncement = async (selector, before, label) => {
-    const after = await statusText(selector);
-    assert.notEqual(after, before, `${label} did not announce an observable status transition`);
+    const observed = await frame.evaluate((target) => {
+      const state = window.__acceptanceStatusTransitions.get(target); state.observer.disconnect();
+      return { after: document.querySelector(target).textContent.trim(), samples: state.samples };
+    }, selector);
+    assert.ok(observed.after && (observed.after !== before || observed.samples.some((text) => text && text !== before)), `${label} did not announce an observable status transition`);
     announcementTransitions.push(label);
   };
   const recordFocusRestoration = async (locator, label) => {

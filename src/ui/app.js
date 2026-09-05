@@ -567,15 +567,20 @@ async function openResult(result) {
     detail.textContent = decodeText(value.contentBase64);
   } catch (error) { detail.textContent = error.message || 'Authoritative navigation was refused.'; }
 }
+let topicSearchGeneration = 0;
 document.querySelector('#topic-search-form')?.addEventListener('submit', async (event) => {
   event.preventDefault();
+  const generation = ++topicSearchGeneration;
   const status = document.querySelector('#topic-search-status');
+  status.textContent = 'Searching…';
   try {
     const value = await queryTopicSearch({ schemaVersion: 1, topicId: document.querySelector('#topic-search-topic-id').value, query: document.querySelector('#topic-search-query').value.trim(), limit: 50 });
+    if (generation !== topicSearchGeneration) return;
     renderSearch('notes-results', value.notes?.results);
     renderSearch('conversations-results', value.conversations?.results);
     status.textContent = `${value.notes?.results?.length ?? 0} Notes · ${value.conversations?.results?.length ?? 0} Conversations`;
   } catch (error) {
+    if (generation !== topicSearchGeneration) return;
     status.textContent = `Topic Search failed (${error?.code || 'unknown'}): ${error?.message || 'The search request was rejected.'}`;
   }
 });

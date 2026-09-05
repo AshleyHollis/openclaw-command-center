@@ -8,6 +8,8 @@ test('remaining UI diagnostics are a closed non-performance subset', () => {
   assert.equal(plan.kind, 'focused');
   assert.deepEqual(plan.scenarioIds, []);
   assert.deepEqual(plan.isolatedSliceIds, ['fresh-scale', 'fresh-mobile']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-scale').isolatedSliceIds, ['fresh-scale']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-mobile').isolatedSliceIds, ['fresh-mobile']);
 });
 
 test('two non-performance diagnostic lanes partition every independent real-host slice', async () => {

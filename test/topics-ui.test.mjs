@@ -220,6 +220,12 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
     });
     const methods = await page.evaluate(() => globalThis.__calls.map((call) => call.method));
     assert.equal(methods.filter((method) => method === 'http:create').length, 1);
+    await page.evaluate(() => {
+      const node = document.querySelector('#topic-search-status'); window.__searchAnnouncements = [];
+      new MutationObserver(() => window.__searchAnnouncements.push(node.textContent)).observe(node, { childList: true, subtree: true, characterData: true });
+    });
+    await page.locator('#topic-search-form button[type="submit"]').click();
+    await page.waitForFunction(() => window.__searchAnnouncements.includes('Searching…') && window.__searchAnnouncements.includes('0 Notes · 0 Conversations'));
     for (const fragment of ['http:create', 'provisioning.retry', 'provisioning.rollback', 'http:rename', 'recategorize.preview', 'archive.preview', 'http:restore', 'search.query', 'recovery.verify', 'recovery.relink', 'recovery.replace-session']) assert.equal(methods.some((method) => method.includes(fragment)), true, fragment);
     const recoveryCall = await page.evaluate(() => globalThis.__calls.find((call) => call.method.endsWith('recovery.verify')));
     assert.equal(recoveryCall.params.expectedRevision, 1);
