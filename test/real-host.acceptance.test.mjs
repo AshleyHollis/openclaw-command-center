@@ -30,6 +30,7 @@ import { compatibilityTuple } from '../src/compatibility.mjs';
 import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice } from '../src/acceptance-scenario-coordinator.mjs';
 import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence, verifiedMigrationStatusReady } from '../src/acceptance-migration.mjs';
 import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet, verifyMissingSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
+import { createGatewayFrameWaiter } from '../src/acceptance-gateway.mjs';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
 const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
 // The UI retains queued requests for 180s while honoring the host's rolling
@@ -1146,6 +1147,21 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.equal(new Set([...firstActivity.activity.records, ...secondActivity.activity.records, ...thirdActivity.activity.records].map((record) => record.activityId)).size, RELEASE_FIXTURE_COUNTS.activityRecords);
 
         const scaleProjectionOptions = { projectionRoot: scaleProjectionRoot, metadataDatabasePath: resolveCommandCenterDatabasePath(path.join(scenarioWorld.root, '.openclaw')) };
+        const verifyScaleSearch = async () => {
+          const response = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: scaleTopicId, query: 'Fictional indexed scale phrase', limit: 50 } });
+          const results = (response?.result ?? response)?.conversations?.results ?? [];
+          assert.equal(results.length, 50, 'rebuilt scale projection must return the bounded public Conversation hits');
+          assert.equal(new Set(results.map((result) => result.messageId)).size, 50);
+          for (const result of results) {
+            assert.equal(result.topicId, scaleTopicId);
+            assert.ok(result.sourceReference?.referenceId);
+            assert.match(result.snippet, /Fictional indexed scale phrase/u);
+          }
+          await waitForCommittedSearchProjections(scaleProjectionRoot, { requiredTopicIds: [scaleTopicId], expectedTopicRowCounts: {
+            notes: { [scaleTopicId]: RELEASE_FIXTURE_COUNTS.indexedNotes },
+            conversations: { [scaleTopicId]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
+          } });
+        };
         const beforeMissingProjection = captureSearchProjectionEvidence(scaleProjectionOptions);
         await Promise.all(COMMITTED_SEARCH_PROJECTION_FILES.map((name) => unlink(path.join(scaleProjectionRoot, name))));
         verifyMissingSearchProjectionSet(scaleProjectionOptions, beforeMissingProjection);
@@ -1254,17 +1270,7 @@ async function requestAuthenticatedGateway({ gatewayUrl, credential, method, par
   signal ??= acceptanceSignalContext.getStore();
   signal?.throwIfAborted();
   const socket = new WebSocket(gatewayUrl.replace(/^http/u, 'ws'));
-  const frames = [];
-  const waitForFrame = (predicate, timeoutMs = 10_000, phase = 'connect-response') => new Promise((resolve, reject) => {
-    const inspect = (frame) => { if (predicate(frame)) { cleanup(); resolve(frame); return true; } return false; };
-    const onMessage = (event) => { let frame; try { frame = JSON.parse(String(event.data)); } catch { return; } frames.push(frame); inspect(frame); };
-    const timer = setTimeout(() => { cleanup(); reject(new Error(`Authenticated Gateway ${phase} timed out for ${method} after ${timeoutMs} ms.`, { cause: requestSite })); }, timeoutMs);
-    const onAbort = () => { cleanup(); reject(signal.reason ?? new Error('Gateway request aborted.')); };
-    const cleanup = () => { clearTimeout(timer); socket.removeEventListener('message', onMessage); signal?.removeEventListener('abort', onAbort); };
-    for (const frame of frames) if (inspect(frame)) return;
-    socket.addEventListener('message', onMessage);
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+  const waitForFrame = createGatewayFrameWaiter(socket, { method, signal, requestSite });
   const abortSocket = () => socket.close();
   signal?.addEventListener('abort', abortSocket, { once: true });
   try {
