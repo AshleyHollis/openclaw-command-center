@@ -2361,6 +2361,51 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(releaseState.realizedConversationCount, RELEASE_FIXTURE_COUNTS.conversations);
       return { reconciledOperations: RELEASE_FIXTURE_COUNTS.conversations - 1, authoritativeTotal: releaseState.realizedConversationCount };
     };
+    const recoverExactPrimary = async ({ topicId, primarySession, signal }) => {
+      const notificationDeviceIdentity = await ensureNotificationTarget(signal);
+      const revokeSessionParams = { key: primarySession.sessionKey, expectedSessionId: primarySession.sessionId, deleteTranscript: true };
+      await assert.rejects(
+        () => requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'sessions.delete', params: revokeSessionParams }),
+        /FORBIDDEN.*operator\.admin/u
+      );
+      // Only this fixture-control RPC has admin authority; frame grants and
+      // the subsequent user mutation remain restricted to read/write.
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'sessions.delete', params: revokeSessionParams });
+      await assert.rejects(
+        () => requestAuthenticatedGateway({
+          gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.sessions.send',
+          params: { schemaVersion: 1, topicId: topicId, referenceId: primarySession.referenceId, logicalOperationId: randomUUID(), message: 'Fictional current mutation after binding revocation' }
+        }),
+        /missing|recovery|unavailable/iu
+      );
+      const replacementCreated = await requestAuthenticatedGateway({
+        gatewayUrl, credential: world.gatewayCredential, deviceIdentity: notificationDeviceIdentity, scopes: ['operator.read', 'operator.write'], method: 'sessions.create',
+        params: { agentId: 'main', label: 'Fictional reconciled Primary Session', idempotencyKey: randomUUID() }
+      });
+      const replacementSession = replacementCreated?.result ?? replacementCreated;
+      assert.ok(replacementSession?.key && replacementSession?.sessionId);
+      const recoveryTopicResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: topicId } });
+      const recoveryTopic = (recoveryTopicResponse?.result ?? recoveryTopicResponse)?.topic;
+      const recoveryReference = recoveryTopic.recovery.find((item) => item.referenceId === primarySession.referenceId && item.state === 'required');
+      assert.ok(typeof recoveryReference?.expectedRevision === 'string' && recoveryReference.expectedRevision.length > 0, 'recovery requires the exact public source revision, not a Session identity');
+      const replacementBindingResponse = await requestAuthenticatedGateway({
+        gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.recovery.replace',
+        params: {
+          schemaVersion: 1, topicId: topicId, referenceId: primarySession.referenceId,
+          sessionKey: replacementSession.key, sessionId: replacementSession.sessionId, expectedRevision: recoveryTopic.revision,
+          expectedSourceRevision: recoveryReference.expectedRevision, logicalOperationId: randomUUID()
+        }
+      });
+      const reconciledSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: topicId } });
+      const replacementBinding = replacementBindingResponse?.result ?? replacementBindingResponse;
+      const reconciledRows = (reconciledSessions?.result ?? reconciledSessions)?.conversations ?? [];
+      const revokedPrimary = reconciledRows.find((session) => session.referenceId === primarySession.referenceId);
+      const reconciledPrimary = reconciledRows.find((session) => session.referenceId === replacementBinding.replacementReferenceId);
+      assert.equal(revokedPrimary?.isPrimary, false, 'revoked durable binding must remain non-Primary recovery history');
+      assert.equal(revokedPrimary.availability, 'replaced-unavailable');
+      assert.deepEqual({ sessionId: reconciledPrimary?.sessionId, status: reconciledPrimary?.status, isPrimary: reconciledPrimary?.isPrimary }, { sessionId: replacementSession.sessionId, status: 'open', isPrimary: true });
+      return { ...primarySession, referenceId: reconciledPrimary.referenceId, sessionKey: replacementSession.key, sessionId: replacementSession.sessionId };
+    };
     await collectScenario('pinned-host-startup', async (signal) => {
       try {
         await waitForConsecutiveReadiness(async () => {
@@ -2393,6 +2438,20 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const { binding } = await ensureMigrationBinding(signal);
       releaseState.startupReadinessMs = Math.max(1, Date.now() - startupMilestoneStartedAt);
       return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, migrationVerified: true, sourceReferenceId: binding.referenceId };
+    });
+    if (focusedScenarioIds?.has('focused-session-recovery')) await collectScenario('focused-session-recovery', async (signal) => {
+      const topicId = RELEASE_ALPHA_TOPIC_ID;
+      const response = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId }, signal });
+      const primary = (response?.result ?? response).conversations.find((item) => item.isPrimary);
+      assert.ok(primary?.referenceId && primary?.sessionId);
+      const navigation = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId, referenceId: primary.referenceId }, signal });
+      const target = navigation?.result ?? navigation;
+      assert.equal(target.sessionId, primary.sessionId);
+      assert.equal(target.sourceReference.referenceId, primary.referenceId);
+      const restored = await recoverExactPrimary({ topicId, primarySession: { ...primary, sessionKey: target.sessionKey }, signal });
+      const current = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId }, signal });
+      assert.equal((current?.result ?? current).topic.usable, true);
+      return { topicId, replacementReferenceId: restored.referenceId, recovered: true };
     });
     await collectScenario('startup-migration-channel-count', async (signal) => {
       const { completion, binding } = await ensureMigrationBinding(signal);
@@ -3113,47 +3172,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // is closed. The following mutation is otherwise current and valid; its
       // refusal is therefore attributable to binding revocation, not stale UI
       // evidence or missing parent authentication.
-      const revokeSessionParams = { key: releaseState.primarySession.sessionKey, expectedSessionId: releaseState.primarySession.sessionId, deleteTranscript: true };
-      await assert.rejects(
-        () => requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'sessions.delete', params: revokeSessionParams }),
-        /FORBIDDEN.*operator\.admin/u
-      );
-      // Only this fixture-control RPC has admin authority; frame grants and
-      // the subsequent user mutation remain restricted to read/write.
-      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'sessions.delete', params: revokeSessionParams });
-      await assert.rejects(
-        () => requestAuthenticatedGateway({
-          gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.sessions.send',
-          params: { schemaVersion: 1, topicId: scaleJourney.topicId, referenceId: releaseState.primarySession.referenceId, logicalOperationId: randomUUID(), message: 'Fictional current mutation after binding revocation' }
-        }),
-        /missing|recovery|unavailable/iu
-      );
+      releaseState.primarySession = await recoverExactPrimary({ topicId: scaleJourney.topicId, primarySession: releaseState.primarySession, signal });
       evidence.revokedMutationRejected = true;
       releaseState.publicBindingBoundary = { safeReadObserved: Boolean(closedDashboard && typeof closedDashboard === 'object'), mutationRejected: true, bindingObserved: true };
-      const replacementCreated = await requestAuthenticatedGateway({
-        gatewayUrl, credential: world.gatewayCredential, deviceIdentity: notificationDeviceIdentity, scopes: ['operator.read', 'operator.write'], method: 'sessions.create',
-        params: { agentId: 'main', label: 'Fictional reconciled Primary Session', idempotencyKey: randomUUID() }
-      });
-      const replacementSession = replacementCreated?.result ?? replacementCreated;
-      assert.ok(replacementSession?.key && replacementSession?.sessionId);
-      const recoveryTopicResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
-      const recoveryTopic = (recoveryTopicResponse?.result ?? recoveryTopicResponse)?.topic;
-      const replacementBindingResponse = await requestAuthenticatedGateway({
-        gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.recovery.replace',
-        params: {
-          schemaVersion: 1, topicId: scaleJourney.topicId, referenceId: releaseState.primarySession.referenceId,
-          sessionKey: replacementSession.key, sessionId: replacementSession.sessionId, expectedRevision: recoveryTopic.revision,
-          expectedSourceRevision: releaseState.primarySession.sessionId, logicalOperationId: randomUUID()
-        }
-      });
-      const reconciledSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
-      const replacementBinding = replacementBindingResponse?.result ?? replacementBindingResponse;
-      const reconciledRows = (reconciledSessions?.result ?? reconciledSessions)?.conversations ?? [];
-      const revokedPrimary = reconciledRows.find((session) => session.referenceId === releaseState.primarySession.referenceId);
-      const reconciledPrimary = reconciledRows.find((session) => session.referenceId === replacementBinding.replacementReferenceId);
-      assert.equal(revokedPrimary?.isPrimary, false, 'revoked durable binding must remain non-Primary recovery history');
-      assert.deepEqual({ sessionId: reconciledPrimary?.sessionId, status: reconciledPrimary?.status, isPrimary: reconciledPrimary?.isPrimary }, { sessionId: replacementSession.sessionId, status: 'open', isPrimary: true });
-      releaseState.primarySession = { ...releaseState.primarySession, referenceId: reconciledPrimary.referenceId, sessionKey: replacementSession.key, sessionId: replacementSession.sessionId };
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
       const reopenedBootstrap = observeBrowserResponse(
@@ -3355,6 +3376,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
       await cdp.detach();
       await assertKeyboardAccessibility(frame, page);
+      evidence.performanceMeasurements ??= {};
       evidence.performanceMeasurements.mobile = { ...mobileJourney.measurement, sourceActionMs: 0 };
       return { topicId: mobileJourney.topicId, viewport: '320x900', keyboardAndReflow: true, zoom200TopicId: zoomJourney.topicId, zoomEvidence: mobileJourney.zoomEvidence, accessibilityStates: mobileJourney.accessibilityStates, focusRestorations: mobileJourney.focusRestorations, announcementTransitions: mobileJourney.announcementTransitions };
     });
@@ -3375,10 +3397,12 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await activate(mobileRow.getByRole('button', { name: 'Rename', exact: true }), true);
       await respondToCommandDialog(frame, { value: 'Project: Fictional Review Journey Topic' });
       await waitForFrameText(frame, '#topic-status', 'Topic renamed.');
+      await frame.locator(`.topic-row[data-topic-id="${reviewJourney.topicId}"]`).getByText('Project: Fictional Review Journey Topic', { exact: true }).waitFor();
       const desktopRow = frame.locator('.topic-row').filter({ hasText: 'Fictional Desktop Journey Topic' });
       await activate(desktopRow.getByRole('button', { name: 'Rename', exact: true }), true);
       await respondToCommandDialog(frame, { value: 'Resource: Fictional Desktop Journey Topic' });
       await waitForFrameText(frame, '#topic-status', 'Topic renamed.');
+      await frame.locator(`.topic-row[data-topic-id="${desktopJourney.topicId}"]`).getByText('Resource: Fictional Desktop Journey Topic', { exact: true }).waitFor();
       await activate(frame.locator('#analysis-run'), true);
       await waitForFrameText(frame, '#analysis-feedback', 'Analysis completed.');
       const proposals = frame.locator('.topic-review-proposal');

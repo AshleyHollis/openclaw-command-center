@@ -3,6 +3,46 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { launchPinnedChromium } from '../src/browser-setup.mjs';
 
+test('delayed Topic rename preserves row focus without stealing outside focus', async () => {
+  const browser = await launchPinnedChromium();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const index = await readFile(new URL('../src/ui/index.html', import.meta.url), 'utf8');
+    const app = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
+    await page.setContent(index.replace('<script defer src="/plugins/command-center/app.js"></script>', ''));
+    await page.addScriptTag({ content: app });
+    await page.evaluate(() => {
+      applyOperatingState({ mode: 'ready', unavailableCapabilities: [] });
+      const topics = ['first', 'second'].map((id) => ({ topicId: `fictional-${id}`, name: `Fictional ${id}`, revision: 1, paraCategory: 'project', lifecycle: 'active', usable: true }));
+      const destination = { activeGroups: { project: topics }, provisioning: [], recovery: [], archived: [] };
+      renderDestination(destination);
+      statusNode.textContent = 'Topic renamed.';
+      window.fetch = async (_url, options) => new Promise((resolve) => {
+        const input = JSON.parse(options.body);
+        globalThis.completeRename = () => {
+          const topic = topics.find((item) => item.topicId === input.topicId);
+          topic.name = input.name; topic.revision += 1;
+          resolve({ ok: true, json: async () => ({ result: { destination } }) });
+        };
+      });
+    });
+    for (const [id, outside] of [['first', false], ['second', true]]) {
+      const row = page.locator(`[data-topic-id="fictional-${id}"]`);
+      await row.getByRole('button', { name: 'Rename', exact: true }).focus();
+      await page.keyboard.press('Enter');
+      await page.locator('#command-dialog-input').fill(`Renamed ${id}`);
+      await page.locator('#command-dialog-input').press('Enter');
+      await page.waitForFunction(() => typeof globalThis.completeRename === 'function');
+      assert.equal(await page.locator('#command-dialog').isVisible(), false);
+      assert.equal(await page.locator('#topic-status').innerText(), 'Topic renamed.', 'generic status may still belong to a previous rename');
+      if (outside) await page.locator('#analysis-run').focus();
+      await page.evaluate(() => { completeRename(); globalThis.completeRename = undefined; });
+      await row.getByText(`Renamed ${id}`, { exact: true }).waitFor();
+      assert.equal(await page.evaluate(() => document.activeElement.id || `${document.activeElement.closest('.topic-row')?.dataset.topicId}:${document.activeElement.textContent}`), outside ? 'analysis-run' : `fictional-${id}:Rename`);
+    }
+  } finally { await browser.close(); }
+});
+
 test('replaced unavailable Conversation retains a visible explanation without live controls', async () => {
   const browser = await launchPinnedChromium();
   try {

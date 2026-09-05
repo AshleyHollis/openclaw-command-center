@@ -29,6 +29,13 @@ test('real-host acceptance defaults to the complete release plan', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('  '), { kind: 'release', scenarioIds: null });
 });
 
+test('Session recovery diagnostic uses the exact shared revocation/replacement contract without corpus journeys', async () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('session-recovery-contract'), { kind: 'focused', scenarioIds: ['pinned-host-startup', 'focused-session-recovery'] });
+  const source = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
+  assert.equal((source.match(/await recoverExactPrimary\(/gu) ?? []).length, 2);
+  assert.match(source, /expectedSourceRevision: recoveryReference\.expectedRevision/u);
+});
+
 test('real-host acceptance exposes one closed authenticated mount dependency plan', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('authenticated-control-ui-mount'), {
     kind: 'focused',
