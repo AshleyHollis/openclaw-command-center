@@ -1115,7 +1115,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       let { frame } = await mountedPluginFrame(page, await pluginDocument);
       const scenarioName = kind === 'review' ? 'Area: Fictional Fresh Review Topic' : kind === 'scale-analysis' ? 'Area: Fictional Fresh Scale Analysis Topic' : `Fictional Fresh ${kind} Topic`;
-      const journey = await runUiJourney(frame, { page, width, name: scenarioName, category: 'project', keyboard: true });
+      const { frame: returnedFrame, ...journey } = await runUiJourney(frame, { page, width, name: scenarioName, category: 'project', keyboard: true });
+      frame = returnedFrame;
       const authoritativeSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
       const authoritativeConversations = (authoritativeSessions?.result ?? authoritativeSessions)?.conversations ?? authoritativeSessions?.conversations ?? [];
       assert.ok(authoritativeConversations.some((item) => item.isPrimary) && authoritativeConversations.some((item) => item.displayName === journey.conversationName));
@@ -1199,7 +1200,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
         assert.deepEqual(await page.evaluate(() => ({ width: document.documentElement.clientWidth, visualWidth: visualViewport.width, scale: visualViewport.scale, ratio: devicePixelRatio })), { width: 320, visualWidth: 160, scale: 2, ratio: 1 });
         assert.equal(await frame.evaluate(() => devicePixelRatio), 1, 'zoom must not be simulated by device pixel density');
-        const zoomJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional Fresh 200 Percent Zoom Topic', category: 'area', keyboard: true });
+        const { frame: zoomFrame, ...zoomJourney } = await runUiJourney(frame, { page, width: 320, name: 'Fictional Fresh 200 Percent Zoom Topic', category: 'area', keyboard: true });
+        frame = zoomFrame;
         assert.ok(zoomJourney.topicId);
         await assertResponsiveFrame(frame, page, 320);
         await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
@@ -1546,6 +1548,7 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
   });
   const backwards = reverse || (order.current >= 0 && order.target < order.current);
   assert.ok(order.count <= limit, 'Sequential keyboard traversal exceeded its bounded focus path.');
+  const invisibleFocus = [];
   for (let step = 1; step <= limit; step += 1) {
     await page.keyboard.press(backwards ? 'Shift+Tab' : 'Tab');
     const state = await locator.evaluate((target) => {
@@ -1565,9 +1568,18 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
     });
     assert.notEqual(state.index, -1, `Sequential keyboard focus left the mounted shell at ${state.name}.`);
     assert.equal(state.hidden, false, 'Sequential keyboard focus entered hidden or inert content.');
-    assert.ok(hasKeyboardFocusIndicator(state), `Sequential keyboard focus must remain visible at ${state.name}: ${JSON.stringify({ outline: state.outline, focusVisible: state.focusVisible, boxShadow: state.boxShadow, baselineBoxShadow: state.baselineBoxShadow })}`);
+    if (!hasKeyboardFocusIndicator(state)) {
+      const control = await locator.evaluate(() => {
+        const active = document.activeElement;
+        return { tag: active?.tagName, className: active?.className, role: active?.getAttribute('role'), contentEditable: active?.isContentEditable };
+      });
+      invisibleFocus.push({ ...control, ...state });
+    }
     assert.equal(state.escapedDialog, false, 'Sequential keyboard focus escaped an open modal dialog.');
-    if (state.target) return;
+    if (state.target) {
+      assert.deepEqual(invisibleFocus, [], `Sequential keyboard focus must remain visible throughout the path: ${JSON.stringify(invisibleFocus)}`);
+      return;
+    }
   }
   throw new Error(`Sequential keyboard traversal did not reach ${await locator.getAttribute('id') || await locator.getAttribute('aria-label') || 'the requested control'}.`);
 }
@@ -1792,13 +1804,10 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
 
   await selectWorkspaceSection(frame, 'chat', width, keyboard);
   const primaryMessage = `Fictional Primary Chat message for ${name}.`;
-  await enterText(frame.locator('#chat-message'), primaryMessage, keyboard);
-  const chatStatusBefore = await statusText('#chat-status');
-  const chatStarted = Date.now();
-  await submitFrameForm(frame, '#chat-form', keyboard);
-  await waitForFrameText(frame, '#chat-status', 'Message sent.');
-  measurement.chatSendMs = Math.max(1, Date.now() - chatStarted);
-  await recordAnnouncement('#chat-status', chatStatusBefore, `${width}px Primary Chat`);
+  const nativeChat = await nativeChatRoundTrip(frame, { page, topicId, message: primaryMessage, width, keyboard });
+  // Native navigation replaces the plugin document; continue against its new frame.
+  frame = nativeChat.frame;
+  measurement.chatSendMs = nativeChat.chatSendMs;
   await assertNoFrameOverflow(frame, `${width}px Primary Chat`);
 
   await selectWorkspaceSection(frame, 'conversations', width, keyboard);
@@ -1825,7 +1834,7 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   await closedSearchResult.getByText('Closed', { exact: true }).waitFor();
   await activate(closedSearchResult.getByRole('button', { name: 'Open Conversation', exact: true }), keyboard);
   await waitForFrameText(frame, '#chat-conversation-name', conversationName);
-  assert.equal(await frame.locator('#chat-message').isDisabled(), true, 'indexed closed Conversation must remain read-only before reopen');
+  assert.equal(await frame.locator('#chat-open').isDisabled(), true, 'indexed closed Conversation must remain history-only before reopen');
   await selectWorkspaceSection(frame, 'conversations', width, keyboard);
   await chooseOption(frame.locator('#conversation-view'), 'closed', keyboard);
   await timed(() => activate(closedConversation.getByRole('button', { name: 'Reopen', exact: true }), keyboard));
@@ -1940,7 +1949,7 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   await waitForFrameText(frame, '#topic-search-detail', 'Edited fictional journey evidence.');
   await assertNoFrameOverflow(frame, `${width}px Topic Search`);
   assert.equal(await frame.locator('#dashboard').isHidden(), false);
-  return { topicId, conversationName, movedPath, primaryMessage, measurement, accessibilityStates, focusRestorations, announcementTransitions };
+  return { frame, topicId, conversationName, movedPath, primaryMessage, measurement, accessibilityStates, focusRestorations, announcementTransitions };
 }
 
 async function locatePaginatedNote(frame, pathName) {
@@ -3015,7 +3024,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await collectScenario('focused-heavy-corpus-mutation-journey', async () => {
         assert.ok(frame && page && releaseState.projectionRoot, 'heavy-corpus mutation scenario requires its authenticated mounted fixture');
         assert.ok(releaseState.focusedSearchRebuildMs > 10_000, `heavy-corpus Search rebuild must exceed the UI send deadline; observed ${releaseState.focusedSearchRebuildMs} ms`);
-        const journey = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Heavy Corpus Mutation Topic', category: 'project', keyboard: true, projectionRoot: releaseState.projectionRoot });
+        const { frame: returnedFrame, ...journey } = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Heavy Corpus Mutation Topic', category: 'project', keyboard: true, projectionRoot: releaseState.projectionRoot });
+        frame = returnedFrame;
         return { topicId: journey.topicId, primaryMessage: journey.primaryMessage, conversationMessage: journey.conversationMessage, rebuildMs: releaseState.focusedSearchRebuildMs };
       });
     }
@@ -3109,7 +3119,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     await collectScenario('migrated-scale-conversation-seeding', async (signal) => ensureScaleConversationFixture(signal));
     await collectScenario('desktop-primary-journey', async () => {
       assert.ok(frame && page && releaseState.projectionRoot, 'desktop scenario requires its mounted fixture state');
-      desktopJourney = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project', keyboard: true, projectionRoot: releaseState.projectionRoot });
+      ({ frame, ...desktopJourney } = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Desktop Journey Topic', category: 'project', keyboard: true, projectionRoot: releaseState.projectionRoot }));
       desktopJourney.measurement.startupReadinessMs = releaseState.startupReadinessMs;
       releaseState.desktop = desktopJourney;
       const desktopSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: desktopJourney.topicId } });
@@ -3149,7 +3159,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
         const name = 'Fictional Second Journey Topic';
         try {
-          const journey = await runUiJourney(frame, { page, width: 1440, name, category: 'resource', keyboard: true, projectionRoot: releaseState.projectionRoot });
+          const { frame: returnedFrame, ...journey } = await runUiJourney(frame, { page, width: 1440, name, category: 'resource', keyboard: true, projectionRoot: releaseState.projectionRoot });
+          frame = returnedFrame;
           return { topicId: journey.topicId, topicOpenCreateMs: journey.measurement.topicOpenCreateMs };
         } catch (error) {
           const state = await frame.evaluate((topicName) => {
@@ -3187,7 +3198,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
-      scaleJourney = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Scale Journey Topic', category: 'resource', keyboard: true, projectionRoot: releaseState.projectionRoot });
+      ({ frame, ...scaleJourney } = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Scale Journey Topic', category: 'resource', keyboard: true, projectionRoot: releaseState.projectionRoot }));
       scaleJourney.measurement.startupReadinessMs = releaseState.startupReadinessMs;
       const scaleSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
       const scalePrimary = ((scaleSessions?.result ?? scaleSessions)?.conversations ?? scaleSessions?.conversations ?? []).find((session) => session.isPrimary === true);
@@ -3406,7 +3417,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
-      mobileJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional Mobile Journey Topic', category: 'project', keyboard: true });
+      ({ frame, ...mobileJourney } = await runUiJourney(frame, { page, width: 320, name: 'Fictional Mobile Journey Topic', category: 'project', keyboard: true }));
       releaseState.mobile = mobileJourney;
       const mobileReminderReferenceIds = [];
       for (const label of ['Keyboard source action', 'Keyboard snooze']) {
@@ -3457,7 +3468,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(frameZoom.ratio, 1, 'browser zoom must not be simulated with device pixel density');
       assert.ok(parentZoom.frameLayoutWidth / parentZoom.scale <= parentZoom.visualWidth, '200% browser zoom must scale the mounted frame into the effective viewport');
       const reflowStarted = Date.now();
-      const zoomJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional 200 Percent Zoom Topic', category: 'area', keyboard: true });
+      const { frame: zoomFrame, ...zoomJourney } = await runUiJourney(frame, { page, width: 320, name: 'Fictional 200 Percent Zoom Topic', category: 'area', keyboard: true });
+      frame = zoomFrame;
       assert.ok(zoomJourney.topicId);
       mobileJourney.accessibilityStates.push(...zoomJourney.accessibilityStates);
       mobileJourney.focusRestorations.push(...zoomJourney.focusRestorations);
@@ -3481,7 +3493,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
-      reviewJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional Review Journey Topic', category: 'area', keyboard: true });
+      ({ frame, ...reviewJourney } = await runUiJourney(frame, { page, width: 320, name: 'Fictional Review Journey Topic', category: 'area', keyboard: true }));
       // These prompt responses seed two deterministic review proposals before
       // the measured keyboard-only decision/checkpoint/application workflow;
       // they are fixture setup, not a completed primary-journey action.
