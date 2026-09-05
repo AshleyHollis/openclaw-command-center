@@ -1678,7 +1678,17 @@ async function nativeChatRoundTrip(frame, { page, topicId, message, width = 1440
     await selectWorkspaceSection(frame, 'chat', width, keyboard);
     await activate(frame.locator('#chat-open'), keyboard);
     const pane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
-    await pane.waitFor({ timeout: 30_000 });
+    try { await pane.waitFor({ timeout: 30_000 }); }
+    catch (error) {
+      const state = {
+        path: new URL(page.url()).pathname,
+        nativePanes: await page.locator('openclaw-chat-pane').count(),
+        pluginAttached: !frame.isDetached(),
+        pluginStatus: frame.isDetached() ? null : await frame.locator('#chat-status').textContent(),
+        renderedText: (await page.locator('body').innerText()).slice(0, 2400)
+      };
+      throw new Error(`[DEBUG-native-route] ${redactBrowserEvidence(JSON.stringify(state))}`, { cause: error });
+    }
     await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, target.sessionKey);
     const composer = pane.locator('.agent-chat__composer-combobox textarea');
     await enterText(composer, message, keyboard);
