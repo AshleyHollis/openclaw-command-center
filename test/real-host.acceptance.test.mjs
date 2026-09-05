@@ -3131,7 +3131,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.revokedMutationRejected = true;
       releaseState.publicBindingBoundary = { safeReadObserved: Boolean(closedDashboard && typeof closedDashboard === 'object'), mutationRejected: true, bindingObserved: true };
       const replacementCreated = await requestAuthenticatedGateway({
-        gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'sessions.create',
+        gatewayUrl, credential: world.gatewayCredential, deviceIdentity: notificationDeviceIdentity, scopes: ['operator.read', 'operator.write'], method: 'sessions.create',
         params: { agentId: 'main', label: 'Fictional reconciled Primary Session', idempotencyKey: randomUUID() }
       });
       const replacementSession = replacementCreated?.result ?? replacementCreated;
