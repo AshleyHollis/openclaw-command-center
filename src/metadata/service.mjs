@@ -657,7 +657,9 @@ function openCore(stateDir, explicitDatabasePath, migrationHooks) {
   if (core.mode === 'ready') {
     try {
       database = new DatabaseSync(databasePath);
-      database.exec('PRAGMA foreign_keys = ON;');
+      // Runtime writes may briefly overlap an external read snapshot. Wait at the
+      // SQLite lock boundary; never replay the operation or change journal mode.
+      database.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 1000;');
     } catch {
       closeQuietly(database);
       core = coreFailure('storage-access-failure', 'The Command Center database could not be opened for use.', 'Check storage access and retry Command Center startup.', core.schemaVersion);
