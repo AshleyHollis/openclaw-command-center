@@ -77,7 +77,7 @@ test('Topic mutation previews replace private Note Folder locators with conventi
 
 test('Topics destination uses the authenticated POST lifecycle seam', () => {
   assert.match(app, /\/plugins\/command-center\/api\/topics\/actions/);
-  assert.match(index, /<h2 id="topics-heading">Topics<\/h2>/);
+  assert.match(index, /<h2 id="topics-heading" tabindex="-1">Topics<\/h2>/);
   assert.match(index, /<script defer src="\/plugins\/command-center\/app\.js"><\/script>/);
   assert.match(app, /openclaw:capability-bridge-hello/);
   assert.doesNotMatch(index, /<script type="module"/);
@@ -152,6 +152,7 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
   try {
     const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
     await page.setContent(index);
+    await page.addStyleTag({ content: styles });
     const sanitizedRecoveryTopic = publicTopicDestination({
       activeGroups: { project: [], area: [], resource: [] }, provisioning: [], archived: [], retired: [],
       recovery: [{ topicId: 'recovery', name: 'Recovery Topic', revision: 1, paraCategory: 'resource', lifecycle: 'active', usable: false, recovery: [{ recoveryId: 'recovery:session:missing', topicId: 'recovery', referenceId: 'session:missing', sourceKind: 'session', state: 'required', expectedRevision: 'session-revision-1', failure: 'private provider failure', diagnostics: [{ topicId: 'recovery', referenceId: 'session:missing', sourceKind: 'session', expectedIdentity: 'exact Primary Session identity', check: 'exact-session-missing', status: 'recovery-required', retryable: true, routes: ['private-route'] }] }] }]
@@ -162,9 +163,11 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
       const topic = (topicId, name, paraCategory, lifecycle = 'active', recovery = []) => ({ topicId, name, revision: 1, provisioningOperationId: '33333333-3333-4333-8333-333333333333', paraCategory, lifecycle, usable: lifecycle === 'active' && paraCategory !== 'archive' && recovery.length === 0, recovery });
       globalThis.__calls = [];
       globalThis.__created = false;
-      globalThis.prompt = (label) => label.includes('Session ID') ? 'session-id-replacement' : label.includes('Session key') ? 'agent:main:replacement' : label.includes('folder') ? '/fictional/vault/Replacement' : 'Renamed Topic';
+      let operationSequence = 0;
+      Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => `71111111-1111-4111-8111-${String(++operationSequence).padStart(12, '0')}` });
+      globalThis.prompt = () => { throw new Error('Native prompt is unavailable.'); };
       globalThis.__confirmations = [];
-      globalThis.confirm = (message) => { globalThis.__confirmations.push(message); return true; };
+      globalThis.confirm = () => { throw new Error('Native confirm is unavailable.'); };
       const destination = () => ({ activeGroups: { project: [topic('active', 'Active Topic', 'project'), topic('long-active', longName, 'project'), ...(globalThis.__created ? [topic('created', 'Created Topic', 'project')] : [])], area: [], resource: [] }, provisioning: [topic('provisioning', 'Provisioning Topic', 'area', 'provisioning')], recovery: [recoveryTopic], archived: [topic('archived', 'Archived Topic', 'archive')] });
       globalThis.fetch = async (_url, options) => {
         const body = JSON.parse(options.body); globalThis.__calls.push({ method: `http:${body.action}`, params: body });
@@ -181,12 +184,12 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
         }
         if (payload.type !== 'openclaw:capability-bridge-request') return;
         globalThis.__calls.push({ method: payload.method, params: payload.params, operationId: payload.operationId });
-        const result = payload.method === 'sessions.create' ? { result: { key: `agent:main:dashboard:bridge-fictional-${payload.operationId}`, sessionId: `session-${payload.operationId}`, revision: '1' } } : payload.method.endsWith('.list') ? { result: destination() } : payload.method.endsWith('search.query') ? { result: { notes: { results: [] }, conversations: { results: [] } } } : { result: {} };
+        const result = payload.method.endsWith('sources.status') ? { result: { schemaVersion: 1, mode: 'ready', unavailableCapabilities: [] } } : payload.method === 'sessions.create' ? { result: { key: `agent:main:dashboard:bridge-fictional-${payload.operationId}`, sessionId: `session-${payload.operationId}`, revision: '1' } } : payload.method.endsWith('.list') ? { result: destination() } : payload.method.endsWith('search.query') ? { result: { notes: { results: [] }, conversations: { results: [] } } } : { result: {} };
         window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result } }, '*');
       });
     }, sanitizedRecoveryTopic);
     await page.addScriptTag({ content: app });
-    await page.getByText('Active Topic').waitFor();
+    await page.locator('.topic-row > strong').filter({ hasText: /^Active Topic$/u }).waitFor();
     await page.getByText('Session session:missing: exact Primary Session identity; exact-session-missing (recovery-required). Blocked: messages, new conversations, and Session changes. Actions: verify exact source, relink Session, or replace Primary Session.').waitFor();
     await page.locator('#topic-create input[name="name"]').fill('Created Topic');
     await page.locator('#topic-create-submit').focus();
@@ -196,7 +199,17 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
     });
     await page.getByText('Topic created and verified').waitFor();
     assert.equal(await page.evaluate(() => document.activeElement?.id), 'topic-create-submit');
-    for (const label of ['Retry', 'Roll back', 'Rename', 'Move to area', 'Archive', 'Restore to project', 'Search archive', 'Verify exact source', 'Relink Session', 'Replace Primary Session']) await page.getByRole('button', { name: label }).first().click();
+    for (const label of ['Retry', 'Roll back', 'Rename', 'Move to area', 'Archive', 'Restore to project', 'Search archive', 'Verify exact source', 'Relink Session', 'Replace Primary Session']) {
+      await page.getByRole('button', { name: label }).first().click();
+      const values = label.includes('Session') ? ['agent:main:replacement', 'session-id-replacement'] : label === 'Rename' ? ['Renamed Topic'] : ['Move to area', 'Archive'].includes(label) ? [undefined] : [];
+      for (const value of values) {
+        await page.locator('#command-dialog').waitFor({ state: 'visible' });
+        await page.evaluate(() => globalThis.__confirmations.push(document.querySelector('#command-dialog-message').textContent));
+        if (value !== undefined) await page.locator('#command-dialog-input').fill(value);
+        await page.locator('#command-dialog-submit').press('Enter');
+      }
+      await page.locator('#command-dialog').waitFor({ state: 'hidden' });
+    }
     await page.locator('#topic-search-query').fill('fictional');
     await page.locator('#topic-search-form').evaluate((form) => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     await page.waitForFunction(() => {

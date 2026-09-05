@@ -10,7 +10,7 @@ const SEARCH_REBUILD_ROUTE = '/plugins/command-center/api/search/rebuild';
 const markdownModuleUrl = /^https?:/u.test(document.baseURI) ? new URL('/plugins/command-center/markdown.js', document.baseURI).href : '/plugins/command-center/markdown.js';
 let markdownModule;
 function loadMarkdownModule() { return markdownModule ??= import(markdownModuleUrl); }
-const SCRIPTED_FORM_IDS = new Set(['topic-analysis-schedule', 'notification-settings-form', 'topic-create', 'topic-search-form', 'chat-form', 'conversation-create', 'note-action-form', 'workspace-search-form']);
+const SCRIPTED_FORM_IDS = new Set(['topic-analysis-schedule', 'notification-settings-form', 'topic-create', 'topic-search-form', 'chat-form', 'conversation-create', 'note-action-form', 'command-dialog-form', 'workspace-search-form']);
 document.addEventListener('click', (event) => {
   const submitter = event.target?.closest?.('button[type="submit"],input[type="submit"]');
   const form = submitter?.form;
@@ -19,6 +19,40 @@ document.addEventListener('click', (event) => {
   form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter }));
 });
 const requestedTopicId = new URLSearchParams(window.location.search).get('topicId');
+// Native prompts are blocked by the host's scripts-only sandbox.
+let pendingCommandDialog = null;
+function askUser(message, { value, details = '' } = {}) {
+  const dialog = document.querySelector('#command-dialog');
+  if (!dialog || pendingCommandDialog) return Promise.resolve(null);
+  const invoker = document.activeElement;
+  document.querySelector('#command-dialog-message').textContent = message;
+  const input = document.querySelector('#command-dialog-input');
+  input.value = value ?? ''; input.required = value !== undefined;
+  document.querySelector('#command-dialog-input-label').hidden = value === undefined;
+  const disclosure = document.querySelector('#command-dialog-details');
+  disclosure.textContent = details; disclosure.hidden = !details;
+  return new Promise((resolve) => {
+    pendingCommandDialog = { resolve, invoker, expectsInput: value !== undefined };
+    dialog.showModal();
+    (value === undefined ? document.querySelector('#command-dialog-cancel') : input).focus();
+  });
+}
+function finishCommandDialog(accepted) {
+  const pending = pendingCommandDialog;
+  if (!pending) return;
+  const input = document.querySelector('#command-dialog-input');
+  if (accepted && pending.expectsInput && !input.reportValidity()) return;
+  const result = accepted ? (pending.expectsInput ? input.value : true) : null;
+  pendingCommandDialog = null;
+  document.querySelector('#command-dialog').close();
+  if (pending.invoker?.isConnected) pending.invoker.focus();
+  pending.resolve(result);
+}
+document.querySelector('#command-dialog-form')?.addEventListener('submit', (event) => { event.preventDefault(); finishCommandDialog(true); });
+document.querySelector('#command-dialog-cancel')?.addEventListener('click', () => finishCommandDialog(false));
+document.querySelector('#command-dialog')?.addEventListener('cancel', (event) => { event.preventDefault(); finishCommandDialog(false); });
+const promptUser = (message, value = '') => askUser(message, { value });
+const confirmUser = (message, details = '') => askUser(message, { details });
 let currentDestination = { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] };
 let topicCreatePending = false;
 let topicCreateOperation = null;
@@ -103,12 +137,12 @@ function renderTopicReview(review) {
 }
 async function topicAnalysisAction(action, input = {}) { requireReadyMutation(); const response = await fetch(TOPIC_ANALYSIS_ACTIONS_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: operationId(), ...input }) }); const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis action was refused.'); return value.result ?? value; }
 async function topicReviewDecision(action, proposal) { const feedback = document.querySelector('#analysis-feedback'); try { await topicAnalysisAction(action, { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision }); feedback.textContent = 'Proposal decision saved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
-async function topicReviewAdjust(proposal) { const feedback = document.querySelector('#analysis-feedback'); if (proposal.operation === 'archive') { feedback.textContent = 'Archive proposals support Approve or Keep as-is.'; return; } const target = proposal.after?.topic ?? proposal.after ?? {}; const initial = proposal.operation === 'create' ? { name: target.name, paraCategory: target.paraCategory } : { paraCategory: target.paraCategory }; const adjustmentJson = window.prompt('Enter the adjusted name/category fields as JSON.', JSON.stringify(initial)); if (!adjustmentJson) return; try { await topicAnalysisAction('proposal.adjust', { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision, adjustment: JSON.parse(adjustmentJson) }); feedback.textContent = 'Proposal adjustment approved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
+async function topicReviewAdjust(proposal) { const feedback = document.querySelector('#analysis-feedback'); if (proposal.operation === 'archive') { feedback.textContent = 'Archive proposals support Approve or Keep as-is.'; return; } const target = proposal.after?.topic ?? proposal.after ?? {}; const initial = proposal.operation === 'create' ? { name: target.name, paraCategory: target.paraCategory } : { paraCategory: target.paraCategory }; const adjustmentJson = await promptUser('Enter the adjusted name/category fields as JSON.', JSON.stringify(initial)); if (!adjustmentJson) return; try { await topicAnalysisAction('proposal.adjust', { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision, adjustment: JSON.parse(adjustmentJson) }); feedback.textContent = 'Proposal adjustment approved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
 async function loadTopicAnalysis() { try { const value = await topicAnalysisRead(); const settings = value.schedule; if (settings) { topicAnalysisScheduleRevision = settings.revision; for (const [id, item] of [['analysis-enabled', settings.enabled], ['analysis-weekday', String(settings.weekday)]]) { const control = document.querySelector(`#${id}`); if (control) id === 'analysis-enabled' ? control.checked = item : control.value = item; } for (const [id, item] of [['analysis-local-time', settings.localTime], ['analysis-time-zone', settings.timeZone]]) { const control = document.querySelector(`#${id}`); if (control && document.activeElement !== control) control.value = item; } } renderTopicReview(value.review); } catch (error) { const feedback = document.querySelector('#analysis-feedback'); if (feedback) feedback.textContent = error.message || 'Topic Analysis is unavailable.'; } }
 document.querySelector('#topic-analysis-schedule')?.addEventListener('submit', async (event) => { event.preventDefault(); try { await topicAnalysisAction('schedule.update', { expectedRevision: topicAnalysisScheduleRevision, settings: { enabled: document.querySelector('#analysis-enabled').checked, weekday: Number(document.querySelector('#analysis-weekday').value), localTime: document.querySelector('#analysis-local-time').value, timeZone: document.querySelector('#analysis-time-zone').value.trim() } }); document.querySelector('#analysis-feedback').textContent = 'Analysis schedule saved.'; await loadTopicAnalysis(); } catch (error) { document.querySelector('#analysis-feedback').textContent = error.message; } });
 document.querySelector('#analysis-run')?.addEventListener('click', async () => { try { await topicAnalysisAction('analysis.run', { trigger: 'manual' }); document.querySelector('#analysis-feedback').textContent = 'Analysis completed.'; await loadTopicAnalysis(); } catch (error) { document.querySelector('#analysis-feedback').textContent = error.message; } });
-document.querySelector('#topic-review-checkpoint')?.addEventListener('click', async () => { const feedback = document.querySelector('#topic-review-plan'); try { const proposals = topicReviewState?.proposals ?? []; const plan = await topicAnalysisAction('review.apply', { reviewId: 'topic-review:global', expectedReviewRevision: topicReviewState?.episodeRevision, approvedProposalRevisions: proposals.filter((proposal) => proposal.state === 'approved').map((proposal) => ({ proposalId: proposal.proposalId, revision: proposal.revision })), applicationId: operationId(), confirm: false }); const checkpoint = plan?.result ?? plan; if (!checkpoint) throw new Error('The final checkpoint was unavailable.'); const visiblePlan = { planRevision: checkpoint.planRevision, reviewRevision: checkpoint.reviewRevision, proposalRevisions: checkpoint.currentProposalRevisions, dependencies: checkpoint.dependencies, exactEffects: checkpoint.effects, preconditions: checkpoint.steps?.map((step) => ({ proposalId: step.proposalId, preconditions: step.preconditions })), compensationDisclosures: checkpoint.steps?.map((step) => ({ proposalId: step.proposalId, compensation: step.compensation })), blockedAndIrreversibleOutcomes: { blockers: checkpoint.blockers, reversibility: checkpoint.steps?.map((step) => ({ proposalId: step.proposalId, reversibility: step.intent?.authoritativePreview?.reversibility ?? step.compensation })) } }; feedback.textContent = `Frozen application plan (inspect before confirming):\n${JSON.stringify(visiblePlan, null, 2)}`; if (!confirm(`Apply only frozen plan ${checkpoint.planRevision}?`)) return; const applied = await topicAnalysisAction('review.apply', { reviewId: 'topic-review:global', applicationId: checkpoint.applicationId, planRevision: checkpoint.planRevision, confirm: true }); const outcomes = Object.values(applied?.outcomes ?? {}).map((item) => item?.status).filter(Boolean); feedback.textContent = outcomes.length ? `Application outcomes: ${outcomes.join(', ')}.` : 'Approved changes applied.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } });
-document.querySelector('#topic-review-snooze')?.addEventListener('click', async () => { const feedback = document.querySelector('#analysis-feedback'); const until = window.prompt('Snooze Topic Review until (RFC3339).', new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()); if (!until || !topicReviewState) return; try { await topicAnalysisAction('review.snooze', { reviewId: 'topic-review:global', expectedReviewRevision: topicReviewState.episodeRevision, snoozedUntil: until }); feedback.textContent = 'Topic Review snoozed.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } });
+document.querySelector('#topic-review-checkpoint')?.addEventListener('click', async () => { const feedback = document.querySelector('#topic-review-plan'); try { const proposals = topicReviewState?.proposals ?? []; const plan = await topicAnalysisAction('review.apply', { reviewId: 'topic-review:global', expectedReviewRevision: topicReviewState?.episodeRevision, approvedProposalRevisions: proposals.filter((proposal) => proposal.state === 'approved').map((proposal) => ({ proposalId: proposal.proposalId, revision: proposal.revision })), applicationId: operationId(), confirm: false }); const checkpoint = plan?.result ?? plan; if (!checkpoint) throw new Error('The final checkpoint was unavailable.'); const visiblePlan = { planRevision: checkpoint.planRevision, reviewRevision: checkpoint.reviewRevision, proposalRevisions: checkpoint.currentProposalRevisions, dependencies: checkpoint.dependencies, exactEffects: checkpoint.effects, preconditions: checkpoint.steps?.map((step) => ({ proposalId: step.proposalId, preconditions: step.preconditions })), compensationDisclosures: checkpoint.steps?.map((step) => ({ proposalId: step.proposalId, compensation: step.compensation })), blockedAndIrreversibleOutcomes: { blockers: checkpoint.blockers, reversibility: checkpoint.steps?.map((step) => ({ proposalId: step.proposalId, reversibility: step.intent?.authoritativePreview?.reversibility ?? step.compensation })) } }; feedback.textContent = `Frozen application plan (inspect before confirming):\n${JSON.stringify(visiblePlan, null, 2)}`; if (!await confirmUser(`Apply only frozen plan ${checkpoint.planRevision}?`, feedback.textContent)) return; const applied = await topicAnalysisAction('review.apply', { reviewId: 'topic-review:global', applicationId: checkpoint.applicationId, planRevision: checkpoint.planRevision, confirm: true }); const outcomes = Object.values(applied?.outcomes ?? {}).map((item) => item?.status).filter(Boolean); feedback.textContent = outcomes.length ? `Application outcomes: ${outcomes.join(', ')}.` : 'Approved changes applied.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } });
+document.querySelector('#topic-review-snooze')?.addEventListener('click', async () => { const feedback = document.querySelector('#analysis-feedback'); const until = await promptUser('Snooze Topic Review until (RFC3339).', new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()); if (!until || !topicReviewState) return; try { await topicAnalysisAction('review.snooze', { reviewId: 'topic-review:global', expectedReviewRevision: topicReviewState.episodeRevision, snoozedUntil: until }); feedback.textContent = 'Topic Review snoozed.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } });
 async function saveNotificationSettings(event) {
   event.preventDefault();
   const feedback = document.querySelector('#settings-feedback');
@@ -449,17 +483,17 @@ function topicRow(topic, kind) {
     const recovery = topic.recovery.find((item) => item.state === 'required'); row.append(diagnostic(topic));
     row.append(mutationButton('Verify exact source', () => runAction('recovery.verify', { topicId: topic.topicId, referenceId: recovery.referenceId, expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Source verified.')));
     if (recovery.sourceKind === 'session') {
-      const exactSession = () => ({ sessionKey: prompt('Session key'), sessionId: prompt('Session ID') });
-      row.append(mutationButton('Relink Session', () => runAction('recovery.relink', { topicId: topic.topicId, referenceId: recovery.referenceId, ...exactSession(), expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Session relinked.')));
-      row.append(mutationButton('Replace Primary Session', () => runAction('recovery.replace-session', { topicId: topic.topicId, referenceId: recovery.referenceId, ...exactSession(), expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Primary Session replaced.')));
+      const exactSession = async () => { const sessionKey = await promptUser('Session key'); if (sessionKey === null) return null; const sessionId = await promptUser('Session ID'); return sessionId === null ? null : { sessionKey, sessionId }; };
+      row.append(mutationButton('Relink Session', async () => { const session = await exactSession(); if (session) await runAction('recovery.relink', { topicId: topic.topicId, referenceId: recovery.referenceId, ...session, expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Session relinked.'); }));
+      row.append(mutationButton('Replace Primary Session', async () => { const session = await exactSession(); if (session) await runAction('recovery.replace-session', { topicId: topic.topicId, referenceId: recovery.referenceId, ...session, expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Primary Session replaced.'); }));
     } else {
-      row.append(mutationButton('Relink Note Folder', () => runAction('recovery.verify', { topicId: topic.topicId, referenceId: recovery.referenceId, replacementLocator: prompt('Exact Note Folder path'), expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Note Folder relinked.')));
+      row.append(mutationButton('Relink Note Folder', async () => { const replacementLocator = await promptUser('Exact Note Folder path'); if (replacementLocator !== null) await runAction('recovery.verify', { topicId: topic.topicId, referenceId: recovery.referenceId, replacementLocator, expectedRevision: topic.revision, expectedSourceRevision: recovery.expectedRevision }, 'Note Folder relinked.'); }));
     }
   } else {
     row.append(button('Open Topic', () => openTopicWorkspace(topic, AUTHORITATIVE_LIST_TOPIC)));
-    row.append(mutationButton('Rename', () => runAction('rename', { topicId: topic.topicId, name: prompt('New Topic name', topic.name), expectedRevision: topic.revision }, 'Topic renamed.')));
-    const target = topic.paraCategory === 'project' ? 'area' : 'project'; row.append(mutationButton(`Move to ${target}`, async () => { const preview = await mutate('recategorize.preview', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision }); if (confirm(`Category: ${topic.paraCategory} → ${target}\n${preview.result.preview.changes?.length ? 'Move managed Note Folder' : 'Note Folder location: unchanged (customized)'}`)) await runAction('recategorize.apply', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic moved.'); }));
-    row.append(mutationButton('Archive', async () => { const preview = await mutate('archive.preview', { topicId: topic.topicId, expectedRevision: topic.revision }); if (confirm(`Disable and retain every active Reminder and scheduled operation (${preview.result.preview.commitments?.filter((item) => item.enabled).length ?? 0} active of ${preview.result.preview.commitments?.length ?? 0} commitment(s))`)) await runAction('archive.apply', { topicId: topic.topicId, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic archived.'); }));
+    row.append(mutationButton('Rename', async () => { const name = await promptUser('New Topic name', topic.name); if (name !== null) await runAction('rename', { topicId: topic.topicId, name, expectedRevision: topic.revision }, 'Topic renamed.'); }));
+    const target = topic.paraCategory === 'project' ? 'area' : 'project'; row.append(mutationButton(`Move to ${target}`, async () => { const preview = await mutate('recategorize.preview', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision }); if (await confirmUser(`Category: ${topic.paraCategory} → ${target}\n${preview.result.preview.changes?.length ? 'Move managed Note Folder' : 'Note Folder location: unchanged (customized)'}`)) await runAction('recategorize.apply', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic moved.'); }));
+    row.append(mutationButton('Archive', async () => { const preview = await mutate('archive.preview', { topicId: topic.topicId, expectedRevision: topic.revision }); if (await confirmUser(`Disable and retain every active Reminder and scheduled operation (${preview.result.preview.commitments?.filter((item) => item.enabled).length ?? 0} active of ${preview.result.preview.commitments?.length ?? 0} commitment(s))`)) await runAction('archive.apply', { topicId: topic.topicId, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic archived.'); }));
   }
   return row;
 }
@@ -505,7 +539,7 @@ document.querySelector('#topic-search-rebuild')?.addEventListener('click', async
 
 const workspace = {
   topic: null, generation: 0, conversations: [], selected: null, selectionGeneration: 0, historyGeneration: 0, chatSendGeneration: 0, chatSendOperations: new Map(),
-  conversationCreateOperations: new Map(), conversationPage: 0, notes: [], notesTotal: 0, notesCursor: null, notesServerPaged: false, notesLoadGeneration: 0, notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
+  conversationsLoadGeneration: 0, conversationCreateOperations: new Map(), conversationPage: 0, notes: [], notesTotal: 0, notesCursor: null, notesServerPaged: false, notesLoadGeneration: 0, notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
 };
 const AUTHORITATIVE_LIST_TOPIC = Symbol('authoritative-list-topic');
 const CONVERSATION_PAGE_SIZE = 50;
@@ -538,7 +572,7 @@ async function pageAction(action, input) {
 }
 function resetWorkspacePresentation() {
   workspace.topic = null; workspace.conversations = []; workspace.selected = null; workspace.conversationPage = 0; workspace.notes = []; workspace.notesTotal = 0; workspace.notesCursor = null; workspace.notesServerPaged = false; workspace.notePage = 0; workspace.note = null; workspace.drafts = new Map();
-  workspace.selectionGeneration += 1; workspace.historyGeneration += 1; workspace.notesLoadGeneration += 1; workspace.noteGeneration += 1; workspace.searchGeneration += 1;
+  workspace.conversationsLoadGeneration += 1; workspace.selectionGeneration += 1; workspace.historyGeneration += 1; workspace.notesLoadGeneration += 1; workspace.noteGeneration += 1; workspace.searchGeneration += 1;
   document.querySelector('#conversation-list')?.replaceChildren(); document.querySelector('#chat-messages')?.replaceChildren(); document.querySelector('#notes-tree')?.replaceChildren();
   document.querySelector('#workspace-notes-results')?.replaceChildren(); document.querySelector('#workspace-conversations-results')?.replaceChildren();
   document.querySelector('#note-editor').hidden = true; document.querySelector('#note-preview')?.replaceChildren(); document.querySelector('#chat-conversation-name').textContent = 'Loading…';
@@ -574,9 +608,10 @@ async function openTopicWorkspace(topicOrId, authority) {
   return generation === workspace.generation ? topic : null;
 }
 async function loadConversations({ selectPrimary = false, generation = workspace.generation } = {}) {
+  const loadGeneration = ++workspace.conversationsLoadGeneration;
   const view = document.querySelector('#conversation-view').value;
   const value = unwrap(await bridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: workspace.topic.topicId, includeClosed: view !== 'open' }));
-  if (generation !== workspace.generation || document.querySelector('#conversation-view').value !== view) return;
+  if (generation !== workspace.generation || loadGeneration !== workspace.conversationsLoadGeneration || document.querySelector('#conversation-view').value !== view) return;
   const nextConversations = (value?.conversations ?? []).filter((item) => view === 'all' || item.status === view);
   const listChanged = nextConversations.length !== workspace.conversations.length || nextConversations.some((item, index) => {
     const current = workspace.conversations[index];

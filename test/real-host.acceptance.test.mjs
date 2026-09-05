@@ -1104,7 +1104,10 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       if (kind === 'scale') {
         const scaleTopicResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: scaleTopicId } });
         const scaleTopic = (scaleTopicResponse?.result ?? scaleTopicResponse)?.topic;
-        assert.equal(scaleTopic?.lifecycle, 'active');
+        if (scaleTopic?.lifecycle !== 'active') {
+          const migration = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.migration.status', params: { schemaVersion: 1 } });
+          assert.fail(`Imported Topic is not active; durableMigration=${JSON.stringify(migration)}`);
+        }
         assert.equal(scaleTopic?.revision, 1);
         assert.equal(typeof scaleTopic?.activatedAt, 'string');
         const initialScaleSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: scaleTopicId } });
@@ -1187,11 +1190,11 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         for (let index = 1; index < proposalCount; index += 1) await activate(proposals.nth(index).getByRole('button', { name: 'Keep as-is', exact: true }), true);
         const checkpoint = frame.locator('#topic-review-checkpoint');
         await checkpoint.waitFor({ state: 'visible' });
-        await page.once('dialog', (dialog) => dialog.dismiss());
         await activate(checkpoint, true);
+        await respondToCommandDialog(frame, { confirm: false });
         await waitForFrameText(frame, '#topic-review-plan', 'Frozen application plan');
-        await page.once('dialog', (dialog) => dialog.accept());
         await activate(checkpoint, true);
+        await respondToCommandDialog(frame);
         await waitForFrameText(frame, '#topic-review-plan', 'Application outcomes:');
         const appliedResponse = await frame.evaluate(async () => {
           const response = await fetch('/plugins/command-center/api/topic-analysis', { credentials: 'omit', headers: { accept: 'application/json' } });
@@ -1541,6 +1544,12 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
   throw new Error(`Sequential keyboard traversal did not reach ${await locator.getAttribute('id') || await locator.getAttribute('aria-label') || 'the requested control'}.`);
 }
 
+async function respondToCommandDialog(frame, { value, confirm = true } = {}) {
+  await frame.locator('#command-dialog').waitFor({ state: 'visible' });
+  if (value !== undefined) await enterText(frame.locator('#command-dialog-input'), value, true);
+  await activate(frame.locator(confirm ? '#command-dialog-submit' : '#command-dialog-cancel'), true);
+  await frame.locator('#command-dialog').waitFor({ state: 'hidden' });
+}
 async function activate(locator, keyboard = false, key = 'Enter') {
   if (keyboard) {
     await locator.scrollIntoViewIfNeeded();
@@ -1713,7 +1722,11 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   await selectWorkspaceSection(frame, 'conversations', width, keyboard);
   await chooseOption(frame.locator('#conversation-view'), 'closed', keyboard);
   await timed(() => activate(closedConversation.getByRole('button', { name: 'Reopen', exact: true }), keyboard));
-  await closedConversation.waitFor({ state: 'detached' });
+  try { await closedConversation.waitFor({ state: 'detached', timeout: 10_000 }); }
+  catch (error) {
+    const state = await frame.evaluate(() => ({ view: document.querySelector('#conversation-view').value, status: document.querySelector('#conversation-status').textContent, rows: [...document.querySelectorAll('.conversation-item')].map((row) => ({ referenceId: row.dataset.referenceId, text: row.textContent })) }));
+    error.message += `; reopenPresentation=${JSON.stringify(state)}`; throw error;
+  }
   await chooseOption(frame.locator('#conversation-view'), 'open', keyboard);
   await frame.locator('.conversation-item').filter({ hasText: conversationName }).getByText('Open', { exact: true }).waitFor();
   measurement.conversationLifecycleMs = Math.max(1, Date.now() - conversationLifecycleStarted);
@@ -3162,8 +3175,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await activate(frame.locator('#evidence-close'), true, 'Escape');
       await activate(attentionCard.getByRole('button', { name: 'Open Topic Review', exact: true }), true);
       const actionStarted = Date.now();
-      page.once('dialog', (dialog) => dialog.accept(new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString()));
       await activate(frame.locator('#topic-review-snooze'), true);
+      await respondToCommandDialog(frame, { value: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString() });
       await waitForFrameText(frame, '#analysis-feedback', 'Topic Review snoozed.');
       evidence.performanceMeasurements = { desktop: { ...scaleJourney.measurement, sourceActionMs: Date.now() - actionStarted } };
       assert.ok(await frame.locator('#in-progress').count() === 1);
@@ -3286,12 +3299,12 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // the measured keyboard-only decision/checkpoint/application workflow;
       // they are fixture setup, not a completed primary-journey action.
       const mobileRow = frame.locator('.topic-row').filter({ hasText: 'Fictional Review Journey Topic' });
-      await page.once('dialog', (dialog) => dialog.accept('Project: Fictional Review Journey Topic'));
       await activate(mobileRow.getByRole('button', { name: 'Rename', exact: true }), true);
+      await respondToCommandDialog(frame, { value: 'Project: Fictional Review Journey Topic' });
       await waitForFrameText(frame, '#topic-status', 'Topic renamed.');
       const desktopRow = frame.locator('.topic-row').filter({ hasText: 'Fictional Desktop Journey Topic' });
-      await page.once('dialog', (dialog) => dialog.accept('Resource: Fictional Desktop Journey Topic'));
       await activate(desktopRow.getByRole('button', { name: 'Rename', exact: true }), true);
+      await respondToCommandDialog(frame, { value: 'Resource: Fictional Desktop Journey Topic' });
       await waitForFrameText(frame, '#topic-status', 'Topic renamed.');
       await activate(frame.locator('#analysis-run'), true);
       await waitForFrameText(frame, '#analysis-feedback', 'Analysis completed.');
@@ -3332,15 +3345,15 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const checkpoint = frame.locator('#topic-review-checkpoint');
       await checkpoint.waitFor({ state: 'visible' });
       reviewJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 320, 'mobile Topic Review checkpoint', true));
-      await page.once('dialog', (dialog) => dialog.dismiss());
       await activate(checkpoint, true);
+      await respondToCommandDialog(frame, { confirm: false });
       await waitForFrameText(frame, '#topic-review-plan', 'Frozen application plan');
       const frozenPlanText = await frame.locator('#topic-review-plan').innerText();
       const frozenPlan = JSON.parse(frozenPlanText.slice(frozenPlanText.indexOf('{')));
       assert.match(frozenPlan.planRevision, /^sha256:[a-f0-9]{64}$/u);
-      await page.once('dialog', (dialog) => dialog.accept());
       const topicReviewApplyStarted = Date.now();
       await activate(checkpoint, true);
+      await respondToCommandDialog(frame);
       await waitForFrameText(frame, '#topic-review-plan', 'Application outcomes:');
       releaseState.topicReviewApplyMs = Math.max(1, Date.now() - topicReviewApplyStarted);
       const appliedReviewResponse = await frame.evaluate(async () => {

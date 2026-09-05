@@ -87,6 +87,7 @@ test('Topic Review UI exposes schedule, evidence/consequences, independent decis
   for (const id of ['topic-analysis-schedule', 'analysis-enabled', 'analysis-weekday', 'analysis-local-time', 'analysis-time-zone', 'analysis-run', 'topic-review-groups', 'topic-review-snooze', 'topic-review-checkpoint']) assert.match(index, new RegExp(`id="${id}"`, 'u'));
   for (const label of ['Save analysis schedule', 'Run analysis now', 'Topic Review', 'Snooze Topic Review', 'Prepare Apply approved changes']) assert.match(index, new RegExp(label, 'u'));
   for (const token of ['proposal.approve', 'proposal.adjust', 'proposal.keep-as-is', 'review.snooze', 'review.apply', 'evidenceFacts', 'searchRetrievalConsequences', 'Rationale', 'Exact before state', 'Affected Source identities', 'Provenance', 'Blocked outcomes', 'Reversibility and irreversible outcomes', 'Frozen application plan', 'exactEffects', 'preconditions', 'compensationDisclosures', 'confirm: false', 'confirm: true']) assert.match(app, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+  assert.doesNotMatch(app, /\b(?:window\.)?(?:prompt|confirm)\(/u);
   assert.doesNotMatch(app, /notification(?:Emitter|Preview|Slot)|announce|pushReview/u);
 });
 
@@ -104,8 +105,8 @@ test('Topic Review controls render and send independent decisions without notifi
       Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => `71111111-1111-4111-8111-${String(++operationSequence).padStart(12, '0')}` });
       globalThis.__topicReviewCalls = [];
       globalThis.__topicReviewApproved = false;
-      globalThis.prompt = () => JSON.stringify({ paraCategory: 'area' });
-      globalThis.confirm = () => { globalThis.__visiblePlanAtConfirmation = document.querySelector('#topic-review-plan').textContent; return true; };
+      globalThis.prompt = () => { throw new Error('Native prompt is blocked by the host sandbox.'); };
+      globalThis.confirm = () => { throw new Error('Native confirm is blocked by the host sandbox.'); };
       globalThis.fetch = async (url, options = {}) => {
         if (url.startsWith('/plugins/command-center/api/dashboard')) return { ok: true, async json() { return { status: 'ok', result: { attention: [], attentionBadgeCount: 0, inProgress: [], comingUp: [], topics: [], activity: { records: [], hasMore: false }, notificationSettings: null } }; } };
         if (url.endsWith('/api/topic-analysis') && options.method !== 'POST') return { ok: true, async json() { const current = globalThis.__topicReviewApproved ? { ...proposal, state: 'approved' } : proposal; return { status: 'ok', result: { schedule: { enabled: true, weekday: 1, localTime: '07:00', timeZone: 'UTC', revision: 1 }, runs: [], review: { reviewId: 'topic-review:global', episodeRevision: 1, state: 'Active', notification: false, groups: [{ topicId: 'topic-fictional', operation: 'archive', proposals: [current] }], proposals: [current] } } }; } };
@@ -120,13 +121,23 @@ test('Topic Review controls render and send independent decisions without notifi
     await page.getByRole('button', { name: 'Approve' }).click();
     await page.getByRole('button', { name: 'Prepare Apply approved changes' }).waitFor();
     await page.getByRole('button', { name: 'Prepare Apply approved changes' }).click();
+    await page.locator('#command-dialog').waitFor({ state: 'visible' });
+    const visiblePlan = await page.locator('#command-dialog-details').textContent();
+    await page.locator('#command-dialog-cancel').press('Escape');
+    assert.equal(await page.evaluate(() => globalThis.__topicReviewCalls.some((input) => input.confirm === true)), false);
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'topic-review-checkpoint');
+    await page.getByRole('button', { name: 'Prepare Apply approved changes' }).click();
+    await page.locator('#command-dialog').waitFor({ state: 'visible' });
+    await page.locator('#command-dialog-submit').press('Enter');
     await page.waitForFunction(() => globalThis.__topicReviewCalls.some((input) => input.action === 'review.apply' && input.confirm === true));
+    const applied = await page.evaluate(() => globalThis.__topicReviewCalls.find((input) => input.confirm === true));
+    assert.equal(applied.applicationId, 'application-fictional');
+    assert.equal(applied.planRevision, 'plan-fictional');
     const actions = await page.evaluate(() => globalThis.__topicReviewCalls.map((input) => input.action));
     assert.deepEqual(actions.slice(0, 2), ['proposal.approve', 'review.apply']);
     assert.equal(actions.at(-1), 'review.apply');
     const checkpoint = await page.evaluate(() => globalThis.__topicReviewCalls.find((input) => input.action === 'review.apply' && input.confirm === false));
     assert.equal(checkpoint.expectedReviewRevision, 1); assert.deepEqual(checkpoint.approvedProposalRevisions, [{ proposalId: 'proposal-fictional', revision: 1 }]);
-    const visiblePlan = await page.evaluate(() => globalThis.__visiblePlanAtConfirmation);
     assert.match(visiblePlan, /change-fictional/u); assert.match(visiblePlan, /topicRevisions/u); assert.match(visiblePlan, /compensationDisclosures/u);
   } finally { await browser.close(); }
 });

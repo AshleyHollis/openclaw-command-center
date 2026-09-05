@@ -107,6 +107,34 @@ async function closeLoopbackServer(server) {
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
+test('shared action dialog works inside the exact scripts-only opaque sandbox', async () => {
+  const page = await browser.newPage();
+  await guardBrowserTraffic(page, 'opaque in-frame action dialog');
+  try {
+    await page.setContent(`<iframe sandbox="allow-scripts" src="${topicPageBaseUrl}/plugins/command-center"></iframe>`);
+    const element = page.locator('iframe');
+    const frame = await (await element.elementHandle()).contentFrame();
+    await frame.waitForLoadState('domcontentloaded');
+    await frame.addScriptTag({ content: app });
+    assert.equal(await element.getAttribute('sandbox'), 'allow-scripts');
+    await frame.evaluate(() => {
+      const trigger = document.createElement('button'); trigger.id = 'dialog-test-trigger'; trigger.textContent = 'Test action'; document.body.append(trigger); trigger.focus();
+      void askUser('Inspect this frozen plan.', { details: 'plan-exact-fictional' }).then((result) => { window.__dialogResult = result; });
+    });
+    await frame.locator('#command-dialog').waitFor({ state: 'visible' });
+    assert.equal(await frame.locator('#command-dialog-details').textContent(), 'plan-exact-fictional');
+    assert.equal(await frame.evaluate(() => askUser('Must not replace the pending plan.')), null);
+    await frame.locator('#command-dialog-cancel').press('Escape');
+    assert.equal(await frame.evaluate(() => window.__dialogResult), null);
+    assert.equal(await frame.evaluate(() => document.activeElement.id), 'dialog-test-trigger');
+    await frame.evaluate(() => { void promptUser('Exact name', 'Initial').then((result) => { window.__dialogResult = result; }); });
+    await frame.locator('#command-dialog-input').fill('Confirmed exact name');
+    await frame.locator('#command-dialog-submit').press('Enter');
+    assert.equal(await frame.evaluate(() => window.__dialogResult), 'Confirmed exact name');
+    assert.equal(await frame.evaluate(() => document.activeElement.id), 'dialog-test-trigger');
+  } finally { await closeGuardedPage(page); }
+});
+
 test('opaque sandboxed Topic Page frame preflights and applies through the real action handler', async () => {
   const guard = new TrafficGuard(); guard.assert('127.0.0.1', 'Topic Page preflight browser'); guard.assert('127.0.0.2', 'Topic Page action browser');
   const topicId = '11111111-1111-4111-8111-111111111111'; const methods = []; const preflightEvidence = []; const calls = [];
@@ -418,7 +446,7 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
         if (fixture.interruptNextSendResponse) { fixture.interruptNextSendResponse = false; respond(payload.requestId, null, { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Fictional interrupted send response.' }); return; }
         result = { schemaVersion: 1, status: 'applied', logicalOperationId: payload.operationId };
       }
-      if (payload.method.endsWith('sessions.browse')) { const topicConversations = payload.params.topicId === topicBId ? [topicBConversation] : conversations; result = { schemaVersion: 1, topicId: payload.params.topicId, conversations: topicConversations.filter((item) => payload.params.includeClosed === true || item.status === 'open').map(({ sessionKey: _private, ...item }) => item) }; }
+      if (payload.method.endsWith('sessions.browse')) { const topicConversations = payload.params.topicId === topicBId ? [topicBConversation] : conversations; result = { schemaVersion: 1, topicId: payload.params.topicId, conversations: topicConversations.filter((item) => payload.params.includeClosed === true || item.status === 'open').map(({ sessionKey: _private, ...item }) => item) }; if (fixture.deferNextConversationBrowse) { fixture.deferNextConversationBrowse = false; const captured = copy(result); fixture.releaseConversationBrowse = () => respond(payload.requestId, captured); return; } }
       if (payload.method.endsWith('sessions.history')) { if (fixture.deferHistoryReferences.has(payload.params.referenceId)) { fixture.deferHistoryReferences.delete(payload.params.referenceId); fixture.deferredHistories.set(payload.params.referenceId, { requestId: payload.requestId }); return; } result = { messages: histories[payload.params.referenceId] ?? [] }; }
       if (payload.method.endsWith('sessions.navigate')) { const item = [...conversations, topicBConversation].find((conversation) => conversation.referenceId === payload.params.referenceId); result = item ? { schemaVersion: 1, status: 'applied', sessionKey: item.sessionKey, sessionId: item.sessionId, sourceReference: { referenceId: item.referenceId, topicId: item.topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: item.sessionKey, observedRevision: null } } : {}; if (fixture.deferNavigateReference === payload.params.referenceId) { fixture.deferNavigateReference = null; fixture.deferredNavigate = { requestId: payload.requestId, result }; return; } }
       if (payload.method.endsWith('notes.browse')) { if (fixture.deferNotesBrowse && payload.params.topicId === topicId) { fixture.deferNotesBrowse = false; fixture.notesBrowsePending = true; fixture.notesBrowseRequest = { requestId: payload.requestId, params: copy(payload.params) }; return; } result = browseNotes(payload.params); }
@@ -899,6 +927,27 @@ test('late send and Search completions cannot clear or populate a newer Topic wo
     await page.locator('#workspace-search-query').fill('current Topic B search'); await submit(page, '#workspace-search-form');
     await page.locator('#workspace-search-status').filter({ hasText: '0 Notes · 0 Conversations' }).waitFor();
     assert.equal(await page.locator('#workspace-notes-results article').count(), 0); assert.equal(await page.locator('#workspace-conversations-results article').count(), 0); assert.equal(await page.locator('#workspace-search-status').textContent(), '0 Notes · 0 Conversations'); assert.equal(await page.evaluate(() => { const fixture = globalThis.__topicPageFixture; fixture.staleSearchObserver.disconnect(); return fixture.staleSearchPainted; }), false);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('late closed Conversation browse cannot repaint a reopened row', async () => {
+  const page = await setupPage();
+  try {
+    await page.locator('#conversation-view').selectOption('closed');
+    const row = page.locator('.conversation-item').first();
+    await row.getByRole('button', { name: 'Reopen', exact: true }).waitFor();
+    const referenceId = await row.getAttribute('data-reference-id');
+    await page.evaluate(() => { globalThis.__topicPageFixture.deferNextConversationBrowse = true; });
+    await page.locator('#conversation-refresh').click();
+    await page.waitForFunction(() => Boolean(globalThis.__topicPageFixture.releaseConversationBrowse));
+    await row.getByRole('button', { name: 'Reopen', exact: true }).click();
+    const exact = page.locator(`[data-reference-id="${referenceId}"]`);
+    await exact.waitFor({ state: 'detached' });
+    const delivered = await page.evaluate(() => globalThis.__topicPageFixture.deliveredBridgeResponses);
+    await page.evaluate(() => globalThis.__topicPageFixture.releaseConversationBrowse());
+    await page.evaluate((target) => globalThis.__topicPageFixture.waitForApplicationSettlement('bridge', target), delivered + 1);
+    assert.equal(await exact.count(), 0);
+    assert.equal(await page.locator('#conversation-view').inputValue(), 'closed');
   } finally { await closeGuardedPage(page); }
 });
 

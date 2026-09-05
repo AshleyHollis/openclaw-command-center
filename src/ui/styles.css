@@ -73,6 +73,9 @@ textarea { width: 100%; max-width: 100%; min-height: 44px; resize: vertical; box
 .markdown-preview { max-height: 55vh; overflow: auto; overflow-wrap: anywhere; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 #note-action-dialog form { padding: 20px; }
+#command-dialog form { padding: 20px; }
+#command-dialog-details { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 45vh; overflow: auto; }
+#command-dialog-input { width: 100%; min-width: 0; box-sizing: border-box; }
 .workspace-sections button { min-width: 44px; min-height: 44px; flex: 1 1 0; }
 @media (max-width: 47.99rem) {
   main { width: 100%; max-width: 100%; padding: 10px; }
