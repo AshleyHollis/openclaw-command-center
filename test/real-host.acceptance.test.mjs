@@ -2441,6 +2441,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     });
     if (focusedScenarioIds?.has('focused-session-recovery')) await collectScenario('focused-session-recovery', async (signal) => {
       const topicId = RELEASE_ALPHA_TOPIC_ID;
+      // The migrated fixture's Note Folder is first verified by a real browse,
+      // just as opening the workspace does in the combined journey.
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId, limit: 1, offset: 0 }, signal });
+      const initialTopic = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId }, signal });
+      assert.equal((initialTopic?.result ?? initialTopic).topic.usable, true, JSON.stringify((initialTopic?.result ?? initialTopic).topic.recovery));
       const response = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId }, signal });
       const primary = (response?.result ?? response).conversations.find((item) => item.isPrimary);
       assert.ok(primary?.referenceId && primary?.sessionId);
@@ -2450,7 +2455,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(target.sourceReference.referenceId, primary.referenceId);
       const restored = await recoverExactPrimary({ topicId, primarySession: { ...primary, sessionKey: target.sessionKey }, signal });
       const current = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId }, signal });
-      assert.equal((current?.result ?? current).topic.usable, true);
+      assert.equal((current?.result ?? current).topic.usable, true, JSON.stringify((current?.result ?? current).topic.recovery));
       return { topicId, replacementReferenceId: restored.referenceId, recovered: true };
     });
     await collectScenario('startup-migration-channel-count', async (signal) => {
