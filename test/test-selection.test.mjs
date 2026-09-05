@@ -94,7 +94,7 @@ test('real-host acceptance exposes one closed authenticated mount dependency pla
 test('migrated Topic Analysis diagnosis invokes the canonical assertion without the full capture', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('startup-authenticated-topic-analysis'), {
     kind: 'focused',
-    scenarioIds: ['pinned-host-startup', 'startup-authenticated-topic-analysis']
+    scenarioIds: ['pinned-host-startup', 'focused-verified-note-locator', 'startup-authenticated-topic-analysis']
   });
 });
 

@@ -32,7 +32,7 @@ const issue32TicketTests = new Set([
 ]);
 
 const focusedRealHostScenarios = Object.freeze({
-  'startup-authenticated-topic-analysis': Object.freeze(['pinned-host-startup', 'startup-authenticated-topic-analysis']),
+  'startup-authenticated-topic-analysis': Object.freeze(['pinned-host-startup', 'focused-verified-note-locator', 'startup-authenticated-topic-analysis']),
   'authenticated-control-ui-mount': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount']),
   'authenticated-reminder-create': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-reminder-create']),
   'closed-tab-notification': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-closed-tab-notification']),

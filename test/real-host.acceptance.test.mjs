@@ -2494,6 +2494,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.missingProjectionRebuilt = true;
       return { recovered: true, rowCounts: verified.rowCounts };
     });
+    if (focusedScenarioIds?.has('focused-verified-note-locator')) await collectScenario('focused-verified-note-locator', async (signal) => {
+      await ensureMigrationBinding(signal);
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, limit: 100, offset: 0 }, signal });
+      return { authoritativeNoteFolderVerified: true };
+    });
     await collectScenario('startup-authenticated-topic-analysis', async (signal) => {
       const { binding } = await ensureMigrationBinding(signal);
       const logicalOperationId = randomUUID();
