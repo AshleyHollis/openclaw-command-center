@@ -21,7 +21,10 @@ test('committed projection evidence verifies artifacts, bookkeeping, and Topic c
       prepared: {
         topicIds: [topicId],
         notes: [],
-        conversations: [],
+        conversations: [
+          { topicId, sourceReference: { version: 1, referenceId: 'fictional-message-session', topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:fictional-message-session', observedRevision: null }, sessionKey: 'agent:main:fictional-message-session', sessionId: 'fictional-message-session', messageId: 'fictional-message', name: 'Fictional message Conversation', date: '2026-08-22T00:00:00.000Z', role: 'user', text: 'Fictional message content', primaryState: 'ordinary', closed: false, provenance: 'native' },
+          { topicId, sourceReference: { version: 1, referenceId: 'fictional-empty-session', topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:fictional-empty-session', observedRevision: null }, sessionKey: 'agent:main:fictional-empty-session', sessionId: 'fictional-empty-session', messageId: null, name: 'Fictional empty Conversation', date: '2026-08-22T00:00:00.000Z', role: 'metadata', text: 'Fictional empty Conversation', primaryState: 'ordinary', closed: false, provenance: 'native' }
+        ],
         noteSourceRevision: 'fictional-notes-v1',
         conversationSourceRevision: 'fictional-conversations-v1'
       }
@@ -34,8 +37,8 @@ test('committed projection evidence verifies artifacts, bookkeeping, and Topic c
     };
     const verified = verifyCommittedSearchProjectionSet(options);
     assert.deepEqual(verified.topicIds, [topicId]);
-    assert.deepEqual(verified.rowCounts, { notes: 0, conversations: 0 });
-    assert.deepEqual(verified.topicRowCounts, { notes: { [topicId]: 0 }, conversations: { [topicId]: 0 } });
+    assert.deepEqual(verified.rowCounts, { notes: 0, conversations: 2, conversationMessages: 1, conversationMetadata: 1 });
+    assert.deepEqual(verified.topicRowCounts, { notes: { [topicId]: 0 }, conversations: { [topicId]: 2 }, conversationMessages: { [topicId]: 1 }, conversationMetadata: { [topicId]: 1 } });
     const captured = captureSearchProjectionEvidence(options);
     assert.equal(Object.keys(captured.artifacts).length, 6);
     assert.equal(captured.bookkeeping.length, 2);

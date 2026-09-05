@@ -433,7 +433,7 @@ async function verifyReleaseSearchResults({ gatewayUrl, credential, projectionRo
     requiredTopicIds: [RELEASE_ALPHA_TOPIC_ID, RELEASE_SCALE_TOPIC_ID],
     expectedTopicRowCounts: {
       notes: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedNotes },
-      conversations: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
+      conversationMessages: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
     }
   });
 }
@@ -446,7 +446,7 @@ async function restoreReleaseSearchBaseline({ gatewayUrl, credential, projection
       requiredTopicIds: [RELEASE_ALPHA_TOPIC_ID, RELEASE_SCALE_TOPIC_ID],
       expectedTopicRowCounts: {
         notes: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedNotes },
-        conversations: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
+        conversationMessages: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
       }
     });
     return verifyReleaseSearchResults({ gatewayUrl, credential, projectionRoot, signal });
@@ -1159,28 +1159,22 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           }
           await waitForCommittedSearchProjections(scaleProjectionRoot, { requiredTopicIds: [scaleTopicId], expectedTopicRowCounts: {
             notes: { [scaleTopicId]: RELEASE_FIXTURE_COUNTS.indexedNotes },
-            conversations: { [scaleTopicId]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
+            conversationMessages: { [scaleTopicId]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages },
+            conversationMetadata: { [scaleTopicId]: RELEASE_FIXTURE_COUNTS.conversations - 1 },
+            conversations: { [scaleTopicId]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages + RELEASE_FIXTURE_COUNTS.conversations - 1 }
           } });
         };
         const beforeMissingProjection = captureSearchProjectionEvidence(scaleProjectionOptions);
         await Promise.all(COMMITTED_SEARCH_PROJECTION_FILES.map((name) => unlink(path.join(scaleProjectionRoot, name))));
         verifyMissingSearchProjectionSet(scaleProjectionOptions, beforeMissingProjection);
         await rebuildSearchThroughAuthenticatedPost({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: scaleTopicId, signal, label: 'fresh missing Search projection rebuild' });
-        await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: scaleTopicId, query: 'Fictional indexed scale phrase', limit: 50 } });
-        await waitForCommittedSearchProjections(scaleProjectionRoot);
-        const notesProjection = new DatabaseSync(path.join(scaleProjectionRoot, 'topic-search-notes.sqlite'), { readOnly: true });
-        const conversationProjection = new DatabaseSync(path.join(scaleProjectionRoot, 'topic-search-conversations.sqlite'), { readOnly: true });
-        try {
-          assert.equal(notesProjection.prepare('SELECT count(*) AS count FROM note_documents WHERE topic_id = ?').get(scaleTopicId).count, RELEASE_FIXTURE_COUNTS.indexedNotes);
-          assert.equal(conversationProjection.prepare('SELECT count(*) AS count FROM conversation_documents WHERE topic_id = ?').get(scaleTopicId).count, RELEASE_FIXTURE_COUNTS.indexedConversationMessages);
-        } finally { notesProjection.close(); conversationProjection.close(); }
+        await verifyScaleSearch();
         const staleManifestPath = path.join(scaleProjectionRoot, 'topic-search-notes.json');
         const staleManifest = JSON.parse(await readFile(staleManifestPath, 'utf8'));
         await writeFile(staleManifestPath, `${JSON.stringify({ ...staleManifest, generation: 'fictional-fresh-stale-generation' })}\n`);
         await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: scaleTopicId, query: 'Fictional indexed scale phrase', limit: 50 } }), /capability-unavailable|projection/iu);
         await rebuildSearchThroughAuthenticatedPost({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: scaleTopicId, signal, label: 'fresh stale Search projection rebuild' });
-        await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: scaleTopicId, query: 'Fictional indexed scale phrase', limit: 50 } });
-        await waitForCommittedSearchProjections(scaleProjectionRoot);
+        await verifyScaleSearch();
         const repairedManifest = JSON.parse(await readFile(staleManifestPath, 'utf8'));
         assert.notEqual(repairedManifest.generation, 'fictional-fresh-stale-generation');
         return Object.freeze({ kind, topicId: journey.topicId, freshWorld: scenarioWorld.root, assertionsCompleted: true, scale: { largeNoteBytes: RELEASE_FIXTURE_COUNTS.largeNoteBytes, conversations: RELEASE_FIXTURE_COUNTS.conversations, activityRecords: RELEASE_FIXTURE_COUNTS.activityRecords, actionCards: RELEASE_FIXTURE_COUNTS.actionCards, indexedNotes: RELEASE_FIXTURE_COUNTS.indexedNotes, indexedConversationMessages: RELEASE_FIXTURE_COUNTS.indexedConversationMessages, largeNoteLifecycleMs: largeNote.largeNoteLifecycleMs, missingProjectionRebuilt: true, staleProjectionRebuilt: true } });
@@ -2455,13 +2449,13 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         requiredTopicIds: [RELEASE_ALPHA_TOPIC_ID, RELEASE_SCALE_TOPIC_ID],
         expectedTopicRowCounts: {
           notes: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedNotes },
-          conversations: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
+          conversationMessages: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
         }
       });
       const verified = await verifyReleaseSearchResults({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal });
       releaseState.realizedSearchCounts = {
         notes: verified.topicRowCounts.notes[RELEASE_SCALE_TOPIC_ID],
-        conversationMessages: verified.topicRowCounts.conversations[RELEASE_SCALE_TOPIC_ID]
+        conversationMessages: verified.topicRowCounts.conversationMessages[RELEASE_SCALE_TOPIC_ID]
       };
       return { projectionRoot, indexedNotes: releaseState.realizedSearchCounts.notes, indexedConversationMessages: releaseState.realizedSearchCounts.conversationMessages, integrityChecked: true };
     });
@@ -2557,7 +2551,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           ...(heavyCorpus ? {
             expectedTopicRowCounts: {
               notes: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedNotes },
-              conversations: { [RELEASE_SCALE_TOPIC_ID]: fullCorpus ? RELEASE_FIXTURE_COUNTS.indexedConversationMessages : 1 }
+              conversationMessages: { [RELEASE_SCALE_TOPIC_ID]: fullCorpus ? RELEASE_FIXTURE_COUNTS.indexedConversationMessages : 1 }
             }
           } : {})
         });
@@ -2787,7 +2781,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         requiredTopicIds: [RELEASE_ALPHA_TOPIC_ID, RELEASE_SCALE_TOPIC_ID],
         expectedTopicRowCounts: {
           notes: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedNotes },
-          conversations: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
+          conversationMessages: { [RELEASE_SCALE_TOPIC_ID]: RELEASE_FIXTURE_COUNTS.indexedConversationMessages }
         }
       });
       return { recovered: true, rebuildMs: Date.now() - startedAt, rowCounts: verified.rowCounts };

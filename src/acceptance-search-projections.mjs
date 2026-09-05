@@ -92,6 +92,14 @@ export function verifyCommittedSearchProjectionSet({ projectionRoot, metadataDat
         rowCounts[projection.kind] = database.prepare(`SELECT count(*) AS count FROM ${projection.table}`).get().count;
         if (rowCounts[projection.kind] !== manifest.rowCount) throw new Error('Committed projection row count does not match its manifest.');
         topicRowCounts[projection.kind] = Object.freeze(Object.fromEntries(requiredTopicIds.map((topicId) => [topicId, database.prepare(`SELECT count(*) AS count FROM ${projection.table} WHERE topic_id = ?`).get(topicId).count])));
+        if (projection.kind === 'conversations') {
+          // Empty Conversations have searchable name rows, not message records.
+          // Retain total document counts and expose both disjoint subsets.
+          for (const [kind, predicate] of [['conversationMessages', 'message_id IS NOT NULL'], ['conversationMetadata', 'message_id IS NULL']]) {
+            rowCounts[kind] = database.prepare(`SELECT count(*) AS count FROM ${projection.table} WHERE ${predicate}`).get().count;
+            topicRowCounts[kind] = Object.freeze(Object.fromEntries(requiredTopicIds.map((topicId) => [topicId, database.prepare(`SELECT count(*) AS count FROM ${projection.table} WHERE topic_id = ? AND ${predicate}`).get(topicId).count])));
+          }
+        }
       } finally {
         database.close();
       }
