@@ -1256,6 +1256,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const proposals = frame.locator('.topic-review-proposal');
         const proposalCount = await proposals.count();
         assert.equal(proposalCount, 1, 'the fresh single-Topic fixture must produce exactly its explicit category proposal');
+        await snoozeTopicReview(frame, page);
         await activate(proposals.first().getByRole('button', { name: 'Approve', exact: true }), true);
         for (let index = 1; index < proposalCount; index += 1) await activate(proposals.nth(index).getByRole('button', { name: 'Keep as-is', exact: true }), true);
         const checkpoint = frame.locator('#topic-review-checkpoint');
@@ -1526,6 +1527,28 @@ async function waitForDashboard(frame, timeout = 10_000) {
     const dashboard = document.querySelector('#dashboard');
     return dashboard && !dashboard.textContent?.includes('Loading current Attention…') && !dashboard.textContent?.includes('Loading Activity…');
   }, undefined, { timeout });
+}
+
+async function snoozeTopicReview(frame, page) {
+  const until = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+  const response = observeBrowserResponse(page.waitForResponse((item) => item.request().method() === 'POST'
+    && new URL(item.url()).pathname === '/plugins/command-center/api/topic-analysis/actions'
+    && item.request().postDataJSON()?.action === 'review.snooze', { timeout: 10_000 }));
+  await activate(frame.locator('#topic-review-snooze'), true);
+  await respondToCommandDialog(frame, { value: until });
+  const observed = await response;
+  assert.equal(observed.observed, true, 'keyboard Snooze must submit the exact Review action');
+  const body = await observed.value.json();
+  assert.equal(observed.value.status(), 200, `Review Snooze refused: ${JSON.stringify(body)}`);
+  assert.equal(body.result?.state, 'Snoozed');
+  assert.equal(body.result?.snoozedUntil, until);
+  await frame.waitForFunction(() => document.querySelector('#analysis-feedback')?.textContent.includes('Topic Review snoozed.'), undefined, { timeout: 10_000 });
+  const readback = await frame.evaluate(async () => {
+    const result = await (await fetch('/plugins/command-center/api/topic-analysis', { credentials: 'omit', headers: { accept: 'application/json' } })).json();
+    return result.review;
+  });
+  assert.deepEqual({ state: readback?.state, until: readback?.snoozedUntil, revision: readback?.episodeRevision },
+    { state: 'Snoozed', until, revision: body.result.episodeRevision });
 }
 
 async function respondToCommandDialog(frame, { value, confirm = true } = {}) {
@@ -3193,9 +3216,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await activate(frame.locator('#evidence-close'), true, 'Escape');
       await activate(attentionCard.getByRole('button', { name: 'Open Topic Review', exact: true }), true);
       const actionStarted = Date.now();
-      await activate(frame.locator('#topic-review-snooze'), true);
-      await respondToCommandDialog(frame, { value: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString() });
-      await waitForFrameText(frame, '#analysis-feedback', 'Topic Review snoozed.');
+      await snoozeTopicReview(frame, page);
       evidence.performanceMeasurements = { desktop: { ...scaleJourney.measurement, sourceActionMs: Date.now() - actionStarted } };
       assert.ok(await frame.locator('#in-progress').count() === 1);
       await prepareExactActivityFixture({ stateDir: resolvedStateDir, gatewayUrl, topicId: RELEASE_ACTIVITY_TOPIC_ID });

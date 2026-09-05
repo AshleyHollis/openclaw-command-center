@@ -3,6 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { Readable } from 'node:stream';
+import { createTopicAnalysisActionsHttpHandler } from '../src/topics/analysis-http.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { candidateToProposal } from '../src/topics/analysis-policy.mjs';
 import { createTopicReviewService } from '../src/topics/review.mjs';
@@ -32,6 +34,33 @@ function persist(metadata, proposal, state = 'pending') {
   metadata.setTopicAnalysisEvidence(proposal.proposalId, evidenceFacts);
   return proposal;
 }
+
+test('opaque-frame Snooze reaches the real Review service with exact revision and replay protections', async () => {
+  await fixture(async ({ metadata }) => {
+    persist(metadata, makeProposal('archive'));
+    const review = createTopicReviewService({ metadata, now: () => Date.parse('2026-08-24T08:00:00Z') });
+    const initial = review.refresh();
+    const handler = createTopicAnalysisActionsHttpHandler({ topicReview: review });
+    const request = async (body) => {
+      const req = Readable.from([Buffer.from(JSON.stringify(body))]);
+      Object.assign(req, { method: 'POST', headers: { origin: 'null', 'content-type': 'application/json' } });
+      const res = { statusCode: 0, setHeader() {}, end(value) { this.body = JSON.parse(value); } };
+      await handler(req, res);
+      return res;
+    };
+    const body = { schemaVersion: 1, action: 'review.snooze', logicalOperationId: '71111111-1111-4111-8111-111111111111', reviewId: initial.reviewId, expectedReviewRevision: initial.episodeRevision, snoozedUntil: '2026-08-25T08:00:00Z' };
+    const response = await request(body);
+    assert.equal(response.statusCode, 200, JSON.stringify(response.body));
+    assert.equal(review.get().state, 'Snoozed');
+    assert.equal(review.get().snoozedUntil, body.snoozedUntil);
+    assert.equal(review.get().episodeRevision, initial.episodeRevision + 1);
+    assert.deepEqual((await request(body)).body, response.body, 'same intent must replay without another revision');
+    assert.equal((await request({ ...body, logicalOperationId: '71111111-1111-4111-8111-111111111112' })).statusCode, 409, 'a new stale action must remain refused');
+    assert.equal((await request({ ...body, snoozedUntil: '2026-08-26T08:00:00Z' })).body.code, 'intent-mismatch');
+    assert.equal((await request({ ...body, unexpected: true })).statusCode, 400);
+    assert.throws(() => review.snooze({ ...body, expectedRevision: initial.episodeRevision + 1 }), /stale or missing/u, 'the service still rejects transport-only fields');
+  });
+});
 
 test('one Routine global review groups deterministic proposals and later analysis updates its episode', async () => {
   await fixture(async ({ metadata }) => {

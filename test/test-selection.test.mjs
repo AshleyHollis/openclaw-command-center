@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+
+test('Topic Review diagnosis reuses its exact independent real-host fixture', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-topic-review').isolatedSliceIds, ['fresh-review']);
+});
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 import { ordinaryTestArgv, ordinaryTestLanes, resolveRealHostAcceptancePlan, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';

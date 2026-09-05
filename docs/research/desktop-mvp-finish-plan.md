@@ -2,6 +2,12 @@
 
 ## Stabilization update (supersedes the pending implementation notes below)
 
+Candidate `0cac7f0` passed 136 Linux affected checks, all 16 independent non-performance slices in two lanes, and the desktop keyboard real-host journey. Its exclusive scale replay newly passed `verified-activity-readback`, including the exact Reminder Complete receipt. The remaining original desktop frontier is `scale-performance`; mobile remains deferred/unpassed. Full release qualification is not claimed by these diagnostic results.
+
+The same replay then exposed a Review Snooze transport mismatch: the HTTP dispatcher forwarded its `action` field into the closed service input, yielding a conflict even with the current revision. A real HTTP-handler/SQLite Review regression reproduced the rejection in 0.3 seconds. The dispatcher now strips only that transport field; stale revisions, mismatched replay intents, unknown fields and the closed service contract remain rejected. Ten Review checks pass. The focused fresh Review fixture now exercises the same keyboard Snooze helper as scale, checking the POST response and exact durable readback with a short error bound instead of waiting for a success message after a rejected request.
+
+Publication source-lineage ambiguity is resolved: freshly fetched main and original immutable snapshot `91bb18e` share exact tree `b55c05c2bad4179665b696333d2beabb6c7fe103`. A normal publication branch can preserve main history and apply the candidate delta without reset, force-push or an unrelated-history merge.
+
 The Reminder root fix is committed in `9011ee4`: successful native one-shot delivery no longer acknowledges Attention, and Snooze re-enables the exact native schedule. Its original real-host reproduction passed, and the Linux affected cluster passed 121 tests. This is a closed diagnostic defect, not a new original acceptance-frontier pass.
 
 The bounded architecture follow-up centralizes native Reminder interpretation and action verification in `src/sources/reminder-lifecycle.mjs`. Existing Source callers and real SQLite Attention tests cross the same interface; no scheduler, store, or permissions were added. A deterministic browser regression also reproduced an older Dashboard response resurrecting a removed card. Dashboard refresh now applies only the latest request and owns card focus/draft restoration in one rendering function.
