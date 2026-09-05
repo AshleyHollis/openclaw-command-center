@@ -159,28 +159,28 @@ function responseSessionId(value) {
   return session?.sessionId ?? session?.id ?? value?.sessionId ?? null;
 }
 
-function assertSessionIdentity(response, reference, sessionId, operation) {
-  if (responseKey(response) !== reference.externalSourceId || responseSessionId(response) !== sessionId) {
+function assertSessionIdentity(response, sessionKey, sessionId, operation) {
+  if (responseKey(response) !== sessionKey || responseSessionId(response) !== sessionId) {
     throw sourceError('source-recovery', `${operation} returned an unexpected Session identity.`);
   }
 }
 
-function conversationName(described, reference) {
+function conversationName(described, sessionKey) {
   const session = responseSession(described);
   for (const value of [session?.displayName, session?.label, session?.derivedTitle, session?.title]) {
     if (typeof value === 'string' && value.trim()) return value.trim();
   }
-  return reference.externalSourceId;
+  return sessionKey;
 }
 
-async function transcriptPass(gateway, reference, expectedSessionId, signal) {
+async function transcriptPass(gateway, sessionKey, expectedSessionId, signal) {
   const messages = [];
   const limit = 100;
   let offset = 0;
   for (;;) {
     signal?.throwIfAborted();
-    const page = await withSignal(gateway.request('chat.history', { sessionKey: reference.externalSourceId, limit, offset }), signal);
-    assertSessionIdentity(page, reference, expectedSessionId, 'chat.history');
+    const page = await withSignal(gateway.request('chat.history', { sessionKey, limit, offset }), signal);
+    assertSessionIdentity(page, sessionKey, expectedSessionId, 'chat.history');
     if (!Array.isArray(page?.messages)) throw sourceError('source-inconsistent', 'chat.history returned an invalid message page.');
     for (const message of page.messages) {
       signal?.throwIfAborted();
@@ -196,15 +196,15 @@ async function transcriptPass(gateway, reference, expectedSessionId, signal) {
   return { messages, fingerprint: digest(messages) };
 }
 
-async function completeTranscript(gateway, reference, expectedSessionId, signal) {
-  const snapshot = await transcriptPass(gateway, reference, expectedSessionId, signal);
-  const verification = await transcriptPass(gateway, reference, expectedSessionId, signal);
+async function completeTranscript(gateway, sessionKey, expectedSessionId, signal) {
+  const snapshot = await transcriptPass(gateway, sessionKey, expectedSessionId, signal);
+  const verification = await transcriptPass(gateway, sessionKey, expectedSessionId, signal);
   if (verification.fingerprint !== snapshot.fingerprint) throw sourceError('source-incomplete', 'The authoritative Session history changed during snapshotting.');
   return snapshot;
 }
 
-async function transcriptReaderPass(transcriptReader, reference, expectedSessionId, signal) {
-  const entries = await withSignal(transcriptReader({ agentId: 'main', sessionKey: reference.externalSourceId, sessionId: expectedSessionId }), signal);
+async function transcriptReaderPass(transcriptReader, sessionKey, expectedSessionId, signal) {
+  const entries = await withSignal(transcriptReader({ agentId: 'main', sessionKey, sessionId: expectedSessionId }), signal);
   if (!Array.isArray(entries)) throw sourceError('source-inconsistent', 'The authoritative transcript reader returned an invalid result.');
   const messages = entries.map((entry) => {
     if (!entry || typeof entry !== 'object' || !entry.message || typeof entry.message !== 'object' || typeof entry.entryId !== 'string' || !entry.entryId) throw sourceError('source-incomplete', 'A visible Session message lacks authoritative identity.');
@@ -213,9 +213,9 @@ async function transcriptReaderPass(transcriptReader, reference, expectedSession
   return { messages, fingerprint: digest(entries) };
 }
 
-async function completeReaderTranscript(transcriptReader, reference, expectedSessionId, signal) {
-  const snapshot = await transcriptReaderPass(transcriptReader, reference, expectedSessionId, signal);
-  const verification = await transcriptReaderPass(transcriptReader, reference, expectedSessionId, signal);
+async function completeReaderTranscript(transcriptReader, sessionKey, expectedSessionId, signal) {
+  const snapshot = await transcriptReaderPass(transcriptReader, sessionKey, expectedSessionId, signal);
+  const verification = await transcriptReaderPass(transcriptReader, sessionKey, expectedSessionId, signal);
   if (verification.fingerprint !== snapshot.fingerprint) throw sourceError('source-incomplete', 'The authoritative Session history changed during snapshotting.');
   return snapshot;
 }
@@ -240,19 +240,21 @@ export async function readConversationSourceSnapshot({ topicId, metadata, gatewa
     signal?.throwIfAborted();
     if (unavailableReplacedSession(metadata, reference, catalogRows, replacements)) continue;
     const state = metadata?.getSessionState?.(reference.referenceId) ?? null;
+    const sessionKey = effectiveSourceLocator(metadata, reference);
     if (typeof state?.sessionId !== 'string' || state.sessionId.trim() === '') throw sourceError('source-recovery', 'The linked Session does not have an exact authoritative Session ID.');
-    let described = { session: { key: reference.externalSourceId, sessionId: state.sessionId, displayName: state.displayName } };
+    let described = { session: { key: sessionKey, sessionId: state.sessionId, displayName: state.displayName } };
     let history;
-    if (typeof transcriptReader === 'function') history = await completeReaderTranscript(transcriptReader, reference, state.sessionId, signal);
+    if (typeof transcriptReader === 'function') history = await completeReaderTranscript(transcriptReader, sessionKey, state.sessionId, signal);
     else {
       const describeRequest = { includeDerivedTitles: true };
-      describeRequest['k' + 'ey'] = reference.externalSourceId;
+      describeRequest['k' + 'ey'] = sessionKey;
       described = await withSignal(authoritativeGateway.request('sessions.describe', describeRequest), signal);
-      assertSessionIdentity(described, reference, state.sessionId, 'sessions.describe');
-      history = await completeTranscript(authoritativeGateway, reference, state.sessionId, signal);
+      assertSessionIdentity(described, sessionKey, state.sessionId, 'sessions.describe');
+      history = await completeTranscript(authoritativeGateway, sessionKey, state.sessionId, signal);
     }
+    if (effectiveSourceLocator(metadata, reference) !== sessionKey || metadata.getSessionState(reference.referenceId)?.sessionId !== state.sessionId) throw sourceError('source-recovery', 'The linked Session changed during snapshotting.');
     const messages = history.messages;
-    const name = conversationName(described, reference);
+    const name = conversationName(described, sessionKey);
     const primaryState = state?.isPrimary ? 'primary' : state?.wasPrimary ? 'former-primary' : 'ordinary';
     let searchableMessages = 0;
     for (let index = 0; index < messages.length; index += 1) {
@@ -270,7 +272,7 @@ export async function readConversationSourceSnapshot({ topicId, metadata, gatewa
       if (date === null) throw sourceError('source-incomplete', 'A searchable Session message is missing an authoritative date.');
       if (typeof id !== 'string' || id.trim() === '') throw sourceError('source-incomplete', 'A searchable Session message is missing an authoritative message identity.');
       const identity = `${reference.referenceId}\u0000${id}`;
-      const row = { topicId, sourceReference: reference, sessionKey: reference.externalSourceId, sessionId: state.sessionId, messageId: id, name: name ?? reference.externalSourceId, date, originatingTopicId: originatingTopicId(message, reference), role: String(message?.role ?? 'unknown'), historyProvenance: imported ? 'imported-primary' : primaryState, closed: state?.status === 'closed', primaryState, provenance: imported ? 'imported' : 'native', importedFrom: imported, text, ...contextAround(messages, index) };
+      const row = { topicId, sourceReference: reference, sessionKey, sessionId: state.sessionId, messageId: id, name: name ?? sessionKey, date, originatingTopicId: originatingTopicId(message, reference), role: String(message?.role ?? 'unknown'), historyProvenance: imported ? 'imported-primary' : primaryState, closed: state?.status === 'closed', primaryState, provenance: imported ? 'imported' : 'native', importedFrom: imported, text, ...contextAround(messages, index) };
       const existing = dedupe.get(identity);
       if (!existing || (existing.provenance === 'native' && row.provenance === 'imported')) dedupe.set(identity, row);
       searchableMessages += 1;
@@ -284,10 +286,10 @@ export async function readConversationSourceSnapshot({ topicId, metadata, gatewa
       dedupe.set(identity, {
         topicId,
         sourceReference: reference,
-        sessionKey: reference.externalSourceId,
+        sessionKey,
         sessionId: state.sessionId,
         messageId: null,
-        name: name ?? reference.externalSourceId,
+        name: name ?? sessionKey,
         date,
         originatingTopicId: null,
         role: 'metadata',
@@ -296,7 +298,7 @@ export async function readConversationSourceSnapshot({ topicId, metadata, gatewa
         primaryState,
         provenance: 'native',
         importedFrom: null,
-        text: name ?? reference.externalSourceId,
+        text: name ?? sessionKey,
         contextBefore: '',
         contextAfter: ''
       });

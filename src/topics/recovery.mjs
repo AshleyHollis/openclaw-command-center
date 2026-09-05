@@ -181,8 +181,6 @@ export class TopicRecoveryService {
       if (input.expectedSourceRevision !== currentRevision && !alreadyApplied) throw sourceError('conflict', 'Session Source Recovery revision is stale.', { currentRevision, expectedRevision: input.expectedSourceRevision });
       if (!existing) this.metadata.createSourceReference({ version: 1, referenceId: replacementReferenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey, observedRevision: sessionId });
       this.metadata.setSessionState?.({ referenceId: replacementReferenceId, sessionId, status: 'open', isPrimary: true, updatedAt: this.now() });
-    } else {
-      this.metadata.applySessionRecoveryRelink({ referenceId, sessionKey, sessionId, expectedSourceRevision: input.expectedSourceRevision, updatedAt: this.now() });
     }
     const recovery = { recoveryId: `recovery:${referenceId}`, topicId, referenceId, sourceKind: 'session', state: 'replaced', lastLocator: sessionKey, lastIdentity: sessionId, failure: `resolved by explicit exact Session ${addReference ? 'replacement' : 'relink'}`, diagnostics: [{ topicId, referenceId, sourceKind: 'session', check: addReference ? 'explicit-replacement' : 'explicit-relink', result: 'verified' }], updatedAt: this.now() };
     return this.finishMutation(operation.logicalOperationId, operationKind, intent, { status: resultStatus, replacementReferenceId, recovery });

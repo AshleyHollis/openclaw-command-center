@@ -291,7 +291,9 @@ export class AuthoritativeSourceService {
     const service = this.requireTopicService(input, { write: input.nativeChat === true, requiredSourceKinds: ['session'] });
     requireCapability(this.capabilities, 'sessions');
     if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' });
-    return service.sessions.navigate(adapterInput(input));
+    const navigation = await service.sessions.navigate(adapterInput(input));
+    this.requireTopicService(input, { write: input.nativeChat === true, requiredSourceKinds: ['session'] });
+    return navigation;
   }
   async verifyPrimarySessionForCreate(topicId, sessions) {
     const primary = (this.metadata.listSourceReferences?.(topicId) ?? []).filter((reference) => reference.topicId === topicId && reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session' && this.metadata.getSessionState?.(reference.referenceId)?.isPrimary === true);

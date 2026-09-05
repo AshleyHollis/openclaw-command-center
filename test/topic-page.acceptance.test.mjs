@@ -1238,6 +1238,19 @@ test('native Chat rejects changed identity and reports host navigation errors wi
   } finally { await closeGuardedPage(page); }
 });
 
+test('native Chat accepts a verified relink without rewriting Source Reference identity', async () => {
+  const page = await setupPage();
+  try {
+    await page.evaluate(() => { const fixture = globalThis.__topicPageFixture; fixture.deferNavigateReference = fixture.primaryId; });
+    await page.locator('#chat-open').click();
+    await page.waitForFunction(() => Boolean(globalThis.__topicPageFixture.deferredNavigate));
+    await page.evaluate(() => { const fixture = globalThis.__topicPageFixture; fixture.deferredNavigate.result.sessionKey = 'agent:main:fictional-relinked'; fixture.resolveDeferredNavigate(); });
+    await page.getByText('Opened native Chat.', { exact: true }).waitFor();
+    const call = await page.evaluate(() => globalThis.__topicPageFixture.calls.find(call => call.method === 'ui.session.navigateResolved'));
+    assert.ok(call, 'the host resolver must still authorize the exact reference and Session ID');
+  } finally { await closeGuardedPage(page); }
+});
+
 test('native Chat keeps closed history read-only until explicit reopening', async () => {
   const page = await setupPage();
   try {

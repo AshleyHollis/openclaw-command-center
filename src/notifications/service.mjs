@@ -65,6 +65,12 @@ function activeEpisode(episode) {
   return episode?.state === 'Active' && !episode?.terminalAt && episodeSeverity(episode) !== null;
 }
 
+function categoryEnabled(slot, severity, settings) {
+  if (severity === 'Reminder') return settings.dueReminders;
+  if (severity === 'Critical' && slot.slot_kind !== 'critical-immediate') return settings.criticalRealerts;
+  return settings.importantItems;
+}
+
 function schedulingSettings(settings) {
   return { ...settings, dueReminders: true, importantItems: true, criticalRealerts: true };
 }
@@ -94,6 +100,7 @@ export function createNotificationService({ metadata, attentionService, sourceSe
   if (!metadata?.databasePath) throw new TypeError('A durable metadata service is required for notifications.');
   const db = new DatabaseSync(metadata.databasePath);
   let closed = false;
+  let reconciliation = Promise.resolve();
   let retainedBinding = emitter?.emit && emitter?.clear ? emitter : undefined;
 
   function assertOpen() {
@@ -205,9 +212,9 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     return db.prepare('SELECT * FROM notification_policy_epochs WHERE epoch_id = ?').get(epoch.epoch_id);
   }
 
-  async function clearEpisode(episodeId, clock, binding) {
-    db.prepare("UPDATE notification_slots SET status = 'cancelled', updated_at_ms = ? WHERE episode_id = ? AND status IN ('scheduled', 'queued')").run(clock, episodeId);
-    const logicalOperationIds = db.prepare(`
+  async function clearEpisode(episodeId, clock, binding, onlyOperationId) {
+    if (!onlyOperationId) db.prepare("UPDATE notification_slots SET status = 'cancelled', updated_at_ms = ? WHERE episode_id = ? AND status IN ('scheduled', 'queued')").run(clock, episodeId);
+    const logicalOperationIds = onlyOperationId ? [onlyOperationId] : db.prepare(`
       SELECT logical_operation_id FROM notification_emissions
       WHERE episode_id = ? AND logical_operation_id IS NOT NULL AND status NOT IN ('cleared', 'suppressed')
       UNION
@@ -249,8 +256,14 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     } catch { retainedBinding = undefined; return false; }
   }
 
+  function deliveryEligible(slot, epoch) {
+    const episode = attentionService?.allEpisodes?.().find(item => item.episodeId === slot.episode_id);
+    return activeEpisode(episode) && episodeSeverity(episode) === epoch?.severity
+      && categoryEnabled(slot, epoch.severity, getSettings());
+  }
+
   async function emitSlot(slot, episode, epoch, currentSettings, clock, binding, kind = episodeKind(episode)) {
-    if (!binding?.emit) return false;
+    if (!binding?.emit || !deliveryEligible(slot, epoch)) return false;
     const candidateKind = kind === 'reminder' ? `reminder-${slot.slot_kind}` : `${kind}-${slot.slot_kind}`;
     const identityCandidate = createNotificationCandidate({ episodeId: episode.episodeId, severity: epoch.severity, kind: candidateKind, epochId: epoch.epoch_id, nowMs: clock, genericPreview: currentSettings.genericPreview });
     const existing = db.prepare('SELECT * FROM notification_emissions WHERE emission_id = ?').get(identityCandidate.emissionId);
@@ -275,11 +288,15 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     } catch (error) {
       logger?.warn?.('Command Center notification emission remains retryable.', error);
       return false;
+    } finally {
+      // Delivery is external to SQLite: compensate if policy changed while awaiting it,
+      // including ambiguous outcomes which may already have reached a device.
+      if (!deliveryEligible(slot, epoch)) await clearEpisode(episode.episodeId, clock, binding, candidate.logicalOperationId);
     }
   }
 
   async function emitQuietSummary(queued, episodes, currentSettings, clock, binding) {
-    const eligible = queued.filter((slot) => episodes.some((episode) => episode.episodeId === slot.episode_id && activeEpisode(episode)));
+    const eligible = queued.filter(slot => deliveryEligible(slot, db.prepare('SELECT * FROM notification_policy_epochs WHERE epoch_id = ?').get(slot.epoch_id)));
     if (!eligible.length || !binding?.emit) return false;
     const oldest = eligible.slice().sort((left, right) => left.due_at_ms - right.due_at_ms || left.episode_id.localeCompare(right.episode_id))[0];
     const episode = episodes.find((item) => item.episodeId === oldest.episode_id);
@@ -307,19 +324,32 @@ export function createNotificationService({ metadata, attentionService, sourceSe
         db.prepare('UPDATE notification_emissions SET status = ?, updated_at_ms = ? WHERE emission_id = ?').run('sent', clock, stableCandidate.emissionId);
       }
       catch { return false; }
+      finally {
+        if (eligible.some(slot => !deliveryEligible(slot, db.prepare('SELECT * FROM notification_policy_epochs WHERE epoch_id = ?').get(slot.epoch_id)))) {
+          await clearEpisode(episode.episodeId, clock, binding, stableCandidate.logicalOperationId);
+        }
+      }
     }
     const summaryCandidate = existing && existing.status === 'sent' ? createNotificationCandidate({ episodeId: episode.episodeId, severity: 'High', kind: 'quiet-summary', epochId: summaryEpochId, nowMs: existing.emitted_at_ms, genericPreview, summaryCount }) : candidate;
     for (const slot of eligible) db.prepare('UPDATE notification_slots SET status = ?, logical_operation_id = ?, emission_id = ?, emitted_at_ms = ?, updated_at_ms = ? WHERE slot_id = ?').run('emitted', summaryCandidate.logicalOperationId, summaryCandidate.emissionId, clock, clock, slot.slot_id);
     return true;
   }
 
-  async function reconcile() {
+  async function reconcileOwned() {
     assertOpen();
     const clock = nowMs(now);
     const currentSettings = getSettings();
     try { attentionService?.list?.({ schemaVersion: 1, now: new Date(clock).toISOString() }); } catch { /* lifecycle reads remain best-effort */ }
     const episodes = attentionService?.allEpisodes?.() ?? [];
     const binding = retainedBinding;
+    // A failed compensating clear remains retryable even when its category is disabled.
+    for (const clear of rows('notification_clear_operations', "status != 'cleared'")) {
+      for (const emission of rows('notification_emissions', 'episode_id = ?', [clear.episode_id])) {
+        if (clear.logical_operation_id === `clear-${digest({ episodeId: clear.episode_id, notificationLogicalOperationId: emission.logical_operation_id }).slice(0, 48)}`) {
+          await clearEpisode(clear.episode_id, clock, binding, emission.logical_operation_id);
+        }
+      }
+    }
     const activeIds = new Set();
     for (const episode of episodes) {
       const severity = episodeSeverity(episode);
@@ -332,11 +362,10 @@ export function createNotificationService({ metadata, attentionService, sourceSe
         const due = rows('notification_slots', "epoch_id = ? AND status IN ('scheduled', 'queued') AND due_at_ms <= ?", [epoch.epoch_id, clock]);
         const queued = [];
         for (const slot of due) {
-          const categoryEnabled = epoch.severity === 'Reminder' ? currentSettings.dueReminders : epoch.severity === 'Critical' ? (slot.slot_kind === 'critical-immediate' ? currentSettings.importantItems : currentSettings.criticalRealerts) : currentSettings.importantItems;
           // Settings suppress delivery at the host boundary. Keep the durable
           // slot scheduled so re-enabling a category does not rewrite its
           // fixed policy timing or lose a not-yet-delivered candidate.
-          if (!categoryEnabled) continue;
+          if (!categoryEnabled(slot, epoch.severity, currentSettings)) continue;
           const quiet = isQuietHours(clock, currentSettings);
           const bypass = slot.slot_kind.startsWith('critical-') || slot.slot_kind === 'reminder-explicit' || slot.slot_kind === 'snooze-return';
           if (!bypass && quiet) { db.prepare("UPDATE notification_slots SET status = 'queued', queued_at_ms = COALESCE(queued_at_ms, ?), updated_at_ms = ? WHERE slot_id = ?").run(clock, clock, slot.slot_id); queued.push(slot); continue; }
@@ -368,6 +397,13 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     }
     db.prepare("UPDATE notification_emissions SET status = 'expired', updated_at_ms = ? WHERE status IN ('sent', 'ambiguous') AND expires_at_ms <= ?").run(clock, clock);
     return Object.freeze({ settings: currentSettings, activeEpisodeIds: Object.freeze([...activeIds]), emitted: rows('notification_emissions'), queued: rows('notification_slots', "status = 'queued'") });
+  }
+
+  function reconcile() {
+    // One owner orders emit/clear effects. A rejected run must not poison the queue.
+    const pending = reconciliation.then(reconcileOwned);
+    reconciliation = pending.catch(() => {});
+    return pending;
   }
 
   function inspect() {

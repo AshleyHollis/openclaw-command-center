@@ -49,6 +49,16 @@ test('native Chat rejects malformed navigation intent', async () => {
   await assert.rejects(f.service.sessionsNavigate({ ...f.input, nativeChat: 'true' }), { code: 'invalid-request' });
 });
 
+for (const change of ['archive', 'recovery']) test(`native Chat rechecks Topic ${change} after awaiting Session authority`, async () => {
+  const f = fixture(); const entered = Promise.withResolvers(); const release = Promise.withResolvers();
+  f.service.forTopic().sessions.authoritativeRows = async () => { entered.resolve(); await release.promise; return [{ sessionKey: f.entry.sessionKey, sessionId: f.state.sessionId }]; };
+  const pending = f.service.sessionsNavigate(f.input); await entered.promise;
+  if (change === 'archive') f.topic.paraCategory = 'archive';
+  else f.recovery.push({ state: 'required', sourceKind: 'session' });
+  release.resolve();
+  await assert.rejects(pending, { code: change === 'archive' ? 'read-only' : 'source-recovery' });
+});
+
 test('registered native resolver rechecks authoritative lifecycle and identity on each host request', async () => {
   const f = fixture();
   let handler;

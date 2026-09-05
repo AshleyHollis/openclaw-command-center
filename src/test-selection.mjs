@@ -1,6 +1,7 @@
 const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs']);
 const browserHeavyTests = new Set([
   'test/keyboard-batch.test.mjs',
+  'test/note-drafts.test.mjs',
   'test/conversation-keyboard-focus.test.mjs',
   'test/keyboard-paint.test.mjs',
   'test/keyboard-time-focus.test.mjs',

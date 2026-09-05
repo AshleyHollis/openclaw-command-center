@@ -704,7 +704,7 @@ document.querySelector('#topic-search-rebuild')?.addEventListener('click', async
 
 const workspace = {
   topic: null, generation: 0, conversations: [], selected: null, selectionGeneration: 0, historyGeneration: 0, nativeChatPending: null,
-  conversationsLoadGeneration: 0, conversationCreateOperations: new Map(), conversationPage: 0, notes: [], notesTotal: 0, notesCursor: null, notesServerPaged: false, notesLoadGeneration: 0, notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
+  conversationsLoadGeneration: 0, conversationCreateOperations: new Map(), conversationPage: 0, notes: [], notesTotal: 0, notesCursor: null, notesServerPaged: false, notesLoadGeneration: 0, notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: createNoteDraftStore(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
 };
 const AUTHORITATIVE_LIST_TOPIC = Symbol('authoritative-list-topic');
 const CONVERSATION_PAGE_SIZE = 50;
@@ -741,7 +741,7 @@ async function pageAction(action, input) {
   return value.result ?? value;
 }
 function resetWorkspacePresentation() {
-  workspace.topic = null; workspace.conversations = []; workspace.selected = null; workspace.conversationPage = 0; workspace.notes = []; workspace.notesTotal = 0; workspace.notesCursor = null; workspace.notesServerPaged = false; workspace.notePage = 0; workspace.note = null; workspace.drafts = new Map();
+  workspace.topic = null; workspace.conversations = []; workspace.selected = null; workspace.conversationPage = 0; workspace.notes = []; workspace.notesTotal = 0; workspace.notesCursor = null; workspace.notesServerPaged = false; workspace.notePage = 0; workspace.note = null; workspace.drafts = createNoteDraftStore();
   workspace.conversationsLoadGeneration += 1; workspace.selectionGeneration += 1; workspace.historyGeneration += 1; workspace.notesLoadGeneration += 1; workspace.noteGeneration += 1; workspace.searchGeneration += 1;
   document.querySelector('#conversation-list')?.replaceChildren(); document.querySelector('#chat-messages')?.replaceChildren(); document.querySelector('#notes-tree')?.replaceChildren();
   document.querySelector('#workspace-notes-results')?.replaceChildren(); document.querySelector('#workspace-conversations-results')?.replaceChildren();
@@ -922,7 +922,7 @@ document.querySelector('#chat-open')?.addEventListener('click', async () => {
     const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: operation.topicId, referenceId: operation.referenceId, nativeChat: true }));
     if (!isCurrent() || !mutationsAvailable() || selectedConversationReadOnly()) return;
     const source = target?.sourceReference;
-    if (!target?.sessionKey || target.sessionId !== operation.sessionId || source?.referenceId !== operation.referenceId || source?.topicId !== operation.topicId || source?.sourceSystem !== 'openclaw' || source?.sourceKind !== 'session' || source?.externalSourceId !== target.sessionKey) throw new Error('The authoritative Conversation changed before native Chat navigation.');
+    if (!target?.sessionKey || target.sessionId !== operation.sessionId || source?.referenceId !== operation.referenceId || source?.topicId !== operation.topicId || source?.sourceSystem !== 'openclaw' || source?.sourceKind !== 'session') throw new Error('The authoritative Conversation changed before native Chat navigation.');
     await navigateNativeConversation(target, operation);
     if (isCurrent()) chatStatus.textContent = 'Opened native Chat.';
   } catch (error) {
@@ -963,6 +963,50 @@ function loadNotesPage() { loadNotes({ preserveSnapshot: true }).catch((error) =
 document.querySelector('#note-previous')?.addEventListener('click', () => { if (workspace.notePage > 0) { workspace.notePage -= 1; if (workspace.notesServerPaged) loadNotesPage(); else renderNotes(); } });
 document.querySelector('#note-next')?.addEventListener('click', () => { const total = workspace.notesServerPaged ? workspace.notesTotal : workspace.notes.length; if ((workspace.notePage + 1) * NOTE_PAGE_SIZE < total) { workspace.notePage += 1; if (workspace.notesServerPaged) loadNotesPage(); else renderNotes(); } });
 document.querySelector('#note-last')?.addEventListener('click', () => { const total = workspace.notesServerPaged ? workspace.notesTotal : workspace.notes.length; const lastPage = Math.max(0, Math.ceil(total / NOTE_PAGE_SIZE) - 1); if (workspace.notePage < lastPage) { workspace.notePage = lastPage; if (workspace.notesServerPaged) loadNotesPage(); else renderNotes(); } });
+// Note Draft is the sole owner of editable text, its base revision and save ordering.
+// Keep this pure owner in the classic shell script: no new loader or bridge contract.
+function createNoteDraftStore() {
+  const entries = new Map();
+  const snapshot = (entry) => entry && Object.freeze({ text: entry.text, dirty: entry.text !== entry.baseText, baseRevision: entry.baseRevision });
+  function assertIdle(id) { if (entries.get(id)?.saving) throw new Error('This Note already has a save in progress.'); }
+  return Object.freeze({
+    get(id) { return snapshot(entries.get(id)); },
+    beginRead(id) { return Object.freeze({ id, version: entries.get(id)?.version ?? 0 }); },
+    acceptRead(ticket, read) {
+      let entry = entries.get(ticket.id);
+      // A dirty draft never rebases on a read. A late read cannot undo a save.
+      if (!entry || (!entry.saving && entry.text === entry.baseText && entry.version === ticket.version)) {
+        entry = { text: read.text, baseText: read.text, baseRevision: read.revision, version: (entry?.version ?? 0) + 1, saving: null };
+        entries.set(ticket.id, entry);
+      }
+      return snapshot(entry);
+    },
+    edit(id, text) { const entry = entries.get(id); entry.text = text; entry.version++; return snapshot(entry); },
+    assertIdle,
+    beginSave(id) {
+      assertIdle(id);
+      const entry = entries.get(id);
+      const operation = Object.freeze({ id, text: entry.text, expectedRevision: entry.baseRevision });
+      entry.saving = operation;
+      return operation;
+    },
+    completeSave(operation, revision) {
+      const entry = entries.get(operation.id);
+      if (entry?.saving !== operation) return;
+      if (typeof revision !== 'string' || revision === '') throw new Error('The authoritative Note save revision was unavailable.');
+      entry.baseText = operation.text; entry.baseRevision = revision; entry.version++; entry.saving = null;
+      return snapshot(entry);
+    },
+    failSave(operation) { const entry = entries.get(operation?.id); if (entry && entry.saving === operation) entry.saving = null; },
+    relocate(fromId, toId, revision) {
+      assertIdle(fromId);
+      const entry = entries.get(fromId);
+      if (!entry) return;
+      entry.baseRevision = revision; entry.version++;
+      entries.delete(fromId); entries.set(toId, entry);
+    }
+  });
+}
 function encodeText(text) { const bytes = new TextEncoder().encode(text); let binary = ''; for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)); return btoa(binary); }
 function decodeBase64Bytes(value) { return Uint8Array.from(atob(value), (character) => character.charCodeAt(0)); }
 function decodeText(value) { return new TextDecoder('utf-8', { fatal: true }).decode(decodeBase64Bytes(value)); }
@@ -986,23 +1030,38 @@ async function readNoteChunks(descriptor) {
 }
 async function openAuthoritativeNote(descriptor, { referenceError = false, moveFocus = true } = {}) {
   const topicGeneration = workspace.generation; const noteGeneration = ++workspace.noteGeneration; const previous = workspace.note;
+  const draftId = `${descriptor.topicId}:${descriptor.referenceId}`;
+  const draftStore = workspace.drafts; const readTicket = draftStore.beginRead(draftId);
   notesStatus.textContent = 'Opening authoritative Note…';
   if (moveFocus) revealWorkspaceTarget('notes');
   try {
     const read = await readNoteChunks(descriptor);
     if (topicGeneration !== workspace.generation || noteGeneration !== workspace.noteGeneration) return;
-    const draftId = `${descriptor.topicId}:${descriptor.referenceId}`; const existing = workspace.drafts.get(draftId);
-    workspace.note = { ...descriptor, revision: read.revision, sourceReference: read.sourceReference, draftId }; workspace.drafts.set(draftId, existing ?? { text: read.text, dirty: false }); showNote(); notesStatus.textContent = 'Authoritative Note opened.';
+    const draft = draftStore.acceptRead(readTicket, read);
+    workspace.note = { ...descriptor, revision: draft.baseRevision, observedRevision: draft.baseRevision, sourceReference: read.sourceReference, draftId }; showNote(); notesStatus.textContent = 'Authoritative Note opened.';
   } catch (error) { if (topicGeneration !== workspace.generation || noteGeneration !== workspace.noteGeneration) return; workspace.note = previous; notesStatus.textContent = referenceError ? 'The authoritative Note changed after this reference was created.' : error.message; }
 }
 function showNote() {
+  workspace.note.revision = workspace.drafts.get(workspace.note.draftId).baseRevision;
+  workspace.note.observedRevision = workspace.note.revision;
   const draft = workspace.drafts.get(workspace.note.draftId); document.querySelector('#note-editor').hidden = false; document.querySelector('#note-title').textContent = workspace.note.path; document.querySelector('#note-content').value = draft.text; document.querySelector('#note-revision').textContent = draft.dirty ? `${workspace.note.revision} · unsaved draft` : workspace.note.revision; if (document.querySelector('#note-preview-mode').getAttribute('aria-pressed') === 'true') void renderNotePreview(draft.text);
 }
-document.querySelector('#note-content')?.addEventListener('input', (event) => { if (!workspace.note) return; const draft = workspace.drafts.get(workspace.note.draftId); draft.text = event.target.value; draft.dirty = true; document.querySelector('#note-revision').textContent = `${workspace.note.revision} · unsaved draft`; });
+document.querySelector('#note-content')?.addEventListener('input', (event) => { if (!workspace.note) return; const draft = workspace.drafts.edit(workspace.note.draftId, event.target.value); document.querySelector('#note-revision').textContent = draft.dirty ? `${draft.baseRevision} · unsaved draft` : draft.baseRevision; });
 async function saveNote() {
-  if (!workspace.note) return; const saving = workspace.note; const generation = workspace.generation; const topicId = workspace.topic.topicId; const draft = workspace.drafts.get(saving.draftId); const text = draft.text;
-  try { const result = await pageAction('notes.edit', { topicId, referenceId: saving.referenceId, path: saving.path, contentBase64: encodeText(text), expectedRevision: saving.revision, expectedTopicRevision: workspace.topic.revision }); const revision = result?.revision ?? result?.note?.revision; if (typeof revision !== 'string' || revision === '') throw new Error('The authoritative Note save revision was unavailable.'); saving.revision = revision; saving.observedRevision = revision; draft.dirty = draft.text !== text; if (generation !== workspace.generation || workspace.topic?.topicId !== topicId) return; const listed = workspace.notes.find((item) => (item.sourceReference?.referenceId ?? item.referenceId) === saving.referenceId); if (listed) { listed.revision = revision; if (listed.sourceReference) listed.sourceReference = { ...listed.sourceReference, observedRevision: revision }; renderNotes(); } if (workspace.note?.draftId !== saving.draftId) { notesStatus.textContent = 'Note saved; the current Note draft was retained.'; return; } showNote(); notesStatus.textContent = 'Note saved.'; }
-  catch (error) { if (generation === workspace.generation && workspace.topic?.topicId === topicId) notesStatus.textContent = error.message; }
+  if (!workspace.note) return;
+  const saving = workspace.note; const generation = workspace.generation; const topicId = workspace.topic.topicId;
+  const draftStore = workspace.drafts; let operation;
+  try {
+    operation = draftStore.beginSave(saving.draftId);
+    const result = await pageAction('notes.edit', { topicId, referenceId: saving.referenceId, path: saving.path, contentBase64: encodeText(operation.text), expectedRevision: operation.expectedRevision, expectedTopicRevision: workspace.topic.revision });
+    const revision = result?.revision ?? result?.note?.revision;
+    draftStore.completeSave(operation, revision);
+    if (generation !== workspace.generation || workspace.topic?.topicId !== topicId) return;
+    const listed = workspace.notes.find((item) => (item.sourceReference?.referenceId ?? item.referenceId) === saving.referenceId);
+    if (listed) { listed.revision = revision; if (listed.sourceReference) listed.sourceReference = { ...listed.sourceReference, observedRevision: revision }; renderNotes(); }
+    if (workspace.note?.draftId !== saving.draftId) { notesStatus.textContent = 'Note saved; the current Note draft was retained.'; return; }
+    showNote(); notesStatus.textContent = 'Note saved.';
+  } catch (error) { draftStore.failSave(operation); if (generation === workspace.generation && workspace.topic?.topicId === topicId) notesStatus.textContent = error.message; }
 }
 document.querySelector('#note-save')?.addEventListener('click', saveNote);
 async function renderNotePreview(text) { const target = document.querySelector('#note-preview'); const generation = workspace.generation; const noteGeneration = workspace.noteGeneration; const draftId = workspace.note?.draftId; target.textContent = 'Rendering preview…'; try { const markdown = await loadMarkdownModule(); if (generation === workspace.generation && noteGeneration === workspace.noteGeneration && workspace.note?.draftId === draftId && !target.hidden) markdown.renderMarkdownInto(target, text, { headingOffset: 4 }); } catch { if (generation === workspace.generation && noteGeneration === workspace.noteGeneration && workspace.note?.draftId === draftId && !target.hidden) { target.replaceChildren(); notesStatus.textContent = 'Markdown preview is unavailable.'; } } }
@@ -1027,13 +1086,51 @@ function openNoteDialog(action, trigger) { noteDialogAction = action; noteDialog
 function closeNoteDialog() { if (noteDialogPending) return; const returnFocus = noteDialogReturnFocus; noteDialogReturnFocus = null; noteDialogAction = null; noteDialog.inert = true; noteDialog.close(); restoreFocus(returnFocus); }
 document.querySelector('#note-new')?.addEventListener('click', (event) => openNoteDialog('notes.create', event.currentTarget)); document.querySelector('#note-rename')?.addEventListener('click', (event) => openNoteDialog('notes.rename', event.currentTarget)); document.querySelector('#note-move')?.addEventListener('click', (event) => openNoteDialog('notes.move', event.currentTarget));
 document.querySelector('#note-action-cancel')?.addEventListener('click', closeNoteDialog); noteDialog?.addEventListener('cancel', (event) => { event.preventDefault(); closeNoteDialog(); });
-document.querySelector('#note-action-form')?.addEventListener('submit', async (event) => { event.preventDefault(); if (noteDialogPending) return; const path = document.querySelector('#note-action-path').value.trim(); const current = workspace.note; const generation = workspace.generation; const topic = workspace.topic; const action = noteDialogAction; setNoteDialogPending(true); document.querySelector('#note-action-status').textContent = 'Applying authoritative Note change…'; try { if (action === 'notes.create') await pageAction(action, { topicId: topic.topicId, referenceId: topic.noteFolderReferenceId ?? exactTopicReference(topic, 'note_folder')?.referenceId, path, contentBase64: encodeText(document.querySelector('#note-action-text').value), expectedTopicRevision: topic.revision }); else await pageAction(action, { topicId: topic.topicId, referenceId: current.referenceId, path: current.path, destinationPath: path, expectedRevision: current.revision, expectedTopicRevision: topic.revision }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; await loadNotes({ generation }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; const next = workspace.notes.find((item) => item.path === path); if (next) { const oldDraft = current && workspace.drafts.get(current.draftId); const source = next.sourceReference; if (oldDraft && current.path !== path) workspace.drafts.set(`${topic.topicId}:${source.referenceId}`, oldDraft); await openAuthoritativeNote({ kind: 'note', topicId: topic.topicId, referenceId: source.referenceId, path, observedRevision: next.revision }, { moveFocus: false }); } setNoteDialogPending(false); closeNoteDialog(); } catch (error) { setNoteDialogPending(false); if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) document.querySelector('#note-action-status').textContent = error.message; } });
+async function submitNoteAction(event) {
+  event.preventDefault();
+  if (noteDialogPending) return;
+  const path = document.querySelector('#note-action-path').value.trim();
+  const current = workspace.note; const generation = workspace.generation;
+  const topic = workspace.topic; const action = noteDialogAction; const draftStore = workspace.drafts;
+  const isCurrent = () => generation === workspace.generation && workspace.topic?.topicId === topic.topicId;
+  setNoteDialogPending(true);
+  document.querySelector('#note-action-status').textContent = 'Applying authoritative Note change…';
+  try {
+    let result;
+    if (action === 'notes.create') {
+      result = await pageAction(action, { topicId: topic.topicId, referenceId: topic.noteFolderReferenceId ?? exactTopicReference(topic, 'note_folder')?.referenceId, path, contentBase64: encodeText(document.querySelector('#note-action-text').value), expectedTopicRevision: topic.revision });
+    } else {
+      draftStore.assertIdle(current.draftId);
+      result = await pageAction(action, { topicId: topic.topicId, referenceId: current.referenceId, path: current.path, destinationPath: path, expectedRevision: draftStore.get(current.draftId).baseRevision, expectedTopicRevision: topic.revision });
+    }
+    if (!isCurrent()) return;
+    await loadNotes({ generation });
+    if (!isCurrent()) return;
+    const next = workspace.notes.find(item => item.path === path);
+    if (next) {
+      const source = next.sourceReference;
+      if (action !== 'notes.create' && current) {
+        // Only the confirmed mutation may advance the base. A later listing may
+        // already contain an external edit and must not silently rebase a draft.
+        const revision = result?.revision ?? result?.note?.revision;
+        if (typeof revision !== 'string' || !revision) throw new Error('The authoritative Note change revision was unavailable.');
+        draftStore.relocate(current.draftId, `${topic.topicId}:${source.referenceId}`, revision);
+      }
+      await openAuthoritativeNote({ kind: 'note', topicId: topic.topicId, referenceId: source.referenceId, path, observedRevision: next.revision }, { moveFocus: false });
+    }
+    setNoteDialogPending(false); closeNoteDialog();
+  } catch (error) {
+    setNoteDialogPending(false);
+    if (isCurrent()) document.querySelector('#note-action-status').textContent = error.message;
+  }
+}
+document.querySelector('#note-action-form')?.addEventListener('submit', submitNoteAction);
 document.querySelector('#notes-refresh')?.addEventListener('click', () => loadNotes());
 
 async function searchWorkspace(event) { event.preventDefault(); if (!workspace.topic) return; const generation = workspace.generation; const searchGeneration = ++workspace.searchGeneration; const topicId = workspace.topic.topicId; workspaceSearchStatus.textContent = 'Searching…'; try { const value = await queryTopicSearch({ schemaVersion: 1, topicId, query: document.querySelector('#workspace-search-query').value.trim(), limit: 50 }); if (generation !== workspace.generation || searchGeneration !== workspace.searchGeneration || workspace.topic?.topicId !== topicId) return; renderWorkspaceSearch('workspace-notes-results', value.notes?.results ?? []); renderWorkspaceSearch('workspace-conversations-results', value.conversations?.results ?? []); workspaceSearchStatus.textContent = `${value.notes?.results?.length ?? 0} Notes · ${value.conversations?.results?.length ?? 0} Conversations`; } catch (error) { if (generation === workspace.generation && searchGeneration === workspace.searchGeneration && workspace.topic?.topicId === topicId) workspaceSearchStatus.textContent = error.message || 'Topic Search is unavailable.'; } }
 async function rebuildWorkspaceSearch() { if (!workspace.topic) return; const topicId = workspace.topic.topicId; const generation = workspace.generation; workspaceSearchStatus.textContent = 'Rebuilding Topic Search…'; try { await rebuildTopicSearchProjection(topicId); if (generation === workspace.generation && workspace.topic?.topicId === topicId) workspaceSearchStatus.textContent = 'Topic Search index rebuilt from authoritative sources.'; } catch (error) { if (generation === workspace.generation && workspace.topic?.topicId === topicId) workspaceSearchStatus.textContent = error.message || 'Topic Search rebuild failed.'; } }
 function renderWorkspaceSearch(id, results) { const target = document.querySelector(`#${id}`); const focus = captureFocus(target); target.replaceChildren(...results.map((result) => { const row = document.createElement('article'); row.dataset.searchKey = searchFocusKey(result); const title = document.createElement('strong'); title.textContent = result.heading || result.conversationName || result.path; const snippet = document.createElement('p'); snippet.textContent = result.snippet ?? ''; row.append(title, snippet); if (result.provenance?.status === 'closed') row.append(Object.assign(document.createElement('span'), { textContent: 'Closed' })); row.append(button(result.navigation.kind === 'note' ? 'Open Note' : 'Open Conversation', () => openWorkspaceResult(result))); return row; })); restoreFocus(focus); }
-async function openWorkspaceResult(result) { if (result.navigation.kind === 'note') return openAuthoritativeNote(result.navigation); const navigation = result.navigation; const generation = workspace.generation; const searchGeneration = workspace.searchGeneration; const selectionGeneration = workspace.selectionGeneration; const topicId = workspace.topic?.topicId; try { if (navigation.topicId !== topicId) throw new Error('The authoritative Conversation belongs to another Topic.'); const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: navigation.topicId, referenceId: navigation.referenceId })); if (generation !== workspace.generation || searchGeneration !== workspace.searchGeneration || selectionGeneration !== workspace.selectionGeneration || workspace.topic?.topicId !== topicId) return; const source = target?.sourceReference; if (target?.sessionKey !== navigation.sessionKey || target?.sessionId !== navigation.sessionId || source?.referenceId !== navigation.referenceId || source?.topicId !== topicId || source?.sourceSystem !== 'openclaw' || source?.sourceKind !== 'session' || source?.externalSourceId !== target.sessionKey) throw new Error('The authoritative Conversation changed after this result was created.'); const item = { referenceId: navigation.referenceId, topicId: navigation.topicId, sessionKey: target.sessionKey, sessionId: target.sessionId, displayName: result.conversationName, status: result.provenance?.status ?? 'open', isPrimary: false }; await selectConversation(item); if (generation === workspace.generation && workspace.topic?.topicId === topicId) revealWorkspaceTarget('chat'); } catch (error) { if (generation === workspace.generation && searchGeneration === workspace.searchGeneration && workspace.topic?.topicId === topicId) workspaceSearchStatus.textContent = error.message || 'Authoritative Conversation navigation was refused.'; } }
+async function openWorkspaceResult(result) { if (result.navigation.kind === 'note') return openAuthoritativeNote(result.navigation); const navigation = result.navigation; const generation = workspace.generation; const searchGeneration = workspace.searchGeneration; const selectionGeneration = workspace.selectionGeneration; const topicId = workspace.topic?.topicId; try { if (navigation.topicId !== topicId) throw new Error('The authoritative Conversation belongs to another Topic.'); const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: navigation.topicId, referenceId: navigation.referenceId })); if (generation !== workspace.generation || searchGeneration !== workspace.searchGeneration || selectionGeneration !== workspace.selectionGeneration || workspace.topic?.topicId !== topicId) return; const source = target?.sourceReference; if (target?.sessionKey !== navigation.sessionKey || target?.sessionId !== navigation.sessionId || source?.referenceId !== navigation.referenceId || source?.topicId !== topicId || source?.sourceSystem !== 'openclaw' || source?.sourceKind !== 'session') throw new Error('The authoritative Conversation changed after this result was created.'); const item = { referenceId: navigation.referenceId, topicId: navigation.topicId, sessionKey: target.sessionKey, sessionId: target.sessionId, displayName: result.conversationName, status: result.provenance?.status ?? 'open', isPrimary: false }; await selectConversation(item); if (generation === workspace.generation && workspace.topic?.topicId === topicId) revealWorkspaceTarget('chat'); } catch (error) { if (generation === workspace.generation && searchGeneration === workspace.searchGeneration && workspace.topic?.topicId === topicId) workspaceSearchStatus.textContent = error.message || 'Authoritative Conversation navigation was refused.'; } }
 document.querySelector('#workspace-search-form')?.addEventListener('submit', searchWorkspace);
 document.querySelector('#workspace-search-rebuild')?.addEventListener('click', rebuildWorkspaceSearch);
 

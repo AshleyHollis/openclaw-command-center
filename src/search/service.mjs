@@ -157,7 +157,7 @@ function isCurrentResult(metadata, topicId, scope, result) {
     }
     const reference = exactReference(metadata, topicId, result.sourceReference?.referenceId ?? result.referenceId);
     assertDescriptorReference(result.sourceReference, reference);
-    if (result.kind !== 'conversation' || reference.sourceSystem !== 'openclaw' || reference.sourceKind !== 'session' || reference.externalSourceId !== result.sessionKey) return false;
+    if (result.kind !== 'conversation' || reference.sourceSystem !== 'openclaw' || reference.sourceKind !== 'session' || effectiveSourceLocator(metadata, reference) !== result.sessionKey) return false;
     const state = metadata?.getSessionState?.(reference.referenceId) ?? null;
     if (typeof state?.sessionId !== 'string' || state.sessionId.length === 0 || result.sessionId !== state.sessionId) return false;
     const status = state?.status ?? 'open';
@@ -330,12 +330,12 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
         for (const key of Object.keys(descriptor)) if (!['kind', 'topicId', 'referenceId', 'sessionKey', 'sessionId', 'messageId'].includes(key)) throw sourceError('invalid-request', 'Conversation navigation contains unsupported fields.');
         const reference = exactReference(metadata, topicId, descriptor.referenceId);
         if (reference.sourceSystem !== 'openclaw' || reference.sourceKind !== 'session') throw sourceError('cross-topic', 'The Conversation navigation Source Reference is invalid.');
-        if (descriptor.sessionKey !== reference.externalSourceId) throw sourceError('source-recovery', 'The Conversation navigation Session key is stale or foreign.');
+        if (descriptor.sessionKey !== effectiveSourceLocator(metadata, reference)) throw sourceError('source-recovery', 'The Conversation navigation Session key is stale or foreign.');
         const state = metadata?.getSessionState?.(reference.referenceId);
         if (typeof descriptor.sessionId !== 'string' || !descriptor.sessionId || descriptor.sessionId !== state?.sessionId) throw sourceError('source-recovery', 'The Conversation navigation Session ID is stale or foreign.');
         if (!navigationSourceService?.sessionsNavigate) throw sourceError('capability-unavailable', 'Authoritative Conversation navigation is unavailable.', { capability: 'sessions' });
         const navigation = await navigationSourceService.sessionsNavigate({ schemaVersion: 1, topicId, referenceId: reference.referenceId });
-        if (navigation?.sourceReference?.referenceId !== reference.referenceId || navigation?.sessionKey !== reference.externalSourceId || navigation?.sessionId !== descriptor.sessionId) throw sourceError('source-recovery', 'Authoritative Conversation navigation did not preserve the exact linked Session.');
+        if (navigation?.sourceReference?.referenceId !== reference.referenceId || navigation?.sessionKey !== effectiveSourceLocator(metadata, reference) || navigation?.sessionId !== descriptor.sessionId) throw sourceError('source-recovery', 'Authoritative Conversation navigation did not preserve the exact linked Session.');
         return Object.freeze({ navigation });
       }
       throw sourceError('invalid-request', 'Unsupported navigation descriptor.');

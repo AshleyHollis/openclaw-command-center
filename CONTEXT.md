@@ -50,6 +50,14 @@ A durable knowledge document whose authoritative content lives in the user's Obs
 **Note Folder**:
 The single Obsidian folder that forms the authoritative boundary for a Topic's Notes.
 
+**Note Draft**:
+Unsaved editing state for one exact Topic-owned Note. It retains the authoritative content revision on which editing began until a confirmed save or identity-preserving relocation advances that base. Opening another Note does not transfer the draft.
+_Avoid_: authoritative Note, cached Note
+
+**Source Locator**:
+The verified current location of a source. Explicit Source Recovery may change a Session's locator without rewriting the durable Source Reference that identifies its Topic ownership and provenance.
+_Avoid_: source identity
+
 **Primary Session**:
 The replaceable Topic Conversation selected by default for a Topic's native Chat action. A former Primary remains linked as an ordinary Topic Conversation; migrated history forms an immutable prefix of the initial Primary Session.
 

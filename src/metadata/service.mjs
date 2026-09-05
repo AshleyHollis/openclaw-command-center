@@ -1626,7 +1626,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     if (!current || current.observedRevision !== expectedSourceRevision && recovery?.lastIdentity !== expectedSourceRevision) throw new CommandCenterMetadataError('conflict', 'Source locator revision is stale.');
     return service.setSourceLocator({ referenceId, locator, observedRevision, locatorVersion: current.locatorVersion + 1, ownership: 'external', updatedAt });
   };
-  service.applySessionRecoveryRelink = ({ referenceId, sessionKey, sessionId, expectedSourceRevision, updatedAt } = {}) => mutate(null, (db) => {
+  function applySessionRecoveryRelink(db, { referenceId, sessionKey, sessionId, expectedSourceRevision, updatedAt }) {
     const current = db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId);
     const state = db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(referenceId);
     if (!current || current.observed_revision !== expectedSourceRevision && state?.session_id !== expectedSourceRevision) throw new CommandCenterMetadataError('conflict', 'Session locator revision is stale.');
@@ -1636,10 +1636,16 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     db.prepare('UPDATE source_locators SET locator = ?, locator_version = locator_version + 1, observed_revision = ?, ownership = ?, updated_at = ? WHERE reference_id = ?').run(sessionKey, sessionId, 'external', timestamp(updatedAt, 'updatedAt'), referenceId);
     db.prepare('UPDATE session_state SET session_id = ?, updated_at = ? WHERE reference_id = ?').run(sessionId, timestamp(updatedAt, 'updatedAt'), referenceId);
     return mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId));
-  });
+  }
+  service.applySessionRecoveryRelink = (input = {}) => mutate(null, db => applySessionRecoveryRelink(db, input));
   service.completeTopicRecoveryMutation = (input = {}) => mutate(null, (db) => {
     const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.intent.topicId);
     if (!topic || topic.revision !== input.expectedRevision) throw new CommandCenterMetadataError('conflict', 'Topic revision is stale.');
+    // A Session relink changes only local metadata: binding, recovery and receipt
+    // belong to this one transaction, never to independently committed steps.
+    if (input.operationKind === 'topics.recovery.relink' && input.intent.addReference === false) {
+      applySessionRecoveryRelink(db, { ...input.intent, updatedAt: input.updatedAt });
+    }
     const recovery = input.recovery;
     const existing = db.prepare('SELECT * FROM source_recovery WHERE recovery_id = ?').get(recovery.recoveryId);
     const now = timestamp(input.updatedAt, 'updatedAt');
