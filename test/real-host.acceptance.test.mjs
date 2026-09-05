@@ -2365,38 +2365,38 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const notificationDeviceIdentity = await ensureNotificationTarget(signal);
       const revokeSessionParams = { key: primarySession.sessionKey, expectedSessionId: primarySession.sessionId, deleteTranscript: true };
       await assert.rejects(
-        () => requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'sessions.delete', params: revokeSessionParams }),
+        () => requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, signal, scopes: ['operator.read', 'operator.write'], method: 'sessions.delete', params: revokeSessionParams }),
         /FORBIDDEN.*operator\.admin/u
       );
       // Only this fixture-control RPC has admin authority; frame grants and
       // the subsequent user mutation remain restricted to read/write.
-      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'sessions.delete', params: revokeSessionParams });
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, signal, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'sessions.delete', params: revokeSessionParams });
       await assert.rejects(
         () => requestAuthenticatedGateway({
-          gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.sessions.send',
+          gatewayUrl, credential: world.gatewayCredential, signal, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.sessions.send',
           params: { schemaVersion: 1, topicId: topicId, referenceId: primarySession.referenceId, logicalOperationId: randomUUID(), message: 'Fictional current mutation after binding revocation' }
         }),
         /missing|recovery|unavailable/iu
       );
       const replacementCreated = await requestAuthenticatedGateway({
-        gatewayUrl, credential: world.gatewayCredential, deviceIdentity: notificationDeviceIdentity, scopes: ['operator.read', 'operator.write'], method: 'sessions.create',
+        gatewayUrl, credential: world.gatewayCredential, signal, deviceIdentity: notificationDeviceIdentity, scopes: ['operator.read', 'operator.write'], method: 'sessions.create',
         params: { agentId: 'main', label: 'Fictional reconciled Primary Session', idempotencyKey: randomUUID() }
       });
       const replacementSession = replacementCreated?.result ?? replacementCreated;
       assert.ok(replacementSession?.key && replacementSession?.sessionId);
-      const recoveryTopicResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: topicId } });
+      const recoveryTopicResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, signal, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: topicId } });
       const recoveryTopic = (recoveryTopicResponse?.result ?? recoveryTopicResponse)?.topic;
       const recoveryReference = recoveryTopic.recovery.find((item) => item.referenceId === primarySession.referenceId && item.state === 'required');
       assert.ok(typeof recoveryReference?.expectedRevision === 'string' && recoveryReference.expectedRevision.length > 0, 'recovery requires the exact public source revision, not a Session identity');
       const replacementBindingResponse = await requestAuthenticatedGateway({
-        gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.recovery.replace',
+        gatewayUrl, credential: world.gatewayCredential, signal, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.recovery.replace',
         params: {
           schemaVersion: 1, topicId: topicId, referenceId: primarySession.referenceId,
           sessionKey: replacementSession.key, sessionId: replacementSession.sessionId, expectedRevision: recoveryTopic.revision,
           expectedSourceRevision: recoveryReference.expectedRevision, logicalOperationId: randomUUID()
         }
       });
-      const reconciledSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: topicId } });
+      const reconciledSessions = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, signal, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: topicId } });
       const replacementBinding = replacementBindingResponse?.result ?? replacementBindingResponse;
       const reconciledRows = (reconciledSessions?.result ?? reconciledSessions)?.conversations ?? [];
       const revokedPrimary = reconciledRows.find((session) => session.referenceId === primarySession.referenceId);
