@@ -3383,6 +3383,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await frame.waitForFunction((ids) => [...document.querySelectorAll('#attention-cards .attention-card')].filter((card) => ids.includes(card.dataset.episodeId)).length === 1, mobileEpisodeIds);
       await activate(mobileCards.first().getByRole('button', { name: 'Reminder Complete', exact: true }), true);
       await waitForFrameText(frame, '#dashboard-feedback', 'Reminder Complete accepted.');
+      // The source receipt precedes the Dashboard readback that removes the
+      // card and restores owner focus. Finish that transition before tabbing
+      // into the next Topic journey (as already required for Snooze above).
+      await mobileCards.waitFor({ state: 'detached', timeout: BRIDGE_UI_OPERATION_BUDGET_MS });
       if (await frame.locator('#activity-load-more').isVisible()) await activate(frame.locator('#activity-load-more'), true);
       await assertResponsiveFrame(frame, page, 320);
       const cdp = await page.context().newCDPSession(page);
