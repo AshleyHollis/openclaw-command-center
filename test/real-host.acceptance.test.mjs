@@ -855,7 +855,7 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
       assert.ok(safeRead && typeof safeRead === 'object');
       const blockedRecoveryOperationId = randomUUID();
       await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, topicId: randomUUID(), name: 'Blocked Recovery Topic', paraCategory: 'resource', logicalOperationId: blockedRecoveryOperationId, authoritativeSession: { key: 'agent:main:blocked-recovery', sessionId: 'blocked-recovery-session', revision: '1', idempotencyKey: blockedRecoveryOperationId, label: 'Blocked Recovery Topic' } } }), /recovery-only/iu);
-      assert.equal(releasePerformanceIdentity.hostReceipt.commit, 'd2ef96f4466d253f32fc48a666a4573b2ee98444', 'the launched runtime must match the exact stable compatibility tuple');
+      assert.equal(releasePerformanceIdentity.hostReceipt.commit, '2309e6542d0ba631178c8e647a2dc8b4763651bd', 'the launched runtime must match the exact stable compatibility tuple');
       assert.equal(runtimeCapability.schemaVersion, 1, 'the active bootstrap must expose the supported bridge protocol');
       const recoveryDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try { assert.equal(recoveryDatabase.prepare('PRAGMA user_version').get().user_version, 99); }
