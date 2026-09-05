@@ -79,6 +79,16 @@ A headless probe using actual host styles reproduced the desktop evidence error 
 
 The clean Linux candidate build and 46 affected tests passed; production digest remains `sha256:815f0b48d3fd660147c912c6036e5fb73c440230b70f1a0f77ad89a8f1b8db48`. Only affected clusters are replayed in `ticket32-ui-desktop-5385caa` and `ticket32-compatibility-startup-5385caa`, against the unchanged sealed host. Startup limits are unchanged; its cause is not yet established. No complete capture or performance qualification has run during this repair.
 
+## Desktop and review frontiers closed — 19:23 AEST
+
+`ticket32-ui-desktop-5385caa` passed all three affected desktop, scale and scale-analysis slices. `ticket32-compatibility-startup-0a758c2` passed both previously failing startup checks with unchanged limits; prior timing failures remain retained, not declared fixed. All 17 independent non-performance slices have passing evidence against the current production bytes. The readiness helper now retains safe attempt/refusal/success counts on failure; the temporary late-startup observation was removed without ever changing the original failed verdict.
+
+Two additional original frontiers closed: `desktop-primary-journey` in `ticket32-desktop-primary-0a758c2`, and `desktop-primary-journey-review` in `ticket32-review-journey-587c65d`. The latter now explicitly establishes the production analyzer's quiet first-run baseline through the public authenticated API before creating the two changed-Topic proposal fixtures. It no longer depends on successful earlier scale setup. Host behavior is unchanged.
+
+The intermediate `ticket32-combined-journey-0a758c2` failed after desktop passed: scale lost keyboard focus after closing a Conversation, mobile lost focus when starting its second Topic journey, and Activity lacked the prior scale receipt. Its missing review proposals were caused by skipped initial analysis setup, repaired and independently verified above. Both lightweight and full-corpus two-Topic diagnostics subsequently passed, so they do not establish a fix for the remaining focus-loss pattern. The exact scale-only path runs as `ticket32-scale-frontier-587c65d`, with detailed focus identity before and after paint and no competing diagnostic lane.
+
+Sealed harness `587c65d0728535387211aeeaff8d50186e9cd047` retains production digest `sha256:815f0b48d3fd660147c912c6036e5fb73c440230b70f1a0f77ad89a8f1b8db48`. The pending performance identity source digest now matches the actual host seal; no historical measured baseline value was edited. Three original frontiers remain: `mobile-accessibility-journey`, `scale-performance`, and `verified-activity-readback`. Final coherent release rows newly closed: zero. All final evaluation/publication/live gates remain required.
+
 ## Not yet release-qualified
 
 The original 211-test snapshot above was focused integration evidence. The later sealed diagnostic candidate is **not a final acceptance capture or release-qualified build**. No unique final release acceptance boundary was closed by these focused or diagnostic passes.
