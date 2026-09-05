@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ADMIN_METHODS, BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, validateBridgeRequest } from '../src/bridge/contracts.mjs';
-import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/register.mjs';
+import { invokeBridgeMethod, registerBridgeMethods, registerNativeSessionNavigation } from '../src/bridge/register.mjs';
 import { randomUUID } from 'node:crypto';
 import { AuthoritativeSourceService } from '../src/sources/service.mjs';
 
@@ -98,6 +98,22 @@ test('native Chat navigation intent is an optional boolean on the closed resolve
   assert.doesNotThrow(() => validateBridgeRequest(method, params));
   assert.throws(() => validateBridgeRequest(method, { ...params, nativeChat: 'true' }));
   assert.throws(() => validateBridgeRequest(method, { ...params, url: 'https://example.invalid/chat' }));
+});
+
+test('host navigation resolver always enforces native Chat policy and exact Session identity', async () => {
+  let handler; const observed = [];
+  registerNativeSessionNavigation({ registerGatewayMethod(method, callback, options) {
+    assert.equal(method, 'command-center.v1.sessions.resolve-native');
+    assert.equal(options.scope, 'operator.read'); handler = callback;
+  } }, { sessionsNavigate(input) { observed.push(input); return { sessionKey: 'agent:main:fictional', sessionId: 'fictional-id' }; } });
+  const input = { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-reference', expectedSessionId: 'fictional-id' };
+  const call = async (params, context = {}) => { let response; await handler({ params, context, req: { id: 'fictional-request' }, respond: (...args) => { response = args; } }); return response; };
+  assert.deepEqual(await call(input), [true, { sessionKey: 'agent:main:fictional' }]);
+  assert.equal(observed[0].nativeChat, true);
+  assert.equal((await call({ ...input, nativeChat: false }))[0], false);
+  assert.equal((await call({ ...input, expectedSessionId: 'replacement-id' }))[0], false);
+  assert.equal((await call(input, { authenticated: false }))[0], false);
+  assert.equal(observed.length, 2);
 });
 
 test('Note browse bridge exposes only one bounded opaque catalog page', async () => {

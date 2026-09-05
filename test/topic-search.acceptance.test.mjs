@@ -360,7 +360,7 @@ test('groups and opens authoritative Topic Search results', async () => {
   };
   try {
     await import(`../src/ui/app.js?acceptance=${Date.now()}`);
-    receive({ source: fakeWindow, data: { type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } } });
+    receive({ source: fakeWindow, data: { type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigateResolved'] } } });
     elements['topic-search-topic-id'].value = topic.topicId;
     const noteResult = { kind: 'note', heading: 'Readme', path: 'readme.md', snippet: 'alpha', highlights: [], contextBefore: '', contextAfter: '', navigation: { kind: 'note', topicId: topic.topicId, referenceId: note.referenceId, path: 'readme.md', heading: 'Readme', observedRevision: note.observedRevision } };
     const conversationResult = { kind: 'conversation', conversationName: 'Closed fixture', date: '2026-08-23T00:00:00.000Z', snippet: 'alpha', highlights: [], contextBefore: '', contextAfter: '', provenance: { role: 'topic-conversation', status: 'closed', importedPrimaryHistory: false }, navigation: { kind: 'conversation', topicId: topic.topicId, referenceId: session.referenceId, sessionKey: session.externalSourceId, sessionId: 'session-fictional', messageId: 'message-fictional' } };
@@ -386,8 +386,8 @@ test('groups and opens authoritative Topic Search results', async () => {
     assert.deepEqual(resolveRequest.params, { schemaVersion: 1, topicId: topic.topicId, referenceId: session.referenceId, nativeChat: true });
     receive({ source: fakeWindow, data: { type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: resolveRequest.requestId, result: { result: { sessionKey: session.externalSourceId, sessionId: 'session-fictional', sourceReference: session } } } } });
     await new Promise((resolve) => setImmediate(resolve));
-    const navigateRequest = sent.find((item) => item.method === 'ui.session.navigate');
-    assert.deepEqual(navigateRequest.params, { sessionKey: session.externalSourceId });
+    const navigateRequest = sent.find((item) => item.method === 'ui.session.navigateResolved');
+    assert.deepEqual(navigateRequest.params, { expectedSessionKey: session.externalSourceId, input: { schemaVersion: 1, topicId: topic.topicId, referenceId: session.referenceId, expectedSessionId: 'session-fictional' } });
     receive({ source: fakeWindow, data: { type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: navigateRequest.requestId, result: {} } } });
     await conversationOpen;
   } finally {

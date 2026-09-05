@@ -63,13 +63,24 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
 
 test('Control UI descriptor grants the operating-status read used to unlock mutations', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-descriptor-'));
+  let service;
   try {
     const host = fakePublishedApi(stateDir);
     plugin.register(host.api);
     assert.equal(host.descriptors.length, 1);
     assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sources.status'));
     assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.attention.act'));
-  } finally { await rm(stateDir, { recursive: true, force: true }); }
+    assert.equal(host.descriptors[0].capabilityBridge.sessionNavigationResolver, 'command-center.v1.sessions.resolve-native');
+    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('ui.session.navigateResolved'));
+    service = host.services[0];
+    await service.start();
+    service.sourceService.sessionsNavigate = async (input) => {
+      assert.equal(input.nativeChat, true);
+      return { schemaVersion: 1, sessionId: 'fictional-session', sessionKey: 'agent:main:fictional' };
+    };
+    const resolved = await host.authenticatedGatewayRequest('command-center.v1.sessions.resolve-native', { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-reference', expectedSessionId: 'fictional-session' });
+    assert.deepEqual(resolved, { sessionKey: 'agent:main:fictional' });
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
 test('Session cleanup does not stop the plugin-wide service; disable and restart do', async () => {

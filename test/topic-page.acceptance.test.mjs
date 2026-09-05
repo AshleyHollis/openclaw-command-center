@@ -415,10 +415,11 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
     window.addEventListener('message', async (event) => {
       if (event.data?.type !== 'openclaw:capability-bridge-send') return;
       const payload = event.data.payload;
-      if (payload.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'sessions.create', 'ui.session.navigate'] } }, '*'); return; }
+      if (payload.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'sessions.create', 'ui.session.navigateResolved'] } }, '*'); return; }
       if (payload.type !== 'openclaw:capability-bridge-request') return;
       fixture.calls.push({ transport: 'bridge', method: payload.method, params: copy(payload.params), operationId: payload.operationId });
-      if (payload.method === 'ui.session.navigate' && fixture.failNativeNavigation) { respond(payload.requestId, null, { code: 'UNAVAILABLE', message: 'Native Chat is unavailable.' }); return; }
+      if (payload.method === 'ui.session.navigateResolved' && fixture.failNativeNavigation) { respond(payload.requestId, null, { code: 'UNAVAILABLE', message: 'Native Chat is unavailable.' }); return; }
+      if (payload.method === 'ui.session.navigateResolved' && fixture.deferNativeNavigation) { fixture.deferNativeNavigation = false; fixture.resolveNativeNavigation = () => respond(payload.requestId, {}); return; }
       if (payload.method === 'sessions.create' && fixture.unknownNextSessionCreate) { fixture.unknownNextSessionCreate = false; respond(payload.requestId, null, { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Fictional unknown Session creation outcome.' }); return; }
       let result = {};
       if (payload.method.endsWith('sources.status')) result = { schemaVersion: 1, mode: 'ready', unavailableCapabilities: [] };
@@ -543,7 +544,7 @@ test('Conversation pane keeps a 51-record authoritative catalog in a bounded 50-
     assert.equal(await page.locator('#chat-conversation-name').textContent(), 'Scale Conversation 50');
     await page.locator('#chat-open').click();
     await page.getByText('Opened native Chat.', { exact: true }).waitFor();
-    assert.deepEqual(await page.evaluate(() => globalThis.__topicPageFixture.calls.find((call) => call.method === 'ui.session.navigate').params), { sessionKey: 'agent:main:scale-50' });
+    assert.deepEqual(await page.evaluate(() => globalThis.__topicPageFixture.calls.find((call) => call.method === 'ui.session.navigateResolved').params), { expectedSessionKey: 'agent:main:scale-50', input: { schemaVersion: 1, topicId: '11111111-1111-4111-8111-111111111111', referenceId: 'session:fictional-topic:scale-50', expectedSessionId: 'scale-session-50' } });
   } finally { await closeGuardedPage(page); }
 });
 
@@ -708,7 +709,9 @@ test('explicit bridge rate refusal preserves frozen mutation identity across the
   const page = await setupPage();
   try {
     await page.waitForFunction(() => pendingBridgeRequests.size === 0 && bridgeQueue.length === 0);
-    await page.clock.install();
+    const clockStart = new Date('2026-01-01T00:00:00Z');
+    await page.clock.install({ time: clockStart });
+    await page.clock.pauseAt(clockStart);
     await page.evaluate(() => {
       const actualSend = sendBridge; window.__rateAttempts = []; window.__rateResult = null;
       sendBridge = (payload) => {
@@ -1174,10 +1177,10 @@ test('native Chat handoff replaces the active composer and transcript with exact
     assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.method.endsWith('sessions.history'))), false);
     await page.getByRole('button', { name: 'Open native Chat', exact: true }).click();
     await page.getByText('Opened native Chat.', { exact: true }).waitFor();
-    const calls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.method.endsWith('sessions.navigate') || call.method === 'ui.session.navigate'));
+    const calls = await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.method.endsWith('sessions.navigate') || call.method === 'ui.session.navigateResolved'));
     assert.equal(calls.length, 2);
     assert.deepEqual(calls[0].params, { schemaVersion: 1, topicId: '11111111-1111-4111-8111-111111111111', referenceId: 'session:fictional-topic:primary', nativeChat: true });
-    assert.deepEqual(calls[1].params, { sessionKey: 'agent:main:primary' });
+    assert.deepEqual(calls[1].params, { expectedSessionKey: 'agent:main:primary', input: { schemaVersion: 1, topicId: '11111111-1111-4111-8111-111111111111', referenceId: 'session:fictional-topic:primary', expectedSessionId: 'primary-session-id' } });
     assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.method.endsWith('sessions.send') || call.method === 'sessions.create')), false);
   } finally { await closeGuardedPage(page); }
 });
@@ -1191,10 +1194,28 @@ test('native Chat ignores a delayed resolution after Conversation selection chan
     await page.getByRole('button', { name: 'Independent Conversation', exact: true }).click();
     await page.evaluate(() => globalThis.__topicPageFixture.resolveDeferredNavigate());
     await page.waitForFunction(() => !document.querySelector('#chat-open').disabled);
-    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.method === 'ui.session.navigate')), false);
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.method === 'ui.session.navigateResolved')), false);
     await page.locator('#chat-open').click();
     await page.getByText('Opened native Chat.', { exact: true }).waitFor();
-    assert.deepEqual(await page.evaluate(() => globalThis.__topicPageFixture.calls.find((call) => call.method === 'ui.session.navigate').params), { sessionKey: 'agent:main:conversation' });
+    assert.deepEqual(await page.evaluate(() => globalThis.__topicPageFixture.calls.find((call) => call.method === 'ui.session.navigateResolved').params), { expectedSessionKey: 'agent:main:conversation', input: { schemaVersion: 1, topicId: '11111111-1111-4111-8111-111111111111', referenceId: 'session:fictional-topic:conversation', expectedSessionId: 'conversation-session-id' } });
+  } finally { await closeGuardedPage(page); }
+});
+
+test('native Chat freezes selection only during the host-owned navigation phase and restores focus', async () => {
+  const page = await setupPage();
+  try {
+    await page.evaluate(() => { globalThis.__topicPageFixture.deferNativeNavigation = true; });
+    await page.locator('#chat-open').click();
+    await page.waitForFunction(() => Boolean(globalThis.__topicPageFixture.resolveNativeNavigation));
+    assert.equal(await page.locator('main').evaluate((main) => main.inert), true);
+    assert.equal(await page.locator('#native-navigation-status').isVisible(), true);
+    await page.evaluate(() => globalThis.__topicPageFixture.resolveNativeNavigation());
+    await page.getByText('Opened native Chat.', { exact: true }).waitFor();
+    assert.equal(await page.locator('main').evaluate((main) => main.inert), false);
+    assert.equal(await page.locator('#native-navigation-status').isVisible(), false);
+    assert.equal(await page.locator('#chat-open').evaluate((button) => button === document.activeElement), true);
+    await page.getByRole('button', { name: 'Independent Conversation', exact: true }).click();
+    assert.equal(await page.locator('#chat-conversation-name').textContent(), 'Independent Conversation');
   } finally { await closeGuardedPage(page); }
 });
 
@@ -1206,7 +1227,7 @@ test('native Chat rejects changed identity and reports host navigation errors wi
     await page.waitForFunction(() => Boolean(globalThis.__topicPageFixture.deferredNavigate));
     await page.evaluate(() => { const fixture = globalThis.__topicPageFixture; fixture.deferredNavigate.result.sessionId = 'foreign-session'; fixture.resolveDeferredNavigate(); });
     await page.getByText('The authoritative Conversation changed before native Chat navigation.', { exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.method === 'ui.session.navigate')), false);
+    assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.some((call) => call.method === 'ui.session.navigateResolved')), false);
     await page.evaluate(() => { globalThis.__topicPageFixture.failNativeNavigation = true; });
     await page.locator('#chat-open').click();
     await page.getByText('Native Chat is unavailable.', { exact: true }).waitFor();
@@ -1229,6 +1250,6 @@ test('native Chat keeps closed history read-only until explicit reopening', asyn
     await page.waitForFunction(() => !document.querySelector('#chat-open').disabled);
     await page.locator('#chat-open').click();
     await page.getByText('Opened native Chat.', { exact: true }).waitFor();
-    assert.deepEqual(await page.evaluate(() => globalThis.__topicPageFixture.calls.find((call) => call.method === 'ui.session.navigate').params), { sessionKey: 'agent:main:closed' });
+    assert.deepEqual(await page.evaluate(() => globalThis.__topicPageFixture.calls.find((call) => call.method === 'ui.session.navigateResolved').params), { expectedSessionKey: 'agent:main:closed', input: { schemaVersion: 1, topicId: '11111111-1111-4111-8111-111111111111', referenceId: 'session:fictional-topic:closed', expectedSessionId: 'closed-session-id' } });
   } finally { await closeGuardedPage(page); }
 });

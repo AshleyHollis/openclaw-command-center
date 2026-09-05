@@ -28,7 +28,7 @@ export const RELEASE_MEASUREMENTS = Object.freeze([
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest']);
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
-const HOST_COMMIT = '1eb7aa385dae0eb8c5b926d1288832489126f987';
+const HOST_COMMIT = 'd2ef96f4466d253f32fc48a666a4573b2ee98444';
 const HOST_VERSION = '2026.9.1';
 const PLAYWRIGHT_VERSION = '1.62.1';
 export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
@@ -38,7 +38,7 @@ export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
 });
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 1,
-  sourceDigest: 'sha256:48efcea696c63fab215f7eacd9f80ff5493e15e4977bcc91cb3c05c318dc68d5',
+  sourceDigest: 'sha256:c0e913313d99c92368d608d48b21a2d38924a2811c07d7081b847e0492cfa846',
   commit: HOST_COMMIT,
   executableDigest: 'sha256:4f4d29770da4f86dbd0e07cbd4d46deab785905dd89ac719033fcfd866fb5d17',
   contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6'

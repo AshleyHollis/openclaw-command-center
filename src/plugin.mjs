@@ -1,6 +1,6 @@
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import { serveShellAsset } from './asset-handler.mjs';
-import { registerBridgeMethods } from './bridge/register.mjs';
+import { registerBridgeMethods, registerNativeSessionNavigation } from './bridge/register.mjs';
 import { legacyDiscordMigrationConfigSchema } from './migration/config.mjs';
 import { createAttentionActionHandler } from './attention/http-route.mjs';
 import { createMetadataService } from './plugin-service.mjs';
@@ -55,6 +55,7 @@ export default definePluginEntry({
       surface: 'tab', id: routeId, label: 'Command Center', group: 'control', path: pluginPath,
       capabilityBridge: {
         protocolVersion: 1,
+        sessionNavigationResolver: 'command-center.v1.sessions.resolve-native',
         requiredMethods: [
           'command-center.v1.sources.status', 'command-center.v1.dashboard.get',
           'command-center.v1.topics.list', 'command-center.v1.topics.get',
@@ -62,7 +63,8 @@ export default definePluginEntry({
           'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send',
           'command-center.v1.attention.act', 'command-center.v1.notes.browse',
           'command-center.v1.notes.read', 'command-center.v1.search.query',
-          'command-center.v1.search.prepare-rebuild', 'sessions.create', 'ui.session.navigate'
+          'command-center.v1.search.prepare-rebuild', 'sessions.create', 'ui.session.navigateResolved',
+          'command-center.v1.sessions.resolve-native'
         ],
         optionalMethods: []
       }
@@ -184,6 +186,7 @@ export default definePluginEntry({
       handler: gateControlUiMutation(createTopicAnalysisActionsHttpHandler(serviceProxy), controlUiMutationsAllowed)
     });
     registerBridgeMethods(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
+    registerNativeSessionNavigation(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
     api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });
     api.registerTool(topicAnalysisToolFactory({ run: (input) => service.topicAnalysisRun(input) }), { name: 'command_center_topic_analysis', optional: true });
     api.registerService(service);

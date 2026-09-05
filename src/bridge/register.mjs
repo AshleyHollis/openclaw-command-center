@@ -1,5 +1,5 @@
 import { BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, sanitizeBridgeResult, validateBridgeRequest } from './contracts.mjs';
-import { errorResult, SourceServiceError } from '../sources/errors.mjs';
+import { assertNoUnexpectedKeys, errorResult, nonBlank, SourceServiceError } from '../sources/errors.mjs';
 
 const schedulerRuntimeMethods = new Set([
   'command-center.v1.reminders.list',
@@ -190,3 +190,23 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
 }
 
 export const registerCommandCenterBridge = registerBridgeMethods;
+
+/** Native host resolvers have a flat target contract, unlike the versioned service envelopes. */
+export function registerNativeSessionNavigation(api, service, { mutationsAllowed = true } = {}) {
+  api.registerGatewayMethod('command-center.v1.sessions.resolve-native', async ({ req, params, context, respond }) => {
+    try {
+      if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
+      if (!mutationsAllowed) throw new SourceServiceError('capability-unavailable', 'Control UI mutation grant is unavailable.');
+      assertNoUnexpectedKeys(params, ['schemaVersion', 'topicId', 'referenceId', 'expectedSessionId'], 'Native Chat target');
+      nonBlank(params.expectedSessionId, 'expectedSessionId');
+      const { expectedSessionId, ...input } = params;
+      // The caller cannot downgrade this to history-only resolution. The source
+      // owner checks archive/close/recovery and the exact persisted link afresh.
+      const target = await invokeBridgeMethod(service, 'command-center.v1.sessions.navigate', { ...input, nativeChat: true }, req?.id ?? null);
+      if (target.sessionId !== expectedSessionId) throw new SourceServiceError('conflict', 'The authoritative Conversation changed before native Chat navigation.');
+      respond(true, { sessionKey: target.sessionKey });
+    } catch (error) {
+      respond(false, null, errorResult(error, { requestId: req?.id ?? null }));
+    }
+  }, { scope: 'operator.read' });
+}

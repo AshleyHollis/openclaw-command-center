@@ -327,7 +327,7 @@ async function openActivity(record) {
     }
     const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: record.navigation.topicId, referenceId: record.navigation.referenceId, nativeChat: true }));
     if (!target?.sessionKey || target.sessionKey !== record.navigation.sessionKey || target.sessionId !== record.navigation.sessionId || target.sourceReference?.referenceId !== record.navigation.referenceId || target.sourceReference?.topicId !== record.navigation.topicId) throw new Error('The authoritative Conversation changed after this Activity was recorded.');
-    await bridgeRequest('ui.session.navigate', { sessionKey: target.sessionKey });
+    await navigateNativeConversation(target, record.navigation);
     feedback.textContent = 'Activity source opened.';
   } catch (error) { feedback.textContent = error.message || 'Authoritative navigation was refused.'; }
 }
@@ -416,7 +416,7 @@ window.addEventListener('message', (event) => {
     clearTimeout(bridgeTimer);
     const methods = new Set(Array.isArray(message.methods) ? message.methods : []); advertisedBridgeMethods = methods;
     for (const key of Object.keys(bridgeLimits)) if (Number.isInteger(message.limits?.[key]) && message.limits[key] > 0) bridgeLimits[key] = Math.min(bridgeLimits[key], message.limits[key]);
-    const required = [...(hasTopicsDestination ? ['command-center.v1.topics.list'] : []), 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.notes.browse', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigate'];
+    const required = [...(hasTopicsDestination ? ['command-center.v1.topics.list'] : []), 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.notes.browse', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigateResolved'];
     if (message.upgradeRequired === true || !required.every((method) => methods.has(method))) rejectBridgeReady(new Error('Command Center requires unavailable host capabilities.'));
     else resolveBridgeReady();
     return;
@@ -575,7 +575,7 @@ async function openResult(result) {
     if (result.navigation?.kind === 'conversation') {
       const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: result.navigation.topicId, referenceId: result.navigation.referenceId, nativeChat: true }));
       if (target?.sessionKey !== result.navigation.sessionKey || target?.sessionId !== result.navigation.sessionId) throw new Error('The authoritative Conversation changed after this search result was created.');
-      await bridgeRequest('ui.session.navigate', { sessionKey: target.sessionKey });
+      await navigateNativeConversation(target, result.navigation);
       return;
     }
     if (result.navigation?.kind !== 'note') throw new Error('Unsupported authoritative navigation target.');
@@ -780,10 +780,34 @@ async function renderHistory(messages, identity) {
   }
   return true;
 }
+let nativeNavigationPending = false;
+async function navigateNativeConversation(target, navigation) {
+  if (nativeNavigationPending) throw new Error('Native Chat is already opening.');
+  nativeNavigationPending = true;
+  const main = document.querySelector('main');
+  const wasInert = main?.inert ?? false;
+  const invoker = document.activeElement;
+  const feedback = document.querySelector('#native-navigation-status');
+  // The host performs a fresh asynchronous resolution. Freeze local selection
+  // for that commit phase; ignoring a late Promise cannot undo host navigation.
+  if (main) main.inert = true;
+  if (feedback) { feedback.hidden = false; feedback.textContent = 'Opening native Chat…'; }
+  try {
+    await bridgeRequest('ui.session.navigateResolved', {
+      input: { schemaVersion: 1, topicId: navigation.topicId, referenceId: navigation.referenceId, expectedSessionId: target.sessionId },
+      expectedSessionKey: target.sessionKey
+    });
+  } finally {
+    nativeNavigationPending = false;
+    if (main) main.inert = wasInert;
+    if (feedback) feedback.hidden = true;
+    if (invoker?.isConnected) invoker.focus();
+  }
+}
 document.querySelector('#chat-open')?.addEventListener('click', async () => {
   const selected = workspace.selected;
   if (!mutationsAvailable() || !selected || selectedConversationReadOnly() || selected.availability === 'replaced-unavailable' || workspace.nativeChatPending) return;
-  const operation = { generation: workspace.generation, selectionGeneration: workspace.selectionGeneration, topicId: workspace.topic.topicId, referenceId: selected.referenceId, sessionId: selected.sessionId };
+  const operation = { generation: workspace.generation, selectionGeneration: workspace.selectionGeneration, topicId: workspace.topic.topicId, referenceId: selected.referenceId, sessionId: selected.sessionId, invoker: document.activeElement };
   workspace.nativeChatPending = operation;
   const isCurrent = () => workspace.generation === operation.generation && workspace.selectionGeneration === operation.selectionGeneration && workspace.topic?.topicId === operation.topicId && workspace.selected?.referenceId === operation.referenceId && workspace.selected?.sessionId === operation.sessionId;
   syncSelectedConversationControls(); chatStatus.textContent = 'Opening native Chat…';
@@ -792,13 +816,14 @@ document.querySelector('#chat-open')?.addEventListener('click', async () => {
     if (!isCurrent() || !mutationsAvailable() || selectedConversationReadOnly()) return;
     const source = target?.sourceReference;
     if (!target?.sessionKey || target.sessionId !== operation.sessionId || source?.referenceId !== operation.referenceId || source?.topicId !== operation.topicId || source?.sourceSystem !== 'openclaw' || source?.sourceKind !== 'session' || source?.externalSourceId !== target.sessionKey) throw new Error('The authoritative Conversation changed before native Chat navigation.');
-    await bridgeRequest('ui.session.navigate', { sessionKey: target.sessionKey });
+    await navigateNativeConversation(target, operation);
     if (isCurrent()) chatStatus.textContent = 'Opened native Chat.';
   } catch (error) {
     if (isCurrent()) chatStatus.textContent = error.message || 'Native Chat navigation was refused.';
   } finally {
     if (workspace.nativeChatPending === operation) workspace.nativeChatPending = null;
     syncSelectedConversationControls();
+    if (isCurrent() && operation.invoker?.isConnected) operation.invoker.focus();
   }
 });
 async function createAuthoritativeSession(label, logicalOperationId) { const created = unwrap(await bridgeRequest('sessions.create', { agentId: 'main', label }, logicalOperationId)); const key = created?.key ?? created?.sessionKey; const sessionId = created?.sessionId ?? created?.entry?.sessionId; const revision = created?.revision ?? created?.updatedAt ?? created?.entry?.updatedAt; if (typeof key !== 'string' || typeof sessionId !== 'string' || revision === undefined || revision === null) throw new Error('The authoritative Session creation response was incomplete.'); return { key, sessionId, revision: String(revision), idempotencyKey: logicalOperationId, label }; }

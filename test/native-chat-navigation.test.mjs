@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createSessionAdapter } from '../src/sources/sessions.mjs';
 import { AuthoritativeSourceService } from '../src/sources/service.mjs';
+import { registerNativeSessionNavigation } from '../src/bridge/register.mjs';
 
 function fixture() {
   const topic = { topicId: 'fictional-topic', lifecycle: 'active', paraCategory: 'project' };
@@ -46,4 +47,25 @@ test('native Chat refuses unresolved Session recovery and same-key replacement',
 test('native Chat rejects malformed navigation intent', async () => {
   const f = fixture();
   await assert.rejects(f.service.sessionsNavigate({ ...f.input, nativeChat: 'true' }), { code: 'invalid-request' });
+});
+
+test('registered native resolver rechecks authoritative lifecycle and identity on each host request', async () => {
+  const f = fixture();
+  let handler;
+  registerNativeSessionNavigation({ registerGatewayMethod(_name, implementation) { handler = implementation; } }, f.service);
+  const request = async () => {
+    let response;
+    const { nativeChat: _nativeChat, ...input } = f.input;
+    await handler({ params: { ...input, expectedSessionId: f.state.sessionId }, context: { authenticated: true }, respond(ok, result, error) { response = { ok, result, error }; } });
+    return response;
+  };
+  assert.deepEqual((await request()).result, { sessionKey: f.reference.externalSourceId });
+  f.state.status = 'closed';
+  assert.deepEqual(await request(), { ok: false, result: null, error: { code: 'unavailable', message: 'The authoritative source request is unavailable.', details: { schemaVersion: 1, status: 'unavailable', requestId: null, logicalOperationId: null } } });
+  f.state.status = 'open'; f.topic.paraCategory = 'archive';
+  assert.equal((await request()).error.code, 'unavailable');
+  f.topic.paraCategory = 'project'; f.recovery.push({ state: 'required', sourceKind: 'session' });
+  assert.equal((await request()).error.code, 'source-recovery');
+  f.recovery.length = 0; f.entry.entry.sessionId = 'replacement-session';
+  assert.equal((await request()).error.code, 'source-recovery');
 });

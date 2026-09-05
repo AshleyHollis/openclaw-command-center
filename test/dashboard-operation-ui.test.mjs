@@ -20,7 +20,7 @@ test('mounted approval retries preserve exact intent and block a competing actio
         const payload = event.data?.payload;
         const send = (value) => window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: value }, '*');
         if (payload?.type === 'openclaw:capability-bridge-hello') {
-          send({ type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.dashboard.get', 'command-center.v1.attention.act', 'command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] });
+          send({ type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.dashboard.get', 'command-center.v1.attention.act', 'command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigateResolved'] });
           return;
         }
         if (payload?.type !== 'openclaw:capability-bridge-request') return;
