@@ -324,8 +324,8 @@ export class AuthoritativeSourceService {
     if (!this.migration) throw sourceError('source-recovery', 'Legacy Discord migration is not configured.');
     return this.migration.resume(input);
   }
-  async ingestReminderRows(topicId, rows) {
-    return reconcileReminderAttention({ topicId, rows, attention: this.attentionService, now: this.defaults.now });
+  async ingestReminderRows(topicId, rows, { completeInventory = true } = {}) {
+    return reconcileReminderAttention({ topicId, rows, attention: this.attentionService, now: this.defaults.now, completeInventory });
   }
   async remindersList(input = {}, runtime = {}) {
     const service = this.requireTopicService(input, { schedulerGateway: runtime.gateway });
@@ -339,7 +339,7 @@ export class AuthoritativeSourceService {
     if (!service.scheduler) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' });
     const result = await service.scheduler.createReminder({ ...adapterInput(input), logicalOperationId: input.logicalOperationId });
     if (!result?.value?.job || !result?.value?.sourceReference) throw sourceError('unavailable', 'Reminder creation returned no authoritative scheduler result.');
-    await this.ingestReminderRows(input.topicId, [result.value]);
+    await this.ingestReminderRows(input.topicId, [result.value], { completeInventory: false });
     return result;
   }
   async refreshReminderAttention() {

@@ -1,6 +1,6 @@
 // Native scheduler state is translated into Attention in this module only.
 // Scheduler delivery and user acknowledgement remain distinct lifecycles.
-export async function reconcileReminderAttention({ topicId, rows, attention, now }) {
+export async function reconcileReminderAttention({ topicId, rows, attention, now, completeInventory = true }) {
   if (!attention?.ingest) return rows;
   const configuredNow = typeof now === 'function' ? now() : now;
   const configuredNowMs = typeof configuredNow === 'number' ? configuredNow : Date.parse(configuredNow);
@@ -55,7 +55,8 @@ export async function reconcileReminderAttention({ topicId, rows, attention, now
       });
     }
   }
-  for (const episode of attention.allEpisodes?.() ?? []) {
+  // A single mutation receipt proves only that row, not absence of siblings.
+  for (const episode of completeInventory ? attention.allEpisodes?.() ?? [] : []) {
     if (episode.topicId !== topicId || episode.sourceCapabilityId !== 'reminders' || ['Resolved', 'Withdrawn'].includes(episode.state) || returnedIds.has(episode.stableSubjectId)) continue;
     await attention.ingest({ schemaVersion: 1, sourceCapabilityId: 'reminders', stableSubjectId: episode.stableSubjectId, attentionReason: episode.attentionReason, occurrenceId: `reminder:${episode.stableSubjectId}:missing:${observedAt}`, occurredAt: observedAt, topicId, sourceReferenceId: episode.sourceReferenceId, evidenceFacts: { reminderDue: false }, transitionEvidence: { verifiedSource: 'scheduler-readback', state: 'withdrawn' } });
   }

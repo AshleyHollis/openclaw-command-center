@@ -49,6 +49,19 @@ async function withReminder(run) {
   metadata.createSourceReference(row.sourceReference);
   const fixture = {
     row,
+    createDeliveredSibling: async () => {
+      clockMs += 1000;
+      const sibling = structuredClone(row);
+      sibling.sourceReference.referenceId = 'fictional-sibling-reference';
+      sibling.sourceReference.externalSourceId = 'fictional-sibling-job';
+      sibling.job.id = 'fictional-sibling-job';
+      metadata.createSourceReference(sibling.sourceReference);
+      const original = source.requireTopicService;
+      source.requireTopicService = () => ({ scheduler: { createReminder: async () => ({ value: sibling }) } });
+      try { await source.remindersCreate({ schemaVersion: 1, topicId: row.sourceReference.topicId, logicalOperationId: randomUUID() }); }
+      finally { source.requireTopicService = original; }
+      return sibling;
+    },
     refresh: () => { clockMs += 1000; return source.ingestReminderRows(row.sourceReference.topicId, [row]); },
     episodes: () => attention.list().episodes,
     all: () => attention.allEpisodes(),
@@ -74,6 +87,21 @@ test('native delivered one-shot remains the same actionable Reminder across refr
     fixture.restart();
     await fixture.refresh();
     assert.equal(fixture.episodes()[0]?.episodeId, episodeId);
+  });
+});
+
+test('creating a delivered Reminder never withdraws another delivered Reminder on the same Topic', async () => {
+  await withReminder(async (fixture) => {
+    fixture.row.job.enabled = false;
+    fixture.row.job.state = deliveredState;
+    await fixture.refresh();
+    const originalId = fixture.episodes()[0].episodeId;
+    await fixture.createDeliveredSibling();
+    assert.equal(fixture.episodes().length, 2, 'a create receipt is not a complete scheduler inventory');
+    assert.ok(fixture.episodes().some((episode) => episode.episodeId === originalId));
+    await fixture.refresh();
+    assert.equal(fixture.episodes().length, 1, 'a complete inventory still withdraws a genuinely missing sibling');
+    assert.equal(fixture.episodes()[0].episodeId, originalId);
   });
 });
 
