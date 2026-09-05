@@ -66,6 +66,7 @@ const focusedRealHostScenarios = Object.freeze({
 });
 
 const diagnosticSliceLanes = Object.freeze({
+  'diagnostic-dashboard-payload': Object.freeze(['dashboard-mixed-payload']),
   'diagnostic-topic-review': Object.freeze(['fresh-review']),
   'diagnostic-reminder-lifecycle': Object.freeze(['reminder-runtime-lifecycle']),
   'diagnostic-scale': Object.freeze(['fresh-scale']),

@@ -51,3 +51,22 @@ test('Dashboard routes admit only exact opaque-frame CORS preflights', async () 
   assert.equal((await invoke(createDashboardActionsHttpHandler(service), { method: 'POST', headers: { origin: 'https://example.invalid', 'content-type': 'application/json' }, body: {} })).statusCode, 403);
   assert.equal(calls, 0);
 });
+
+test('Dashboard read responses remain byte-bounded without widening mutation requests or receipts', async () => {
+  const tooLarge = { text: 'x'.repeat(256 * 1024) };
+  const read = await invoke(createDashboardReadHttpHandler({ dashboard: { get: async () => tooLarge } }));
+  assert.equal(read.statusCode, 507);
+  assert.equal(read.body.code, 'response-too-large');
+  assert.ok(Buffer.byteLength(JSON.stringify(read.body)) < 256);
+  const unicode = await invoke(createDashboardReadHttpHandler({ dashboard: { get: async () => ({ text: '界'.repeat(100_000) }) } }));
+  assert.equal(unicode.statusCode, 507, 'the response ceiling counts bytes, not characters');
+  let mutations = 0;
+  const mutate = createDashboardActionsHttpHandler({ async dashboardUpdateSettings() { mutations += 1; return { padding: 'x'.repeat(32_768) }; } });
+  const input = { schemaVersion: 1, action: 'settings.update', logicalOperationId: randomUUID(), expectedRevision: 1, settings: { dueReminders: false } };
+  const oversizedRequest = await invoke(mutate, { method: 'POST', headers: { 'content-type': 'application/json' }, body: { ...input, settings: { padding: 'x'.repeat(32_768) } } });
+  assert.equal(oversizedRequest.statusCode, 400);
+  assert.equal(mutations, 0);
+  const oversizedReceipt = await invoke(mutate, { method: 'POST', headers: { 'content-type': 'application/json' }, body: input });
+  assert.equal(oversizedReceipt.statusCode, 507);
+  assert.equal(mutations, 1);
+});

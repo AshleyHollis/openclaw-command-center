@@ -1123,6 +1123,24 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       const authoritativeSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
       const authoritativeConversations = (authoritativeSessions?.result ?? authoritativeSessions)?.conversations ?? authoritativeSessions?.conversations ?? [];
       assert.ok(authoritativeConversations.some((item) => item.isPrimary) && authoritativeConversations.some((item) => item.displayName === journey.conversationName));
+      if (kind === 'dashboard-payload') {
+        await prepareExactActivityFixture({ stateDir: path.join(scenarioWorld.root, '.openclaw'), gatewayUrl: scenarioWorld.gateway.url, topicId: journey.topicId });
+        const referenceIds = [];
+        for (let index = 0; index < 5; index += 1) {
+          const created = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'command-center.v1.reminders.create', params: { schemaVersion: 1, topicId: journey.topicId, logicalOperationId: randomUUID(), declaration: { name: `Fictional mixed Dashboard Reminder ${index}`, enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000 - index).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional mixed Dashboard diagnostic' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } }, signal });
+          referenceIds.push((created.result ?? created).value.sourceReference.referenceId);
+        }
+        const dashboard = await readDashboard(scenarioWorld.gateway.url);
+        assert.equal(dashboard.activity.records.length, 50);
+        for (const referenceId of referenceIds) assert.equal(dashboard.attention.filter((episode) => episode.sourceReferenceId === referenceId).length, 1);
+        const responseBytes = Buffer.byteLength(JSON.stringify({ schemaVersion: 1, status: 'applied', result: dashboard }));
+        assert.ok(responseBytes > 32_768, 'real-host mixed fixture must cross the former response limit');
+        assert.equal(dashboard.activity.hasMore, true);
+        const second = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 50 });
+        assert.equal(second.activity.records.length, 50);
+        assert.equal(new Set([...dashboard.activity.records, ...second.activity.records].map((row) => row.activityId)).size, 100);
+        return Object.freeze({ kind, assertionsCompleted: true, responseBytes, activityPageCount: 50, dueReminders: referenceIds.length });
+      }
       if (kind === 'reminder-lifecycle') {
         const rpc = (method, params) => requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method, params, signal });
         const created = await rpc('command-center.v1.reminders.create', { schemaVersion: 1, topicId: journey.topicId, logicalOperationId: randomUUID(), declaration: { name: 'Fictional lifecycle diagnostic Reminder', enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional lifecycle diagnostic' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } });
@@ -2069,6 +2087,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   ]);
   const isolatedRunPromises = new Map();
   // Diagnostic only: do not silently add a new release-matrix requirement.
+  if (acceptancePlan.isolatedSliceIds?.includes('dashboard-mixed-payload')) isolatedSlices.set('dashboard-mixed-payload', startIsolatedSlice('dashboard-mixed-payload', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'dashboard-payload', width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('fresh-mobile')) isolatedSlices.set('fresh-mobile', startIsolatedSlice('fresh-mobile', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'mobile', width: 320, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('reminder-runtime-lifecycle')) isolatedSlices.set('reminder-runtime-lifecycle', startIsolatedSlice('reminder-runtime-lifecycle', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'reminder-lifecycle', width: 1440, signal })));
   const isolatedResult = async (id) => {
@@ -3461,14 +3480,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await assertResponsiveFrame(frame, page, 1440);
       return { planRevision: frozenPlan.planRevision, appliedProposalCount: frozenPlan.proposalRevisions.length };
     });
-    if (acceptancePlan.kind === 'release') {
-      await Promise.all([...isolatedSlices.keys()].map(async (id) => {
-        try { await isolatedResult(id); }
-        catch (error) {
-          scenarioFailures.push({ id: `isolated:${id}`, error: new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || error)) });
-        }
-      }));
-    }
     const finalizationErrors = await finalizeAcceptanceJourney({
       closeBrowser: async (signal) => await closeManagedBrowser(managedBrowser, signal),
       stopHost: async () => {
@@ -3489,6 +3500,16 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       timeoutMs: 60_000,
       onProgress: ({ phase, status }) => reportProgress(testContext, `finalization:${phase}:${status}`)
     });
+    // Release the completed primary host/browser before starting independent
+    // worlds; retaining them here adds unused memory and background work.
+    if (acceptancePlan.kind === 'release') {
+      await Promise.all([...isolatedSlices.keys()].map(async (id) => {
+        try { await isolatedResult(id); }
+        catch (error) {
+          scenarioFailures.push({ id: `isolated:${id}`, error: new HarnessFailure('release-row-failed', redactBrowserEvidence(error?.message || error)) });
+        }
+      }));
+    }
     let privacyEvidence;
     try {
       await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });

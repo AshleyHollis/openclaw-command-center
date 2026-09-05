@@ -55,3 +55,12 @@ test('desktop keyboard records its observed Reminder status announcements for th
     assert.ok(journey.includes(`${observation}\n      ${recording}`), `record the verified ${message} transition, not an invented release count`);
   }
 });
+
+test('complete capture closes the primary world before launching independent worlds', async () => {
+  const source = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
+  const review = source.indexOf("await collectScenario('desktop-primary-journey-review'");
+  const finalize = source.indexOf('const finalizationErrors = await finalizeAcceptanceJourney', review);
+  const independent = source.indexOf('await Promise.all([...isolatedSlices.keys()]', review);
+  assert.ok(finalize > review && independent > finalize, 'completed primary resources must not overlap independent fixtures');
+  assert.ok(source.indexOf('let privacyEvidence', independent) > independent, 'coherent qualification still follows every fixture');
+});
