@@ -114,3 +114,11 @@ export function verifyCommittedSearchProjectionSet({ projectionRoot, metadataDat
     generations: Object.freeze(Object.fromEntries(manifests.map((manifest) => [manifest.projectionId, manifest.generation])))
   });
 }
+
+export function verifyMissingSearchProjectionSet(options, previousEvidence) {
+  const current = captureSearchProjectionEvidence(options);
+  if (COMMITTED_SEARCH_PROJECTION_FILES.some((name) => current.artifacts[name])) throw new Error('Disposable search projection files must all be absent.');
+  const retained = Object.fromEntries(Object.entries(previousEvidence.artifacts).filter(([name]) => !COMMITTED_SEARCH_PROJECTION_FILES.includes(name)));
+  if (JSON.stringify(current.artifacts) !== JSON.stringify(retained) || JSON.stringify(current.bookkeeping) !== JSON.stringify(previousEvidence.bookkeeping)) throw new Error('Missing-projection setup must preserve durable records and metadata bookkeeping.');
+  return current;
+}

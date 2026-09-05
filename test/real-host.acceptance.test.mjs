@@ -29,7 +29,7 @@ import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
 import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice } from '../src/acceptance-scenario-coordinator.mjs';
 import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence, verifiedMigrationStatusReady } from '../src/acceptance-migration.mjs';
-import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
+import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet, verifyMissingSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
 const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
 // The UI retains queued requests for 180s while honoring the host's rolling
@@ -1145,8 +1145,10 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.deepEqual([firstActivity.activity.records.length, secondActivity.activity.records.length, thirdActivity.activity.records.length], [50, 50, 1]);
         assert.equal(new Set([...firstActivity.activity.records, ...secondActivity.activity.records, ...thirdActivity.activity.records].map((record) => record.activityId)).size, RELEASE_FIXTURE_COUNTS.activityRecords);
 
+        const scaleProjectionOptions = { projectionRoot: scaleProjectionRoot, metadataDatabasePath: resolveCommandCenterDatabasePath(path.join(scenarioWorld.root, '.openclaw')) };
+        const beforeMissingProjection = captureSearchProjectionEvidence(scaleProjectionOptions);
         await Promise.all(COMMITTED_SEARCH_PROJECTION_FILES.map((name) => unlink(path.join(scaleProjectionRoot, name))));
-        assert.deepEqual(await readdir(scaleProjectionRoot), [], 'fresh scale query must begin with a missing disposable projection');
+        verifyMissingSearchProjectionSet(scaleProjectionOptions, beforeMissingProjection);
         await rebuildSearchThroughAuthenticatedPost({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: scaleTopicId, signal, label: 'fresh missing Search projection rebuild' });
         await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: scaleTopicId, query: 'Fictional indexed scale phrase', limit: 50 } });
         await waitForCommittedSearchProjections(scaleProjectionRoot);
@@ -2478,8 +2480,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     await collectScenario('missing-projection-recovery', async (signal) => {
       const projectionRoot = path.join(path.dirname(databasePath), 'projections');
       await restoreReleaseSearchBaseline({ gatewayUrl, credential: world.gatewayCredential, projectionRoot, signal, label: 'missing recovery' });
+      const beforeMissingProjection = captureSearchProjectionEvidence({ projectionRoot, metadataDatabasePath: databasePath });
       await Promise.all(COMMITTED_SEARCH_PROJECTION_FILES.map((name) => unlink(path.join(projectionRoot, name))));
-      const before = captureSearchProjectionEvidence({ projectionRoot, metadataDatabasePath: databasePath });
+      const before = verifyMissingSearchProjectionSet({ projectionRoot, metadataDatabasePath: databasePath }, beforeMissingProjection);
       await assert.rejects(
         requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.search.query', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, query: 'Fictional scale search phrase', limit: 50 }, signal }),
         /capability-unavailable|projection/iu

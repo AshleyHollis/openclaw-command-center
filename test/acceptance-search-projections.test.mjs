@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { captureSearchProjectionEvidence, verifyCommittedSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
+import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet, verifyMissingSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterProjectionRoot } from '../src/metadata/path.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { publishTopicSearchSnapshot } from '../src/search/rebuild.mjs';
@@ -59,6 +59,16 @@ test('committed projection evidence verifies artifacts, bookkeeping, and Topic c
 
     metadata.setProjectionBookkeeping({ projectionId: 'topic-search-notes', sourceRevision: 'invalidated', inputDigest: 'invalidated' });
     assert.throws(() => verifyCommittedSearchProjectionSet(options), /bookkeeping|committed projection/iu);
+
+    const retainedReceipt = path.join(options.projectionRoot, 'rebuild-operation-fictional.json');
+    await writeFile(retainedReceipt, '{"state":"applied"}\n');
+    await writeFile(path.join(options.projectionRoot, '.topic-search.invalidated.json'), '{"state":"invalidated"}\n');
+    const beforeMissing = captureSearchProjectionEvidence(options);
+    assert.throws(() => verifyMissingSearchProjectionSet(options, beforeMissing), /must all be absent/);
+    for (const name of COMMITTED_SEARCH_PROJECTION_FILES) await unlink(path.join(options.projectionRoot, name));
+    assert.equal(Object.keys(verifyMissingSearchProjectionSet(options, beforeMissing).artifacts).length, 2);
+    await writeFile(retainedReceipt, '{"state":"changed"}\n');
+    assert.throws(() => verifyMissingSearchProjectionSet(options, beforeMissing), /preserve durable records/);
   } finally {
     metadata.close();
     await rm(stateDir, { recursive: true, force: true });
