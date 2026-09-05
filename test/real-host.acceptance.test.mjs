@@ -3347,20 +3347,25 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       ({ frame, ...mobileJourney } = await runUiJourney(frame, { page, width: 320, name: 'Fictional Mobile Journey Topic', category: 'project', keyboard: true }));
       releaseState.mobile = mobileJourney;
       const mobileReminderReferenceIds = [];
-      for (const label of ['Keyboard source action', 'Keyboard snooze']) {
+      let mobileAuditReminderReferenceId;
+      for (const label of ['Keyboard source action', 'Keyboard snooze', 'Keyboard final audit']) {
         const createdReminder = await requestAuthenticatedGateway({
           gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'command-center.v1.reminders.create',
           params: { schemaVersion: 1, topicId: mobileJourney.topicId, logicalOperationId: randomUUID(), declaration: { name: `Fictional ${label}`, enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: `Fictional ${label} reminder` }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } }
         });
         const referenceId = createdReminder?.result?.value?.sourceReference?.referenceId;
         assert.equal(typeof referenceId, 'string');
-        mobileReminderReferenceIds.push(referenceId);
+        if (label === 'Keyboard final audit') mobileAuditReminderReferenceId = referenceId;
+        else mobileReminderReferenceIds.push(referenceId);
       }
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.reload({ waitUntil: 'domcontentloaded' });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await waitForDashboard(frame);
       const mobileDashboard = await readDashboard(gatewayUrl);
+      const mobileAuditEpisodes = mobileDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'reminders' && episode.topicId === mobileJourney.topicId && episode.sourceReferenceId === mobileAuditReminderReferenceId);
+      assert.equal(mobileAuditEpisodes.length, 1, 'final keyboard audit owns a separate live Reminder, not a previously completed/snoozed card');
+      const mobileAuditEpisodeId = mobileAuditEpisodes[0].episodeId;
       const mobileEpisodeIds = mobileReminderReferenceIds.map((referenceId) => {
         const matches = mobileDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'reminders' && episode.topicId === mobileJourney.topicId && episode.sourceReferenceId === referenceId);
         assert.equal(matches.length, 1, 'each created Reminder must resolve to one exact Attention episode');
@@ -3410,6 +3415,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       mobileJourney.zoomEvidence = { ...parentZoom, frameLayoutWidth: frameZoom.layoutWidth };
       await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
       await cdp.detach();
+      await frame.locator(`#attention-cards .attention-card[data-episode-id=${JSON.stringify(mobileAuditEpisodeId)}]`).getByRole('button', { name: 'View evidence', exact: true }).waitFor({ state: 'visible' });
       await assertKeyboardAccessibility(frame, page);
       evidence.performanceMeasurements ??= {};
       evidence.performanceMeasurements.mobile = { ...mobileJourney.measurement, sourceActionMs: 0 };
