@@ -32,6 +32,7 @@ import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, r
 import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet, verifyMissingSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
 import { createGatewayFrameWaiter } from '../src/acceptance-gateway.mjs';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
+import { afterKeyboardPaint } from './support/keyboard-paint.mjs';
 const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
 // The UI retains queued requests for 180s while honoring the host's rolling
 // quotas. Queue time remains inside all performance measurements.
@@ -1552,6 +1553,7 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
   const invisibleFocus = [];
   for (let step = 1; step <= limit; step += 1) {
     await page.keyboard.press(backwards ? 'Shift+Tab' : 'Tab');
+    await locator.evaluate(afterKeyboardPaint);
     const state = await locator.evaluate((target) => {
       const visible = (node) => {
         const style = getComputedStyle(node);
