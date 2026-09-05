@@ -22,6 +22,11 @@ test('build is deterministic and bound to its launch digest', async () => {
     const first = await build();
     const second = await build();
     assert.deepEqual(second, first);
+    for (const { path: relative } of second.files.filter((entry) => entry.path.endsWith('.mjs'))) {
+      const modulePath = path.join(distRoot, relative);
+      const source = await readFile(modulePath, 'utf8');
+      for (const match of source.matchAll(/\bfrom\s+['"](\.[^'"]+)['"]/gu)) await access(new URL(match[1], pathToFileURL(modulePath)));
+    }
     await assertBuiltDigest(second);
     await writeFile(path.join(distRoot, 'ui', 'index.html'), '<changed>');
     await assert.rejects(assertBuiltDigest(second), /digest drift/);

@@ -1138,11 +1138,13 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.ok(journey.accessibilityStates.length >= 8 && journey.focusRestorations.length >= 4 && journey.announcementTransitions.length >= 4);
         await assertResponsiveFrame(frame, page, 320);
         const cdp = await page.context().newCDPSession(page);
-        await cdp.send('Emulation.setDeviceMetricsOverride', { width: 160, height: 450, screenWidth: 320, screenHeight: 900, deviceScaleFactor: 2, mobile: false });
-        assert.deepEqual(await page.evaluate(() => ({ width: document.documentElement.clientWidth, ratio: devicePixelRatio })), { width: 160, ratio: 2 });
-        assert.deepEqual(await frame.evaluate(() => ({ width: document.documentElement.clientWidth, ratio: devicePixelRatio })), { width: 160, ratio: 2 });
-        await assertResponsiveFrame(frame, page, 160);
-        await cdp.send('Emulation.clearDeviceMetricsOverride');
+        await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
+        assert.deepEqual(await page.evaluate(() => ({ width: document.documentElement.clientWidth, visualWidth: visualViewport.width, scale: visualViewport.scale, ratio: devicePixelRatio })), { width: 320, visualWidth: 160, scale: 2, ratio: 1 });
+        assert.equal(await frame.evaluate(() => devicePixelRatio), 1, 'zoom must not be simulated by device pixel density');
+        const zoomJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional Fresh 200 Percent Zoom Topic', category: 'area', keyboard: true });
+        assert.ok(zoomJourney.topicId);
+        await assertResponsiveFrame(frame, page, 320);
+        await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
         await cdp.detach();
       } else if (kind === 'review') {
         await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: journey.topicId, input: {}, logicalOperationId: randomUUID() } });
