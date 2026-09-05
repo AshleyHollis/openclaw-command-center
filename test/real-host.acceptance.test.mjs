@@ -1142,9 +1142,21 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           }, scenarioHost.earlyExit, { required: 1, deadlineMs: 15_000, delayMs: 100, signal });
         } catch (error) { throw new Error(`Reminder runtime did not settle: ${JSON.stringify(observed)}`, { cause: error }); }
         finally { scheduler.close(); }
+        const afterRun = await readDashboard(scenarioWorld.gateway.url);
+        assert.equal(afterRun.attention.filter(exact).length, 1, `Untouched Reminder disappeared after native execution: ${JSON.stringify(observed)}`);
+        ({ frame } = await runUiJourney(frame, { page, width, name: 'Fictional Reminder Lifecycle Second Topic', category: 'area', keyboard: true }));
         const after = await readDashboard(scenarioWorld.gateway.url);
-        assert.equal(after.attention.filter(exact).length, 1, `Untouched Reminder disappeared after native execution: ${JSON.stringify(observed)}`);
-        return Object.freeze({ kind, assertionsCompleted: true, scheduler: observed });
+        const readback = new DatabaseSync(path.join(scenarioWorld.root, '.openclaw', 'state', 'openclaw.sqlite'), { readOnly: true });
+        let afterJourney;
+        try {
+          const row = readback.prepare('SELECT enabled, state_json FROM cron_jobs WHERE job_id = ?').get(value.job.id);
+          const state = row ? JSON.parse(row.state_json) : {};
+          afterJourney = { exists: Boolean(row), enabled: Boolean(row?.enabled), stateKeys: Object.keys(state), lastRunAtMs: state.lastRunAtMs, lastRunStatus: state.lastRunStatus, lastStatus: state.lastStatus, nextRunAtMs: state.nextRunAtMs, running: Boolean(state.runningAtMs) };
+        } finally { readback.close(); }
+        const relatedActivity = after.activity.records.filter((record) => record.sourceReferenceId === value.sourceReference.referenceId).map(({ actorMode, operationKind, outcome }) => ({ actorMode, operationKind, outcome }));
+        const lifecycleEvidence = { schedulerAfterRun: observed, schedulerAfterJourney: afterJourney, relatedActivity };
+        assert.equal(after.attention.filter(exact).length, 1, `Untouched Reminder disappeared across a Topic/native Chat round trip: ${JSON.stringify(lifecycleEvidence)}`);
+        return Object.freeze({ kind, assertionsCompleted: true, ...lifecycleEvidence });
       }
       if (kind === 'scale') {
         const scaleTopicResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: scaleTopicId } });
@@ -2188,6 +2200,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     scanPublicEvidence([JSON.stringify([...isolatedEvidence])]);
     if (failures.length) throw new AggregateError(failures, 'Independent diagnostic slices failed');
     assert.equal(isolatedEvidence.size, acceptancePlan.isolatedSliceIds.length);
+    if (acceptancePlan.isolatedSliceIds.includes('reminder-runtime-lifecycle')) testContext.diagnostic(`reminder-lifecycle-evidence=${JSON.stringify(isolatedEvidence.get('reminder-runtime-lifecycle'))}`);
     testContext.diagnostic(`acceptance-scenario-result=${JSON.stringify({ schemaVersion: 1, outcome: 'passed', scenario: process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO, isolatedSliceIds: [...isolatedEvidence.keys()], buildDigest: buildReceipt.digest, performanceQualified: false })}`);
     return;
   }
