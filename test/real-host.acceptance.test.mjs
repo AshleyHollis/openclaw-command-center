@@ -2501,6 +2501,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     });
     await collectScenario('startup-authenticated-topic-analysis', async (signal) => {
       const { binding } = await ensureMigrationBinding(signal);
+      const sourceSnapshot = new DatabaseSync(databasePath, { readOnly: true });
+      let observedSources;
+      try {
+        observedSources = new Map(sourceSnapshot.prepare(`SELECT source.reference_id, source.observed_revision AS ownership_revision,
+          COALESCE(locator.observed_revision, source.observed_revision) AS verification_revision
+          FROM source_references AS source LEFT JOIN source_locators AS locator ON locator.reference_id = source.reference_id
+          WHERE source.topic_id = ?`).all(RELEASE_ALPHA_TOPIC_ID).map((source) => [source.reference_id, source]));
+      } finally { sourceSnapshot.close(); }
       const logicalOperationId = randomUUID();
       const params = { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, input: {}, logicalOperationId };
       const response = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params, signal });
@@ -2518,7 +2526,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const topic = (topicResponse?.result ?? topicResponse)?.topic;
       const activitySource = topic.sourceReferences.find((reference) => reference.referenceId === record?.sourceReferenceId);
       assert.ok(activitySource);
-      assert.equal(record.verificationRevision, activitySource.observedRevision);
+      const observedSource = observedSources.get(record.sourceReferenceId);
+      assert.ok(observedSource, 'Activity must identify a Source observed before the analysis');
+      assert.equal(record.verificationRevision, observedSource.verification_revision);
+      assert.equal(activitySource.observedRevision, observedSource.ownership_revision, 'Analysis must preserve the separate migration ownership marker');
       const replay = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params, signal });
       const replayMutation = replay?.result ?? replay;
       assert.deepEqual(replayMutation?.value ?? replayMutation?.result?.value, value);
@@ -3096,7 +3107,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // is closed. The following mutation is otherwise current and valid; its
       // refusal is therefore attributable to binding revocation, not stale UI
       // evidence or missing parent authentication.
-      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'sessions.delete', params: { key: releaseState.primarySession.sessionKey, deleteTranscript: true } });
+      const revokeSessionParams = { key: releaseState.primarySession.sessionKey, expectedSessionId: releaseState.primarySession.sessionId, deleteTranscript: true };
+      await assert.rejects(
+        () => requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'sessions.delete', params: revokeSessionParams }),
+        /FORBIDDEN.*operator\.admin/u
+      );
+      // Only this fixture-control RPC has admin authority; frame grants and
+      // the subsequent user mutation remain restricted to read/write.
+      await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'sessions.delete', params: revokeSessionParams });
       await assert.rejects(
         () => requestAuthenticatedGateway({
           gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.sessions.send',
@@ -3271,17 +3289,28 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
       mobileJourney = await runUiJourney(frame, { page, width: 320, name: 'Fictional Mobile Journey Topic', category: 'project', keyboard: true });
       releaseState.mobile = mobileJourney;
+      const mobileReminderReferenceIds = [];
       for (const label of ['Keyboard source action', 'Keyboard snooze']) {
-        await requestAuthenticatedGateway({
+        const createdReminder = await requestAuthenticatedGateway({
           gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'command-center.v1.reminders.create',
           params: { schemaVersion: 1, topicId: mobileJourney.topicId, logicalOperationId: randomUUID(), declaration: { name: `Fictional ${label}`, enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: `Fictional ${label} reminder` }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } }
         });
+        const referenceId = createdReminder?.result?.value?.sourceReference?.referenceId;
+        assert.equal(typeof referenceId, 'string');
+        mobileReminderReferenceIds.push(referenceId);
       }
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.reload({ waitUntil: 'domcontentloaded' });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await waitForDashboard(frame);
-      const mobileCards = frame.locator('#attention-cards .attention-card').filter({ hasText: 'Fictional Keyboard' });
+      const mobileDashboard = await readDashboard(gatewayUrl);
+      const mobileEpisodeIds = mobileReminderReferenceIds.map((referenceId) => {
+        const matches = mobileDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'reminders' && episode.topicId === mobileJourney.topicId && episode.sourceReferenceId === referenceId);
+        assert.equal(matches.length, 1, 'each created Reminder must resolve to one exact Attention episode');
+        return matches[0].episodeId;
+      });
+      assert.equal(new Set(mobileEpisodeIds).size, 2);
+      const mobileCards = frame.locator(mobileEpisodeIds.map((id) => `#attention-cards .attention-card[data-episode-id=${JSON.stringify(id)}]`).join(', '));
       await mobileCards.nth(1).waitFor({ state: 'visible' });
       mobileJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 320, 'mobile Attention cards', true));
       await activate(mobileCards.first().getByRole('button', { name: 'View evidence', exact: true }), true);
@@ -3293,7 +3322,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await chooseOption(mobileCards.first().locator('select[aria-label="Snooze duration"]'), 'PT72H', true);
       await activate(mobileCards.first().getByRole('button', { name: 'Snooze', exact: true }), true);
       await waitForFrameText(frame, '#dashboard-feedback', 'Item snoozed.');
-      await frame.waitForFunction(() => [...document.querySelectorAll('#attention-cards .attention-card')].filter((card) => card.textContent.includes('Fictional Keyboard')).length === 1);
+      await frame.waitForFunction((ids) => [...document.querySelectorAll('#attention-cards .attention-card')].filter((card) => ids.includes(card.dataset.episodeId)).length === 1, mobileEpisodeIds);
       await activate(mobileCards.first().getByRole('button', { name: 'Reminder Complete', exact: true }), true);
       await waitForFrameText(frame, '#dashboard-feedback', 'Reminder Complete accepted.');
       if (await frame.locator('#activity-load-more').isVisible()) await activate(frame.locator('#activity-load-more'), true);

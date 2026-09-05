@@ -107,6 +107,8 @@ async function topicAnalysisRead() {
 }
 function renderTopicReview(review) {
   topicReviewState = review; const target = document.querySelector('#topic-review-groups'); const checkpoint = document.querySelector('#topic-review-checkpoint'); if (!target) return;
+  const active = document.activeElement;
+  const focusIntent = target.contains(active) ? { proposalId: active.closest('[data-proposal-id]')?.dataset.proposalId, label: active.textContent } : null;
   target.replaceChildren();
   for (const group of review?.groups ?? []) {
     const section = document.createElement('section'); section.className = 'topic-review-group'; const heading = document.createElement('h5'); heading.textContent = `${group.topicId} · ${group.operation}`; section.append(heading);
@@ -134,6 +136,13 @@ function renderTopicReview(review) {
   if (!target.childElementCount) target.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No Topic Review proposals.' }));
   if (checkpoint) { const proposals = review?.proposals ?? []; checkpoint.hidden = proposals.length === 0 || !proposals.some((proposal) => proposal.state === 'approved') || proposals.some((proposal) => proposal.state !== 'approved'); }
   const snooze = document.querySelector('#topic-review-snooze'); if (snooze) snooze.hidden = !review || review.state === 'Resolved';
+  if (focusIntent) {
+    const available = [...target.querySelectorAll('button')].filter((control) => !control.disabled && !control.hidden);
+    const retained = available.find((control) => control.closest('[data-proposal-id]')?.dataset.proposalId === focusIntent.proposalId && control.textContent === focusIntent.label);
+    const next = retained ?? available[0] ?? (checkpoint && !checkpoint.hidden && !checkpoint.disabled ? checkpoint : null);
+    if (next) next.focus();
+    else { const heading = document.querySelector('#topic-review-heading'); if (heading) { heading.tabIndex = -1; heading.focus(); } }
+  }
 }
 async function topicAnalysisAction(action, input = {}) { requireReadyMutation(); const response = await fetch(TOPIC_ANALYSIS_ACTIONS_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: operationId(), ...input }) }); const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis action was refused.'); return value.result ?? value; }
 async function topicReviewDecision(action, proposal) { const feedback = document.querySelector('#analysis-feedback'); try { await topicAnalysisAction(action, { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision }); feedback.textContent = 'Proposal decision saved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }

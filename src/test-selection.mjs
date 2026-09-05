@@ -4,6 +4,7 @@ const browserHeavyTests = new Set([
   'test/dashboard-ui.test.mjs',
   'test/topic-page.acceptance.test.mjs',
   'test/topic-review-ui.test.mjs',
+  'test/topic-review-focus.test.mjs',
   'test/topics-ui.test.mjs'
 ]);
 const topicPageTicketTests = new Set([
@@ -33,6 +34,7 @@ const issue32TicketTests = new Set([
 
 const focusedRealHostScenarios = Object.freeze({
   'startup-authenticated-topic-analysis': Object.freeze(['pinned-host-startup', 'focused-verified-note-locator', 'startup-authenticated-topic-analysis']),
+  'combined-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'mobile-accessibility-journey', 'desktop-primary-journey-review']),
   'authenticated-control-ui-mount': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount']),
   'authenticated-reminder-create': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-reminder-create']),
   'closed-tab-notification': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-closed-tab-notification']),

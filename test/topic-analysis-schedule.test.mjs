@@ -120,7 +120,7 @@ test('Cron reconciliation fails closed when the owned declaration omits its conf
   await assert.rejects(service.reconcile(), (error) => error.code === 'conflict');
 });
 
-test('registered analysis bridge deterministically coalesces reversed completion and replays the durable run', async () => {
+for (const locatorRevision of [null, 'fs:fictional-verified-note-folder']) test(`registered analysis bridge coalesces and replays with ${locatorRevision ? 'verified locator' : 'source reference'} revision`, async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-analysis-bridge-'));
   const topicId = 'topic-serial';
   const sourceId = 'source-serial';
@@ -135,6 +135,7 @@ test('registered analysis bridge deterministically coalesces reversed completion
   try {
     metadata.createTopic({ topicId, name: 'Fictional serialized analysis', lifecycle: 'active', paraCategory: 'area', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
     metadata.createSourceReference({ version: 1, referenceId: sourceId, topicId, sourceSystem: 'fictional', sourceKind: 'record', externalSourceId: 'fictional-serial-record', observedRevision: 'fictional-serial-r1', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
+    if (locatorRevision) metadata.setSourceLocator({ referenceId: sourceId, locator: 'fictional-note-folder', observedRevision: locatorRevision });
     metadata.createTopic({ topicId: 'topic-foreign', name: 'Fictional foreign analysis', lifecycle: 'active', paraCategory: 'area', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
     metadata.createSourceReference({ version: 1, referenceId: 'source-foreign', topicId: 'topic-foreign', sourceSystem: 'fictional', sourceKind: 'record', externalSourceId: 'fictional-foreign-record', observedRevision: 'fictional-foreign-r1', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
     metadata.recordTopicAnalysisRun({ runId: 'fictional-serial-prior', schemaVersion: 1, trigger: 'manual', outcome: 'success', baselineCursor: { nextTopicId: null, nextSourceId: null }, successCursor: { nextTopicId: null, nextSourceId: null }, changedCount: 0, evaluatedCount: 0, proposalCount: 0, retainedOverflowCount: 0, startedAt: '2026-08-21T00:00:00.000Z', finishedAt: '2026-08-21T00:00:01.000Z' });
@@ -166,7 +167,8 @@ test('registered analysis bridge deterministically coalesces reversed completion
     assert.deepEqual(analyzedTopicIds, [topicId], 'authenticated Topic analysis must not inspect a foreign Topic');
     const runId = firstResult.result.value.analysisId;
     const activity = source.activityGet({ activityId: `activity:topic-analysis:${runId}` }).record;
-    assert.deepEqual({ outcome: activity.outcome, topicId: activity.topicId, sourceReferenceId: activity.sourceReferenceId, verificationRevision: activity.verificationRevision }, { outcome: 'applied', topicId, sourceReferenceId: sourceId, verificationRevision: 'fictional-serial-r1' });
+    assert.deepEqual({ outcome: activity.outcome, topicId: activity.topicId, sourceReferenceId: activity.sourceReferenceId, verificationRevision: activity.verificationRevision }, { outcome: 'applied', topicId, sourceReferenceId: sourceId, verificationRevision: locatorRevision ?? 'fictional-serial-r1' });
+    assert.equal(metadata.getSourceReference(sourceId).observedRevision, 'fictional-serial-r1', 'verification must not overwrite the durable source ownership revision');
     const interrupted = metadata.getOperation('71111111-1111-4111-8111-111111111112');
     metadata.recordOperation({ ...interrupted, state: 'pending', resultStatus: 'pending', resultIdentity: null, observedRevision: null, updatedAt: '2026-08-22T00:00:02.000Z' });
     const interruptedInner = metadata.getOperation('analysis-provider:71111111-1111-4111-8111-111111111112');

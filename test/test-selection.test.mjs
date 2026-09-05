@@ -112,6 +112,14 @@ test('real-host acceptance exposes a closed full-corpus scale performance plan',
   });
 });
 
+test('combined journey diagnostic retains dependent desktop, scale, Activity, mobile and review checks', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('combined-journey'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'mobile-accessibility-journey', 'desktop-primary-journey-review']
+  });
+  assert.deepEqual(ordinaryTestLanes(['test/topic-review-focus.test.mjs']), [{ id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/topic-review-focus.test.mjs'] }]);
+});
+
 test('ordinary suite excludes only the separately invoked real-host receipt test', () => {
   assert.deepEqual(selectOrdinaryTestFiles([
     'storage-recovery.test.mjs',
