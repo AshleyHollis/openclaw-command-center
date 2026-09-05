@@ -41,6 +41,16 @@ test('keyboard focus evidence recognises a focus-only shadow without accepting a
   assert.equal(hasKeyboardFocusIndicator({ ...evidence, boxShadow: 'none' }), false);
   assert.equal(hasKeyboardFocusIndicator({ outline: 'solid' }), true);
   assert.equal(hasKeyboardFocusIndicator({ nativeComposite: true }), true);
+  assert.equal(hasKeyboardFocusIndicator({ nativeTextCaret: true, focusVisible: true }), true);
+  assert.equal(hasKeyboardFocusIndicator({ nativeTextCaret: true, focusVisible: false }), false);
+});
+
+test('keyboard focus evidence recognises changed background shape but not an unchanged or transparent fill', () => {
+  const evidence = { focusVisible: true, backgroundColor: 'rgb(30, 60, 120)', baselineBackgroundColor: 'rgba(0, 0, 0, 0)' };
+  assert.equal(hasKeyboardFocusIndicator(evidence), true);
+  assert.equal(hasKeyboardFocusIndicator({ ...evidence, focusVisible: false }), false);
+  assert.equal(hasKeyboardFocusIndicator({ ...evidence, baselineBackgroundColor: evidence.backgroundColor }), false);
+  assert.equal(hasKeyboardFocusIndicator({ ...evidence, backgroundColor: 'rgba(0, 0, 0, 0)', baselineBackgroundColor: 'rgb(30, 60, 120)' }), false);
 });
 
 test('accepts only an observed successful browser response', () => {
