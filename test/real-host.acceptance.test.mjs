@@ -2504,8 +2504,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const sourceSnapshot = new DatabaseSync(databasePath, { readOnly: true });
       let observedSources;
       try {
-        observedSources = new Map(sourceSnapshot.prepare(`SELECT source.reference_id, source.observed_revision AS ownership_revision,
-          COALESCE(locator.observed_revision, source.observed_revision) AS verification_revision
+        observedSources = new Map(sourceSnapshot.prepare(`SELECT source.reference_id, source.last_observed_revision AS ownership_revision,
+          COALESCE(locator.observed_revision, source.last_observed_revision) AS verification_revision
           FROM source_references AS source LEFT JOIN source_locators AS locator ON locator.reference_id = source.reference_id
           WHERE source.topic_id = ?`).all(RELEASE_ALPHA_TOPIC_ID).map((source) => [source.reference_id, source]));
       } finally { sourceSnapshot.close(); }
