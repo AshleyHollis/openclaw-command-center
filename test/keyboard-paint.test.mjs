@@ -9,7 +9,7 @@ test('keyboard evidence observes painted reduced-motion focus and still rejects 
   try {
     const page = await browser.newPage({ reducedMotion: 'reduce' });
     await page.setContent(`<style>
-      button { background: transparent; outline: none; border: 0; }
+      button { background: transparent; outline: none; border: 0; transition: background-color 20ms 120ms; }
       button:focus-visible { background: color-mix(in srgb, #bcbcc0 7%, transparent); }
       #missing:focus-visible { background: transparent; }
       @media (prefers-reduced-motion: reduce) { * { transition-duration: 0.01ms !important; } }
@@ -25,5 +25,9 @@ test('keyboard evidence observes painted reduced-motion focus and still rejects 
       assert.equal(state.focused, true);
       assert.equal(hasKeyboardFocusIndicator({ ...state, baselineBackgroundColor }), id === 'painted', JSON.stringify(state));
     }
+    await page.addStyleTag({ content: '#painted { transition-delay: 60s; }' });
+    const stalled = page.locator('#painted');
+    await stalled.focus();
+    await assert.rejects(stalled.evaluate(afterKeyboardPaint), /Keyboard focus transition did not settle within 1000ms/);
   } finally { await browser.close(); }
 });
