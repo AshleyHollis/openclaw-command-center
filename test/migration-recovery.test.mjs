@@ -8,6 +8,16 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
 
 const fixture = new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url);
+
+test('migration Review retains bounded SQLite classification without exposing exception content', async () => {
+  let saved;
+  const service = createLegacyDiscordMigrationService({ metadata: { getMigrationState: () => ({ phase: 'importing' }), setMigrationState: (value) => { saved = value; } } });
+  service.failureBoundary = 'authoritative-append';
+  await service.recordReview(Object.assign(new Error('Fictional private SQL and path must not escape'), { code: 'ERR_SQLITE_ERROR', errcode: 517 }));
+  assert.equal(saved.failureCode, 'ERR_SQLITE_ERROR');
+  assert.equal(saved.failureSummary, 'ERR_SQLITE_ERROR:sqlite-517:authoritative-append');
+  assert.doesNotMatch(JSON.stringify(saved), /private SQL|path must/u);
+});
 const channel = { channelId: 'fictional-channel-alpha', topicId: 'fictional-topic-recovery', paraCategory: 'project', noteFolderPath: '/fictional/vault/recovery' };
 function runtime() { const sessions = new Map(); return { sessions, async appendSessionTranscriptMessageByIdentityStrict(params) { const events = sessions.get(params.sessionKey) ?? []; events.push({ id: params.eventId, parentId: params.parentId ?? null, message: params.message }); sessions.set(params.sessionKey, events); return { kind: 'result', result: { messageId: params.eventId, appended: true } }; }, async withSessionTranscriptWriteLock(target, run) { return run({ readEvents: async () => sessions.get(target.sessionKey) ?? [], publishUpdate: async () => undefined }); }, async readVisibleSessionTranscriptMessageEntries({ sessionKey }) { return sessions.get(sessionKey) ?? []; } }; }
 

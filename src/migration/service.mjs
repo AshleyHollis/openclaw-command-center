@@ -24,7 +24,11 @@ function occurrenceSequenceDigester(channelId) {
     }
   };
 }
-function safeError(error, fallback = 'migration-failure') { return { code: String(error?.code || fallback).slice(0, 80), summary: String(error?.code || fallback).slice(0, 300) }; }
+function safeError(error, fallback = 'migration-failure') {
+  const code = String(error?.code || fallback).slice(0, 80);
+  const sqliteCode = Number.isInteger(error?.errcode) && error.errcode >= 0 && error.errcode <= 65535 ? `:sqlite-${error.errcode}` : '';
+  return { code, summary: `${code}${sqliteCode}` };
+}
 function readSessionId(value) { return value?.sessionId ?? value?.session?.sessionId ?? value?.id ?? null; }
 function readSessionKey(value) { return value?.key ?? value?.sessionKey ?? value?.session?.key ?? null; }
 function asFailure(error, fallback = 'migration-failure') { const safe = safeError(error, fallback); return { code: safe.code || fallback, summary: safe.summary || fallback }; }
@@ -200,11 +204,14 @@ export class LegacyDiscordMigrationService {
       await this.preflightSessions(selected);
       this.metadata.setMigrationState({ stateId: MIGRATION_ID, schemaVersion: 1, configDigest, sourceDigest, phase: state.phase === 'review' ? 'pending' : state.phase, failureCode: null, failureSummary: null, failureCount: state.failureCount ?? 0, updatedAt: this.now() });
       phaseHook(this.hooks, 'beforeRun', { logicalOperationId, resume, configDigest, sourceDigest });
+      this.failureBoundary = 'provisioning';
       await this.provision(selected, { configDigest, sourceDigest });
       await this.import(selected, { configDigest, sourceDigest });
+      this.failureBoundary = 'verification';
       await this.verify(selected, { configDigest, sourceDigest });
       const verifiedChannels = selected.length;
       const verifiedOccurrences = selected.reduce((total, item) => total + item.channel.occurrences.length, 0);
+      this.failureBoundary = 'metadata-completion';
       this.metadata.completeLegacyDiscordMigration({ configDigest, sourceDigest, verifiedChannelCount: verifiedChannels, verifiedOccurrenceCount: verifiedOccurrences, completionRevision: this.metadata.getMigrationState()?.revision ?? 1, verifiedAt: this.now() });
       phaseHook(this.hooks, 'afterComplete', { logicalOperationId });
       return this.status();
@@ -446,6 +453,7 @@ export class LegacyDiscordMigrationService {
       if (!row) throw Object.assign(new Error('Migration channel provisioning state is missing.'), { code: 'destination-corrupt', channelId: channel.channelId });
       if (row.phase === 'complete') continue;
       phaseHook(this.hooks, 'beforePhase', { phase: 'importing', channelId: channel.channelId });
+      this.failureBoundary = 'authoritative-read';
       const events = transcriptEntries(await this.readEvents(row));
       if (events.length > channel.occurrences.length) throw Object.assign(new Error('An ordinary transcript suffix exists before migration verification.'), { code: 'destination-corrupt', channelId: channel.channelId });
       for (const [index, entry] of events.entries()) {
@@ -471,6 +479,7 @@ export class LegacyDiscordMigrationService {
           if (!checkpoint?.destinationMessageId || !checkpoint?.destinationAnchor) result = await this.append(row, channel, occurrence, index === 0 ? null : events[index - 1]?.eventId ?? null);
           previousEventId = existing.eventId ?? previousEventId;
         } else {
+          this.failureBoundary = 'authoritative-append';
           result = await this.append(row, channel, occurrence, previousEventId);
           previousEventId = result?.result?.messageId ?? result?.messageId ?? previousEventId;
           events.push({ event: { id: previousEventId, parentId: index === 0 ? null : events.at(-1)?.eventId ?? null }, eventId: previousEventId, parentId: index === 0 ? null : events.at(-1)?.eventId ?? null, message: canonicalImportedUserMessage(channel.channelId, occurrence) });
@@ -478,10 +487,12 @@ export class LegacyDiscordMigrationService {
         if (result) phaseHook(this.hooks, 'afterAuthoritativeAppend', { phase: 'importing', channelId: channel.channelId, displayOrder: occurrence.displayOrder, occurrenceId: identity.occurrenceId, destinationMessageId: result.result.messageId });
         if (result) {
           const target = { ...(await this.transcriptTarget(row)), sourceChannelId: channel.channelId };
+          this.failureBoundary = 'metadata-anchor';
           const [persisted] = this.metadata.setMigrationOccurrences(channel.channelId, [{ occurrenceId: identity.occurrenceId, occurrenceDigest: identity.occurrenceDigest, displayOrder: occurrence.displayOrder, destinationMessageId: result.result.messageId, destinationAnchor: durableAnchor(result.result, target, occurrence, index === 0 ? null : events[index - 1]?.eventId ?? null, index) }]);
           checkpoints.set(identity.occurrenceId, persisted);
         }
         phaseHook(this.hooks, 'afterAppend', { phase: 'importing', channelId: channel.channelId, displayOrder: occurrence.displayOrder, occurrenceId: identity.occurrenceId });
+        this.failureBoundary = 'metadata-checkpoint';
         row = this.metadata.setMigrationChannel({ ...row, phase: 'importing', importedCount: index + 1, importedDigest, nextOrdinal: index + 1, updatedAt: this.now() });
         phaseHook(this.hooks, 'afterCheckpoint', { phase: 'importing', channelId: channel.channelId, displayOrder: occurrence.displayOrder });
       }
@@ -552,6 +563,7 @@ export class LegacyDiscordMigrationService {
             const expectedParentId = index === 0 ? null : committed[index - 1]?.eventId ?? null;
             if (!entry || entry.eventId !== identity.eventId || entry.parentId !== expectedParentId || !provenanceMatches(entry.message, item.channel.channelId, occurrence)) throw Object.assign(new Error('Primary Session prefix changed before durable channel activation.'), { code: 'verification-failed', channelId: item.channel.channelId });
             if (typeof runtime.readSessionTranscriptVisibleMessageDelta === 'function') {
+              this.failureBoundary = 'verify-authoritative-anchor';
               const replay = await locked.appendMessage({ eventId: identity.eventId, idempotencyLookup: 'scan', idempotencyKey: identity.idempotencyKey, parentId: expectedParentId ?? undefined, message: canonicalImportedUserMessage(item.channel.channelId, occurrence), now: Date.parse(occurrence.timestamp) });
               const target = { ...(await this.transcriptTarget(row)), sourceChannelId: item.channel.channelId };
               const authoritativeAnchor = durableAnchor(replay, target, occurrence, expectedParentId, index);
@@ -565,6 +577,7 @@ export class LegacyDiscordMigrationService {
 
   async recordReview(error, selected = []) {
     const failure = asFailure(error);
+    if (this.failureBoundary) failure.summary += `:${this.failureBoundary}`;
     const channelId = error?.channelId ?? selected?.[0]?.channel?.channelId;
     try {
       if (channelId && this.metadata.getMigrationChannel?.(channelId)) {

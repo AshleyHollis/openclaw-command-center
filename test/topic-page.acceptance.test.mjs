@@ -930,6 +930,113 @@ test('late send and Search completions cannot clear or populate a newer Topic wo
   } finally { await closeGuardedPage(page); }
 });
 
+test('bridge rolling-window admission queues the 61st read without resetting host authority', async () => {
+  const page = await setupPage();
+  try {
+    await page.waitForFunction(() => pendingBridgeRequests.size === 0 && bridgeQueue.length === 0);
+    await page.clock.install();
+    await page.evaluate(() => {
+      bridgeRequestTimes.splice(0); window.__rateCompleted = 0;
+      for (let i = 0; i < 61; i += 1) void bridgeRequest('command-center.v1.sources.status', { schemaVersion: 1 }).then(() => { window.__rateCompleted += 1; });
+    });
+    await page.waitForFunction(() => window.__rateCompleted === 60);
+    assert.equal(await page.evaluate(() => bridgeQueue.length), 1);
+    await page.clock.fastForward(59_000);
+    assert.equal(await page.evaluate(() => window.__rateCompleted), 60);
+    await page.clock.fastForward(1_001);
+    await page.waitForFunction(() => window.__rateCompleted === 61);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('bridge concurrency admission holds a ninth request until a dispatched request settles', async () => {
+  const page = await setupPage();
+  try {
+    await page.waitForFunction(() => pendingBridgeRequests.size === 0 && bridgeQueue.length === 0);
+    await page.evaluate(() => {
+      const actualSend = sendBridge; window.__heldRequests = [];
+      sendBridge = (payload) => payload.method === 'command-center.v1.sources.status' ? window.__heldRequests.push(payload) : actualSend(payload);
+      for (let i = 0; i < 9; i += 1) void bridgeRequest('command-center.v1.sources.status', { schemaVersion: 1 });
+    });
+    await page.waitForFunction(() => window.__heldRequests.length === 8);
+    assert.equal(await page.evaluate(() => bridgeQueue.length), 1);
+    await page.evaluate(() => window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: window.__heldRequests[0].requestId, result: {} } }, '*'));
+    await page.waitForFunction(() => window.__heldRequests.length === 9);
+    assert.equal(await page.evaluate(() => bridgeActive), 8);
+    await page.evaluate(() => { for (const held of window.__heldRequests.slice(1)) window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: held.requestId, result: {} } }, '*'); });
+    await page.waitForFunction(() => bridgeActive === 0);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('bridge mutation admission holds the thirteenth new operation for the rolling window', async () => {
+  const page = await setupPage();
+  try {
+    await page.waitForFunction(() => pendingBridgeRequests.size === 0 && bridgeQueue.length === 0);
+    await page.clock.install();
+    await page.evaluate(() => {
+      bridgeMutationTimes.clear(); window.__mutationCompleted = 0;
+      for (let i = 0; i < 13; i += 1) void bridgeRequest('sessions.create', { agentId: 'main', label: 'Fictional' }, `mutation-${i}`).then(() => { window.__mutationCompleted += 1; });
+    });
+    await page.waitForFunction(() => window.__mutationCompleted === 12);
+    assert.equal(await page.evaluate(() => bridgeQueue.length), 1);
+    await page.clock.fastForward(59_000);
+    assert.equal(await page.evaluate(() => window.__mutationCompleted), 12);
+    await page.clock.fastForward(1_001);
+    await page.waitForFunction(() => window.__mutationCompleted === 13);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('explicit bridge rate refusal preserves frozen mutation identity across the advertised cooldown', async () => {
+  const page = await setupPage();
+  try {
+    await page.waitForFunction(() => pendingBridgeRequests.size === 0 && bridgeQueue.length === 0);
+    await page.clock.install();
+    await page.evaluate(() => {
+      const actualSend = sendBridge; window.__rateAttempts = []; window.__rateResult = null;
+      sendBridge = (payload) => {
+        if (payload.method !== 'sessions.create') return actualSend(payload);
+        window.__rateAttempts.push(structuredClone(payload));
+        window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, ...(window.__rateAttempts.length === 1 ? { error: { code: 'RATE_LIMITED', retryable: true, retryAfterMs: 60_000 } } : { result: { exact: true } }) } }, '*');
+      };
+      const params = { agentId: 'main', label: 'Frozen label' };
+      void bridgeRequest('sessions.create', params, 'operation-exact-fictional').then((result) => { window.__rateResult = result; });
+      params.label = 'Changed after submission';
+    });
+    await page.waitForFunction(() => bridgeQueue.length === 1 && bridgeActive === 0);
+    await page.clock.fastForward(59_999);
+    assert.equal(await page.evaluate(() => window.__rateAttempts.length), 1);
+    await page.clock.fastForward(2);
+    await page.waitForFunction(() => window.__rateResult?.exact === true);
+    const attempts = await page.evaluate(() => window.__rateAttempts);
+    assert.equal(attempts.length, 2); assert.notEqual(attempts[0].requestId, attempts[1].requestId);
+    assert.equal(attempts[0].operationId, 'operation-exact-fictional');
+    assert.equal(attempts[1].operationId, attempts[0].operationId);
+    assert.deepEqual(attempts[1].params, { agentId: 'main', label: 'Frozen label' });
+  } finally { await closeGuardedPage(page); }
+});
+
+test('an exhausted rate refusal still pauses other queued jobs and expires non-head jobs on time', async () => {
+  const page = await setupPage();
+  try {
+    await page.waitForFunction(() => pendingBridgeRequests.size === 0 && bridgeQueue.length === 0);
+    await page.clock.install();
+    await page.evaluate(() => {
+      bridgeLimits.maxConcurrentRequests = 1; window.__queueSends = []; window.__expired = false;
+      sendBridge = (payload) => {
+        window.__queueSends.push(payload);
+        window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, error: { code: 'RATE_LIMITED', retryable: true, retryAfterMs: 60_000 } } }, '*');
+      };
+      const job = (deadline, retries, reject) => ({ method: 'command-center.v1.sources.status', params: { schemaVersion: 1 }, deadline, retries, resolve() {}, reject });
+      bridgeQueue.push(job(Date.now() + 180_000, 2, () => {}), job(Date.now() + 180_000, 0, () => {}), job(Date.now() + 10_000, 0, () => { window.__expired = true; }));
+      drainBridgeQueue();
+    });
+    await page.waitForFunction(() => bridgeActive === 0 && bridgeCooldownUntil > Date.now());
+    assert.equal(await page.evaluate(() => window.__queueSends.length), 1);
+    await page.clock.fastForward(10_001);
+    assert.equal(await page.evaluate(() => window.__expired), true);
+    assert.equal(await page.evaluate(() => window.__queueSends.length), 1);
+  } finally { await closeGuardedPage(page); }
+});
+
 test('a superseding initial Conversation refresh retains Primary selection', async () => {
   const page = await setupPage();
   try {

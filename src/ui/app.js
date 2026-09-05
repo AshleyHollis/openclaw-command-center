@@ -357,6 +357,43 @@ function operationId() {
 }
 function unwrap(value) { while (value?.result !== undefined || value?.value !== undefined) value = value.result ?? value.value; return value; }
 const pendingBridgeRequests = new Map();
+const BRIDGE_OPERATION_BUDGET_MS = 180_000;
+const bridgeLimits = { maxConcurrentRequests: 8, maxRequestsPerMinute: 60, maxMutationsPerMinute: 12 };
+const bridgeQueue = []; const bridgeRequestTimes = []; const bridgeMutationTimes = new Map();
+let bridgeActive = 0; let bridgeCooldownUntil = 0; let bridgeQueueTimer;
+function drainBridgeQueue() {
+  clearTimeout(bridgeQueueTimer);
+  const now = Date.now();
+  for (let index = bridgeQueue.length - 1; index >= 0; index -= 1) {
+    if (bridgeQueue[index].deadline <= now) {
+      const [expired] = bridgeQueue.splice(index, 1);
+      expired.reject(Object.assign(new Error('Host capacity wait expired. Retry the unchanged action.'), { code: 'RATE_LIMITED', terminal: false }));
+    }
+  }
+  while (bridgeRequestTimes[0] <= now - 60_000) bridgeRequestTimes.shift();
+  for (const [id, at] of bridgeMutationTimes) if (at <= now - 60_000) bridgeMutationTimes.delete(id);
+  while (bridgeQueue.length) {
+    const job = bridgeQueue[0];
+    let until = bridgeCooldownUntil;
+    if (bridgeRequestTimes.length >= bridgeLimits.maxRequestsPerMinute) until = Math.max(until, bridgeRequestTimes[0] + 60_001);
+    if (job.operationId && !bridgeMutationTimes.has(job.operationId) && bridgeMutationTimes.size >= bridgeLimits.maxMutationsPerMinute) until = Math.max(until, Math.min(...bridgeMutationTimes.values()) + 60_001);
+    if (until > now || bridgeActive >= bridgeLimits.maxConcurrentRequests) {
+      const earliestDeadline = Math.min(...bridgeQueue.map((queued) => queued.deadline));
+      bridgeQueueTimer = setTimeout(drainBridgeQueue, Math.max(1, Math.min(earliestDeadline, until > now ? until : earliestDeadline) - now)); break;
+    }
+    bridgeQueue.shift(); bridgeRequestTimes.push(now); bridgeActive += 1;
+    if (job.operationId && !bridgeMutationTimes.has(job.operationId)) bridgeMutationTimes.set(job.operationId, now);
+    void sendBridgeRequest(job).then(job.resolve, (error) => {
+      const rateRefusal = error.code === 'RATE_LIMITED' && error.retryable === true && Number.isInteger(error.retryAfterMs) && error.retryAfterMs > 0 && error.retryAfterMs <= 60_000;
+      if (rateRefusal) bridgeCooldownUntil = Math.max(bridgeCooldownUntil, Date.now() + error.retryAfterMs);
+      if (rateRefusal && job.retries < 2 && Date.now() + error.retryAfterMs < job.deadline) {
+        job.retries += 1; bridgeQueue.unshift(job);
+      } else job.reject(error);
+    }).finally(() => { bridgeActive -= 1; drainBridgeQueue(); });
+  }
+  const feedback = document.querySelector('#bridge-queue-status');
+  if (feedback) feedback.textContent = bridgeQueue.length ? 'Waiting for host capacity. Your action is retained; no need to submit again.' : '';
+}
 let advertisedBridgeMethods = new Set();
 let resolveBridgeReady;
 let rejectBridgeReady;
@@ -369,6 +406,7 @@ window.addEventListener('message', (event) => {
   if (message?.type === 'openclaw:capability-bridge-ready') {
     clearTimeout(bridgeTimer);
     const methods = new Set(Array.isArray(message.methods) ? message.methods : []); advertisedBridgeMethods = methods;
+    for (const key of Object.keys(bridgeLimits)) if (Number.isInteger(message.limits?.[key]) && message.limits[key] > 0) bridgeLimits[key] = Math.min(bridgeLimits[key], message.limits[key]);
     const required = [...(hasTopicsDestination ? ['command-center.v1.topics.list'] : []), 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.notes.browse', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'ui.session.navigate'];
     if (message.upgradeRequired === true || !required.every((method) => methods.has(method))) rejectBridgeReady(new Error('Command Center requires unavailable host capabilities.'));
     else resolveBridgeReady();
@@ -378,13 +416,19 @@ window.addEventListener('message', (event) => {
   const pending = pendingBridgeRequests.get(message.requestId);
   if (!pending) return;
   pendingBridgeRequests.delete(message.requestId);
-  if (message.error) pending.reject(Object.assign(new Error(message.error.code === 'MUTATION_RECONCILIATION_REQUIRED' ? 'The host no longer retains this action outcome. Inspect Activity and the source before taking another action.' : message.error.message || 'Capability bridge request failed.'), { code: message.error.code, terminal: !['MUTATION_OUTCOME_UNKNOWN', 'TIMEOUT', 'RATE_LIMITED'].includes(message.error.code) }));
+  if (message.error) pending.reject(Object.assign(new Error(message.error.code === 'MUTATION_RECONCILIATION_REQUIRED' ? 'The host no longer retains this action outcome. Inspect Activity and the source before taking another action.' : message.error.message || 'Capability bridge request failed.'), { code: message.error.code, retryable: message.error.retryable, retryAfterMs: message.error.retryAfterMs, terminal: !['MUTATION_OUTCOME_UNKNOWN', 'TIMEOUT', 'RATE_LIMITED'].includes(message.error.code) }));
   else pending.resolve(message.result);
 });
 async function bridgeRequest(method, params, mutationOperationId = params?.logicalOperationId) {
+  const capturedParams = structuredClone(params);
   await bridgeReady;
+  if (bridgeQueue.length >= 128) throw Object.assign(new Error('Host request queue is full. Retry the unchanged action.'), { code: 'RATE_LIMITED', terminal: false });
+  return new Promise((resolve, reject) => { bridgeQueue.push({ method, params: capturedParams, operationId: mutationOperationId, deadline: Date.now() + BRIDGE_OPERATION_BUDGET_MS, retries: 0, resolve, reject }); drainBridgeQueue(); });
+}
+async function sendBridgeRequest(job) {
+  const { method, params, operationId: mutationOperationId } = job;
   const requestId = operationId();
-  const timeoutMs = method === 'command-center.v1.notes.browse' ? 120_000 : 30_000;
+  const timeoutMs = Math.min(job.deadline - Date.now(), method === 'command-center.v1.notes.browse' ? 120_000 : 30_000);
   return await new Promise((resolve, reject) => {
     const timer = setTimeout(() => { pendingBridgeRequests.delete(requestId); reject(Object.assign(new Error(`Capability bridge request exceeded ${timeoutMs / 1_000} seconds.`), { code: 'TIMEOUT', terminal: false })); }, timeoutMs);
     pendingBridgeRequests.set(requestId, { resolve(value) { clearTimeout(timer); resolve(value); }, reject(error) { clearTimeout(timer); reject(error); } });

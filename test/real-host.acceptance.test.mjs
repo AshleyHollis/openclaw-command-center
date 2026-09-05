@@ -32,6 +32,9 @@ import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, r
 import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
 const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
+// The UI retains queued requests for 180s while honoring the host's rolling
+// quotas. Queue time remains inside all performance measurements.
+const BRIDGE_UI_OPERATION_BUDGET_MS = 185_000;
 const acceptanceSignalContext = new AsyncLocalStorage();
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
@@ -189,6 +192,7 @@ function boundedHostEvidence(diagnostics) {
 }
 
 async function configureEvidencePage(page, browserGuard, evidence) {
+  page.setDefaultTimeout(BRIDGE_UI_OPERATION_BUDGET_MS);
   await page.route('**/*', async (route) => {
     const request = route.request();
     const hostName = new URL(request.url()).hostname;
@@ -1460,7 +1464,7 @@ async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey, si
   return requestAuthenticatedGateway({ gatewayUrl, credential, method: 'chat.history', params: { sessionKey }, signal });
 }
 
-async function waitForFrameText(frame, selector, expected, timeout = 10_000) {
+async function waitForFrameText(frame, selector, expected, timeout = BRIDGE_UI_OPERATION_BUDGET_MS) {
   try {
     await frame.waitForFunction(({ selector: target, expectedText }) => document.querySelector(target)?.textContent?.includes(expectedText), { selector, expectedText: expected }, { timeout });
   } catch (error) {
@@ -1735,7 +1739,7 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   await selectWorkspaceSection(frame, 'conversations', width, keyboard);
   await chooseOption(frame.locator('#conversation-view'), 'closed', keyboard);
   await timed(() => activate(closedConversation.getByRole('button', { name: 'Reopen', exact: true }), keyboard));
-  try { await closedConversation.waitFor({ state: 'detached', timeout: 10_000 }); }
+  try { await closedConversation.waitFor({ state: 'detached', timeout: BRIDGE_UI_OPERATION_BUDGET_MS }); }
   catch (error) {
     const state = await frame.evaluate(() => ({ view: document.querySelector('#conversation-view').value, status: document.querySelector('#conversation-status').textContent, rows: [...document.querySelectorAll('.conversation-item')].map((row) => ({ referenceId: row.dataset.referenceId, text: row.textContent })) }));
     throw new Error(`Reopen did not settle; reopenPresentation=${JSON.stringify(state)}`, { cause: error });
