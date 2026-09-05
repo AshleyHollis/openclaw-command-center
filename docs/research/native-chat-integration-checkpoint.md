@@ -107,6 +107,14 @@ The replacement `ticket32-candidate-6646b6c-build` passed all 55 checks and seal
 
 Unique original frontier closures since the preceding checkpoint: zero. Three remain: `mobile-accessibility-journey`, `scale-performance`, and `verified-activity-readback`. The 17 earlier independent slice passes belong to the old production digest and require affected requalification. Desktop/review re-passes are not new frontiers. The held Atomic checkpoint and live system remain unchanged.
 
+## Readback boundaries and current security evidence — 19:59 AEST
+
+`ticket32-security-recovery-6646b6c` passed all 12 independent security/recovery slices on production digest `cd18df03e772f5102fbfaf896a569c6d5336a9ed9b750c2f506672149bc2b89d`. This requalifies existing capabilities, not new original frontiers.
+
+`ticket32-mobile-frontier-6646b6c` passed the earlier Conversation-close boundary, then reproduced the second-Topic focus interruption. Unlike the original detached-body failure, focus now correctly landed on `attention-heading` when the completed Reminder card disappeared. The harness began its next keyboard path after the source acceptance announcement but before the following Dashboard readback. Test-only `2e7387546be53cb103d34f42f5c55d80ae4b80b8` waits for both exact fixture Reminder cards to be absent before the next journey, using the existing operation budget. The Snooze path already required its corresponding card-removal readback. No focus assertion was weakened to accept the asynchronous interruption.
+
+The common cause at both repaired journey seams is that input/receipt acknowledgement is not visible operation completion. These are explicit readback waits, not retries, sleeps or longer acceptance budgets. The next mobile job and remaining five independent UI/data slices must use the same newly sealed test candidate; scale/Activity stays exclusive afterward. All three original frontiers remain open until those actual results arrive.
+
 ## Not yet release-qualified
 
 The original 211-test snapshot above was focused integration evidence. The later sealed diagnostic candidate is **not a final acceptance capture or release-qualified build**. No unique final release acceptance boundary was closed by these focused or diagnostic passes.
