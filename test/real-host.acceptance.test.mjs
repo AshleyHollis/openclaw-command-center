@@ -1250,14 +1250,15 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
 }
 
 async function requestAuthenticatedGateway({ gatewayUrl, credential, method, params = {}, scopes = ['operator.read'], responseTimeoutMs = 10_000, signal, deviceIdentity }) {
+  const requestSite = new Error(`Authenticated Gateway request site: ${method}`);
   signal ??= acceptanceSignalContext.getStore();
   signal?.throwIfAborted();
   const socket = new WebSocket(gatewayUrl.replace(/^http/u, 'ws'));
   const frames = [];
-  const waitForFrame = (predicate, timeoutMs = 10_000) => new Promise((resolve, reject) => {
+  const waitForFrame = (predicate, timeoutMs = 10_000, phase = 'connect-response') => new Promise((resolve, reject) => {
     const inspect = (frame) => { if (predicate(frame)) { cleanup(); resolve(frame); return true; } return false; };
     const onMessage = (event) => { let frame; try { frame = JSON.parse(String(event.data)); } catch { return; } frames.push(frame); inspect(frame); };
-    const timer = setTimeout(() => { cleanup(); reject(new Error('Authenticated Gateway response timed out.')); }, timeoutMs);
+    const timer = setTimeout(() => { cleanup(); reject(new Error(`Authenticated Gateway ${phase} timed out for ${method} after ${timeoutMs} ms.`, { cause: requestSite })); }, timeoutMs);
     const onAbort = () => { cleanup(); reject(signal.reason ?? new Error('Gateway request aborted.')); };
     const cleanup = () => { clearTimeout(timer); socket.removeEventListener('message', onMessage); signal?.removeEventListener('abort', onAbort); };
     for (const frame of frames) if (inspect(frame)) return;
@@ -1267,7 +1268,7 @@ async function requestAuthenticatedGateway({ gatewayUrl, credential, method, par
   const abortSocket = () => socket.close();
   signal?.addEventListener('abort', abortSocket, { once: true });
   try {
-    const challengePromise = waitForFrame((frame) => frame?.type === 'event' && frame.event === 'connect.challenge');
+    const challengePromise = waitForFrame((frame) => frame?.type === 'event' && frame.event === 'connect.challenge', 10_000, 'challenge');
     const openedPromise = new Promise((resolve, reject) => {
       const cleanup = () => {
         clearTimeout(timer);
@@ -1293,7 +1294,7 @@ async function requestAuthenticatedGateway({ gatewayUrl, credential, method, par
     if (!connected.ok) throw new Error(`Authenticated Gateway connect failed: ${connected.error?.code ?? 'unknown'}`);
     const requestId = `command-center-acceptance-${randomUUID()}`;
     socket.send(JSON.stringify({ type: 'req', id: requestId, method, params }));
-    const response = await waitForFrame((frame) => frame?.type === 'res' && frame.id === requestId, responseTimeoutMs);
+    const response = await waitForFrame((frame) => frame?.type === 'res' && frame.id === requestId, responseTimeoutMs, 'method-response');
     if (!response.ok) {
       const detail = redactBrowserEvidence(response.error?.message ?? 'no bounded detail');
       throw new Error(`Authenticated ${method} failed: ${response.error?.code ?? 'unknown'} (${detail})`);
