@@ -12,6 +12,29 @@ function metadataFixture() {
   return { refs, listSourceReferences: () => refs, createSourceReference: (reference) => { refs.push(reference); return reference; }, observeSourceReference: ({ referenceId, observedRevision }) => { const found = refs.find((reference) => reference.referenceId === referenceId); const updated = { ...found, observedRevision }; refs.splice(refs.indexOf(found), 1, updated); return updated; } };
 }
 
+test('Snooze re-enables a delivered one-shot through the exact revision-fenced idempotent update', async () => {
+  const metadata = metadataFixture();
+  metadata.refs.push({ version: 1, referenceId: 'reminder-delivered-ref', topicId: 'topic-scheduler', sourceSystem: 'scheduler', sourceKind: 'reminder_schedule', externalSourceId: 'job-delivered', observedRevision: 'revision-1' });
+  let job = { id: 'job-delivered', enabled: false, configRevision: 'revision-1', schedule: { kind: 'at', at: '2026-09-05T10:00:00.000Z' }, state: { lastRunStatus: 'ok' } };
+  const updates = [];
+  const gateway = { request: async (method, params) => {
+    if (method === 'cron.get') return structuredClone(job);
+    assert.equal(method, 'cron.update');
+    updates.push(params);
+    job = { ...job, ...params.patch, configRevision: 'revision-2' };
+    return structuredClone(job);
+  } };
+  const adapter = createSchedulerAdapter({ topicId: 'topic-scheduler', metadata, gateway });
+  const schedule = { kind: 'at', at: '2026-09-06T10:00:00.000Z' };
+  const input = { referenceId: 'reminder-delivered-ref', logicalOperationId: randomUUID(), expectedConfigRevision: 'revision-1', patch: { schedule } };
+  const result = await adapter.snooze(input);
+  assert.equal(result.value.job.enabled, true, 'a new date on a disabled schedule does not schedule another delivery');
+  assert.deepEqual(updates[0], { id: 'job-delivered', expectedConfigRevision: 'revision-1', patch: { schedule, enabled: true } });
+  assert.equal((await adapter.snooze(input)).status, 'applied');
+  assert.equal(updates.length, 1);
+  await assert.rejects(() => adapter.snooze({ ...input, logicalOperationId: randomUUID(), patch: { schedule, enabled: true } }), /unsupported|schedule/i);
+});
+
 test('Reminder creation is declarative and scheduler reads resolve exact job IDs', async () => {
   const metadata = metadataFixture();
   const calls = [];
@@ -141,7 +164,7 @@ test('scheduler actions construct closed conservative patches and reject unrelat
   assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
   const schedule = { kind: 'at', at: '2026-08-24T00:00:00Z' };
   await adapter.snooze({ ...common, logicalOperationId: randomUUID(), referenceId: 'reminder-ref', patch: { schedule } });
-  assert.deepEqual(calls.at(-1).params.patch, { schedule });
+  assert.deepEqual(calls.at(-1).params.patch, { schedule, enabled: true });
   await adapter.reschedule({ ...common, logicalOperationId: randomUUID(), referenceId: 'schedule-ref', patch: { schedule } });
   assert.deepEqual(calls.at(-1).params.patch, { schedule });
 });

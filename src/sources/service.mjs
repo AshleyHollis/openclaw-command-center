@@ -335,9 +335,18 @@ export class AuthoritativeSourceService {
       returnedIds.add(externalId);
       const schedule = row?.job?.schedule;
       const dueAt = schedule?.kind === 'at' ? Date.parse(schedule.at) : Number(row?.job?.state?.nextRunAtMs);
-      const due = row?.job?.enabled !== false && Number.isFinite(dueAt) && dueAt <= observedNowMs;
       const occurrenceVersion = row.job.configRevision ?? row.sourceReference.observedRevision;
       const context = this.attentionService.sourceOccurrenceContext?.({ sourceCapabilityId: 'reminders', stableSubjectId: externalId, attentionReason: 'reminder-due' });
+      // Native Cron disables a successfully delivered one-shot. Delivery is
+      // not user acknowledgement: retain Attention until its existing episode
+      // is explicitly terminal, including when first observed after delivery.
+      const lastRunAtMs = row.job.state?.lastRunAtMs;
+      const deliveredOneShot = row.job.enabled === false && schedule?.kind === 'at'
+        && Number.isFinite(lastRunAtMs) && lastRunAtMs >= dueAt && lastRunAtMs <= observedNowMs
+        && (row.job.state?.lastRunStatus ?? row.job.state?.lastStatus) === 'ok';
+      const acknowledged = context && ['Resolved', 'Withdrawn'].includes(context.state);
+      const due = Number.isFinite(dueAt) && dueAt <= observedNowMs
+        && (row.job.enabled !== false || (deliveredOneShot && !acknowledged));
       if (due) {
         const generation = context && ['Resolved', 'Withdrawn'].includes(context.state) ? context.generation + 1 : context?.generation ?? 1;
         await this.attentionService.ingest({

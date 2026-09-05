@@ -108,7 +108,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
             const rows = await sourceService.remindersList({ schemaVersion: 1, topicId: episode.topicId });
             const row = rows.find((item) => item.sourceReference?.referenceId === episode.sourceReferenceId);
             if (actionId === 'reminder.complete') return row?.job?.enabled === false;
-            return row?.job?.schedule?.kind === 'at' && row.job.schedule.at === parameters.until;
+            return row?.job?.enabled === true && row.job.schedule?.kind === 'at' && row.job.schedule.at === parameters.until;
           }
         }
       });

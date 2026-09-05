@@ -223,7 +223,8 @@ export class SchedulerAdapter {
 
   async snooze(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'scheduleReferenceId', 'requestId', 'logicalOperationId', 'expectedConfigRevision', 'patch'], 'reminders.snooze request');
-    return this.update({ ...input, patch: closedSchedulePatch(input.patch, 'reminders.snooze') }, 'reminders.snooze', 'reminder_schedule');
+    const patch = closedSchedulePatch(input.patch, 'reminders.snooze');
+    return this.update({ ...input, patch: { ...patch, enabled: true } }, 'reminders.snooze', 'reminder_schedule');
   }
 
   async complete(input = {}) {
