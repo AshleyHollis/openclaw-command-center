@@ -71,6 +71,14 @@ This closes one original journey frontier and one independent mobile diagnostic 
 
 Current diagnostic lanes are `ticket32-ui-data-61056b9` and `ticket32-security-recovery-61056b9`, against the same sealed pair. Existing mobile/security passes repeated by those lanes are requalification, not new unique progress. Broader host checks in `ticket32-native-focus-green` have passed all type-check and lint phases but final repository guards are still running. No complete acceptance capture or performance qualification has been repeated during this repair.
 
+## Focus evidence timing repaired — 19:07 AEST
+
+Both broader diagnostic lanes completed. `ticket32-ui-data-61056b9` passed `fresh-mobile` and `fresh-review`; desktop, scale and scale-analysis failed on the same native header focus samples. `ticket32-security-recovery-61056b9` passed ten slices; `host-tuple-refusal` and `build-variant` failed consecutive startup readiness. The broader host check sequence `ticket32-native-focus-green` completed successfully. New independent diagnostic closure since 18:54: `fresh-review`. No additional original journey frontier or final coherent release row closed.
+
+A headless probe using actual host styles reproduced the desktop evidence error in 20/20 samples: immediately focused controls reported the transparent transition start color; after paint they reported the expected background with focus unchanged. Harness `5385caa1f8556f51ac33fcfa8f1bb4f8fc5e55fd` synchronizes focus evidence to a paint opportunity without disabling styles or retrying failed indicators. Its regression failed before the fix and passed afterward, including a negative control with no indicator. This recognizes a rendering mechanism, not contrast qualification.
+
+The clean Linux candidate build and 46 affected tests passed; production digest remains `sha256:815f0b48d3fd660147c912c6036e5fb73c440230b70f1a0f77ad89a8f1b8db48`. Only affected clusters are replayed in `ticket32-ui-desktop-5385caa` and `ticket32-compatibility-startup-5385caa`, against the unchanged sealed host. Startup limits are unchanged; its cause is not yet established. No complete capture or performance qualification has run during this repair.
+
 ## Not yet release-qualified
 
 The original 211-test snapshot above was focused integration evidence. The later sealed diagnostic candidate is **not a final acceptance capture or release-qualified build**. No unique final release acceptance boundary was closed by these focused or diagnostic passes.
