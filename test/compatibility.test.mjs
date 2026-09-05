@@ -23,6 +23,7 @@ test('release admission refuses unsupported or missing bridge declarations befor
 test('accepts the exact canonical compatibility tuple', () => {
   assert.deepEqual(validateCompatibility(structuredClone(canonical)), { ok: true });
   assertDeclarativeMirror(canonical);
+  assert.deepEqual(packageLock.packages[''].commandCenter, packageJson.commandCenter, 'lockfile must retain the complete canonical runtime metadata');
   assert.deepEqual(packageJson.openclaw.extensions, ['./dist/plugin.mjs']);
 });
 
