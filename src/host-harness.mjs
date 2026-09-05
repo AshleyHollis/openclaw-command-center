@@ -282,6 +282,8 @@ export async function waitForConsecutiveReadiness(observe, earlyExit, { required
   const startedAt = now();
   let consecutive = 0;
   let attempt = 0;
+  let successfulObservations = 0;
+  let refusedConnections = 0;
   while (deadlineMs === undefined ? attempt < attempts : now() - startedAt < deadlineMs) {
     signal?.throwIfAborted();
     const remainingProbeMs = deadlineMs === undefined ? undefined : Math.max(1, deadlineMs - (now() - startedAt));
@@ -296,7 +298,7 @@ export async function waitForConsecutiveReadiness(observe, earlyExit, { required
       const observation = Promise.resolve().then(() => observe(probeSignal)).catch((error) => {
         probeSignal?.throwIfAborted();
         // A newly launched listener may not have bound its port yet. This is not readiness.
-        if ((error?.cause?.code ?? error?.code) === 'ECONNREFUSED') return false;
+        if ((error?.cause?.code ?? error?.code) === 'ECONNREFUSED') { refusedConnections += 1; return false; }
         throw error;
       });
       result = await withAbort(Promise.race([observation, earlyExit.then((error) => { throw error; })]), probeSignal);
@@ -305,15 +307,18 @@ export async function waitForConsecutiveReadiness(observe, earlyExit, { required
       signal?.removeEventListener('abort', abortProbe);
     }
     attempt += 1;
+    if (result) successfulObservations += 1;
     consecutive = result ? consecutive + 1 : 0;
     if (consecutive >= required) return;
     const remaining = deadlineMs === undefined ? delayMs : Math.max(0, deadlineMs - (now() - startedAt));
     if (remaining === 0) break;
     await withAbort(Promise.race([wait(Math.min(delayMs, remaining), signal), earlyExit.then((error) => { throw error; })]), signal);
   }
-  throw new HarnessFailure(deadlineMs === undefined ? 'readiness-flapping' : 'readiness-timeout', deadlineMs === undefined
+  const failure = new HarnessFailure(deadlineMs === undefined ? 'readiness-flapping' : 'readiness-timeout', deadlineMs === undefined
     ? 'Host did not produce consecutive readiness observations'
     : `Host did not produce consecutive readiness observations within ${deadlineMs} ms`);
+  failure.readiness = Object.freeze({ attempts: attempt, successfulObservations, refusedConnections, elapsedMs: now() - startedAt });
+  throw failure;
 }
 
 export async function fetchJsonWithDeadline(url, options = {}, { label = 'HTTP operation', timeoutMs = 10_000, fetchImpl = fetchWithRuntimeDispatcher } = {}) {

@@ -81,6 +81,13 @@ test('startup readiness retries only refused connections and still requires cons
     await assert.rejects(waitForConsecutiveReadiness(() => { throw failure; }, new Promise(() => {})), (error) => error === failure);
   }
   await assert.rejects(waitForConsecutiveReadiness(() => false, Promise.resolve(refused)), (error) => error === refused);
+  let clock = 0;
+  await assert.rejects(waitForConsecutiveReadiness(() => { throw refused; }, new Promise(() => {}), {
+    attempts: 2, now: () => clock, wait: async (ms) => { clock += ms; }
+  }), (error) => {
+    assert.deepEqual(error.readiness, { attempts: 2, successfulObservations: 0, refusedConnections: 2, elapsedMs: 200 });
+    return error.category === 'readiness-flapping';
+  });
 });
 
 test('elapsed readiness deadlines allow late success and reject flapping without real sleeps', async () => {

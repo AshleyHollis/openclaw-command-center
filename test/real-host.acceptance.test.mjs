@@ -2199,6 +2199,16 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           assert.deepEqual(await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot')), mismatchedSnapshot);
           const mountedUiObserved = await assertMountedReadOnlyOperatingMode({ world: hostWorld, expectedMode: 'recovery-only' });
           return Object.freeze({ kind: 'host', admissionRejected: true, mode: 'recovery-only', safeReadObserved: true, mutationRejected: true, restoredStateValidated: true, mountedUiObserved, unsupportedControlsAbsent: true });
+        } catch (error) {
+          // Diagnostic observation only: retain the original failed verdict and budget.
+          if (acceptancePlan.isolatedSliceIds && error.category === 'readiness-flapping') {
+            const started = Date.now();
+            try {
+              await waitForConsecutiveReadiness(async () => (await fetchWithDeadline(`${hostWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${hostWorld.gatewayCredential}` } }, 'late host-tuple startup observation', 10_000)).ok, hostTupleRuntime.earlyExit, { required: 2, deadlineMs: 30_000, signal });
+              error.lateStartupObservation = { ready: true, additionalMs: Date.now() - started };
+            } catch (lateError) { error.lateStartupObservation = { ready: false, category: lateError.category, additionalMs: Date.now() - started }; }
+          }
+          throw error;
         } finally {
           removeAbortCleanup();
           await withDeadline('host-tuple restoration stop', async () => { await stopPinnedHost(hostTupleRuntime.child); await hostTupleRuntime.outputDrained; });
