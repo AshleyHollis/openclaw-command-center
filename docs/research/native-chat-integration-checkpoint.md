@@ -129,6 +129,16 @@ The Linux build passed 56 checks and sealed new production digest `sha256:a39832
 
 After verifying both diagnostic lanes terminal and no competing worker pods active, `ticket32-scale-frontier-7595397` runs alone against the unchanged sealed production bytes. It includes exact dependent Activity readback. The successor builder/mobile/security manifests are only prepared; they must not start until this exclusive diagnostic ends. Three original frontiers still remain and no complete capture has run.
 
+## Shared Reminder disappearance — 20:29 AEST
+
+The exclusive `ticket32-scale-frontier-7595397` failed at its unchanged 240-second scenario deadline while the keyboard driver awaited the Reminder Complete locator. Dependent Activity readback had no source-action receipt. Both browser and host cleanup completed; no measured baseline was produced.
+
+`ticket32-mobile-frontier-f777a9f` also failed: its separately created final-audit Reminder had disappeared before the explicit Evidence-control precondition. During this still-running fictional fixture, read-only inspection of the native scheduler store showed the untouched audit Reminder disabled, the snoozed fixture enabled with its new future date, and the explicitly completed fixture disabled. The runtime status was stored separately and was not captured before cleanup, so automatic native execution is a hypothesis to verify, not a claimed proven cause. The app currently treats disabled scheduler rows as resolved Reminder Attention. Creating another fixture did not fix this shared lifecycle boundary and is not considered a completed repair.
+
+`ticket32-security-recovery-f777a9f` passed all 12 independent slices on current production digest `a398327cf913a9cd98057062f278c767f588d7b64b0db27dbf637429df2870f2`. No new original frontier closed. The diagnostic builder now fetches the exact Git commit rather than a floating branch: the earlier f777a9f builder correctly refused the later documentation tip. Its fresh pinned replacement passed all 56 checks without modifying the failed directory.
+
+Harness `8bfe5bbe0e07a3e8380e67ca3b88e0c5d7a26e06` adds diagnostic-only `diagnostic-reminder-lifecycle`: a fresh real host and public Topic journey, exact Reminder creation/readback, native `cron.run`, bounded read-only runtime-state observation, and a check that the untouched due Reminder remains actionable. It is deliberately excluded from the canonical 17-slice release map. Its build and focused replay are next; do not repeat mobile or scale to discover this lifecycle cause. The final complete capture remains prepared but unlaunched.
+
 ## Not yet release-qualified
 
 The original 211-test snapshot above was focused integration evidence. The later sealed diagnostic candidate is **not a final acceptance capture or release-qualified build**. No unique final release acceptance boundary was closed by these focused or diagnostic passes.
