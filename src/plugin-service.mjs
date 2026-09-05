@@ -4,6 +4,7 @@ import { createNoteMaintenanceService } from './maintenance/notes.mjs';
 import { openCommandCenterMetadataService } from './metadata/service.mjs';
 import { createLegacyDiscordMigrationService } from './migration/service.mjs';
 import { createAuthoritativeSourceService } from './sources/service.mjs';
+import { reminderActionApplied } from './sources/reminder-lifecycle.mjs';
 import { createSearchRebuildService, reconcileTopicSearchBookkeeping } from './search/rebuild.mjs';
 import { createTopicSearchService } from './search/service.mjs';
 import { createTopicContextPolicy } from './search/context.mjs';
@@ -107,8 +108,7 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
           verify: async ({ episode, actionId, parameters }) => {
             const rows = await sourceService.remindersList({ schemaVersion: 1, topicId: episode.topicId });
             const row = rows.find((item) => item.sourceReference?.referenceId === episode.sourceReferenceId);
-            if (actionId === 'reminder.complete') return row?.job?.enabled === false;
-            return row?.job?.enabled === true && row.job.schedule?.kind === 'at' && row.job.schedule.at === parameters.until;
+            return reminderActionApplied(actionId, row?.job, parameters);
           }
         }
       });

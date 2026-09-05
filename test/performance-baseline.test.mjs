@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { build } from '../src/build.mjs';
-import { assertPerformanceBaselineBuildIdentity, assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, deriveReleaseThresholds, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
+import { assertPerformanceBaselineBuildIdentity, assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, deriveReleaseThresholds, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
 
 async function readReleasePerformanceBaseline() {
-  return validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
+  return validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v2.json', import.meta.url), 'utf8')));
 }
 
 test('release performance baseline pins the measured corpus and immutable first successful capture', async () => {
@@ -14,7 +14,7 @@ test('release performance baseline pins the measured corpus and immutable first 
   assert.equal(assertPerformanceBaselineBuildIdentity(baseline, `sha256:${buildReceipt.digest}`), true);
   assert.deepEqual(baseline.viewport, { width: 1440, height: 900 });
   assert.deepEqual(baseline.fixtureCounts, { largeNoteBytes: 8388609, conversations: 101, activityRecords: 101, actionCards: 2, indexedNotes: 5000, indexedConversationMessages: 5000 });
-  assert.deepEqual(RELEASE_MEASUREMENTS, ['startupReadinessMs', 'dashboardLoadMs', 'topicOpenCreateMs', 'chatSendMs', 'conversationLifecycleMs', 'largeNoteLifecycleMs', 'indexedSearchMs', 'activityNextPageMs', 'topicReviewApplyMs', 'mobileReflowMs']);
+  assert.deepEqual(RELEASE_MEASUREMENTS, ['startupReadinessMs', 'dashboardLoadMs', 'topicOpenCreateMs', 'chatSendMs', 'conversationLifecycleMs', 'largeNoteLifecycleMs', 'indexedSearchMs', 'activityNextPageMs', 'topicReviewApplyMs']);
   assert.equal(baseline.fixtureIdentity, RELEASE_FIXTURE_IDENTITY);
   assert.equal(baseline.capture.successfulRunOrdinal, 1);
   assert.equal(baseline.browser.version, '151.0.7922.34');
@@ -29,7 +29,7 @@ test('release performance baseline pins the measured corpus and immutable first 
 
 function coherentGeneratedBaseline() {
   const seed = {
-    schemaVersion: 1,
+    schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION,
     hostVersion: releasePerformanceIdentity.hostVersion,
     hostReceipt: releasePerformanceIdentity.hostReceipt,
     pluginBuildDigest: `sha256:${'b'.repeat(64)}`,

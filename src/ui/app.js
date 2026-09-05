@@ -342,34 +342,45 @@ function focusNotificationTarget() {
   if (card) { card.setAttribute('tabindex', '-1'); card.focus(); document.querySelector('#dashboard-feedback').textContent = 'Notification opened. No changes were made.'; }
   else document.querySelector('#dashboard-feedback').textContent = 'This notification is no longer available.';
 }
+let dashboardRefreshSequence = 0;
+function renderAttentionCards(episodes) {
+  const attention = document.querySelector('#attention-cards');
+  // Capture after the awaited read: preserve current focus, not the control
+  // that happened to be focused when this refresh began.
+  const active = document.activeElement;
+  const focusedCard = attention.contains(active) ? active.closest('.attention-card') : null;
+  const focusIntent = focusedCard ? { episodeId: focusedCard.dataset.episodeId, key: active.dataset.focusKey,
+    snooze: focusedCard.querySelector('select')?.value, custom: focusedCard.querySelector('input[type="datetime-local"]')?.value } : null;
+  attention.replaceChildren(...episodes.map(renderAttentionCard));
+  if (!attention.childElementCount) attention.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nothing needs attention.' }));
+  if (focusIntent) {
+    const card = [...attention.children].find((node) => node.dataset.episodeId === focusIntent.episodeId);
+    const select = card?.querySelector('select'); const custom = card?.querySelector('input[type="datetime-local"]');
+    if (select && [...select.options].some((option) => option.value === focusIntent.snooze)) select.value = focusIntent.snooze;
+    if (custom) { custom.hidden = select?.value !== 'custom'; custom.value = focusIntent.custom ?? ''; }
+    const replacement = [...(card?.querySelectorAll('[data-focus-key]') ?? [])].find((node) => node.dataset.focusKey === focusIntent.key && !node.disabled && !node.closest('[hidden], [inert]'));
+    const target = replacement ?? document.querySelector('#attention-heading');
+    if (!replacement) target.setAttribute('tabindex', '-1');
+    target.focus({ preventScroll: true });
+  }
+}
 async function loadDashboard() {
+  const refreshSequence = ++dashboardRefreshSequence;
   try {
-    dashboardState = await dashboardRead(0); renderNotificationSettings(dashboardState.notificationSettings); const attention = document.querySelector('#attention-cards');
-    // Capture after the awaited read: preserve current focus, not the control
-    // that happened to be focused when this refresh began.
-    const active = document.activeElement;
-    const focusedCard = attention.contains(active) ? active.closest('.attention-card') : null;
-    const focusIntent = focusedCard ? { episodeId: focusedCard.dataset.episodeId, key: active.dataset.focusKey,
-      snooze: focusedCard.querySelector('select')?.value, custom: focusedCard.querySelector('input[type="datetime-local"]')?.value } : null;
-    attention.replaceChildren(...(dashboardState.attention ?? []).map(renderAttentionCard));
-    if (!attention.childElementCount) attention.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nothing needs attention.' }));
-    if (focusIntent) {
-      const card = [...attention.children].find((node) => node.dataset.episodeId === focusIntent.episodeId);
-      const select = card?.querySelector('select'); const custom = card?.querySelector('input[type="datetime-local"]');
-      if (select && [...select.options].some((option) => option.value === focusIntent.snooze)) select.value = focusIntent.snooze;
-      if (custom) { custom.hidden = select?.value !== 'custom'; custom.value = focusIntent.custom ?? ''; }
-      const replacement = [...(card?.querySelectorAll('[data-focus-key]') ?? [])].find((node) => node.dataset.focusKey === focusIntent.key && !node.disabled && !node.closest('[hidden], [inert]'));
-      const target = replacement ?? document.querySelector('#attention-heading');
-      if (!replacement) target.setAttribute('tabindex', '-1');
-      target.focus({ preventScroll: true });
-    }
+    const incoming = await dashboardRead(0);
+    if (refreshSequence !== dashboardRefreshSequence) return;
+    dashboardState = incoming;
+    renderNotificationSettings(dashboardState.notificationSettings);
+    renderAttentionCards(dashboardState.attention ?? []);
     document.querySelector('#attention-badge').textContent = String(dashboardState.attentionBadgeCount ?? 0);
     renderDashboardProgress();
     const coming = document.querySelector('#coming-up'); coming.replaceChildren(...(dashboardState.comingUp ?? []).map((item) => { const row = document.createElement('p'); row.textContent = `${item.day} · ${item.time} · ${item.context} · ${item.label}`; return row; })); if (!coming.childElementCount) coming.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No future Reminders.' }));
     fillTopicLaunchers(dashboardState.topics); renderActivity(dashboardState.activity?.records); const more = document.querySelector('#activity-load-more'); more.textContent = 'Load more Activity'; more.hidden = dashboardState.activity?.hasMore !== true; more.onclick = async () => { const next = await dashboardRead(dashboardState.activity.nextOffset); dashboardState.activity = next.activity; renderActivity(next.activity.records, true); more.hidden = next.activity.hasMore !== true; }; if (statusNode) statusNode.textContent = 'Dashboard is current.';
     focusNotificationTarget();
     await loadTopicAnalysis();
-  } catch (error) { document.querySelector('#dashboard-feedback').textContent = error.message || 'Dashboard is unavailable.'; }
+  } catch (error) {
+    if (refreshSequence === dashboardRefreshSequence) document.querySelector('#dashboard-feedback').textContent = error.message || 'Dashboard is unavailable.';
+  }
 }
 
 function operationId() {

@@ -41,7 +41,7 @@ const issue32TicketTests = new Set([
 const focusedRealHostScenarios = Object.freeze({
   'startup-authenticated-topic-analysis': Object.freeze(['pinned-host-startup', 'focused-verified-note-locator', 'startup-authenticated-topic-analysis']),
   'session-recovery-contract': Object.freeze(['pinned-host-startup', 'focused-session-recovery']),
-  'combined-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'mobile-accessibility-journey', 'desktop-primary-journey-review']),
+  'combined-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'desktop-keyboard-journey', 'desktop-primary-journey-review']),
   'authenticated-control-ui-mount': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount']),
   'native-chat-handoff': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-handoff']),
   'native-chat-pointer-handoff': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']),
@@ -52,6 +52,7 @@ const focusedRealHostScenarios = Object.freeze({
   'migrated-scale-conversation-seeding': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding']),
   'desktop-primary-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey']),
   'desktop-review-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'desktop-primary-journey-review']),
+  'desktop-keyboard-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-keyboard-journey']),
   'mobile-primary-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'mobile-accessibility-journey']),
   'desktop-to-scale-transition': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']),
   'heavy-desktop-to-scale-transition': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-heavy-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']),
@@ -70,8 +71,8 @@ const diagnosticSliceLanes = Object.freeze({
   'diagnostic-mobile': Object.freeze(['fresh-mobile']),
   'diagnostic-ui-desktop': Object.freeze(['fresh-desktop', 'fresh-scale', 'fresh-scale-analysis']),
   'diagnostic-compatibility-startup': Object.freeze(['host-tuple-refusal', 'build-variant']),
-  'diagnostic-ui-remaining': Object.freeze(['fresh-scale', 'fresh-mobile']),
-  'diagnostic-ui-data': Object.freeze(['fresh-desktop', 'fresh-scale', 'fresh-scale-analysis', 'fresh-mobile', 'fresh-review']),
+  'diagnostic-ui-remaining': Object.freeze(['fresh-scale']),
+  'diagnostic-ui-data': Object.freeze(['fresh-desktop', 'fresh-scale', 'fresh-scale-analysis', 'fresh-review']),
   'diagnostic-security-recovery': Object.freeze(['host-tuple-refusal', 'build-variant', 'plugin-api-variant', 'bridge-protocol-variant', 'binding-mismatch', 'foreign-database-restoration', 'secure-origin', 'degraded-bridge-grants', 'degraded-source-availability', 'combined-degraded', 'recovery-only-compatibility', 'destructive-migration-restoration'])
 });
 

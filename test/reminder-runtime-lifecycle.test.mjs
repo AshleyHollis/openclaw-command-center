@@ -7,10 +7,23 @@ import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createAttentionService } from '../src/attention/service.mjs';
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
+import { reminderActionApplied } from '../src/sources/reminder-lifecycle.mjs';
 
 const now = '2026-09-05T10:01:00.000Z';
 const dueAt = '2026-09-05T10:00:00.000Z';
 const deliveredState = { lastRunAtMs: Date.parse(dueAt) + 1000, lastRunStatus: 'ok', lastStatus: 'ok' };
+
+test('Reminder verification requires the exact action effect and never mistakes a disabled Snooze for success', () => {
+  const parameters = { until: now };
+  const job = { enabled: true, schedule: { kind: 'at', at: now } };
+  assert.equal(reminderActionApplied('reminder.snooze', job, parameters), true);
+  assert.equal(reminderActionApplied('reminder.snooze', { ...job, enabled: false }, parameters), false);
+  assert.equal(reminderActionApplied('reminder.snooze', job, { until: dueAt }), false);
+  assert.equal(reminderActionApplied('reminder.complete', { ...job, enabled: false }, parameters), true);
+  assert.equal(reminderActionApplied('reminder.complete', job, parameters), false);
+  assert.equal(reminderActionApplied('unknown', job, parameters), false);
+  assert.equal(reminderActionApplied('reminder.complete', undefined, parameters), false);
+});
 
 async function withReminder(run) {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-reminder-lifecycle-'));

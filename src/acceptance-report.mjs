@@ -1,7 +1,7 @@
 import { RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from './performance-baseline.mjs';
 
-export const ACCEPTANCE_REPORT_VERSION = 1;
-export const RELEASE_ROW_IDS = Object.freeze(['pinned-host-startup', 'desktop-primary-journey', 'mobile-accessibility-journey', 'scale-performance', 'degraded-bridge-grants', 'degraded-source-availability', 'recovery-only-compatibility', 'destructive-migration-restoration', 'privacy-artifact-output']);
+export const ACCEPTANCE_REPORT_VERSION = 2;
+export const RELEASE_ROW_IDS = Object.freeze(['pinned-host-startup', 'desktop-primary-journey', 'desktop-keyboard-journey', 'scale-performance', 'degraded-bridge-grants', 'degraded-source-availability', 'recovery-only-compatibility', 'destructive-migration-restoration', 'privacy-artifact-output']);
 export const FINALIZATION_PHASES = Object.freeze(['browser-close', 'host-stop', 'browser-traffic', 'host-traffic', 'child-traffic', 'build-digest']);
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
@@ -63,11 +63,10 @@ function validatePassedEvidence(id, evidence, buildDigest, performanceBaseline) 
       if (!Array.isArray(evidence.actions) || evidence.actions.length < 12 || evidence.actions.length > 40 || evidence.actions.some((value) => typeof value !== 'string' || value.length > 80)) invalid(`${id}.actions is incomplete or unbounded`);
       return;
     }
-    case 'mobile-accessibility-journey': {
-      closed(evidence, ['schemaVersion', 'viewport', 'keyboardOnly', 'zoom200', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'minimumTargetCssPx', 'noPageOverflow', 'states'], id);
-      exactMap(evidence.viewport, { width: 320, height: 900 }, `${id}.viewport`);
-      for (const key of ['keyboardOnly', 'zoom200', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'noPageOverflow']) yes(evidence[key], `${id}.${key}`);
-      if (evidence.minimumTargetCssPx < 44) invalid(`${id}.minimumTargetCssPx must be at least 44`);
+    case 'desktop-keyboard-journey': {
+      closed(evidence, ['schemaVersion', 'viewport', 'keyboardOnly', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'noPageOverflow', 'states'], id);
+      exactMap(evidence.viewport, { width: 1440, height: 900 }, `${id}.viewport`);
+      for (const key of ['keyboardOnly', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'noPageOverflow']) yes(evidence[key], `${id}.${key}`);
       if (!Array.isArray(evidence.states) || evidence.states.length < 8 || evidence.states.length > 40) invalid(`${id}.states is incomplete or unbounded`);
       return;
     }

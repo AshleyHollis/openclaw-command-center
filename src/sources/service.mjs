@@ -9,6 +9,7 @@ import { effectiveSourceLocator } from './reference.mjs';
 import { createMutationCoordinator } from './mutation-coordinator.mjs';
 import { createNoteAdapter } from './notes.mjs';
 import { createReminderAdapter } from './reminders.mjs';
+import { reconcileReminderAttention } from './reminder-lifecycle.mjs';
 import { createSearchAdapter } from './search.mjs';
 import { createSessionAdapter } from './sessions.mjs';
 import { createSchedulerAdapter } from './scheduler.mjs';
@@ -324,65 +325,7 @@ export class AuthoritativeSourceService {
     return this.migration.resume(input);
   }
   async ingestReminderRows(topicId, rows) {
-    if (!this.attentionService?.ingest) return rows;
-    const configuredNow = typeof this.defaults.now === 'function' ? this.defaults.now() : this.defaults.now;
-    const configuredNowMs = typeof configuredNow === 'number' ? configuredNow : Date.parse(configuredNow);
-    const observedNowMs = Number.isFinite(configuredNowMs) ? configuredNowMs : Date.now();
-    const observedAt = new Date(observedNowMs).toISOString();
-    const returnedIds = new Set();
-    for (const row of rows) {
-      const externalId = row.sourceReference.externalSourceId;
-      returnedIds.add(externalId);
-      const schedule = row?.job?.schedule;
-      const dueAt = schedule?.kind === 'at' ? Date.parse(schedule.at) : Number(row?.job?.state?.nextRunAtMs);
-      const occurrenceVersion = row.job.configRevision ?? row.sourceReference.observedRevision;
-      const context = this.attentionService.sourceOccurrenceContext?.({ sourceCapabilityId: 'reminders', stableSubjectId: externalId, attentionReason: 'reminder-due' });
-      // Native Cron disables a successfully delivered one-shot. Delivery is
-      // not user acknowledgement: retain Attention until its existing episode
-      // is explicitly terminal, including when first observed after delivery.
-      const lastRunAtMs = row.job.state?.lastRunAtMs;
-      const deliveredOneShot = row.job.enabled === false && schedule?.kind === 'at'
-        && Number.isFinite(lastRunAtMs) && lastRunAtMs >= dueAt && lastRunAtMs <= observedNowMs
-        && (row.job.state?.lastRunStatus ?? row.job.state?.lastStatus) === 'ok';
-      const acknowledged = context && ['Resolved', 'Withdrawn'].includes(context.state);
-      const due = Number.isFinite(dueAt) && dueAt <= observedNowMs
-        && (row.job.enabled !== false || (deliveredOneShot && !acknowledged));
-      if (due) {
-        const generation = context && ['Resolved', 'Withdrawn'].includes(context.state) ? context.generation + 1 : context?.generation ?? 1;
-        await this.attentionService.ingest({
-          schemaVersion: 1,
-          sourceCapabilityId: 'reminders',
-          stableSubjectId: externalId,
-          attentionReason: 'reminder-due',
-          occurrenceId: `reminder:${externalId}:generation:${generation}:revision:${occurrenceVersion ?? 'unversioned'}`,
-          ...(occurrenceVersion ? { occurrenceVersion: String(occurrenceVersion) } : {}),
-          occurredAt: observedAt,
-          topicId,
-          sourceReferenceId: row.sourceReference.referenceId,
-          evidenceFacts: { reminderDue: true, explicitTimed: schedule?.kind === 'at', dueAt: Number.isFinite(dueAt) ? new Date(dueAt).toISOString() : observedAt },
-          ...(occurrenceVersion ? { transitionEvidence: { verifiedSource: 'scheduler-readback', version: String(occurrenceVersion), state: 'active' } } : {})
-        });
-      } else if (context && context.state !== 'Snoozed' && !['Resolved', 'Withdrawn'].includes(context.state)) {
-        await this.attentionService.ingest({
-          schemaVersion: 1,
-          sourceCapabilityId: 'reminders',
-          stableSubjectId: externalId,
-          attentionReason: 'reminder-due',
-          occurrenceId: `reminder:${externalId}:terminal:${occurrenceVersion ?? 'unversioned'}`,
-          ...(occurrenceVersion ? { occurrenceVersion: String(occurrenceVersion) } : {}),
-          occurredAt: observedAt,
-          topicId,
-          sourceReferenceId: row.sourceReference.referenceId,
-          evidenceFacts: { reminderDue: false },
-          transitionEvidence: { verifiedSource: 'scheduler-readback', ...(occurrenceVersion ? { version: String(occurrenceVersion) } : {}), state: row?.job?.enabled === false ? 'resolved' : 'withdrawn' }
-        });
-      }
-    }
-    for (const episode of this.attentionService.allEpisodes?.() ?? []) {
-      if (episode.topicId !== topicId || episode.sourceCapabilityId !== 'reminders' || ['Resolved', 'Withdrawn'].includes(episode.state) || returnedIds.has(episode.stableSubjectId)) continue;
-      await this.attentionService.ingest({ schemaVersion: 1, sourceCapabilityId: 'reminders', stableSubjectId: episode.stableSubjectId, attentionReason: episode.attentionReason, occurrenceId: `reminder:${episode.stableSubjectId}:missing:${observedAt}`, occurredAt: observedAt, topicId, sourceReferenceId: episode.sourceReferenceId, evidenceFacts: { reminderDue: false }, transitionEvidence: { verifiedSource: 'scheduler-readback', state: 'withdrawn' } });
-    }
-    return rows;
+    return reconcileReminderAttention({ topicId, rows, attention: this.attentionService, now: this.defaults.now });
   }
   async remindersList(input = {}, runtime = {}) {
     const service = this.requireTopicService(input, { schedulerGateway: runtime.gateway });

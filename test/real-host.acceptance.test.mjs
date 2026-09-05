@@ -24,7 +24,7 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl, isControlUiPluginUrl } from '../src/acceptance-readiness.mjs';
-import { assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
+import { assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, RELEASE_PERFORMANCE_BASELINE_VERSION, releasePerformanceIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
 import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice } from '../src/acceptance-scenario-coordinator.mjs';
@@ -33,6 +33,7 @@ import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, ver
 import { createGatewayFrameWaiter } from '../src/acceptance-gateway.mjs';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
 import { tabTo } from './support/keyboard-navigation.mjs';
+import { activate, enterText, chooseOption, auditDynamicAccessibilityState, assertNoFrameOverflow, assertResponsiveFrame, assertKeyboardAccessibility } from './support/keyboard-accessibility.mjs';
 import { closeOpenConversation } from './support/conversation-lifecycle.mjs';
 const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
 // The UI retains queued requests for 180s while honoring the host's rolling
@@ -44,7 +45,7 @@ const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
 const READY_CAPABILITIES = Object.freeze(Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'analysis', 'attention', 'search'].map((name) => [name, true])));
 const capturePerformanceBaseline = process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE === '1';
-const capturedPerformanceBaselinePath = '/tmp/command-center-release-performance-baseline.v1.json';
+const capturedPerformanceBaselinePath = '/tmp/command-center-release-performance-baseline.v2.json';
 const acceptancePlan = resolveRealHostAcceptancePlan(process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO);
 if (acceptancePlan.kind === 'focused' && capturePerformanceBaseline) throw new Error('Focused real-host acceptance cannot capture a performance baseline.');
 
@@ -1527,57 +1528,12 @@ async function waitForDashboard(frame, timeout = 10_000) {
   }, undefined, { timeout });
 }
 
-async function assertNoFrameOverflow(frame, label) {
-  const audit = await frame.evaluate(() => {
-    const selectors = ['html', 'body', 'main', '#dashboard', '.dashboard-panel', '#topic-groups', '.topic-group', '#topic-exceptions', '#topic-workspace', '.workspace-layout', '.workspace-layout > [data-pane]', 'dialog[open]', '.evidence-scroll', '.card-list', '#activity', '#conversation-list', '#chat-messages', '#notes-tree', '.note-editor', '.markdown-preview', '.search-grid', '#notes-results', '#conversations-results', '#workspace-notes-results', '#workspace-conversations-results', '#topic-review-groups'];
-    const nodes = [...new Set(selectors.flatMap((selector) => [...document.querySelectorAll(selector)]))];
-    const visible = nodes.filter((node) => {
-      const style = getComputedStyle(node);
-      return style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]') && node.clientWidth > 0;
-    });
-    return {
-      checked: visible.map((node) => node.id || node.getAttribute('data-pane') || node.className || node.tagName),
-      overflowing: visible.filter((node) => node.scrollWidth > node.clientWidth).map((node) => ({ name: node.id || node.getAttribute('data-pane') || node.className || node.tagName, scrollWidth: node.scrollWidth, clientWidth: node.clientWidth }))
-    };
-  });
-  assert.ok(audit.checked.length > 0, `${label} did not audit any visible layout containers`);
-  assert.deepEqual(audit.overflowing, [], `${label} has pane-level horizontal overflow`);
-}
-
-
 async function respondToCommandDialog(frame, { value, confirm = true } = {}) {
   await frame.locator('#command-dialog').waitFor({ state: 'visible' });
   if (value !== undefined) await enterText(frame.locator('#command-dialog-input'), value, true);
   await activate(frame.locator(confirm ? '#command-dialog-submit' : '#command-dialog-cancel'), true);
   await frame.locator('#command-dialog').waitFor({ state: 'hidden' });
 }
-async function activate(locator, keyboard = false, key = 'Enter') {
-  if (keyboard) {
-    await locator.scrollIntoViewIfNeeded();
-    await tabTo(locator);
-    await locator.page().keyboard.press(key);
-  }
-  else await locator.click();
-}
-
-async function enterText(locator, value, keyboard = false) {
-  if (!keyboard) return locator.fill(value);
-  await tabTo(locator);
-  await locator.page().keyboard.press('ControlOrMeta+A');
-  await locator.page().keyboard.type(value);
-}
-
-async function chooseOption(locator, value, keyboard = false) {
-  if (!keyboard) return locator.selectOption(value);
-  const index = await locator.locator('option').evaluateAll((options, target) => options.findIndex((option) => option.value === target), value);
-  assert.ok(index >= 0, `Missing keyboard-select option ${value}`);
-  await tabTo(locator);
-  await locator.page().keyboard.press('Home');
-  for (let position = 0; position < index; position += 1) await locator.page().keyboard.press('ArrowDown');
-  await locator.page().keyboard.press('Enter');
-  assert.equal(await locator.inputValue(), value);
-}
-
 async function submitFrameForm(frame, selector, keyboard = false) {
   const form = frame.locator(selector);
   assert.equal(await form.evaluate((node) => node.checkValidity()), true, `${selector} must be valid before submission`);
@@ -1589,45 +1545,6 @@ async function submitFrameForm(frame, selector, keyboard = false) {
 
 async function selectWorkspaceSection(frame, name, width, keyboard = false) {
   if (width < 768) await activate(frame.locator(`.workspace-sections button[data-section="${name}"]`), keyboard);
-}
-
-async function auditDynamicAccessibilityState(frame, page, width, label, keyboard) {
-  const responsive = await assertResponsiveFrame(frame, page, width);
-  const state = await frame.evaluate((keyboardMode) => {
-    const modal = [...document.querySelectorAll('[role="dialog"]')].find((node) => node instanceof HTMLDialogElement && node.open);
-    const active = document.activeElement;
-    const style = active instanceof HTMLElement ? getComputedStyle(active) : null;
-    return {
-      modalLabelled: !modal || (modal.getAttribute('aria-modal') === 'true' && Boolean(modal.getAttribute('aria-labelledby') || modal.getAttribute('aria-label'))),
-      focusInModal: !modal || modal.contains(active),
-      focusVisible: !keyboardMode || (active instanceof HTMLElement && active !== document.body && style?.outlineStyle !== 'none'),
-      liveRegions: [...document.querySelectorAll('[role="status"], [role="alert"], [aria-live]')].map((node) => node.textContent?.trim() ?? ''),
-      colorIndependent: [...document.querySelectorAll('[aria-selected], [aria-current], [aria-checked], [data-status]')].filter((node) => {
-        const nodeStyle = getComputedStyle(node);
-        return nodeStyle.display !== 'none' && nodeStyle.visibility !== 'hidden';
-      }).every((node) => Boolean(node.textContent?.trim() || node.getAttribute('aria-label') || node.getAttribute('aria-selected') || node.getAttribute('aria-current') || node.getAttribute('aria-checked') || node.getAttribute('data-status'))),
-      reducedMotion: !matchMedia('(prefers-reduced-motion: reduce)').matches || [...document.querySelectorAll('*')].every((node) => {
-        const nodeStyle = getComputedStyle(node);
-        return parseFloat(nodeStyle.animationDuration || '0') <= 0.001 && parseFloat(nodeStyle.transitionDuration || '0') <= 0.001 && nodeStyle.scrollBehavior !== 'smooth';
-      }),
-      reducedMotionPreference: matchMedia('(prefers-reduced-motion: reduce)').matches,
-      forcedColorsPreference: matchMedia('(forced-colors: active)').matches,
-      headings: [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')]
-        .filter((node) => {
-          const headingStyle = getComputedStyle(node);
-          return headingStyle.display !== 'none' && headingStyle.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
-        })
-        .map((node) => Number(node.tagName.slice(1)))
-    };
-  }, keyboard);
-  assert.equal(state.modalLabelled, true, `${label} dialog is not labelled`);
-  assert.equal(state.focusInModal, true, `${label} focus escaped its modal dialog`);
-  assert.equal(state.focusVisible, true, `${label} has no visible keyboard focus`);
-  assert.ok(state.liveRegions.length > 0, `${label} has no live status announcement region`);
-  assert.equal(state.colorIndependent, true, `${label} conveys state only by color`);
-  assert.equal(state.reducedMotion, true, `${label} retains motion under reduced-motion preference`);
-  for (let index = 1; index < state.headings.length; index += 1) assert.ok(state.headings[index] - state.headings[index - 1] <= 1, `${label} skips a heading level`);
-  return Object.freeze({ label, colorIndependent: state.colorIndependent, reducedMotion: state.reducedMotion, reducedMotionPreference: state.reducedMotionPreference, forcedColorsPreference: state.forcedColorsPreference, minimumTargetCssPx: responsive.minimumTargetCssPx, noPageOverflow: responsive.noPageOverflow, modalLabelled: state.modalLabelled });
 }
 
 async function retainNativeChatScreenshot(page, name) {
@@ -1948,7 +1865,7 @@ async function locatePaginatedNote(frame, pathName) {
   throw new Error(`The paginated Notes catalog omitted ${pathName}.`);
 }
 
-async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId = RELEASE_SCALE_TOPIC_ID }) {
+async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId = RELEASE_SCALE_TOPIC_ID, mobile = false }) {
   const lifecycleStarted = Date.now();
   const importedTopic = frame.locator('.topic-row').filter({ hasText: 'Fictional Scale Corpus' });
   await importedTopic.getByRole('button', { name: 'Open Topic', exact: true }).click();
@@ -2015,66 +1932,16 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   const navigation = navigationResponse?.result ?? navigationResponse;
   assert.deepEqual({ referenceId: navigation.sourceReference?.referenceId, sessionId: navigation.sessionId, sessionKeyPresent: Boolean(navigation.sessionKey) }, { referenceId: pageTwoIdentity.referenceId, sessionId: pageTwoIdentity.sessionId, sessionKeyPresent: true });
   await assertNoFrameOverflow(frame, `1440px ${RELEASE_FIXTURE_COUNTS.conversations}-Conversation page two`);
-  await frame.page().setViewportSize({ width: 320, height: 900 });
-  await selectWorkspaceSection(frame, 'conversations', 320, true);
-  await assertNoFrameOverflow(frame, `320px ${RELEASE_FIXTURE_COUNTS.conversations}-Conversation page two`);
-  await frame.page().setViewportSize({ width: 1440, height: 900 });
+  if (mobile) {
+    await frame.page().setViewportSize({ width: 320, height: 900 });
+    await selectWorkspaceSection(frame, 'conversations', 320, true);
+    await assertNoFrameOverflow(frame, `320px ${RELEASE_FIXTURE_COUNTS.conversations}-Conversation page two`);
+    await frame.page().setViewportSize({ width: 1440, height: 900 });
+  }
   await activate(frame.locator('#workspace-back'), true);
   await waitForDashboard(frame);
   measurements.largeNoteLifecycleMs = Math.max(1, Date.now() - lifecycleStarted);
   return Object.freeze(measurements);
-}
-
-async function assertResponsiveFrame(frame, page, width) {
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, `${width}px page has horizontal overflow`);
-  await assertNoFrameOverflow(frame, `${width}px responsive frame`);
-  const interactive = await frame.locator('button, input, select, textarea, a').evaluateAll((nodes) => nodes.filter((node) => {
-    const style = getComputedStyle(node);
-    return style.display !== 'none' && style.visibility !== 'hidden' && node.getClientRects().length > 0 && !node.closest('[hidden], [inert]');
-  }).map((node) => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height, name: node.getAttribute('aria-label') || node.labels?.[0]?.textContent?.trim() || node.textContent?.trim().slice(0, 80) || node.getAttribute('title') })));
-  for (const node of interactive) {
-    assert.ok(node.name, `${width}px interactive target has no observable name`);
-    assert.ok(node.width >= 44 && node.height >= 44, `${width}px interactive target is below 44px: ${node.name}`);
-  }
-  assert.equal(await frame.locator('h1').count(), 1);
-  assert.equal(await frame.locator('[role="dialog"]').count(), 2);
-  return Object.freeze({ minimumTargetCssPx: Math.min(...interactive.map((node) => Math.min(node.width, node.height))), noPageOverflow: true });
-}
-
-async function assertKeyboardAccessibility(frame, page) {
-  await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
-  assert.equal(await frame.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches && matchMedia('(forced-colors: active)').matches), true);
-  const traversed = [];
-  for (let index = 0; index < 80; index += 1) {
-    await page.keyboard.press('Tab');
-    const focused = await frame.evaluate(() => {
-      const node = document.activeElement;
-      if (!(node instanceof HTMLElement) || node === document.body) return null;
-      const style = getComputedStyle(node);
-      const name = node.getAttribute('aria-label') || node.labels?.[0]?.textContent?.trim() || node.textContent?.trim().slice(0, 80) || node.getAttribute('title');
-      return { name, outline: style.outlineStyle, hidden: Boolean(node.closest('[hidden], [inert]')) };
-    });
-    if (!focused) continue;
-    assert.ok(focused.name, 'Tab traversal reached an unnamed control');
-    assert.equal(focused.hidden, false, 'Tab traversal entered hidden or inert content');
-    assert.notEqual(focused.outline, 'none', `Keyboard focus is not visible for ${focused.name}`);
-    traversed.push(focused.name);
-    if (focused.name === 'View evidence') {
-      await page.keyboard.press('Enter');
-      assert.equal(await frame.locator('#evidence-dialog').getAttribute('open'), '');
-      assert.equal(await frame.getByRole('dialog', { name: /evidence/iu }).getAttribute('aria-modal'), 'true');
-      await page.keyboard.press('Escape');
-      assert.equal(await frame.evaluate(() => (document.activeElement?.getAttribute('aria-label') || document.activeElement?.textContent?.trim()) === 'View evidence'), true, 'Escape must restore Evidence focus');
-      break;
-    }
-  }
-  assert.ok(traversed.includes('View evidence'), 'Tab traversal must reach the Evidence action');
-  await page.keyboard.press('Shift+Tab');
-  assert.notEqual(await frame.evaluate(() => document.activeElement), null);
-  await page.setViewportSize({ width: 320, height: 900 });
-  assert.equal(await frame.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, '400% reflow at a 320 CSS-pixel content width has page-level overflow');
-  await assertResponsiveFrame(frame, page, 320);
-  await page.emulateMedia({ reducedMotion: 'no-preference', forcedColors: 'none' });
 }
 
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 2_400_000, concurrency: true }, async (testContext) => {
@@ -2085,7 +1952,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     buildReceipt = await withDeadline('candidate build', () => process.env.COMMAND_CENTER_SEALED_CANDIDATE === '1' ? readBuiltReceipt() : build(), 120_000);
     await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
     if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
-      baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
+      baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v2.json', import.meta.url), 'utf8')));
       assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
     }
     reportProgress(testContext, 'build:passed');
@@ -2125,8 +1992,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     ['fresh-desktop', startIsolatedSlice('fresh-desktop', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'desktop', width: 1440, signal }))],
     ['fresh-scale', startIsolatedSlice('fresh-scale', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'scale', width: 1440, signal }))],
     ['fresh-scale-analysis', startIsolatedSlice('fresh-scale-analysis', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'scale-analysis', width: 1440, signal }))],
-    ['fresh-mobile', startIsolatedSlice('fresh-mobile', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'mobile', width: 320, signal }))],
-    ['fresh-review', startIsolatedSlice('fresh-review', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'review', width: 320, signal }))],
+    ['fresh-review', startIsolatedSlice('fresh-review', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'review', width: 1440, signal }))],
     ['host-tuple-refusal', startIsolatedSlice('host-tuple-refusal', async (signal) => {
       return withIsolatedWorld(async (hostWorld) => {
         const restoredStateDir = path.join(hostWorld.root, '.openclaw');
@@ -2180,7 +2046,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   ]);
   const isolatedRunPromises = new Map();
   // Diagnostic only: do not silently add a new release-matrix requirement.
-  if (acceptancePlan.isolatedSliceIds?.includes('reminder-runtime-lifecycle')) isolatedSlices.set('reminder-runtime-lifecycle', startIsolatedSlice('reminder-runtime-lifecycle', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'reminder-lifecycle', width: 320, signal })));
+  if (acceptancePlan.isolatedSliceIds?.includes('fresh-mobile')) isolatedSlices.set('fresh-mobile', startIsolatedSlice('fresh-mobile', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'mobile', width: 320, signal })));
+  if (acceptancePlan.isolatedSliceIds?.includes('reminder-runtime-lifecycle')) isolatedSlices.set('reminder-runtime-lifecycle', startIsolatedSlice('reminder-runtime-lifecycle', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'reminder-lifecycle', width: 1440, signal })));
   const isolatedResult = async (id) => {
     if (!isolatedRunPromises.has(id)) isolatedRunPromises.set(id, isolatedSlices.get(id)?.());
     await isolatedRunPromises.get(id);
@@ -2306,8 +2173,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     assert.ok(host.child.pid, 'spawned host must own the isolated endpoint before probing it');
     const browserGuard = new TrafficGuard();
     const evidence = { console: [], errors: [], requests: [], responses: [], bootstrapStatus: undefined, parentBootstrapBodyKeys: [], routeGrant: false, parentBootstrap: false, cookieProbe: false, cookieProbeStatus: undefined, frame: false, readinessAttempts: [] };
-    const releaseState = { startup: false, desktop: undefined, mobile: undefined, restored: false, forgedMutationRejected: false, projectionRoot: undefined, baseline: undefined, activityPaged: false, reviewApplied: false, missingProjectionRebuilt: false, staleProjectionRebuilt: false, realizedScaleSeed };
-    let managedBrowser, browser, page, iframe, frame, qualifiedBaseline, desktopJourney, scaleJourney, mobileJourney, reviewJourney, pluginDocument;
+    const releaseState = { startup: false, desktop: undefined, keyboard: undefined, restored: false, forgedMutationRejected: false, projectionRoot: undefined, baseline: undefined, activityPaged: false, reviewApplied: false, missingProjectionRebuilt: false, staleProjectionRebuilt: false, realizedScaleSeed };
+    let managedBrowser, browser, page, iframe, frame, qualifiedBaseline, desktopJourney, scaleJourney, keyboardJourney, reviewJourney, pluginDocument;
     let failure;
     const scenarioCoordinator = createAcceptanceScenarioCoordinator({
       execute: async (id, run) => {
@@ -2728,7 +2595,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       browser = managedBrowser.browser;
       if (capturePerformanceBaseline) {
         baselineSeed = {
-          schemaVersion: 1,
+          schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION,
           hostVersion: releasePerformanceIdentity.hostVersion,
           hostReceipt: releasePerformanceIdentity.hostReceipt,
           pluginBuildDigest: `sha256:${buildReceipt.digest}`,
@@ -3357,9 +3224,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const renderedActivityIds = await frame.locator('#activity .activity-row').evaluateAll((rows) => rows.map((row) => row.dataset.activityId).filter(Boolean));
       assert.deepEqual(renderedActivityIds.slice(0, firstActivityIds.length), firstActivityIds, 'Activity page append must not replace or reorder page one');
       await assertNoFrameOverflow(frame, '1440px 101-record Activity');
-      await page.setViewportSize({ width: 320, height: 900 });
-      await assertNoFrameOverflow(frame, '320px 101-record Activity');
-      await page.setViewportSize({ width: 1440, height: 900 });
       const verifiedActivityRow = frame.locator(`#activity .activity-row[data-activity-id="${releaseState.verifiedActivity.activityId}"]`);
       await verifiedActivityRow.waitFor({ state: 'visible' });
       scaleJourney.measurement.activityNextPageMs = Math.max(1, Date.now() - activityStarted);
@@ -3374,23 +3238,25 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.deepEqual({ activityId: verifiedActivity?.activityId, episodeId: verifiedActivity?.episodeId, logicalOperationId: verifiedActivity?.logicalOperationId, topicId: verifiedActivity?.topicId, sourceReferenceId: verifiedActivity?.sourceReferenceId, operationKind: verifiedActivity?.operationKind, outcome: verifiedActivity?.outcome, verificationRevision: verifiedActivity?.verificationRevision, occurredAt: verifiedActivity?.occurredAt }, { activityId: receipt.activityId, episodeId: receipt.episodeId, logicalOperationId: receipt.logicalOperationId, topicId: receipt.topicId, sourceReferenceId: receipt.sourceReferenceId, operationKind: receipt.operationKind, outcome: receipt.outcome, verificationRevision: receipt.verificationRevision, occurredAt: receipt.occurredAt });
       return { activityId: verifiedActivity.activityId, sourceReferenceId: verifiedActivity.sourceReferenceId, logicalOperationId: verifiedActivity.logicalOperationId };
     });
-    await collectScenario('mobile-accessibility-journey', async () => {
-      assert.ok(browser, 'mobile scenario requires an independently reset browser fixture');
+    const mobileQualification = focusedScenarioIds?.has('mobile-accessibility-journey') === true;
+    const accessibilityWidth = mobileQualification ? 320 : 1440;
+    await collectScenario(mobileQualification ? 'mobile-accessibility-journey' : 'desktop-keyboard-journey', async () => {
+      assert.ok(browser, 'keyboard scenario requires an independently reset browser fixture');
       await page.close();
-      page = await browser.newPage({ viewport: { width: 320, height: 900 } });
+      page = await browser.newPage({ viewport: { width: accessibilityWidth, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }), (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
-      ({ frame, ...mobileJourney } = await runUiJourney(frame, { page, width: 320, name: 'Fictional Mobile Journey Topic', category: 'project', keyboard: true }));
-      releaseState.mobile = mobileJourney;
+      ({ frame, ...keyboardJourney } = await runUiJourney(frame, { page, width: accessibilityWidth, name: 'Fictional Keyboard Journey Topic', category: 'project', keyboard: true }));
+      releaseState.keyboard = keyboardJourney;
       const mobileReminderReferenceIds = [];
       let mobileAuditReminderReferenceId;
       for (const label of ['Keyboard source action', 'Keyboard snooze', 'Keyboard final audit']) {
         const createdReminder = await requestAuthenticatedGateway({
           gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'command-center.v1.reminders.create',
-          params: { schemaVersion: 1, topicId: mobileJourney.topicId, logicalOperationId: randomUUID(), declaration: { name: `Fictional ${label}`, enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: `Fictional ${label} reminder` }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } }
+          params: { schemaVersion: 1, topicId: keyboardJourney.topicId, logicalOperationId: randomUUID(), declaration: { name: `Fictional ${label}`, enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: `Fictional ${label} reminder` }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } }
         });
         const referenceId = createdReminder?.result?.value?.sourceReference?.referenceId;
         assert.equal(typeof referenceId, 'string');
@@ -3402,11 +3268,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await waitForDashboard(frame);
       const mobileDashboard = await readDashboard(gatewayUrl);
-      const mobileAuditEpisodes = mobileDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'reminders' && episode.topicId === mobileJourney.topicId && episode.sourceReferenceId === mobileAuditReminderReferenceId);
+      const mobileAuditEpisodes = mobileDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'reminders' && episode.topicId === keyboardJourney.topicId && episode.sourceReferenceId === mobileAuditReminderReferenceId);
       assert.equal(mobileAuditEpisodes.length, 1, 'final keyboard audit owns a separate live Reminder, not a previously completed/snoozed card');
       const mobileAuditEpisodeId = mobileAuditEpisodes[0].episodeId;
       const mobileEpisodeIds = mobileReminderReferenceIds.map((referenceId) => {
-        const matches = mobileDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'reminders' && episode.topicId === mobileJourney.topicId && episode.sourceReferenceId === referenceId);
+        const matches = mobileDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'reminders' && episode.topicId === keyboardJourney.topicId && episode.sourceReferenceId === referenceId);
         assert.equal(matches.length, 1, 'each created Reminder must resolve to one exact Attention episode');
         return matches[0].episodeId;
       });
@@ -3414,13 +3280,13 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const mobileCards = frame.locator(mobileEpisodeIds.map((id) => `#attention-cards .attention-card[data-episode-id=${JSON.stringify(id)}]`).join(', '));
       await mobileCards.nth(1).waitFor({ state: 'visible' });
       await tabTo(mobileCards.first().getByRole('button', { name: 'View evidence', exact: true }));
-      mobileJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 320, 'mobile Attention cards', true));
+      keyboardJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, accessibilityWidth, 'keyboard Attention cards', true));
       await activate(mobileCards.first().getByRole('button', { name: 'View evidence', exact: true }), true);
       assert.equal(await frame.locator('#evidence-dialog').getAttribute('open'), '');
-      mobileJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 320, 'mobile Evidence dialog', true));
+      keyboardJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, accessibilityWidth, 'keyboard Evidence dialog', true));
       await page.keyboard.press('Escape');
       assert.equal(await mobileCards.first().getByRole('button', { name: 'View evidence', exact: true }).evaluate((node) => document.activeElement === node), true, 'Evidence dialog must restore its invoking control');
-      mobileJourney.focusRestorations.push('320px Evidence dialog');
+      keyboardJourney.focusRestorations.push(`${accessibilityWidth}px Evidence dialog`);
       await chooseOption(mobileCards.first().locator('select[aria-label="Snooze duration"]'), 'PT72H', true);
       await activate(mobileCards.first().getByRole('button', { name: 'Snooze', exact: true }), true);
       await waitForFrameText(frame, '#dashboard-feedback', 'Item snoozed.');
@@ -3432,44 +3298,48 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // into the next Topic journey (as already required for Snooze above).
       await mobileCards.waitFor({ state: 'detached', timeout: BRIDGE_UI_OPERATION_BUDGET_MS });
       if (await frame.locator('#activity-load-more').isVisible()) await activate(frame.locator('#activity-load-more'), true);
-      await assertResponsiveFrame(frame, page, 320);
-      const cdp = await page.context().newCDPSession(page);
-      await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
-      const parentZoom = await page.evaluate(() => ({ layoutWidth: document.documentElement.clientWidth, visualWidth: visualViewport.width, scale: visualViewport.scale, frameLayoutWidth: document.querySelector('iframe')?.getBoundingClientRect().width ?? 0 }));
-      const frameZoom = await frame.evaluate(() => ({ layoutWidth: document.documentElement.clientWidth, ratio: devicePixelRatio }));
-      assert.equal(parentZoom.layoutWidth, 320);
-      assert.equal(parentZoom.visualWidth, 160);
-      assert.equal(parentZoom.scale, 2);
-      assert.equal(frameZoom.ratio, 1, 'browser zoom must not be simulated with device pixel density');
-      assert.ok(parentZoom.frameLayoutWidth / parentZoom.scale <= parentZoom.visualWidth, '200% browser zoom must scale the mounted frame into the effective viewport');
-      const reflowStarted = Date.now();
-      const { frame: zoomFrame, ...zoomJourney } = await runUiJourney(frame, { page, width: 320, name: 'Fictional 200 Percent Zoom Topic', category: 'area', keyboard: true });
-      frame = zoomFrame;
-      assert.ok(zoomJourney.topicId);
-      mobileJourney.accessibilityStates.push(...zoomJourney.accessibilityStates);
-      mobileJourney.focusRestorations.push(...zoomJourney.focusRestorations);
-      mobileJourney.announcementTransitions.push(...zoomJourney.announcementTransitions);
-      await assertResponsiveFrame(frame, page, 320);
-      mobileJourney.measurement.mobileReflowMs = Math.max(1, Date.now() - reflowStarted);
-      mobileJourney.zoomEvidence = { ...parentZoom, frameLayoutWidth: frameZoom.layoutWidth };
-      await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
-      await cdp.detach();
+      await assertResponsiveFrame(frame, page, accessibilityWidth);
+      let zoomJourney;
+      if (mobileQualification) {
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
+        const parentZoom = await page.evaluate(() => ({ layoutWidth: document.documentElement.clientWidth, visualWidth: visualViewport.width, scale: visualViewport.scale, frameLayoutWidth: document.querySelector('iframe')?.getBoundingClientRect().width ?? 0 }));
+        const frameZoom = await frame.evaluate(() => ({ layoutWidth: document.documentElement.clientWidth, ratio: devicePixelRatio }));
+        assert.equal(parentZoom.layoutWidth, 320);
+        assert.equal(parentZoom.visualWidth, 160);
+        assert.equal(parentZoom.scale, 2);
+        assert.equal(frameZoom.ratio, 1, 'browser zoom must not be simulated with device pixel density');
+        assert.ok(parentZoom.frameLayoutWidth / parentZoom.scale <= parentZoom.visualWidth, '200% browser zoom must scale the mounted frame into the effective viewport');
+        const reflowStarted = Date.now();
+        const { frame: zoomFrame, ...zoomResult } = await runUiJourney(frame, { page, width: 320, name: 'Fictional 200 Percent Zoom Topic', category: 'area', keyboard: true });
+        frame = zoomFrame;
+        zoomJourney = zoomResult;
+        assert.ok(zoomResult.topicId);
+        keyboardJourney.accessibilityStates.push(...zoomResult.accessibilityStates);
+        keyboardJourney.focusRestorations.push(...zoomResult.focusRestorations);
+        keyboardJourney.announcementTransitions.push(...zoomResult.announcementTransitions);
+        await assertResponsiveFrame(frame, page, 320);
+        keyboardJourney.measurement.mobileReflowMs = Math.max(1, Date.now() - reflowStarted);
+        keyboardJourney.zoomEvidence = { ...parentZoom, frameLayoutWidth: frameZoom.layoutWidth };
+        await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
+        await cdp.detach();
+      }
       await frame.locator(`#attention-cards .attention-card[data-episode-id=${JSON.stringify(mobileAuditEpisodeId)}]`).getByRole('button', { name: 'View evidence', exact: true }).waitFor({ state: 'visible' });
-      await assertKeyboardAccessibility(frame, page);
+      await assertKeyboardAccessibility(frame, page, { mobile: mobileQualification });
       evidence.performanceMeasurements ??= {};
-      evidence.performanceMeasurements.mobile = { ...mobileJourney.measurement, sourceActionMs: 0 };
-      return { topicId: mobileJourney.topicId, viewport: '320x900', keyboardAndReflow: true, zoom200TopicId: zoomJourney.topicId, zoomEvidence: mobileJourney.zoomEvidence, accessibilityStates: mobileJourney.accessibilityStates, focusRestorations: mobileJourney.focusRestorations, announcementTransitions: mobileJourney.announcementTransitions };
+      evidence.performanceMeasurements.keyboard = { ...keyboardJourney.measurement, sourceActionMs: 0 };
+      return { topicId: keyboardJourney.topicId, viewport: { width: accessibilityWidth, height: 900 }, keyboardOnly: true, zoom200TopicId: zoomJourney?.topicId, zoomEvidence: keyboardJourney.zoomEvidence, accessibilityStates: keyboardJourney.accessibilityStates, focusRestorations: keyboardJourney.focusRestorations, announcementTransitions: keyboardJourney.announcementTransitions };
     });
     await collectScenario('desktop-primary-journey-review', async () => {
       assert.ok(browser, 'review scenario requires an independently mounted browser fixture');
       if (page && !page.isClosed()) await page.close();
-      page = await browser.newPage({ viewport: { width: 320, height: 900 } });
+      page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
-      ({ frame, ...reviewJourney } = await runUiJourney(frame, { page, width: 320, name: 'Fictional Review Journey Topic', category: 'area', keyboard: true }));
+      ({ frame, ...reviewJourney } = await runUiJourney(frame, { page, width: 1440, name: 'Fictional Review Journey Topic', category: 'area', keyboard: true }));
       // These prompt responses seed two deterministic review proposals before
       // the measured keyboard-only decision/checkpoint/application workflow;
       // they are fixture setup, not a completed primary-journey action.
@@ -3478,8 +3348,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       for (const topicId of [desktopJourney.topicId, reviewJourney.topicId]) {
         await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId, input: {}, logicalOperationId: randomUUID() } });
       }
-      const mobileRow = frame.locator('.topic-row').filter({ hasText: 'Fictional Review Journey Topic' });
-      await activate(mobileRow.getByRole('button', { name: 'Rename', exact: true }), true);
+      const reviewRow = frame.locator('.topic-row').filter({ hasText: 'Fictional Review Journey Topic' });
+      await activate(reviewRow.getByRole('button', { name: 'Rename', exact: true }), true);
       await respondToCommandDialog(frame, { value: 'Project: Fictional Review Journey Topic' });
       await waitForFrameText(frame, '#topic-status', 'Topic renamed.');
       await frame.locator(`.topic-row[data-topic-id="${reviewJourney.topicId}"]`).getByText('Project: Fictional Review Journey Topic', { exact: true }).waitFor();
@@ -3502,7 +3372,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const keptBefore = beforeDecisions.find((proposal) => proposal.state === 'pending' && proposal.affectedTopicIds.includes(desktopJourney.topicId));
       assert.ok(approvedBefore && keptBefore);
       const proposal = frame.locator(`[data-proposal-id="${approvedBefore.proposalId}"]`);
-      reviewJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 320, 'mobile Topic Review proposal', true));
+      reviewJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 1440, 'desktop Topic Review proposal', true));
       await activate(proposal.getByRole('button', { name: 'Approve', exact: true }), true);
       await waitForFrameText(frame, '#analysis-feedback', 'Proposal decision saved.');
       const afterApproval = await frame.evaluate(async () => {
@@ -3526,7 +3396,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       }
       const checkpoint = frame.locator('#topic-review-checkpoint');
       await checkpoint.waitFor({ state: 'visible' });
-      reviewJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 320, 'mobile Topic Review checkpoint', true));
+      reviewJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 1440, 'desktop Topic Review checkpoint', true));
       await activate(checkpoint, true);
       await respondToCommandDialog(frame, { confirm: false });
       await waitForFrameText(frame, '#topic-review-plan', 'Frozen application plan');
@@ -3561,7 +3431,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal((changedTopic?.result ?? changedTopic).topic.paraCategory, 'project');
       releaseState.reviewApplied = true;
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-      await assertResponsiveFrame(frame, page, 320);
+      await assertResponsiveFrame(frame, page, 1440);
       return { planRevision: frozenPlan.planRevision, appliedProposalCount: frozenPlan.proposalRevisions.length };
     });
     if (acceptancePlan.kind === 'release') {
@@ -3587,7 +3457,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         host.diagnostics.guard.assertClean();
       },
       assertChildTraffic: async () => await assertRecordedChildTraffic(world),
-      // Bind the digest to the completed desktop and narrow-viewport journey.
+      // Bind the digest to the completed desktop and keyboard journey.
       assertBuildDigest: async () => await assertBuiltDigest(buildReceipt),
       timeoutMs: 60_000,
       onProgress: ({ phase, status }) => reportProgress(testContext, `finalization:${phase}:${status}`)
@@ -3598,10 +3468,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), redactBrowserEvidence(failure?.message || '')]);
       privacyEvidence = { schemaVersion: 1, repository: true, generated: true, capturedOutput: true, browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: finalizationErrors.length === 0 };
       if (acceptancePlan.kind === 'release' && scenarioFailures.length === 0 && finalizationErrors.length === 0) {
-        assert.ok(scaleJourney && mobileJourney && releaseState.reviewApplied, 'baseline qualification requires every independently collected release phase');
+        assert.ok(scaleJourney && keyboardJourney && releaseState.reviewApplied, 'baseline qualification requires every independently collected release phase');
         assert.equal(isolatedEvidence.size, isolatedSlices.size, 'baseline qualification requires every independent runtime slice');
         scaleJourney.measurement.topicReviewApplyMs = releaseState.topicReviewApplyMs;
-        scaleJourney.measurement.mobileReflowMs = mobileJourney.measurement.mobileReflowMs;
         if (capturePerformanceBaseline) {
           assert.ok(baselineSeed, 'baseline capture requires the launched browser identity');
           qualifiedBaseline = captureFirstReleasePerformanceBaseline(baselineSeed, scaleJourney.measurement);
@@ -3654,13 +3523,13 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         for (const fresh of await Promise.all(['fresh-desktop', 'fresh-review'].map(isolatedResult))) assert.equal(fresh.assertionsCompleted, true);
         return { schemaVersion: 1, topicId: desktop.topicId, authoritativeReadback: { primarySession: Boolean(releaseState.primarySession?.sessionId), conversation: Boolean(releaseState.durableWorkspace?.conversation?.sessionId), closedConversation: true, note: Boolean(releaseState.durableWorkspace?.note?.revision), attention: Boolean(releaseState.sourceActionActivity), activity: releaseState.activityPaged, topicReview: releaseState.reviewApplied }, actions: ['dashboard-load', 'topic-select', 'topic-create', 'primary-chat-send', 'conversation-create', 'conversation-switch', 'conversation-close', 'conversation-search', 'conversation-reopen', 'note-create', 'note-edit', 'note-preview', 'note-rename', 'note-move', 'topic-search', 'attention-evidence', 'attention-snooze', 'source-action', 'activity-page', 'topic-review'] };
       } },
-      { id: 'mobile-accessibility-journey', run: async () => {
-        const accessibility = scenarioResult('mobile-accessibility-journey');
+      { id: 'desktop-keyboard-journey', run: async () => {
+        const accessibility = scenarioResult('desktop-keyboard-journey');
         scenarioResult('desktop-primary-journey-review');
-        assert.equal((await isolatedResult('fresh-mobile')).assertionsCompleted, true);
-        const states = accessibility.accessibilityStates;
+        assert.equal((await isolatedResult('fresh-desktop')).assertionsCompleted, true);
+        const states = [...accessibility.accessibilityStates, ...reviewJourney.accessibilityStates];
         assert.ok(states.length >= 12, 'Accessibility evidence must cover every dynamic journey state');
-        return { schemaVersion: 1, viewport: { width: 320, height: 900 }, keyboardOnly: true, zoom200: accessibility.zoomEvidence?.scale === 2 && accessibility.zoomEvidence?.visualWidth === 160, forcedColors: states.some((state) => state.forcedColorsPreference), reducedMotion: states.filter((state) => state.reducedMotionPreference).every((state) => state.reducedMotion), focusRestored: accessibility.focusRestorations.length >= 10, announcements: accessibility.announcementTransitions.length >= 9, colorIndependent: states.every((state) => state.colorIndependent), minimumTargetCssPx: Math.min(...states.map((state) => state.minimumTargetCssPx)), noPageOverflow: states.every((state) => state.noPageOverflow), states: states.map((state) => state.label) };
+        return { schemaVersion: 1, viewport: { width: 1440, height: 900 }, keyboardOnly: true, forcedColors: states.some((state) => state.forcedColorsPreference), reducedMotion: states.filter((state) => state.reducedMotionPreference).every((state) => state.reducedMotion), focusRestored: accessibility.focusRestorations.length + reviewJourney.focusRestorations.length >= 10, announcements: accessibility.announcementTransitions.length + reviewJourney.announcementTransitions.length >= 9, colorIndependent: states.every((state) => state.colorIndependent), noPageOverflow: states.every((state) => state.noPageOverflow), states: states.map((state) => state.label) };
       } },
       { id: 'scale-performance', run: async () => {
         scenarioResult('scale-performance');

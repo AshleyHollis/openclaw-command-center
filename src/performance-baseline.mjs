@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const RELEASE_PERFORMANCE_BASELINE_VERSION = 1;
+export const RELEASE_PERFORMANCE_BASELINE_VERSION = 2;
 
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
   largeNoteBytes: 8_388_609,
@@ -22,8 +22,7 @@ export const RELEASE_MEASUREMENTS = Object.freeze([
   'largeNoteLifecycleMs',
   'indexedSearchMs',
   'activityNextPageMs',
-  'topicReviewApplyMs',
-  'mobileReflowMs'
+  'topicReviewApplyMs'
 ]);
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest']);
@@ -79,7 +78,7 @@ function normalizeIdentity(value, { allowPendingCapture = false } = {}) {
   const fixtureIdentity = digest(value.fixtureIdentity, 'fixtureIdentity');
   if (fixtureIdentity !== RELEASE_FIXTURE_IDENTITY) invalid('fixtureIdentity is not the measured release fixture');
   const fixtureCounts = assertFixtureCounts(value.fixtureCounts);
-  return { schemaVersion: 1, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts };
+  return { schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts };
 }
 
 function assertFixtureCounts(value) {
@@ -169,11 +168,11 @@ export function validateReleasePerformanceBaseline(value) {
   const thresholds = assertThresholds(value.thresholds, observations);
   closed(value.capture, ['policy', 'successfulRunOrdinal', 'identityDigest', 'observationsDigest'], 'capture');
   if (value.capture.policy !== 'first-successful-pinned-harness-observation' || value.capture.successfulRunOrdinal !== 1) invalid('capture must identify the first successful pinned harness observation');
-  const expectedIdentityDigest = canonicalDigest({ schemaVersion: 1, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts });
+  const expectedIdentityDigest = canonicalDigest({ schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts });
   const expectedObservationsDigest = canonicalDigest(observations);
   if (value.capture.identityDigest !== expectedIdentityDigest || value.capture.observationsDigest !== expectedObservationsDigest) invalid('capture evidence does not match the pinned identities and observations');
   const capture = Object.freeze({ ...value.capture });
-  return Object.freeze({ schemaVersion: 1, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts, observations, thresholds, capture });
+  return Object.freeze({ schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts, observations, thresholds, capture });
 }
 
 export function assertPerformanceObservationWithinBaseline(name, observation, baseline) {

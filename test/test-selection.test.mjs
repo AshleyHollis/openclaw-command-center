@@ -7,7 +7,7 @@ test('remaining UI diagnostics are a closed non-performance subset', () => {
   const plan = resolveRealHostAcceptancePlan('diagnostic-ui-remaining');
   assert.equal(plan.kind, 'focused');
   assert.deepEqual(plan.scenarioIds, []);
-  assert.deepEqual(plan.isolatedSliceIds, ['fresh-scale', 'fresh-mobile']);
+  assert.deepEqual(plan.isolatedSliceIds, ['fresh-scale']);
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-scale').isolatedSliceIds, ['fresh-scale']);
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-mobile').isolatedSliceIds, ['fresh-mobile']);
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-ui-desktop').isolatedSliceIds, ['fresh-desktop', 'fresh-scale', 'fresh-scale-analysis']);
@@ -124,10 +124,10 @@ test('real-host acceptance keeps exact Activity readback with its full-corpus sc
   });
 });
 
-test('combined journey diagnostic retains dependent desktop, scale, Activity, mobile and review checks', () => {
+test('combined journey diagnostic retains dependent desktop, scale, Activity, keyboard and review checks', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('combined-journey'), {
     kind: 'focused',
-    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'mobile-accessibility-journey', 'desktop-primary-journey-review']
+    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'desktop-keyboard-journey', 'desktop-primary-journey-review']
   });
   assert.deepEqual(ordinaryTestLanes(['test/topic-review-focus.test.mjs']), [{ id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/topic-review-focus.test.mjs'] }]);
 });

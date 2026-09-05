@@ -1,5 +1,15 @@
 # Desktop-first MVP: finish plan
 
+## Stabilization update (supersedes the pending implementation notes below)
+
+The Reminder root fix is committed in `9011ee4`: successful native one-shot delivery no longer acknowledges Attention, and Snooze re-enables the exact native schedule. Its original real-host reproduction passed, and the Linux affected cluster passed 121 tests. This is a closed diagnostic defect, not a new original acceptance-frontier pass.
+
+The bounded architecture follow-up centralizes native Reminder interpretation and action verification in `src/sources/reminder-lifecycle.mjs`. Existing Source callers and real SQLite Attention tests cross the same interface; no scheduler, store, or permissions were added. A deterministic browser regression also reproduced an older Dashboard response resurrecting a removed card. Dashboard refresh now applies only the latest request and owns card focus/draft restoration in one rendering function.
+
+Desktop acceptance is now executable: report and performance contracts are version 2, canonical review/keyboard journeys use the desktop viewport, and mobile remains opt-in under #216. Shared real-browser keyboard/audit policy lives in `test/support/keyboard-accessibility.mjs`. The nine non-mobile performance measurements remain required. Historical v1 baseline bytes are untouched; the v2 baseline must come from a successful coherent capture, so its persisted-baseline test remains pending until that capture exists.
+
+Local affected checks passed 38 tests. Next: seal these changes, run the two non-performance lanes, requalify desktop keyboard, then run scale/Activity exclusively. Final coherent capture, independent evaluation/review, Linux/publication, host-profile migration and backup/rollback/live smoke checks are still required. No new original frontier pass or live deployment is claimed by this update.
+
 Approved 2026-09-05. Canonical scope: [MVP #19](https://github.com/AshleyHollis/openclaw-command-center/issues/19), [completion #32](https://github.com/AshleyHollis/openclaw-command-center/issues/32). Mobile qualification is [deferred to #216](https://github.com/AshleyHollis/openclaw-command-center/issues/216), not passed. Attachments #213 and automatic Notes #214 remain deferred.
 
 ## Scope

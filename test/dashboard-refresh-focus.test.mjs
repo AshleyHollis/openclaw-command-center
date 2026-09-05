@@ -56,6 +56,12 @@ test('Dashboard refresh retains exact Attention focus and snooze draft, or moves
       await page.evaluate(async () => { window.__attention[0].episodeId = 'fictional-replacement'; await loadDashboard(); });
       assert.equal(await page.evaluate(() => document.activeElement?.id), 'attention-heading');
       assert.equal(await page.locator('#attention-heading').evaluate((node) => getComputedStyle(node).outlineStyle), 'solid');
+      await page.evaluate(() => { window.__deferDashboard = true; window.__releaseDashboard = null; window.__refresh = loadDashboard(); });
+      await page.waitForFunction(() => typeof window.__releaseDashboard === 'function');
+      await page.evaluate(async () => { window.__attention = []; await loadDashboard(); });
+      assert.equal(await page.locator('#attention-cards .attention-card').count(), 0);
+      await page.evaluate(async () => { window.__releaseDashboard(); await window.__refresh; });
+      assert.equal(await page.locator('#attention-cards .attention-card').count(), 0, 'an older Dashboard response must not resurrect removed Attention');
       await page.close();
     }
   } finally { await browser.close(); }
