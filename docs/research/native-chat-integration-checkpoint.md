@@ -59,11 +59,23 @@ The exact clean host `d2ef96f4466d253f32fc48a666a4573b2ee98444` is now built and
 
 New unique diagnostic closures since the previous checkpoint: two. New closures of the original six journey frontiers: zero. New final release rows: zero. The six remain `focused-native-chat-handoff`, `desktop-primary-journey`, `mobile-accessibility-journey`, `desktop-primary-journey-review`, `scale-performance`, and `verified-activity-readback`.
 
+## Keyboard handoff qualified — 18:54 AEST
+
+Host `2309e6542d0ba631178c8e647a2dc8b4763651bd` repairs transcript keyboard focus and supplies a shared light-DOM forced-colors outline without changing component-owned offsets. The regression failed on the original CSS and passed after the fix; independent review was scoped-clean through P2. The exact clean-source Linux build and integrity seal succeeded. Fixture source digest: `sha256:d4fe44584a584d68b18924edf0c16964b8ac90e9be1c5d6286f8ac0817dcd4fe`.
+
+Plugin `e1ad8fca67e04551d19da2ef929bb0c6af258203` pins that host in all compatibility mirrors. Harness successor `61056b90a99626dce91c2fa3737a59a6c7b36b6f` retains the same production digest, `sha256:815f0b48d3fd660147c912c6036e5fb73c440230b70f1a0f77ad89a8f1b8db48`. It fixes the verifier's incomplete tag list by using native tab-index semantics, including the model picker's implicit `summary` control. The preceding real-host replay reached that visibly focused picker before the verifier rejected it; no product or security rule was relaxed.
+
+`ticket32-native-chat-61056b9` passed `focused-native-chat-handoff`: keyboard-only open/send, native acknowledgement, exact authoritative user-message readback and return to the Topic. All cleanup and traffic/digest finalizers passed. `ticket32-mobile-61056b9` independently passed `fresh-mobile`, including the adapted Notes/Conversation journey and actual 200% zoom. The fixture does not prove assistant inference without model credentials.
+
+This closes one original journey frontier and one independent mobile diagnostic slice, not final release rows. Five original frontiers remain: `desktop-primary-journey`, `mobile-accessibility-journey`, `desktop-primary-journey-review`, `scale-performance`, and `verified-activity-readback`. The fuller coherent mobile scenario remains required despite the independent slice's pass.
+
+Current diagnostic lanes are `ticket32-ui-data-61056b9` and `ticket32-security-recovery-61056b9`, against the same sealed pair. Existing mobile/security passes repeated by those lanes are requalification, not new unique progress. Broader host checks in `ticket32-native-focus-green` have passed all type-check and lint phases but final repository guards are still running. No complete acceptance capture or performance qualification has been repeated during this repair.
+
 ## Not yet release-qualified
 
 The original 211-test snapshot above was focused integration evidence. The later sealed diagnostic candidate is **not a final acceptance capture or release-qualified build**. No unique final release acceptance boundary was closed by these focused or diagnostic passes.
 
-First repair and qualify the native keyboard focus presentation. Then qualify the adapted desktop/mobile journeys. Preserve actual native Session message readback, keyboard/mobile checks and measured Chat-send performance; do not replace these with a navigation-only pass or a mocked host result.
+Inspect the two remaining diagnostic-lane results and repair only remaining affected owner boundaries. Preserve actual native Session message readback, keyboard/mobile checks and measured Chat-send performance; do not replace these with a navigation-only pass or a mocked host result.
 
 After that, seal the exact pair; rerun affected non-performance clusters in the two diagnostic lanes; keep measured performance exclusive; run one coherent complete capture, independent evaluation and Linux publication gates. Verify backup/rollback before live activation. Previous-build passes are historical evidence, not qualification of these changed bytes.
 
