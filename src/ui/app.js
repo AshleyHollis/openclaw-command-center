@@ -71,7 +71,7 @@ let operatingState = Object.freeze({ mode: 'recovery-only', unavailableCapabilit
 async function dashboardRead(offset = 0) {
   return unwrap(await bridgeRequest('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: offset, activityLimit: 50 }));
 }
-function dashboardButton(label, action, { mutation = true } = {}) { const node = mutation ? mutationButton(label, action) : button(label, action); node.className = 'dashboard-action'; return node; }
+function dashboardButton(label, action, { mutation = true, focusKey = label } = {}) { const node = mutation ? mutationButton(label, action) : button(label, action); node.className = 'dashboard-action'; node.dataset.focusKey = focusKey; return node; }
 function displayEvidence(value) {
   const target = document.querySelector('#evidence-content');
   target.replaceChildren();
@@ -262,10 +262,10 @@ function snoozeControl(episode) {
   const choices = Array.isArray(episode.eligibleSnoozeChoices) ? episode.eligibleSnoozeChoices : [];
   if (!choices.length) return null;
   const wrapper = document.createElement('div'); wrapper.className = 'snooze-control';
-  const select = document.createElement('select'); select.setAttribute('aria-label', 'Snooze duration');
+  const select = document.createElement('select'); select.setAttribute('aria-label', 'Snooze duration'); select.dataset.focusKey = 'snooze-duration';
   const labels = { NEXT_0700: 'Tomorrow morning', PT72H: 'Three days', PT168H: 'One week', custom: 'Custom time' };
   for (const choice of choices) { const option = document.createElement('option'); option.value = choice; option.textContent = labels[choice] ?? choice; select.append(option); }
-  const custom = document.createElement('input'); custom.type = 'datetime-local'; custom.setAttribute('aria-label', 'Custom snooze time'); custom.hidden = true;
+  const custom = document.createElement('input'); custom.type = 'datetime-local'; custom.setAttribute('aria-label', 'Custom snooze time'); custom.dataset.focusKey = 'snooze-custom'; custom.hidden = true;
   select.addEventListener('change', () => { custom.hidden = select.value !== 'custom'; if (!custom.hidden) custom.focus(); });
   wrapper.append(select, custom, dashboardButton('Snooze', () => {
     const value = select.value;
@@ -293,7 +293,7 @@ function renderAttentionCard(episode) {
       const details = document.createElement('p'); details.textContent = `${label}: ${typeof value === 'string' ? value : JSON.stringify(value ?? null)}`; card.append(details);
     }
   }
-  for (const action of (episode.actions ?? []).filter((item) => !['attention.snooze', 'reminder.snooze'].includes(item.actionId)).slice(0, 3)) actions.append(dashboardButton(action.label || 'Open', () => runDashboardAction(episode, action.actionId, action.actionId === 'reminder.complete' ? { expectedConfigRevision: episode.sourceRevision } : {}, `${action.label || 'Action'} accepted.`)));
+  for (const action of (episode.actions ?? []).filter((item) => !['attention.snooze', 'reminder.snooze'].includes(item.actionId)).slice(0, 3)) actions.append(dashboardButton(action.label || 'Open', () => runDashboardAction(episode, action.actionId, action.actionId === 'reminder.complete' ? { expectedConfigRevision: episode.sourceRevision } : {}, `${action.label || 'Action'} accepted.`), { focusKey: action.actionId }));
   const snooze = snoozeControl(episode); if (snooze) actions.append(snooze);
   const evidence = dashboardButton('View evidence', () => showEvidence(episode, evidence), { mutation: false }); actions.append(evidence);
   card.append(actions); return card;
@@ -345,8 +345,24 @@ function focusNotificationTarget() {
 async function loadDashboard() {
   try {
     dashboardState = await dashboardRead(0); renderNotificationSettings(dashboardState.notificationSettings); const attention = document.querySelector('#attention-cards');
+    // Capture after the awaited read: preserve current focus, not the control
+    // that happened to be focused when this refresh began.
+    const active = document.activeElement;
+    const focusedCard = attention.contains(active) ? active.closest('.attention-card') : null;
+    const focusIntent = focusedCard ? { episodeId: focusedCard.dataset.episodeId, key: active.dataset.focusKey,
+      snooze: focusedCard.querySelector('select')?.value, custom: focusedCard.querySelector('input[type="datetime-local"]')?.value } : null;
     attention.replaceChildren(...(dashboardState.attention ?? []).map(renderAttentionCard));
     if (!attention.childElementCount) attention.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nothing needs attention.' }));
+    if (focusIntent) {
+      const card = [...attention.children].find((node) => node.dataset.episodeId === focusIntent.episodeId);
+      const select = card?.querySelector('select'); const custom = card?.querySelector('input[type="datetime-local"]');
+      if (select && [...select.options].some((option) => option.value === focusIntent.snooze)) select.value = focusIntent.snooze;
+      if (custom) { custom.hidden = select?.value !== 'custom'; custom.value = focusIntent.custom ?? ''; }
+      const replacement = [...(card?.querySelectorAll('[data-focus-key]') ?? [])].find((node) => node.dataset.focusKey === focusIntent.key && !node.disabled && !node.closest('[hidden], [inert]'));
+      const target = replacement ?? document.querySelector('#attention-heading');
+      if (!replacement) target.setAttribute('tabindex', '-1');
+      target.focus({ preventScroll: true });
+    }
     document.querySelector('#attention-badge').textContent = String(dashboardState.attentionBadgeCount ?? 0);
     renderDashboardProgress();
     const coming = document.querySelector('#coming-up'); coming.replaceChildren(...(dashboardState.comingUp ?? []).map((item) => { const row = document.createElement('p'); row.textContent = `${item.day} · ${item.time} · ${item.context} · ${item.label}`; return row; })); if (!coming.childElementCount) coming.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No future Reminders.' }));

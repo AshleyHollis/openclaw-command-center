@@ -2,6 +2,7 @@ const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs']);
 const browserHeavyTests = new Set([
   'test/dashboard-operation-ui.test.mjs',
   'test/dashboard-ui.test.mjs',
+  'test/dashboard-refresh-focus.test.mjs',
   'test/topic-page.acceptance.test.mjs',
   'test/topic-review-ui.test.mjs',
   'test/topic-review-focus.test.mjs',
