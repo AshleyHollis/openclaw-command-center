@@ -36,7 +36,8 @@ h2, h3, h4 { overflow-wrap: anywhere; }
 button, input, select { min-height: 44px; }
 button { border: 0; border-radius: 8px; padding: 9px 12px; background: var(--accent); color: #07120f; font-weight: 700; cursor: pointer; overflow-wrap: anywhere; white-space: normal; }
 button:disabled { opacity: .55; }
-button:focus, input:focus, select:focus, dialog:focus, [tabindex]:focus { outline: 3px solid #fff; outline-offset: 2px; }
+/* Native date/time picker buttons focus inside the input's browser-owned tree. */
+button:focus, input:focus-within, select:focus, dialog:focus, [tabindex]:focus { outline: 3px solid #fff; outline-offset: 2px; }
 input, select { width: 100%; min-width: 0; box-sizing: border-box; background: #0d1620; border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 10px; }
 .topic-create, .topic-grid, .search-grid { display: grid; gap: 14px; }
 .topic-create { grid-template-columns: 2fr 1fr auto; align-items: end; }
