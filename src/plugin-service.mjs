@@ -15,6 +15,7 @@ import { createTopicAnalysisProvider } from './topics/analysis-provider.mjs';
 import { createProductionTopicAnalyzer } from './topics/production-analyzer.mjs';
 import { createTopicAnalysisScheduleService } from './topics/analysis-schedule.mjs';
 import { createTopicReviewService } from './topics/review.mjs';
+import { SourceServiceError } from './sources/errors.mjs';
 
 let activeMaintenanceService;
 
@@ -48,6 +49,9 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
   let startupSearchRebuildController;
   let stopPromise;
   let stopping = false;
+  let recoveryOnly = false;
+  const refuseRecovery = () => { throw new SourceServiceError('recovery-only', 'Command Center is recovery-only; authoritative data and mutations remain unavailable.'); };
+  const requireOperational = () => { if (recoveryOnly) refuseRecovery(); };
   return {
     id: 'command-center-metadata',
     async start() {
@@ -74,6 +78,24 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
         attention: configuredSourceCapabilities.attention !== false
       };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
+      recoveryOnly = metadataService.getOperatingStatus().mode === 'recovery-only';
+      if (recoveryOnly) {
+        // The metadata owner has refused this database. Do not create consumers that open it independently.
+        const closedPresentation = (reads) => new Proxy(Object.freeze(reads), { get(target, property) { return Object.hasOwn(target, property) ? target[property] : property === 'then' ? undefined : refuseRecovery; } });
+        const destination = () => ({ activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] });
+        sourceService = closedPresentation({
+          status() { const status = metadataService.getOperatingStatus(); return { schemaVersion: 1, mode: 'recovery-only', metadataSchemaVersion: status.schemaVersion, diagnostics: status.diagnostics ?? [], unavailableCapabilities: status.unavailableCapabilities ?? [] }; },
+          close() {}, settleSearchRefresh() {}
+        });
+        topicService = closedPresentation({ listDestination: destination, listDestinationVerified: destination });
+        dashboardService = Object.freeze({ get(input = {}) {
+          const activityOffset = input.activityOffset ?? 0;
+          const activityLimit = input.activityLimit ?? 50;
+          if (!Number.isSafeInteger(activityOffset) || activityOffset < 0 || !Number.isSafeInteger(activityLimit) || activityLimit < 1 || activityLimit > 50) throw new SourceServiceError('invalid-request', 'Dashboard paging is invalid.');
+          return { schemaVersion: 1, serverTime: new Date().toISOString(), attention: [], attentionBadgeCount: 0, inProgress: [], comingUp: [], topics: [], activity: { records: [], nextOffset: null, hasMore: false }, activityOffset, activityLimit };
+        } });
+        return sourceService.status();
+      }
       const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: api.pluginConfig?.legacyDiscordMigration, logger: api.logger });
       attentionService = createAttentionService({
         metadata: metadataService,
@@ -267,9 +289,11 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
     get topicAnalysisSchedule() { return topicAnalysisSchedule; },
     get topicReview() { return topicReview; },
     topicAnalysisRead() {
+      if (recoveryOnly) return { schemaVersion: 1, schedule: null, runs: [], review: null };
       return { schemaVersion: 1, schedule: topicAnalysisSchedule?.peekSettings?.() ?? metadataService?.getTopicAnalysisSettings?.() ?? null, runs: metadataService?.listTopicAnalysisRuns?.() ?? [], review: topicReview?.get?.() ?? null };
     },
     topicAnalysisRun(input) {
+      requireOperational();
       if (!topicAnalysisRunner) throw new Error('Command Center Topic Analysis is not ready.');
       const trigger = input?.trigger ?? 'manual';
       const execution = ['weekly', 'catch-up'].includes(trigger) && topicAnalysisSchedule
@@ -277,17 +301,18 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
         : topicAnalysisRunner.run({ ...input, trigger }).then((result) => { topicReview?.refresh?.(); return result; });
       return Promise.resolve(execution);
     },
-    topicAnalysisScheduleUpdate(input) { if (!topicAnalysisSchedule) throw new Error('Command Center Topic Analysis scheduling is not ready.'); return topicAnalysisSchedule.update(input); },
+    topicAnalysisScheduleUpdate(input) { requireOperational(); if (!topicAnalysisSchedule) throw new Error('Command Center Topic Analysis scheduling is not ready.'); return topicAnalysisSchedule.update(input); },
     topicReviewGet() { return topicReview?.get?.() ?? null; },
-    topicReviewDecide(input) { return topicReview.decide(input); },
-    topicReviewSnooze(input) { return topicReview.snooze(input); },
-    topicReviewCheckpoint(input) { return topicReview.checkpoint(input); },
-    topicReviewApply(input) { return topicReview.apply(input); },
+    topicReviewDecide(input) { requireOperational(); return topicReview.decide(input); },
+    topicReviewSnooze(input) { requireOperational(); return topicReview.snooze(input); },
+    topicReviewCheckpoint(input) { requireOperational(); return topicReview.checkpoint(input); },
+    topicReviewApply(input) { requireOperational(); return topicReview.apply(input); },
     async dashboardGet(input, runtime = {}) {
       if (!dashboardService) throw new Error('Command Center Dashboard is not ready.');
       const request = { ...input };
       delete request.requestId;
       delete request.authenticatedOperatorId;
+      if (recoveryOnly) return dashboardService.get(request);
       return sourceService.withSchedulerGateway(runtime, async () => {
         try { await sourceService?.refreshReminderAttention?.(); } catch { /* the projection omits unavailable scheduler rows */ }
         await notificationService?.reconcile?.();
@@ -295,24 +320,29 @@ export function createMetadataService(api, { notificationEmitter, searchRebuildS
       });
     },
     dashboardUpdateSettings(input) {
+      requireOperational();
       if (!notificationService) throw new Error('Command Center notification settings are not ready.');
       return notificationService.updateSettings(input);
     },
     notificationReconcile(runtime = {}) {
+      if (recoveryOnly) return;
       return sourceService.withSchedulerGateway(runtime, () => Promise.resolve(sourceService?.refreshReminderAttention?.()).catch(() => undefined).then(() => notificationService?.reconcile?.()));
     },
     notificationCaptureBinding() {
       return notificationService?.captureCurrentOperatorBinding?.() ?? false;
     },
     topicContextRetrieve(input) {
+      requireOperational();
       if (!contextPolicy) throw new Error('Command Center Topic context is not ready.');
       return contextPolicy.retrieve(input);
     },
     async searchRebuild(input) {
+      requireOperational();
       if (!searchService?.rebuildPrepared) throw new Error('Command Center Topic Search rebuild is not ready.');
       return searchService.rebuildPrepared(input);
     },
     async searchPrepareRebuild(input) {
+      requireOperational();
       if (!searchRebuildService?.prepareAuthorized) throw new Error('Command Center Topic Search rebuild preparation is not ready.');
       return searchRebuildService.prepareAuthorized(input);
     }

@@ -3,7 +3,7 @@ import test from 'node:test';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
 import packageJson from '../package.json' with { type: 'json' };
 import packageLock from '../package-lock.json' with { type: 'json' };
-import { assertDeclarativeMirror, validateCompatibility } from '../src/compatibility.mjs';
+import { assertCapabilityBridgeDeclaration, assertDeclarativeMirror, validateCompatibility } from '../src/compatibility.mjs';
 import { pinnedHost } from '../src/host-harness.mjs';
 
 const supportedOpenClaw = Object.freeze({
@@ -14,6 +14,11 @@ const controllerIntegrationCommit = '01072cc079ff2ba088daab493501c0b95b41428a';
 const upstreamCompatibilityCommit = controllerIntegrationCommit;
 const controllerPackageVersion = '2026.9.1';
 const publishedSdkVersion = controllerPackageVersion;
+
+test('release admission refuses unsupported or missing bridge declarations before activation', () => {
+  assert.doesNotThrow(() => assertCapabilityBridgeDeclaration({ protocolVersion: 1 }));
+  for (const declaration of [undefined, {}, { protocolVersion: 0 }, { protocolVersion: 2 }, { protocolVersion: '1' }, { protocolVersion: 1.5 }]) assert.throws(() => assertCapabilityBridgeDeclaration(declaration), /requires a capability bridge protocol/u);
+});
 
 test('accepts the exact canonical compatibility tuple', () => {
   assert.deepEqual(validateCompatibility(structuredClone(canonical)), { ok: true });

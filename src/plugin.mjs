@@ -11,6 +11,7 @@ import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandl
 import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
 import { createTopicPageActionsHandler } from './topics/page-http.mjs';
 import { createSearchRebuildHttpHandler, searchRebuildRoute } from './search/http-route.mjs';
+import { assertCapabilityBridgeDeclaration } from './compatibility.mjs';
 
 export { runNoteMaintenance } from './plugin-service.mjs';
 
@@ -50,6 +51,24 @@ export default definePluginEntry({
   configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema, topics: { type: 'object', properties: { noteRoot: { type: 'string', minLength: 1, pattern: '\\S' } }, required: ['noteRoot'], additionalProperties: false }, sourceCapabilities: { type: 'object', properties: Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'search', 'analysis', 'attention'].map((name) => [name, { const: false }])), additionalProperties: false }, controlUiGrant: { const: false } }, additionalProperties: false },
   /** @param {OpenClawPluginApi} api */
   register(api) {
+    const descriptor = {
+      surface: 'tab', id: routeId, label: 'Command Center', group: 'control', path: pluginPath,
+      capabilityBridge: {
+        protocolVersion: 1,
+        requiredMethods: [
+          'command-center.v1.sources.status', 'command-center.v1.dashboard.get',
+          'command-center.v1.topics.list', 'command-center.v1.topics.get',
+          'command-center.v1.sessions.browse', 'command-center.v1.sessions.history',
+          'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send',
+          'command-center.v1.attention.act', 'command-center.v1.notes.browse',
+          'command-center.v1.notes.read', 'command-center.v1.search.query',
+          'command-center.v1.search.prepare-rebuild', 'sessions.create', 'ui.session.navigate'
+        ],
+        optionalMethods: []
+      }
+    };
+    // Fail before emitters, runtime services, methods, or HTTP routes acquire side effects.
+    assertCapabilityBridgeDeclaration(descriptor.capabilityBridge);
     const controlUiMutationsAllowed = api.pluginConfig?.controlUiGrant !== false;
     if (typeof api.notifications?.registerEmitter !== 'function') throw new Error('Command Center requires the published notification emitter API.');
     const notificationEmitter = api.notifications.registerEmitter({
@@ -103,34 +122,7 @@ export default definePluginEntry({
     });
     // This public SDK seam asks Control UI to render the route in its default
     // scripts-only frame. Gateway auth makes the host mint a frame grant.
-    if (api.pluginConfig?.controlUiGrant !== false) api.session.controls.registerControlUiDescriptor({
-      surface: 'tab',
-      id: routeId,
-      label: 'Command Center',
-      group: 'control',
-      path: pluginPath,
-      capabilityBridge: {
-        protocolVersion: 1,
-        requiredMethods: [
-          'command-center.v1.sources.status',
-          'command-center.v1.dashboard.get',
-          'command-center.v1.topics.list',
-          'command-center.v1.topics.get',
-          'command-center.v1.sessions.browse',
-          'command-center.v1.sessions.history',
-          'command-center.v1.sessions.navigate',
-          'command-center.v1.sessions.send',
-          'command-center.v1.attention.act',
-          'command-center.v1.notes.browse',
-          'command-center.v1.notes.read',
-          'command-center.v1.search.query',
-          'command-center.v1.search.prepare-rebuild',
-          'sessions.create',
-          'ui.session.navigate'
-        ],
-        optionalMethods: []
-      }
-    });
+    if (controlUiMutationsAllowed) api.session.controls.registerControlUiDescriptor(descriptor);
     for (const path of assets.keys()) {
       api.registerHttpRoute({
         path,

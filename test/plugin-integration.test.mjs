@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -69,6 +69,18 @@ test('Control UI descriptor grants the operating-status read used to unlock muta
     assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sources.status'));
     assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.attention.act'));
   } finally { await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('unsupported actual bridge declaration refuses activation before touching any published API', async () => {
+  const entryUrl = new URL('../src/plugin.mjs', import.meta.url);
+  const source = await readFile(entryUrl, 'utf8');
+  assert.equal(source.split('protocolVersion: 1,').length - 1, 1);
+  const variant = source.replace('protocolVersion: 1,', 'protocolVersion: 2,').replace(/from '(\.[^']+|openclaw\/[^']+)'/gu, (_match, specifier) => `from '${specifier.startsWith('.') ? new URL(specifier, entryUrl).href : import.meta.resolve(specifier)}'`);
+  const { default: incompatible } = await import(`data:text/javascript;base64,${Buffer.from(variant).toString('base64')}`);
+  const touched = [];
+  const forbiddenApi = new Proxy({}, { get(_target, key) { touched.push(key); throw new Error('Registration acquired a side effect before release admission'); } });
+  assert.throws(() => incompatible.register(forbiddenApi), /requires a capability bridge protocol/u);
+  assert.deepEqual(touched, []);
 });
 
 test('production plugin exposes Ready analysis and replays its durable bridge result without redispatch', async () => {
