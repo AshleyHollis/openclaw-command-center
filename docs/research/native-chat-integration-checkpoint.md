@@ -115,6 +115,14 @@ Unique original frontier closures since the preceding checkpoint: zero. Three re
 
 The common cause at both repaired journey seams is that input/receipt acknowledgement is not visible operation completion. These are explicit readback waits, not retries, sleeps or longer acceptance budgets. The next mobile job and remaining five independent UI/data slices must use the same newly sealed test candidate; scale/Activity stays exclusive afterward. All three original frontiers remain open until those actual results arrive.
 
+## Native date/time focus repair — 20:05 AEST
+
+`ticket32-ui-data-2e73875` passed all five independent UI/data slices; together with the preceding security lane, all 17 independent slices passed on production digest `cd18df03e772f5102fbfaf896a569c6d5336a9ed9b750c2f506672149bc2b89d`. The full mobile journey passed Conversation close, Reminder completion and its second Topic at 200% zoom, then failed the final keyboard audit on the Quiet Hours Start field.
+
+A half-second browser reproduction with the actual product stylesheet showed the browser-owned picker button retaining `:focus-within` on the time input while `:focus` and `:focus-visible` are false. The existing outer outline disappeared at this internal keyboard stop. Production fix `759539760a1e4ce99d5461c2bdd0bce510c43208` applies the same outline to `input:focus-within`, without replacing native controls, adding event handlers or relaxing the audit. Its regression traverses time, date and datetime-local controls in both directions at 320px/1440px, with forced colors on/off, checks the internal picker path, and verifies the outline disappears after leaving the input.
+
+The Linux build passed 56 checks and sealed new production digest `sha256:a398327cf913a9cd98057062f278c767f588d7b64b0db27dbf637429df2870f2`. The affected full mobile and desktop/review journeys run in `ticket32-mobile-frontier-7595397` and `ticket32-review-journey-7595397`. Their results are pending; prior slice passes remain historical evidence for the earlier digest. All three original remaining frontiers and the final coherent release/evaluation/publication/live gates remain open.
+
 ## Not yet release-qualified
 
 The original 211-test snapshot above was focused integration evidence. The later sealed diagnostic candidate is **not a final acceptance capture or release-qualified build**. No unique final release acceptance boundary was closed by these focused or diagnostic passes.
