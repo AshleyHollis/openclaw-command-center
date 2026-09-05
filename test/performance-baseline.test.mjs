@@ -18,7 +18,7 @@ test('release performance baseline pins the measured corpus and immutable first 
   assert.equal(baseline.fixtureIdentity, RELEASE_FIXTURE_IDENTITY);
   assert.equal(baseline.capture.successfulRunOrdinal, 1);
   assert.equal(baseline.browser.version, '151.0.7922.34');
-  assert.equal(baseline.hostReceipt.commit, '01072cc079ff2ba088daab493501c0b95b41428a');
+  assert.equal(baseline.hostReceipt.commit, '1eb7aa385dae0eb8c5b926d1288832489126f987');
   assert.deepEqual(baseline.thresholds, deriveReleaseThresholds(baseline.observations));
   assert.throws(() => validateReleasePerformanceBaselineSeed(baseline), /unsupported field|seed/u);
   for (const name of RELEASE_MEASUREMENTS) {
