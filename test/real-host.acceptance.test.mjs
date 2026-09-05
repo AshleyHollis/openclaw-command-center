@@ -3315,9 +3315,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await chooseOption(mobileCards.first().locator('select[aria-label="Snooze duration"]'), 'PT72H', true);
       await activate(mobileCards.first().getByRole('button', { name: 'Snooze', exact: true }), true);
       await waitForFrameText(frame, '#dashboard-feedback', 'Item snoozed.');
+      keyboardJourney.announcementTransitions.push('Item snoozed.');
       await frame.waitForFunction((ids) => [...document.querySelectorAll('#attention-cards .attention-card')].filter((card) => ids.includes(card.dataset.episodeId)).length === 1, mobileEpisodeIds);
       await activate(mobileCards.first().getByRole('button', { name: 'Reminder Complete', exact: true }), true);
       await waitForFrameText(frame, '#dashboard-feedback', 'Reminder Complete accepted.');
+      keyboardJourney.announcementTransitions.push('Reminder Complete accepted.');
       // The source receipt precedes the Dashboard readback that removes the
       // card and restores owner focus. Finish that transition before tabbing
       // into the next Topic journey (as already required for Snooze above).

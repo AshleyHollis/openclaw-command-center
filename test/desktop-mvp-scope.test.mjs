@@ -44,3 +44,14 @@ test('focused full-corpus setup retains verified counts needed by the scale rece
   assert.ok(/notes: verified\.topicRowCounts\.notes\[RELEASE_SCALE_TOPIC_ID\]/u.test(setup));
   assert.ok(/conversationMessages: verified\.topicRowCounts\.conversationMessages\[RELEASE_SCALE_TOPIC_ID\]/u.test(setup));
 });
+
+test('desktop keyboard records its observed Reminder status announcements for the release gate', async () => {
+  const source = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('const mobileQualification');
+  const journey = source.slice(start, source.indexOf("await collectScenario('desktop-primary-journey-review'", start)).replace(/\r\n/gu, '\n');
+  for (const message of ['Item snoozed.', 'Reminder Complete accepted.']) {
+    const observation = `await waitForFrameText(frame, '#dashboard-feedback', '${message}');`;
+    const recording = `keyboardJourney.announcementTransitions.push('${message}');`;
+    assert.ok(journey.includes(`${observation}\n      ${recording}`), `record the verified ${message} transition, not an invented release count`);
+  }
+});
