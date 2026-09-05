@@ -89,6 +89,12 @@ The intermediate `ticket32-combined-journey-0a758c2` failed after desktop passed
 
 Sealed harness `587c65d0728535387211aeeaff8d50186e9cd047` retains production digest `sha256:815f0b48d3fd660147c912c6036e5fb73c440230b70f1a0f77ad89a8f1b8db48`. The pending performance identity source digest now matches the actual host seal; no historical measured baseline value was edited. Three original frontiers remain: `mobile-accessibility-journey`, `scale-performance`, and `verified-activity-readback`. Final coherent release rows newly closed: zero. All final evaluation/publication/live gates remain required.
 
+## Scale observation deadline corrected — 19:28 AEST
+
+`ticket32-scale-frontier-587c65d` progressed beyond the prior focus-loss point, then failed at the pending-source-action observer. The observer's ten-second deadline started concurrently with `activate`, which includes sequential keyboard traversal; that traversal was still running when failed-test cleanup closed its page, producing an unhandled rejection. Harness `8075fcd3b2fdd8daa2b13626995480dac8a2f882` awaits activation before starting the observer deadline. The MutationObserver remains installed beforehand and retains brief pending states. No timeout or assertion is relaxed.
+
+The scale selector now includes its dependent `verified-activity-readback` assertion in the same run. A separate full-corpus mobile selector retains the complete existing mobile journey, including Reminder actions and second-Topic 200% zoom. Targeted selection, finalization and paint checks passed locally. Real-host verification remains required; three original frontiers and all final release gates remain open. The intermittent earlier focus-loss pattern is retained as unresolved, not inferred fixed from passing smaller replays.
+
 ## Not yet release-qualified
 
 The original 211-test snapshot above was focused integration evidence. The later sealed diagnostic candidate is **not a final acceptance capture or release-qualified build**. No unique final release acceptance boundary was closed by these focused or diagnostic passes.
