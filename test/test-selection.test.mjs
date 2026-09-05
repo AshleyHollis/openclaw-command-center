@@ -12,6 +12,8 @@ test('remaining UI diagnostics are a closed non-performance subset', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-mobile').isolatedSliceIds, ['fresh-mobile']);
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-ui-desktop').isolatedSliceIds, ['fresh-desktop', 'fresh-scale', 'fresh-scale-analysis']);
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-compatibility-startup').isolatedSliceIds, ['host-tuple-refusal', 'build-variant']);
+  const review = resolveRealHostAcceptancePlan('desktop-review-journey');
+  assert.deepEqual(review.scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'desktop-primary-journey-review']);
 });
 
 test('two non-performance diagnostic lanes partition every independent real-host slice', async () => {

@@ -3500,6 +3500,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // These prompt responses seed two deterministic review proposals before
       // the measured keyboard-only decision/checkpoint/application workflow;
       // they are fixture setup, not a completed primary-journey action.
+      // First analysis intentionally records a quiet baseline. Own that setup
+      // here so an earlier failed scale action cannot suppress this independent check.
+      for (const topicId of [desktopJourney.topicId, reviewJourney.topicId]) {
+        await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId, input: {}, logicalOperationId: randomUUID() } });
+      }
       const mobileRow = frame.locator('.topic-row').filter({ hasText: 'Fictional Review Journey Topic' });
       await activate(mobileRow.getByRole('button', { name: 'Rename', exact: true }), true);
       await respondToCommandDialog(frame, { value: 'Project: Fictional Review Journey Topic' });
