@@ -1649,6 +1649,61 @@ async function auditDynamicAccessibilityState(frame, page, width, label, keyboar
   return Object.freeze({ label, colorIndependent: state.colorIndependent, reducedMotion: state.reducedMotion, reducedMotionPreference: state.reducedMotionPreference, forcedColorsPreference: state.forcedColorsPreference, minimumTargetCssPx: responsive.minimumTargetCssPx, noPageOverflow: responsive.noPageOverflow, modalLabelled: state.modalLabelled });
 }
 
+async function nativeChatRoundTrip(frame, { page, topicId, message, width = 1440, keyboard = false }) {
+  const pluginUrl = page.url();
+  const target = await frame.evaluate(async (id) => {
+    const catalog = unwrap(await bridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: id }));
+    const primary = catalog.conversations.find((item) => item.isPrimary);
+    if (!primary) throw new Error('Native Chat requires an exact Primary Session.');
+    return unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: id, referenceId: primary.referenceId, nativeChat: true }));
+  }, topicId);
+  assert.ok(target.sessionKey && target.sessionId && target.sourceReference?.referenceId);
+  let sentRequest;
+  let acknowledgement;
+  const listeners = [];
+  const observeSocket = (socket) => {
+    const onSent = ({ payload }) => {
+      let value; try { value = JSON.parse(String(payload)); } catch { return; }
+      if (value.type === 'req' && value.method === 'chat.send' && value.params?.message === message) sentRequest = value;
+    };
+    const onReceived = ({ payload }) => {
+      let value; try { value = JSON.parse(String(payload)); } catch { return; }
+      if (sentRequest && value.type === 'res' && value.id === sentRequest.id) acknowledgement = value;
+    };
+    socket.on('framesent', onSent); socket.on('framereceived', onReceived);
+    listeners.push(() => { socket.off('framesent', onSent); socket.off('framereceived', onReceived); });
+  };
+  page.on('websocket', observeSocket);
+  try {
+    await selectWorkspaceSection(frame, 'chat', width, keyboard);
+    await activate(frame.locator('#chat-open'), keyboard);
+    const pane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+    await pane.waitFor({ timeout: 30_000 });
+    await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, target.sessionKey);
+    const composer = pane.locator('.agent-chat__composer-combobox textarea');
+    await enterText(composer, message, keyboard);
+    const started = Date.now();
+    await activate(pane.getByRole('button', { name: 'Send message', exact: true }), keyboard);
+    await withDeadline('native Chat acknowledgement', async (signal) => {
+      while (!acknowledgement) { signal.throwIfAborted(); await new Promise((resolve) => setTimeout(resolve, 20)); }
+    }, 30_000);
+    const chatSendMs = Math.max(1, Date.now() - started);
+    assert.equal(sentRequest.params.sessionKey, target.sessionKey, 'native composer must send to the exact linked Session');
+    assert.equal(acknowledgement.ok, true, 'native Chat must acknowledge an accepted send');
+    await pane.getByText(message, { exact: true }).waitFor();
+    const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
+    await page.goto(pluginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    const returned = (await mountedPluginFrame(page, await pluginDocument)).frame;
+    await activate(returned.locator(`.topic-row[data-topic-id="${topicId}"]`).getByRole('button', { name: 'Open Topic', exact: true }), keyboard);
+    await waitForFrameText(returned, '#workspace-status', 'Topic workspace ready.');
+    const history = await returned.evaluate(async ({ topicId, referenceId }) => unwrap(await bridgeRequest('command-center.v1.sessions.history', { schemaVersion: 1, topicId, referenceId, limit: 100 })), { topicId, referenceId: target.sourceReference.referenceId });
+    assert.equal(history.sessionId, target.sessionId);
+    assert.equal(history.sessionKey, target.sessionKey);
+    assert.ok(history.messages.some((item) => item.role === 'user' && (item.text === message || item.content === message || Array.isArray(item.content) && item.content.some((part) => part.text === message))), 'native send must persist in the exact authoritative Session');
+    return { frame: returned, chatSendMs, sessionId: target.sessionId, referenceId: target.sourceReference.referenceId };
+  } finally { page.off('websocket', observeSocket); for (const dispose of listeners) dispose(); }
+}
+
 async function runUiJourney(frame, { page, width, name, category = 'project', keyboard = false, projectionRoot } = {}) {
   const measurement = {};
   const accessibilityStates = [];
@@ -2905,6 +2960,15 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     }
     if (focusedScenarioIds?.has('focused-scale-session-seeding')) {
       await collectScenario('focused-scale-session-seeding', async (signal) => ensureScaleConversationFixture(signal));
+    }
+    if (focusedScenarioIds?.has('focused-native-chat-handoff')) {
+      await collectScenario('focused-native-chat-handoff', async () => {
+        await activate(frame.locator(`.topic-row[data-topic-id="${RELEASE_ALPHA_TOPIC_ID}"]`).getByRole('button', { name: 'Open Topic', exact: true }), true);
+        await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
+        const result = await nativeChatRoundTrip(frame, { page, topicId: RELEASE_ALPHA_TOPIC_ID, message: 'Fictional native Chat round-trip evidence.', keyboard: true });
+        frame = result.frame;
+        return { sessionId: result.sessionId, referenceId: result.referenceId, nativeComposer: true, authoritativeHistory: true, returnedToTopic: true };
+      });
     }
     if (focusedScenarioIds?.has('focused-scale-workspace-readiness')) {
       await collectScenario('focused-scale-workspace-readiness', async (signal) => {

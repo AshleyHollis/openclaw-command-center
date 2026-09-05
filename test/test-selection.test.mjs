@@ -213,3 +213,6 @@ test('Topic Page browser runner is mandatory, pinned, and included in the ordina
   assert.match(setup, /PLAYWRIGHT_VERSION = '1\.62\.1'/u);
   assert.match(setup, /evaluator-provided PLAYWRIGHT_BROWSERS_PATH/u);
 });
+test('native Chat diagnostic requires the real authenticated mount and native round trip', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-handoff']);
+});
