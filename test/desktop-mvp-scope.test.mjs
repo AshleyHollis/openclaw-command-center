@@ -33,7 +33,7 @@ test('canonical runtime keeps mobile fixtures optional and review at the desktop
   const review = source.slice(start, source.indexOf('const finalizationErrors', start));
   assert.match(review, /width: 1440, height: 900/u);
   assert.doesNotMatch(review, /width: 320|page, 320/u);
-  assert.match(source, /assertKeyboardAccessibility\(frame, page, \{ mobile: mobileQualification \}\)/u);
+  assert.match(source, /assertKeyboardAccessibility\(frame, page, \{ mobile: mobileQualification, evidence: auditEvidence \}\)/u);
 });
 
 test('focused full-corpus setup retains verified counts needed by the scale receipt', async () => {
