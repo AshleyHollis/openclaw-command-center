@@ -1649,6 +1649,13 @@ async function auditDynamicAccessibilityState(frame, page, width, label, keyboar
   return Object.freeze({ label, colorIndependent: state.colorIndependent, reducedMotion: state.reducedMotion, reducedMotionPreference: state.reducedMotionPreference, forcedColorsPreference: state.forcedColorsPreference, minimumTargetCssPx: responsive.minimumTargetCssPx, noPageOverflow: responsive.noPageOverflow, modalLabelled: state.modalLabelled });
 }
 
+async function retainNativeChatScreenshot(page, name) {
+  const directory = process.env.COMMAND_CENTER_NATIVE_CHAT_EVIDENCE_DIR;
+  if (!directory) return;
+  await mkdir(directory, { recursive: true });
+  await page.screenshot({ path: path.join(directory, `${name}.png`), fullPage: true, timeout: 5000 });
+}
+
 async function nativeChatRoundTrip(frame, { page, topicId, message, width = 1440, keyboard = false }) {
   const pluginUrl = page.url();
   const target = await frame.evaluate(async (id) => {
@@ -1676,6 +1683,7 @@ async function nativeChatRoundTrip(frame, { page, topicId, message, width = 1440
   page.on('websocket', observeSocket);
   try {
     await selectWorkspaceSection(frame, 'chat', width, keyboard);
+    await retainNativeChatScreenshot(page, 'native-chat-before');
     await activate(frame.locator('#chat-open'), keyboard);
     const pane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
     try { await pane.waitFor({ timeout: 30_000 }); }
@@ -1690,6 +1698,7 @@ async function nativeChatRoundTrip(frame, { page, topicId, message, width = 1440
       throw new Error(`[DEBUG-native-route] ${redactBrowserEvidence(JSON.stringify(state))}`, { cause: error });
     }
     await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, target.sessionKey);
+    await retainNativeChatScreenshot(page, 'native-chat-open');
     const composer = pane.locator('.agent-chat__composer-combobox textarea');
     await enterText(composer, message, keyboard);
     const started = Date.now();
@@ -1710,7 +1719,11 @@ async function nativeChatRoundTrip(frame, { page, topicId, message, width = 1440
     assert.equal(history.sessionId, target.sessionId);
     assert.equal(history.sessionKey, target.sessionKey);
     assert.ok(history.messages.some((item) => item.role === 'user' && (item.text === message || item.content === message || Array.isArray(item.content) && item.content.some((part) => part.text === message))), 'native send must persist in the exact authoritative Session');
+    await retainNativeChatScreenshot(page, 'native-chat-return');
     return { frame: returned, chatSendMs, sessionId: target.sessionId, referenceId: target.sourceReference.referenceId };
+  } catch (error) {
+    await retainNativeChatScreenshot(page, 'native-chat-failed').catch(() => {});
+    throw error;
   } finally { page.off('websocket', observeSocket); for (const dispose of listeners) dispose(); }
 }
 
