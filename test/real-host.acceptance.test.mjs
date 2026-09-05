@@ -2576,6 +2576,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         });
         releaseState.projectionRoot = projectionRoot;
         releaseState.focusedSearchRebuildMs = rebuildMs;
+        if (fullCorpus) releaseState.realizedSearchCounts = {
+          notes: verified.topicRowCounts.notes[RELEASE_SCALE_TOPIC_ID],
+          conversationMessages: verified.topicRowCounts.conversationMessages[RELEASE_SCALE_TOPIC_ID]
+        };
         return { rowCounts: verified.rowCounts, rebuildMs };
       });
       scenarioResult('focused-control-ui-search-projection');

@@ -35,3 +35,12 @@ test('canonical runtime keeps mobile fixtures optional and review at the desktop
   assert.doesNotMatch(review, /width: 320|page, 320/u);
   assert.match(source, /assertKeyboardAccessibility\(frame, page, \{ mobile: mobileQualification \}\)/u);
 });
+
+test('focused full-corpus setup retains verified counts needed by the scale receipt', async () => {
+  const source = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf("await collectScenario('focused-control-ui-search-projection'");
+  const setup = source.slice(start, source.indexOf("scenarioResult('focused-control-ui-search-projection')", start));
+  assert.ok(/if \(fullCorpus\) releaseState\.realizedSearchCounts =/u.test(setup), 'focused scale setup must retain observed counts before constructing its receipt');
+  assert.ok(/notes: verified\.topicRowCounts\.notes\[RELEASE_SCALE_TOPIC_ID\]/u.test(setup));
+  assert.ok(/conversationMessages: verified\.topicRowCounts\.conversationMessages\[RELEASE_SCALE_TOPIC_ID\]/u.test(setup));
+});
