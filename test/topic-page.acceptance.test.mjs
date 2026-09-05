@@ -388,7 +388,7 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
       if (body.action === 'conversations.create' && fixture.interruptNextConversationCreateResponse) { fixture.interruptNextConversationCreateResponse = false; throw new TypeError('Fictional interrupted Conversation create response.'); }
       if (body.action === 'conversations.close' || body.action === 'conversations.reopen') conversations = conversations.map((item) => item.referenceId === body.referenceId ? { ...item, status: body.action.endsWith('close') ? 'closed' : 'open' } : item);
       const decodedText = body.contentBase64 === undefined ? undefined : new TextDecoder().decode(Uint8Array.from(atob(body.contentBase64), (character) => character.charCodeAt(0)));
-      if (body.action === 'notes.create') notes = [...notes, { path: body.path, text: decodedText, revision: `created-revision-${notes.length}`, sourceReference: noteReference(body.path, `created-revision-${notes.length}`) }];
+      if (body.action === 'notes.create') { const revision = routed.body.result.revision; notes = [...notes, { path: body.path, text: decodedText, revision, sourceReference: noteReference(body.path, revision) }]; }
       if (body.action === 'notes.rename' || body.action === 'notes.move') notes = notes.map((note) => note.path === body.path ? { ...note, path: body.destinationPath, revision: `${body.action}-revision`, sourceReference: noteReference(body.destinationPath, `${body.action}-revision`) } : note);
       if (body.action === 'notes.edit' && fixture.deferNoteEdit) { fixture.deferNoteEdit = false; fixture.noteEditPending = true; await new Promise((resolve) => { fixture.noteEditResolver = resolve; }); fixture.noteEditPending = false; }
       if (body.action === 'notes.edit') notes = notes.map((note) => note.path === body.path ? { ...note, text: decodedText, revision: 'saved-revision', sourceReference: { ...note.sourceReference, observedRevision: 'saved-revision' } } : note);
@@ -1185,6 +1185,49 @@ test('successful mobile Note creation restores focus after authoritative refresh
     await page.locator('#note-action-path').fill('mobile-focus.md'); await page.locator('#note-action-text').fill('# Mobile focus'); await submit(page, '#note-action-form');
     await page.getByRole('heading', { name: 'mobile-focus.md', exact: true }).waitFor();
     assert.equal(await newNote.evaluate((node) => document.activeElement === node), true);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('Note creation keeps its dialog pending until authoritative hydration finishes', async () => {
+  const page = await setupPage({ width: 320 });
+  try {
+    await page.getByRole('button', { name: 'Notes', exact: true }).click();
+    const newNote = page.getByRole('button', { name: 'New Note' });
+    await newNote.click();
+    await page.locator('#note-action-path').fill('delayed-created.md');
+    await page.locator('#note-action-text').fill('Fictional created content');
+    await page.evaluate(() => { globalThis.__topicPageFixture.deferNoteReadPath = 'delayed-created.md'; });
+    await submit(page, '#note-action-form');
+    await page.waitForFunction(() => Boolean(globalThis.__topicPageFixture.deferredNoteRead));
+    assert.equal(await page.locator('#note-action-dialog').isVisible(), true);
+    assert.equal(await page.locator('#note-action-submit').isDisabled(), true);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#note-action-dialog').isVisible(), true, 'pending readback must not release focus prematurely');
+    await page.evaluate(() => globalThis.__topicPageFixture.resolveDeferredNoteRead());
+    await page.locator('#note-action-dialog').waitFor({ state: 'hidden' });
+    assert.equal(await page.locator('#note-content').inputValue(), 'Fictional created content');
+    assert.equal(await newNote.evaluate((node) => document.activeElement === node), true);
+    await page.locator('#note-content').fill('Fictional immediate edited content');
+    await page.getByRole('button', { name: 'Save Note' }).click();
+    await page.getByText('Note saved.', { exact: true }).waitFor();
+    assert.equal(await page.locator('#note-content').inputValue(), 'Fictional immediate edited content');
+  } finally { await closeGuardedPage(page); }
+});
+
+test('delayed mobile Note reopening preserves newer draft text and user focus', async () => {
+  const page = await setupPage({ width: 320 });
+  try {
+    await page.getByRole('button', { name: 'Notes', exact: true }).click();
+    const note = page.getByRole('button', { name: 'nested/brief.md', exact: true });
+    await note.click(); await page.getByText('Authoritative Note opened.', { exact: true }).waitFor();
+    await page.evaluate(() => { globalThis.__topicPageFixture.deferNoteReadPath = 'nested/brief.md'; });
+    await note.click();
+    await page.waitForFunction(() => Boolean(globalThis.__topicPageFixture.deferredNoteRead));
+    await page.locator('#note-content').fill('Newer fictional draft during readback');
+    await page.evaluate(() => globalThis.__topicPageFixture.resolveDeferredNoteRead());
+    await page.getByText('Authoritative Note opened.', { exact: true }).waitFor();
+    assert.equal(await page.locator('#note-content').inputValue(), 'Newer fictional draft during readback');
+    assert.equal(await page.locator('#note-content').evaluate((node) => document.activeElement === node), true);
   } finally { await closeGuardedPage(page); }
 });
 

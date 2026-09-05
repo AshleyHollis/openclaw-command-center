@@ -29,14 +29,14 @@ test('mounted approval retries preserve exact intent and block a competing actio
         if (payload.method === 'command-center.v1.attention.act') {
           window.__actions.push(payload);
           if (window.__expiredOperation) send({ ...response, error: { code: 'MUTATION_RECONCILIATION_REQUIRED', message: 'The host outcome expired.' } });
-          else if (window.__actions.length === 1) send({ ...response, error: { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Acknowledgement was lost.' } });
+          else if (window.__actions.length === 1) window.__releaseAction = () => send({ ...response, error: { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Acknowledgement was lost.' } });
           else send({ ...response, result: { status: 'applied', result: { episode: { state: 'Resolved' } } } });
           return;
         }
         let result = {};
         if (payload.method === 'command-center.v1.dashboard.get') {
           window.__dashboardReads += 1;
-          result = { serverTime: '2026-09-05T00:00:00Z', attentionBadgeCount: 1, attention: [episode], inProgress: [], comingUp: [], topics: [], activity: { records: [], hasMore: false } };
+          result = { serverTime: '2026-09-05T00:00:00Z', attentionBadgeCount: 2, attention: [episode, { episodeId: 'global-review', sourceCapabilityId: 'topic-review', stableSubjectId: 'topic-review:global', context: 'Fictional global review', actions: [], eligibleSnoozeChoices: ['PT72H'] }], inProgress: [], comingUp: [], topics: [], activity: { records: [], hasMore: false } };
         } else if (payload.method === 'command-center.v1.sources.status') result = { mode: 'ready', unavailableCapabilities: [] };
         else if (payload.method === 'command-center.v1.topics.list') result = { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] };
         send({ ...response, result: { result } });
@@ -44,9 +44,19 @@ test('mounted approval retries preserve exact intent and block a competing actio
     });
     await page.addScriptTag({ content: await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8') });
     await page.getByText('Fictional approval', { exact: true }).waitFor();
-    assert.match(await page.locator('.attention-card').innerText(), /Side effects:.*Changes the fictional monitor/u);
+    const approvalCard = page.locator('.attention-card').filter({ hasText: 'Fictional approval' });
+    assert.match(await approvalCard.innerText(), /Side effects:.*Changes the fictional monitor/u);
+    const reviewCard = page.locator('.attention-card').filter({ hasText: 'Fictional global review' });
+    assert.equal(await reviewCard.getByRole('button', { name: 'Snooze', exact: true }).count(), 0);
+    await reviewCard.getByRole('button', { name: 'Open Topic Review', exact: true }).click();
+    assert.equal(await page.locator('#topic-review-heading').evaluate((node) => document.activeElement === node), true);
+    assert.equal(await page.evaluate(() => window.__actions.length), 0);
     await page.getByRole('button', { name: 'Approve', exact: true }).click();
+    await page.getByText('Awaiting source confirmation: Fictional approval', { exact: true }).waitFor();
+    await page.waitForFunction(() => typeof window.__releaseAction === 'function');
+    await page.evaluate(() => window.__releaseAction());
     await page.getByRole('button', { name: 'Reconcile action', exact: true }).waitFor();
+    assert.match(await page.locator('#in-progress').innerText(), /Outcome unconfirmed/u);
     await page.getByRole('button', { name: 'Reject', exact: true }).click();
     assert.equal(await page.evaluate(() => window.__actions.length), 1);
     await page.getByRole('button', { name: 'Reconcile action', exact: true }).click();

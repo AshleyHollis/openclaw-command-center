@@ -77,7 +77,7 @@ function renderTopicReview(review) {
   for (const group of review?.groups ?? []) {
     const section = document.createElement('section'); section.className = 'topic-review-group'; const heading = document.createElement('h5'); heading.textContent = `${group.topicId} · ${group.operation}`; section.append(heading);
     for (const proposal of group.proposals ?? []) {
-      const card = document.createElement('article'); card.className = 'topic-review-proposal'; const summary = document.createElement('p'); summary.textContent = `${proposal.operation} · ${proposal.evidenceFacts?.length ?? 0} inspectable facts · ${proposal.state}`; const evidence = document.createElement('ul'); for (const fact of proposal.evidenceFacts ?? []) { const item = document.createElement('li'); item.textContent = `${fact.sourceId} @ ${fact.sourceRevision}: ${fact.fact}`; evidence.append(item); }
+      const card = document.createElement('article'); card.className = 'topic-review-proposal'; card.dataset.proposalId = proposal.proposalId; const summary = document.createElement('p'); summary.textContent = `${proposal.operation} · ${proposal.evidenceFacts?.length ?? 0} inspectable facts · ${proposal.state}`; const evidence = document.createElement('ul'); for (const fact of proposal.evidenceFacts ?? []) { const item = document.createElement('li'); item.textContent = `${fact.sourceId} @ ${fact.sourceRevision}: ${fact.fact}`; evidence.append(item); }
       const disclosures = [
         ['Rationale', proposal.rationale],
         ['Exact before state', proposal.before],
@@ -133,13 +133,26 @@ async function saveNotificationSettings(event) {
 }
 document.querySelector('#notification-settings-form')?.addEventListener('submit', saveNotificationSettings);
 const dashboardOperations = new Map();
+function renderDashboardProgress() {
+  const progress = document.querySelector('#in-progress');
+  if (!progress) return;
+  const authoritative = dashboardState?.inProgress ?? [];
+  const items = authoritative.map((episode) => Object.assign(document.createElement('p'), { textContent: episode.context || 'Action in progress' }));
+  for (const [episodeId, operation] of dashboardOperations) {
+    if (authoritative.some((episode) => episode.episodeId === episodeId)) continue;
+    const item = document.createElement('p'); item.dataset.pendingOperation = operation.params.logicalOperationId;
+    item.textContent = `${operation.pending ? 'Awaiting source confirmation' : 'Outcome unconfirmed'}: ${operation.context || 'Action'}`; items.push(item);
+  }
+  progress.replaceChildren(...items);
+  if (!items.length) progress.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nothing in progress.' }));
+}
 async function dashboardMutate(episode, action, input = {}) {
   requireReadyMutation();
   const approvalId = episode.actions?.find((item) => item.actionId === action)?.target?.approvalId;
   const intent = JSON.stringify({ action, input, approvalId });
   let operation = dashboardOperations.get(episode.episodeId);
   if (operation && operation.intent !== intent) throw new Error('The previous action is not yet confirmed. Reconcile that action before choosing another.');
-  operation ??= { intent, params: {
+  operation ??= { intent, context: episode.context, params: {
     schemaVersion: 1, logicalOperationId: operationId(), sourceCapabilityId: episode.sourceCapabilityId, stableSubjectId: episode.stableSubjectId, episodeId: episode.episodeId,
     expectedEpisodeRevision: episode.revision, expectedSourceRevision: episode.sourceRevision ?? undefined, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actionId: action, input: structuredClone(input), ...(approvalId ? { approvalId } : {})
   } };
@@ -156,8 +169,9 @@ async function dashboardMutate(episode, action, input = {}) {
     } catch (error) {
       if (error.terminal !== false) dashboardOperations.delete(episode.episodeId);
       throw error;
-    } finally { operation.pending = null; }
+    } finally { operation.pending = null; renderDashboardProgress(); }
   })();
+  renderDashboardProgress();
   return operation.pending;
 }
 async function openTopic(topicId) {
@@ -200,6 +214,8 @@ async function runDashboardAction(episode, action, input, label) {
   }
 }
 function snoozeControl(episode) {
+  // Global Topic Review has its own revisioned owner; it is not a Topic-bound source action.
+  if (episode.sourceCapabilityId === 'topic-review') return null;
   const choices = Array.isArray(episode.eligibleSnoozeChoices) ? episode.eligibleSnoozeChoices : [];
   if (!choices.length) return null;
   const wrapper = document.createElement('div'); wrapper.className = 'snooze-control';
@@ -221,10 +237,13 @@ function snoozeControl(episode) {
 }
 function renderAttentionCard(episode) {
   const card = document.createElement('article'); card.className = 'attention-card'; card.dataset.notificationRecord = episode.notificationRecordId ?? '';
+  card.dataset.episodeId = episode.episodeId;
+  card.dataset.sourceCapabilityId = episode.sourceCapabilityId;
   const heading = document.createElement('h4'); heading.textContent = episode.context || 'Attention item';
   const meta = document.createElement('p'); meta.className = 'card-meta'; meta.textContent = `${episode.severity || 'Attention'} · ${episode.sourceKind || 'Source'}`;
   card.append(heading, meta);
   const actions = document.createElement('div'); actions.className = 'card-actions';
+  if (episode.sourceCapabilityId === 'topic-review') actions.append(dashboardButton('Open Topic Review', () => { const heading = document.querySelector('#topic-review-heading'); heading.setAttribute('tabindex', '-1'); heading.scrollIntoView?.({ block: 'start' }); heading.focus(); }, { mutation: false }));
   const disclosure = episode.actions?.find((action) => action.actionId === 'approval.approve')?.target?.disclosure;
   if (disclosure) {
     for (const [label, value] of [['Pending approval', disclosure.actionId], ['Target', disclosure.target], ['Parameters', disclosure.parameters], ['Side effects', disclosure.sideEffects], ['Expires', disclosure.expiresAt]]) {
@@ -286,7 +305,7 @@ async function loadDashboard() {
     attention.replaceChildren(...(dashboardState.attention ?? []).map(renderAttentionCard));
     if (!attention.childElementCount) attention.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nothing needs attention.' }));
     document.querySelector('#attention-badge').textContent = String(dashboardState.attentionBadgeCount ?? 0);
-    const progress = document.querySelector('#in-progress'); progress.replaceChildren(...(dashboardState.inProgress ?? []).map((episode) => { const item = document.createElement('p'); item.textContent = episode.context || 'Action in progress'; return item; })); if (!progress.childElementCount) progress.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nothing in progress.' }));
+    renderDashboardProgress();
     const coming = document.querySelector('#coming-up'); coming.replaceChildren(...(dashboardState.comingUp ?? []).map((item) => { const row = document.createElement('p'); row.textContent = `${item.day} · ${item.time} · ${item.context} · ${item.label}`; return row; })); if (!coming.childElementCount) coming.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No future Reminders.' }));
     fillTopicLaunchers(dashboardState.topics); renderActivity(dashboardState.activity?.records); const more = document.querySelector('#activity-load-more'); more.textContent = 'Load more Activity'; more.hidden = dashboardState.activity?.hasMore !== true; more.onclick = async () => { const next = await dashboardRead(dashboardState.activity.nextOffset); dashboardState.activity = next.activity; renderActivity(next.activity.records, true); more.hidden = next.activity.hasMore !== true; }; if (statusNode) statusNode.textContent = 'Dashboard is current.';
     focusNotificationTarget();
@@ -597,7 +616,8 @@ function renderConversations() {
   document.querySelector('#conversation-page-status').textContent = `Page ${workspace.conversationPage + 1} of ${pageCount}`;
   if (focusedReferenceId) {
     const replacementRow = [...target.querySelectorAll('.conversation-item')].find((row) => row.dataset.referenceId === focusedReferenceId);
-    const replacement = [...(replacementRow?.querySelectorAll('button') ?? [])].find((control) => control.textContent === focusedLabel) ?? replacementRow?.querySelector('button');
+    const controls = [...(replacementRow?.querySelectorAll('button') ?? [])];
+    const replacement = controls.find((control) => control.textContent === focusedLabel) ?? controls.find((control) => control.textContent === (focusedLabel === 'Close' ? 'Reopen' : focusedLabel === 'Reopen' ? 'Close' : null)) ?? replacementRow?.querySelector('button');
     (replacement ?? document.querySelector('#conversation-view'))?.focus();
   }
 }
@@ -605,16 +625,11 @@ function sameConversation(left, right) { return left?.topicId === right?.topicId
 function syncSelectedConversationControls() { const closed = workspace.selected?.status === 'closed'; document.querySelector('#chat-send').disabled = closed; document.querySelector('#chat-message').disabled = closed; }
 async function changeConversationStatus(item) {
   const generation = workspace.generation; const topic = workspace.topic; const action = item.status === 'closed' ? 'conversations.reopen' : 'conversations.close'; const status = item.status === 'closed' ? 'open' : 'closed';
-  const restoreActionFocus = document.activeElement?.closest?.('.conversation-item')?.dataset.referenceId === item.referenceId;
   try {
     await pageAction(action, { topicId: topic.topicId, referenceId: item.referenceId, expectedRevision: topic.revision });
     if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return;
     if (sameConversation(workspace.selected, item)) { workspace.selected = { ...workspace.selected, status }; syncSelectedConversationControls(); }
     await loadConversations({ generation });
-    if (restoreActionFocus && generation === workspace.generation) {
-      const replacement = [...document.querySelectorAll('.conversation-item')].find((row) => row.dataset.referenceId === item.referenceId)?.querySelector('button:last-child');
-      (replacement ?? document.querySelector('#conversation-view'))?.focus();
-    }
   } catch (error) { if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) conversationStatus.textContent = error.message || 'The Conversation action was refused.'; }
 }
 async function selectConversation(item) {
@@ -719,11 +734,13 @@ async function readNoteChunks(descriptor) {
 }
 async function openAuthoritativeNote(descriptor, { referenceError = false, moveFocus = true } = {}) {
   const topicGeneration = workspace.generation; const noteGeneration = ++workspace.noteGeneration; const previous = workspace.note;
+  notesStatus.textContent = 'Opening authoritative Note…';
+  if (moveFocus) revealWorkspaceTarget('notes');
   try {
     const read = await readNoteChunks(descriptor);
     if (topicGeneration !== workspace.generation || noteGeneration !== workspace.noteGeneration) return;
     const draftId = `${descriptor.topicId}:${descriptor.referenceId}`; const existing = workspace.drafts.get(draftId);
-    workspace.note = { ...descriptor, revision: read.revision, sourceReference: read.sourceReference, draftId }; workspace.drafts.set(draftId, existing ?? { text: read.text, dirty: false }); showNote(); notesStatus.textContent = 'Authoritative Note opened.'; if (moveFocus) revealWorkspaceTarget('notes');
+    workspace.note = { ...descriptor, revision: read.revision, sourceReference: read.sourceReference, draftId }; workspace.drafts.set(draftId, existing ?? { text: read.text, dirty: false }); showNote(); notesStatus.textContent = 'Authoritative Note opened.';
   } catch (error) { if (topicGeneration !== workspace.generation || noteGeneration !== workspace.noteGeneration) return; workspace.note = previous; notesStatus.textContent = referenceError ? 'The authoritative Note changed after this reference was created.' : error.message; }
 }
 function showNote() {
@@ -746,7 +763,7 @@ function openNoteDialog(action, trigger) { noteDialogAction = action; noteDialog
 function closeNoteDialog() { if (noteDialogPending) return; const returnFocus = noteDialogReturnFocus; noteDialogReturnFocus = null; noteDialogAction = null; noteDialog.inert = true; noteDialog.close(); if (returnFocus?.isConnected) returnFocus.focus(); }
 document.querySelector('#note-new')?.addEventListener('click', (event) => openNoteDialog('notes.create', event.currentTarget)); document.querySelector('#note-rename')?.addEventListener('click', (event) => openNoteDialog('notes.rename', event.currentTarget)); document.querySelector('#note-move')?.addEventListener('click', (event) => openNoteDialog('notes.move', event.currentTarget));
 document.querySelector('#note-action-cancel')?.addEventListener('click', closeNoteDialog); noteDialog?.addEventListener('cancel', (event) => { event.preventDefault(); closeNoteDialog(); });
-document.querySelector('#note-action-form')?.addEventListener('submit', async (event) => { event.preventDefault(); if (noteDialogPending) return; const path = document.querySelector('#note-action-path').value.trim(); const current = workspace.note; const generation = workspace.generation; const topic = workspace.topic; const action = noteDialogAction; const returnFocus = noteDialogReturnFocus; setNoteDialogPending(true); document.querySelector('#note-action-status').textContent = 'Applying authoritative Note change…'; try { if (action === 'notes.create') await pageAction(action, { topicId: topic.topicId, referenceId: topic.noteFolderReferenceId ?? exactTopicReference(topic, 'note_folder')?.referenceId, path, contentBase64: encodeText(document.querySelector('#note-action-text').value), expectedTopicRevision: topic.revision }); else await pageAction(action, { topicId: topic.topicId, referenceId: current.referenceId, path: current.path, destinationPath: path, expectedRevision: current.revision, expectedTopicRevision: topic.revision }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; setNoteDialogPending(false); closeNoteDialog(); await loadNotes({ generation }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; const next = workspace.notes.find((item) => item.path === path); if (next) { const oldDraft = current && workspace.drafts.get(current.draftId); const source = next.sourceReference; if (oldDraft && current.path !== path) workspace.drafts.set(`${topic.topicId}:${source.referenceId}`, oldDraft); await openAuthoritativeNote({ kind: 'note', topicId: topic.topicId, referenceId: source.referenceId, path, observedRevision: next.revision }, { moveFocus: false }); } if (returnFocus?.isConnected) returnFocus.focus(); } catch (error) { setNoteDialogPending(false); if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) document.querySelector('#note-action-status').textContent = error.message; } });
+document.querySelector('#note-action-form')?.addEventListener('submit', async (event) => { event.preventDefault(); if (noteDialogPending) return; const path = document.querySelector('#note-action-path').value.trim(); const current = workspace.note; const generation = workspace.generation; const topic = workspace.topic; const action = noteDialogAction; const returnFocus = noteDialogReturnFocus; setNoteDialogPending(true); document.querySelector('#note-action-status').textContent = 'Applying authoritative Note change…'; try { if (action === 'notes.create') await pageAction(action, { topicId: topic.topicId, referenceId: topic.noteFolderReferenceId ?? exactTopicReference(topic, 'note_folder')?.referenceId, path, contentBase64: encodeText(document.querySelector('#note-action-text').value), expectedTopicRevision: topic.revision }); else await pageAction(action, { topicId: topic.topicId, referenceId: current.referenceId, path: current.path, destinationPath: path, expectedRevision: current.revision, expectedTopicRevision: topic.revision }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; await loadNotes({ generation }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; const next = workspace.notes.find((item) => item.path === path); if (next) { const oldDraft = current && workspace.drafts.get(current.draftId); const source = next.sourceReference; if (oldDraft && current.path !== path) workspace.drafts.set(`${topic.topicId}:${source.referenceId}`, oldDraft); await openAuthoritativeNote({ kind: 'note', topicId: topic.topicId, referenceId: source.referenceId, path, observedRevision: next.revision }, { moveFocus: false }); } setNoteDialogPending(false); closeNoteDialog(); if (returnFocus?.isConnected) returnFocus.focus(); } catch (error) { setNoteDialogPending(false); if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) document.querySelector('#note-action-status').textContent = error.message; } });
 document.querySelector('#notes-refresh')?.addEventListener('click', () => loadNotes());
 
 async function searchWorkspace(event) { event.preventDefault(); if (!workspace.topic) return; const generation = workspace.generation; const searchGeneration = ++workspace.searchGeneration; const topicId = workspace.topic.topicId; workspaceSearchStatus.textContent = 'Searching…'; try { const value = await queryTopicSearch({ schemaVersion: 1, topicId, query: document.querySelector('#workspace-search-query').value.trim(), limit: 50 }); if (generation !== workspace.generation || searchGeneration !== workspace.searchGeneration || workspace.topic?.topicId !== topicId) return; renderWorkspaceSearch('workspace-notes-results', value.notes?.results ?? []); renderWorkspaceSearch('workspace-conversations-results', value.conversations?.results ?? []); workspaceSearchStatus.textContent = `${value.notes?.results?.length ?? 0} Notes · ${value.conversations?.results?.length ?? 0} Conversations`; } catch (error) { if (generation === workspace.generation && searchGeneration === workspace.searchGeneration && workspace.topic?.topicId === topicId) workspaceSearchStatus.textContent = error.message || 'Topic Search is unavailable.'; } }
@@ -762,7 +779,7 @@ function setPaneOpen(name, open) { workspace.panes[name] = open; const pane = do
 document.querySelector('#conversations-close')?.addEventListener('click', () => setPaneOpen('conversations', false)); document.querySelector('#notes-close')?.addEventListener('click', () => setPaneOpen('notes', false)); document.querySelector('#conversations-open')?.addEventListener('click', () => setPaneOpen('conversations', true)); document.querySelector('#notes-open')?.addEventListener('click', () => setPaneOpen('notes', true));
 function selectMobileSection(name) { workspace.mobileSection = name; if (name === 'conversations') setPaneOpen('conversations', true); if (name === 'notes') setPaneOpen('notes', true); for (const control of selectAll('.workspace-sections button')) control.setAttribute('aria-selected', String(control.dataset.section === name)); updateResponsivePanes(); }
 function updateResponsivePanes() { const mobile = typeof matchMedia === 'function' && matchMedia('(max-width: 47.99rem)').matches; for (const pane of selectAll('.workspace-layout > [data-pane]')) { const visible = mobile ? pane.dataset.pane === workspace.mobileSection : !['conversations', 'notes'].includes(pane.dataset.pane) || workspace.panes[pane.dataset.pane]; pane.style.display = visible ? '' : 'none'; pane.inert = !visible; } }
-function revealWorkspaceTarget(name) { if (typeof matchMedia === 'function' && matchMedia('(max-width: 47.99rem)').matches) { selectMobileSection(name); focusPane(name); } else if (name === 'notes' || name === 'conversations') setPaneOpen(name, true); else focusPane(name, false); }
+function revealWorkspaceTarget(name) { if (typeof matchMedia === 'function' && matchMedia('(max-width: 47.99rem)').matches) { if (workspace.mobileSection !== name) { selectMobileSection(name); focusPane(name); } } else if (name === 'notes' || name === 'conversations') setPaneOpen(name, true); else focusPane(name, false); }
 for (const control of selectAll('.workspace-sections button')) control.addEventListener('click', () => selectMobileSection(control.dataset.section)); if (typeof matchMedia === 'function') matchMedia('(max-width: 47.99rem)').addEventListener?.('change', updateResponsivePanes); updateResponsivePanes();
 document.querySelector('#workspace-back')?.addEventListener('click', async () => { ++workspace.generation; if (hasTopicsDestination) await loadTopics(); setWorkspaceVisible(false); document.querySelector('#topics-heading')?.focus(); if (hasDashboardDestination) void loadDashboard(); });
 

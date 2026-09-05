@@ -977,21 +977,37 @@ async function exerciseRejectedCandidateVariant({ descriptor, buildReceipt, kind
     const variantHost = await withDeadline(`${kind} variant host launch`, (launchSignal) => launchPinnedHost({ descriptor, world: variantWorld, buildReceipt, signal: launchSignal }), 120_000, signal);
     const removeAbortCleanup = stopHostOnAbort(signal, variantHost);
     let expectedAdmissionFailure = false;
+    let variantFailure;
     try {
       if (kind === 'plugin-api') {
         const refusal = await withDeadline('incompatible plugin API admission', () => variantHost.earlyExit, 30_000, signal);
         assert.equal(refusal.category, 'plugin-not-found');
-        await withDeadline('incompatible plugin API process exit', async () => {
-          if (variantHost.child.exitCode === null) await new Promise((resolve) => variantHost.child.once('exit', resolve));
-          await variantHost.outputDrained;
-        }, 10_000, signal);
-        assert.notEqual(variantHost.child.exitCode, 0);
         assert.match(`${variantHost.diagnostics.stdout}\n${variantHost.diagnostics.stderr}`, /plugin requires plugin API =1900\.1\.1, but this host is 2026\.9\.1; skipping (?:discovery|load)/u);
-        await assert.rejects(() => fetchWithDeadline(`${variantWorld.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'create', name: 'Blocked incompatible API Topic', paraCategory: 'resource', logicalOperationId: randomUUID() }) }, 'rejected host mutation', 10_000), (error) => (error?.cause?.code ?? error?.code) === 'ECONNREFUSED');
+        expectedAdmissionFailure = true;
+        const exited = () => new HarnessFailure('host-early-exit', 'The incompatible plugin prevented host startup');
+        const processExit = variantHost.child.exitCode !== null ? Promise.resolve(exited()) : new Promise((resolve) => variantHost.child.once('exit', () => resolve(exited())));
+        let bootstrap;
+        let startupRejected = false;
+        try {
+          await waitForConsecutiveReadiness(async () => {
+            const response = await fetchWithDeadline(`${variantWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${variantWorld.gatewayCredential}` } }, 'host health after plugin API refusal', 10_000);
+            if (response.ok) bootstrap = await response.json();
+            return response.ok;
+          }, processExit, { required: 2, deadlineMs: 30_000, signal });
+        } catch (error) { if (error?.category === 'host-early-exit') startupRejected = true; else throw error; }
+        const mutationRequest = () => fetchWithDeadline(`${variantWorld.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(refusedTopicCreateRequest('Blocked incompatible API Topic')) }, 'rejected plugin mutation', 10_000);
+        if (startupRejected) {
+          assert.notEqual(variantHost.child.exitCode, 0);
+          await variantHost.outputDrained;
+          await assert.rejects(mutationRequest, (error) => (error?.cause?.code ?? error?.code) === 'ECONNREFUSED');
+        } else {
+          assert.equal(routeGrant(bootstrap), false);
+          assert.equal((await mutationRequest()).status, 404);
+          await assertPluginFrameUnavailable({ world: variantWorld, label: 'plugin API activation rejection' });
+        }
         assert.deepEqual(await readFile(restoredDatabase), restoredBytes);
         for (const [index, name] of ['manifest.json', 'metadata.sqlite.snapshot'].entries()) assert.deepEqual(await readFile(path.join(restoredRecovery, name)), restoredArtifacts[index]);
-        expectedAdmissionFailure = true;
-        return Object.freeze({ kind, activationRejected: true, mutationRejected: true, restoredStatePreserved: true, startupRejected: true, frameUnavailableObserved: true, mountedUiObserved: false, unsupportedControlsAbsent: true });
+        return Object.freeze({ kind, activationRejected: true, mutationRejected: true, restoredStatePreserved: true, startupRejected, frameUnavailableObserved: true, mountedUiObserved: false, unsupportedControlsAbsent: true });
       }
       let bootstrap;
       await waitForConsecutiveReadiness(async () => {
@@ -1006,18 +1022,21 @@ async function exerciseRejectedCandidateVariant({ descriptor, buildReceipt, kind
         const safeRead = await requestAuthenticatedGateway({ gatewayUrl: variantWorld.gateway.url, credential: variantWorld.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 } });
         assert.ok(safeRead && typeof safeRead === 'object');
       }
-      const mutation = await fetchWithDeadline(`${variantWorld.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'create', name: `Blocked ${kind} restored Topic`, paraCategory: 'resource', logicalOperationId: randomUUID() }) }, `${kind} rejected mutation`, 10_000);
+      const mutation = await fetchWithDeadline(`${variantWorld.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(refusedTopicCreateRequest(`Blocked ${kind} restored Topic`)) }, `${kind} rejected mutation`, 10_000);
       assert.equal(mutation.status, kind === 'build' ? 422 : 404);
       assert.deepEqual(await readFile(restoredDatabase), restoredBytes, `${kind} rejection must preserve restored database bytes`);
       for (const [index, name] of ['manifest.json', 'metadata.sqlite.snapshot'].entries()) assert.deepEqual(await readFile(path.join(restoredRecovery, name)), restoredArtifacts[index], `${kind} rejection must preserve ${name}`);
       const mountedUiObserved = kind === 'build' ? await assertMountedReadOnlyOperatingMode({ world: variantWorld, expectedMode: 'recovery-only' }) : false;
       const frameUnavailableObserved = kind === 'build' ? false : await assertPluginFrameUnavailable({ world: variantWorld, label: `${kind} activation rejection` });
       return Object.freeze({ kind, ...(kind === 'build' ? { mode: 'recovery-only', safeReadObserved: true, mountedUiObserved, frameUnavailableObserved, unsupportedControlsAbsent: true } : { activationRejected: true, mountedUiObserved: false, frameUnavailableObserved, unsupportedControlsAbsent: false }), mutationRejected: true, restoredStatePreserved: true });
-    } finally {
+    } catch (error) { variantFailure = error; throw error; }
+    finally {
       removeAbortCleanup();
       await withDeadline(`${kind} variant host stop`, async () => { await stopPinnedHost(variantHost.child); await variantHost.outputDrained; });
-      if (expectedAdmissionFailure) assert.equal(variantHost.diagnostics.category, 'plugin-not-found');
-      else assertNoFatalHostOutput(variantHost.diagnostics);
+      try {
+        if (expectedAdmissionFailure) assert.equal(variantHost.diagnostics.category, 'plugin-not-found');
+        else assertNoFatalHostOutput(variantHost.diagnostics);
+      } catch (error) { if (variantFailure) throw new AggregateError([variantFailure, error], `Variant failed: ${variantFailure.message}; host finalization also failed`); throw error; }
       await assertRecordedChildTraffic(variantWorld);
       variantHost.diagnostics.guard.assertClean();
     }
@@ -1042,10 +1061,6 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       const activity = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
       try {
         activity.createTopic({ topicId: 'fictional-fresh-scale-activity', paraCategory: 'resource', lifecycle: 'active' });
-        for (let index = 0; index < RELEASE_FIXTURE_COUNTS.activityRecords; index += 1) {
-          const createdAt = new Date(Date.UTC(2099, 7, 29) + index).toISOString();
-          activity.recordActivity({ activityId: `fictional-fresh-scale-activity-${index}`, topicId: 'fictional-fresh-scale-activity', logicalOperationId: randomUUID(), transportRequestId: randomUUID(), operationKind: 'fixture.scale', outcome: 'applied', observedRevision: `sha256:${String(index).padStart(64, '0')}`, createdAt, updatedAt: createdAt });
-        }
       } finally { activity.close(); }
       scaleProjectionRoot = path.join(path.dirname(resolveCommandCenterDatabasePath(stateDir)), 'projections');
     }
@@ -1059,10 +1074,20 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
     const browserGuard = new TrafficGuard();
     try {
       signal?.throwIfAborted();
-      await waitForConsecutiveReadiness(async (probeSignal) => {
-        try { return (await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, `${kind} fresh readiness`, 10_000)).ok; }
-        catch (error) { if (error?.category === 'transport-timeout') return false; throw error; }
-      }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
+      const readinessProgress = [];
+      const readinessStarted = Date.now();
+      const observeMigration = () => {
+        if (kind !== 'scale') return;
+        const state = readMigrationProgress(path.join(scenarioWorld.root, '.openclaw'));
+        readinessProgress.push({ elapsedMs: Date.now() - readinessStarted, ...state });
+        if (readinessProgress.length > 12) readinessProgress.shift();
+      };
+      try {
+        await waitForConsecutiveReadiness(async (probeSignal) => {
+          try { return (await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, `${kind} fresh readiness`, 10_000)).ok; }
+          catch (error) { if (error?.category === 'transport-timeout') { observeMigration(); return false; } throw error; }
+        }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
+      } catch (error) { observeMigration(); error.message += `; durableStartupProgress=${JSON.stringify(readinessProgress)}`; throw error; }
       managedBrowser = await withDeadline(`${kind} fresh browser launch`, () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       const page = await managedBrowser.browser.newPage({ viewport: { width, height: 900 } });
       const evidence = { console: [], errors: [], requests: [], responses: [] };
@@ -1093,6 +1118,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.equal(freshScaleAuthoritativeCount, RELEASE_FIXTURE_COUNTS.conversations);
         const largeNote = await exerciseLargeNoteFixture(frame, { gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: scaleTopicId });
 
+        await prepareExactActivityFixture({ stateDir: path.join(scenarioWorld.root, '.openclaw'), gatewayUrl: scenarioWorld.gateway.url, topicId: 'fictional-fresh-scale-activity' });
         const firstActivity = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 0, activityLimit: 50 });
         const secondActivity = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 50, activityLimit: 50 });
         const thirdActivity = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 100, activityLimit: 50 });
@@ -1373,6 +1399,47 @@ async function completeReminder(gatewayUrl, episode, { credential, signal, devic
   return payload;
 }
 
+function refusedTopicCreateRequest(name) {
+  const logicalOperationId = randomUUID();
+  return { schemaVersion: 1, action: 'create', topicId: randomUUID(), name, paraCategory: 'resource', logicalOperationId, authoritativeSession: { key: 'agent:main:fictional-refused-topic', sessionId: 'fictional-refused-session', revision: '1', idempotencyKey: logicalOperationId, label: name } };
+}
+
+function readMigrationProgress(stateDir) {
+  let db;
+  try {
+    db = new DatabaseSync(resolveCommandCenterDatabasePath(stateDir), { readOnly: true });
+    return { state: db.prepare('SELECT phase FROM migration_state').all(), channels: db.prepare('SELECT phase, imported_count AS importedCount, next_ordinal AS nextOrdinal, expected_count AS expectedCount FROM migration_channels LIMIT 3').all(), anchoredOccurrences: db.prepare('SELECT count(*) AS count FROM migration_occurrences WHERE destination_anchor_json IS NOT NULL').get().count };
+  } catch { return { state: 'unavailable' }; }
+  finally { db?.close(); }
+}
+
+async function prepareExactActivityFixture({ stateDir, gatewayUrl, topicId }) {
+  const readIds = async () => {
+    const ids = [];
+    for (let offset = 0; offset <= RELEASE_FIXTURE_COUNTS.activityRecords; offset += 50) {
+      const page = (await readDashboard(gatewayUrl, { activityOffset: offset, activityLimit: 50 })).activity;
+      ids.push(...page.records.map((record) => record.activityId));
+      assert.ok(ids.length <= RELEASE_FIXTURE_COUNTS.activityRecords, 'genuine Activity exceeds the exact release fixture; never delete or hide it');
+      if (!page.hasMore) return ids;
+    }
+    throw new Error('Activity fixture exceeds its bounded pagination contract');
+  };
+  const genuine = await readIds();
+  assert.equal(new Set(genuine).size, genuine.length);
+  // Fixture-only synthetic rows go through the canonical metadata writer, never a new product write API.
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: READY_CAPABILITIES });
+  try {
+    assert.equal(metadata.getOperatingStatus().mode, 'ready');
+    for (let index = genuine.length; index < RELEASE_FIXTURE_COUNTS.activityRecords; index += 1) {
+      const createdAt = new Date(Date.UTC(2026, 0, 1) + index).toISOString();
+      metadata.recordActivity({ activityId: `fictional-scale-top-up-${index}`, topicId, logicalOperationId: randomUUID(), transportRequestId: randomUUID(), operationKind: 'fixture.scale', outcome: 'applied', observedRevision: `sha256:${String(index).padStart(64, '0')}`, createdAt, updatedAt: createdAt });
+    }
+  } finally { metadata.close(); }
+  const finalIds = await readIds();
+  assert.equal(finalIds.length, RELEASE_FIXTURE_COUNTS.activityRecords);
+  for (const id of genuine) assert.ok(finalIds.includes(id), 'real source Activity must remain in the exact fixture');
+}
+
 async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey, signal }) {
   return requestAuthenticatedGateway({ gatewayUrl, credential, method: 'chat.history', params: { sessionKey }, signal });
 }
@@ -1502,12 +1569,12 @@ async function chooseOption(locator, value, keyboard = false) {
 }
 
 async function submitFrameForm(frame, selector, keyboard = false) {
+  const form = frame.locator(selector);
+  assert.equal(await form.evaluate((node) => node.checkValidity()), true, `${selector} must be valid before submission`);
   if (keyboard) {
-    const form = frame.locator(selector);
-    assert.equal(await form.evaluate((node) => node.checkValidity()), true, `${selector} must be valid before keyboard submission`);
     await activate(form.locator('button[type="submit"]'), true, 'Space');
   }
-  else await frame.locator(selector).evaluate((form) => form.requestSubmit());
+  else await form.locator('button[type="submit"]').click();
 }
 
 async function selectWorkspaceSection(frame, name, width, keyboard = false) {
@@ -1646,6 +1713,7 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   await selectWorkspaceSection(frame, 'conversations', width, keyboard);
   await chooseOption(frame.locator('#conversation-view'), 'closed', keyboard);
   await timed(() => activate(closedConversation.getByRole('button', { name: 'Reopen', exact: true }), keyboard));
+  await closedConversation.waitFor({ state: 'detached' });
   await chooseOption(frame.locator('#conversation-view'), 'open', keyboard);
   await frame.locator('.conversation-item').filter({ hasText: conversationName }).getByText('Open', { exact: true }).waitFor();
   measurement.conversationLifecycleMs = Math.max(1, Date.now() - conversationLifecycleStarted);
@@ -1666,6 +1734,7 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   await frame.locator('#notes-tree').getByRole('button', { name: notePath, exact: true }).waitFor();
   const noteStarted = Date.now();
   await activate(frame.locator('#notes-tree').getByRole('button', { name: notePath, exact: true }), keyboard);
+  await waitForFrameText(frame, '#notes-status', 'Authoritative Note opened.');
   await frame.locator('#note-editor').waitFor({ state: 'visible' });
   await audit(`${width}px Note editor`);
   actionDurations.push(Math.max(1, Date.now() - noteStarted));
@@ -1992,7 +2061,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
           assert.equal((statusResponse?.result ?? statusResponse).mode, 'recovery-only');
           const safeRead = await requestAuthenticatedGateway({ gatewayUrl: hostWorld.gateway.url, credential: hostWorld.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 } });
           assert.ok(safeRead && typeof safeRead === 'object');
-          const mutation = await fetchWithDeadline(`${hostWorld.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'create', name: 'Blocked host tuple Topic', paraCategory: 'resource', logicalOperationId: randomUUID() }) }, 'host-tuple restoration mutation', 10_000);
+          const mutation = await fetchWithDeadline(`${hostWorld.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(refusedTopicCreateRequest('Blocked host tuple Topic')) }, 'host-tuple restoration mutation', 10_000);
           assert.equal(mutation.status, 422);
           assert.deepEqual(await readFile(restoredDatabase), mismatchedBytes);
           assert.deepEqual(await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot')), mismatchedSnapshot);
@@ -2121,25 +2190,6 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const activityFixture = openCommandCenterMetadataService({ stateDir: resolvedStateDir, capabilities: READY_CAPABILITIES });
     try {
       activityFixture.createTopic({ topicId: RELEASE_ACTIVITY_TOPIC_ID, paraCategory: 'resource', lifecycle: 'active' });
-      for (let index = 0; index < RELEASE_FIXTURE_COUNTS.activityRecords - 1; index += 1) {
-        // Keep the exact frozen Activity corpus at the head of the global
-        // Dashboard feed so migration/journey records cannot change its
-        // required 50/50/1 pagination boundary once the verified navigation
-        // record is added through the authoritative source service.
-        const createdAt = new Date(Date.UTC(2099, 7, 29, 12, 0, 0) + index).toISOString();
-        activityFixture.recordActivity({
-          activityId: `fictional-scale-activity-${index}`,
-          topicId: RELEASE_ACTIVITY_TOPIC_ID,
-          logicalOperationId: randomUUID(),
-          transportRequestId: randomUUID(),
-          operationKind: 'fixture.scale',
-          outcome: 'applied',
-          observedRevision: `sha256:${String(index).padStart(64, '0')}`,
-          createdAt,
-          updatedAt: createdAt
-        });
-      }
-      assert.equal(activityFixture.listActivity(RELEASE_ACTIVITY_TOPIC_ID).length, RELEASE_FIXTURE_COUNTS.activityRecords - 1);
     } finally { activityFixture.close(); }
       reportProgress(testContext, 'fixture:passed');
     }, 240_000));
@@ -2915,10 +2965,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         }
       });
     }
-    await collectScenario('scale-performance', async () => {
+    await collectScenario('scale-performance', async (signal) => {
       assert.ok(browser && releaseState.projectionRoot, 'scale scenario requires the independently seeded authoritative fixture');
-      const notificationDeviceIdentity = await ensureNotificationTarget();
-      await ensureScaleConversationFixture();
+      const notificationDeviceIdentity = await ensureNotificationTarget(signal);
+      await ensureScaleConversationFixture(signal);
       if (page && !page.isClosed()) await page.close();
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
@@ -3077,20 +3127,28 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.restored = true;
       const attentionCards = frame.locator('#attention-cards .attention-card');
       await assert.doesNotReject(attentionCards.nth(1).waitFor({ state: 'visible', timeout: 15_000 }));
-      const attentionCard = attentionCards.first();
-      const sourceActionCard = attentionCards.nth(1);
-      const sourceAction = sourceActionCard.getByRole('button', { name: 'Complete Reminder', exact: true });
+      const attentionCard = frame.locator('#attention-cards [data-source-capability-id="topic-review"]');
+      const sourceActionCard = frame.locator('#attention-cards [data-source-capability-id="reminders"]');
+      const sourceAction = sourceActionCard.getByRole('button', { name: 'Reminder Complete', exact: true });
+      await frame.evaluate(() => {
+        window.__observedPendingSourceAction = false;
+        const target = document.querySelector('#in-progress');
+        const observer = new MutationObserver(() => {
+          if (target.textContent.includes('Awaiting source confirmation')) { window.__observedPendingSourceAction = true; observer.disconnect(); }
+        });
+        observer.observe(target, { childList: true, subtree: true, characterData: true });
+      });
       const sourceActionStarted = activate(sourceAction, true);
-      await frame.waitForFunction(() => !document.querySelector('#in-progress')?.textContent?.includes('Nothing in progress'), undefined, { timeout: 10_000 });
+      await frame.waitForFunction(() => window.__observedPendingSourceAction === true, undefined, { timeout: 10_000 });
       await sourceActionStarted;
-      await waitForFrameText(frame, '#dashboard-feedback', 'Complete Reminder accepted.');
+      await waitForFrameText(frame, '#dashboard-feedback', 'Reminder Complete accepted.');
       const actionReceipt = JSON.parse(await frame.locator('#dashboard-feedback').getAttribute('data-activity-receipt'));
       assert.ok(actionReceipt?.activityId && actionReceipt?.logicalOperationId, 'keyboard source action must expose its bounded Activity receipt');
       const sourceActivityResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.activity.get', params: { schemaVersion: 1, activityId: actionReceipt.activityId } });
       const completedActivity = (sourceActivityResponse?.result ?? sourceActivityResponse)?.record;
       const exactActivity = (value) => ({ activityId: value?.activityId, episodeId: value?.episodeId, logicalOperationId: value?.logicalOperationId, topicId: value?.topicId, sourceReferenceId: value?.sourceReferenceId, operationKind: value?.operationKind, outcome: value?.outcome, verificationRevision: value?.verificationRevision, occurredAt: value?.occurredAt });
       assert.deepEqual(exactActivity(completedActivity), exactActivity(actionReceipt));
-      assert.equal(completedActivity.outcome, 'applied');
+      assert.equal(completedActivity.outcome, 'resolved');
       assert.match(completedActivity.operationKind, /reminder.*complete|complete.*reminder/iu);
       releaseState.sourceActionActivity = completedActivity;
       releaseState.verifiedActivity = completedActivity;
@@ -3102,12 +3160,18 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.ok((await frame.locator('#evidence-content').innerText()).length > 0);
       await auditDynamicAccessibilityState(frame, page, 1440, 'desktop Evidence dialog', true);
       await activate(frame.locator('#evidence-close'), true, 'Escape');
-      await chooseOption(attentionCard.locator('select[aria-label="Snooze duration"]'), 'PT72H', true);
+      await activate(attentionCard.getByRole('button', { name: 'Open Topic Review', exact: true }), true);
       const actionStarted = Date.now();
-      await activate(attentionCard.getByRole('button', { name: 'Snooze', exact: true }), true);
-      await waitForFrameText(frame, '#dashboard-feedback', 'Item snoozed.');
+      page.once('dialog', (dialog) => dialog.accept(new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString()));
+      await activate(frame.locator('#topic-review-snooze'), true);
+      await waitForFrameText(frame, '#analysis-feedback', 'Topic Review snoozed.');
       evidence.performanceMeasurements = { desktop: { ...scaleJourney.measurement, sourceActionMs: Date.now() - actionStarted } };
       assert.ok(await frame.locator('#in-progress').count() === 1);
+      await prepareExactActivityFixture({ stateDir: resolvedStateDir, gatewayUrl, topicId: RELEASE_ACTIVITY_TOPIC_ID });
+      pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
+      await waitForDashboard(frame);
       const activityStarted = Date.now();
       const loadMoreActivity = frame.locator('#activity-load-more');
       await loadMoreActivity.waitFor({ state: 'visible' });
@@ -3179,8 +3243,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await chooseOption(mobileCards.first().locator('select[aria-label="Snooze duration"]'), 'PT72H', true);
       await activate(mobileCards.first().getByRole('button', { name: 'Snooze', exact: true }), true);
       await waitForFrameText(frame, '#dashboard-feedback', 'Item snoozed.');
-      await activate(mobileCards.nth(1).getByRole('button', { name: 'Complete Reminder', exact: true }), true);
-      await waitForFrameText(frame, '#dashboard-feedback', 'Complete Reminder accepted.');
+      await frame.waitForFunction(() => [...document.querySelectorAll('#attention-cards .attention-card')].filter((card) => card.textContent.includes('Fictional Keyboard')).length === 1);
+      await activate(mobileCards.first().getByRole('button', { name: 'Reminder Complete', exact: true }), true);
+      await waitForFrameText(frame, '#dashboard-feedback', 'Reminder Complete accepted.');
       if (await frame.locator('#activity-load-more').isVisible()) await activate(frame.locator('#activity-load-more'), true);
       await assertResponsiveFrame(frame, page, 320);
       const cdp = await page.context().newCDPSession(page);
@@ -3221,7 +3286,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // the measured keyboard-only decision/checkpoint/application workflow;
       // they are fixture setup, not a completed primary-journey action.
       const mobileRow = frame.locator('.topic-row').filter({ hasText: 'Fictional Review Journey Topic' });
-      await page.once('dialog', (dialog) => dialog.accept('Area: Fictional Review Journey Topic'));
+      await page.once('dialog', (dialog) => dialog.accept('Project: Fictional Review Journey Topic'));
       await activate(mobileRow.getByRole('button', { name: 'Rename', exact: true }), true);
       await waitForFrameText(frame, '#topic-status', 'Topic renamed.');
       const desktopRow = frame.locator('.topic-row').filter({ hasText: 'Fictional Desktop Journey Topic' });
@@ -3238,8 +3303,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         return (body.result ?? body).review?.proposals ?? (body.result ?? body).proposals;
       });
       assert.equal(beforeDecisions.filter((proposal) => proposal.state === 'pending').length >= 2, true);
-      const [approvedBefore, keptBefore] = beforeDecisions.filter((proposal) => proposal.state === 'pending').slice(0, 2);
-      const proposal = proposals.first();
+      const approvedBefore = beforeDecisions.find((proposal) => proposal.state === 'pending' && proposal.affectedTopicIds.includes(reviewJourney.topicId));
+      const keptBefore = beforeDecisions.find((proposal) => proposal.state === 'pending' && proposal.affectedTopicIds.includes(desktopJourney.topicId));
+      assert.ok(approvedBefore && keptBefore);
+      const proposal = frame.locator(`[data-proposal-id="${approvedBefore.proposalId}"]`);
       reviewJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 320, 'mobile Topic Review proposal', true));
       await activate(proposal.getByRole('button', { name: 'Approve', exact: true }), true);
       await waitForFrameText(frame, '#analysis-feedback', 'Proposal decision saved.');
@@ -3249,7 +3316,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       });
       assert.equal(afterApproval.find((item) => item.proposalId === approvedBefore.proposalId)?.state, 'approved');
       assert.deepEqual(afterApproval.find((item) => item.proposalId === keptBefore.proposalId), keptBefore, 'Approving one proposal must not alter its sibling decision or revision');
-      const pendingCard = frame.locator('.topic-review-proposal').filter({ has: frame.getByRole('button', { name: 'Keep as-is', exact: true }) }).filter({ hasNot: frame.locator('button:disabled') }).first();
+      const pendingCard = frame.locator(`[data-proposal-id="${keptBefore.proposalId}"]`);
       await activate(pendingCard.getByRole('button', { name: 'Keep as-is', exact: true }), true);
       await waitForFrameText(frame, '#analysis-feedback', 'Proposal decision saved.');
       const afterKeep = await frame.evaluate(async () => {
@@ -3257,7 +3324,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         return (body.result ?? body).review?.proposals ?? (body.result ?? body).proposals;
       });
       assert.equal(afterKeep.find((item) => item.proposalId === approvedBefore.proposalId)?.state, 'approved');
-      assert.match(afterKeep.find((item) => item.proposalId === keptBefore.proposalId)?.state ?? '', /kept|rejected/iu);
+      assert.equal(afterKeep.some((item) => item.proposalId === keptBefore.proposalId), false, 'kept proposal leaves the actionable view');
+      for (const sibling of afterKeep.filter((item) => item.state === 'pending')) {
+        await activate(frame.locator(`[data-proposal-id="${sibling.proposalId}"]`).getByRole('button', { name: 'Keep as-is', exact: true }), true);
+        await frame.locator(`[data-proposal-id="${sibling.proposalId}"]`).waitFor({ state: 'detached' });
+      }
       const checkpoint = frame.locator('#topic-review-checkpoint');
       await checkpoint.waitFor({ state: 'visible' });
       reviewJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 320, 'mobile Topic Review checkpoint', true));
@@ -3279,14 +3350,21 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(appliedReviewResponse.status, 200);
       const appliedReview = appliedReviewResponse.body?.result ?? appliedReviewResponse.body;
       assert.equal(appliedReview?.review?.state ?? appliedReview?.state, 'Resolved');
-      const durableProposals = appliedReview?.review?.proposals ?? appliedReview?.proposals ?? [];
-      const approvedDurable = durableProposals.filter((proposal) => proposal.proposalId === approvedBefore.proposalId);
-      assert.deepEqual(approvedDurable.map(({ proposalId, revision }) => ({ proposalId, revision })), frozenPlan.proposalRevisions);
-      assert.match(durableProposals.find((proposal) => proposal.proposalId === keptBefore.proposalId)?.state ?? '', /kept|rejected/iu);
+      assert.deepEqual(appliedReview.review.proposals, []);
+      assert.equal(appliedReview.review.applicationSummary.outcomes[approvedBefore.proposalId].status, 'applied');
+      const durable = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        const approved = durable.prepare('SELECT proposal_id AS proposalId, revision, state FROM topic_proposals WHERE proposal_id = ?').get(approvedBefore.proposalId);
+        assert.equal(approved.state, 'applied');
+        assert.deepEqual([{ proposalId: approved.proposalId, revision: approved.revision }], frozenPlan.proposalRevisions);
+        assert.equal(durable.prepare('SELECT state FROM topic_proposals WHERE proposal_id = ?').get(keptBefore.proposalId).state, 'kept');
+      } finally { durable.close(); }
+      const changedTopic = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: reviewJourney.topicId } });
+      assert.equal((changedTopic?.result ?? changedTopic).topic.paraCategory, 'project');
       releaseState.reviewApplied = true;
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
       await assertResponsiveFrame(frame, page, 320);
-      return { planRevision: frozenPlan.planRevision, appliedProposalCount: durableProposals.length };
+      return { planRevision: frozenPlan.planRevision, appliedProposalCount: frozenPlan.proposalRevisions.length };
     });
     if (acceptancePlan.kind === 'release') {
       await Promise.all([...isolatedSlices.keys()].map(async (id) => {
@@ -3434,7 +3512,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     ], { timeoutMs: 240_000, onProgress: ({ id, phase }) => reportProgress(testContext, `row:${id}:${phase}`) });
     assert.deepEqual(rows.map((row) => row.id), RELEASE_ROW_IDS);
     const finalizationPhases = ['browser-close', 'host-stop', 'browser-traffic', 'host-traffic', 'child-traffic', 'build-digest'].map((phase) => ({ phase, error: finalizationErrors.find((entry) => entry.phase === phase)?.error }));
-    const report = createAcceptanceReport({ buildDigest: buildReceipt.digest, rows, finalization: finalizationPhases, performanceBaseline: baseline });
+    let report;
+    try { report = createAcceptanceReport({ buildDigest: buildReceipt.digest, rows, finalization: finalizationPhases, performanceBaseline: baseline }); }
+    catch (error) { failure ??= error; }
     if (!failure && finalizationErrors.length > 0) failure = finalizationErrors[0].error;
     let reportPassed = false;
     if (!failure) {
