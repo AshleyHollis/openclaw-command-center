@@ -1596,7 +1596,6 @@ async function retainNativeChatScreenshot(page, name) {
 }
 
 async function nativeChatRoundTrip(frame, { page, topicId, message, width = 1440, keyboard = false }) {
-  const pluginUrl = page.url();
   const target = await frame.evaluate(async (id) => {
     const catalog = unwrap(await bridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: id }));
     const primary = catalog.conversations.find((item) => item.isPrimary);
@@ -1639,8 +1638,10 @@ async function nativeChatRoundTrip(frame, { page, topicId, message, width = 1440
     assert.equal(sentRequest.params.sessionKey, target.sessionKey, 'native composer must send to the exact linked Session');
     assert.equal(acknowledgement.ok, true, 'native Chat must acknowledge an accepted send');
     await pane.getByText(message, { exact: true }).waitFor();
+    const returnLink = page.locator('openclaw-app-sidebar [data-sidebar-entry="plugin:command-center/command-center"]').getByRole('link', { name: 'Command Center', exact: true });
+    if (keyboard) await tabTo(returnLink);
     const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
-    await page.goto(pluginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await activate(returnLink, keyboard);
     const returned = (await mountedPluginFrame(page, await pluginDocument)).frame;
     await activate(returned.locator(`.topic-row[data-topic-id="${topicId}"]`).getByRole('button', { name: 'Open Topic', exact: true }), keyboard);
     await waitForFrameText(returned, '#workspace-status', 'Topic workspace ready.');
@@ -3370,8 +3371,9 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
         await cdp.detach();
       }
-      await frame.locator(`#attention-cards .attention-card[data-episode-id=${JSON.stringify(mobileAuditEpisodeId)}]`).getByRole('button', { name: 'View evidence', exact: true }).waitFor({ state: 'visible' });
-      await assertKeyboardAccessibility(frame, page, { mobile: mobileQualification });
+      const auditEvidence = frame.locator(`#attention-cards .attention-card[data-episode-id=${JSON.stringify(mobileAuditEpisodeId)}]`).getByRole('button', { name: 'View evidence', exact: true });
+      await auditEvidence.waitFor({ state: 'visible' });
+      await assertKeyboardAccessibility(frame, page, { mobile: mobileQualification, evidence: auditEvidence });
       evidence.performanceMeasurements ??= {};
       evidence.performanceMeasurements.keyboard = { ...keyboardJourney.measurement, sourceActionMs: 0 };
       return { topicId: keyboardJourney.topicId, viewport: { width: accessibilityWidth, height: 900 }, keyboardOnly: true, zoom200TopicId: zoomJourney?.topicId, zoomEvidence: keyboardJourney.zoomEvidence, accessibilityStates: keyboardJourney.accessibilityStates, focusRestorations: keyboardJourney.focusRestorations, announcementTransitions: keyboardJourney.announcementTransitions };

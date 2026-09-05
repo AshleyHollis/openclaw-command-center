@@ -18,13 +18,56 @@ document.addEventListener('click', (event) => {
   event.preventDefault();
   form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter }));
 });
+// Remember semantic identity, not just a DOM node that a refresh can detach.
+// Callers capture immediately before rendering, or when opening a modal.
+const FOCUS_OWNERS = [
+  ['#attention-cards', 'attention-heading'],
+  ['#activity, #activity-load-more', 'activity-heading'],
+  ['#topic-review-groups, #topic-review-checkpoint, #topic-review-snooze', 'topic-review-heading'],
+  ['.topic-row', 'topics-heading'],
+  ['#conversations-pane', 'conversations-heading'],
+  ['#notes-pane', 'notes-heading'],
+  ['#notes-results, #conversations-results', 'search-heading'],
+  ['#workspace-search-pane', 'workspace-search-heading']
+];
+const FOCUS_IDENTITY_ATTRIBUTES = ['data-episode-id', 'data-activity-id', 'data-proposal-id', 'data-reference-id', 'data-topic-id', 'data-search-key'];
+function usableFocusTarget(node) {
+  if (!(node instanceof HTMLElement) || !node.isConnected || node.matches(':disabled') || node.closest('[hidden], [inert]')) return false;
+  const style = getComputedStyle(node);
+  return node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+}
+function captureFocus(root = document, node = document.activeElement) {
+  if (!(node instanceof HTMLElement) || node === document.body || !root?.contains(node)) return null;
+  const owner = FOCUS_OWNERS.find(([selector]) => node.closest(selector));
+  const row = node.closest(FOCUS_IDENTITY_ATTRIBUTES.map((attribute) => `[${attribute}]`).join(','));
+  const attribute = row && FOCUS_IDENTITY_ATTRIBUTES.find((name) => row.hasAttribute(name));
+  return { node, id: node.id, owner: owner?.[0], fallback: owner?.[1], rowAttribute: attribute,
+    rowIdentity: attribute && row.getAttribute(attribute), rowIsControl: row === node,
+    key: node.dataset.focusKey || node.getAttribute('name') || node.textContent?.trim() };
+}
+function restoreFocus(intent) {
+  if (!intent) return;
+  let replacement = intent.id ? document.getElementById(intent.id) : null;
+  if (!replacement && intent.rowAttribute) {
+    const row = [...document.querySelectorAll(`[${intent.rowAttribute}]`)].find((node) =>
+      node.getAttribute(intent.rowAttribute) === intent.rowIdentity && (!intent.owner || node.closest(intent.owner)));
+    replacement = intent.rowIsControl ? row : [...(row?.querySelectorAll('button, input, select, textarea, a, [tabindex]') ?? [])]
+      .find((node) => (node.dataset.focusKey || node.getAttribute('name') || node.textContent?.trim()) === intent.key);
+  }
+  const target = [intent.node, replacement, document.getElementById(intent.fallback),
+    document.querySelector('#topic-workspace-heading'), document.querySelector('#topics-heading'), document.querySelector('#dashboard-heading')].find(usableFocusTarget);
+  if (!target) return;
+  if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
+  if (document.activeElement !== target) target.focus({ preventScroll: true });
+}
+
 const requestedTopicId = new URLSearchParams(window.location.search).get('topicId');
 // Native prompts are blocked by the host's scripts-only sandbox.
 let pendingCommandDialog = null;
 function askUser(message, { value, details = '' } = {}) {
   const dialog = document.querySelector('#command-dialog');
   if (!dialog || pendingCommandDialog) return Promise.resolve(null);
-  const invoker = document.activeElement;
+  const invoker = captureFocus();
   document.querySelector('#command-dialog-message').textContent = message;
   const input = document.querySelector('#command-dialog-input');
   input.value = value ?? ''; input.required = value !== undefined;
@@ -45,7 +88,7 @@ function finishCommandDialog(accepted) {
   const result = accepted ? (pending.expectsInput ? input.value : true) : null;
   pendingCommandDialog = null;
   document.querySelector('#command-dialog').close();
-  if (pending.invoker?.isConnected) pending.invoker.focus();
+  restoreFocus(pending.invoker);
   pending.resolve(result);
 }
 document.querySelector('#command-dialog-form')?.addEventListener('submit', (event) => { event.preventDefault(); finishCommandDialog(true); });
@@ -83,13 +126,13 @@ function displayEvidence(value) {
 }
 function showEvidence(episode, trigger) {
   const dialog = document.querySelector('#evidence-dialog');
-  evidenceReturnFocus = trigger;
+  evidenceReturnFocus = captureFocus(document, trigger);
   document.querySelector('#evidence-heading').textContent = `${episode.context || 'Attention item'} evidence`;
   displayEvidence(episode.evidence ?? episode.evidenceFacts);
   if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '');
   document.querySelector('.evidence-scroll')?.focus();
 }
-document.querySelector('#evidence-dialog')?.addEventListener('close', () => { evidenceReturnFocus?.focus?.(); evidenceReturnFocus = null; });
+document.querySelector('#evidence-dialog')?.addEventListener('close', () => { restoreFocus(evidenceReturnFocus); evidenceReturnFocus = null; });
 document.querySelector('#evidence-close')?.addEventListener('click', () => document.querySelector('#evidence-dialog')?.close?.());
 function renderNotificationSettings(settings) {
   if (!settings) return;
@@ -108,6 +151,7 @@ async function topicAnalysisRead() {
 function renderTopicReview(review) {
   topicReviewState = review; const target = document.querySelector('#topic-review-groups'); const checkpoint = document.querySelector('#topic-review-checkpoint'); if (!target) return;
   const active = document.activeElement;
+  const checkpointFocus = active === checkpoint || active?.id === 'topic-review-snooze' ? captureFocus() : null;
   const focusIntent = target.contains(active) ? { proposalId: active.closest('[data-proposal-id]')?.dataset.proposalId, label: active.textContent } : null;
   target.replaceChildren();
   for (const group of review?.groups ?? []) {
@@ -136,6 +180,7 @@ function renderTopicReview(review) {
   if (!target.childElementCount) target.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No Topic Review proposals.' }));
   if (checkpoint) { const proposals = review?.proposals ?? []; checkpoint.hidden = proposals.length === 0 || !proposals.some((proposal) => proposal.state === 'approved') || proposals.some((proposal) => proposal.state !== 'approved'); }
   const snooze = document.querySelector('#topic-review-snooze'); if (snooze) snooze.hidden = !review || review.state === 'Resolved';
+  restoreFocus(checkpointFocus);
   if (focusIntent) {
     const available = [...target.querySelectorAll('button')].filter((control) => !control.disabled && !control.hidden);
     const retained = available.find((control) => control.closest('[data-proposal-id]')?.dataset.proposalId === focusIntent.proposalId && control.textContent === focusIntent.label);
@@ -307,13 +352,14 @@ function fillTopicLaunchers(topics) {
   }
 }
 function renderActivity(records, append = false) {
-  const target = document.querySelector('#activity'); if (!append) activityRecords = [];
+  const target = document.querySelector('#activity'); const focus = captureFocus(target); if (!append) activityRecords = [];
   activityRecords = [...activityRecords, ...(records ?? [])]; target.replaceChildren(...activityRecords.map((record) => {
     const row = document.createElement('article'); row.className = 'activity-row'; row.dataset.activityId = record.activityId; const text = document.createElement('span'); text.textContent = `${record.operationKind || 'Activity'} · ${record.outcome || 'recorded'}`; row.append(text);
     if (record.navigation?.verified === true && ['session', 'note'].includes(record.navigation.kind)) row.append(dashboardButton('Open source', () => openActivity(record), { mutation: false }));
     return row;
   }));
   if (!activityRecords.length) target.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No routine history.' }));
+  restoreFocus(focus);
 }
 async function openActivity(record) {
   const feedback = document.querySelector('#dashboard-feedback');
@@ -331,18 +377,21 @@ async function openActivity(record) {
     feedback.textContent = 'Activity source opened.';
   } catch (error) { feedback.textContent = error.message || 'Authoritative navigation was refused.'; }
 }
+let notificationFocusHandled = false;
 function focusNotificationTarget() {
   const params = new URLSearchParams(window.location.search);
   const record = params.get('record');
   const notification = params.get('openclawNotification') ?? params.get('notification');
   const hasNotificationRequest = ['record', 'destination', 'notification', 'openclawNotification'].some((name) => params.has(name));
-  if (!hasNotificationRequest) return;
+  if (!hasNotificationRequest || notificationFocusHandled) return;
+  notificationFocusHandled = true;
   if (notification !== 'plugin-detail' || params.get('destination') !== 'attention-card' || !/^record-[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(record ?? '')) { document.querySelector('#dashboard-feedback').textContent = 'This notification link is unavailable.'; return; }
   const card = document.querySelector(`[data-notification-record="${CSS.escape(record)}"]`);
   if (card) { card.setAttribute('tabindex', '-1'); card.focus(); document.querySelector('#dashboard-feedback').textContent = 'Notification opened. No changes were made.'; }
   else document.querySelector('#dashboard-feedback').textContent = 'This notification is no longer available.';
 }
 let dashboardRefreshSequence = 0;
+let activityPageRequest = null;
 function renderAttentionCards(episodes) {
   const attention = document.querySelector('#attention-cards');
   // Capture after the awaited read: preserve current focus, not the control
@@ -366,6 +415,7 @@ function renderAttentionCards(episodes) {
 }
 async function loadDashboard() {
   const refreshSequence = ++dashboardRefreshSequence;
+  activityPageRequest = null;
   try {
     const incoming = await dashboardRead(0);
     if (refreshSequence !== dashboardRefreshSequence) return;
@@ -375,7 +425,28 @@ async function loadDashboard() {
     document.querySelector('#attention-badge').textContent = String(dashboardState.attentionBadgeCount ?? 0);
     renderDashboardProgress();
     const coming = document.querySelector('#coming-up'); coming.replaceChildren(...(dashboardState.comingUp ?? []).map((item) => { const row = document.createElement('p'); row.textContent = `${item.day} · ${item.time} · ${item.context} · ${item.label}`; return row; })); if (!coming.childElementCount) coming.append(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No future Reminders.' }));
-    fillTopicLaunchers(dashboardState.topics); renderActivity(dashboardState.activity?.records); const more = document.querySelector('#activity-load-more'); more.textContent = 'Load more Activity'; more.hidden = dashboardState.activity?.hasMore !== true; more.onclick = async () => { const next = await dashboardRead(dashboardState.activity.nextOffset); dashboardState.activity = next.activity; renderActivity(next.activity.records, true); more.hidden = next.activity.hasMore !== true; }; if (statusNode) statusNode.textContent = 'Dashboard is current.';
+    fillTopicLaunchers(dashboardState.topics); renderActivity(dashboardState.activity?.records);
+    const more = document.querySelector('#activity-load-more');
+    const moreFocus = document.activeElement === more ? captureFocus() : null;
+    more.textContent = 'Load more Activity'; more.hidden = dashboardState.activity?.hasMore !== true; more.removeAttribute('aria-busy');
+    restoreFocus(moreFocus);
+    more.onclick = async () => {
+      if (activityPageRequest || dashboardState.activity?.hasMore !== true) return;
+      const request = { refreshSequence: dashboardRefreshSequence };
+      activityPageRequest = request; more.setAttribute('aria-busy', 'true');
+      try {
+        const next = await dashboardRead(dashboardState.activity.nextOffset);
+        if (request !== activityPageRequest || request.refreshSequence !== dashboardRefreshSequence) return;
+        const focus = document.activeElement === more ? captureFocus() : null;
+        dashboardState.activity = next.activity; renderActivity(next.activity.records, true);
+        more.hidden = next.activity.hasMore !== true; restoreFocus(focus);
+      } catch (error) {
+        if (request === activityPageRequest) document.querySelector('#dashboard-feedback').textContent = error.message || 'Activity is unavailable.';
+      } finally {
+        if (request === activityPageRequest) { activityPageRequest = null; more.removeAttribute('aria-busy'); }
+      }
+    };
+    if (statusNode) statusNode.textContent = 'Dashboard is current.';
     focusNotificationTarget();
     await loadTopicAnalysis();
   } catch (error) {
@@ -592,10 +663,11 @@ function renderDestination(value) {
   }
 }
 async function loadTopics(message = '') { if (!hasTopicsDestination) return; try { renderDestination(await read('destination')); statusNode.textContent = message || 'Topics are current.'; } catch (error) { statusNode.textContent = error.message; } }
-async function createTopic(event) { event.preventDefault(); if (topicCreatePending) return; validateTopicNameInput(); if (!topicCreateForm.reportValidity()) return; const intent = { name: topicNameInput.value.trim().normalize('NFC'), paraCategory: topicCreateForm.elements.paraCategory.value }; if (topicCreateOperation && (topicCreateOperation.name !== intent.name || topicCreateOperation.paraCategory !== intent.paraCategory)) { statusNode.textContent = 'The previous Topic creation is not yet confirmed. Retry its unchanged name and category first.'; return; } topicCreateOperation ??= { ...intent, topicId: crypto.randomUUID(), logicalOperationId: operationId() }; const restoreSubmitFocus = document.activeElement === topicCreateSubmit; topicCreatePending = true; topicCreateSubmit.disabled = true; statusNode.textContent = 'Creating Topic…'; try { const result = await mutate('create', { ...intent, topicId: topicCreateOperation.topicId, logicalOperationId: topicCreateOperation.logicalOperationId }); currentDestination = result.result?.value?.destination ?? result.result?.destination ?? currentDestination; renderDestination(currentDestination); statusNode.textContent = 'Topic created and verified.'; topicCreateOperation = null; topicCreateForm.reset(); } catch (error) { if (error.destination) currentDestination = error.destination; renderDestination(currentDestination); if (error.terminal !== false) topicCreateOperation = null; statusNode.textContent = error.terminal === false ? 'Topic creation is not yet confirmed. Retry the unchanged name and category to reconcile it.' : `Topic action failed: ${error.message}`; } finally { topicCreatePending = false; topicCreateSubmit.disabled = false; if (restoreSubmitFocus) topicCreateSubmit.focus(); } }
+async function createTopic(event) { event.preventDefault(); if (topicCreatePending) return; validateTopicNameInput(); if (!topicCreateForm.reportValidity()) return; const intent = { name: topicNameInput.value.trim().normalize('NFC'), paraCategory: topicCreateForm.elements.paraCategory.value }; if (topicCreateOperation && (topicCreateOperation.name !== intent.name || topicCreateOperation.paraCategory !== intent.paraCategory)) { statusNode.textContent = 'The previous Topic creation is not yet confirmed. Retry its unchanged name and category first.'; return; } topicCreateOperation ??= { ...intent, topicId: crypto.randomUUID(), logicalOperationId: operationId() }; const restoreSubmitFocus = document.activeElement === topicCreateSubmit; topicCreatePending = true; topicCreateSubmit.disabled = true; statusNode.textContent = 'Creating Topic…'; if (restoreSubmitFocus) { statusNode.tabIndex = -1; statusNode.focus(); } try { const result = await mutate('create', { ...intent, topicId: topicCreateOperation.topicId, logicalOperationId: topicCreateOperation.logicalOperationId }); currentDestination = result.result?.value?.destination ?? result.result?.destination ?? currentDestination; renderDestination(currentDestination); statusNode.textContent = 'Topic created and verified.'; topicCreateOperation = null; topicCreateForm.reset(); } catch (error) { if (error.destination) currentDestination = error.destination; renderDestination(currentDestination); if (error.terminal !== false) topicCreateOperation = null; statusNode.textContent = error.terminal === false ? 'Topic creation is not yet confirmed. Retry the unchanged name and category to reconcile it.' : `Topic action failed: ${error.message}`; } finally { topicCreatePending = false; topicCreateSubmit.disabled = false; if (restoreSubmitFocus && document.activeElement === statusNode) topicCreateSubmit.focus(); } }
 topicNameInput?.addEventListener('input', validateTopicNameInput); topicCreateForm?.addEventListener('submit', createTopic);
 
-function renderSearch(id, results) { const target = document.querySelector(`#${id}`); target.replaceChildren(...(results ?? []).map((result) => { const row = document.createElement('article'); const heading = document.createElement('strong'); heading.textContent = result.heading || result.conversationName || result.path || 'Result'; const snippet = document.createElement('p'); snippet.textContent = result.snippet || ''; const open = button(result.navigation?.kind === 'conversation' ? 'Open Conversation' : 'Open Note', () => openResult(result)); row.append(heading, snippet, open); return row; })); }
+function searchFocusKey(result) { const navigation = result.navigation ?? {}; return JSON.stringify([navigation.kind, navigation.topicId, navigation.referenceId, navigation.path, result.heading]); }
+function renderSearch(id, results) { const target = document.querySelector(`#${id}`); const focus = captureFocus(target); target.replaceChildren(...(results ?? []).map((result) => { const row = document.createElement('article'); row.dataset.searchKey = searchFocusKey(result); const heading = document.createElement('strong'); heading.textContent = result.heading || result.conversationName || result.path || 'Result'; const snippet = document.createElement('p'); snippet.textContent = result.snippet || ''; const open = button(result.navigation?.kind === 'conversation' ? 'Open Conversation' : 'Open Note', () => openResult(result)); row.append(heading, snippet, open); return row; })); restoreFocus(focus); }
 async function openResult(result) {
   const detail = document.querySelector('#topic-search-detail');
   try {
@@ -647,8 +719,13 @@ const workspaceSearchStatus = document.querySelector('#workspace-search-status')
 const selectAll = (selector) => typeof document.querySelectorAll === 'function' ? document.querySelectorAll(selector) : [];
 
 function setWorkspaceVisible(visible) {
+  const active = document.activeElement;
+  const wasVisible = usableFocusTarget(active);
   if (workspaceNode) workspaceNode.hidden = !visible;
   for (const section of selectAll('main > section:not(#topic-workspace)')) section.hidden = visible;
+  if (wasVisible && !usableFocusTarget(active)) {
+    document.querySelector(visible ? '#topic-workspace-heading' : '#topics-heading')?.focus();
+  }
 }
 function exactTopicReference(topic, kind, referenceId) {
   return (topic?.sourceReferences ?? []).find((item) => item.sourceKind === kind && (!referenceId || item.referenceId === referenceId));
@@ -734,6 +811,7 @@ async function loadConversations({ selectPrimary = false, generation = workspace
 function renderConversations() {
   const target = document.querySelector('#conversation-list');
   const active = document.activeElement;
+  const pagerFocus = active?.closest('.conversation-pages') ? captureFocus() : null;
   const focusedRow = active?.closest?.('.conversation-item');
   const focusedReferenceId = focusedRow?.dataset.referenceId;
   const focusedLabel = focusedReferenceId && active instanceof HTMLButtonElement ? active.textContent : null;
@@ -752,6 +830,7 @@ function renderConversations() {
   const previous = document.querySelector('#conversation-previous'); const next = document.querySelector('#conversation-next');
   previous.disabled = workspace.conversationPage === 0; next.disabled = workspace.conversationPage >= pageCount - 1;
   document.querySelector('#conversation-page-status').textContent = `Page ${workspace.conversationPage + 1} of ${pageCount}`;
+  restoreFocus(pagerFocus);
   if (focusedReferenceId) {
     const replacementRow = [...target.querySelectorAll('.conversation-item')].find((row) => row.dataset.referenceId === focusedReferenceId);
     const controls = [...(replacementRow?.querySelectorAll('button:not(:disabled)') ?? [])];
@@ -838,6 +917,7 @@ document.querySelector('#chat-open')?.addEventListener('click', async () => {
   workspace.nativeChatPending = operation;
   const isCurrent = () => workspace.generation === operation.generation && workspace.selectionGeneration === operation.selectionGeneration && workspace.topic?.topicId === operation.topicId && workspace.selected?.referenceId === operation.referenceId && workspace.selected?.sessionId === operation.sessionId;
   syncSelectedConversationControls(); chatStatus.textContent = 'Opening native Chat…';
+  if (operation.invoker?.id === 'chat-open') { chatStatus.tabIndex = -1; chatStatus.focus(); }
   try {
     const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: operation.topicId, referenceId: operation.referenceId, nativeChat: true }));
     if (!isCurrent() || !mutationsAvailable() || selectedConversationReadOnly()) return;
@@ -850,7 +930,7 @@ document.querySelector('#chat-open')?.addEventListener('click', async () => {
   } finally {
     if (workspace.nativeChatPending === operation) workspace.nativeChatPending = null;
     syncSelectedConversationControls();
-    if (isCurrent() && operation.invoker?.isConnected) operation.invoker.focus();
+    if (isCurrent() && document.activeElement === chatStatus && usableFocusTarget(operation.invoker)) operation.invoker.focus();
   }
 });
 async function createAuthoritativeSession(label, logicalOperationId) { const created = unwrap(await bridgeRequest('sessions.create', { agentId: 'main', label }, logicalOperationId)); const key = created?.key ?? created?.sessionKey; const sessionId = created?.sessionId ?? created?.entry?.sessionId; const revision = created?.revision ?? created?.updatedAt ?? created?.entry?.updatedAt; if (typeof key !== 'string' || typeof sessionId !== 'string' || revision === undefined || revision === null) throw new Error('The authoritative Session creation response was incomplete.'); return { key, sessionId, revision: String(revision), idempotencyKey: logicalOperationId, label }; }
@@ -872,11 +952,12 @@ async function loadNotes({ generation = workspace.generation, preserveSnapshot =
   renderNotes(); notesStatus.textContent = `${workspace.notesTotal} Notes.`;
 }
 function renderNotes() {
-  const target = document.querySelector('#notes-tree'); target.replaceChildren();
+  const target = document.querySelector('#notes-tree'); const focus = captureFocus(document.querySelector('#notes-pane')); target.replaceChildren();
   const total = workspace.notesServerPaged ? workspace.notesTotal : workspace.notes.length; const pageCount = Math.max(1, Math.ceil(total / NOTE_PAGE_SIZE)); workspace.notePage = Math.min(workspace.notePage, pageCount - 1); const start = workspace.notePage * NOTE_PAGE_SIZE;
   const visibleNotes = workspace.notesServerPaged ? workspace.notes : workspace.notes.slice(start, start + NOTE_PAGE_SIZE);
-  for (const note of visibleNotes) { const source = note.sourceReference ?? exactTopicReference(workspace.topic, 'note', note.referenceId); const open = button(note.path, () => openAuthoritativeNote({ kind: 'note', topicId: workspace.topic.topicId, referenceId: source?.referenceId, path: note.path, observedRevision: note.revision ?? source?.observedRevision })); open.className = 'note-tree-item'; target.append(open); }
+  for (const note of visibleNotes) { const source = note.sourceReference ?? exactTopicReference(workspace.topic, 'note', note.referenceId); const open = button(note.path, () => openAuthoritativeNote({ kind: 'note', topicId: workspace.topic.topicId, referenceId: source?.referenceId, path: note.path, observedRevision: note.revision ?? source?.observedRevision })); open.className = 'note-tree-item'; open.dataset.referenceId = source?.referenceId ?? note.path; target.append(open); }
   document.querySelector('#note-previous').disabled = workspace.notePage === 0; document.querySelector('#note-next').disabled = workspace.notePage >= pageCount - 1; document.querySelector('#note-last').disabled = workspace.notePage >= pageCount - 1; document.querySelector('#note-page-status').textContent = `${total} Notes · Page ${workspace.notePage + 1} of ${pageCount}`;
+  restoreFocus(focus);
 }
 function loadNotesPage() { loadNotes({ preserveSnapshot: true }).catch((error) => { notesStatus.textContent = error.message || 'The requested Notes page is unavailable.'; }); }
 document.querySelector('#note-previous')?.addEventListener('click', () => { if (workspace.notePage > 0) { workspace.notePage -= 1; if (workspace.notesServerPaged) loadNotesPage(); else renderNotes(); } });
@@ -929,17 +1010,29 @@ async function setNoteMode(preview) { const editor = document.querySelector('#no
 document.querySelector('#note-edit-mode')?.addEventListener('click', () => setNoteMode(false)); document.querySelector('#note-preview-mode')?.addEventListener('click', () => setNoteMode(true));
 
 const noteDialog = document.querySelector('#note-action-dialog'); let noteDialogAction = null; let noteDialogReturnFocus = null; let noteDialogPending = false;
-function setNoteDialogPending(pending) { noteDialogPending = pending; for (const control of noteDialog.querySelectorAll('input, textarea, button')) control.disabled = pending; }
-function openNoteDialog(action, trigger) { noteDialogAction = action; noteDialogReturnFocus = trigger; noteDialog.inert = false; setNoteDialogPending(false); document.querySelector('#note-action-status').textContent = ''; document.querySelector('#note-action-heading').textContent = action === 'notes.create' ? 'Create Note' : action === 'notes.rename' ? 'Rename Note' : 'Move Note'; document.querySelector('#note-action-path').value = action === 'notes.create' ? '' : workspace.note?.path ?? ''; document.querySelector('#note-action-text').value = ''; document.querySelector('#note-action-text-label').hidden = action !== 'notes.create'; noteDialog.showModal(); document.querySelector('#note-action-path').focus(); }
-function closeNoteDialog() { if (noteDialogPending) return; const returnFocus = noteDialogReturnFocus; noteDialogReturnFocus = null; noteDialogAction = null; noteDialog.inert = true; noteDialog.close(); if (returnFocus?.isConnected) returnFocus.focus(); }
+function setNoteDialogPending(pending) {
+  const status = document.querySelector('#note-action-status');
+  const ownedFocus = noteDialog.contains(document.activeElement);
+  const statusFocused = document.activeElement === status;
+  noteDialogPending = pending;
+  for (const control of noteDialog.querySelectorAll('input, textarea, button')) control.disabled = pending;
+  status.tabIndex = pending ? 0 : -1;
+  if (pending && ownedFocus) status.focus();
+  else if (!pending && statusFocused) document.querySelector('#note-action-path').focus();
+}
+noteDialog?.addEventListener('keydown', (event) => {
+  if (noteDialogPending && event.key === 'Tab') { event.preventDefault(); document.querySelector('#note-action-status').focus(); }
+});
+function openNoteDialog(action, trigger) { noteDialogAction = action; noteDialogReturnFocus = captureFocus(document, trigger); noteDialog.inert = false; setNoteDialogPending(false); document.querySelector('#note-action-status').textContent = ''; document.querySelector('#note-action-heading').textContent = action === 'notes.create' ? 'Create Note' : action === 'notes.rename' ? 'Rename Note' : 'Move Note'; document.querySelector('#note-action-path').value = action === 'notes.create' ? '' : workspace.note?.path ?? ''; document.querySelector('#note-action-text').value = ''; document.querySelector('#note-action-text-label').hidden = action !== 'notes.create'; noteDialog.showModal(); document.querySelector('#note-action-path').focus(); }
+function closeNoteDialog() { if (noteDialogPending) return; const returnFocus = noteDialogReturnFocus; noteDialogReturnFocus = null; noteDialogAction = null; noteDialog.inert = true; noteDialog.close(); restoreFocus(returnFocus); }
 document.querySelector('#note-new')?.addEventListener('click', (event) => openNoteDialog('notes.create', event.currentTarget)); document.querySelector('#note-rename')?.addEventListener('click', (event) => openNoteDialog('notes.rename', event.currentTarget)); document.querySelector('#note-move')?.addEventListener('click', (event) => openNoteDialog('notes.move', event.currentTarget));
 document.querySelector('#note-action-cancel')?.addEventListener('click', closeNoteDialog); noteDialog?.addEventListener('cancel', (event) => { event.preventDefault(); closeNoteDialog(); });
-document.querySelector('#note-action-form')?.addEventListener('submit', async (event) => { event.preventDefault(); if (noteDialogPending) return; const path = document.querySelector('#note-action-path').value.trim(); const current = workspace.note; const generation = workspace.generation; const topic = workspace.topic; const action = noteDialogAction; const returnFocus = noteDialogReturnFocus; setNoteDialogPending(true); document.querySelector('#note-action-status').textContent = 'Applying authoritative Note change…'; try { if (action === 'notes.create') await pageAction(action, { topicId: topic.topicId, referenceId: topic.noteFolderReferenceId ?? exactTopicReference(topic, 'note_folder')?.referenceId, path, contentBase64: encodeText(document.querySelector('#note-action-text').value), expectedTopicRevision: topic.revision }); else await pageAction(action, { topicId: topic.topicId, referenceId: current.referenceId, path: current.path, destinationPath: path, expectedRevision: current.revision, expectedTopicRevision: topic.revision }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; await loadNotes({ generation }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; const next = workspace.notes.find((item) => item.path === path); if (next) { const oldDraft = current && workspace.drafts.get(current.draftId); const source = next.sourceReference; if (oldDraft && current.path !== path) workspace.drafts.set(`${topic.topicId}:${source.referenceId}`, oldDraft); await openAuthoritativeNote({ kind: 'note', topicId: topic.topicId, referenceId: source.referenceId, path, observedRevision: next.revision }, { moveFocus: false }); } setNoteDialogPending(false); closeNoteDialog(); if (returnFocus?.isConnected) returnFocus.focus(); } catch (error) { setNoteDialogPending(false); if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) document.querySelector('#note-action-status').textContent = error.message; } });
+document.querySelector('#note-action-form')?.addEventListener('submit', async (event) => { event.preventDefault(); if (noteDialogPending) return; const path = document.querySelector('#note-action-path').value.trim(); const current = workspace.note; const generation = workspace.generation; const topic = workspace.topic; const action = noteDialogAction; setNoteDialogPending(true); document.querySelector('#note-action-status').textContent = 'Applying authoritative Note change…'; try { if (action === 'notes.create') await pageAction(action, { topicId: topic.topicId, referenceId: topic.noteFolderReferenceId ?? exactTopicReference(topic, 'note_folder')?.referenceId, path, contentBase64: encodeText(document.querySelector('#note-action-text').value), expectedTopicRevision: topic.revision }); else await pageAction(action, { topicId: topic.topicId, referenceId: current.referenceId, path: current.path, destinationPath: path, expectedRevision: current.revision, expectedTopicRevision: topic.revision }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; await loadNotes({ generation }); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; const next = workspace.notes.find((item) => item.path === path); if (next) { const oldDraft = current && workspace.drafts.get(current.draftId); const source = next.sourceReference; if (oldDraft && current.path !== path) workspace.drafts.set(`${topic.topicId}:${source.referenceId}`, oldDraft); await openAuthoritativeNote({ kind: 'note', topicId: topic.topicId, referenceId: source.referenceId, path, observedRevision: next.revision }, { moveFocus: false }); } setNoteDialogPending(false); closeNoteDialog(); } catch (error) { setNoteDialogPending(false); if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) document.querySelector('#note-action-status').textContent = error.message; } });
 document.querySelector('#notes-refresh')?.addEventListener('click', () => loadNotes());
 
 async function searchWorkspace(event) { event.preventDefault(); if (!workspace.topic) return; const generation = workspace.generation; const searchGeneration = ++workspace.searchGeneration; const topicId = workspace.topic.topicId; workspaceSearchStatus.textContent = 'Searching…'; try { const value = await queryTopicSearch({ schemaVersion: 1, topicId, query: document.querySelector('#workspace-search-query').value.trim(), limit: 50 }); if (generation !== workspace.generation || searchGeneration !== workspace.searchGeneration || workspace.topic?.topicId !== topicId) return; renderWorkspaceSearch('workspace-notes-results', value.notes?.results ?? []); renderWorkspaceSearch('workspace-conversations-results', value.conversations?.results ?? []); workspaceSearchStatus.textContent = `${value.notes?.results?.length ?? 0} Notes · ${value.conversations?.results?.length ?? 0} Conversations`; } catch (error) { if (generation === workspace.generation && searchGeneration === workspace.searchGeneration && workspace.topic?.topicId === topicId) workspaceSearchStatus.textContent = error.message || 'Topic Search is unavailable.'; } }
 async function rebuildWorkspaceSearch() { if (!workspace.topic) return; const topicId = workspace.topic.topicId; const generation = workspace.generation; workspaceSearchStatus.textContent = 'Rebuilding Topic Search…'; try { await rebuildTopicSearchProjection(topicId); if (generation === workspace.generation && workspace.topic?.topicId === topicId) workspaceSearchStatus.textContent = 'Topic Search index rebuilt from authoritative sources.'; } catch (error) { if (generation === workspace.generation && workspace.topic?.topicId === topicId) workspaceSearchStatus.textContent = error.message || 'Topic Search rebuild failed.'; } }
-function renderWorkspaceSearch(id, results) { const target = document.querySelector(`#${id}`); target.replaceChildren(...results.map((result) => { const row = document.createElement('article'); const title = document.createElement('strong'); title.textContent = result.heading || result.conversationName || result.path; const snippet = document.createElement('p'); snippet.textContent = result.snippet ?? ''; row.append(title, snippet); if (result.provenance?.status === 'closed') row.append(Object.assign(document.createElement('span'), { textContent: 'Closed' })); row.append(button(result.navigation.kind === 'note' ? 'Open Note' : 'Open Conversation', () => openWorkspaceResult(result))); return row; })); }
+function renderWorkspaceSearch(id, results) { const target = document.querySelector(`#${id}`); const focus = captureFocus(target); target.replaceChildren(...results.map((result) => { const row = document.createElement('article'); row.dataset.searchKey = searchFocusKey(result); const title = document.createElement('strong'); title.textContent = result.heading || result.conversationName || result.path; const snippet = document.createElement('p'); snippet.textContent = result.snippet ?? ''; row.append(title, snippet); if (result.provenance?.status === 'closed') row.append(Object.assign(document.createElement('span'), { textContent: 'Closed' })); row.append(button(result.navigation.kind === 'note' ? 'Open Note' : 'Open Conversation', () => openWorkspaceResult(result))); return row; })); restoreFocus(focus); }
 async function openWorkspaceResult(result) { if (result.navigation.kind === 'note') return openAuthoritativeNote(result.navigation); const navigation = result.navigation; const generation = workspace.generation; const searchGeneration = workspace.searchGeneration; const selectionGeneration = workspace.selectionGeneration; const topicId = workspace.topic?.topicId; try { if (navigation.topicId !== topicId) throw new Error('The authoritative Conversation belongs to another Topic.'); const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: navigation.topicId, referenceId: navigation.referenceId })); if (generation !== workspace.generation || searchGeneration !== workspace.searchGeneration || selectionGeneration !== workspace.selectionGeneration || workspace.topic?.topicId !== topicId) return; const source = target?.sourceReference; if (target?.sessionKey !== navigation.sessionKey || target?.sessionId !== navigation.sessionId || source?.referenceId !== navigation.referenceId || source?.topicId !== topicId || source?.sourceSystem !== 'openclaw' || source?.sourceKind !== 'session' || source?.externalSourceId !== target.sessionKey) throw new Error('The authoritative Conversation changed after this result was created.'); const item = { referenceId: navigation.referenceId, topicId: navigation.topicId, sessionKey: target.sessionKey, sessionId: target.sessionId, displayName: result.conversationName, status: result.provenance?.status ?? 'open', isPrimary: false }; await selectConversation(item); if (generation === workspace.generation && workspace.topic?.topicId === topicId) revealWorkspaceTarget('chat'); } catch (error) { if (generation === workspace.generation && searchGeneration === workspace.searchGeneration && workspace.topic?.topicId === topicId) workspaceSearchStatus.textContent = error.message || 'Authoritative Conversation navigation was refused.'; } }
 document.querySelector('#workspace-search-form')?.addEventListener('submit', searchWorkspace);
 document.querySelector('#workspace-search-rebuild')?.addEventListener('click', rebuildWorkspaceSearch);
