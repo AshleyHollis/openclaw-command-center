@@ -215,4 +215,5 @@ test('Topic Page browser runner is mandatory, pinned, and included in the ordina
 });
 test('native Chat diagnostic requires the real authenticated mount and native round trip', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-handoff']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-pointer-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']);
 });

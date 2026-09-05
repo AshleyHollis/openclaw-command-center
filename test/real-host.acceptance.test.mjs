@@ -2985,13 +2985,15 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     if (focusedScenarioIds?.has('focused-scale-session-seeding')) {
       await collectScenario('focused-scale-session-seeding', async (signal) => ensureScaleConversationFixture(signal));
     }
-    if (focusedScenarioIds?.has('focused-native-chat-handoff')) {
-      await collectScenario('focused-native-chat-handoff', async () => {
-        await activate(frame.locator(`.topic-row[data-topic-id="${RELEASE_ALPHA_TOPIC_ID}"]`).getByRole('button', { name: 'Open Topic', exact: true }), true);
+    const nativeChatScenarioId = ['focused-native-chat-handoff', 'focused-native-chat-pointer-handoff'].find((id) => focusedScenarioIds?.has(id));
+    if (nativeChatScenarioId) {
+      const keyboard = nativeChatScenarioId === 'focused-native-chat-handoff';
+      await collectScenario(nativeChatScenarioId, async () => {
+        await activate(frame.locator(`.topic-row[data-topic-id="${RELEASE_ALPHA_TOPIC_ID}"]`).getByRole('button', { name: 'Open Topic', exact: true }), keyboard);
         await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
-        const result = await nativeChatRoundTrip(frame, { page, topicId: RELEASE_ALPHA_TOPIC_ID, message: 'Fictional native Chat round-trip evidence.', keyboard: true });
+        const result = await nativeChatRoundTrip(frame, { page, topicId: RELEASE_ALPHA_TOPIC_ID, message: 'Fictional native Chat round-trip evidence.', keyboard });
         frame = result.frame;
-        return { sessionId: result.sessionId, referenceId: result.referenceId, nativeComposer: true, authoritativeHistory: true, returnedToTopic: true };
+        return { sessionId: result.sessionId, referenceId: result.referenceId, nativeComposer: true, authoritativeHistory: true, returnedToTopic: true, keyboard };
       });
     }
     if (focusedScenarioIds?.has('focused-scale-workspace-readiness')) {
