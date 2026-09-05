@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, openSync } from 'node:fs';
 import { link, mkdir, open, readdir, rename, rmdir, writeFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { createSourceReference, revisionForBytes } from './reference.mjs';
+import { createSourceReference, effectiveSourceLocator, revisionForBytes } from './reference.mjs';
 import { SourceServiceError, sourceError, nonBlank } from './errors.mjs';
 import { assertSafeDirectory, assertSafeNotePath, isWithin, normalizeNotePath } from './note-path.mjs';
 
@@ -52,7 +52,7 @@ export class NoteAdapter {
 
   async resolveRoot() {
     if (this.root && this.metadata && !this.noteFolderReferenceId) {
-      const matches = this.metadata.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder' && reference.externalSourceId === this.root) ?? [];
+      const matches = this.metadata.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder' && effectiveSourceLocator(this.metadata, reference) === this.root) ?? [];
       if (matches.length === 1) this.noteFolderReferenceId = matches[0].referenceId;
     }
     if (this.metadata && this.noteFolderReferenceId) {
@@ -108,9 +108,10 @@ export class NoteAdapter {
   }
 
   noteReference(root, relativePath, revision, referencesByExternalSourceId = null) {
+    this.assertCurrentRoot(root);
     const externalSourceId = `${root}/${relativePath}`;
     const matches = referencesByExternalSourceId === null
-      ? this.metadata?.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note' && reference.externalSourceId === externalSourceId) ?? []
+      ? this.metadata?.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note' && effectiveSourceLocator(this.metadata, reference) === externalSourceId) ?? []
       : referencesByExternalSourceId.get(externalSourceId) ?? [];
     if (matches.length > 1) throw sourceError('source-recovery', 'The Note Source Reference is ambiguous.');
     return createSourceReference({
@@ -118,9 +119,15 @@ export class NoteAdapter {
       topicId: this.topicId,
       sourceSystem: 'obsidian',
       sourceKind: 'note',
-      externalSourceId,
+      externalSourceId: matches[0]?.externalSourceId ?? externalSourceId,
       observedRevision: revision
     });
+  }
+
+  assertCurrentRoot(root) {
+    if (!this.noteFolderReferenceId) return;
+    const current = this.metadata?.getSourceLocator?.(this.noteFolderReferenceId);
+    if (current && (current.locator !== root || current.observedRevision !== this.rootObservedRevision)) throw sourceError('conflict', 'The Note Folder moved during source access.');
   }
 
   descriptorPath(handle, name = '') {
@@ -266,7 +273,7 @@ export class NoteAdapter {
     if (input.referenceId !== undefined && input.referenceId !== this.noteFolderReferenceId) {
       const reference = this.metadata?.getSourceReference?.(input.referenceId);
       const expectedExternalId = `${root}/${state.relativePath}`;
-      if (!reference || reference.topicId !== this.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || reference.externalSourceId !== expectedExternalId) {
+      if (!reference || reference.topicId !== this.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || effectiveSourceLocator(this.metadata, reference) !== expectedExternalId) {
         throw sourceError('source-recovery', 'The Note read does not match the exact Topic-owned Note Source Reference.');
       }
     }
@@ -289,9 +296,10 @@ export class NoteAdapter {
     const referencesByExternalSourceId = new Map();
     for (const reference of this.metadata?.listSourceReferences?.(this.topicId) ?? []) {
       if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note') continue;
-      const matches = referencesByExternalSourceId.get(reference.externalSourceId) ?? [];
+      const locator = effectiveSourceLocator(this.metadata, reference);
+      const matches = referencesByExternalSourceId.get(locator) ?? [];
       matches.push(reference);
-      referencesByExternalSourceId.set(reference.externalSourceId, matches);
+      referencesByExternalSourceId.set(locator, matches);
     }
     const rootStat = this.rootStat;
     const rootHandle = await this.duplicateRootHandle();
@@ -351,6 +359,7 @@ export class NoteAdapter {
       await this.assertChainStable([{ namedPath: root, stat: rootStat }]);
     } finally { await rootHandle.close(); }
     notes.sort((left, right) => left.path.localeCompare(right.path));
+    this.assertCurrentRoot(root);
     if (input.observe !== false) {
       const observed = typeof this.metadata?.observeSourceReferences === 'function'
         ? this.metadata.observeSourceReferences(notes.map((note) => note.sourceReference))

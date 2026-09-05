@@ -1541,6 +1541,41 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
       ON CONFLICT(reference_id) DO UPDATE SET locator = excluded.locator, locator_version = excluded.locator_version, ownership = excluded.ownership, observed_revision = excluded.observed_revision, updated_at = excluded.updated_at`).run(referenceId, requiredString(input.locator, 'locator'), integerValue(locatorVersion, 'locatorVersion', { minimum: 1 }), input.ownership ?? existing?.ownership ?? 'external', input.observedRevision ?? null, timestamp(input.updatedAt, 'updatedAt'));
     return mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId));
   });
+  service.relocateNoteFolder = (input = {}) => mutate('notes', (db) => {
+    const folder = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(requiredString(input.referenceId, 'referenceId'));
+    const current = db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(input.referenceId);
+    if (!folder || folder.source_system !== 'obsidian' || folder.source_kind !== 'note_folder' || !current) throw new CommandCenterMetadataError('not-found', 'The exact Note Folder binding was not found.');
+    const from = requiredString(input.from, 'from');
+    const to = requiredString(input.to, 'to');
+    if (!path.isAbsolute(from) || !path.isAbsolute(to) || from === to) throw new CommandCenterMetadataError('invalid-value', 'Note Folder relocation requires distinct absolute locators.');
+    if (current.locator !== from || current.locator_version !== input.expectedLocatorVersion || current.observed_revision !== input.expectedSourceRevision) throw new CommandCenterMetadataError('conflict', 'Note Folder locator revision is stale.');
+    const notes = db.prepare(`SELECT reference.*, locator.locator, locator.locator_version, locator.ownership, locator.observed_revision AS locator_revision
+      FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+      WHERE reference.source_system = 'obsidian' AND reference.source_kind = 'note'`).all();
+    const moves = [];
+    for (const note of notes) {
+      if (note.topic_id !== folder.topic_id) continue;
+      const effective = note.locator ?? note.external_source_id;
+      if (!path.isAbsolute(effective)) continue;
+      const relative = path.relative(from, effective);
+      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+      moves.push({ note, destination: `${to.replace(/[\\/]+$/u, '')}/${relative.split(path.sep).join('/')}` });
+    }
+    const destinations = new Set();
+    const movingIds = new Set(moves.map(({ note }) => note.reference_id));
+    const stationary = new Set(notes.filter((note) => !movingIds.has(note.reference_id)).map((note) => path.resolve(note.locator ?? note.external_source_id)));
+    for (const { destination } of moves) {
+      const exact = path.resolve(destination);
+      if (destinations.has(exact) || stationary.has(exact)) throw new CommandCenterMetadataError('conflict', 'A relocated Note destination is already owned or ambiguous.');
+      destinations.add(exact);
+    }
+    const now = timestamp(input.updatedAt, 'updatedAt');
+    const save = db.prepare(`INSERT INTO source_locators (reference_id, locator, locator_version, ownership, observed_revision, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(reference_id) DO UPDATE SET locator=excluded.locator, locator_version=excluded.locator_version, ownership=excluded.ownership, observed_revision=excluded.observed_revision, updated_at=excluded.updated_at`);
+    for (const { note, destination } of moves) save.run(note.reference_id, destination, (note.locator_version ?? 0) + 1, note.ownership ?? 'external', note.locator_revision ?? note.last_observed_revision, now);
+    save.run(folder.reference_id, to, current.locator_version + 1, current.ownership, current.observed_revision, now);
+    return mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(folder.reference_id));
+  });
   service.getSourceLocator = (referenceId) => readOne('SELECT * FROM source_locators WHERE reference_id = ?', [requiredString(referenceId, 'referenceId')], mapLocator) || null;
   service.listSourceLocators = (topicId = undefined) => topicId === undefined
     ? readMany('SELECT * FROM source_locators ORDER BY reference_id', [], mapLocator)

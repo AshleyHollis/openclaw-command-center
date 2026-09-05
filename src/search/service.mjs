@@ -1,6 +1,7 @@
 import { openProjectionStore, SEARCH_PROJECTION_VERSIONS } from './projection-store.mjs';
 import { validateSearchRequest } from './query.mjs';
 import { sourceError } from '../sources/errors.mjs';
+import { effectiveSourceLocator } from '../sources/reference.mjs';
 import { clearTopicSearchInvalidationMarker, hasTopicSearchInvalidationMarker, markTopicSearchInvalidated } from './freshness.mjs';
 
 function exactReference(metadata, topicId, referenceId) {
@@ -150,7 +151,7 @@ function isCurrentResult(metadata, topicId, scope, result) {
       const folderRoot = metadata?.getSourceLocator?.(folder.referenceId)?.locator ?? folder.externalSourceId;
       const expectedExternalSourceId = `${folderRoot.replace(/\/+$/u, '')}/${result.path}`;
       return reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note'
-        && reference.externalSourceId === expectedExternalSourceId
+        && effectiveSourceLocator(metadata, reference) === expectedExternalSourceId
         && folder.referenceId === scope.folder.referenceId
         && folder.externalSourceId === scope.folder.externalSourceId;
     }

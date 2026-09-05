@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
+import { effectiveSourceLocator } from '../sources/reference.mjs';
 import { normalizeNotePath } from '../sources/note-path.mjs';
 import { explicitSessionReplacements, unavailableReplacedSession } from '../sources/session-replacement.mjs';
 
@@ -79,11 +80,11 @@ export async function readNoteSourceSnapshot({ topicId, metadata, noteAdapter, q
       if (!entry || typeof entry.path !== 'string' || entry.sourceReference?.topicId !== topicId || entry.sourceReference?.sourceSystem !== 'obsidian' || entry.sourceReference?.sourceKind !== 'note') throw sourceError('source-recovery', 'The Note adapter returned a foreign or identity-mismatched Note.');
       const relativePath = normalizeNotePath(entry.path);
       const expectedExternalId = `${folderRoot.replace(/\/+$/u, '')}/${relativePath}`;
-      if (entry.sourceReference.externalSourceId !== expectedExternalId) throw sourceError('source-recovery', 'The Note adapter returned a Note outside the exact Topic Folder.');
+      if (effectiveSourceLocator(metadata, entry.sourceReference) !== expectedExternalId) throw sourceError('source-recovery', 'The Note adapter returned a Note outside the exact Topic Folder.');
       const read = typeof entry.text === 'string'
         ? entry
         : await withSignal(noteAdapter.read({ path: relativePath, referenceId: entry.sourceReference.referenceId, observe: true }), signal);
-      if (read.path !== relativePath || read.sourceReference?.topicId !== topicId || read.sourceReference?.sourceSystem !== 'obsidian' || read.sourceReference?.sourceKind !== 'note' || read.sourceReference.externalSourceId !== expectedExternalId) throw sourceError('source-recovery', 'The Note adapter returned a foreign or identity-mismatched Note.');
+      if (read.path !== relativePath || read.sourceReference?.topicId !== topicId || read.sourceReference?.sourceSystem !== 'obsidian' || read.sourceReference?.sourceKind !== 'note' || read.sourceReference.externalSourceId !== entry.sourceReference.externalSourceId || effectiveSourceLocator(metadata, read.sourceReference) !== expectedExternalId) throw sourceError('source-recovery', 'The Note adapter returned a foreign or identity-mismatched Note.');
       if (read.sourceReference.referenceId !== entry.sourceReference.referenceId || read.sourceReference.observedRevision !== read.revision) throw sourceError('source-recovery', 'The Note adapter returned a changed Note identity.');
       return noteSections(read.text).map((section) => {
       signal?.throwIfAborted();

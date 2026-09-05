@@ -5,6 +5,7 @@ import { createAnalysisAdapter } from './analysis.mjs';
 import { createAttentionAdapter } from './attention.mjs';
 import { capabilityDiagnostics, normalizeSourceCapabilities, requireCapability } from './capabilities.mjs';
 import { sourceError, assertNoUnexpectedKeys } from './errors.mjs';
+import { effectiveSourceLocator } from './reference.mjs';
 import { createMutationCoordinator } from './mutation-coordinator.mjs';
 import { createNoteAdapter } from './notes.mjs';
 import { createReminderAdapter } from './reminders.mjs';
@@ -130,7 +131,7 @@ export class AuthoritativeSourceService {
     const notePath = input.path ?? input.notePath ?? input.sourcePath;
     const folderRoot = folder && (this.metadata.getSourceLocator?.(folder.referenceId)?.locator ?? folder.externalSourceId);
     const expectedExternalId = folderRoot ? `${String(folderRoot).replace(/\/+$/u, '')}/${notePath}` : null;
-    if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || (expectedExternalId && reference.externalSourceId !== expectedExternalId)) throw sourceError('source-recovery', 'The exact Topic-owned Note Source Reference does not match the requested path.');
+    if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || (expectedExternalId && effectiveSourceLocator(this.metadata, reference) !== expectedExternalId)) throw sourceError('source-recovery', 'The exact Topic-owned Note Source Reference does not match the requested path.');
     const expectedRevision = read ? input.observedRevision : input.expectedRevision;
     const replay = input.logicalOperationId ? this.metadata.getOperation?.(input.logicalOperationId) : null;
     if (expectedRevision !== undefined && reference.observedRevision !== expectedRevision && !replay) throw sourceError('conflict', 'The Note Source Reference revision is stale.');
@@ -283,7 +284,14 @@ export class AuthoritativeSourceService {
     const value = await service.sessions.list({ ...adapterRequest, status: input.includeClosed === true ? 'all' : 'open' });
     return { schemaVersion: 1, topicId: input.topicId, conversations: value.conversations };
   }
-  async sessionsNavigate(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); return service.sessions.navigate(adapterInput(input)); }
+  async sessionsNavigate(input = {}) {
+    // Native Chat exposes a composer: resolving that destination must obey the
+    // same Topic archive and source-recovery policy as sending a message.
+    const service = this.requireTopicService(input, { write: input.nativeChat === true, requiredSourceKinds: ['session'] });
+    requireCapability(this.capabilities, 'sessions');
+    if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' });
+    return service.sessions.navigate(adapterInput(input));
+  }
   async verifyPrimarySessionForCreate(topicId, sessions) {
     const primary = (this.metadata.listSourceReferences?.(topicId) ?? []).filter((reference) => reference.topicId === topicId && reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session' && this.metadata.getSessionState?.(reference.referenceId)?.isPrimary === true);
     if (primary.length !== 1) throw sourceError('source-recovery', 'Conversation creation requires exactly one persisted Primary Session identity.');

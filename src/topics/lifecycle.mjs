@@ -32,14 +32,7 @@ function revisionsFor(metadata, topicId, extra = []) {
 
 function updateMovedLocator(metadata, referenceId, destination) {
   const current = metadata.getSourceLocator(referenceId);
-  return metadata.setSourceLocator({
-    referenceId,
-    locator: destination,
-    locatorVersion: current.locatorVersion + 1,
-    ownership: current.ownership,
-    observedRevision: current.observedRevision,
-    createdAt: current.createdAt
-  });
+  return metadata.relocateNoteFolder({ referenceId, from: current.locator, to: destination, expectedLocatorVersion: current.locatorVersion, expectedSourceRevision: current.observedRevision });
 }
 
 function filesystemIdentity(stat) { return stat ? `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}` : null; }

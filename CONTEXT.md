@@ -35,7 +35,7 @@ _Avoid_: Archived Topic, deleted Topic
 The recorded predecessor-and-successor relationship created by a Topic merge or split. It keeps historical links and provenance resolvable across topology changes.
 
 **Topic Page**:
-The focused Command Center destination for one Topic, combining its Chat, Notes, search, and later Topic-specific detail.
+The focused Command Center destination for one Topic, combining its overview, Notes, search, and linked Conversations. Its Chat action opens the exact linked native OpenClaw conversation; Command Center does not own an active Chat composer or transcript renderer. Closed Conversations and Archived Topics retain a history-only source view because native Chat does not provide a read-only navigation contract.
 _Avoid_: channel page
 
 ## Knowledge and conversation
@@ -47,7 +47,7 @@ A durable knowledge document whose authoritative content lives in the user's Obs
 The single Obsidian folder that forms the authoritative boundary for a Topic's Notes.
 
 **Primary Session**:
-The replaceable Topic Conversation that receives messages sent through a Topic's main Chat. A former Primary remains linked as an ordinary Topic Conversation; migrated history forms an immutable prefix of the initial Primary Session.
+The replaceable Topic Conversation selected by default for a Topic's native Chat action. A former Primary remains linked as an ordinary Topic Conversation; migrated history forms an immutable prefix of the initial Primary Session.
 
 **Topic Conversation**:
 An isolated OpenClaw session associated with exactly one Topic at a time. Reassignment preserves its identity, transcript, and originating-Topic provenance without inheriting another Topic Conversation's transcript.

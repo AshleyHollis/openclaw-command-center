@@ -99,7 +99,7 @@ function parameterSchema(field, method) {
   if (arrayFields.has(field)) return Object.freeze({ type: 'array' });
   if (stringFields.has(field)) return Object.freeze({ type: 'string', minLength: 1 });
   if (objectFields.has(field)) return Object.freeze({ type: 'object' });
-  if (field === 'enabled' || field === 'isPrimary') return Object.freeze({ type: 'boolean' });
+  if (field === 'enabled' || field === 'isPrimary' || field === 'nativeChat') return Object.freeze({ type: 'boolean' });
   if (field === 'limit') return Object.freeze({ type: 'integer', minimum: 1, maximum: 100 });
   if (field === 'offset') return Object.freeze({ type: 'integer', minimum: 0 });
   if (field === 'activityLimit') return Object.freeze({ type: 'integer', minimum: 1, maximum: 50 });
@@ -383,7 +383,7 @@ const fields = Object.freeze({
   'command-center.v1.notes.move': ['topicId', 'referenceId', 'sourcePath', 'path', 'destinationPath', 'newPath', 'expectedRevision', 'logicalOperationId'],
   'command-center.v1.sessions.history': ['topicId', 'referenceId', 'sessionReferenceId', 'limit', 'offset', 'messageId'],
   'command-center.v1.sessions.browse': ['topicId', 'includeClosed'],
-  'command-center.v1.sessions.navigate': ['topicId', 'referenceId', 'sessionReferenceId'],
+  'command-center.v1.sessions.navigate': ['topicId', 'referenceId', 'sessionReferenceId', 'nativeChat'],
   'command-center.v1.sessions.create': ['topicId', 'label', 'isPrimary', 'logicalOperationId', 'authoritativeSession'],
   'command-center.v1.sessions.send': ['topicId', 'referenceId', 'message', 'logicalOperationId'],
   'command-center.v1.sessions.close': ['topicId', 'referenceId', 'sessionReferenceId', 'isPrimary', 'logicalOperationId'],

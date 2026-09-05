@@ -303,9 +303,11 @@ export class SessionAdapter {
   }
 
   async navigate(input = {}) {
-    assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId', 'requestId'], 'Session navigation request');
+    assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId', 'requestId', 'nativeChat'], 'Session navigation request');
+    if (input.nativeChat !== undefined && typeof input.nativeChat !== 'boolean') throw sourceError('invalid-request', 'nativeChat must be a boolean.');
     const reference = this.resolveReference(input);
     const { state } = await this.resolveStableState(reference.referenceId);
+    if (input.nativeChat === true && state.status !== 'open') throw sourceError('read-only', 'Closed Conversations are read-only. Reopen the Conversation before opening native Chat.');
     return Object.freeze({ schemaVersion: 1, status: 'applied', sessionKey: reference.externalSourceId, sessionId: state.sessionId, sourceReference: reference });
   }
 

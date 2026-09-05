@@ -9,7 +9,8 @@ import { createSourceReference } from '../src/sources/reference.mjs';
 import { createTopicService } from '../src/topics/service.mjs';
 import { createSessionAdapter } from '../src/sources/sessions.mjs';
 import { NoteAdapter } from '../src/sources/notes.mjs';
-import { readConversationSourceSnapshot } from '../src/search/source-snapshot.mjs';
+import { readConversationSourceSnapshot, readNoteSourceSnapshot } from '../src/search/source-snapshot.mjs';
+import { AuthoritativeSourceService } from '../src/sources/service.mjs';
 
 function pluginSessionBoundary({ sessionId = () => randomUUID(), updatedAt = () => Date.now() } = {}) {
   const entries = new Map();
@@ -163,6 +164,12 @@ test('Topic rename preserves a nested Note reference across adapter reopen', asy
       assert.deepEqual({ referenceId: note.sourceReference.referenceId, revision: note.revision, path: note.path }, { referenceId: original.sourceReference.referenceId, revision: original.revision, path: original.path });
       const read = await reopened.read({ path: note.path, referenceId: original.sourceReference.referenceId });
       assert.equal(read.text, original.text);
+      const snapshot = await readNoteSourceSnapshot({ topicId, metadata, noteAdapter: reopened });
+      assert.equal(snapshot.notes[0].sourceReference.referenceId, original.sourceReference.referenceId);
+      assert.equal(snapshot.notes[0].sourceReference.externalSourceId, original.sourceReference.externalSourceId);
+      const service = Object.assign(Object.create(AuthoritativeSourceService.prototype), { metadata });
+      assert.equal(service.assertExactNoteReference({ topicId, referenceId: original.sourceReference.referenceId, path: original.path }).referenceId, original.sourceReference.referenceId);
+      assert.throws(() => service.assertExactNoteReference({ topicId, referenceId: original.sourceReference.referenceId, path: 'unrelated.md' }), /does not match/);
     } finally { adapter.close(); reopened?.close(); }
   });
 });

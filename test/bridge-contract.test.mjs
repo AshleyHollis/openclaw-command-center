@@ -92,6 +92,14 @@ test('handlers preserve authenticated request context and echo request and logic
   assert.deepEqual(response[1], { schemaVersion: 1, status: 'applied', requestId: 'gateway-frame-1', logicalOperationId: null, result: { mode: 'ready' } });
 });
 
+test('native Chat navigation intent is an optional boolean on the closed resolver contract', () => {
+  const method = 'command-center.v1.sessions.navigate';
+  const params = { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-session', nativeChat: true };
+  assert.doesNotThrow(() => validateBridgeRequest(method, params));
+  assert.throws(() => validateBridgeRequest(method, { ...params, nativeChat: 'true' }));
+  assert.throws(() => validateBridgeRequest(method, { ...params, url: 'https://example.invalid/chat' }));
+});
+
 test('Note browse bridge exposes only one bounded opaque catalog page', async () => {
   const reference = { version: 1, referenceId: 'note:page', topicId: 'topic-page', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/vault/page.md', observedRevision: 'sha256:page', createdAt: '2026-09-05T00:00:00.000Z', updatedAt: '2026-09-05T00:00:00.000Z' };
   const result = await invokeBridgeMethod({

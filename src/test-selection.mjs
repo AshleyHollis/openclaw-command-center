@@ -12,6 +12,7 @@ const topicPageTicketTests = new Set([
   'bridge-contract.test.mjs',
   'browser-setup.test.mjs',
   'markdown-preview.test.mjs',
+  'native-chat-navigation.test.mjs',
   'note-adapter.test.mjs',
   'note-conflicts.test.mjs',
   'plugin-contract.test.mjs',

@@ -67,8 +67,8 @@ test('replaced unavailable Conversation retains a visible explanation without li
     assert.equal(await old.getByRole('button', { name: 'Former Conversation' }).isDisabled(), true);
     assert.match(await old.innerText(), /Replaced — source unavailable; history reference retained/);
     assert.equal(await old.locator('button:not(:disabled)').count(), 0);
-    assert.equal(await page.locator('#chat-send').isDisabled(), true);
-    assert.equal(await page.locator('#chat-message').isDisabled(), true);
+    assert.equal(await page.locator('#chat-open').isDisabled(), true);
+    assert.equal(await page.locator('#chat-form').count(), 0);
     assert.equal(await page.locator('[data-reference-id="fictional-new"]').getByRole('button', { name: 'Replacement Conversation' }).isEnabled(), true);
     await page.locator('#conversation-refresh').focus();
     await page.keyboard.press('Tab');

@@ -10,7 +10,7 @@ const SEARCH_REBUILD_ROUTE = '/plugins/command-center/api/search/rebuild';
 const markdownModuleUrl = /^https?:/u.test(document.baseURI) ? new URL('/plugins/command-center/markdown.js', document.baseURI).href : '/plugins/command-center/markdown.js';
 let markdownModule;
 function loadMarkdownModule() { return markdownModule ??= import(markdownModuleUrl); }
-const SCRIPTED_FORM_IDS = new Set(['topic-analysis-schedule', 'notification-settings-form', 'topic-create', 'topic-search-form', 'chat-form', 'conversation-create', 'note-action-form', 'command-dialog-form', 'workspace-search-form']);
+const SCRIPTED_FORM_IDS = new Set(['topic-analysis-schedule', 'notification-settings-form', 'topic-create', 'topic-search-form', 'conversation-create', 'note-action-form', 'command-dialog-form', 'workspace-search-form']);
 document.addEventListener('click', (event) => {
   const submitter = event.target?.closest?.('button[type="submit"],input[type="submit"]');
   const form = submitter?.form;
@@ -325,7 +325,7 @@ async function openActivity(record) {
       feedback.textContent = 'Activity source opened.';
       return;
     }
-    const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: record.navigation.topicId, referenceId: record.navigation.referenceId }));
+    const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: record.navigation.topicId, referenceId: record.navigation.referenceId, nativeChat: true }));
     if (!target?.sessionKey || target.sessionKey !== record.navigation.sessionKey || target.sessionId !== record.navigation.sessionId || target.sourceReference?.referenceId !== record.navigation.referenceId || target.sourceReference?.topicId !== record.navigation.topicId) throw new Error('The authoritative Conversation changed after this Activity was recorded.');
     await bridgeRequest('ui.session.navigate', { sessionKey: target.sessionKey });
     feedback.textContent = 'Activity source opened.';
@@ -416,7 +416,7 @@ window.addEventListener('message', (event) => {
     clearTimeout(bridgeTimer);
     const methods = new Set(Array.isArray(message.methods) ? message.methods : []); advertisedBridgeMethods = methods;
     for (const key of Object.keys(bridgeLimits)) if (Number.isInteger(message.limits?.[key]) && message.limits[key] > 0) bridgeLimits[key] = Math.min(bridgeLimits[key], message.limits[key]);
-    const required = [...(hasTopicsDestination ? ['command-center.v1.topics.list'] : []), 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.notes.browse', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'ui.session.navigate'];
+    const required = [...(hasTopicsDestination ? ['command-center.v1.topics.list'] : []), 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.notes.browse', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigate'];
     if (message.upgradeRequired === true || !required.every((method) => methods.has(method))) rejectBridgeReady(new Error('Command Center requires unavailable host capabilities.'));
     else resolveBridgeReady();
     return;
@@ -444,7 +444,7 @@ async function sendBridgeRequest(job) {
     sendBridge({ type: 'openclaw:capability-bridge-request', requestId, method, params, ...(typeof mutationOperationId === 'string' ? { operationId: mutationOperationId } : {}) });
   });
 }
-const STATIC_MUTATION_SELECTORS = Object.freeze(['#topic-create', '#notification-settings-form', '#topic-analysis-schedule', '#topic-review-snooze', '#topic-review-checkpoint', '#topic-search-rebuild', '#conversation-create', '#chat-form', '#note-new', '#note-save', '#note-rename', '#note-move', '#note-action-submit', '#workspace-search-rebuild']);
+const STATIC_MUTATION_SELECTORS = Object.freeze(['#topic-create', '#notification-settings-form', '#topic-analysis-schedule', '#topic-review-snooze', '#topic-review-checkpoint', '#topic-search-rebuild', '#conversation-create', '#chat-open', '#note-new', '#note-save', '#note-rename', '#note-move', '#note-action-submit', '#workspace-search-rebuild']);
 function mutationsAvailable() { return operatingState.mode === 'ready'; }
 function applyOperatingState(value) {
   const mode = ['ready', 'degraded', 'recovery-only'].includes(value?.mode) ? value.mode : 'recovery-only';
@@ -573,7 +573,7 @@ async function openResult(result) {
   const detail = document.querySelector('#topic-search-detail');
   try {
     if (result.navigation?.kind === 'conversation') {
-      const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: result.navigation.topicId, referenceId: result.navigation.referenceId }));
+      const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: result.navigation.topicId, referenceId: result.navigation.referenceId, nativeChat: true }));
       if (target?.sessionKey !== result.navigation.sessionKey || target?.sessionId !== result.navigation.sessionId) throw new Error('The authoritative Conversation changed after this search result was created.');
       await bridgeRequest('ui.session.navigate', { sessionKey: target.sessionKey });
       return;
@@ -604,7 +604,7 @@ document.querySelector('#topic-search-form')?.addEventListener('submit', async (
 document.querySelector('#topic-search-rebuild')?.addEventListener('click', async () => { const status = document.querySelector('#topic-search-status'); status.textContent = 'Rebuilding Topic Search…'; try { await rebuildTopicSearchProjection(document.querySelector('#topic-search-topic-id').value); status.textContent = 'Topic Search index rebuilt from authoritative sources.'; } catch (error) { status.textContent = error.message || 'Topic Search rebuild failed.'; } });
 
 const workspace = {
-  topic: null, generation: 0, conversations: [], selected: null, selectionGeneration: 0, historyGeneration: 0, chatSendGeneration: 0, chatSendOperations: new Map(),
+  topic: null, generation: 0, conversations: [], selected: null, selectionGeneration: 0, historyGeneration: 0, nativeChatPending: null,
   conversationsLoadGeneration: 0, conversationCreateOperations: new Map(), conversationPage: 0, notes: [], notesTotal: 0, notesCursor: null, notesServerPaged: false, notesLoadGeneration: 0, notePage: 0, note: null, noteGeneration: 0, searchGeneration: 0, drafts: new Map(), panes: { conversations: true, notes: true }, mobileSection: 'chat'
 };
 const AUTHORITATIVE_LIST_TOPIC = Symbol('authoritative-list-topic');
@@ -642,7 +642,8 @@ function resetWorkspacePresentation() {
   document.querySelector('#conversation-list')?.replaceChildren(); document.querySelector('#chat-messages')?.replaceChildren(); document.querySelector('#notes-tree')?.replaceChildren();
   document.querySelector('#workspace-notes-results')?.replaceChildren(); document.querySelector('#workspace-conversations-results')?.replaceChildren();
   document.querySelector('#note-editor').hidden = true; document.querySelector('#note-preview')?.replaceChildren(); document.querySelector('#chat-conversation-name').textContent = 'Loading…';
-  const chatMessage = document.querySelector('#chat-message'); chatMessage.value = ''; chatMessage.disabled = true; document.querySelector('#chat-send').disabled = true;
+  document.querySelector('#chat-open').disabled = true;
+  workspace.nativeChatPending = null;
   const searchForm = document.querySelector('#workspace-search-form'); const searchQuery = document.querySelector('#workspace-search-query'); searchQuery.value = ''; searchQuery.disabled = true; searchForm.querySelector('button[type="submit"]').disabled = true;
   if (noteDialog?.open) { noteDialogReturnFocus = null; noteDialogAction = null; noteDialog.close(); }
   chatStatus.textContent = ''; conversationStatus.textContent = ''; notesStatus.textContent = ''; workspaceSearchStatus.textContent = '';
@@ -732,30 +733,35 @@ function renderConversations() {
   }
 }
 function sameConversation(left, right) { return left?.topicId === right?.topicId && left?.referenceId === right?.referenceId && left?.sessionId === right?.sessionId; }
-function syncSelectedConversationControls() { const readOnly = workspace.selected?.status === 'closed' || workspace.selected?.availability === 'replaced-unavailable'; document.querySelector('#chat-send').disabled = readOnly; document.querySelector('#chat-message').disabled = readOnly; }
+function selectedConversationReadOnly() { return workspace.topic?.paraCategory === 'archive' || workspace.selected?.status === 'closed'; }
+function syncSelectedConversationControls() {
+  document.querySelector('#chat-open').disabled = !mutationsAvailable() || !workspace.selected || selectedConversationReadOnly() || workspace.selected.availability === 'replaced-unavailable' || Boolean(workspace.nativeChatPending);
+  document.querySelector('#chat-messages').hidden = !selectedConversationReadOnly();
+}
 async function changeConversationStatus(item) {
   const generation = workspace.generation; const topic = workspace.topic; const action = item.status === 'closed' ? 'conversations.reopen' : 'conversations.close'; const status = item.status === 'closed' ? 'open' : 'closed';
   try {
     await pageAction(action, { topicId: topic.topicId, referenceId: item.referenceId, expectedRevision: topic.revision });
     if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return;
-    if (sameConversation(workspace.selected, item)) { workspace.selected = { ...workspace.selected, status }; syncSelectedConversationControls(); }
+    if (sameConversation(workspace.selected, item)) await selectConversation({ ...workspace.selected, status });
     await loadConversations({ generation });
   } catch (error) { if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) conversationStatus.textContent = error.message || 'The Conversation action was refused.'; }
 }
 async function selectConversation(item) {
   if (item.availability === 'replaced-unavailable') return;
-  const topicGeneration = workspace.generation; const selectionGeneration = sameConversation(workspace.selected, item) ? workspace.selectionGeneration : ++workspace.selectionGeneration; const historyGeneration = ++workspace.historyGeneration; const chatSendGeneration = workspace.chatSendGeneration;
+  const topicGeneration = workspace.generation; const selectionGeneration = sameConversation(workspace.selected, item) ? workspace.selectionGeneration : ++workspace.selectionGeneration; const historyGeneration = ++workspace.historyGeneration;
   const restoreConversationFocus = document.activeElement?.closest?.('.conversation-item')?.dataset.referenceId === item.referenceId;
   workspace.selected = item; document.querySelector('#chat-conversation-name').textContent = item.displayName; document.querySelector('#chat-messages').replaceChildren();
-  chatStatus.textContent = '';
+  chatStatus.textContent = selectedConversationReadOnly() ? 'Read-only history. Reopen the Conversation or restore the Topic before opening native Chat.' : 'Continue this Conversation in OpenClaw’s native Chat. Notes stay here.';
   syncSelectedConversationControls(); renderConversations();
   if (restoreConversationFocus) [...document.querySelectorAll('.conversation-item')].find((row) => row.dataset.referenceId === item.referenceId)?.querySelector('button')?.focus();
+  if (!selectedConversationReadOnly()) return;
   try {
     const value = unwrap(await bridgeRequest('command-center.v1.sessions.history', { schemaVersion: 1, topicId: workspace.topic.topicId, referenceId: item.referenceId, limit: 100 }));
     if (topicGeneration !== workspace.generation || selectionGeneration !== workspace.selectionGeneration || historyGeneration !== workspace.historyGeneration || workspace.selected?.referenceId !== item.referenceId || workspace.selected?.sessionId !== item.sessionId) return;
     await renderHistory(value?.messages ?? [], { topicGeneration, selectionGeneration, historyGeneration, referenceId: item.referenceId, sessionId: item.sessionId });
   } catch (error) {
-    if (topicGeneration === workspace.generation && selectionGeneration === workspace.selectionGeneration && historyGeneration === workspace.historyGeneration && chatSendGeneration === workspace.chatSendGeneration && workspace.selected?.referenceId === item.referenceId && workspace.selected?.sessionId === item.sessionId) chatStatus.textContent = error.message;
+    if (topicGeneration === workspace.generation && selectionGeneration === workspace.selectionGeneration && historyGeneration === workspace.historyGeneration && workspace.selected?.referenceId === item.referenceId && workspace.selected?.sessionId === item.sessionId) chatStatus.textContent = error.message;
   }
 }
 function yieldToUserInput() { return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))); }
@@ -774,24 +780,26 @@ async function renderHistory(messages, identity) {
   }
   return true;
 }
-function chatSendIntent(selected, message) { return { topicId: workspace.topic?.topicId, referenceId: selected?.referenceId, sessionId: selected?.sessionId, message }; }
-function sameChatSendIntent(left, right) { return left?.topicId === right?.topicId && left?.referenceId === right?.referenceId && left?.sessionId === right?.sessionId && left?.message === right?.message; }
-function sameChatSendTarget(left, right) { return left?.topicId === right?.topicId && left?.referenceId === right?.referenceId && left?.sessionId === right?.sessionId; }
-function chatSendOperationKey(topicGeneration, selectionGeneration, intent) { return JSON.stringify([topicGeneration, selectionGeneration, intent.topicId, intent.referenceId, intent.sessionId]); }
-document.querySelector('#chat-form')?.addEventListener('submit', async (event) => {
-  event.preventDefault(); const selected = workspace.selected; const generation = workspace.generation; const selectionGeneration = workspace.selectionGeneration; const input = document.querySelector('#chat-message'); const message = input.value.trim(); if (!message || !selected || selected.status === 'closed' || selected.availability === 'replaced-unavailable') return;
-  const intent = chatSendIntent(selected, message); const operationKey = chatSendOperationKey(generation, selectionGeneration, intent); let operation = workspace.chatSendOperations.get(operationKey) ?? [...workspace.chatSendOperations.values()].find((candidate) => candidate.generation === generation && sameChatSendTarget(candidate.intent, intent));
-  if (operation && !sameChatSendIntent(operation.intent, intent)) { chatStatus.textContent = 'A different Chat send is already settling and was not sent.'; return; }
-  if (operation?.pending) { chatStatus.textContent = 'Sending message…'; return; }
-  if (operation && operation.entryId !== operationKey) { if (workspace.chatSendOperations.get(operation.entryId) === operation) workspace.chatSendOperations.delete(operation.entryId); operation.entryId = operationKey; operation.selectionGeneration = selectionGeneration; workspace.chatSendOperations.set(operationKey, operation); }
-  if (!operation) { operation = { entryId: operationKey, generation, selectionGeneration, logicalOperationId: operationId(), intent, pending: false }; workspace.chatSendOperations.set(operationKey, operation); }
-  const { topicId, referenceId, sessionId } = operation.intent; const sendGeneration = ++workspace.chatSendGeneration; operation.pending = true;
-  const sendButton = document.querySelector('#chat-send'); const restoreSendFocus = document.activeElement === sendButton;
-  sendButton.disabled = true; chatStatus.textContent = 'Sending message…';
-  const isCurrent = () => generation === workspace.generation && selectionGeneration === workspace.selectionGeneration && workspace.chatSendGeneration === sendGeneration && workspace.topic?.topicId === topicId && workspace.selected?.referenceId === referenceId && workspace.selected?.sessionId === sessionId;
-  try { const exact = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId, referenceId })); const source = exact?.sourceReference; if (!exact?.sessionKey || exact.sessionId !== sessionId || source?.referenceId !== referenceId || source?.topicId !== topicId || source?.sourceSystem !== 'openclaw' || source?.sourceKind !== 'session' || source?.externalSourceId !== exact.sessionKey) throw new Error('The authoritative Conversation changed before Chat send.'); await bridgeRequest('command-center.v1.sessions.send', { schemaVersion: 1, topicId, referenceId, message: operation.intent.message, logicalOperationId: operation.logicalOperationId }, operation.logicalOperationId); if (workspace.chatSendOperations.get(operation.entryId) === operation) workspace.chatSendOperations.delete(operation.entryId); if (!isCurrent()) return; const retainedDraft = input.value.trim() !== operation.intent.message; if (!retainedDraft) input.value = ''; await selectConversation(workspace.selected); if (isCurrent()) { syncSelectedConversationControls(); if (restoreSendFocus && !sendButton.disabled) sendButton.focus(); chatStatus.textContent = retainedDraft ? 'Message sent; the current draft was retained.' : 'Message sent.'; } }
-  catch (error) { operation.pending = false; if (error.terminal !== false && workspace.chatSendOperations.get(operation.entryId) === operation) workspace.chatSendOperations.delete(operation.entryId); if (isCurrent()) { syncSelectedConversationControls(); if (restoreSendFocus && !sendButton.disabled) sendButton.focus(); chatStatus.textContent = error.terminal === false ? 'Message delivery is not yet confirmed. Retry the unchanged message to reconcile it.' : error.message; } }
-  finally { if (isCurrent()) syncSelectedConversationControls(); }
+document.querySelector('#chat-open')?.addEventListener('click', async () => {
+  const selected = workspace.selected;
+  if (!mutationsAvailable() || !selected || selectedConversationReadOnly() || selected.availability === 'replaced-unavailable' || workspace.nativeChatPending) return;
+  const operation = { generation: workspace.generation, selectionGeneration: workspace.selectionGeneration, topicId: workspace.topic.topicId, referenceId: selected.referenceId, sessionId: selected.sessionId };
+  workspace.nativeChatPending = operation;
+  const isCurrent = () => workspace.generation === operation.generation && workspace.selectionGeneration === operation.selectionGeneration && workspace.topic?.topicId === operation.topicId && workspace.selected?.referenceId === operation.referenceId && workspace.selected?.sessionId === operation.sessionId;
+  syncSelectedConversationControls(); chatStatus.textContent = 'Opening native Chat…';
+  try {
+    const target = unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: operation.topicId, referenceId: operation.referenceId, nativeChat: true }));
+    if (!isCurrent() || !mutationsAvailable() || selectedConversationReadOnly()) return;
+    const source = target?.sourceReference;
+    if (!target?.sessionKey || target.sessionId !== operation.sessionId || source?.referenceId !== operation.referenceId || source?.topicId !== operation.topicId || source?.sourceSystem !== 'openclaw' || source?.sourceKind !== 'session' || source?.externalSourceId !== target.sessionKey) throw new Error('The authoritative Conversation changed before native Chat navigation.');
+    await bridgeRequest('ui.session.navigate', { sessionKey: target.sessionKey });
+    if (isCurrent()) chatStatus.textContent = 'Opened native Chat.';
+  } catch (error) {
+    if (isCurrent()) chatStatus.textContent = error.message || 'Native Chat navigation was refused.';
+  } finally {
+    if (workspace.nativeChatPending === operation) workspace.nativeChatPending = null;
+    syncSelectedConversationControls();
+  }
 });
 async function createAuthoritativeSession(label, logicalOperationId) { const created = unwrap(await bridgeRequest('sessions.create', { agentId: 'main', label }, logicalOperationId)); const key = created?.key ?? created?.sessionKey; const sessionId = created?.sessionId ?? created?.entry?.sessionId; const revision = created?.revision ?? created?.updatedAt ?? created?.entry?.updatedAt; if (typeof key !== 'string' || typeof sessionId !== 'string' || revision === undefined || revision === null) throw new Error('The authoritative Session creation response was incomplete.'); return { key, sessionId, revision: String(revision), idempotencyKey: logicalOperationId, label }; }
 document.querySelector('#conversation-create')?.addEventListener('submit', async (event) => { event.preventDefault(); const input = event.currentTarget.elements.label; const label = input.value.trim(); const generation = workspace.generation; const topic = workspace.topic; const intentKey = `${topic.topicId}:${label}`; let operation = workspace.conversationCreateOperations.get(intentKey); if (operation?.pending) return; if (!operation) { operation = { logicalOperationId: operationId(), authoritativeSession: null, pending: false }; workspace.conversationCreateOperations.set(intentKey, operation); } operation.pending = true; try { operation.authoritativeSession ??= await createAuthoritativeSession(label, operation.logicalOperationId); await pageAction('conversations.create', { topicId: topic.topicId, label, expectedRevision: topic.revision, logicalOperationId: operation.logicalOperationId, authoritativeSession: operation.authoritativeSession }); workspace.conversationCreateOperations.delete(intentKey); if (generation !== workspace.generation || workspace.topic?.topicId !== topic.topicId) return; if (input.value.trim() === label) input.value = ''; await loadConversations({ generation }); } catch (error) { operation.pending = false; if (error.terminal !== false) workspace.conversationCreateOperations.delete(intentKey); if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) conversationStatus.textContent = error.terminal === false ? 'Conversation creation is not yet confirmed. Retry the unchanged label to reconcile it.' : error.message || 'Conversation creation was refused.'; } });

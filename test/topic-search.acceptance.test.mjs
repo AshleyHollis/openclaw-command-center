@@ -228,7 +228,7 @@ test('an archived lifecycle Topic remains searchable and restore preserves proje
     await writeFile(path.join(metadata.getSourceLocator(folderReference.referenceId).locator, 'readme.md'), '# Archived Search\n\narchived lifecycle phrase');
     const currentNoteReference = () => {
       const externalSourceId = `${metadata.getSourceLocator(folderReference.referenceId).locator}/readme.md`;
-      return metadata.listSourceReferences(topicId).find((reference) => reference.sourceKind === 'note' && reference.externalSourceId === externalSourceId);
+      return metadata.listSourceReferences(topicId).find((reference) => reference.sourceKind === 'note' && (metadata.getSourceLocator(reference.referenceId)?.locator ?? reference.externalSourceId) === externalSourceId);
     };
     const authoritativeSources = { readTopicSnapshot: async ({ topicId: requestedTopicId }) => {
       assert.equal(requestedTopicId, topicId);
@@ -244,7 +244,8 @@ test('an archived lifecycle Topic remains searchable and restore preserves proje
     const archive = await topics.archivePreview({ topicId });
     await topics.archiveConfirm({ topicId, structuralChangeId: archive.structuralChangeId, previewDigest: archive.digest, expectedRevisions: archive.expectedRevisions, logicalOperationId: randomUUID() });
     assert.equal(metadata.getTopic(topicId).paraCategory, 'archive');
-    const archivedNoteReference = metadata.createSourceReference({ version: 1, referenceId: `note:${topicId}:archived-readme`, topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${metadata.getSourceLocator(folderReference.referenceId).locator}/readme.md`, observedRevision: 'sha256:archived-note' });
+    const archivedNoteReference = currentNoteReference();
+    assert.equal(archivedNoteReference.referenceId, noteReference.referenceId);
     const rebuild = createSearchRebuildService({ stateDir, metadata, authoritativeSources });
     const search = createTopicSearchService({ stateDir, metadata });
     await rebuild.rebuild();
@@ -256,12 +257,13 @@ test('an archived lifecycle Topic remains searchable and restore preserves proje
     assert.equal(archived.conversations.results[0].provenance.role, 'primary');
     const restore = topics.restorePreview({ topicId, paraCategory: 'resource' });
     await topics.restoreConfirm({ topicId, paraCategory: 'resource', structuralChangeId: restore.structuralChangeId, previewDigest: restore.digest, expectedRevisions: restore.expectedRevisions, logicalOperationId: randomUUID() });
-    const restoredNoteReference = metadata.createSourceReference({ version: 1, referenceId: `note:${topicId}:restored-readme`, topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${metadata.getSourceLocator(folderReference.referenceId).locator}/readme.md`, observedRevision: 'sha256:archived-note' });
+    const restoredNoteReference = currentNoteReference();
+    assert.equal(restoredNoteReference.referenceId, noteReference.referenceId);
     await rebuild.rebuild();
     const restored = await search.query({ schemaVersion: 1, topicId, query: 'archived lifecycle phrase', limit: 20 });
     assert.equal(restored.notes.results[0].sourceReference.referenceId, restoredNoteReference.referenceId);
     assert.equal(restored.notes.results[0].snippet, archived.notes.results[0].snippet);
-    assert.ok(originalReferenceIds.every((referenceId) => metadata.getSourceReference(referenceId)));
+    assert.deepEqual(metadata.listSourceReferences(topicId).map((reference) => reference.referenceId).sort(), originalReferenceIds);
     assert.equal(metadata.getTopic(topicId).paraCategory, 'resource');
   } finally {
     metadata.close();
@@ -381,7 +383,7 @@ test('groups and opens authoritative Topic Search results', async () => {
     const conversationOpen = fakeWindow.CommandCenterSearch.openResult(conversationResult);
     await new Promise((resolve) => setImmediate(resolve));
     const resolveRequest = sent.find((item) => item.method === 'command-center.v1.sessions.navigate');
-    assert.deepEqual(resolveRequest.params, { schemaVersion: 1, topicId: topic.topicId, referenceId: session.referenceId });
+    assert.deepEqual(resolveRequest.params, { schemaVersion: 1, topicId: topic.topicId, referenceId: session.referenceId, nativeChat: true });
     receive({ source: fakeWindow, data: { type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: resolveRequest.requestId, result: { result: { sessionKey: session.externalSourceId, sessionId: 'session-fictional', sourceReference: session } } } } });
     await new Promise((resolve) => setImmediate(resolve));
     const navigateRequest = sent.find((item) => item.method === 'ui.session.navigate');
