@@ -97,3 +97,10 @@ export async function assertBuiltDigest(receipt = latestBuildReceipt) {
   if (!sameReceipt(receipt, declared) || !sameReceipt(receipt, actual)) throw new Error('Built output digest drift detected');
   return actual;
 }
+
+/** Consume a previously sealed artifact without rebuilding or writing its tree. */
+export async function readBuiltReceipt() {
+  const receipt = JSON.parse(await readFile(path.join(distRoot, digestFileName), 'utf8'));
+  await assertBuiltDigest(receipt);
+  return freezeReceipt(receipt);
+}

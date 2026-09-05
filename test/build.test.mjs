@@ -18,10 +18,12 @@ async function withIsolatedBuild(run) {
 }
 
 test('build is deterministic and bound to its launch digest', async () => {
-  await withIsolatedBuild(async ({ assertBuiltDigest, build, digestFileName, distRoot }) => {
+  await withIsolatedBuild(async ({ assertBuiltDigest, build, readBuiltReceipt, digestFileName, distRoot }) => {
+    await assert.rejects(readBuiltReceipt(), (error) => error.code === 'ENOENT');
     const first = await build();
     const second = await build();
     assert.deepEqual(second, first);
+    assert.deepEqual(await readBuiltReceipt(), second);
     for (const { path: relative } of second.files.filter((entry) => entry.path.endsWith('.mjs'))) {
       const modulePath = path.join(distRoot, relative);
       const source = await readFile(modulePath, 'utf8');
@@ -30,6 +32,7 @@ test('build is deterministic and bound to its launch digest', async () => {
     await assertBuiltDigest(second);
     await writeFile(path.join(distRoot, 'ui', 'index.html'), '<changed>');
     await assert.rejects(assertBuiltDigest(second), /digest drift/);
+    await assert.rejects(readBuiltReceipt(), /digest drift/);
 
     const forgedFiles = second.files.map((entry) => entry.path === 'ui/index.html'
       ? { ...entry, sha256: createHash('sha256').update('<changed>').digest('hex') }

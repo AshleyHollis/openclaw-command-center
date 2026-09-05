@@ -13,7 +13,7 @@ import { fetchWithRuntimeDispatcher as fetch } from 'openclaw/plugin-sdk/runtime
 import { finalizeAcceptanceJourney } from '../src/acceptance-finalization.mjs';
 import { assertAcceptanceReportPassed, createAcceptanceReport, RELEASE_ROW_IDS, runAcceptanceRows } from '../src/acceptance-report.mjs';
 import { hasSuccessfulBrowserResponse, observeBrowserResponse, observedBrowserResponseStatus, recordBounded } from '../src/browser-evidence.mjs';
-import { build, assertBuiltDigest } from '../src/build.mjs';
+import { build, assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, fetchJsonWithDeadline, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { assertWebSocketDestination, boundedTrafficEvidence, TrafficGuard } from '../src/isolation.mjs';
@@ -1923,7 +1923,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   await testContext.test('release preparation: candidate build and authenticated descriptor', async () => {
     reportProgress(testContext, 'build:started');
     descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
-    buildReceipt = await withDeadline('candidate build', () => build(), 120_000);
+    buildReceipt = await withDeadline('candidate build', () => process.env.COMMAND_CENTER_SEALED_CANDIDATE === '1' ? readBuiltReceipt() : build(), 120_000);
     await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
     if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
       baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v1.json', import.meta.url), 'utf8')));
