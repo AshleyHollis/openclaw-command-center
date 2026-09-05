@@ -139,6 +139,12 @@ The exclusive `ticket32-scale-frontier-7595397` failed at its unchanged 240-seco
 
 Harness `8bfe5bbe0e07a3e8380e67ca3b88e0c5d7a26e06` adds diagnostic-only `diagnostic-reminder-lifecycle`: a fresh real host and public Topic journey, exact Reminder creation/readback, native `cron.run`, bounded read-only runtime-state observation, and a check that the untouched due Reminder remains actionable. It is deliberately excluded from the canonical 17-slice release map. Its build and focused replay are next; do not repeat mobile or scale to discover this lifecycle cause. The final complete capture remains prepared but unlaunched.
 
+## Scheduler-only hypothesis rejected — 20:34 AEST
+
+`ticket32-reminder-lifecycle-8bfe5bb` completed successfully in 29 seconds: native `cron.run` alone did not reproduce disappearance in the fresh fixture. This is diagnostic evidence against that simple hypothesis, not a new acceptance frontier or proof that the full lifecycle is correct. The full mobile and scale jobs remain stopped with their original failures.
+
+Diagnostic-only successor `7a6d030a36a61e45c6a3ae74c26e5e2238d7bbf5` adds the second Topic/native Chat round trip and retains bounded scheduler enabled/runtime state before and afterward plus related Activity actor, operation and outcome. It remains excluded from the canonical release matrix and changes no production bytes. Verify the exact new builder/replay result before deciding which source or UI contract to change.
+
 ## Not yet release-qualified
 
 The original 211-test snapshot above was focused integration evidence. The later sealed diagnostic candidate is **not a final acceptance capture or release-qualified build**. No unique final release acceptance boundary was closed by these focused or diagnostic passes.
