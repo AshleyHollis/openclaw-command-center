@@ -1122,6 +1122,30 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       const authoritativeSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
       const authoritativeConversations = (authoritativeSessions?.result ?? authoritativeSessions)?.conversations ?? authoritativeSessions?.conversations ?? [];
       assert.ok(authoritativeConversations.some((item) => item.isPrimary) && authoritativeConversations.some((item) => item.displayName === journey.conversationName));
+      if (kind === 'reminder-lifecycle') {
+        const rpc = (method, params) => requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method, params, signal });
+        const created = await rpc('command-center.v1.reminders.create', { schemaVersion: 1, topicId: journey.topicId, logicalOperationId: randomUUID(), declaration: { name: 'Fictional lifecycle diagnostic Reminder', enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional lifecycle diagnostic' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } });
+        const value = (created.result ?? created).value;
+        assert.ok(value?.job?.id && value?.sourceReference?.referenceId);
+        const before = await readDashboard(scenarioWorld.gateway.url);
+        const exact = (episode) => episode.sourceReferenceId === value.sourceReference.referenceId;
+        assert.equal(before.attention.filter(exact).length, 1, 'fresh due Reminder must first be actionable');
+        await rpc('cron.run', { id: value.job.id, mode: 'force' });
+        const scheduler = new DatabaseSync(path.join(scenarioWorld.root, '.openclaw', 'state', 'openclaw.sqlite'), { readOnly: true });
+        let observed;
+        try {
+          await waitForConsecutiveReadiness(async () => {
+            const row = scheduler.prepare('SELECT enabled, state_json FROM cron_jobs WHERE job_id = ?').get(value.job.id);
+            const state = row ? JSON.parse(row.state_json) : {};
+            observed = { exists: Boolean(row), enabled: Boolean(row?.enabled), stateKeys: Object.keys(state), lastRunAtMs: state.lastRunAtMs, lastRunStatus: state.lastRunStatus, lastStatus: state.lastStatus, nextRunAtMs: state.nextRunAtMs, running: Boolean(state.runningAtMs) };
+            return typeof state.lastRunAtMs === 'number' && !state.runningAtMs;
+          }, scenarioHost.earlyExit, { required: 1, deadlineMs: 15_000, delayMs: 100, signal });
+        } catch (error) { throw new Error(`Reminder runtime did not settle: ${JSON.stringify(observed)}`, { cause: error }); }
+        finally { scheduler.close(); }
+        const after = await readDashboard(scenarioWorld.gateway.url);
+        assert.equal(after.attention.filter(exact).length, 1, `Untouched Reminder disappeared after native execution: ${JSON.stringify(observed)}`);
+        return Object.freeze({ kind, assertionsCompleted: true, scheduler: observed });
+      }
       if (kind === 'scale') {
         const scaleTopicResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: scaleTopicId } });
         const scaleTopic = (scaleTopicResponse?.result ?? scaleTopicResponse)?.topic;
@@ -2143,6 +2167,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     ['destructive-migration-restoration', startIsolatedSlice('destructive-migration-restoration', (signal) => withIsolatedWorld((rowWorld) => exerciseRestorationMatrix({ stateDir: path.join(rowWorld.root, '.openclaw'), descriptor, buildReceipt, world: rowWorld, signal }), { candidateRoot: process.cwd() }))]
   ]);
   const isolatedRunPromises = new Map();
+  // Diagnostic only: do not silently add a new release-matrix requirement.
+  if (acceptancePlan.isolatedSliceIds?.includes('reminder-runtime-lifecycle')) isolatedSlices.set('reminder-runtime-lifecycle', startIsolatedSlice('reminder-runtime-lifecycle', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'reminder-lifecycle', width: 320, signal })));
   const isolatedResult = async (id) => {
     if (!isolatedRunPromises.has(id)) isolatedRunPromises.set(id, isolatedSlices.get(id)?.());
     await isolatedRunPromises.get(id);

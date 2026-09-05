@@ -65,6 +65,7 @@ const focusedRealHostScenarios = Object.freeze({
 });
 
 const diagnosticSliceLanes = Object.freeze({
+  'diagnostic-reminder-lifecycle': Object.freeze(['reminder-runtime-lifecycle']),
   'diagnostic-scale': Object.freeze(['fresh-scale']),
   'diagnostic-mobile': Object.freeze(['fresh-mobile']),
   'diagnostic-ui-desktop': Object.freeze(['fresh-desktop', 'fresh-scale', 'fresh-scale-analysis']),
