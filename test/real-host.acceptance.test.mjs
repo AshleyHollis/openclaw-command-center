@@ -1514,7 +1514,8 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
       const style = getComputedStyle(node);
       return !node.disabled && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
     };
-    const tabbable = (node) => visible(node) && (node.tabIndex >= 0 && node.matches('button,input,select,textarea,a[href],[tabindex]') || ['auto', 'scroll'].includes(getComputedStyle(node).overflowY));
+    // Use native tabIndex semantics, including implicit controls such as summary.
+    const tabbable = (node) => visible(node) && (node.tabIndex >= 0 || ['auto', 'scroll'].includes(getComputedStyle(node).overflowY));
     const tabbables = [...document.querySelectorAll('*')].filter(tabbable);
     window.__acceptanceKeyboardBaselines = new WeakMap(tabbables.map((node) => {
       const style = getComputedStyle(node);
@@ -1556,7 +1557,7 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
         const style = getComputedStyle(node);
         return !node.disabled && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
       };
-      const tabbable = (node) => visible(node) && (node.tabIndex >= 0 && node.matches('button,input,select,textarea,a[href],[tabindex]') || ['auto', 'scroll'].includes(getComputedStyle(node).overflowY));
+      const tabbable = (node) => visible(node) && (node.tabIndex >= 0 || ['auto', 'scroll'].includes(getComputedStyle(node).overflowY));
       const tabbables = [...document.querySelectorAll('*')].filter(tabbable);
       const active = document.activeElement;
       const nativeComposite = active instanceof HTMLInputElement && ['date', 'datetime-local', 'month', 'time', 'week'].includes(active.type);
