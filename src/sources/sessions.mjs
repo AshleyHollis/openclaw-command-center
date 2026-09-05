@@ -3,6 +3,7 @@ import { createSourceReference } from './reference.mjs';
 import { assertLogicalOperationId } from './operation-journal.mjs';
 import { createMutationCoordinator } from './mutation-coordinator.mjs';
 import { assertPrimaryMayClose } from './session-state.mjs';
+import { explicitSessionReplacements, unavailableReplacedSession } from './session-replacement.mjs';
 
 function responseKey(value) {
   return value?.key ?? value?.sessionKey ?? value?.session?.key ?? null;
@@ -179,6 +180,7 @@ export class SessionAdapter {
   async history(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId', 'requestId', 'limit', 'offset', 'messageId'], 'Session history request');
     const reference = this.resolveReference(input);
+    if (explicitSessionReplacements(this.metadata, this.topicId).has(reference.referenceId)) await this.resolveExact({ referenceId: reference.referenceId });
     if (this.sessionStore) {
       const exact = await this.resolveExact({ referenceId: reference.referenceId });
       if (!this.transcriptReader) return { messages: [], sessionKey: exact.sessionKey, sessionId: exact.sessionId };
@@ -240,13 +242,17 @@ export class SessionAdapter {
     if (!['open', 'closed', 'all'].includes(status)) throw sourceError('invalid-request', 'Session list status must be open, closed, or all.');
     const conversations = [];
     const catalogRows = await this.authoritativeRows();
+    // Gateway sessions.list is bounded/filtered and cannot prove absence.
+    const replacements = this.sessionStore?.listSessionEntries ? explicitSessionReplacements(this.metadata, this.topicId) : new Set();
     for (const reference of this.references()) {
-      const { state } = await this.resolveStableState(reference.referenceId, { catalogRows });
+      const unavailable = unavailableReplacedSession(this.metadata, reference, catalogRows, replacements);
+      const { state } = unavailable ? { state: this.metadata.getSessionState(reference.referenceId) } : await this.resolveStableState(reference.referenceId, { catalogRows });
       if (typeof state.updatedAt !== 'string' || state.updatedAt.trim() === '') throw sourceError('source-recovery', 'A linked Conversation has incomplete persisted presentation state.');
       if (status !== 'all' && state.status !== status) continue;
       conversations.push({
         referenceId: reference.referenceId,
         sessionId: state.sessionId,
+        ...(unavailable ? { availability: 'replaced-unavailable' } : {}),
         displayName: state.displayName || (state.isPrimary ? 'Primary Conversation' : 'Conversation'),
         status: state.status,
         isPrimary: state.isPrimary === true,

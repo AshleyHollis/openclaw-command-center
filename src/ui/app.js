@@ -673,9 +673,17 @@ async function loadConversations({ selectPrimary = false, generation = workspace
   const nextConversations = (value?.conversations ?? []).filter((item) => view === 'all' || item.status === view);
   const listChanged = nextConversations.length !== workspace.conversations.length || nextConversations.some((item, index) => {
     const current = workspace.conversations[index];
-    return !current || ['referenceId', 'topicId', 'sessionKey', 'sessionId', 'displayName', 'status', 'isPrimary', 'wasPrimary'].some((field) => current[field] !== item[field]);
+    return !current || ['referenceId', 'topicId', 'sessionKey', 'sessionId', 'displayName', 'status', 'isPrimary', 'wasPrimary', 'availability'].some((field) => current[field] !== item[field]);
   });
   workspace.conversations = nextConversations;
+  const selectedReadback = nextConversations.find((item) => item.referenceId === workspace.selected?.referenceId);
+  if (selectedReadback?.availability === 'replaced-unavailable') {
+    if (workspace.selected?.availability !== 'replaced-unavailable') { workspace.selectionGeneration += 1; workspace.historyGeneration += 1; }
+    workspace.selected = selectedReadback;
+    syncSelectedConversationControls();
+    document.querySelector('#chat-messages').replaceChildren();
+    chatStatus.textContent = 'This Session was replaced. Its source is unavailable; the history reference is retained.';
+  }
   workspace.conversationPage = Math.min(workspace.conversationPage, Math.max(0, Math.ceil(workspace.conversations.length / CONVERSATION_PAGE_SIZE) - 1));
   if (listChanged) renderConversations(); conversationStatus.textContent = `${workspace.conversations.length} ${view === 'closed' ? 'closed ' : ''}Conversations.`;
   if (selectPrimary || !workspace.selected) {
@@ -699,9 +707,10 @@ function renderConversations() {
   const start = workspace.conversationPage * CONVERSATION_PAGE_SIZE;
   for (const item of workspace.conversations.slice(start, start + CONVERSATION_PAGE_SIZE)) {
     const row = document.createElement('div'); row.className = 'conversation-item'; row.dataset.referenceId = item.referenceId; row.dataset.sessionId = item.sessionId;
-    const choose = button(item.displayName, () => selectConversation(item)); if (workspace.selected?.referenceId === item.referenceId) choose.setAttribute('aria-current', 'true'); row.append(choose);
-    const state = document.createElement('span'); state.textContent = item.status === 'closed' ? 'Closed' : item.isPrimary ? 'Primary' : 'Open'; row.append(state);
-    if (!item.isPrimary) row.append(mutationButton(item.status === 'closed' ? 'Reopen' : 'Close', () => changeConversationStatus(item)));
+    const unavailable = item.availability === 'replaced-unavailable';
+    const choose = button(item.displayName, () => selectConversation(item)); choose.disabled = unavailable; if (workspace.selected?.referenceId === item.referenceId) choose.setAttribute('aria-current', 'true'); row.append(choose);
+    const state = document.createElement('span'); state.textContent = unavailable ? 'Replaced — source unavailable; history reference retained' : item.status === 'closed' ? 'Closed' : item.isPrimary ? 'Primary' : 'Open'; row.append(state);
+    if (!item.isPrimary && !unavailable) row.append(mutationButton(item.status === 'closed' ? 'Reopen' : 'Close', () => changeConversationStatus(item)));
     target.append(row);
   }
   const previous = document.querySelector('#conversation-previous'); const next = document.querySelector('#conversation-next');
@@ -709,13 +718,13 @@ function renderConversations() {
   document.querySelector('#conversation-page-status').textContent = `Page ${workspace.conversationPage + 1} of ${pageCount}`;
   if (focusedReferenceId) {
     const replacementRow = [...target.querySelectorAll('.conversation-item')].find((row) => row.dataset.referenceId === focusedReferenceId);
-    const controls = [...(replacementRow?.querySelectorAll('button') ?? [])];
-    const replacement = controls.find((control) => control.textContent === focusedLabel) ?? controls.find((control) => control.textContent === (focusedLabel === 'Close' ? 'Reopen' : focusedLabel === 'Reopen' ? 'Close' : null)) ?? replacementRow?.querySelector('button');
+    const controls = [...(replacementRow?.querySelectorAll('button:not(:disabled)') ?? [])];
+    const replacement = controls.find((control) => control.textContent === focusedLabel) ?? controls.find((control) => control.textContent === (focusedLabel === 'Close' ? 'Reopen' : focusedLabel === 'Reopen' ? 'Close' : null)) ?? controls[0];
     (replacement ?? document.querySelector('#conversation-view'))?.focus();
   }
 }
 function sameConversation(left, right) { return left?.topicId === right?.topicId && left?.referenceId === right?.referenceId && left?.sessionId === right?.sessionId; }
-function syncSelectedConversationControls() { const closed = workspace.selected?.status === 'closed'; document.querySelector('#chat-send').disabled = closed; document.querySelector('#chat-message').disabled = closed; }
+function syncSelectedConversationControls() { const readOnly = workspace.selected?.status === 'closed' || workspace.selected?.availability === 'replaced-unavailable'; document.querySelector('#chat-send').disabled = readOnly; document.querySelector('#chat-message').disabled = readOnly; }
 async function changeConversationStatus(item) {
   const generation = workspace.generation; const topic = workspace.topic; const action = item.status === 'closed' ? 'conversations.reopen' : 'conversations.close'; const status = item.status === 'closed' ? 'open' : 'closed';
   try {
@@ -726,6 +735,7 @@ async function changeConversationStatus(item) {
   } catch (error) { if (generation === workspace.generation && workspace.topic?.topicId === topic.topicId) conversationStatus.textContent = error.message || 'The Conversation action was refused.'; }
 }
 async function selectConversation(item) {
+  if (item.availability === 'replaced-unavailable') return;
   const topicGeneration = workspace.generation; const selectionGeneration = sameConversation(workspace.selected, item) ? workspace.selectionGeneration : ++workspace.selectionGeneration; const historyGeneration = ++workspace.historyGeneration; const chatSendGeneration = workspace.chatSendGeneration;
   const restoreConversationFocus = document.activeElement?.closest?.('.conversation-item')?.dataset.referenceId === item.referenceId;
   workspace.selected = item; document.querySelector('#chat-conversation-name').textContent = item.displayName; document.querySelector('#chat-messages').replaceChildren();
@@ -761,7 +771,7 @@ function sameChatSendIntent(left, right) { return left?.topicId === right?.topic
 function sameChatSendTarget(left, right) { return left?.topicId === right?.topicId && left?.referenceId === right?.referenceId && left?.sessionId === right?.sessionId; }
 function chatSendOperationKey(topicGeneration, selectionGeneration, intent) { return JSON.stringify([topicGeneration, selectionGeneration, intent.topicId, intent.referenceId, intent.sessionId]); }
 document.querySelector('#chat-form')?.addEventListener('submit', async (event) => {
-  event.preventDefault(); const selected = workspace.selected; const generation = workspace.generation; const selectionGeneration = workspace.selectionGeneration; const input = document.querySelector('#chat-message'); const message = input.value.trim(); if (!message || !selected || selected.status === 'closed') return;
+  event.preventDefault(); const selected = workspace.selected; const generation = workspace.generation; const selectionGeneration = workspace.selectionGeneration; const input = document.querySelector('#chat-message'); const message = input.value.trim(); if (!message || !selected || selected.status === 'closed' || selected.availability === 'replaced-unavailable') return;
   const intent = chatSendIntent(selected, message); const operationKey = chatSendOperationKey(generation, selectionGeneration, intent); let operation = workspace.chatSendOperations.get(operationKey) ?? [...workspace.chatSendOperations.values()].find((candidate) => candidate.generation === generation && sameChatSendTarget(candidate.intent, intent));
   if (operation && !sameChatSendIntent(operation.intent, intent)) { chatStatus.textContent = 'A different Chat send is already settling and was not sent.'; return; }
   if (operation?.pending) { chatStatus.textContent = 'Sending message…'; return; }

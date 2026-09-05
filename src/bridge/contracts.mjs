@@ -182,7 +182,7 @@ function actionResultSchema(method) {
     completeSnapshot: Object.freeze({ type: 'boolean' }),
     defaults: Object.freeze({ type: 'object' }),
     sessionInfo: Object.freeze({ type: 'object' }),
-    conversations: Object.freeze({ type: 'array', items: Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ referenceId: { type: 'string' }, sessionId: { type: 'string' }, displayName: { type: 'string' }, status: { enum: ['open', 'closed'] }, isPrimary: { type: 'boolean' }, wasPrimary: { type: 'boolean' }, updatedAt: { type: 'string' } }), required: ['referenceId', 'sessionId', 'displayName', 'status', 'isPrimary', 'wasPrimary', 'updatedAt'] }) }),
+    conversations: Object.freeze({ type: 'array', items: Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ referenceId: { type: 'string' }, sessionId: { type: 'string' }, displayName: { type: 'string' }, status: { enum: ['open', 'closed'] }, availability: { enum: ['replaced-unavailable'] }, isPrimary: { type: 'boolean' }, wasPrimary: { type: 'boolean' }, updatedAt: { type: 'string' } }), required: ['referenceId', 'sessionId', 'displayName', 'status', 'isPrimary', 'wasPrimary', 'updatedAt'] }) }),
     thinkingLevel: Object.freeze({ type: ['string', 'null'] }),
     fastMode: Object.freeze({ type: ['boolean', 'null'] }),
     toolOverrides: Object.freeze({ type: ['object', 'null'] }),

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
 import { normalizeNotePath } from '../sources/note-path.mjs';
+import { explicitSessionReplacements, unavailableReplacedSession } from '../sources/session-replacement.mjs';
 
 async function withSignal(operation, signal) {
   signal?.throwIfAborted();
@@ -222,11 +223,21 @@ export async function readConversationSourceSnapshot({ topicId, metadata, gatewa
   signal?.throwIfAborted();
   const references = exactTopicReferences(metadata, topicId, 'openclaw', 'session');
   const authoritativeGateway = gateway ?? api?.runtime?.gateway;
+  const replacements = explicitSessionReplacements(metadata, topicId);
+  let catalogRows = [];
+  if (replacements.size) {
+    const store = api?.runtime?.agent?.session;
+    if (store?.listSessionEntries) catalogRows = store.listSessionEntries({ agentId: 'main', readOnly: true }).map((row) => ({ sessionKey: row.sessionKey, ...(row.entry ?? {}) }));
+    // A filtered/paginated Gateway list cannot prove a source is absent.
+    // Without the complete host store, retain exact reads and fail closed.
+    else replacements.clear();
+  }
   if (typeof transcriptReader !== 'function' && typeof authoritativeGateway?.request !== 'function') throw sourceError('source-unavailable', 'The authoritative Sessions reader is unavailable.');
   const conversations = [];
   const dedupe = new Map();
   for (const reference of references) {
     signal?.throwIfAborted();
+    if (unavailableReplacedSession(metadata, reference, catalogRows, replacements)) continue;
     const state = metadata?.getSessionState?.(reference.referenceId) ?? null;
     if (typeof state?.sessionId !== 'string' || state.sessionId.trim() === '') throw sourceError('source-recovery', 'The linked Session does not have an exact authoritative Session ID.');
     let described = { session: { key: reference.externalSourceId, sessionId: state.sessionId, displayName: state.displayName } };

@@ -7,6 +7,8 @@ import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSourceReference } from '../src/sources/reference.mjs';
 import { createTopicService } from '../src/topics/service.mjs';
+import { createSessionAdapter } from '../src/sources/sessions.mjs';
+import { readConversationSourceSnapshot } from '../src/search/source-snapshot.mjs';
 
 function pluginSessionBoundary({ sessionId = () => randomUUID(), updatedAt = () => Date.now() } = {}) {
   const entries = new Map();
@@ -821,7 +823,7 @@ test('missing replacement Primary recovers the exact reference and resumes lifec
   });
 });
 
-test('Session Source Recovery relinks or replaces exact identities while retaining Topic, former reference, and recovery history', async () => {
+test('Session Source Recovery relinks or replaces exact identities while retaining Topic, former reference, and recovery history', async (t) => {
   await fixture(async ({ vault, metadata, sessionAdapterFactory }) => {
     let sessions = [];
     const gateway = { request: async (method) => method === 'sessions.list' ? { sessions } : (() => { throw new Error(`Unexpected ${method}`); })() };
@@ -858,6 +860,30 @@ test('Session Source Recovery relinks or replaces exact identities while retaini
     assert.equal(recoveryRows.length, 1);
     assert.equal(recoveryRows[0].state, 'replaced');
     assert.match(recoveryRows[0].failure, /replacement/);
+    await t.test('browse retains replaced history without blocking the exact replacement', async () => {
+      const sessionStore = { listSessionEntries: () => sessions.map(({ key, ...entry }) => ({ sessionKey: key, entry })) };
+      const adapter = createSessionAdapter({ metadata, topicId, gateway, sessionStore });
+      const listed = await adapter.list();
+      const former = listed.conversations.find((row) => row.referenceId === reference.referenceId);
+      assert.equal(former.availability, 'replaced-unavailable');
+      assert.equal(former.isPrimary, false);
+      assert.equal(listed.conversations.find((row) => row.isPrimary).referenceId, replacement.replacementReferenceId);
+      await assert.rejects(adapter.navigate({ referenceId: reference.referenceId }), /missing or replaced/);
+      await assert.rejects(adapter.history({ referenceId: reference.referenceId }), /missing or replaced/);
+      await assert.rejects(adapter.send({ referenceId: reference.referenceId, logicalOperationId: randomUUID(), message: 'must not dispatch' }), /missing or replaced/);
+    });
+    await t.test('search snapshots exclude unavailable replaced content, not live sources', async () => {
+      const reads = [];
+      const api = { runtime: { agent: { session: { listSessionEntries: () => sessions.map(({ key, ...entry }) => ({ sessionKey: key, entry })) } } } };
+      const snapshot = await readConversationSourceSnapshot({ metadata, topicId, gateway, api, transcriptReader: async ({ sessionKey }) => {
+        reads.push(sessionKey);
+        assert.equal(sessionKey, sessions[0].key, 'deleted former Session must not be read or represented as empty history');
+        return [];
+      } });
+      assert.equal(snapshot.conversations.length, 1);
+      assert.equal(snapshot.conversations[0].sourceReference.referenceId, replacement.replacementReferenceId);
+      assert.equal(reads.length, 2, 'replacement history retains its independent verification read');
+    });
   });
 });
 

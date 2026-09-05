@@ -15,6 +15,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
   const routes = [];
   const methods = new Map();
   const services = [];
+  const lifecycles = [];
   const candidates = [];
   let currentBindingAvailable = bindingAvailable;
   let revoked = false;
@@ -29,7 +30,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     logger: { warn() {} },
     runtime: { state: { resolveStateDir: () => stateDir }, ...(gateway ? { gateway } : {}) },
     session: { controls: { registerControlUiDescriptor(value) { descriptors.push(structuredClone(value)); } } },
-    lifecycle: { registerRuntimeLifecycle() {} },
+    lifecycle: { registerRuntimeLifecycle(value) { lifecycles.push(value); } },
     notifications: {
       registerEmitter(declaration) {
         declarations.push(structuredClone(declaration));
@@ -42,7 +43,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     registerService(service) { services.push(service); }
   };
   return {
-    api, declarations, descriptors, routes, methods, services, candidates,
+    api, declarations, descriptors, routes, methods, services, lifecycles, candidates,
     async authenticatedGatewayRequest(name, params) {
       const handler = methods.get(name);
       if (!handler) throw new Error(`Missing fake Gateway method ${name}`);
@@ -69,6 +70,41 @@ test('Control UI descriptor grants the operating-status read used to unlock muta
     assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sources.status'));
     assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.attention.act'));
   } finally { await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('Session cleanup does not stop the plugin-wide service; disable and restart do', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-cleanup-'));
+  try {
+    const host = fakePublishedApi(stateDir);
+    plugin.register(host.api);
+    let stops = 0;
+    host.services[0].stop = async () => { stops += 1; };
+    for (const reason of ['delete', 'reset']) await host.lifecycles[0].cleanup({ reason, sessionKey: 'agent:main:fictional-deleted' });
+    assert.equal(stops, 0, 'Session-scoped cleanup must not close Topic services or metadata');
+    for (const reason of ['disable', 'restart']) await host.lifecycles[0].cleanup({ reason });
+    assert.equal(stops, 2, 'plugin-wide lifecycle must still stop its service');
+  } finally { await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('started plugin keeps authenticated Topic reads alive across Session delete and reset cleanup', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-live-cleanup-'));
+  let service;
+  try {
+    const host = fakePublishedApi(stateDir);
+    plugin.register(host.api);
+    service = host.services[0];
+    await service.start();
+    const original = service.topicService;
+    const before = await host.authenticatedGatewayRequest('command-center.v1.topics.list', { schemaVersion: 1 });
+    for (const reason of ['delete', 'reset']) {
+      await host.lifecycles[0].cleanup({ reason, sessionKey: 'agent:main:fictional-session' });
+      assert.equal(service.topicService, original);
+      const response = await host.authenticatedGatewayRequest('command-center.v1.topics.list', { schemaVersion: 1 });
+      assert.deepEqual(response.result, before.result);
+    }
+    await host.lifecycles[0].cleanup({ reason: 'disable' });
+    assert.equal(service.topicService, undefined);
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
 test('unsupported actual bridge declaration refuses activation before touching any published API', async () => {

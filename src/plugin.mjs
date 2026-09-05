@@ -79,7 +79,11 @@ export default definePluginEntry({
     });
     if (!notificationEmitter || typeof notificationEmitter.bindCurrentOperator !== 'function') throw new Error('Command Center notification emitter registration was refused.');
     const service = createMetadataService(api, { notificationEmitter });
-    api.lifecycle?.registerRuntimeLifecycle?.({ id: 'command-center-notifications', cleanup: () => service.stop() });
+    api.lifecycle?.registerRuntimeLifecycle?.({ id: 'command-center-notifications', cleanup: ({ reason }) => {
+      // Session reset/delete is not a plugin shutdown: Topic services and
+      // metadata must remain alive to report and repair the missing binding.
+      if (reason === 'disable' || reason === 'restart') return service.stop();
+    } });
     const sourceProxy = new Proxy({}, {
       get(_target, property) {
         return (...args) => {

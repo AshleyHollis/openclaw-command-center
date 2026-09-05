@@ -5,6 +5,7 @@ const browserHeavyTests = new Set([
   'test/topic-page.acceptance.test.mjs',
   'test/topic-review-ui.test.mjs',
   'test/topic-review-focus.test.mjs',
+  'test/workspace-recovery-ui.test.mjs',
   'test/topics-ui.test.mjs'
 ]);
 const topicPageTicketTests = new Set([
