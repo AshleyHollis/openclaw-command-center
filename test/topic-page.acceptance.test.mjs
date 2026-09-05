@@ -930,6 +930,21 @@ test('late send and Search completions cannot clear or populate a newer Topic wo
   } finally { await closeGuardedPage(page); }
 });
 
+test('a superseding initial Conversation refresh retains Primary selection', async () => {
+  const page = await setupPage();
+  try {
+    await page.evaluate(() => { const fixture = globalThis.__topicPageFixture; fixture.deferNextConversationBrowse = true; void window.CommandCenterTopics.openTopic(fixture.topic); });
+    await page.waitForFunction(() => Boolean(globalThis.__topicPageFixture.releaseConversationBrowse));
+    await page.locator('#conversation-refresh').click();
+    await page.locator('#chat-conversation-name').filter({ hasText: 'Primary Conversation' }).waitFor();
+    const delivered = await page.evaluate(() => globalThis.__topicPageFixture.deliveredBridgeResponses);
+    await page.evaluate(() => globalThis.__topicPageFixture.releaseConversationBrowse());
+    await page.evaluate((target) => globalThis.__topicPageFixture.waitForApplicationSettlement('bridge', target), delivered + 1);
+    assert.equal(await page.locator('#chat-message').isEnabled(), true);
+    assert.equal(await page.locator('#chat-conversation-name').textContent(), 'Primary Conversation');
+  } finally { await closeGuardedPage(page); }
+});
+
 test('late closed Conversation browse cannot repaint a reopened row', async () => {
   const page = await setupPage();
   try {

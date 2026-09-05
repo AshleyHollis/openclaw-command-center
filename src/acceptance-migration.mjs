@@ -1,3 +1,10 @@
+export function verifiedMigrationStatusReady(status, { channelCount, occurrenceCount }) {
+  if (!status || status.enabled !== true || !['pending', 'provisioning', 'importing', 'verifying', 'complete'].includes(status.phase) || status.failures?.length || status.channels?.some((channel) => channel.failureCode || channel.phase === 'review')) throw new Error(`Migration setup refused: ${JSON.stringify(status).slice(0, 4096)}`);
+  if (status.phase !== 'complete') return false;
+  if (status.complete !== true || status.completion?.verifiedChannelCount !== channelCount || status.completion?.verifiedOccurrenceCount !== occurrenceCount) throw new Error('Migration completion does not match the exact fixture counts.');
+  return true;
+}
+
 export function readVerifiedMigrationCompletion(database, { completionId, topicId }) {
   const completion = database.prepare('SELECT * FROM migration_completion WHERE completion_id = ?').get(completionId);
   if (!completion) return undefined;

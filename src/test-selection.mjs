@@ -51,6 +51,7 @@ const focusedRealHostScenarios = Object.freeze({
 });
 
 const diagnosticSliceLanes = Object.freeze({
+  'diagnostic-ui-remaining': Object.freeze(['fresh-scale', 'fresh-mobile']),
   'diagnostic-ui-data': Object.freeze(['fresh-desktop', 'fresh-scale', 'fresh-scale-analysis', 'fresh-mobile', 'fresh-review']),
   'diagnostic-security-recovery': Object.freeze(['host-tuple-refusal', 'build-variant', 'plugin-api-variant', 'bridge-protocol-variant', 'binding-mismatch', 'foreign-database-restoration', 'secure-origin', 'degraded-bridge-grants', 'degraded-source-availability', 'combined-degraded', 'recovery-only-compatibility', 'destructive-migration-restoration'])
 });

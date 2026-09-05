@@ -28,7 +28,7 @@ import { assertPerformanceObservationWithinBaseline, captureFirstReleasePerforma
 import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 import { compatibilityTuple } from '../src/compatibility.mjs';
 import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice } from '../src/acceptance-scenario-coordinator.mjs';
-import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence } from '../src/acceptance-migration.mjs';
+import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence, verifiedMigrationStatusReady } from '../src/acceptance-migration.mjs';
 import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
 const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
@@ -1088,6 +1088,19 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           catch (error) { if (error?.category === 'transport-timeout') { observeMigration(); return false; } throw error; }
         }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
       } catch (error) { observeMigration(); error.message += `; durableStartupProgress=${JSON.stringify(readinessProgress)}`; throw error; }
+      if (kind === 'scale') {
+        let lastMigrationStatus;
+        try {
+          await waitForConsecutiveReadiness(async (probeSignal) => {
+            const response = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.migration.status', params: { schemaVersion: 1 }, signal: probeSignal });
+            lastMigrationStatus = response.result ?? response;
+            return verifiedMigrationStatusReady(lastMigrationStatus, { channelCount: 1, occurrenceCount: RELEASE_FIXTURE_COUNTS.indexedConversationMessages });
+          }, scenarioHost.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 500, signal });
+        } catch (error) { throw new Error(`Scale migration setup did not complete: ${JSON.stringify(lastMigrationStatus)}`, { cause: error }); }
+        const database = new DatabaseSync(resolveCommandCenterDatabasePath(path.join(scenarioWorld.root, '.openclaw')), { readOnly: true });
+        try { assert.ok(readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId: scaleTopicId }), 'verified scale migration must have a durable completion and exact Primary binding'); }
+        finally { database.close(); }
+      }
       managedBrowser = await withDeadline(`${kind} fresh browser launch`, () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       const page = await managedBrowser.browser.newPage({ viewport: { width, height: 900 } });
       const evidence = { console: [], errors: [], requests: [], responses: [] };
@@ -1725,7 +1738,7 @@ async function runUiJourney(frame, { page, width, name, category = 'project', ke
   try { await closedConversation.waitFor({ state: 'detached', timeout: 10_000 }); }
   catch (error) {
     const state = await frame.evaluate(() => ({ view: document.querySelector('#conversation-view').value, status: document.querySelector('#conversation-status').textContent, rows: [...document.querySelectorAll('.conversation-item')].map((row) => ({ referenceId: row.dataset.referenceId, text: row.textContent })) }));
-    error.message += `; reopenPresentation=${JSON.stringify(state)}`; throw error;
+    throw new Error(`Reopen did not settle; reopenPresentation=${JSON.stringify(state)}`, { cause: error });
   }
   await chooseOption(frame.locator('#conversation-view'), 'open', keyboard);
   await frame.locator('.conversation-item').filter({ hasText: conversationName }).getByText('Open', { exact: true }).waitFor();

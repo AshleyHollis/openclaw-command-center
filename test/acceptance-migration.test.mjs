@@ -1,10 +1,24 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence } from '../src/acceptance-migration.mjs';
+import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence, verifiedMigrationStatusReady } from '../src/acceptance-migration.mjs';
 import { createAcceptanceScenarioCoordinator } from '../src/acceptance-scenario-coordinator.mjs';
 
 const topicId = '11111111-1111-4111-8111-111111111111';
+
+test('migration readiness requires exact verified completion, not a healthy listener or imported count', () => {
+  const expected = { channelCount: 1, occurrenceCount: 5000 };
+  const status = { enabled: true, phase: 'importing', complete: false, channels: [{ importedCount: 2754, expectedCount: 5000 }], failures: [] };
+  assert.equal(verifiedMigrationStatusReady(status, expected), false);
+  assert.equal(verifiedMigrationStatusReady({ ...status, phase: 'verifying', channels: [{ importedCount: 5000 }] }, expected), false);
+  assert.throws(() => verifiedMigrationStatusReady({ ...status, phase: 'review' }, expected), /refused/u);
+  assert.throws(() => verifiedMigrationStatusReady({ ...status, failures: [{ failureCode: 'verification-failed' }] }, expected), /refused/u);
+  assert.throws(() => verifiedMigrationStatusReady({ ...status, channels: [{ failureCode: 'destination-corrupt' }] }, expected), /refused/u);
+  const completed = { ...status, phase: 'complete', complete: true, completion: { verifiedChannelCount: 1, verifiedOccurrenceCount: 5000 } };
+  assert.equal(verifiedMigrationStatusReady(completed, expected), true);
+  assert.throws(() => verifiedMigrationStatusReady({ ...completed, complete: false }, expected), /exact fixture/u);
+  assert.throws(() => verifiedMigrationStatusReady({ ...completed, completion: { verifiedChannelCount: 1, verifiedOccurrenceCount: 4999 } }, expected), /exact fixture/u);
+});
 
 function migrationDatabase(referenceId) {
   const database = new DatabaseSync(':memory:');

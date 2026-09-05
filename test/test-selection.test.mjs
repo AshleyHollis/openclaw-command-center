@@ -3,6 +3,13 @@ import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 import { ordinaryTestArgv, ordinaryTestLanes, resolveRealHostAcceptancePlan, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
 
+test('remaining UI diagnostics are a closed non-performance subset', () => {
+  const plan = resolveRealHostAcceptancePlan('diagnostic-ui-remaining');
+  assert.equal(plan.kind, 'focused');
+  assert.deepEqual(plan.scenarioIds, []);
+  assert.deepEqual(plan.isolatedSliceIds, ['fresh-scale', 'fresh-mobile']);
+});
+
 test('two non-performance diagnostic lanes partition every independent real-host slice', async () => {
   const plans = ['diagnostic-ui-data', 'diagnostic-security-recovery'].map(resolveRealHostAcceptancePlan);
   const ids = plans.flatMap((plan) => plan.isolatedSliceIds);

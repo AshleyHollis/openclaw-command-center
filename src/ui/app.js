@@ -620,7 +620,7 @@ async function loadConversations({ selectPrimary = false, generation = workspace
   workspace.conversations = nextConversations;
   workspace.conversationPage = Math.min(workspace.conversationPage, Math.max(0, Math.ceil(workspace.conversations.length / CONVERSATION_PAGE_SIZE) - 1));
   if (listChanged) renderConversations(); conversationStatus.textContent = `${workspace.conversations.length} ${view === 'closed' ? 'closed ' : ''}Conversations.`;
-  if (selectPrimary) {
+  if (selectPrimary || !workspace.selected) {
     const primary = (value?.conversations ?? []).find((item) => item.isPrimary);
     if (!primary) throw new Error('The Topic Primary Session is unavailable.');
     // Catalog and Note readiness make the workspace usable. Primary history
