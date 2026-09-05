@@ -986,7 +986,7 @@ async function exerciseRejectedCandidateVariant({ descriptor, buildReceipt, kind
           await variantHost.outputDrained;
         }, 10_000, signal);
         assert.notEqual(variantHost.child.exitCode, 0);
-        assert.match(`${variantHost.diagnostics.stdout}\n${variantHost.diagnostics.stderr}`, /plugin requires plugin API =1900\.1\.1, but this host is 2026\.9\.1; skipping load/u);
+        assert.match(`${variantHost.diagnostics.stdout}\n${variantHost.diagnostics.stderr}`, /plugin requires plugin API =1900\.1\.1, but this host is 2026\.9\.1; skipping (?:discovery|load)/u);
         await assert.rejects(() => fetchWithDeadline(`${variantWorld.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'create', name: 'Blocked incompatible API Topic', paraCategory: 'resource', logicalOperationId: randomUUID() }) }, 'rejected host mutation', 10_000), (error) => (error?.cause?.code ?? error?.code) === 'ECONNREFUSED');
         assert.deepEqual(await readFile(restoredDatabase), restoredBytes);
         for (const [index, name] of ['manifest.json', 'metadata.sqlite.snapshot'].entries()) assert.deepEqual(await readFile(path.join(restoredRecovery, name)), restoredArtifacts[index]);
@@ -1154,7 +1154,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await frame.locator('.topic-review-proposal').first().waitFor({ state: 'visible' });
         const proposals = frame.locator('.topic-review-proposal');
         const proposalCount = await proposals.count();
-        assert.ok(proposalCount >= 1);
+        assert.equal(proposalCount, 1, 'the fresh single-Topic fixture must produce exactly its explicit category proposal');
         await activate(proposals.first().getByRole('button', { name: 'Approve', exact: true }), true);
         for (let index = 1; index < proposalCount; index += 1) await activate(proposals.nth(index).getByRole('button', { name: 'Keep as-is', exact: true }), true);
         const checkpoint = frame.locator('#topic-review-checkpoint');
@@ -1172,9 +1172,19 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.equal(appliedResponse.status, 200);
         const applied = appliedResponse.body?.result ?? appliedResponse.body;
         assert.equal(applied?.review?.state ?? applied?.state, 'Resolved');
-        const durableProposals = applied?.review?.proposals ?? applied?.proposals ?? [];
-        assert.ok(durableProposals.some((proposal) => proposal.state === 'applied'));
-        assert.ok(durableProposals.every((proposal) => proposal.affectedTopicIds?.includes(journey.topicId)));
+        const summary = applied.review.applicationSummary;
+        assert.equal(summary.status, 'complete');
+        const outcomes = Object.values(summary.outcomes);
+        assert.equal(outcomes.length, 1);
+        assert.equal(outcomes[0].status, 'applied');
+        assert.equal(outcomes[0].result.topicId, journey.topicId);
+        assert.deepEqual(applied.review.proposals, [], 'resolved proposals leave the actionable review list');
+        const readbackResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: journey.topicId } });
+        const readback = (readbackResponse?.result ?? readbackResponse).topic;
+        assert.equal(readback.paraCategory, 'area');
+        assert.equal(readback.name, 'Area: Fictional Fresh Review Topic Revised');
+        assert.equal(readback.revision, topic.revision + 2, 'rename and approved recategorization each advance the Topic revision once');
+        assert.equal(readback.noteFolderReferenceId, topic.noteFolderReferenceId);
       }
       return Object.freeze({ kind, topicId: journey.topicId, freshWorld: scenarioWorld.root, assertionsCompleted: true });
     } finally {
