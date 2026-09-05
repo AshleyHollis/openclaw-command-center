@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { chromium } from 'playwright';
+import { launchPinnedChromium } from '../src/browser-setup.mjs';
 
 const index = await readFile(new URL('../src/ui/index.html', import.meta.url), 'utf8');
 const app = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
@@ -38,8 +37,8 @@ test('Dashboard markup keeps the required first-class regions and narrow flow la
   assert.match(index, /id="note-action-dialog"[^>]*aria-describedby="note-action-status"/u);
 });
 
-test('deferred shell initialization exposes both bridge globals before readiness resolves', { skip: !existsSync(chromium.executablePath()) && 'Playwright browser is supplied by the isolated evaluator' }, async () => {
-  const browser = await chromium.launch({ headless: true });
+test('deferred shell initialization exposes both bridge globals before readiness resolves', async () => {
+  const browser = await launchPinnedChromium();
   try {
     const page = await browser.newPage();
     await page.setContent(index);
@@ -65,8 +64,8 @@ test('deferred shell initialization exposes both bridge globals before readiness
   } finally { await browser.close(); }
 });
 
-test('wide and narrow Topic launchers and topic.open actions open the exact verified Topic', { skip: !existsSync(chromium.executablePath()) && 'Playwright browser is supplied by the isolated evaluator' }, async () => {
-  const browser = await chromium.launch({ headless: true });
+test('wide and narrow Topic launchers and topic.open actions open the exact verified Topic', async () => {
+  const browser = await launchPinnedChromium();
   try {
     for (const width of [1200, 320]) {
       const page = await browser.newPage({ viewport: { width, height: 800 } });
@@ -117,8 +116,8 @@ test('wide and narrow Topic launchers and topic.open actions open the exact veri
   } finally { await browser.close(); }
 });
 
-test('Dashboard is keyboard-usable at 320px and opens a scrollable evidence dialog', { skip: !existsSync(chromium.executablePath()) && 'Playwright browser is supplied by the isolated evaluator' }, async () => {
-  const browser = await chromium.launch({ headless: true });
+test('Dashboard is keyboard-usable at 320px and opens a scrollable evidence dialog', async () => {
+  const browser = await launchPinnedChromium();
   try {
     const page = await browser.newPage({ viewport: { width: 320, height: 720 }, reducedMotion: 'reduce' });
     const document = index.replace('<link rel="stylesheet" href="/plugins/command-center/styles.css">', `<style>${styles}</style>`);
@@ -152,8 +151,8 @@ test('Dashboard is keyboard-usable at 320px and opens a scrollable evidence dial
   } finally { await browser.close(); }
 });
 
-test('authenticated operating modes preserve safe reads and suppress unsupported mounted mutations', { skip: !existsSync(chromium.executablePath()) && 'Playwright browser is supplied by the isolated evaluator' }, async () => {
-  const browser = await chromium.launch({ headless: true });
+test('authenticated operating modes preserve safe reads and suppress unsupported mounted mutations', async () => {
+  const browser = await launchPinnedChromium();
   try {
     for (const variant of [
       { mode: 'ready', unavailableCapabilities: [], mutations: true },

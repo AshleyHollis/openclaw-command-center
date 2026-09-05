@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
-import { chromium } from 'playwright';
+import { launchPinnedChromium } from '../src/browser-setup.mjs';
 import { createTopicsHttpHandler } from '../src/topics/http.mjs';
 import { publicTopicDestination } from '../src/topics/snapshot.mjs';
 
@@ -147,8 +147,8 @@ test('Topics destination uses the authenticated POST lifecycle seam', () => {
   assert.match(styles, /\.topic-row>strong[^}]*overflow-wrap:\s*anywhere/);
 });
 
-test('authenticated Topics frame exercises lifecycle controls at desktop and narrow widths', { skip: !existsSync(chromium.executablePath()) && 'Playwright browser is supplied by the isolated evaluator' }, async () => {
-  const browser = await chromium.launch({ headless: true });
+test('authenticated Topics frame exercises lifecycle controls at desktop and narrow widths', async () => {
+  const browser = await launchPinnedChromium();
   try {
     const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
     await page.setContent(index);

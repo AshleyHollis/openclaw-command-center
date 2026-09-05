@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { chromium } from 'playwright';
+import { launchPinnedChromium } from '../src/browser-setup.mjs';
 
-test('mounted approval retries preserve exact intent and block a competing action until reconciled', { skip: !existsSync(chromium.executablePath()) && 'Playwright browser is supplied by the isolated evaluator' }, async () => {
-  const browser = await chromium.launch({ headless: true });
+test('mounted approval retries preserve exact intent and block a competing action until reconciled', async () => {
+  const browser = await launchPinnedChromium();
   try {
     const page = await browser.newPage();
     await page.setContent(await readFile(new URL('../src/ui/index.html', import.meta.url), 'utf8'));
