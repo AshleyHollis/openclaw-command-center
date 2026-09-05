@@ -2536,7 +2536,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       releaseState.forgedMutationRejected = true;
       return { rejected: true };
     });
-    if (acceptancePlan.kind === 'focused') {
+    if (focusedScenarioIds?.has('focused-control-ui-migration-readiness')) {
       await collectScenario('focused-control-ui-migration-readiness', async (signal) => {
         const completed = await ensureMigrationBinding(signal);
         return { completionId: completed.completion.completion_id, referenceId: completed.binding.referenceId };
