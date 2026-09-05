@@ -2,6 +2,10 @@
 
 Vocabulary for the OpenClaw plugin that provides a global attention surface and focused PARA Topics inside the Control UI.
 
+## MVP delivery scope
+
+The approved 2026-09-05 MVP is desktop-first (#19, #32). Basic desktop keyboard operation and all source-correctness, security, recovery, performance and safe-release requirements remain. Mobile-specific layout, touch and mobile zoom/reflow qualification is deferred, not passed (#216). Attachments (#213) and automatic Note maintenance (#214) remain follow-ups. See `docs/research/desktop-mvp-finish-plan.md` for the remaining work and evidence boundaries.
+
 ## Navigation and context
 
 **Command Center**:

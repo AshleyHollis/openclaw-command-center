@@ -147,9 +147,17 @@ Diagnostic-only successor `7a6d030a36a61e45c6a3ae74c26e5e2238d7bbf5` adds the se
 
 ## Not yet release-qualified
 
+### Superseding checkpoint: desktop-first scope and proven Reminder defect
+
+The successor `ticket32-reminder-lifecycle-7a6d030` terminated Failed in approximately 35 seconds. Native execution succeeded and disabled the one-shot schedule; after the second Topic/native Chat round trip, Command Center emitted system `attention.resolved` and removed the untouched Reminder. The earlier immediate scheduler-only read did not cover this later refresh boundary. The shared delivery-versus-acknowledgement defect is now reproduced, but its source fix remains pending.
+
+The user subsequently approved a desktop-first MVP. #216 owns deferred mobile layout, touch and mobile zoom/reflow qualification. Basic desktop keyboard operation remains in #32, along with all correctness/security/recovery/performance/release gates. The approved ticket scope is updated; executable matrix alignment is still pending. Do not treat the old full-capture configuration as desktop-first or count the deferral as a pass.
+
+Two original required frontiers remain unpassed (`scale-performance`, `verified-activity-readback`); the original mobile frontier is deferred/unpassed. There are zero new unique passing frontiers. See [the desktop MVP finish plan](desktop-mvp-finish-plan.md) for the four remaining work packages, retained keyboard requirements and release-integration risks. No diagnostic job is active at this checkpoint; no controller hold or live state was changed.
+
 The original 211-test snapshot above was focused integration evidence. The later sealed diagnostic candidate is **not a final acceptance capture or release-qualified build**. No unique final release acceptance boundary was closed by these focused or diagnostic passes.
 
-Inspect the two remaining diagnostic-lane results and repair only remaining affected owner boundaries. Preserve actual native Session message readback, keyboard/mobile checks and measured Chat-send performance; do not replace these with a navigation-only pass or a mocked host result.
+Repair the reproduced Reminder lifecycle boundary and align the executable matrix to the approved desktop-first scope. Preserve actual native Session message readback, desktop keyboard checks and measured Chat-send performance; do not replace these with a navigation-only pass or a mocked host result. Retain mobile tests as deferred follow-up diagnostics (#216).
 
 After that, seal the exact pair; rerun affected non-performance clusters in the two diagnostic lanes; keep measured performance exclusive; run one coherent complete capture, independent evaluation and Linux publication gates. Verify backup/rollback before live activation. Previous-build passes are historical evidence, not qualification of these changed bytes.
 
