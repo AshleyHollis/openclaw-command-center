@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { hasSuccessfulBrowserResponse, observeBrowserResponse, observedBrowserResponseStatus, recordBounded } from '../src/browser-evidence.mjs';
+import { hasKeyboardFocusIndicator, hasSuccessfulBrowserResponse, observeBrowserResponse, observedBrowserResponseStatus, recordBounded } from '../src/browser-evidence.mjs';
 
 test('records a successful browser response observation', async () => {
   const recorded = [];
@@ -30,6 +30,17 @@ test('caps browser evidence and leaves a single truncation marker', () => {
   for (const value of ['one', 'two', 'three', 'four']) recordBounded(evidence, value, 3);
 
   assert.deepEqual(evidence, ['one', 'two', '[truncated]']);
+});
+
+test('keyboard focus evidence recognises a focus-only shadow without accepting an ordinary decoration', () => {
+  const ring = 'rgb(220, 70, 60) 0px 0px 0px 2px';
+  const evidence = { outline: 'none', focusVisible: true, boxShadow: ring, baselineBoxShadow: 'none' };
+  assert.equal(hasKeyboardFocusIndicator(evidence), true);
+  assert.equal(hasKeyboardFocusIndicator({ ...evidence, baselineBoxShadow: ring }), false);
+  assert.equal(hasKeyboardFocusIndicator({ ...evidence, focusVisible: false }), false);
+  assert.equal(hasKeyboardFocusIndicator({ ...evidence, boxShadow: 'none' }), false);
+  assert.equal(hasKeyboardFocusIndicator({ outline: 'solid' }), true);
+  assert.equal(hasKeyboardFocusIndicator({ nativeComposite: true }), true);
 });
 
 test('accepts only an observed successful browser response', () => {

@@ -12,7 +12,7 @@ import 'playwright-core';
 import { fetchWithRuntimeDispatcher as fetch } from 'openclaw/plugin-sdk/runtime-fetch';
 import { finalizeAcceptanceJourney } from '../src/acceptance-finalization.mjs';
 import { assertAcceptanceReportPassed, createAcceptanceReport, RELEASE_ROW_IDS, runAcceptanceRows } from '../src/acceptance-report.mjs';
-import { hasSuccessfulBrowserResponse, observeBrowserResponse, observedBrowserResponseStatus, recordBounded } from '../src/browser-evidence.mjs';
+import { hasKeyboardFocusIndicator, hasSuccessfulBrowserResponse, observeBrowserResponse, observedBrowserResponseStatus, recordBounded } from '../src/browser-evidence.mjs';
 import { build, assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, fetchJsonWithDeadline, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
@@ -1514,6 +1514,7 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
     };
     const tabbable = (node) => visible(node) && (node.tabIndex >= 0 && node.matches('button,input,select,textarea,a[href],[tabindex]') || ['auto', 'scroll'].includes(getComputedStyle(node).overflowY));
     const tabbables = [...document.querySelectorAll('*')].filter(tabbable);
+    window.__acceptanceKeyboardBaselines = new WeakMap(tabbables.map((node) => [node, getComputedStyle(node).boxShadow]));
     return {
       count: tabbables.length,
       current: tabbables.indexOf(document.activeElement),
@@ -1553,11 +1554,11 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
       const tabbables = [...document.querySelectorAll('*')].filter(tabbable);
       const active = document.activeElement;
       const nativeComposite = active instanceof HTMLInputElement && ['date', 'datetime-local', 'month', 'time', 'week'].includes(active.type);
-      return { index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: Boolean(active?.closest?.('[hidden], [inert]')) || active?.getClientRects?.().length === 0, outline: active ? getComputedStyle(active).outlineStyle : 'none', nativeComposite, escapedDialog: Boolean(target.closest('dialog[open]')) && !active?.closest?.('dialog[open]') };
+      return { index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: Boolean(active?.closest?.('[hidden], [inert]')) || active?.getClientRects?.().length === 0, outline: active ? getComputedStyle(active).outlineStyle : 'none', focusVisible: Boolean(active?.matches(':focus-visible')), boxShadow: active ? getComputedStyle(active).boxShadow : 'none', baselineBoxShadow: window.__acceptanceKeyboardBaselines?.get(active), nativeComposite, escapedDialog: Boolean(target.closest('dialog[open]')) && !active?.closest?.('dialog[open]') };
     });
     assert.notEqual(state.index, -1, `Sequential keyboard focus left the mounted shell at ${state.name}.`);
     assert.equal(state.hidden, false, 'Sequential keyboard focus entered hidden or inert content.');
-    assert.ok(state.outline !== 'none' || state.nativeComposite, `Sequential keyboard focus must remain visible at ${state.name}.`);
+    assert.ok(hasKeyboardFocusIndicator(state), `Sequential keyboard focus must remain visible at ${state.name}: ${JSON.stringify({ outline: state.outline, focusVisible: state.focusVisible, boxShadow: state.boxShadow, baselineBoxShadow: state.baselineBoxShadow })}`);
     assert.equal(state.escapedDialog, false, 'Sequential keyboard focus escaped an open modal dialog.');
     if (state.target) return;
   }

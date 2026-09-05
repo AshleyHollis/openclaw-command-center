@@ -20,6 +20,10 @@ export function observedBrowserResponseStatus(observation) {
   return observation.observed ? observation.value.status() : undefined;
 }
 
+export function hasKeyboardFocusIndicator({ outline = 'none', nativeComposite = false, focusVisible = false, boxShadow, baselineBoxShadow }) {
+  return outline !== 'none' || nativeComposite || (focusVisible && typeof boxShadow === 'string' && boxShadow !== 'none' && typeof baselineBoxShadow === 'string' && boxShadow !== baselineBoxShadow);
+}
+
 /** Keep failure diagnostics useful without retaining an unbounded page trace. */
 export function recordBounded(collection, value, limit = 100) {
   const finalValueIndex = Math.max(0, limit - 1);
