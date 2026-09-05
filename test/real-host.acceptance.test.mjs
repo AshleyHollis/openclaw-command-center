@@ -3042,7 +3042,13 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const scalePrimary = ((scaleSessions?.result ?? scaleSessions)?.conversations ?? scaleSessions?.conversations ?? []).find((session) => session.isPrimary === true);
       const scaleOrdinary = ((scaleSessions?.result ?? scaleSessions)?.conversations ?? scaleSessions?.conversations ?? []).find((session) => session.displayName === scaleJourney.conversationName);
       assert.ok(scalePrimary?.referenceId && scalePrimary?.sessionId && scaleOrdinary?.referenceId && scaleOrdinary?.sessionId);
-      releaseState.primarySession = scalePrimary;
+      const scaleNavigation = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId: scaleJourney.topicId, referenceId: scalePrimary.referenceId }, signal });
+      const scaleTarget = scaleNavigation?.result ?? scaleNavigation;
+      assert.ok(typeof scaleTarget.sessionKey === 'string' && scaleTarget.sessionKey.length > 0);
+      assert.equal(scaleTarget.sessionId, scalePrimary.sessionId);
+      assert.equal(scaleTarget.sourceReference.referenceId, scalePrimary.referenceId);
+      assert.equal(scaleTarget.sourceReference.topicId, scaleJourney.topicId);
+      releaseState.primarySession = { ...scalePrimary, sessionKey: scaleTarget.sessionKey };
       const scaleNotes = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.notes.browse', params: { schemaVersion: 1, topicId: scaleJourney.topicId, limit: 100, offset: 0 } });
       const scaleNote = authenticatedList(scaleNotes, 'notes').find((note) => note.path === scaleJourney.movedPath);
       assert.ok(scaleNote?.sourceReference?.referenceId && scaleNote?.revision);
@@ -3312,6 +3318,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal(new Set(mobileEpisodeIds).size, 2);
       const mobileCards = frame.locator(mobileEpisodeIds.map((id) => `#attention-cards .attention-card[data-episode-id=${JSON.stringify(id)}]`).join(', '));
       await mobileCards.nth(1).waitFor({ state: 'visible' });
+      await tabTo(mobileCards.first().getByRole('button', { name: 'View evidence', exact: true }));
       mobileJourney.accessibilityStates.push(await auditDynamicAccessibilityState(frame, page, 320, 'mobile Attention cards', true));
       await activate(mobileCards.first().getByRole('button', { name: 'View evidence', exact: true }), true);
       assert.equal(await frame.locator('#evidence-dialog').getAttribute('open'), '');
@@ -3436,7 +3443,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         const approved = durable.prepare('SELECT proposal_id AS proposalId, revision, state FROM topic_proposals WHERE proposal_id = ?').get(approvedBefore.proposalId);
         assert.equal(approved.state, 'applied');
         assert.deepEqual([{ proposalId: approved.proposalId, revision: approved.revision }], frozenPlan.proposalRevisions);
-        assert.equal(durable.prepare('SELECT state FROM topic_proposals WHERE proposal_id = ?').get(keptBefore.proposalId).state, 'kept');
+        const kept = durable.prepare('SELECT state, suppressed_digest AS suppressedDigest, decision_revision AS decisionRevision FROM topic_proposals WHERE proposal_id = ?').get(keptBefore.proposalId);
+        assert.equal(kept.state, 'suppressed');
+        assert.equal(kept.suppressedDigest, keptBefore.materialEvidenceDigest);
+        assert.equal(kept.decisionRevision, keptBefore.revision);
       } finally { durable.close(); }
       const changedTopic = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: reviewJourney.topicId } });
       assert.equal((changedTopic?.result ?? changedTopic).topic.paraCategory, 'project');
