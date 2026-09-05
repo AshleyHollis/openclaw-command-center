@@ -14,6 +14,7 @@ test('remaining UI diagnostics are a closed non-performance subset', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-compatibility-startup').isolatedSliceIds, ['host-tuple-refusal', 'build-variant']);
   const review = resolveRealHostAcceptancePlan('desktop-review-journey');
   assert.deepEqual(review.scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'desktop-primary-journey-review']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('mobile-primary-journey').scenarioIds, ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'mobile-accessibility-journey']);
 });
 
 test('two non-performance diagnostic lanes partition every independent real-host slice', async () => {
@@ -116,10 +117,10 @@ test('real-host acceptance exposes a focused Topic Review projection plan', () =
   });
 });
 
-test('real-host acceptance exposes a closed full-corpus scale performance plan', () => {
+test('real-host acceptance keeps exact Activity readback with its full-corpus scale action', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('scale-performance'), {
     kind: 'focused',
-    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'scale-performance']
+    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'scale-performance', 'verified-activity-readback']
   });
 });
 

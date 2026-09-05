@@ -3339,9 +3339,11 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         });
         observer.observe(target, { childList: true, subtree: true, characterData: true });
       });
-      const sourceActionStarted = activate(sourceAction, true);
+      // The observer above retains even a brief pending state. Complete keyboard
+      // traversal before starting its observation deadline; never leave navigation
+      // running unobserved while failure cleanup closes its page.
+      await activate(sourceAction, true);
       await frame.waitForFunction(() => window.__observedPendingSourceAction === true, undefined, { timeout: 10_000 });
-      await sourceActionStarted;
       await waitForFrameText(frame, '#dashboard-feedback', 'Reminder Complete accepted.');
       const actionReceipt = JSON.parse(await frame.locator('#dashboard-feedback').getAttribute('data-activity-receipt'));
       assert.ok(actionReceipt?.activityId && actionReceipt?.logicalOperationId, 'keyboard source action must expose its bounded Activity receipt');
