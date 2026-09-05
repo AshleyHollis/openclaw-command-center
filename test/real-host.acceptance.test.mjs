@@ -1553,7 +1553,7 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
   const invisibleFocus = [];
   for (let step = 1; step <= limit; step += 1) {
     await page.keyboard.press(backwards ? 'Shift+Tab' : 'Tab');
-    await locator.evaluate(afterKeyboardPaint);
+    const paint = await locator.evaluate(afterKeyboardPaint);
     const state = await locator.evaluate((target) => {
       const visible = (node) => {
         const style = getComputedStyle(node);
@@ -1569,7 +1569,7 @@ async function tabTo(locator, { reverse = false, limit = 240 } = {}) {
       const nativeTextCaret = editableText && !active.readOnly && style?.caretColor !== 'transparent' && style?.caretColor !== 'rgba(0, 0, 0, 0)';
       return { index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: Boolean(active?.closest?.('[hidden], [inert]')) || active?.getClientRects?.().length === 0, outline: style?.outlineStyle ?? 'none', focusVisible: Boolean(active?.matches(':focus-visible')), boxShadow: style?.boxShadow, baselineBoxShadow: baseline?.boxShadow, backgroundColor: style?.backgroundColor, baselineBackgroundColor: baseline?.backgroundColor, nativeTextCaret, nativeComposite, escapedDialog: Boolean(target.closest('dialog[open]')) && !active?.closest?.('dialog[open]') };
     });
-    assert.notEqual(state.index, -1, `Sequential keyboard focus left the mounted shell at ${state.name}.`);
+    assert.notEqual(state.index, -1, `Sequential keyboard focus left the mounted shell: ${JSON.stringify({ target: order.targetState.name, step, backwards, active: state.name, paint })}`);
     assert.equal(state.hidden, false, 'Sequential keyboard focus entered hidden or inert content.');
     if (!hasKeyboardFocusIndicator(state)) {
       const control = await locator.evaluate(() => {
