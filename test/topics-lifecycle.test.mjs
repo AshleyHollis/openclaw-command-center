@@ -8,6 +8,7 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSourceReference } from '../src/sources/reference.mjs';
 import { createTopicService } from '../src/topics/service.mjs';
 import { createSessionAdapter } from '../src/sources/sessions.mjs';
+import { NoteAdapter } from '../src/sources/notes.mjs';
 import { readConversationSourceSnapshot } from '../src/search/source-snapshot.mjs';
 
 function pluginSessionBoundary({ sessionId = () => randomUUID(), updatedAt = () => Date.now() } = {}) {
@@ -142,6 +143,27 @@ test('Topic provisioning is durable, grouped only when usable, and preserves ide
     assert.notEqual(reopened.getOperatingStatus().mode, 'recovery-only', JSON.stringify(reopened.getOperatingStatus()));
     assert.ok(reopened.getTopic(topicId));
     reopened.close();
+  });
+});
+
+test('Topic rename preserves a nested Note reference across adapter reopen', async () => {
+  await fixture(async ({ metadata, topics }) => {
+    const created = await topics.create({ name: 'Fictional Note Identity', paraCategory: 'project', logicalOperationId: randomUUID() });
+    const topicId = created.topic.topicId;
+    const folder = metadata.listSourceReferences(topicId).find((reference) => reference.sourceKind === 'note_folder');
+    const options = { metadata, topicId, noteFolderReferenceId: folder.referenceId };
+    const adapter = new NoteAdapter(options);
+    let reopened;
+    try {
+      const original = (await adapter.create({ path: 'nested/evidence.md', text: 'Fictional durable evidence' })).note;
+      await topics.rename({ topicId, name: 'Fictional Note Identity Renamed', expectedRevision: topics.get(topicId).revision, logicalOperationId: randomUUID() });
+      adapter.close();
+      reopened = new NoteAdapter(options);
+      const note = (await reopened.browse()).find((entry) => entry.path === original.path);
+      assert.deepEqual({ referenceId: note.sourceReference.referenceId, revision: note.revision, path: note.path }, { referenceId: original.sourceReference.referenceId, revision: original.revision, path: original.path });
+      const read = await reopened.read({ path: note.path, referenceId: original.sourceReference.referenceId });
+      assert.equal(read.text, original.text);
+    } finally { adapter.close(); reopened?.close(); }
   });
 });
 
