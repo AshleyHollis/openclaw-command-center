@@ -38,7 +38,7 @@ export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
 });
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 1,
-  sourceDigest: 'sha256:c0e913313d99c92368d608d48b21a2d38924a2811c07d7081b847e0492cfa846',
+  sourceDigest: 'sha256:d4fe44584a584d68b18924edf0c16964b8ac90e9be1c5d6286f8ac0817dcd4fe',
   commit: HOST_COMMIT,
   executableDigest: 'sha256:4f4d29770da4f86dbd0e07cbd4d46deab785905dd89ac719033fcfd866fb5d17',
   contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6'
