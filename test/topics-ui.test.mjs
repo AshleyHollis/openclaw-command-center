@@ -38,6 +38,19 @@ test('Topic mutation route is POST-only, closed, size-bounded, and sanitizes fai
   assert.deepEqual(Object.keys(applied.body.result.value.destination).sort(), ['activeGroups', 'archived', 'nextCursor', 'provisioning', 'recovery', 'retired']);
 });
 
+test('native Topic creation forwards authenticated HTTP dispatch without requiring browser Session adoption', async () => {
+  const topicId = randomUUID();
+  let dispatcher;
+  const service = { topics: {
+    async create(input, runtime) { dispatcher = runtime?.gatewayRequest; return { status: 'applied', topicId: input.topicId }; },
+    listDestination() { return { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] }; }
+  } };
+  const response = await invokeRoute({ service, body: { schemaVersion: 1, action: 'create', topicId, logicalOperationId: randomUUID(), name: 'Native Topic', paraCategory: 'project' } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.result.value.topicId, topicId);
+  assert.equal(typeof dispatcher, 'function');
+});
+
 test('one-step restore rejects a stale caller revision before regenerating its preview', async () => {
   let previews = 0;
   const service = { topics: {
@@ -169,21 +182,27 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
       globalThis.__confirmations = [];
       globalThis.confirm = () => { throw new Error('Native confirm is unavailable.'); };
       const destination = () => ({ activeGroups: { project: [topic('active', 'Active Topic', 'project'), topic('long-active', longName, 'project'), ...(globalThis.__created ? [topic('created', 'Created Topic', 'project')] : [])], area: [], resource: [] }, provisioning: [topic('provisioning', 'Provisioning Topic', 'area', 'provisioning')], recovery: [recoveryTopic], archived: [topic('archived', 'Archived Topic', 'archive')] });
-      globalThis.fetch = async (_url, options) => {
+      globalThis.fetch = async () => { throw new Error('Private HTTP must use the parent relay.'); };
+      globalThis.__relayHttpFixture = async (_url, options) => {
         const body = JSON.parse(options.body); globalThis.__calls.push({ method: `http:${body.action}`, params: body });
         if (body.action === 'create') globalThis.__created = true;
         const preview = { structuralChangeId: '44444444-4444-4444-8444-444444444444', digest: 'sha256:preview', expectedRevisions: [{ source: 'topic', id: body.topicId, revision: 1 }], changes: [], commitments: [] };
         return { ok: true, async json() { return body.action.endsWith('.preview') ? { status: 'applied', result: { preview } } : { status: 'applied', result: { destination: destination() } }; } };
       };
-      window.addEventListener('message', (event) => {
+      window.addEventListener('message', async (event) => {
         if (event.data?.type !== 'openclaw:capability-bridge-send') return;
         const payload = event.data.payload;
         if (payload.type === 'openclaw:capability-bridge-hello') {
-          window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'sessions.create', 'ui.session.navigateResolved'] } }, '*');
+          window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'sessions.create', 'ui.session.navigateResolved', 'ui.http.get', 'ui.http.post'] } }, '*');
           return;
         }
         if (payload.type !== 'openclaw:capability-bridge-request') return;
         globalThis.__calls.push({ method: payload.method, params: payload.params, operationId: payload.operationId });
+        if (payload.method === 'ui.http.post') {
+          const response = await globalThis.__relayHttpFixture(payload.params.path, { body: payload.params.body });
+          window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result: { status: 200, body: JSON.stringify(await response.json()) } } }, '*');
+          return;
+        }
         const result = payload.method.endsWith('sources.status') ? { result: { schemaVersion: 1, mode: 'ready', unavailableCapabilities: [] } } : payload.method === 'sessions.create' ? { result: { key: `agent:main:dashboard:bridge-fictional-${payload.operationId}`, sessionId: `session-${payload.operationId}`, revision: '1' } } : payload.method.endsWith('.list') ? { result: destination() } : payload.method.endsWith('search.query') ? { result: { notes: { results: [] }, conversations: { results: [] } } } : { result: {} };
         window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: payload.requestId, result } }, '*');
       });
@@ -217,7 +236,7 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
       return ['http:create', 'provisioning.retry', 'provisioning.rollback', 'http:rename', 'recategorize.preview', 'archive.preview', 'http:restore', 'search.query', 'recovery.verify', 'recovery.relink', 'recovery.replace-session']
         .every((fragment) => methods.some((method) => method.includes(fragment)))
         && globalThis.__confirmations.some((message) => message.includes('Disable and retain every active Reminder and scheduled operation'));
-    });
+    }, undefined, { timeout: 90_000 }); // This batch now shares the host's 12 writes/minute relay budget.
     const methods = await page.evaluate(() => globalThis.__calls.map((call) => call.method));
     assert.equal(methods.filter((method) => method === 'http:create').length, 1);
     await page.evaluate(() => {

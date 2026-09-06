@@ -26,7 +26,7 @@ test('closing a Conversation retains a keyboard path to its filter during asynch
           workspace.mobileSection = 'conversations';
           setWorkspaceVisible(true);
           selectMobileSection('conversations');
-          globalThis.fetch = async () => { await new Promise((resolve) => { window.__releaseClose = resolve; }); extra.status = 'closed'; return { ok: true, async json() { return { result: {} }; } }; };
+          relayHttp = async () => { await new Promise((resolve) => { window.__releaseClose = resolve; }); extra.status = 'closed'; return { ok: true, async json() { return { result: {} }; } }; };
           bridgeRequest = async (method) => ({ result: method === 'command-center.v1.sessions.browse' ? { conversations: [primary, extra].filter((item) => document.querySelector('#conversation-view').value === 'closed' ? item.status === 'closed' : item.status === 'open') } : { messages: [] } });
           renderConversations();
         });

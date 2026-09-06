@@ -15,7 +15,7 @@ function topicName(topic) { return typeof topic?.name === 'string' && topic.name
 function reminderDueAt(row) {
   const job = row?.job ?? row;
   if (job?.schedule?.kind === 'at') return dateMs(job.schedule.at);
-  return dateMs(job?.nextRunAtMs);
+  return dateMs(job?.state?.nextRunAtMs);
 }
 
 function publicReminder(row, topic, dueAtMs, timeZone = 'UTC') {
@@ -98,7 +98,14 @@ export async function projectDashboard({ sourceService, attentionService, metada
   const attentionResult = typeof sourceService?.attentionList === 'function'
     ? await sourceService.attentionList({ schemaVersion: 1 })
     : attentionService?.list?.({ schemaVersion: 1 }) ?? { episodes: [], inProgress: [] };
-  const active = asArray(attentionResult?.episodes).filter((episode) => episode?.state === 'Active' && (episode.severity !== 'Routine' || episode.sourceCapabilityId === 'topic-review' || episode.sourceCapabilityId === 'reminders' && episode.evidenceFacts?.reminderDue === true)).map(compactEpisode);
+  // Attention's owner admits Routine monitors too. Keep Dashboard's quieter
+  // presentation, but never hide an approval or invent its decision actions.
+  const active = asArray(attentionResult?.episodes).filter((episode) => episode?.state === 'Active' && (
+    episode.severity !== 'Routine' || episode.sourceKind === 'approval'
+    || asArray(episode.actions).some((action) => ['approval.approve', 'approval.reject'].includes(action.actionId))
+    || episode.sourceCapabilityId === 'topic-review'
+    || episode.sourceCapabilityId === 'reminders' && episode.evidenceFacts?.reminderDue === true
+  )).map(compactEpisode);
   const inProgress = asArray(attentionResult?.inProgress).filter((episode) => episode?.state === 'Action running').map((episode) => Object.freeze({ ...compactEpisode(episode), actions: [] }));
   const topicById = new Map(topics.map((topic) => [topic.topicId, topic]));
   const reminders = await listReminderRows({ sourceService, metadata, topics });
@@ -121,17 +128,15 @@ export async function projectDashboard({ sourceService, attentionService, metada
   comingUp.sort((left, right) => left.dueAt.localeCompare(right.dueAt) || left.context.localeCompare(right.context));
   const activity = await activityPage({ sourceService, attentionService, metadata, offset: activityOffset, limit: activityLimit, navigationResolver });
   const settings = typeof notificationSettings === 'function' ? await notificationSettings() : notificationSettings;
+  const visibleAttention = Object.freeze(active.filter((episode) => {
+    const dueAtMs = dateMs(episode.evidence?.dueAt ?? episode.evidenceFacts?.dueAt);
+    return !episode.sourceReferenceId || !Number.isSafeInteger(dueAtMs) || !futureOccurrenceKeys.has(`${episode.sourceReferenceId}:${dueAtMs}`);
+  }));
   return Object.freeze({
     schemaVersion: 1,
     serverTime: new Date(serverTimeMs).toISOString(),
-    attention: Object.freeze(active.filter((episode) => {
-      const dueAtMs = dateMs(episode.evidence?.dueAt ?? episode.evidenceFacts?.dueAt);
-      return !episode.sourceReferenceId || !Number.isSafeInteger(dueAtMs) || !futureOccurrenceKeys.has(`${episode.sourceReferenceId}:${dueAtMs}`);
-    })),
-    attentionBadgeCount: active.filter((episode) => {
-      const dueAtMs = dateMs(episode.evidence?.dueAt ?? episode.evidenceFacts?.dueAt);
-      return !episode.sourceReferenceId || !Number.isSafeInteger(dueAtMs) || !futureOccurrenceKeys.has(`${episode.sourceReferenceId}:${dueAtMs}`);
-    }).length,
+    attention: visibleAttention,
+    attentionBadgeCount: visibleAttention.length,
     inProgress: Object.freeze(inProgress),
     comingUp: Object.freeze(comingUp),
     topics: Object.freeze(topics.map((topic) => Object.freeze({ topicId: topic.topicId, name: topicName(topic), paraCategory: topic.paraCategory }))),

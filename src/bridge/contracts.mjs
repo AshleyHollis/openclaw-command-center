@@ -1,8 +1,12 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
+import { historyResultSchema } from './history-contracts.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { validateScheduleDeclaration, validateScheduleUpdatePatch } from '../sources/scheduler-input.mjs';
 
 export const READ_METHODS = Object.freeze([
+  'command-center.v1.histories.list',
+  'command-center.v1.histories.read',
+  'command-center.v1.histories.attachment-read',
   'command-center.v1.sources.status',
   'command-center.v1.migration.status',
   'command-center.v1.migration.review-failures',
@@ -109,6 +113,7 @@ function parameterSchema(field, method) {
 }
 
 function actionResultSchema(method) {
+  if (historyResultSchema(method)) return historyResultSchema(method);
   if (method === 'command-center.v1.search.query') {
     const sourceReference = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({
       version: { const: 1 }, referenceId: { type: 'string' }, topicId: { type: 'string' }, sourceSystem: { type: 'string' }, sourceKind: { type: 'string' }, externalSourceId: { type: 'string' }, observedRevision: { type: ['string', 'null'] }, createdAt: { type: ['string', 'null'] }, updatedAt: { type: ['string', 'null'] }
@@ -279,6 +284,9 @@ function actionResultSchema(method) {
   });
 }
 const required = Object.freeze({
+  'command-center.v1.histories.list': [],
+  'command-center.v1.histories.read': ['historyId'],
+  'command-center.v1.histories.attachment-read': ['historyId', 'messageId', 'attachmentId', 'offset'],
   'command-center.v1.migration.status': [],
   'command-center.v1.migration.review-failures': [],
   'command-center.v1.migration.resume': ['expectedMigrationRevision'],
@@ -294,7 +302,7 @@ const required = Object.freeze({
   'command-center.v1.topics.recovery-replace': ['topicId', 'referenceId', 'expectedRevision', 'expectedSourceRevision'],
   'command-center.v1.topics.get': ['topicId'],
   'command-center.v1.topics.recovery.status': ['topicId', 'referenceId'],
-  'command-center.v1.topics.create': ['topicId', 'name', 'paraCategory', 'authoritativeSession'],
+  'command-center.v1.topics.create': ['topicId', 'name', 'paraCategory'],
   'command-center.v1.topics.replace-primary-session': ['topicId', 'expectedRevision'],
   'command-center.v1.topics.provisioning.retry': ['topicId', 'expectedRevision'],
   'command-center.v1.topics.provisioning.rollback': ['topicId', 'expectedRevision'],
@@ -344,6 +352,9 @@ const required = Object.freeze({
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit']
 });
 const fields = Object.freeze({
+  'command-center.v1.histories.list': ['topicId'],
+  'command-center.v1.histories.read': ['historyId', 'offset', 'limit'],
+  'command-center.v1.histories.attachment-read': ['historyId', 'messageId', 'attachmentId', 'offset', 'observedRevision'],
   'command-center.v1.migration.status': [],
   'command-center.v1.migration.review-failures': [],
   'command-center.v1.migration.resume': ['expectedMigrationRevision'],

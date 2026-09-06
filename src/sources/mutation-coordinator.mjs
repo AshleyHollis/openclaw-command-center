@@ -15,6 +15,7 @@ export class MutationCoordinator {
     this.journal = journal ?? new OperationJournal({ metadata });
     this.now = now ?? (() => new Date().toISOString());
     this.requestIdFactory = requestIdFactory ?? ((base) => base);
+    this.inFlight = new Map();
   }
 
   async read({ operationKind, requestId = 'read', read }) {
@@ -25,12 +26,59 @@ export class MutationCoordinator {
     }
   }
 
-  async mutate({ operationKind, requestId, logicalOperationId, topicId = null, referenceId = null, intent, intentDigest, idempotent = false, execute, reconcile }) {
-    nonBlank(operationKind, 'operationKind');
-    nonBlank(requestId, 'requestId');
+  async mutate(input) {
+    return this.#coordinate(input, false);
+  }
+
+  /** Verify only: even a proven absent effect must never enter execute. */
+  async reconcile(input) {
+    return this.#coordinate(input, true);
+  }
+
+  async #coordinate(input, reconcileOnly) {
+    nonBlank(input.operationKind, 'operationKind');
+    nonBlank(input.requestId, 'requestId');
+    const logicalId = assertLogicalOperationId(input.logicalOperationId);
+    const digest = input.intentDigest ?? digestIntent({ action: input.operationKind, topicId: input.topicId ?? null, referenceId: input.referenceId ?? null, input: input.intent ?? {} });
+    const running = this.inFlight.get(logicalId);
+    if (running) {
+      if (running.digest !== digest || running.kind !== input.operationKind) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
+      if (reconcileOnly || running.reconcileOnly) {
+        await running.promise.catch(() => {});
+        return this.#coordinate(input, reconcileOnly);
+      }
+      const result = await running.promise;
+      return Object.freeze({ ...result, requestId: input.requestId });
+    }
+    // Reserve before execution can yield: a duplicate must not reconcile a
+    // still-running effect and mistake its not-yet-published state for absence.
+    const promise = Promise.resolve().then(() => this.#performMutation({ ...input, intentDigest: digest, reconcileOnly })).finally(() => this.inFlight.delete(logicalId));
+    this.inFlight.set(logicalId, { digest, kind: input.operationKind, reconcileOnly, promise });
+    return promise;
+  }
+
+  async #performMutation({ operationKind, requestId, logicalOperationId, topicId = null, referenceId = null, intent, intentDigest, idempotent = false, execute, reconcile, reconcileOnly = false }) {
     const logicalId = assertLogicalOperationId(logicalOperationId);
     const digest = intentDigest ?? digestIntent({ action: operationKind, topicId, referenceId, input: intent ?? {} });
     const existing = this.journal.get(logicalId);
+    if (reconcileOnly) {
+      if (existing && (existing.intentDigest !== digest || existing.operationKind !== operationKind)) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
+      if (typeof reconcile !== 'function') throw sourceError('unknown', 'Authoritative reconciliation is unavailable.');
+      const verified = await reconcile({ requestId, logicalOperationId: logicalId, intentDigest: digest, retry: true,
+        applied: existing?.state === 'applied', pending: existing?.state === 'pending', resultIdentity: existing?.resultIdentity ?? null,
+        observedRevision: existing?.observedRevision ?? null, operationCreatedAt: existing?.createdAt });
+      const outcome = reconciliationOutcome(verified);
+      // A previously witnessed effect cannot become absent: its source may have
+      // moved or been replaced. Preserve the receipt and require recovery.
+      if (outcome === 'not-applied' && existing?.state === 'applied') throw sourceError('unknown', 'The applied mutation result is no longer authoritatively recoverable.');
+      const value = verified?.value ?? verified?.result ?? null;
+      if (existing || outcome === 'applied') this.journal.record({ ...existing, logicalOperationId: logicalId, transportRequestId: requestId,
+        intentDigest: digest, operationKind, state: outcome, resultStatus: outcome,
+        ...(outcome === 'applied' ? { resultIdentity: identityOf(value), observedRevision: revisionOf(value) } : {}),
+        createdAt: existing?.createdAt ?? this.now(), updatedAt: this.now() });
+      if (!['applied', 'not-applied'].includes(outcome)) throw sourceError(outcome, 'Authoritative reconciliation could not confirm this operation.', { logicalOperationId: logicalId, requestId });
+      return this.wrapResult(outcome, value, { logicalOperationId: logicalId, transportRequestId: requestId });
+    }
     if (existing) {
       if (existing.intentDigest !== digest) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
       if (existing.state === 'applied') {

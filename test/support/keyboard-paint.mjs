@@ -1,7 +1,12 @@
 /** Browser-evaluated synchronization before collecting keyboard focus evidence. */
 export async function afterKeyboardPaint(target) {
   const view = target.ownerDocument.defaultView;
-  const focused = target.ownerDocument.activeElement;
+  const activeElement = () => {
+    let active = target.ownerDocument.activeElement;
+    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    return active;
+  };
+  const focused = activeElement();
   const before = { tag: focused?.tagName, id: focused?.id, className: typeof focused?.className === 'string' ? focused.className : undefined };
   // A render opportunity starts transitions; it does not prove they completed,
   // even at reduced-motion durations under a throttled evaluator.
@@ -17,5 +22,5 @@ export async function afterKeyboardPaint(target) {
     } finally { view.clearTimeout(timer); }
     await new Promise((resolve) => view.requestAnimationFrame(() => view.requestAnimationFrame(resolve)));
   }
-  return { before, connected: Boolean(focused?.isConnected), unchanged: target.ownerDocument.activeElement === focused };
+  return { before, connected: Boolean(focused?.isConnected), unchanged: activeElement() === focused };
 }

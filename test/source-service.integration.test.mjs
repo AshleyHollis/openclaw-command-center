@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { registerBridgeMethods } from '../src/bridge/register.mjs';
+import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/register.mjs';
+import { readNativeNote } from '../src/native-ui/note-read.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
 import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
@@ -126,6 +127,40 @@ test('conversation creation verifies the exact Primary Session and records recov
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('native Conversation creation uses only its request-local Gateway and retains exact Primary ownership', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-native-session-create-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
+    const topicId = randomUUID();
+    const primaryKey = 'agent:main:dashboard:fictional-primary';
+    const createdKey = 'agent:main:dashboard:fictional-created';
+    metadata.createTopic({ topicId, paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'fictional-primary', topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: primaryKey, observedRevision: null });
+    metadata.setSessionState({ referenceId: 'fictional-primary', sessionId: 'fictional-primary-id', status: 'open', isPrimary: true });
+    const entries = new Map([[primaryKey, { sessionId: 'fictional-primary-id', updatedAt: 1 }]]);
+    const sessionStore = { listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })) };
+    const service = createAuthoritativeSourceService({ metadata, sessionStore, capabilities: { sessions: true } });
+    const gatewayRequest = async (method) => {
+      if (method === 'sessions.create') {
+        entries.set(createdKey, { sessionId: 'fictional-created-id', updatedAt: 2 });
+        return { key: createdKey, sessionId: 'fictional-created-id', entry: { updatedAt: 2 } };
+      }
+      if (method === 'sessions.list') return { sessions: sessionStore.listSessionEntries() };
+      throw new Error(`Unexpected method ${method}`);
+    };
+    const result = await service.sessionsCreate({ topicId, label: 'Native Conversation', logicalOperationId: randomUUID() }, { gatewayRequest });
+    assert.equal(result.value.sourceReference.externalSourceId, createdKey);
+    assert.equal(result.value.sessionId, 'fictional-created-id');
+    assert.equal(metadata.getSessionState('fictional-primary').isPrimary, true);
+    await assert.rejects(() => service.sessionsCreate({ topicId, label: 'Detached request', logicalOperationId: randomUUID() }), { code: 'capability-unavailable' });
+    assert.equal(entries.size, 2);
+    entries.delete(primaryKey);
+    await assert.rejects(() => service.sessionsCreate({ topicId, label: 'Missing Primary', logicalOperationId: randomUUID() }, { gatewayRequest }), { code: 'source-recovery' });
+    assert.equal(entries.size, 1);
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('public source service writes durable authoritative Markdown and keeps metadata free of content', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-integration-'));
   const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-vault-'));
@@ -155,6 +190,12 @@ test('public source service writes durable authoritative Markdown and keeps meta
     const compressible = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/compressible.md', text: 'z'.repeat(2 * 1024 * 1024), logicalOperationId: randomUUID() });
     const compressed = await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', referenceId: compressible.value.note.sourceReference.referenceId, path: 'nested/compressible.md', offset: 0 });
     assert.deepEqual({ contentEncoding: compressed.contentEncoding, nextOffset: compressed.nextOffset, totalBytes: compressed.totalBytes, complete: compressed.complete }, { contentEncoding: 'gzip', nextOffset: 2 * 1024 * 1024, totalBytes: 2 * 1024 * 1024, complete: true });
+    const native = await readNativeNote({ signal: new AbortController().signal,
+      request: async (method, input) => ({ result: await invokeBridgeMethod(service, method, input) })
+    }, { topicId: 'topic-integration', referenceId: compressible.value.note.sourceReference.referenceId,
+      path: 'nested/compressible.md', observedRevision: compressed.revision });
+    assert.equal(native.text, 'z'.repeat(2 * 1024 * 1024));
+    assert.equal(native.revision, compressed.revision);
     assert.equal((await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/note.md' })).text, 'authoritative text');
     assert.throws(() => service.analysisRead({ schemaVersion: 1, topicId: 'topic-integration' }), (error) => error.code === 'capability-unavailable');
   } finally {

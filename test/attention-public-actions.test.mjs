@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createAttentionActionHandler } from '../src/attention/http-route.mjs';
 import { createAttentionService } from '../src/attention/service.mjs';
+import { createDashboardService } from '../src/dashboard/service.mjs';
 import { registerBridgeMethods } from '../src/bridge/register.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSourceCapabilityRegistry } from '../src/sources/capabilities.mjs';
@@ -168,15 +169,17 @@ test('production Reminder listing ingests due scheduler evidence into Attention'
   });
 });
 
-test('authenticated Gateway actions expose and consume approval decisions through the same service', async () => {
+for (const sourceKind of ['approval', 'operational']) {
+test(`Dashboard exposes Routine decisions from ${sourceKind} sources through authenticated Gateway actions`, async () => {
   await fixture(async ({ metadata }) => {
     let dispatches = 0;
     let preconditionRevision = 'precondition-1';
     const attention = createAttentionService({ metadata, now: () => '2026-08-23T00:01:00.000Z', operatorId: 'operator-public', host: 'host-public' });
+    try {
     const sources = createSourceCapabilityRegistry({ attention });
     sources.register({
       sourceCapabilityId: 'approval-public',
-      sourceKind: 'approval',
+      sourceKind,
       deriveEvidence: () => ({}),
       preconditionReader: async () => ({ available: true, revision: preconditionRevision }),
       actions: [{
@@ -187,6 +190,12 @@ test('authenticated Gateway actions expose and consume approval decisions throug
       }]
     });
     const created = await sources.ingest(occurrence('approval-public', 'approval-public-1'));
+    sources.register({ sourceCapabilityId: 'routine-monitor', sourceKind: 'operational', actions: [], deriveEvidence: () => ({}) });
+    const routine = await sources.ingest(occurrence('routine-monitor', 'routine-monitor-1', { stableSubjectId: 'routine-monitor' }));
+    assert.equal(attention.list().episodes.some((episode) => episode.episodeId === routine.episode.episodeId), true);
+    const dashboard = createDashboardService({ metadata, attentionService: attention, now: () => '2026-08-23T00:01:00.000Z' });
+    const beforeApproval = await dashboard.get();
+    assert.equal(beforeApproval.attentionBadgeCount, sourceKind === 'approval' ? 1 : 0);
     const registrations = [];
     registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
       attentionAct: (input) => attention.act(input), attentionList: (input) => attention.list(input), attentionGet: (input) => attention.get(input.episodeId),
@@ -203,12 +212,22 @@ test('authenticated Gateway actions expose and consume approval decisions throug
     assert.equal(projectedApproval.target.approvalId, pending[1].result.approval.approvalId);
     assert.deepEqual(projectedApproval.target.disclosure.sideEffects, ['Changes the fictional monitor.']);
     assert.deepEqual(attention.get(created.episode.episodeId).episode.actions.map((action) => action.actionId), ['approval.approve', 'approval.reject', 'topic.open']);
+    const pendingDashboard = await dashboard.get();
+    assert.equal(pendingDashboard.attentionBadgeCount, 1);
+    assert.deepEqual(pendingDashboard.attention.map((episode) => episode.episodeId), [created.episode.episodeId]);
+    assert.equal(pendingDashboard.attention[0].severity, 'Routine');
+    assert.equal(pendingDashboard.attention[0].actions[0].target.approvalId, pending[1].result.approval.approvalId);
+    assert.equal(dispatches, 0);
     const unauthenticated = await invoke({ ...common, logicalOperationId: '74444444-4444-4444-8444-444444444444', actionId: 'approval.approve', approvalId: pending[1].result.approval.approvalId }, false);
     assert.equal(unauthenticated[0], false);
+    assert.equal(dispatches, 0);
     const approved = await invoke({ ...common, logicalOperationId: '75555555-5555-4555-8555-555555555555', actionId: 'approval.approve', approvalId: pending[1].result.approval.approvalId });
     assert.equal(approved[0], true, JSON.stringify(approved));
     assert.equal(approved[1].result.episode.state, 'Resolved');
     assert.equal(dispatches, 1);
+    const resolvedDashboard = await dashboard.get();
+    assert.equal(resolvedDashboard.attentionBadgeCount, 0);
+    assert.deepEqual(resolvedDashboard.attention, []);
     const approvedReplay = await invoke({ ...common, logicalOperationId: '75555555-5555-4555-8555-555555555555', actionId: 'approval.approve', approvalId: pending[1].result.approval.approvalId });
     assert.equal(approvedReplay[0], true);
     assert.equal(approvedReplay[1].result.activity.activityId, approved[1].result.activity.activityId);
@@ -239,7 +258,8 @@ test('authenticated Gateway actions expose and consume approval decisions throug
 
     const revised = await sources.ingest(occurrence('approval-public', 'approval-public-4', { stableSubjectId: 'subject-public-replacement', occurredAt: '2026-08-23T00:02:00.000Z' }));
     assert.equal(revised.episode.revision, 2);
-    assert.deepEqual(attention.get(replaceable.episode.episodeId).episode.actions.map((action) => action.actionId), ['monitor.change']);
+    assert.deepEqual(attention.get(replaceable.episode.episodeId).episode.actions.map((action) => action.actionId), sourceKind === 'approval' ? ['monitor.change'] : ['monitor.change', 'attention.snooze']);
+    assert.equal((await dashboard.get()).attentionBadgeCount, sourceKind === 'approval' ? 1 : 0);
     const evidenceReplacement = await invoke({ ...replacementCommon, expectedEpisodeRevision: 2, logicalOperationId: '7bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', actionId: 'monitor.change' });
     assert.equal(evidenceReplacement[0], true, JSON.stringify(evidenceReplacement));
     assert.equal(evidenceReplacement[1].result.status, 'approval-required');
@@ -254,9 +274,10 @@ test('authenticated Gateway actions expose and consume approval decisions throug
     assert.equal(secondOperator[0], true, JSON.stringify(secondOperator));
     assert.notEqual(secondOperator[1].result.approval.approvalId, firstOperator[1].result.approval.approvalId);
     assert.equal(secondOperator[1].result.approval.operatorId, 'gateway-operator-2');
-    attention.close();
+    } finally { attention.close(); }
   });
 });
+}
 
 test('an enabled future Reminder remains Snoozed during authoritative monitoring', async () => {
   await fixture(async ({ metadata }) => {

@@ -145,7 +145,7 @@ function renderNotificationSettings(settings) {
   }
 }
 async function topicAnalysisRead() {
-  const response = await fetch(TOPIC_ANALYSIS_ROUTE, { credentials: 'omit', headers: { accept: 'application/json' } });
+  const response = await relayHttp(TOPIC_ANALYSIS_ROUTE, { credentials: 'omit', headers: { accept: 'application/json' } });
   const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis is unavailable.'); return value.result ?? value;
 }
 function renderTopicReview(review) {
@@ -189,7 +189,7 @@ function renderTopicReview(review) {
     else { const heading = document.querySelector('#topic-review-heading'); if (heading) { heading.tabIndex = -1; heading.focus(); } }
   }
 }
-async function topicAnalysisAction(action, input = {}) { requireReadyMutation(); const response = await fetch(TOPIC_ANALYSIS_ACTIONS_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: operationId(), ...input }) }); const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis action was refused.'); return value.result ?? value; }
+async function topicAnalysisAction(action, input = {}) { requireReadyMutation(); const response = await relayHttp(TOPIC_ANALYSIS_ACTIONS_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: operationId(), ...input }) }); const value = await response.json(); if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Analysis action was refused.'); return value.result ?? value; }
 async function topicReviewDecision(action, proposal) { const feedback = document.querySelector('#analysis-feedback'); try { await topicAnalysisAction(action, { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision }); feedback.textContent = 'Proposal decision saved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
 async function topicReviewAdjust(proposal) { const feedback = document.querySelector('#analysis-feedback'); if (proposal.operation === 'archive') { feedback.textContent = 'Archive proposals support Approve or Keep as-is.'; return; } const target = proposal.after?.topic ?? proposal.after ?? {}; const initial = proposal.operation === 'create' ? { name: target.name, paraCategory: target.paraCategory } : { paraCategory: target.paraCategory }; const adjustmentJson = await promptUser('Enter the adjusted name/category fields as JSON.', JSON.stringify(initial)); if (!adjustmentJson) return; try { await topicAnalysisAction('proposal.adjust', { proposalId: proposal.proposalId, expectedProposalRevision: proposal.revision, adjustment: JSON.parse(adjustmentJson) }); feedback.textContent = 'Proposal adjustment approved.'; await loadTopicAnalysis(); } catch (error) { feedback.textContent = error.message; } }
 async function loadTopicAnalysis() { try { const value = await topicAnalysisRead(); const settings = value.schedule; if (settings) { topicAnalysisScheduleRevision = settings.revision; for (const [id, item] of [['analysis-enabled', settings.enabled], ['analysis-weekday', String(settings.weekday)]]) { const control = document.querySelector(`#${id}`); if (control) id === 'analysis-enabled' ? control.checked = item : control.value = item; } for (const [id, item] of [['analysis-local-time', settings.localTime], ['analysis-time-zone', settings.timeZone]]) { const control = document.querySelector(`#${id}`); if (control && document.activeElement !== control) control.value = item; } } renderTopicReview(value.review); } catch (error) { const feedback = document.querySelector('#analysis-feedback'); if (feedback) feedback.textContent = error.message || 'Topic Analysis is unavailable.'; } }
@@ -212,7 +212,7 @@ async function saveNotificationSettings(event) {
   };
   if (!event.currentTarget.reportValidity()) return;
   try {
-    const response = await fetch(DASHBOARD_ACTIONS_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'settings.update', logicalOperationId: operationId(), expectedRevision: notificationSettingsRevision, settings }) });
+    const response = await relayHttp(DASHBOARD_ACTIONS_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'settings.update', logicalOperationId: operationId(), expectedRevision: notificationSettingsRevision, settings }) });
     const value = await response.json();
     if (!response.ok || value.status === 'error') throw new Error(value.message || 'Notification settings were refused.');
     feedback.textContent = 'Notification settings saved.';
@@ -514,7 +514,7 @@ window.addEventListener('message', (event) => {
     clearTimeout(bridgeTimer);
     const methods = new Set(Array.isArray(message.methods) ? message.methods : []); advertisedBridgeMethods = methods;
     for (const key of Object.keys(bridgeLimits)) if (Number.isInteger(message.limits?.[key]) && message.limits[key] > 0) bridgeLimits[key] = Math.min(bridgeLimits[key], message.limits[key]);
-    const required = [...(hasTopicsDestination ? ['command-center.v1.topics.list'] : []), 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.notes.browse', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigateResolved'];
+    const required = [...(hasTopicsDestination ? ['command-center.v1.topics.list'] : []), 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.notes.browse', 'command-center.v1.search.query', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', 'ui.session.navigateResolved', 'ui.http.get', 'ui.http.post'];
     if (message.upgradeRequired === true || !required.every((method) => methods.has(method))) rejectBridgeReady(new Error('Command Center requires unavailable host capabilities.'));
     else resolveBridgeReady();
     return;
@@ -531,6 +531,18 @@ async function bridgeRequest(method, params, mutationOperationId = params?.logic
   await bridgeReady;
   if (bridgeQueue.length >= 128) throw Object.assign(new Error('Host request queue is full. Retry the unchanged action.'), { code: 'RATE_LIMITED', terminal: false });
   return new Promise((resolve, reject) => { bridgeQueue.push({ method, params: capturedParams, operationId: mutationOperationId, deadline: Date.now() + BRIDGE_OPERATION_BUDGET_MS, retries: 0, resolve, reject }); drainBridgeQueue(); });
+}
+// Private data and actions cross the authenticated parent; the opaque frame
+// never receives a credential or issues its own private HTTP request.
+async function relayHttp(path, options = {}) {
+  const post = options.method === 'POST';
+  const body = options.body;
+  const input = post ? JSON.parse(body) : undefined;
+  // The domain operation spans native preparation and HTTP completion. Each
+  // transport step needs its own stable ID while the body keeps the domain ID.
+  const id = post ? `http:${path.replace('/plugins/command-center/api/', '')}:${input.action ?? 'rebuild'}:${input.logicalOperationId}` : undefined;
+  const result = await bridgeRequest(post ? 'ui.http.post' : 'ui.http.get', { path, ...(post ? { body } : {}) }, id);
+  return { ok: result.status >= 200 && result.status < 300, status: result.status, json: async () => JSON.parse(result.body) };
 }
 async function sendBridgeRequest(job) {
   const { method, params, operationId: mutationOperationId } = job;
@@ -564,7 +576,7 @@ async function rebuildTopicSearchProjection(topicId) {
   requireReadyMutation();
   const logicalOperationId = operationId();
   await bridgeRequest('command-center.v1.search.prepare-rebuild', { schemaVersion: 1, topicId, logicalOperationId });
-  const response = await fetch(SEARCH_REBUILD_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId }) });
+  const response = await relayHttp(SEARCH_REBUILD_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId }) });
   const value = await response.json();
   if (!response.ok || value.status === 'error') throw new Error(value.message || 'Topic Search rebuild was refused.');
   return value;
@@ -592,7 +604,7 @@ async function mutate(action, input) {
     : input;
   let response; let value;
   try {
-    response = await fetch(HTTP_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId, ...request }) });
+    response = await relayHttp(HTTP_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId, ...request }) });
     value = await response.json();
   } catch (error) { throw Object.assign(error instanceof Error ? error : new Error('The Topic action response was unavailable.'), { terminal: false }); }
   if (!response.ok || value.status === 'error') throw Object.assign(new Error(value.message || 'Topic action failed.'), { code: value.code, terminal: !['unknown', 'unavailable'].includes(value.code), destination: value.result?.destination });
@@ -734,7 +746,7 @@ async function pageAction(action, input) {
   requireReadyMutation();
   let response; let value;
   try {
-    response = await fetch(PAGE_ACTION_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: input.logicalOperationId ?? operationId(), ...input }) });
+    response = await relayHttp(PAGE_ACTION_ROUTE, { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action, logicalOperationId: input.logicalOperationId ?? operationId(), ...input }) });
     value = await response.json();
   } catch (error) { throw Object.assign(error instanceof Error ? error : new Error('The Topic Page action response was unavailable.'), { terminal: false }); }
   if (!response.ok || value.status === 'error') throw Object.assign(new Error(value.message || 'The Topic Page action was refused.'), { code: value.code, terminal: !['unknown', 'unavailable'].includes(value.code) });

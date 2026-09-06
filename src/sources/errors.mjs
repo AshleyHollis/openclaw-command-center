@@ -13,7 +13,7 @@ export function sourceError(code, message, details = {}) {
 
 export function errorResult(error, { requestId = null, logicalOperationId = null } = {}) {
   const trusted = error instanceof SourceServiceError;
-  const allowedCodes = new Set(['invalid-request', 'unsupported-version', 'unauthenticated', 'capability-unavailable', 'source-recovery', 'unsafe-path', 'invalid-path', 'not-found', 'cross-topic', 'conflict', 'intent-mismatch', 'not-applied', 'unknown', 'recovery-only', 'unavailable']);
+  const allowedCodes = new Set(['invalid-request', 'unsupported-version', 'unauthenticated', 'capability-unavailable', 'feature-unavailable', 'source-recovery', 'unsafe-path', 'invalid-path', 'not-found', 'cross-topic', 'conflict', 'intent-mismatch', 'not-applied', 'unknown', 'recovery-only', 'unavailable']);
   const code = trusted && allowedCodes.has(error.code) ? error.code : 'unavailable';
   const status = ['conflict', 'not-applied', 'unknown', 'unavailable', 'recovery-only'].includes(code) ? code : 'unavailable';
   const safeMessages = {
@@ -29,6 +29,7 @@ export function errorResult(error, { requestId = null, logicalOperationId = null
       status,
       requestId,
       logicalOperationId,
+      ...(code === 'feature-unavailable' ? { retryable: false } : {}),
       ...(trusted && error.currentRevision !== undefined ? { currentRevision: error.currentRevision } : {}),
       ...(trusted && error.currentPath !== undefined ? { currentPath: error.currentPath } : {}),
       ...(trusted && error.capability !== undefined ? { capability: error.capability } : {})

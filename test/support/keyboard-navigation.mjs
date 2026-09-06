@@ -2,24 +2,67 @@ import assert from 'node:assert/strict';
 import { hasKeyboardFocusIndicator } from '../../src/browser-evidence.mjs';
 import { afterKeyboardPaint } from './keyboard-paint.mjs';
 
-function readKeyboardFocus(target) {
-      const visible = (node) => {
-        const style = getComputedStyle(node);
-        return !node.disabled && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
-      };
-      const tabbable = (node) => visible(node) && (node.tabIndex >= 0 || ['auto', 'scroll'].includes(getComputedStyle(node).overflowY));
-      const tabbables = [...document.querySelectorAll('*')].filter(tabbable);
-      const active = document.activeElement;
-      window.__acceptanceKeyboardIds ??= new WeakMap();
-      window.__acceptanceKeyboardNextId ??= 0;
-      if (active && !window.__acceptanceKeyboardIds.has(active)) window.__acceptanceKeyboardIds.set(active, ++window.__acceptanceKeyboardNextId);
-      const nativeComposite = active instanceof HTMLInputElement && ['date', 'datetime-local', 'month', 'time', 'week'].includes(active.type);
-      const style = active ? getComputedStyle(active) : null;
-      const accessibleName = active?.getAttribute('aria-label')?.trim() || (active?.getAttribute('aria-labelledby') ?? '').split(/\s+/u).map((id) => document.getElementById(id)?.textContent?.trim() ?? '').join(' ').trim() || active?.labels?.[0]?.textContent?.trim() || active?.textContent?.trim() || active?.getAttribute('title')?.trim();
-      const baseline = window.__acceptanceKeyboardBaselines?.get(active);
-      const editableText = active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement && ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(active.type);
-      const nativeTextCaret = editableText && !active.readOnly && style?.caretColor !== 'transparent' && style?.caretColor !== 'rgba(0, 0, 0, 0)';
-      return { accessibleName, identity: window.__acceptanceKeyboardIds.get(active), body: active === document.body, disabled: Boolean(active?.disabled), index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: Boolean(active?.closest?.('[hidden], [inert]')) || active?.getClientRects?.().length === 0, outline: parseFloat(style?.outlineWidth ?? '0') > 0 && !['transparent', 'rgba(0, 0, 0, 0)'].includes(style?.outlineColor) ? style?.outlineStyle : 'none', focusVisible: Boolean(active?.matches(':focus-visible')), boxShadow: style?.boxShadow, baselineBoxShadow: baseline?.boxShadow, backgroundColor: style?.backgroundColor, baselineBackgroundColor: baseline?.backgroundColor, nativeTextCaret, nativeComposite, escapedDialog: Boolean(target?.closest?.('dialog[open]')) && !active?.closest?.('dialog[open]') };
+function readKeyboardFocus(target, prepare = false) {
+  const parent = (node) => node?.assignedSlot ?? node?.parentElement ?? node?.getRootNode()?.host ?? null;
+  const ancestor = (node, selector) => {
+    for (let current = node; current; current = parent(current)) if (current.matches?.(selector)) return current;
+    return null;
+  };
+  const visible = (node) => {
+    const style = getComputedStyle(node);
+    return !node.matches(':disabled') && node.getClientRects().length > 0 && style.display !== 'none'
+      && !['hidden', 'collapse'].includes(style.visibility) && !ancestor(node, '[hidden], [inert]');
+  };
+  const tabbable = (node) => visible(node) && (node.tabIndex >= 0 || ['auto', 'scroll'].includes(getComputedStyle(node).overflowY));
+  const tabbables = [];
+  const visit = (node) => {
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    if (tabbable(node)) tabbables.push(node);
+    // Hosts and slots establish composed order; do not also walk undistributed
+    // light children or replaced slot fallback. Closed roots remain opaque.
+    if (node.shadowRoot) {
+      if (node.hasAttribute('tabindex') && node.tabIndex < 0) return;
+      for (const child of node.shadowRoot.children) visit(child);
+    } else if (node instanceof HTMLSlotElement) {
+      for (const child of node.assignedElements({ flatten: true })) visit(child);
+    } else {
+      for (const child of node.children) visit(child);
+    }
+  };
+  visit(document.documentElement);
+  let active = document.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  if (prepare) {
+    const previousBaselines = window.__acceptanceKeyboardBaselines;
+    window.__acceptanceKeyboardBaselines = new WeakMap(tabbables.map((node) => {
+      const style = getComputedStyle(node);
+      return [node, node === active && previousBaselines?.has(node) ? previousBaselines.get(node) : { boxShadow: style.boxShadow, backgroundColor: style.backgroundColor }];
+    }));
+    const hiddenAncestor = ancestor(target, '[hidden], [inert]');
+    return {
+      count: tabbables.length,
+      current: tabbables.indexOf(active),
+      target: tabbables.indexOf(target),
+      inDialog: Boolean(ancestor(target, 'dialog[open]')),
+      targetState: {
+        name: target.id || target.getAttribute('aria-label') || target.getAttribute('name') || target.tagName,
+        disabled: target.matches(':disabled'), tabIndex: target.tabIndex, rects: target.getClientRects().length,
+        hiddenAncestor: hiddenAncestor?.id || hiddenAncestor?.tagName || null,
+        display: getComputedStyle(target).display, visibility: getComputedStyle(target).visibility
+      }
+    };
+  }
+  window.__acceptanceKeyboardIds ??= new WeakMap();
+  window.__acceptanceKeyboardNextId ??= 0;
+  if (active && !window.__acceptanceKeyboardIds.has(active)) window.__acceptanceKeyboardIds.set(active, ++window.__acceptanceKeyboardNextId);
+  const nativeComposite = active instanceof HTMLInputElement && ['date', 'datetime-local', 'month', 'time', 'week'].includes(active.type);
+  const style = active ? getComputedStyle(active) : null;
+  const accessibleName = active?.getAttribute('aria-label')?.trim() || (active?.getAttribute('aria-labelledby') ?? '').split(/\s+/u).map((id) => active.getRootNode().getElementById(id)?.textContent?.trim() ?? '').join(' ').trim() || active?.labels?.[0]?.textContent?.trim() || active?.textContent?.trim() || active?.getAttribute('title')?.trim();
+  const baseline = window.__acceptanceKeyboardBaselines?.get(active);
+  const editableText = active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement && ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(active.type);
+  const nativeTextCaret = editableText && !active.readOnly && style?.caretColor !== 'transparent' && style?.caretColor !== 'rgba(0, 0, 0, 0)';
+  const targetDialog = ancestor(target, 'dialog[open]');
+  return { accessibleName, identity: window.__acceptanceKeyboardIds.get(active), body: active === document.body, disabled: Boolean(active?.matches(':disabled')), index: tabbables.indexOf(active), name: active?.id || active?.getAttribute?.('aria-label') || active?.tagName || 'unknown', target: active === target, hidden: !active || !visible(active), outline: parseFloat(style?.outlineWidth ?? '0') > 0 && !['transparent', 'rgba(0, 0, 0, 0)'].includes(style?.outlineColor) ? style?.outlineStyle : 'none', focusVisible: Boolean(active?.matches(':focus-visible')), boxShadow: style?.boxShadow, baselineBoxShadow: baseline?.boxShadow, backgroundColor: style?.backgroundColor, baselineBackgroundColor: baseline?.backgroundColor, nativeTextCaret, nativeComposite, escapedDialog: Boolean(targetDialog) && ancestor(active, 'dialog[open]') !== targetDialog };
 }
 
 function requireVisibleFocus(state) {
@@ -38,39 +81,13 @@ export async function assertKeyboardFocus(frame) {
 export async function tabTo(locator, { reverse = false, limit } = {}) {
   await locator.waitFor({ state: 'visible' });
   const page = locator.page();
-  const order = await locator.evaluate((target) => {
-    const visible = (node) => {
-      const style = getComputedStyle(node);
-      return !node.disabled && node.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden], [inert]');
-    };
-    // Use native tabIndex semantics, including implicit controls such as summary.
-    const tabbable = (node) => visible(node) && (node.tabIndex >= 0 || ['auto', 'scroll'].includes(getComputedStyle(node).overflowY));
-    const tabbables = [...document.querySelectorAll('*')].filter(tabbable);
-    const previousBaselines = window.__acceptanceKeyboardBaselines;
-    window.__acceptanceKeyboardBaselines = new WeakMap(tabbables.map((node) => {
-      const style = getComputedStyle(node);
-      return [node, node === document.activeElement && previousBaselines?.has(node) ? previousBaselines.get(node) : { boxShadow: style.boxShadow, backgroundColor: style.backgroundColor }];
-    }));
-    return {
-      count: tabbables.length,
-      current: tabbables.indexOf(document.activeElement),
-      target: tabbables.indexOf(target),
-      inDialog: Boolean(target.closest('dialog[open]')),
-      targetState: {
-        name: target.id || target.getAttribute('aria-label') || target.getAttribute('name') || target.tagName,
-        disabled: Boolean(target.disabled),
-        tabIndex: target.tabIndex,
-        rects: target.getClientRects().length,
-        hiddenAncestor: target.closest('[hidden], [inert]')?.id || target.closest('[hidden], [inert]')?.tagName || null,
-        display: getComputedStyle(target).display,
-        visibility: getComputedStyle(target).visibility
-      }
-    };
-  });
+  const order = await locator.evaluate(readKeyboardFocus, true);
   assert.notEqual(order.target, -1, `Requested keyboard target is absent from the sequential focus order: ${JSON.stringify(order.targetState)}`);
   if (order.current === order.target) {
     await locator.evaluate(afterKeyboardPaint);
-    requireVisibleFocus(await locator.evaluate(readKeyboardFocus));
+    const state = await locator.evaluate(readKeyboardFocus);
+    requireVisibleFocus(state);
+    assert.equal(state.target, true, 'Focus must remain on the exact requested keyboard target after paint.');
     return;
   }
   if (order.current < 0) await locator.evaluate((target) => {

@@ -133,10 +133,13 @@ test('Session create/history/send use exact linked keys without transcript inher
   await assert.rejects(() => adapter.history({ referenceId: 'missing' }), /exact linked Session/i);
 });
 
-test('Session create reads the pinned host entry identity and revision shape', async () => {
+test('Session create reads the exact latest entry even when it is outside the first catalog page', async () => {
   const metadata = metadataFixture();
   const boundary = pluginSessionBoundary();
-  const adapter = createSessionAdapter({ metadata, gateway: boundary.gateway, sessionStore: boundary.sessionStore, topicId: 'topic-entry-shape' });
+  const firstPage = Array.from({ length: 200 }, (_, index) => ({ sessionKey: `agent:main:dashboard:other-${index}`, sessionId: `other-${index}`, updatedAt: 1 }));
+  const gateway = { request: (method, params) => method === 'sessions.list' ? { sessions: firstPage } : boundary.gateway.request(method, params) };
+  const sessionStore = { ...boundary.sessionStore, getSessionEntry(params) { assert.equal(params.readConsistency, 'latest'); return boundary.sessionStore.getSessionEntry(params); } };
+  const adapter = createSessionAdapter({ metadata, gateway, sessionStore, topicId: 'topic-entry-shape' });
   const created = await adapter.create({ logicalOperationId: randomUUID(), label: 'Entry Shape', isPrimary: true });
   const entry = boundary.entries.get(created.value.key);
   assert.equal(created.value.sessionId, entry.sessionId);

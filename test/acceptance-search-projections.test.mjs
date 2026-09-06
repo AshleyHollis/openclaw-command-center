@@ -7,6 +7,7 @@ import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, ver
 import { resolveCommandCenterDatabasePath, resolveCommandCenterProjectionRoot } from '../src/metadata/path.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { publishTopicSearchSnapshot } from '../src/search/rebuild.mjs';
+import { readTopicSearchFreshness } from '../src/search/freshness.mjs';
 
 const topicId = '11111111-1111-4111-8111-111111111111';
 
@@ -19,6 +20,7 @@ test('committed projection evidence verifies artifacts, bookkeeping, and Topic c
       stateDir,
       metadata,
       prepared: {
+        freshness: readTopicSearchFreshness(stateDir),
         topicIds: [topicId],
         notes: [],
         conversations: [

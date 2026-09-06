@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict';
 import { access, chmod, copyFile, cp, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
-import { createECDH, createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
-import { AsyncLocalStorage } from 'node:async_hooks';
+import { createECDH, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { createServer as createHttpsServer } from 'node:https';
 import test from 'node:test';
 import path from 'node:path';
-import { chromium } from 'playwright';
 import 'playwright-core';
 import { fetchWithRuntimeDispatcher as fetch } from 'openclaw/plugin-sdk/runtime-fetch';
 import { finalizeAcceptanceJourney } from '../src/acceptance-finalization.mjs';
@@ -16,7 +14,7 @@ import { hasSuccessfulBrowserResponse, observeBrowserResponse, observedBrowserRe
 import { build, assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, fetchJsonWithDeadline, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
-import { assertWebSocketDestination, boundedTrafficEvidence, TrafficGuard } from '../src/isolation.mjs';
+import { assertWebSocketDestination, TrafficGuard } from '../src/isolation.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
 import { COMMAND_CENTER_SCHEMA_VERSION, metadataSchemaV1Sql } from '../src/metadata/schema.mjs';
@@ -30,22 +28,23 @@ import { compatibilityTuple } from '../src/compatibility.mjs';
 import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, runAbortableAcceptanceBoundary, runBoundedAcceptanceSlice } from '../src/acceptance-scenario-coordinator.mjs';
 import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence, verifiedMigrationStatusReady } from '../src/acceptance-migration.mjs';
 import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet, verifyMissingSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
-import { createGatewayFrameWaiter } from '../src/acceptance-gateway.mjs';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
 import { tabTo } from './support/keyboard-navigation.mjs';
 import { activate, enterText, chooseOption, auditDynamicAccessibilityState, assertNoFrameOverflow, assertResponsiveFrame, assertKeyboardAccessibility } from './support/keyboard-accessibility.mjs';
 import { closeOpenConversation } from './support/conversation-lifecycle.mjs';
-const EXTERNAL_OPERATION_TIMEOUT_MS = 60_000;
-// The UI retains queued requests for 180s while honoring the host's rolling
-// quotas. Queue time remains inside all performance measurements.
-const BRIDGE_UI_OPERATION_BUDGET_MS = 185_000;
-const acceptanceSignalContext = new AsyncLocalStorage();
+import { acceptanceSignalContext, EXTERNAL_OPERATION_TIMEOUT_MS, BRIDGE_UI_OPERATION_BUDGET_MS, createGatewayDeviceIdentity, withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory } from './support/real-host-runtime.mjs';
+import { exerciseNativeControlUiActivation, exerciseNativeKeyboardJourney } from './support/first-live-native-journey.mjs';
+import { exerciseNativeScaleJourney } from './support/first-live-native-scale.mjs';
+import { runNativeReleaseCapture } from './support/first-live-native-release.mjs';
+import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVariant } from './support/first-live-native-degraded.mjs';
+import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
+import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
 const READY_CAPABILITIES = Object.freeze(Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'analysis', 'attention', 'search'].map((name) => [name, true])));
 const capturePerformanceBaseline = process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE === '1';
-const capturedPerformanceBaselinePath = '/tmp/command-center-release-performance-baseline.v2.json';
+const capturedPerformanceBaselinePath = '/tmp/command-center-release-performance-baseline.v3.json';
 const acceptancePlan = resolveRealHostAcceptancePlan(process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO);
 if (acceptancePlan.kind === 'focused' && capturePerformanceBaseline) throw new Error('Focused real-host acceptance cannot capture a performance baseline.');
 
@@ -77,18 +76,6 @@ async function createLoopbackNotificationReceiver(tempRoot) {
   return Object.freeze({ certificatePath, endpoint: `https://127.0.0.1:${address.port}/push`, deliveries, close: () => new Promise((resolve) => server.close(resolve)) });
 }
 
-function createGatewayDeviceIdentity() {
-  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-  const rawPublicKey = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
-  return Object.freeze({ privateKey, publicKey: rawPublicKey.toString('base64url'), deviceId: createHash('sha256').update(rawPublicKey).digest('hex') });
-}
-
-function signedGatewayDevice(identity, { nonce, credential, scopes, client }) {
-  const signedAt = Date.now();
-  const payload = ['v3', identity.deviceId, client.id, client.mode, 'operator', scopes.join(','), String(signedAt), credential, nonce, client.platform.toLowerCase(), ''].join('|');
-  return { id: identity.deviceId, publicKey: identity.publicKey, signature: sign(null, Buffer.from(payload), identity.privateKey).toString('base64url'), signedAt, nonce };
-}
-
 function releaseScaleConversationOperationId(index) {
   assert.ok(Number.isInteger(index) && index > 0 && index < RELEASE_FIXTURE_COUNTS.conversations);
   return `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`;
@@ -96,38 +83,6 @@ function releaseScaleConversationOperationId(index) {
 
 function reportProgress(testContext, phase, detail = {}) {
   testContext.diagnostic(`release-progress=${JSON.stringify({ schemaVersion: 1, phase, ...detail })}`);
-}
-
-async function withDeadline(label, operation, timeoutMs = EXTERNAL_OPERATION_TIMEOUT_MS, parentSignal) {
-  const controller = new AbortController();
-  let timedOut = false;
-  let timer;
-  const pending = Promise.resolve().then(() => operation(controller.signal));
-  const abortFromParent = () => controller.abort(parentSignal.reason);
-  if (parentSignal?.aborted) abortFromParent();
-  else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
-  void pending.then(async (value) => {
-    if (!timedOut) return;
-    try {
-      if (value?.child) await stopPinnedHost(value.child);
-      else await value?.close?.();
-    } catch { /* a timed-out operation remains failed; cleanup is best effort */ }
-  }, () => {});
-  try {
-    return await Promise.race([
-      pending,
-      new Promise((_, reject) => { timer = setTimeout(() => { timedOut = true; controller.abort(); reject(new HarnessFailure('operation-timeout', `${label} exceeded its ${timeoutMs} ms deadline`)); }, timeoutMs); })
-    ]);
-  } finally {
-    clearTimeout(timer);
-    parentSignal?.removeEventListener('abort', abortFromParent);
-  }
-}
-
-function stopHostOnAbort(signal, host) {
-  const stop = () => { void stopPinnedHost(host.child); };
-  signal?.addEventListener('abort', stop, { once: true });
-  return () => signal?.removeEventListener('abort', stop);
 }
 
 function delayWithSignal(delayMs, signal) {
@@ -138,26 +93,6 @@ function delayWithSignal(delayMs, signal) {
     function aborted() { clearTimeout(timer); signal?.removeEventListener('abort', aborted); reject(signal.reason ?? new Error('Operation aborted.')); }
     signal?.addEventListener('abort', aborted, { once: true });
   });
-}
-
-async function launchManagedBrowser(options) {
-  const server = await chromium.launchServer({ ...options, args: ['--no-proxy-server', ...(options?.args ?? [])] });
-  try {
-    const browser = await chromium.connect(server.wsEndpoint());
-    return { browser, server, close: async () => { await browser.close(); await server.close().catch(() => {}); } };
-  } catch (error) {
-    await server.kill().catch(() => {});
-    throw error;
-  }
-}
-
-async function closeManagedBrowser(managed, signal) {
-  if (!managed) return;
-  const forceClose = () => { void managed.server.kill(); };
-  if (signal?.aborted) forceClose();
-  else signal?.addEventListener('abort', forceClose, { once: true });
-  try { await managed.close(); }
-  finally { signal?.removeEventListener('abort', forceClose); }
 }
 
 async function fetchWithDeadline(url, options = {}, label = 'HTTP operation', timeoutMs = EXTERNAL_OPERATION_TIMEOUT_MS) {
@@ -180,36 +115,6 @@ async function fetchWithDeadline(url, options = {}, label = 'HTTP operation', ti
 function routeGrant(config) {
   const values = config?.[runtimeCapability.bootstrap.grantsField] || [];
   return Array.isArray(values) && values.some((value) => value?.pluginId === 'command-center' && value?.path === '/plugins/command-center' && value?.match === 'exact');
-}
-
-function redactBrowserEvidence(value) {
-  return redact(String(value).replace(/([?#&](?:token|password|secret|key)=)[^&#\s]+/gi, '$1[redacted]'), 300);
-}
-
-function boundedHostEvidence(diagnostics) {
-  return {
-    stdout: diagnostics.stdout,
-    stderr: diagnostics.stderr,
-    category: diagnostics.category,
-    traffic: boundedTrafficEvidence(diagnostics.guard.attempts)
-  };
-}
-
-async function configureEvidencePage(page, browserGuard, evidence) {
-  page.setDefaultTimeout(BRIDGE_UI_OPERATION_BUDGET_MS);
-  await page.route('**/*', async (route) => {
-    const request = route.request();
-    const hostName = new URL(request.url()).hostname;
-    try { browserGuard.assert(hostName, 'browser'); recordBounded(evidence.requests, redactBrowserEvidence(request.url())); await route.continue(); }
-    catch (error) { recordBounded(evidence.errors, redactBrowserEvidence(error.message)); await route.abort(); }
-  });
-  await page.routeWebSocket('**/*', (socket) => {
-    try { assertWebSocketDestination(browserGuard, socket.url()); socket.connectToServer(); }
-    catch (error) { recordBounded(evidence.errors, redactBrowserEvidence(error.message)); }
-  });
-  page.on('console', (message) => recordBounded(evidence.console, redactBrowserEvidence(message.text())));
-  page.on('pageerror', (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
-  page.on('response', (response) => recordBounded(evidence.responses, redactBrowserEvidence(`${response.status()} ${response.url()}`)));
 }
 
 async function waitForNotificationEmission(databasePath, { attempts = 100, status = 'sent', excludeEmissionId } = {}) {
@@ -858,7 +763,7 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
       assert.ok(safeRead && typeof safeRead === 'object');
       const blockedRecoveryOperationId = randomUUID();
       await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, topicId: randomUUID(), name: 'Blocked Recovery Topic', paraCategory: 'resource', logicalOperationId: blockedRecoveryOperationId, authoritativeSession: { key: 'agent:main:blocked-recovery', sessionId: 'blocked-recovery-session', revision: '1', idempotencyKey: blockedRecoveryOperationId, label: 'Blocked Recovery Topic' } } }), /recovery-only/iu);
-      assert.equal(releasePerformanceIdentity.hostReceipt.commit, '2309e6542d0ba631178c8e647a2dc8b4763651bd', 'the launched runtime must match the exact stable compatibility tuple');
+      assert.equal(releasePerformanceIdentity.hostReceipt.commit, 'c1d67aaa14b62d6172cd2c57f8b3ceff9aed350f', 'the launched runtime must match the exact stable compatibility tuple');
       assert.equal(runtimeCapability.schemaVersion, 1, 'the active bootstrap must expose the supported bridge protocol');
       const recoveryDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try { assert.equal(recoveryDatabase.prepare('PRAGMA user_version').get().user_version, 99); }
@@ -876,33 +781,74 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
   }, { candidateRoot: process.cwd() });
 }
 
-async function exerciseSecureHostVariant({ descriptor, buildReceipt, signal }) {
+async function exerciseSecureHostVariant({ descriptor, buildReceipt, signal, onFinalization }) {
   return withIsolatedWorld(async (secureWorld) => {
     const numericSecureUrl = new URL(secureWorld.gateway.url.replace(/^http:/u, 'https:'));
     const fictionalTailnetHost = 'command-center.fictional.ts.net';
     const secureUrl = `https://${fictionalTailnetHost}:${numericSecureUrl.port}`;
     const config = JSON.parse(await readFile(secureWorld.manifest.configPath, 'utf8'));
     config.gateway.tls = { enabled: true, autoGenerate: true };
-    config.gateway.controlUi = { allowedOrigins: [secureUrl] };
+    config.gateway.controlUi = { ...config.gateway.controlUi, allowedOrigins: [secureUrl] };
     await writeFile(secureWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
     const secureHost = await withDeadline('secure-origin host launch', (launchSignal) => launchPinnedHost({ descriptor, world: secureWorld, buildReceipt, signal: launchSignal }), 120_000, signal);
     const removeAbortCleanup = stopHostOnAbort(signal, secureHost);
     let managedBrowser;
     let browser;
     const secureBrowserGuard = new TrafficGuard();
+    const evidence = { requests: [], responses: [], console: [], errors: [] };
+    const abortBrowser = () => { void managedBrowser?.server.kill().catch(() => {}); };
+    signal?.addEventListener('abort', abortBrowser, { once: true });
+    let failure;
+    let result;
     const readinessAttempts = [];
     let finalReadinessError = 'Secure endpoint did not become ready.';
     let readinessAttempt = 0;
     try {
       managedBrowser = await withDeadline('secure-origin browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000, args: [`--host-resolver-rules=MAP ${fictionalTailnetHost} 127.0.0.1,EXCLUDE localhost`] }));
       browser = managedBrowser.browser;
-      const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 320, height: 900 } });
+      const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 900 } });
       const page = await context.newPage();
+      await configureEvidencePage(page, secureBrowserGuard, evidence);
       await page.route('**/*', async (route) => {
-        const hostname = new URL(route.request().url()).hostname;
-        if (hostname !== fictionalTailnetHost) { await route.abort(); throw new HarnessFailure('secure-origin-escape', 'Secure-origin fixture attempted an unexpected hostname.'); }
+        const url = new URL(route.request().url());
+        if (url.origin !== secureUrl) {
+          try { secureBrowserGuard.assert('', 'secure-origin-escape'); }
+          catch (error) { recordBounded(evidence.errors, redactBrowserEvidence(error.message)); }
+          await route.abort(); return;
+        }
         secureBrowserGuard.assert('127.0.0.1', `browser-host-map:${fictionalTailnetHost}`);
+        recordBounded(evidence.requests, redactBrowserEvidence(url.href));
         await route.continue();
+      });
+      let nativeCatalog;
+      let activation;
+      await page.routeWebSocket('**/*', socket => {
+        const url = new URL(socket.url());
+        if (url.protocol !== 'wss:' || url.hostname !== fictionalTailnetHost || url.port !== numericSecureUrl.port) {
+          try { secureBrowserGuard.assert('', 'secure-websocket-escape'); }
+          catch (error) { recordBounded(evidence.errors, redactBrowserEvidence(error.message)); }
+          void socket.close(); return;
+        }
+        secureBrowserGuard.assert('127.0.0.1', `browser-websocket-host-map:${fictionalTailnetHost}`);
+        const server = socket.connectToServer();
+        const requests = new Map();
+        socket.onMessage(payload => {
+          server.send(payload);
+          let frame; try { frame = JSON.parse(String(payload)); } catch { return; }
+          if (frame.type === 'req' && ['plugins.controlUi.list', 'plugins.controlUi.report'].includes(frame.method)) {
+            if (requests.size >= 32) { recordBounded(evidence.errors, 'Secure native observation capacity exceeded'); return; }
+            requests.set(frame.id, frame);
+          }
+        });
+        server.onMessage(payload => {
+          socket.send(payload);
+          let frame; try { frame = JSON.parse(String(payload)); } catch { return; }
+          if (frame.type !== 'res') return;
+          const request = requests.get(frame.id); requests.delete(frame.id);
+          if (!request || frame.ok !== true) return;
+          if (request.method === 'plugins.controlUi.list') nativeCatalog = frame.payload;
+          if (request.method === 'plugins.controlUi.report' && request.params.pluginId === 'command-center' && request.params.status === 'activated') activation = request.params;
+        });
       });
       try { await waitForConsecutiveReadiness(async () => {
         const attempt = ++readinessAttempt;
@@ -922,31 +868,50 @@ async function exerciseSecureHostVariant({ descriptor, buildReceipt, signal }) {
           if (readinessAttempts.length > 20) readinessAttempts.shift();
           return false;
         }
-      }, secureHost.earlyExit, { attempts: 60, delayMs: 250 }); }
+      }, secureHost.earlyExit, { attempts: 60, delayMs: 250, signal }); }
       catch (error) {
         const failure = new HarnessFailure('secure-origin-readiness', `${finalReadinessError} (${error?.category ?? 'readiness'})`);
         failure.diagnostics = { readinessAttempts: readinessAttempts.map((entry) => ({ ...entry })) };
         throw failure;
       }
-      const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
-      await page.goto(controlUiPluginUrl({ gatewayUrl: secureUrl, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: secureWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      await mountedPluginFrame(page, await pluginDocument);
+      const grantPrefix = '/__openclaw__/plugins/control-ui/command-center/';
+      const pluginEntry = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'GET'
+        && new URL(response.url()).origin === secureUrl && new URL(response.url()).pathname.startsWith(grantPrefix)
+        && new URL(response.url()).pathname.endsWith('/entry.mjs'), { timeout: 60_000 }));
+      await page.goto(controlUiPluginUrl({ gatewayUrl: secureUrl, pluginId: 'command-center', routeId: 'topics', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: secureWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      const loaded = await pluginEntry;
+      assert.equal(hasSuccessfulBrowserResponse(loaded), true);
+      assert.deepEqual(await loaded.value.body(), await readFile(path.join(process.cwd(), 'dist/native-ui/entry.mjs')));
+      const nativePage = page.locator('openclaw-plugin-page');
+      await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
+      assert.equal(await nativePage.locator('iframe').count(), 0);
+      await waitForConsecutiveReadiness(async () => !!activation && nativeCatalog?.plugins?.some(plugin => plugin.pluginId === activation.pluginId && plugin.revision === activation.revision),
+        secureHost.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+      assert.match(activation.revision, /^[a-f0-9]{64}$/u);
+      assert.equal(new URL(loaded.value.url()).pathname, `${grantPrefix}${activation.revision}/entry.mjs`);
       assert.equal(new URL(page.url()).hostname, fictionalTailnetHost);
       assert.equal(new URL(page.url()).protocol, 'https:');
-      return Object.freeze({ secureOrigin: new URL(page.url()).origin, actualTlsLoad: true, fictionalTailnetHost, loopbackResolution: '127.0.0.1', readinessAttempts: Object.freeze(readinessAttempts.map((entry) => Object.freeze({ ...entry }))) });
-    } finally {
+      result = Object.freeze({ secureOrigin: new URL(page.url()).origin, actualTlsLoad: true, fictionalTailnetHost, loopbackResolution: '127.0.0.1', nativeActivationObserved: true, revision: activation.revision,
+        readinessAttempts: Object.freeze(readinessAttempts.map((entry) => Object.freeze({ ...entry }))) });
+    } catch (error) { failure = error; }
+    finally {
       removeAbortCleanup();
       const finalizationErrors = await finalizeAcceptanceJourney({
         closeBrowser: async (signal) => await closeManagedBrowser(managedBrowser, signal),
         stopHost: async () => { await stopPinnedHost(secureHost.child); await secureHost.outputDrained; },
         assertBrowserTraffic: () => secureBrowserGuard.assertClean(),
-        assertHostTraffic: () => assertNoFatalHostOutput(secureHost.diagnostics),
+        assertHostTraffic: () => { secureHost.diagnostics.guard.assertClean(); assertNoFatalHostOutput(secureHost.diagnostics); if (secureHost.diagnostics.cleanupError) throw secureHost.diagnostics.cleanupError; },
         assertChildTraffic: async () => await assertRecordedChildTraffic(secureWorld),
         assertBuildDigest: async () => await assertBuiltDigest(buildReceipt),
-        timeoutMs: 60_000
+        timeoutMs: 60_000,
+        onProgress: onFinalization
       });
-      if (finalizationErrors.length) throw new AggregateError(finalizationErrors.map(({ error }) => error), 'Secure-origin finalization failed');
+      signal?.removeEventListener('abort', abortBrowser);
+      if (finalizationErrors.length) failure = new AggregateError([...(failure ? [failure] : []), ...finalizationErrors.map(({ error }) => error)], 'Secure-origin finalization failed');
     }
+    scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(secureHost.diagnostics))]);
+    if (failure) throw failure;
+    return result;
   }, { candidateRoot: process.cwd() });
 }
 
@@ -1319,50 +1284,6 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
   }, { candidateRoot: process.cwd() });
 }
 
-async function requestAuthenticatedGateway({ gatewayUrl, credential, method, params = {}, scopes = ['operator.read'], responseTimeoutMs = 10_000, signal, deviceIdentity }) {
-  const requestSite = new Error(`Authenticated Gateway request site: ${method}`);
-  signal ??= acceptanceSignalContext.getStore();
-  signal?.throwIfAborted();
-  const socket = new WebSocket(gatewayUrl.replace(/^http/u, 'ws'));
-  const waitForFrame = createGatewayFrameWaiter(socket, { method, signal, requestSite });
-  const abortSocket = () => socket.close();
-  signal?.addEventListener('abort', abortSocket, { once: true });
-  try {
-    const challengePromise = waitForFrame((frame) => frame?.type === 'event' && frame.event === 'connect.challenge', 10_000, 'challenge');
-    const openedPromise = new Promise((resolve, reject) => {
-      const cleanup = () => {
-        clearTimeout(timer);
-        socket.removeEventListener('open', onOpen);
-        socket.removeEventListener('error', onError);
-        signal?.removeEventListener('abort', onAbort);
-      };
-      const onAbort = () => { cleanup(); reject(signal.reason ?? new Error('Gateway connection aborted.')); };
-      const onOpen = () => { cleanup(); resolve(); };
-      const onError = () => { cleanup(); reject(new Error('Authenticated Gateway connection failed.')); };
-      const timer = setTimeout(() => { cleanup(); reject(new Error('Authenticated Gateway connection timed out.')); }, 10_000);
-      socket.addEventListener('open', onOpen, { once: true });
-      socket.addEventListener('error', onError, { once: true });
-      signal?.addEventListener('abort', onAbort, { once: true });
-    });
-    const [, challenge] = await Promise.all([openedPromise, challengePromise]);
-    assert.equal(typeof challenge.payload?.nonce, 'string');
-    const connectId = `command-center-acceptance-connect-${randomUUID()}`;
-    const client = { id: 'cli', version: '1', platform: 'test', mode: 'cli' };
-    const device = deviceIdentity ? signedGatewayDevice(deviceIdentity, { nonce: challenge.payload.nonce, credential, scopes, client }) : undefined;
-    socket.send(JSON.stringify({ type: 'req', id: connectId, method: 'connect', params: { minProtocol: 4, maxProtocol: 4, client, caps: [], commands: [], role: 'operator', scopes, auth: { ['to' + 'ken']: credential }, ...(device ? { device } : {}) } }));
-    const connected = await waitForFrame((frame) => frame?.type === 'res' && frame.id === connectId);
-    if (!connected.ok) throw new Error(`Authenticated Gateway connect failed: ${connected.error?.code ?? 'unknown'}`);
-    const requestId = `command-center-acceptance-${randomUUID()}`;
-    socket.send(JSON.stringify({ type: 'req', id: requestId, method, params }));
-    const response = await waitForFrame((frame) => frame?.type === 'res' && frame.id === requestId, responseTimeoutMs, 'method-response');
-    if (!response.ok) {
-      const detail = redactBrowserEvidence(response.error?.message ?? 'no bounded detail');
-      throw new Error(`Authenticated ${method} failed: ${response.error?.code ?? 'unknown'} (${detail})`);
-    }
-    return response.payload;
-  } finally { signal?.removeEventListener('abort', abortSocket); socket.close(); }
-}
-
 function authenticatedList(response, property) {
   const value = response?.result ?? response;
   if (Array.isArray(value)) return value;
@@ -1521,10 +1442,6 @@ async function prepareExactActivityFixture({ stateDir, gatewayUrl, topicId }) {
   const finalIds = await readIds();
   assert.equal(finalIds.length, RELEASE_FIXTURE_COUNTS.activityRecords);
   for (const id of genuine) assert.ok(finalIds.includes(id), 'real source Activity must remain in the exact fixture');
-}
-
-async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey, signal }) {
-  return requestAuthenticatedGateway({ gatewayUrl, credential, method: 'chat.history', params: { sessionKey }, signal });
 }
 
 async function waitForFrameText(frame, selector, expected, timeout = BRIDGE_UI_OPERATION_BUDGET_MS) {
@@ -1986,19 +1903,81 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   return Object.freeze(measurements);
 }
 
-test('mounts the built plugin through the isolated authenticated external tab', { timeout: 2_400_000, concurrency: true }, async (testContext) => {
+test('mounts the built plugin through the isolated authenticated external tab', { timeout: 900_000, concurrency: true }, async (testContext) => {
   let descriptor, buildReceipt, baseline, baselineSeed;
+  const nativeDiagnostic = acceptancePlan.kind === 'focused' && acceptancePlan.scenarioIds?.length === 1
+    ? ['native-control-ui-activation', 'desktop-keyboard-journey', 'scale-performance'].find(id => acceptancePlan.scenarioIds[0] === id) : undefined;
   await testContext.test('release preparation: candidate build and authenticated descriptor', async () => {
     reportProgress(testContext, 'build:started');
     descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
+    if ((nativeDiagnostic || acceptancePlan.kind === 'release') && process.env.COMMAND_CENTER_SEALED_CANDIDATE !== '1') throw new Error('Native acceptance requires a sealed candidate receipt.');
     buildReceipt = await withDeadline('candidate build', () => process.env.COMMAND_CENTER_SEALED_CANDIDATE === '1' ? readBuiltReceipt() : build(), 120_000);
     await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
     if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
-      baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v2.json', import.meta.url), 'utf8')));
+      baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v3.json', import.meta.url), 'utf8')));
       assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
     }
     reportProgress(testContext, 'build:passed');
   });
+  if (nativeDiagnostic) {
+    assert.ok(descriptor && buildReceipt, 'Native diagnosis requires successful descriptor and sealed receipt admission');
+    const keyboard = nativeDiagnostic === 'desktop-keyboard-journey';
+    const scale = nativeDiagnostic === 'scale-performance';
+    // Use the owner's default execution/cleanup budget so every focused slice
+    // stays below controller inactivity. Diagnostics never qualify performance.
+    const journey = scale ? exerciseNativeScaleJourney : keyboard ? exerciseNativeKeyboardJourney : exerciseNativeControlUiActivation;
+    const evidence = await runBoundedAcceptanceSlice(nativeDiagnostic, (signal) => journey({ descriptor, buildReceipt, signal }));
+    await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });
+    scanPublicEvidence([JSON.stringify(evidence)]);
+    testContext.diagnostic(`acceptance-scenario-result=${JSON.stringify({ schemaVersion: 1, outcome: 'passed', scenario: nativeDiagnostic, scenarioIds: acceptancePlan.scenarioIds, buildDigest: buildReceipt.digest, performanceQualified: false, evidence })}`);
+    return;
+  }
+  if (acceptancePlan.kind === 'release') {
+    assert.ok(descriptor && buildReceipt, 'Native release requires successful descriptor and sealed receipt admission');
+    const bind = (run, options = {}) => ({ signal, onFinalization }) => run({ descriptor, buildReceipt, ...options, signal, onFinalization });
+    const { report, capturedBaseline } = await runNativeReleaseCapture({
+      descriptor, buildReceipt, baseline, capturePerformanceBaseline,
+      runners: {
+        primary: bind(exerciseNativeControlUiActivation),
+        keyboard: bind(exerciseNativeKeyboardJourney),
+        secure: bind(exerciseSecureHostVariant),
+        bridgeDenied: bind(exerciseNativeDegradedBridgeHostVariant),
+        sourceUnavailable: bind(exerciseNativeDegradedSourceRow),
+        combinedDegraded: bind(exerciseNativeDegradedSourceRow, { combined: true }),
+        hostMismatch: bind(exerciseNativeReleaseMismatchVariant, { kind: 'host' }),
+        buildMismatch: bind(exerciseNativeReleaseMismatchVariant, { kind: 'build' }),
+        pluginApiMismatch: bind(exerciseNativePluginApiMismatchVariant),
+        bridgeProtocolMismatch: bind(exerciseNativeReleaseMismatchVariant, { kind: 'bridge-protocol' }),
+        bindingMismatch: bind(exerciseNativeBindingMismatchHostVariant),
+        foreignRestoration: bind(exerciseNativeForeignDatabaseRestorationVariant),
+        schemaMismatch: bind(exerciseNativeRecoveryOnlyHostVariant),
+        restoration: ({ signal, onFinalization }) => withIsolatedWorld(world => exerciseNativeRestorationMatrix({
+          stateDir: path.join(world.root, '.openclaw'), descriptor, buildReceipt, world, signal, onFinalization
+        }), { candidateRoot: process.cwd() }),
+        scale: bind(exerciseNativeScaleJourney)
+      },
+      onProgress: ({ id, status }) => reportProgress(testContext, `native-participant:${id}:${status}`),
+      scanArtifacts: async ({ signal, participantEvidence, rowEvidence, performanceBaseline }) => {
+        signal.throwIfAborted();
+        await assertBuiltDigest(buildReceipt);
+        await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });
+        scanPublicEvidence([JSON.stringify(participantEvidence), JSON.stringify(rowEvidence), JSON.stringify(performanceBaseline)]);
+        signal.throwIfAborted();
+        return { repository: true, generated: true, capturedOutput: true };
+      }
+    });
+    const result = {
+      schemaVersion: 1, outcome: 'passed', releaseRows: RELEASE_ROW_IDS,
+      command: ['node', '--test', '--test-isolation=none', '--test-reporter=/opt/openclaw-control/src/ticket-test-reporter.js', 'test/real-host.acceptance.test.mjs'],
+      expectedTest: 'mounts the built plugin through the isolated authenticated external tab',
+      buildDigest: buildReceipt.digest, performanceBaseline: report.performanceBaseline
+    };
+    scanPublicEvidence([JSON.stringify(report), JSON.stringify(result)]);
+    if (capturedBaseline) await writeFile(capturedPerformanceBaselinePath, `${JSON.stringify(capturedBaseline, null, 2)}\n`, { flag: 'wx' });
+    testContext.diagnostic(`acceptance-report=${JSON.stringify(report)}`);
+    testContext.diagnostic(`acceptance-result=${JSON.stringify(result)}`);
+    return;
+  }
   const isolatedEvidence = new Map();
   const isolatedErrors = new Map();
   let isolatedActive = 0;
@@ -2035,56 +2014,18 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     ['fresh-scale', startIsolatedSlice('fresh-scale', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'scale', width: 1440, signal }))],
     ['fresh-scale-analysis', startIsolatedSlice('fresh-scale-analysis', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'scale-analysis', width: 1440, signal }))],
     ['fresh-review', startIsolatedSlice('fresh-review', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'review', width: 1440, signal }))],
-    ['host-tuple-refusal', startIsolatedSlice('host-tuple-refusal', async (signal) => {
-      return withIsolatedWorld(async (hostWorld) => {
-        const restoredStateDir = path.join(hostWorld.root, '.openclaw');
-        const restoredDatabase = await prepareRestoredRuntimeState(restoredStateDir, 'fictional-restored-host-tuple-topic');
-        const raw = JSON.parse(process.env.COMMAND_CENTER_ISOLATED_HOST);
-        const productCompatibilityCommit = ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('');
-        assert.throws(() => parseHostDescriptor(JSON.stringify({ ...raw, commit: productCompatibilityCommit })), (error) => error?.category === 'invalid-commit');
-        const incompatibleDescriptor = { ...descriptor, integrity: { ...descriptor.integrity, sourceDigest: `sha256:${'0'.repeat(64)}` } };
-        await assert.rejects(() => launchPinnedHost({ descriptor: incompatibleDescriptor, world: hostWorld, buildReceipt }), (error) => error?.category === 'host-integrity');
-        const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(restoredStateDir);
-        const manifestPath = path.join(recoveryDirectory, 'manifest.json');
-        const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-        manifest.targetRelease.host = compatibilityTuple.priorRelease.host;
-        await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
-        const mismatchedBytes = await readFile(restoredDatabase);
-        const mismatchedSnapshot = await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot'));
-        const hostTupleRuntime = await withDeadline('host-tuple restoration launch', (launchSignal) => launchPinnedHost({ descriptor, world: hostWorld, buildReceipt, signal: launchSignal }), 120_000, signal);
-        const removeAbortCleanup = stopHostOnAbort(signal, hostTupleRuntime);
-        try {
-          await waitForConsecutiveReadiness(async () => (await fetchWithDeadline(`${hostWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${hostWorld.gatewayCredential}` } }, 'host-tuple restoration readiness', 10_000)).ok, hostTupleRuntime.earlyExit, { required: 2, attempts: 100, delayMs: 100 });
-          const statusResponse = await requestAuthenticatedGateway({ gatewayUrl: hostWorld.gateway.url, credential: hostWorld.gatewayCredential, method: 'command-center.v1.sources.status', params: { schemaVersion: 1 } });
-          assert.equal((statusResponse?.result ?? statusResponse).mode, 'recovery-only');
-          const safeRead = await requestAuthenticatedGateway({ gatewayUrl: hostWorld.gateway.url, credential: hostWorld.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 } });
-          assert.ok(safeRead && typeof safeRead === 'object');
-          const mutation = await fetchWithDeadline(`${hostWorld.gateway.url}/plugins/command-center/api/topics/actions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(refusedTopicCreateRequest('Blocked host tuple Topic')) }, 'host-tuple restoration mutation', 10_000);
-          assert.equal(mutation.status, 422);
-          assert.deepEqual(await readFile(restoredDatabase), mismatchedBytes);
-          assert.deepEqual(await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot')), mismatchedSnapshot);
-          const mountedUiObserved = await assertMountedReadOnlyOperatingMode({ world: hostWorld, expectedMode: 'recovery-only' });
-          return Object.freeze({ kind: 'host', admissionRejected: true, mode: 'recovery-only', safeReadObserved: true, mutationRejected: true, restoredStateValidated: true, mountedUiObserved, unsupportedControlsAbsent: true });
-        } finally {
-          removeAbortCleanup();
-          await withDeadline('host-tuple restoration stop', async () => { await stopPinnedHost(hostTupleRuntime.child); await hostTupleRuntime.outputDrained; });
-          assertNoFatalHostOutput(hostTupleRuntime.diagnostics);
-          await assertRecordedChildTraffic(hostWorld);
-          hostTupleRuntime.diagnostics.guard.assertClean();
-        }
-      }, { candidateRoot: process.cwd() });
-    })],
-    ['build-variant', startIsolatedSlice('build-variant', (signal) => exerciseRejectedCandidateVariant({ descriptor, buildReceipt, kind: 'build', signal }))],
-    ['plugin-api-variant', startIsolatedSlice('plugin-api-variant', (signal) => exerciseRejectedCandidateVariant({ descriptor, buildReceipt, kind: 'plugin-api', signal }))],
-    ['bridge-protocol-variant', startIsolatedSlice('bridge-protocol-variant', (signal) => exerciseRejectedCandidateVariant({ descriptor, buildReceipt, kind: 'bridge-protocol', signal }))],
-    ['binding-mismatch', startIsolatedSlice('binding-mismatch', (signal) => exerciseBindingMismatchHostVariant({ descriptor, buildReceipt, signal }))],
-    ['foreign-database-restoration', startIsolatedSlice('foreign-database-restoration', (signal) => exerciseForeignDatabaseRestorationVariant({ descriptor, buildReceipt, signal }))],
+    ['host-tuple-refusal', startIsolatedSlice('host-tuple-refusal', (signal) => exerciseNativeReleaseMismatchVariant({ descriptor, buildReceipt, kind: 'host', signal }))],
+    ['build-variant', startIsolatedSlice('build-variant', (signal) => exerciseNativeReleaseMismatchVariant({ descriptor, buildReceipt, kind: 'build', signal }))],
+    ['plugin-api-variant', startIsolatedSlice('plugin-api-variant', (signal) => exerciseNativePluginApiMismatchVariant({ descriptor, buildReceipt, signal }))],
+    ['bridge-protocol-variant', startIsolatedSlice('bridge-protocol-variant', (signal) => exerciseNativeReleaseMismatchVariant({ descriptor, buildReceipt, kind: 'bridge-protocol', signal }))],
+    ['binding-mismatch', startIsolatedSlice('binding-mismatch', (signal) => exerciseNativeBindingMismatchHostVariant({ descriptor, buildReceipt, signal }))],
+    ['foreign-database-restoration', startIsolatedSlice('foreign-database-restoration', (signal) => exerciseNativeForeignDatabaseRestorationVariant({ descriptor, buildReceipt, signal }))],
     ['secure-origin', startIsolatedSlice('secure-origin', (signal) => exerciseSecureHostVariant({ descriptor, buildReceipt, signal }))],
-    ['degraded-bridge-grants', startIsolatedSlice('degraded-bridge-grants', (signal) => exerciseDegradedBridgeHostVariant({ descriptor, buildReceipt, signal }))],
-    ['degraded-source-availability', startIsolatedSlice('degraded-source-availability', (signal) => exerciseDegradedSourceRow({ descriptor, buildReceipt, signal }))],
-    ['combined-degraded', startIsolatedSlice('combined-degraded', (signal) => exerciseDegradedSourceRow({ descriptor, buildReceipt, combined: true, signal }))],
-    ['recovery-only-compatibility', startIsolatedSlice('recovery-only-compatibility', (signal) => exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signal }))],
-    ['destructive-migration-restoration', startIsolatedSlice('destructive-migration-restoration', (signal) => withIsolatedWorld((rowWorld) => exerciseRestorationMatrix({ stateDir: path.join(rowWorld.root, '.openclaw'), descriptor, buildReceipt, world: rowWorld, signal }), { candidateRoot: process.cwd() }))]
+    ['degraded-bridge-grants', startIsolatedSlice('degraded-bridge-grants', (signal) => exerciseNativeDegradedBridgeHostVariant({ descriptor, buildReceipt, signal }))],
+    ['degraded-source-availability', startIsolatedSlice('degraded-source-availability', (signal) => exerciseNativeDegradedSourceRow({ descriptor, buildReceipt, signal }))],
+    ['combined-degraded', startIsolatedSlice('combined-degraded', (signal) => exerciseNativeDegradedSourceRow({ descriptor, buildReceipt, combined: true, signal }))],
+    ['recovery-only-compatibility', startIsolatedSlice('recovery-only-compatibility', (signal) => exerciseNativeRecoveryOnlyHostVariant({ descriptor, buildReceipt, signal }))],
+    ['destructive-migration-restoration', startIsolatedSlice('destructive-migration-restoration', (signal) => withIsolatedWorld((rowWorld) => exerciseNativeRestorationMatrix({ stateDir: path.join(rowWorld.root, '.openclaw'), descriptor, buildReceipt, world: rowWorld, signal }), { candidateRoot: process.cwd() }))]
   ]);
   const isolatedRunPromises = new Map();
   // Diagnostic only: do not silently add a new release-matrix requirement.

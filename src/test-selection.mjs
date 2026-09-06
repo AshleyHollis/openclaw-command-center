@@ -1,5 +1,10 @@
 const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs']);
 const browserHeavyTests = new Set([
+  'test/native-operating-mode.test.mjs',
+  'test/first-live-native-ui.test.mjs',
+  'test/native-ui-attention.test.mjs',
+  'test/native-ui-editing.test.mjs',
+  'test/native-ui-page.test.mjs',
   'test/keyboard-batch.test.mjs',
   'test/note-drafts.test.mjs',
   'test/conversation-keyboard-focus.test.mjs',
@@ -31,6 +36,28 @@ const topicPageTicketTests = new Set([
   'topic-search.acceptance.test.mjs'
 ]);
 const issue32TicketTests = new Set([
+  'migration-preservation-bundle.test.mjs',
+  'imported-history-owner.test.mjs',
+  'preserved-history-transcript.test.mjs',
+  'native-release-capture.test.mjs',
+  'test-runtime.test.mjs',
+  'native-compatibility-fixture.test.mjs',
+  'first-live-migration-bindings.test.mjs',
+  'native-operating-mode.test.mjs',
+  'conversation-creation.test.mjs',
+  'conversation-recovery-http.test.mjs',
+  'first-live-registration.test.mjs',
+  'first-live-startup.test.mjs',
+  'first-live-package.test.mjs',
+  'first-live-note-read-only.test.mjs',
+  'first-live-native-ui.test.mjs',
+  'native-ui-attention.test.mjs',
+  'native-startup-capabilities.test.mjs',
+  'note-process-death.test.mjs',
+  'native-ui-editing.test.mjs',
+  'native-note-read.test.mjs',
+  'native-ui-navigation.test.mjs',
+  'native-ui-page.test.mjs',
   'acceptance-finalization.test.mjs',
   'acceptance-report.test.mjs',
   'bridge-contract.test.mjs',
@@ -41,6 +68,7 @@ const issue32TicketTests = new Set([
 ]);
 
 const focusedRealHostScenarios = Object.freeze({
+  'native-control-ui-activation': Object.freeze(['native-control-ui-activation']),
   'startup-authenticated-topic-analysis': Object.freeze(['pinned-host-startup', 'focused-verified-note-locator', 'startup-authenticated-topic-analysis']),
   'session-recovery-contract': Object.freeze(['pinned-host-startup', 'focused-session-recovery']),
   'combined-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'desktop-keyboard-journey', 'desktop-primary-journey-review']),
@@ -54,7 +82,7 @@ const focusedRealHostScenarios = Object.freeze({
   'migrated-scale-conversation-seeding': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding']),
   'desktop-primary-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey']),
   'desktop-review-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'desktop-primary-journey-review']),
-  'desktop-keyboard-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-keyboard-journey']),
+  'desktop-keyboard-journey': Object.freeze(['desktop-keyboard-journey']),
   'mobile-primary-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'mobile-accessibility-journey']),
   'desktop-to-scale-transition': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']),
   'heavy-desktop-to-scale-transition': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-heavy-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']),
@@ -63,7 +91,7 @@ const focusedRealHostScenarios = Object.freeze({
   'heavy-corpus-mutation-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-heavy-corpus-mutation-journey']),
   'repeated-recovery-session-create': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-invalidated-projection-recovery', 'focused-missing-projection-recovery', 'focused-stale-projection-recovery', 'focused-session-create-after-recovery']),
   'scale-workspace-readiness': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'focused-scale-workspace-readiness']),
-  'scale-performance': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'scale-performance', 'verified-activity-readback']),
+  'scale-performance': Object.freeze(['scale-performance']),
   'ui-state-regression': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-ui-state-regression'])
 });
 

@@ -5,7 +5,41 @@ import { sourceError } from '../sources/errors.mjs';
 // for exact sessions.list readback and cleanup.
 const DISPATCH_TIMEOUT_MS = 45_000;
 
-// Construct only inside an authenticated plugin Gateway handler. The pinned
+// Capture the host's admitted identity and request lifetime, never request JSON.
+// The synchronous fence can run inside the owning metadata transaction after
+// native readback. It is not an independent credential reauthentication service.
+export async function createRequestScopedConversationRuntime({ getRequestScope, dispatchGatewayMethod } = {}) {
+  const readScope = getRequestScope ?? (await import('openclaw/plugin-sdk/plugin-runtime')).getPluginRuntimeGatewayRequestScope;
+  const refuse = () => { throw sourceError('unauthenticated', 'The original authenticated Conversation request is no longer available.'); };
+  if (typeof readScope !== 'function') return refuse();
+  const scope = readScope();
+  const client = scope?.client;
+  const profile = client?.authenticatedUserProfile;
+  const principalId = profile?.profileId;
+  const resolver = scope?.resolveGatewayContext;
+  const role = client?.connect?.role;
+  const granted = client?.connect?.scopes;
+  if (scope?.pluginId !== 'command-center' || scope.gatewayMethodDispatchAllowed !== true || typeof principalId !== 'string' || !principalId.trim()
+    || typeof resolver !== 'function' || role !== 'operator' || !Array.isArray(granted)
+    || !granted.every(value => typeof value === 'string') || !granted.some(value => value === 'operator.write' || value === 'operator.admin')) return refuse();
+  const scopes = JSON.stringify([...granted].sort());
+  const context = resolver();
+  if (!context) return refuse();
+  const assertCurrent = () => {
+    if (readScope() !== scope || scope.client !== client || client.authenticatedUserProfile !== profile || profile.profileId !== principalId
+      || scope.pluginId !== 'command-center' || scope.gatewayMethodDispatchAllowed !== true || scope.resolveGatewayContext !== resolver
+      || client.connect?.role !== role || !Array.isArray(client.connect?.scopes) || JSON.stringify([...client.connect.scopes].sort()) !== scopes
+      || resolver() !== context) refuse();
+  };
+  assertCurrent();
+  const request = createRequestScopedGatewayRequest(dispatchGatewayMethod);
+  return Object.freeze({
+    creationAuthority: Object.freeze({ principalId, assertCurrent }),
+    gatewayRequest: async (...args) => { assertCurrent(); return request(...args); }
+  });
+}
+
+// Construct only inside an authenticated plugin HTTP handler. The pinned
 // host binds dispatchGatewayMethod to that request scope and refuses detached
 // plugin calls.
 export function createRequestScopedGatewayRequest(dispatchGatewayMethod) {
@@ -22,7 +56,7 @@ export function createRequestScopedGatewayRequest(dispatchGatewayMethod) {
     if (typeof dispatch !== 'function') throw sourceError('capability-unavailable', 'Authenticated Gateway dispatch is unavailable.');
     const response = await dispatch(method, params, { expectFinal: true, timeoutMs: DISPATCH_TIMEOUT_MS });
     if (!response || response.ok !== true) {
-      const code = typeof response?.error?.code === 'string' ? response.error.code : 'unavailable';
+      const code = typeof response?.error?.code === 'string' ? response.error.code.toLowerCase().replaceAll('_', '-') : 'unavailable';
       throw sourceError(code, `The authenticated ${method} request was refused.`, {
         method,
         retryable: response?.error?.retryable === true

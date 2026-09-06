@@ -4,6 +4,29 @@ import test from 'node:test';
 import { registerBridgeMethods } from '../src/bridge/register.mjs';
 import { validateBridgeRequest } from '../src/bridge/contracts.mjs';
 
+test('Attention uses the canonical host profile across HTTP and WebSocket clients', async (t) => {
+  for (const [name, client, expected] of [
+    ['HTTP profile', { authenticatedUserProfile: { profileId: 'profile-operator' } }, 'profile-operator'],
+    ['WebSocket profile precedes login identity', { authenticatedUserProfile: { profileId: 'profile-operator' }, authenticatedUserId: 'login@example.test' }, 'profile-operator'],
+    ['profile precedes legacy operator identity', { authenticatedUserProfile: { profileId: 'profile-operator' }, authenticatedOperatorId: 'legacy-operator' }, 'profile-operator'],
+    ['invalid profile does not fall back', { authenticatedUserProfile: { profileId: '' }, authenticatedUserId: 'login@example.test' }, null],
+    ['display name is not identity', { authenticatedUserProfile: { displayName: 'Operator' } }, null]
+  ]) await t.test(name, async () => {
+    let handler;
+    let seen;
+    registerBridgeMethods({ registerGatewayMethod(method, value) { if (method === 'command-center.v1.attention.act') handler = value; } }, {
+      attentionAct(input) { seen = input.authenticatedOperatorId; return { schemaVersion: 1, status: 'applied' }; }
+    });
+    let response;
+    await handler({ req: { id: 'profile-request' }, client, context: { authenticated: true }, params: {
+      schemaVersion: 1, topicId: 'topic-1', sourceReferenceId: 'source-1', episodeId: 'episode-1',
+      expectedEpisodeRevision: 1, expectedSourceRevision: 'revision-1', actionId: 'monitor.retry', input: {}, logicalOperationId: randomUUID()
+    }, respond: (...args) => { response = args; } });
+    assert.equal(response[0], expected !== null);
+    assert.equal(seen, expected ?? undefined);
+  });
+});
+
 test('Attention and Activity bridge methods are closed, scoped, and redact bounded projections', async () => {
   const operationId = randomUUID();
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.attention.list', { schemaVersion: 1, limit: 50 }));

@@ -53,7 +53,9 @@ export class AuthoritativeSourceService {
     if (!this.topicServices.has(id) || dynamic) {
       const options = { ...this.defaults, ...extra, metadata: this.metadata, api: this.api, gateway: this.gateway, topicId: id, coordinator: this.coordinator };
       const notes = this.capabilities.notes?.available === false ? null : createNoteAdapter(options);
-      const sessions = this.capabilities.sessions?.available === false || !this.gateway?.request ? null : createSessionAdapter(options);
+      const sessionGateway = extra.sessionGateway ?? this.gateway;
+      const sessionStore = options.sessionStore ?? this.api?.runtime?.agent?.session;
+      const sessions = this.capabilities.sessions?.available === false || (!sessionGateway?.request && !sessionStore?.listSessionEntries) ? null : createSessionAdapter({ ...options, gateway: sessionGateway });
       const schedulerGateway = contextualSchedulerGateway ?? this.gateway;
       const schedulerOptions = { ...options, gateway: schedulerGateway };
       const scheduler = this.capabilities.scheduler?.available === false || !schedulerGateway?.request ? null : createSchedulerAdapter(schedulerOptions);
@@ -81,7 +83,7 @@ export class AuthoritativeSourceService {
     return this.topicServices.get(id);
   }
 
-  requireTopicService(input, { write = false, requiredSourceKinds = [], schedulerGateway } = {}) {
+  requireTopicService(input, { write = false, requiredSourceKinds = [], schedulerGateway, sessionGateway } = {}) {
     const topicId = String(input?.topicId ?? '').trim();
     if (!topicId) throw sourceError('invalid-request', 'topicId must be a non-blank string.');
     if (typeof this.metadata.getTopic !== 'function') throw sourceError('recovery-only', 'Topic ownership metadata is unavailable.');
@@ -93,7 +95,7 @@ export class AuthoritativeSourceService {
       throw sourceError('source-recovery', 'The requested Topic has unresolved authoritative Source Recovery.');
     }
     this.assertTopicReadiness(topic);
-    return this.forTopic(topicId, schedulerGateway ? { schedulerGateway } : {});
+    return this.forTopic(topicId, { ...(schedulerGateway ? { schedulerGateway } : {}), ...(sessionGateway ? { sessionGateway } : {}) });
   }
 
   withSchedulerGateway(runtime, operation) {
@@ -172,6 +174,22 @@ export class AuthoritativeSourceService {
   }
 
   async notesBrowse(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'notes'); return service.notes.browsePage(adapterInput(input)); }
+  async readImportedHistory(action, input, runtime) {
+    const { requestId: _requestId, ...command } = input;
+    const assertCurrent = () => {
+      if (this.closed || typeof runtime?.assertCurrent !== 'function' || runtime.assertCurrent()?.then) throw sourceError('unauthenticated', 'Current history read authority is required.');
+      requireCapability(this.capabilities, 'sessions');
+      if (this.metadata.getOperatingStatus().mode === 'recovery-only') throw sourceError('recovery-only', 'Imported History is unavailable during recovery.');
+    };
+    assertCurrent();
+    if (typeof this.defaults.historyReader !== 'function') throw sourceError('capability-unavailable', 'The preserved history source is not configured.');
+    const reader = await this.defaults.historyReader();
+    assertCurrent();
+    return reader[action](command, assertCurrent);
+  }
+  historiesList(input, runtime) { return this.readImportedHistory('list', input, runtime); }
+  historiesRead(input, runtime) { return this.readImportedHistory('read', input, runtime); }
+  historiesAttachmentRead(input, runtime) { return this.readImportedHistory('attachmentRead', input, runtime); }
   async notesRead(input = {}) {
     const service = this.requireTopicService(input);
     requireCapability(this.capabilities, 'notes');
@@ -202,21 +220,39 @@ export class AuthoritativeSourceService {
       sourceReference: note.sourceReference
     };
   }
-  async guardedNoteMutation(input, operationKind, method) {
-    const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['note_folder'] });
+  async guardedNoteMutation(input, operationKind, method, { reconcileOnly = false } = {}) {
+    const service = this.requireTopicService(input, { write: !reconcileOnly, requiredSourceKinds: ['note_folder'] });
     requireCapability(this.capabilities, 'notes');
+    // Re-enter policy validation after obtaining cross-process ownership, and
+    // keep it through coordinator reconciliation and the durable result receipt.
+    if (service.notes.recovery && !service.notes.recovery.owned) return service.notes.recovery.run(() => this.guardedNoteMutation(input, operationKind, method, { reconcileOnly }));
     this.assertExactNoteReference(input, { create: method === 'create' });
     const execute = () => service.notes[method](adapterInput(input));
-    if (!this.coordinator) return execute();
+    if (!this.coordinator) {
+      if (reconcileOnly) throw sourceError('unknown', 'The durable mutation coordinator is unavailable.');
+      return execute();
+    }
     const logicalOperationId = input.logicalOperationId;
     const { requestId: _requestId, schemaVersion: _schemaVersion, ...intentInput } = input;
-    return this.coordinator.mutate({
+    return this.coordinator[reconcileOnly ? 'reconcile' : 'mutate']({
       operationKind,
       requestId: input.requestId ?? logicalOperationId,
       logicalOperationId,
       intent: intentInput,
       execute,
       reconcile: async ({ applied = false, resultIdentity = null, observedRevision = null } = {}) => {
+        if (service.notes.recovery?.enabled) {
+          const recovered = await service.notes.recovery.reconcile(adapterInput(input), method);
+          if (recovered) return recovered;
+          if (method === 'create') return { outcome: 'unknown' };
+          // Without an inode-proven effect receipt, equal bytes are not evidence
+          // that this logical operation published an externally replaced file.
+          try {
+            const source = await service.notes.read({ path: input.path ?? input.sourcePath ?? input.notePath });
+            return { outcome: source.revision === input.expectedRevision ? 'not-applied' : 'conflict' };
+          } catch (error) { return { outcome: error.code === 'not-found' || error.code === 'ENOENT' ? 'unknown' : 'conflict' }; }
+        }
+        if (reconcileOnly || method === 'create') return { outcome: 'unknown' };
         const targetPath = input.destinationPath ?? input.newPath ?? input.path ?? input.notePath;
         if (!targetPath) return { matched: false };
         const relocation = method === 'rename' || method === 'move';
@@ -259,6 +295,17 @@ export class AuthoritativeSourceService {
   async refreshSearchAfterMutation(_topicId) {
     await this.invalidateSearch({ preserveCommittedProjection: true });
   }
+  async sessionTranscriptUpdated(update, { signal } = {}) {
+    if (signal?.aborted || !this.capabilities.search.available || !this.capabilities.sessions.available) return;
+    const target = update?.target;
+    if (!target || typeof target.sessionKey !== 'string' || !target.sessionKey.startsWith('agent:main:') || typeof target.sessionId !== 'string' || !target.sessionId || target.agentId !== 'main') return;
+    const references = this.metadata.listSourceReferences().filter((reference) => reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session' && effectiveSourceLocator(this.metadata, reference) === target.sessionKey);
+    if (!references.length) return;
+    const exactIdentity = references.length === 1 && this.metadata.getSessionState(references[0].referenceId)?.sessionId === target.sessionId;
+    const refreshed = exactIdentity ? this.searchProvider.reconcile({ signal }) : this.invalidateSearch({ preserveCommittedProjection: true });
+    this.searchRefresh = Promise.all([this.searchRefresh, refreshed]).then(() => {}, () => {});
+    return refreshed;
+  }
   async refreshSearch(_topicId) {
     const rebuild = async () => {
       await this.invalidateSearch();
@@ -273,7 +320,9 @@ export class AuthoritativeSourceService {
     await this.searchRefresh;
   }
   async notesCreate(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.create', 'create'); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async notesCreateReconcile(input = {}) { return this.guardedNoteMutation(input, 'notes.create', 'create', { reconcileOnly: true }); }
   async notesEdit(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.edit', 'edit'); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async notesEditReconcile(input = {}) { return this.guardedNoteMutation(input, 'notes.edit', 'edit', { reconcileOnly: true }); }
   async notesRename(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.rename', 'rename'); await this.refreshSearchAfterMutation(input.topicId); return result; }
   async notesMove(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.move', 'move'); await this.refreshSearchAfterMutation(input.topicId); return result; }
   async sessionsHistory(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); return service.sessions.history(adapterInput(input)); }
@@ -316,7 +365,40 @@ export class AuthoritativeSourceService {
       throw sourceError('source-recovery', 'The exact Primary Session is unavailable; Source Recovery is required before creating a conversation.');
     }
   }
-  async sessionsCreate(input = {}, runtime = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); await this.verifyPrimarySessionForCreate(input.topicId, service.sessions); const result = await service.sessions.create(adapterInput(input), runtime); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async sessionsCreationInspect(input = {}, runtime = {}) {
+    const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] });
+    requireCapability(this.capabilities, 'sessions');
+    if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' });
+    return service.sessions.creationInspect(adapterInput(input), runtime);
+  }
+  async sessionsCreationReconcile(input = {}, runtime = {}) {
+    const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] });
+    requireCapability(this.capabilities, 'sessions');
+    if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' });
+    return service.sessions.creationReconcile(adapterInput(input), runtime);
+  }
+  async sessionsCreationAcknowledge(input = {}, runtime = {}) {
+    const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] });
+    requireCapability(this.capabilities, 'sessions');
+    if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' });
+    return service.sessions.creationAcknowledge(adapterInput(input), runtime);
+  }
+  async sessionsCreate(input = {}, runtime = {}) {
+    const sessionGateway = typeof runtime.gatewayRequest === 'function' ? { request: runtime.gatewayRequest } : undefined;
+    const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'], sessionGateway });
+    requireCapability(this.capabilities, 'sessions');
+    if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' });
+    if ('expectedTopicRevision' in input || runtime.creationAuthority !== undefined) {
+      // The retained owner captures and verifies its original Primary, owns the
+      // dispatch claim, and gates publication after every external await.
+      return service.sessions.create(adapterInput(input), runtime);
+    }
+    // Legacy provisioning/structural callers are not first-live entrypoints.
+    await this.verifyPrimarySessionForCreate(input.topicId, service.sessions);
+    const result = await service.sessions.create(adapterInput(input), runtime);
+    await this.refreshSearchAfterMutation(input.topicId);
+    return result;
+  }
   async sessionsSend(input = {}, runtime = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); const result = await service.sessions.send(adapterInput(input), runtime); await this.refreshSearchAfterMutation(input.topicId); return result; }
   async sessionsClose(input = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); const result = await service.sessions.close(adapterInput(input)); await this.refreshSearchAfterMutation(input.topicId); return result; }
   async sessionsReopen(input = {}) { const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] }); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); const result = await service.sessions.reopen(adapterInput(input)); await this.refreshSearchAfterMutation(input.topicId); return result; }
@@ -451,6 +533,7 @@ export class AuthoritativeSourceService {
   activityList(input = {}) { requireCapability(this.capabilities, 'activity'); const request = { ...input }; delete request.requestId; return this.attentionService?.listActivity(request) ?? { schemaVersion: 1, records: [], nextOffset: null, hasMore: false }; }
   activityGet(input = {}) { requireCapability(this.capabilities, 'activity'); return { schemaVersion: 1, record: this.attentionService?.getActivity(input.activityId) ?? null }; }
   close() {
+    this.closed = true;
     for (const service of this.topicServices.values()) service.notes?.close?.();
     this.topicServices.clear();
   }

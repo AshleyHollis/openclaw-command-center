@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { projectDashboard } from '../src/dashboard/service.mjs';
+import { createReminderAdapter } from '../src/sources/reminders.mjs';
 
 test('dashboard partitions current and future Reminder occurrences and pages Activity', async () => {
   const serverTime = '2026-08-27T12:00:00.000Z';
@@ -44,4 +45,35 @@ test('dashboard partitions current and future Reminder occurrences and pages Act
   const secondPage = await projectDashboard({ sourceService, metadata: { listUsableTopics: () => topics }, now: () => serverTime, activityOffset: result.activity.nextOffset, activityLimit: 50 });
   assert.equal(secondPage.activity.records.length, 1);
   assert.equal(secondPage.activity.hasMore, false);
+});
+
+test('Dashboard Coming Up uses native recurring state through the Reminder adapter', async () => {
+  const instant = (hour) => Date.parse(`2026-08-27T${hour}:00:00.000Z`);
+  const topic = { topicId: 'topic-native-dates', name: 'Fictional Schedule', lifecycle: 'active' };
+  const jobs = [
+    { id: 'every', schedule: { kind: 'every', everyMs: 60_000 }, state: { nextRunAtMs: instant('13') }, nextRunAtMs: instant('20') },
+    { id: 'cron', schedule: { kind: 'cron', expr: '0 0 * * *', tz: 'Australia/Brisbane' }, state: { nextRunAtMs: instant('14') } },
+    { id: 'once', schedule: { kind: 'at', at: new Date(instant('15')).toISOString() }, state: { nextRunAtMs: instant('21') } },
+    { id: 'missing', schedule: { kind: 'every', everyMs: 60_000 }, state: {}, nextRunAtMs: instant('22') },
+    { id: 'past', schedule: { kind: 'every', everyMs: 60_000 }, state: { nextRunAtMs: instant('11') } },
+    { id: 'disabled', enabled: false, schedule: { kind: 'cron', expr: '0 0 * * *' }, state: { nextRunAtMs: instant('16') } }
+  ].map((job) => ({ enabled: true, configRevision: 'config-native', ...job }));
+  const references = jobs.map((job) => ({ referenceId: `reference-${job.id}`, topicId: topic.topicId, sourceSystem: 'scheduler', sourceKind: 'reminder_schedule', externalSourceId: job.id, observedRevision: job.configRevision }));
+  const reminders = createReminderAdapter({ topicId: topic.topicId,
+    metadata: { listSourceReferences: () => references },
+    gateway: { request: async (method, params) => {
+      assert.equal(method, 'cron.list'); assert.deepEqual(params, { includeDisabled: true });
+      return { jobs: [...jobs.toReversed(), jobs[0]] };
+    } }
+  });
+  const result = await projectDashboard({
+    metadata: { listUsableTopics: () => [topic] },
+    sourceService: { forTopic: () => ({ reminders }) },
+    now: () => instant('12'), timeZone: 'UTC'
+  });
+  assert.deepEqual(result.comingUp.map((item) => item.dueAt), [
+    '2026-08-27T13:00:00.000Z', '2026-08-27T14:00:00.000Z', '2026-08-27T15:00:00.000Z'
+  ]);
+  assert.deepEqual(result.comingUp.map((item) => item.time), ['1:00 PM', '2:00 PM', '3:00 PM']);
+  assert.equal(result.attentionBadgeCount, 0);
 });

@@ -1,5 +1,7 @@
 import { BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, sanitizeBridgeResult, validateBridgeRequest } from './contracts.mjs';
 import { assertNoUnexpectedKeys, errorResult, nonBlank, SourceServiceError } from '../sources/errors.mjs';
+import { assertFirstLiveCommand, FIRST_LIVE_COMMANDS, FIRST_LIVE_FEATURES } from '../release-scope.mjs';
+import { captureHistoryReadAuthority } from './read-authority.mjs';
 
 const schedulerRuntimeMethods = new Set([
   'command-center.v1.reminders.list',
@@ -57,6 +59,9 @@ export function createAuthenticatedCoreGateway({ req, client, context, isWebchat
 }
 
 const handlerMap = Object.freeze({
+  'command-center.v1.histories.list': (service, params, runtime) => service.historiesList(params, runtime),
+  'command-center.v1.histories.read': (service, params, runtime) => service.historiesRead(params, runtime),
+  'command-center.v1.histories.attachment-read': (service, params, runtime) => service.historiesAttachmentRead(params, runtime),
   'command-center.v1.sources.status': (service) => service.status(),
   'command-center.v1.migration.status': (service) => service.migrationStatus(),
   'command-center.v1.migration.review-failures': (service) => service.migrationReview(),
@@ -64,7 +69,11 @@ const handlerMap = Object.freeze({
   'command-center.v1.topics.list': async (service) => service.topics.listDestinationVerified ? service.topics.listDestinationVerified() : service.topics.listDestination(),
   'command-center.v1.topics.get': async (service, params) => ({ topic: service.topics.getVerified ? await service.topics.getVerified(params.topicId) : service.topics.get(params.topicId) }),
   'command-center.v1.topics.recovery.status': async (service, params) => ({ recovery: await service.topics.inspectSourceRecovery(params) }),
-  'command-center.v1.topics.create': async (service, params) => { const { authoritativeSession, ...input } = params; return { value: await service.topics.create(input, { authoritativeSession }) }; },
+  'command-center.v1.topics.create': async (service, params, runtime) => {
+    const { authoritativeSession, ...input } = params;
+    if (authoritativeSession === undefined && typeof runtime?.gatewayRequest !== 'function') throw new SourceServiceError('capability-unavailable', 'Topic creation requires authenticated HTTP dispatch.');
+    return { value: await service.topics.create(input, { ...runtime, authoritativeSession }) };
+  },
   'command-center.v1.topics.provisioning.retry': async (service, params, runtime) => ({ value: await service.topics.provisioningRetry(params, runtime) }),
   'command-center.v1.topics.provisioning.rollback': async (service, params) => ({ value: await service.topics.provisioningRollback(params) }),
   'command-center.v1.topics.rename': async (service, params) => ({ value: await service.topics.rename(params) }),
@@ -147,15 +156,19 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
       try {
         if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
         if (!mutationsAllowed && WRITE_METHODS.includes(method)) throw new SourceServiceError('capability-unavailable', 'Control UI mutation grant is unavailable.');
-        service.notificationCaptureBinding?.();
-        const authenticatedOperatorId = typeof client?.authenticatedOperatorId === 'string' && client.authenticatedOperatorId.trim() !== ''
-          ? client.authenticatedOperatorId
-          : typeof client?.authenticatedUserId === 'string' && client.authenticatedUserId.trim() !== ''
-            ? client.authenticatedUserId
-            : null;
+        assertFirstLiveCommand('bridge', method);
+        if (FIRST_LIVE_FEATURES.notifications) service.notificationCaptureBinding?.();
+        // The host profile is canonical across HTTP and WebSocket. An invalid
+        // profile must not switch an approval to a login label or legacy owner.
+        const principal = client?.authenticatedUserProfile !== undefined
+          ? client.authenticatedUserProfile?.profileId
+          : client?.authenticatedOperatorId ?? client?.authenticatedUserId;
+        const authenticatedOperatorId = typeof principal === 'string' && principal.trim() !== '' ? principal : null;
         if (method === 'command-center.v1.attention.act' && authenticatedOperatorId === null) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
         const operatorId = method.startsWith('command-center.v1.attention.') ? authenticatedOperatorId : null;
         let runtime = {};
+        const assertHistoryRead = method.startsWith('command-center.v1.histories.') ? captureHistoryReadAuthority({ client, context, signal }) : null;
+        if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
         if (schedulerRuntimeMethods.has(method) && client) runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;
         if (method === 'command-center.v1.sessions.send' && client && typeof coreSessionSend === 'function') {
@@ -177,8 +190,18 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
           const agentTurn = await context.createAgentTurnFacade({ client, isWebchatConnect, assertContextCurrent: sessionMutationAuthorization?.assertCurrent });
           runtime = { agentTurnDispatch: ({ sessionKey, sessionId, message, runId }) => agentTurn.dispatch({ message, agentId: 'main', sessionKey, sessionId, expectedExistingSessionId: sessionId, channel: 'webchat', deliver: false, idempotencyKey: runId }, { signal }) };
         }
-        const result = await invokeBridgeMethod(handlerService, method, params, requestId, operatorId, runtime);
+        const sourceResult = await invokeBridgeMethod(handlerService, method, params, requestId, operatorId, runtime);
+        // Keep durable migration failures visible without offering commands
+        // that this release refuses. The migration owner's full contract stays
+        // unchanged for future releases and bootstrap recovery.
+        const result = ['command-center.v1.migration.status', 'command-center.v1.migration.review-failures'].includes(method)
+          ? { ...sourceResult, actions: (sourceResult.actions ?? []).filter(action => FIRST_LIVE_COMMANDS.bridge.includes(action.method)) }
+          : sourceResult;
         const logicalOperationId = params.logicalOperationId ?? null;
+        if (assertHistoryRead) {
+          if (Buffer.byteLength(JSON.stringify({ schemaVersion: 1, status: 'applied', requestId, logicalOperationId, result })) > 786_432) throw new SourceServiceError('source-recovery', 'The history response exceeds the bounded page size.');
+          assertHistoryRead();
+        }
         respond(true, { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId, result });
       } catch (error) {
         respond(false, null, errorResult(error, { requestId, logicalOperationId: params?.logicalOperationId ?? null }));

@@ -1,7 +1,7 @@
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
-import { serveShellAsset } from './asset-handler.mjs';
 import { registerBridgeMethods, registerNativeSessionNavigation } from './bridge/register.mjs';
-import { legacyDiscordMigrationConfigSchema } from './migration/config.mjs';
+import { createRequestScopedConversationRuntime } from './bridge/gateway-method-dispatch.mjs';
+import { pluginConfigSchema } from './plugin-config.mjs';
 import { createAttentionActionHandler } from './attention/http-route.mjs';
 import { createMetadataService } from './plugin-service.mjs';
 import { topicContextToolFactory } from './search/tool.mjs';
@@ -11,7 +11,7 @@ import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandl
 import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
 import { createTopicPageActionsHandler } from './topics/page-http.mjs';
 import { createSearchRebuildHttpHandler, searchRebuildRoute } from './search/http-route.mjs';
-import { assertCapabilityBridgeDeclaration } from './compatibility.mjs';
+import { assertFirstLiveTopicAction, FIRST_LIVE_FEATURES } from './release-scope.mjs';
 
 export { runNoteMaintenance } from './plugin-service.mjs';
 
@@ -19,17 +19,16 @@ export const pluginId = 'command-center';
 export const routeId = 'command-center';
 export const pluginPath = '/plugins/command-center';
 
-const assets = new Map([
-  [`${pluginPath}`, ['index.html', 'text/html; charset=utf-8']],
-  [`${pluginPath}/styles.css`, ['styles.css', 'text/css; charset=utf-8']],
-  [`${pluginPath}/markdown.js`, ['markdown.js', 'text/javascript; charset=utf-8']],
-  [`${pluginPath}/app.js`, ['app.js', 'text/javascript; charset=utf-8']]
-]);
+const legacyPaths = [pluginPath, `${pluginPath}/styles.css`, `${pluginPath}/markdown.js`, `${pluginPath}/app.js`];
 
 /** @typedef {import('openclaw/plugin-sdk/plugin-entry').OpenClawPluginApi} OpenClawPluginApi */
 
-async function serveShell(req, res) {
-  return serveShellAsset(req, res, { assets });
+function unavailableFirstLiveFeature(_req, res) {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.statusCode = 501;
+  res.end(JSON.stringify({ schemaVersion: 1, status: 'error', code: 'feature-unavailable', retryable: false, message: 'This feature is not available in the first live release. Use the native Topics page.' }));
+  return true;
 }
 
 function gateControlUiMutation(handler, allowed) {
@@ -48,38 +47,30 @@ export default definePluginEntry({
   id: pluginId,
   name: 'Command Center',
   description: 'A responsive Command Center control destination.',
-  configSchema: { type: 'object', properties: { legacyDiscordMigration: legacyDiscordMigrationConfigSchema, topics: { type: 'object', properties: { noteRoot: { type: 'string', minLength: 1, pattern: '\\S' } }, required: ['noteRoot'], additionalProperties: false }, sourceCapabilities: { type: 'object', properties: Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'search', 'analysis', 'attention'].map((name) => [name, { const: false }])), additionalProperties: false }, controlUiGrant: { const: false } }, additionalProperties: false },
+  configSchema: pluginConfigSchema,
   /** @param {OpenClawPluginApi} api */
   register(api) {
-    const descriptor = {
-      surface: 'tab', id: routeId, label: 'Command Center', group: 'control', path: pluginPath,
-      capabilityBridge: {
-        protocolVersion: 1,
-        sessionNavigationResolver: 'command-center.v1.sessions.resolve-native',
-        requiredMethods: [
-          'command-center.v1.sources.status', 'command-center.v1.dashboard.get',
-          'command-center.v1.topics.list', 'command-center.v1.topics.get',
-          'command-center.v1.sessions.browse', 'command-center.v1.sessions.history',
-          'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send',
-          'command-center.v1.attention.act', 'command-center.v1.notes.browse',
-          'command-center.v1.notes.read', 'command-center.v1.search.query',
-          'command-center.v1.search.prepare-rebuild', 'sessions.create', 'ui.session.navigateResolved',
-          'command-center.v1.sessions.resolve-native'
-        ],
-        optionalMethods: []
-      }
-    };
-    // Fail before emitters, runtime services, methods, or HTTP routes acquire side effects.
-    assertCapabilityBridgeDeclaration(descriptor.capabilityBridge);
+    api.registerCli?.(async context => {
+      const { registerReconciliationCli } = await import('./migration/reconcile-cli.mjs');
+      registerReconciliationCli(context);
+    }, { descriptors: [{ name: 'command-center', description: 'Command Center existing-data reconciliation', hasSubcommands: true }] });
+    // Metadata discovery registers only lazy CLI declarations and must not
+    // acquire the full activation's services or notification emitter.
+    if (api.registrationMode === 'cli-metadata') return;
+    // Native contributions and exact HTTP capabilities are declared in the
+    // manifest. The host owns authentication; no iframe grant is manufactured.
     const controlUiMutationsAllowed = api.pluginConfig?.controlUiGrant !== false;
-    if (typeof api.notifications?.registerEmitter !== 'function') throw new Error('Command Center requires the published notification emitter API.');
-    const notificationEmitter = api.notifications.registerEmitter({
-      version: 1,
-      id: 'command-center-attention-v1',
-      requiredScopes: ['operator.read'],
-      destinations: [{ id: 'attention-card', tabId: routeId }]
-    });
-    if (!notificationEmitter || typeof notificationEmitter.bindCurrentOperator !== 'function') throw new Error('Command Center notification emitter registration was refused.');
+    let notificationEmitter;
+    if (FIRST_LIVE_FEATURES.notifications) {
+      if (typeof api.notifications?.registerEmitter !== 'function') throw new Error('Command Center requires the published notification emitter API.');
+      notificationEmitter = api.notifications.registerEmitter({
+        version: 1,
+        id: 'command-center-attention-v1',
+        requiredScopes: ['operator.read'],
+        destinations: [{ id: 'attention-card', pageId: 'attention' }]
+      });
+      if (!notificationEmitter || typeof notificationEmitter.bindCurrentOperator !== 'function') throw new Error('Command Center notification emitter registration was refused.');
+    }
     const service = createMetadataService(api, { notificationEmitter });
     api.lifecycle?.registerRuntimeLifecycle?.({ id: 'command-center-notifications', cleanup: ({ reason }) => {
       // Session reset/delete is not a plugin shutdown: Topic services and
@@ -126,69 +117,68 @@ export default definePluginEntry({
         return sourceProxy[property];
       }
     });
-    // This public SDK seam asks Control UI to render the route in its default
-    // scripts-only frame. Gateway auth makes the host mint a frame grant.
-    if (controlUiMutationsAllowed) api.session.controls.registerControlUiDescriptor(descriptor);
-    for (const path of assets.keys()) {
+    // Old bookmarks must not open a second UI that advertises deferred writes.
+    // Native module assets are served by the host's declared plugin UI loader.
+    for (const path of legacyPaths) {
       api.registerHttpRoute({
         path,
         auth: path === pluginPath ? 'gateway' : 'plugin',
         match: 'exact',
-        handler: serveShell
+        handler: unavailableFirstLiveFeature
       });
     }
     api.registerHttpRoute({
       path: '/plugins/command-center/api/attention/actions',
-      auth: 'plugin',
+      auth: 'gateway',
       match: 'exact',
-      handler: gateControlUiMutation(createAttentionActionHandler(serviceProxy), controlUiMutationsAllowed)
+      handler: gateControlUiMutation(FIRST_LIVE_FEATURES.dashboard ? createAttentionActionHandler(serviceProxy) : unavailableFirstLiveFeature, controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/dashboard',
-      auth: 'plugin',
+      auth: 'gateway',
       match: 'exact',
-      handler: createDashboardReadHttpHandler(serviceProxy)
+      handler: FIRST_LIVE_FEATURES.dashboard ? createDashboardReadHttpHandler(serviceProxy) : unavailableFirstLiveFeature
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/dashboard/actions',
-      auth: 'plugin',
+      auth: 'gateway',
       match: 'exact',
-      handler: gateControlUiMutation(createDashboardActionsHttpHandler(serviceProxy), controlUiMutationsAllowed)
+      handler: gateControlUiMutation(FIRST_LIVE_FEATURES.notifications ? createDashboardActionsHttpHandler(serviceProxy) : unavailableFirstLiveFeature, controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topics/actions',
-      auth: 'plugin',
+      auth: 'gateway',
       match: 'exact',
-      handler: gateControlUiMutation(createTopicsHttpHandler(serviceProxy), controlUiMutationsAllowed)
+      handler: gateControlUiMutation(FIRST_LIVE_FEATURES.topicProvisioning || FIRST_LIVE_FEATURES.structuralChanges ? createTopicsHttpHandler(serviceProxy) : unavailableFirstLiveFeature, controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topic/actions',
-      auth: 'plugin',
+      auth: 'gateway',
       match: 'exact',
-      handler: gateControlUiMutation(createTopicPageActionsHandler(serviceProxy), controlUiMutationsAllowed)
+      handler: gateControlUiMutation(createTopicPageActionsHandler(serviceProxy, { assertAction: assertFirstLiveTopicAction, createConversationRuntime: createRequestScopedConversationRuntime }), controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: searchRebuildRoute,
-      auth: 'plugin',
+      auth: 'gateway',
       match: 'exact',
-      handler: gateControlUiMutation(createSearchRebuildHttpHandler(serviceProxy), controlUiMutationsAllowed)
+      handler: gateControlUiMutation(FIRST_LIVE_FEATURES.search ? createSearchRebuildHttpHandler(serviceProxy) : unavailableFirstLiveFeature, controlUiMutationsAllowed)
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topic-analysis',
-      auth: 'plugin',
+      auth: 'gateway',
       match: 'exact',
-      handler: createTopicAnalysisReadHttpHandler(serviceProxy)
+      handler: FIRST_LIVE_FEATURES.analysis ? createTopicAnalysisReadHttpHandler(serviceProxy) : unavailableFirstLiveFeature
     });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/topic-analysis/actions',
-      auth: 'plugin',
+      auth: 'gateway',
       match: 'exact',
-      handler: gateControlUiMutation(createTopicAnalysisActionsHttpHandler(serviceProxy), controlUiMutationsAllowed)
+      handler: gateControlUiMutation(FIRST_LIVE_FEATURES.analysis ? createTopicAnalysisActionsHttpHandler(serviceProxy) : unavailableFirstLiveFeature, controlUiMutationsAllowed)
     });
     registerBridgeMethods(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
     registerNativeSessionNavigation(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
-    api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });
-    api.registerTool(topicAnalysisToolFactory({ run: (input) => service.topicAnalysisRun(input) }), { name: 'command_center_topic_analysis', optional: true });
+    if (FIRST_LIVE_FEATURES.search) api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });
+    if (FIRST_LIVE_FEATURES.analysis) api.registerTool(topicAnalysisToolFactory({ run: (input) => service.topicAnalysisRun(input) }), { name: 'command_center_topic_analysis', optional: true });
     api.registerService(service);
   }
 });

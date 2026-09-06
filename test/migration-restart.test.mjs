@@ -5,8 +5,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
-import { legacyDiscordMigrationConfigDigest } from '../src/migration/config.mjs';
+import { createMigrationFixtureService } from './fixtures/migration-folders.mjs';
 
 const fixturePath = new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url).pathname;
 const config = { schemaVersion: 1, exportPath: fixturePath, channels: [{ channelId: 'fictional-channel-alpha', topicId: 'fictional-topic-restart', paraCategory: 'project', noteFolderPath: '/fictional/vault/restart' }] };
@@ -51,7 +50,7 @@ test('an interruption after a durable checkpoint converges without duplicate eve
     const transcripts = runtime();
     let interrupted = true;
     const gateway = { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-session-restart' }) };
-    const service = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined, hooks: { afterAppend() { if (interrupted) { interrupted = false; throw new Error('fictional interruption'); } } } });
+    const service = createMigrationFixtureService({ metadata, config, gateway, transcriptRuntime: transcripts, hooks: { afterAppend() { if (interrupted) { interrupted = false; throw new Error('fictional interruption'); } } } });
     assert.equal((await service.start()).complete, false);
     assert.equal(metadata.getMigrationState().phase, 'review');
     assert.equal(metadata.getTopicName('fictional-topic-restart'), 'Fictional Alpha');
@@ -76,12 +75,12 @@ test('a reopened transcript and metadata ledger reconcile an append with no chec
     const gateway = { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-session-durable-restart' }) };
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
     let interrupted = true;
-    const first = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime: durableRuntime(transcriptPath), folderVerifier: async () => undefined, hooks: { afterAuthoritativeAppend() { if (interrupted) { interrupted = false; throw new Error('fictional crash before checkpoint acknowledgement'); } } } });
+    const first = createMigrationFixtureService({ metadata, config, gateway, transcriptRuntime: durableRuntime(transcriptPath), hooks: { afterAuthoritativeAppend() { if (interrupted) { interrupted = false; throw new Error('fictional crash before checkpoint acknowledgement'); } } } });
     assert.equal((await first.start()).phase, 'review');
     assert.equal(metadata.listMigrationOccurrences('fictional-channel-alpha')[0].destinationMessageId, null);
     metadata.close();
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
-    const second = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime: durableRuntime(transcriptPath), folderVerifier: async () => undefined });
+    const second = createMigrationFixtureService({ metadata, config, gateway, transcriptRuntime: durableRuntime(transcriptPath) });
     assert.equal((await second.resume({ logicalOperationId: randomUUID(), expectedMigrationRevision: metadata.getMigrationState().revision })).complete, true);
     const persisted = JSON.parse(await readFile(transcriptPath, 'utf8'))['agent:main:command-center:legacy-discord:fictional-channel-alpha'];
     assert.deepEqual(persisted.map((event) => event.message.__openclaw.legacyDiscordV1.displayOrder), [0, 1]);
@@ -97,10 +96,10 @@ test('concurrent Resume requests converge and durably complete both logical oper
     const transcripts = runtime();
     const gateway = { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-session-concurrent-resume' }) };
     let interrupted = true;
-    await createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined, hooks: { afterAuthoritativeAppend() { if (interrupted) { interrupted = false; throw new Error('fictional concurrent resume setup'); } } } }).start();
+    await createMigrationFixtureService({ metadata, config, gateway, transcriptRuntime: transcripts, hooks: { afterAuthoritativeAppend() { if (interrupted) { interrupted = false; throw new Error('fictional concurrent resume setup'); } } } }).start();
     const expectedMigrationRevision = metadata.getMigrationState().revision;
     const operationIds = [randomUUID(), randomUUID()];
-    const services = operationIds.map(() => createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined }));
+    const services = operationIds.map(() => createMigrationFixtureService({ metadata, config, gateway, transcriptRuntime: transcripts }));
     const results = await Promise.all(services.map((service, index) => service.resume({ logicalOperationId: operationIds[index], expectedMigrationRevision })));
     assert.equal(results.every((result) => result.complete), true);
     const events = transcripts.sessions.get('agent:main:command-center:legacy-discord:fictional-channel-alpha');
@@ -120,10 +119,10 @@ test('an interruption after Session binding reuses the deterministic Primary Ses
     let sessionCreates = 0;
     const gateway = { request: async (method, params) => { if (method === 'sessions.create') sessionCreates += 1; return { ['k' + 'ey']: params.key, sessionId: 'fictional-session-binding' }; } };
     const configWithBinding = { ...config, channels: [{ ...config.channels[0], topicId: 'fictional-topic-binding' }] };
-    const first = createLegacyDiscordMigrationService({ metadata, config: configWithBinding, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined, hooks: { afterProvisioningBinding() { if (interrupted) { interrupted = false; throw new Error('fictional binding interruption'); } } } });
+    const first = createMigrationFixtureService({ metadata, config: configWithBinding, gateway, transcriptRuntime: transcripts, hooks: { afterProvisioningBinding() { if (interrupted) { interrupted = false; throw new Error('fictional binding interruption'); } } } });
     assert.equal((await first.start()).complete, false);
     assert.equal(metadata.getMigrationChannel('fictional-channel-alpha'), null);
-    const second = createLegacyDiscordMigrationService({ metadata, config: configWithBinding, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined });
+    const second = createMigrationFixtureService({ metadata, config: configWithBinding, gateway, transcriptRuntime: transcripts });
     assert.equal((await second.start()).complete, true);
     assert.equal(sessionCreates, 1);
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
@@ -149,8 +148,8 @@ test('Topic and host Session creation boundaries resume from durable migration o
       const hooks = boundary === 'topic'
         ? { afterTopicBinding() { if (interrupted) { interrupted = false; throw new Error('fictional Topic boundary interruption'); } } }
         : { afterSessionCreate() { if (interrupted) { interrupted = false; throw new Error('fictional Session boundary interruption'); } } };
-      assert.equal((await createLegacyDiscordMigrationService({ metadata, config: boundaryConfig, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined, hooks }).start()).complete, false);
-      assert.equal((await createLegacyDiscordMigrationService({ metadata, config: boundaryConfig, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined }).start()).complete, true);
+      assert.equal((await createMigrationFixtureService({ metadata, config: boundaryConfig, gateway, transcriptRuntime: transcripts, hooks }).start()).complete, false);
+      assert.equal((await createMigrationFixtureService({ metadata, config: boundaryConfig, gateway, transcriptRuntime: transcripts }).start()).complete, true);
       assert.equal(creates, 1);
     } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
   }
@@ -165,11 +164,11 @@ test('an ordinary suffix blocks resume before another imported append', async ()
     let interrupted = true;
     const suffixConfig = { ...config, channels: [{ ...config.channels[0], topicId: 'fictional-topic-suffix' }] };
     const gateway = { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-session-suffix' }) };
-    await createLegacyDiscordMigrationService({ metadata, config: suffixConfig, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined, hooks: { afterAppend() { if (interrupted) { interrupted = false; throw new Error('fictional interruption'); } } } }).start();
+    await createMigrationFixtureService({ metadata, config: suffixConfig, gateway, transcriptRuntime: transcripts, hooks: { afterAppend() { if (interrupted) { interrupted = false; throw new Error('fictional interruption'); } } } }).start();
     const events = transcripts.sessions.values().next().value;
     events.push({ id: 'fictional-ordinary-suffix', parentId: events.at(-1).id, message: { role: 'user', content: 'ordinary suffix', text: 'ordinary suffix' } });
     const before = events.length;
-    const resumed = await createLegacyDiscordMigrationService({ metadata, config: suffixConfig, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined }).start();
+    const resumed = await createMigrationFixtureService({ metadata, config: suffixConfig, gateway, transcriptRuntime: transcripts }).start();
     assert.equal(resumed.phase, 'review');
     assert.equal(events.length, before);
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
@@ -181,8 +180,7 @@ test('an orphaned deterministic Session reference is reconciled through the auth
   try {
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
     const gapConfig = { ...config, channels: [{ ...config.channels[0], topicId: 'fictional-topic-session-gap' }] };
-    metadata.createTopic({ topicId: 'fictional-topic-session-gap', paraCategory: 'project', lifecycle: 'provisioning' });
-    metadata.createSourceReference({ version: 1, referenceId: 'migration:folder:fictional-channel-alpha', topicId: 'fictional-topic-session-gap', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/vault/restart', observedRevision: `legacy-discord-owner:${legacyDiscordMigrationConfigDigest(gapConfig)}` });
+    await createMigrationFixtureService({ metadata, config: gapConfig, gateway: { request: async () => ({ sessions: [] }) }, hooks: { afterTopicBinding() { throw new Error('fictional interruption after atomic folder binding'); } } }).start();
     metadata.createSourceReference({ version: 1, referenceId: 'migration:session:fictional-channel-alpha', topicId: 'fictional-topic-session-gap', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:command-center:legacy-discord:fictional-channel-alpha', observedRevision: null });
     let creates = 0;
     const listOffsets = [];
@@ -195,7 +193,7 @@ test('an orphaned deterministic Session reference is reconciled through the auth
       }
       return {};
     } };
-    const service = createLegacyDiscordMigrationService({ metadata, config: gapConfig, gateway, transcriptRuntime: runtime(), folderVerifier: async (value) => value });
+    const service = createMigrationFixtureService({ metadata, config: gapConfig, gateway, transcriptRuntime: runtime() });
     assert.equal((await service.start()).complete, true);
     assert.equal(creates, 0);
     assert.deepEqual(listOffsets, [0, 100, 0, 100]);
@@ -230,7 +228,7 @@ test('strict identity append and verification use the pinned host runtime', asyn
         });
       }
     };
-    const service = createLegacyDiscordMigrationService({ metadata, config: { ...config, channels: [{ ...config.channels[0], topicId: 'fictional-topic-locked-append' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-session-locked-append' }) }, transcriptRuntime, folderVerifier: async (value) => value });
+    const service = createMigrationFixtureService({ metadata, config: { ...config, channels: [{ ...config.channels[0], topicId: 'fictional-topic-locked-append' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-session-locked-append' }) }, transcriptRuntime });
     assert.equal((await service.start()).complete, true);
     assert.equal(sessions.values().next().value.length, 2);
     assert.equal(strictAppends, 2);
@@ -244,7 +242,7 @@ test('a checkpoint ahead of its append is reconciled from the authoritative tran
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
     const transcripts = runtime();
     let interrupted = true;
-    const service = createLegacyDiscordMigrationService({ metadata, config: { ...config, channels: [{ ...config.channels[0], topicId: 'fictional-topic-checkpoint-ahead' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-session-checkpoint-ahead' }) }, transcriptRuntime: transcripts, folderVerifier: async () => undefined, hooks: { beforePhase({ phase }) { if (phase === 'importing' && interrupted) { interrupted = false; const row = metadata.getMigrationChannel('fictional-channel-alpha'); metadata.setMigrationChannel({ ...row, phase: 'importing', importedCount: 1, importedDigest: 'sha256:' + '1'.repeat(64), nextOrdinal: 1, updatedAt: new Date().toISOString() }); throw new Error('fictional checkpoint-only interruption'); } } } });
+    const service = createMigrationFixtureService({ metadata, config: { ...config, channels: [{ ...config.channels[0], topicId: 'fictional-topic-checkpoint-ahead' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-session-checkpoint-ahead' }) }, transcriptRuntime: transcripts, hooks: { beforePhase({ phase }) { if (phase === 'importing' && interrupted) { interrupted = false; const row = metadata.getMigrationChannel('fictional-channel-alpha'); metadata.setMigrationChannel({ ...row, phase: 'importing', importedCount: 1, importedDigest: 'sha256:' + '1'.repeat(64), nextOrdinal: 1, updatedAt: new Date().toISOString() }); throw new Error('fictional checkpoint-only interruption'); } } } });
     assert.equal((await service.start()).complete, false);
     assert.equal((await service.resume({ logicalOperationId: randomUUID(), expectedMigrationRevision: metadata.getMigrationState().revision })).complete, true);
     const reference = metadata.listSourceReferences('fictional-topic-checkpoint-ahead').find((item) => item.sourceKind === 'session');

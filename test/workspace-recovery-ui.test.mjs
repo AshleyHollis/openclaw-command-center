@@ -17,7 +17,7 @@ test('delayed Topic rename preserves row focus without stealing outside focus', 
       const destination = { activeGroups: { project: topics }, provisioning: [], recovery: [], archived: [] };
       renderDestination(destination);
       statusNode.textContent = 'Topic renamed.';
-      window.fetch = async (_url, options) => new Promise((resolve) => {
+      relayHttp = async (_url, options) => new Promise((resolve) => {
         const input = JSON.parse(options.body);
         globalThis.completeRename = () => {
           const topic = topics.find((item) => item.topicId === input.topicId);

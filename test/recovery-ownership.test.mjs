@@ -9,8 +9,10 @@ import { createSessionAdapter } from '../src/sources/sessions.mjs';
 import { readConversationSourceSnapshot } from '../src/search/source-snapshot.mjs';
 import { createTopicSearchService } from '../src/search/service.mjs';
 import { rebuildTopicSearchProjections } from '../src/search/rebuild.mjs';
+import { createTopicContextPolicy } from '../src/search/context.mjs';
+import { topicContextToolFactory } from '../src/search/tool.mjs';
 
-test('relink commits binding and recovery together, replays after restart, and search navigates the effective Session', async () => {
+test('relink commits binding and recovery together, replays after restart, and binds Search and Topic context to the effective Session', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-relink-owner-'));
   let metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true, notes: true } });
   const topicId = 'fictional-topic'; const referenceId = 'fictional-session';
@@ -39,6 +41,8 @@ test('relink commits binding and recovery together, replays after restart, and s
     assert.deepEqual(await recovery.relink(input), result);
     assert.equal(metadata.getSourceReference(referenceId).externalSourceId, 'agent:main:fictional-original', 'identity must not be rewritten to a locator');
     assert.equal(metadata.getSourceLocator(referenceId).locator, sessionKey);
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true, notes: true } });
     const adapter = createSessionAdapter({ topicId, metadata, gateway });
     assert.equal((await adapter.navigate({ referenceId })).sessionKey, sessionKey);
     for (const useReader of [false, true]) {
@@ -54,6 +58,13 @@ test('relink commits binding and recovery together, replays after restart, and s
       assert.equal(results.conversations.results.length, 1);
       assert.equal((await search.navigate(results.conversations.results[0].navigation)).navigation.sessionKey, sessionKey);
       await assert.rejects(search.navigate({ ...results.conversations.results[0].navigation, sessionKey: 'agent:main:fictional-original' }), /stale|foreign/);
+      const contextTool = topicContextToolFactory(createTopicContextPolicy({ metadata, searchService: search }));
+      await assert.rejects(contextTool({ sessionKey: 'agent:main:fictional-original' }).execute('obsolete-session', { query: 'alpha' }), (error) => error.code === 'source-recovery');
+      const context = (await contextTool({ sessionKey }).execute('relinked-session', { query: 'alpha' })).details;
+      assert.equal(context.currentTopic.topicId, topicId);
+      assert.equal(context.groups.conversations[0].sourceReference.referenceId, referenceId);
+      assert.equal(context.groups.conversations[0].navigation.sessionKey, sessionKey);
+      assert.equal(metadata.getSourceReference(referenceId).externalSourceId, 'agent:main:fictional-original');
       search.close?.();
     }
   } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }

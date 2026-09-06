@@ -10,8 +10,8 @@ import { boundedTrafficEvidence, describeTrafficEvidence, TrafficGuard } from '.
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 export const pinnedHost = Object.freeze({
   // The evaluator checkout is the exact signed stable-release source commit.
-  packageVersion: '2026.9.1',
-  commit: '2309e6542d0ba631178c8e647a2dc8b4763651bd',
+  packageVersion: '2026.9.2',
+  commit: 'c1d67aaa14b62d6172cd2c57f8b3ceff9aed350f',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
@@ -147,13 +147,18 @@ export function redact(text, maximum = 4096) {
 }
 
 export function classifyHostOutput(text) {
+  return hostOutputCategories(text)[0];
+}
+
+function hostOutputCategories(text) {
   // Classification never emits this input. Do not apply the diagnostics cap
   // here: a host can report a fatal marker after more than 4096 bytes of
   // harmless output.
   const output = String(text);
-  if (/plugin not found:\s*command-center/i.test(output)) return 'plugin-not-found';
-  if (/(?:bootstrap|authentication)[^\n]*(?:failed|failure|error|denied)|(?:failed|failure|error|denied)[^\n]*(?:bootstrap|authentication)/i.test(output)) return 'bootstrap-authentication-failure';
-  return undefined;
+  const categories = [];
+  if (/plugin not found:\s*command-center/i.test(output)) categories.push('plugin-not-found');
+  if (/(?:bootstrap|authentication)[^\n]*(?:failed|failure|error|denied)|(?:failed|failure|error|denied)[^\n]*(?:bootstrap|authentication)/i.test(output)) categories.push('bootstrap-authentication-failure');
+  return categories;
 }
 
 /**
@@ -161,19 +166,32 @@ export function classifyHostOutput(text) {
  * stream chunks. This state is intentionally separate from bounded redacted
  * diagnostics, which must stop retaining output after their cap.
  */
-export function createHostOutputClassifier() {
+export function createHostOutputClassifier(diagnostics) {
   let tail = '';
+  if (diagnostics) diagnostics.fatalCategories ??= [];
   return (chunk) => {
     const output = `${tail}${String(chunk)}`;
     tail = output.slice(-hostOutputClassifierTailLength);
-    return classifyHostOutput(output);
+    const categories = hostOutputCategories(output);
+    if (diagnostics) {
+      // Retain the first readiness failure, but keep checking drained output.
+      // The closed category vocabulary bounds this evidence independently of logs.
+      diagnostics.category ||= categories[0];
+      for (const category of categories) if (!diagnostics.fatalCategories.includes(category)) diagnostics.fatalCategories.push(category);
+    }
+    return categories[0];
   };
 }
 
 /** Fail finalization when a fatal marker arrived after readiness. */
-export function assertNoFatalHostOutput(diagnostics) {
-  if (diagnostics?.category) {
-    throw new HarnessFailure(diagnostics.category, `Host reported ${diagnostics.category}`);
+export function assertNoFatalHostOutput(diagnostics, { expectedPluginNotFound = false } = {}) {
+  if (expectedPluginNotFound && (!Array.isArray(diagnostics?.fatalCategories) || !diagnostics.fatalCategories.includes('plugin-not-found'))) {
+    throw new Error('Expected plugin rejection requires complete fatal output category evidence.');
+  }
+  const categories = new Set([...(diagnostics?.fatalCategories ?? []), ...(diagnostics?.category ? [diagnostics.category] : [])]);
+  for (const category of categories) {
+    if (expectedPluginNotFound && category === 'plugin-not-found') continue;
+    throw new HarnessFailure(category, `Host reported ${category}`);
   }
 }
 
@@ -186,17 +204,67 @@ function drainStream(stream) {
   });
 }
 
-export async function launchPinnedHost({ descriptor, world, buildReceipt, onOutput = () => {}, signal, notificationCaPath }) {
+const worldRuns = new WeakMap();
+const runOwners = new WeakMap();
+const stoppingChildren = new WeakMap();
+const maximumHostGenerations = 8;
+
+export async function launchPinnedHost(options) {
+  const { world } = options;
+  if (!world || worldRuns.has(world)) throw new HarnessFailure('restart-owner', 'World already has a host lifecycle owner');
+  const owner = { options: { ...options }, transitioning: true, current: undefined };
+  worldRuns.set(world, owner);
+  try {
+    return await launchGeneration(owner, options, []);
+  } catch (error) {
+    worldRuns.delete(world);
+    throw error;
+  } finally { owner.transitioning = false; }
+}
+
+/** Restart only a run issued by this owner; never copy state or choose a new port. */
+export async function restartPinnedHost(previousRun, { signal, onOutput } = {}) {
+  const owner = runOwners.get(previousRun);
+  if (!owner || owner.current !== previousRun || owner.transitioning) throw new HarnessFailure('restart-owner', 'Restart requires the current, idle host lifecycle owner');
+  if (previousRun.generations.length >= maximumHostGenerations) throw new HarnessFailure('restart-limit', 'Host generation diagnostic limit reached');
+  owner.transitioning = true;
+  const { world } = owner.options;
+  try {
+    // Cancellation must not leave the predecessor running. It is checked only
+    // after stop/drain, before any new reservation or child can be created.
+    await stopPinnedHost(previousRun.child);
+    await boundedCompletion(previousRun.outputDrained, 2_000, 'host-output-drain');
+    signal?.throwIfAborted();
+    for (const generation of previousRun.generations) {
+      assertNoFatalHostOutput(generation.diagnostics);
+      generation.diagnostics.guard.assertClean();
+      if (generation.diagnostics.cleanupError) throw generation.diagnostics.cleanupError;
+    }
+    await assertRecordedChildTraffic(world);
+    if (typeof world.gatewayReservation.reacquire !== 'function') throw new HarnessFailure('endpoint-isolation', 'World does not support a real endpoint reacquisition');
+    await world.gatewayReservation.reacquire({ signal });
+    return await launchGeneration(owner, { ...owner.options, signal, onOutput: onOutput ?? owner.options.onOutput }, previousRun.generations);
+  } catch (error) {
+    // There is no successor on a failed launch. Release any listener acquired
+    // for it, leaving the exact previous run available for diagnosis/retry.
+    if (world.gatewayReservation.isReserved()) await world.gatewayReservation.release();
+    throw error;
+  } finally { owner.transitioning = false; }
+}
+
+async function launchGeneration(owner, { descriptor, world, buildReceipt, onOutput = () => {}, signal, notificationCaPath, hostVerificationOptions }, preceding) {
   signal?.throwIfAborted();
-  const host = await verifyHost(descriptor);
+  const host = await verifyHost(descriptor, hostVerificationOptions);
   signal?.throwIfAborted();
   await assertBuiltDigest(buildReceipt);
+  signal?.throwIfAborted();
   if (world?.gateway?.host !== '127.0.0.1' || !Number.isInteger(world.gateway.port) || world.gateway.port === 18789
     || !world.gatewayReservation?.isReserved?.()) {
     throw new HarnessFailure('endpoint-isolation', 'Isolated world does not hold a unique loopback Gateway endpoint');
   }
   await world.gatewayReservation.release();
   if (world.gatewayReservation.isReserved()) throw new HarnessFailure('endpoint-isolation', 'Isolated Gateway endpoint reservation was not released for the host');
+  signal?.throwIfAborted();
   const guard = new TrafficGuard();
   guard.assert('127.0.0.1', 'host launch');
   const guardModule = new URL('./isolated-child-guard.mjs', import.meta.url);
@@ -208,15 +276,11 @@ export async function launchPinnedHost({ descriptor, world, buildReceipt, onOutp
     // Preserve only the executable search path needed by the controller's
     // `#!/usr/bin/env node` wrapper. Fixture/configuration state remains
     // explicitly rooted in the disposable world.
-    env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot, COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.pathname}`, ...(notificationCaPath ? { NODE_EXTRA_CA_CERTS: path.resolve(notificationCaPath) } : {}) },
+    env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot, COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.href}`, ...(notificationCaPath ? { NODE_EXTRA_CA_CERTS: path.resolve(notificationCaPath) } : {}) },
     stdio: ['ignore', 'pipe', 'pipe']
   });
-  const abortHost = () => { void stopPinnedHost(child); };
-  if (signal?.aborted) abortHost();
-  else signal?.addEventListener('abort', abortHost, { once: true });
-  child.once('exit', () => signal?.removeEventListener('abort', abortHost));
   const diagnostics = { stdout: '', stderr: '', category: undefined, guard };
-  const classifiers = { stdout: createHostOutputClassifier(), stderr: createHostOutputClassifier() };
+  const classifiers = { stdout: createHostOutputClassifier(diagnostics), stderr: createHostOutputClassifier(diagnostics) };
   // A child can emit its final output after `exit`. Keep this promise from
   // launch time so finalization waits for every data event before checking
   // fatal categories and traffic evidence.
@@ -224,18 +288,40 @@ export async function launchPinnedHost({ descriptor, world, buildReceipt, onOutp
   let reportFatal;
   const fatalOutput = new Promise((resolve) => { reportFatal = resolve; });
   for (const [stream, key] of [[child.stdout, 'stdout'], [child.stderr, 'stderr']]) stream.on('data', (chunk) => {
-    diagnostics.category ||= classifiers[key](chunk);
+    classifiers[key](chunk);
     diagnostics[key] = redact(`${diagnostics[key]}${chunk}`);
     if (diagnostics.category) reportFatal(new HarnessFailure(diagnostics.category, `Host reported ${diagnostics.category}`));
     onOutput(key, diagnostics[key]);
   });
-  const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve(new HarnessFailure(diagnostics.category || 'host-early-exit', `Host exited before readiness (${code ?? signal})`))));
+  const exited = new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve(new HarnessFailure(diagnostics.category || 'host-early-exit', `Host exited before readiness (${code ?? signal})`)));
+    child.once('error', error => resolve(new HarnessFailure('host-launch', `Host process failed: ${error.code ?? 'unknown'}`)));
+  });
   const earlyExit = Promise.race([exited, fatalOutput]);
-  return Object.freeze({ child, diagnostics, earlyExit, outputDrained, host, endpoint: world.gateway });
+  let abortCleanup = Promise.resolve();
+  const abortHost = () => {
+    abortCleanup = stopPinnedHost(child).then(() => boundedCompletion(outputDrained, 2_000, 'host-output-drain'));
+    // Keep the actual rejection available to the caller, while recording it in
+    // the retained generation evidence even when cancellation isn't awaited.
+    abortCleanup.catch(error => { diagnostics.cleanupError = error; reportFatal(error); });
+  };
+  if (signal?.aborted) abortHost();
+  else signal?.addEventListener('abort', abortHost, { once: true });
+  child.once('close', () => signal?.removeEventListener('abort', abortHost));
+  const generation = Object.freeze({ child, diagnostics, outputDrained });
+  const run = Object.freeze({ child, diagnostics, earlyExit, outputDrained, host, endpoint: world.gateway,
+    generations: Object.freeze([...preceding, generation]), get abortCleanup() { return abortCleanup; } });
+  owner.current = run;
+  runOwners.set(run, owner);
+  return run;
 }
 
 export async function assertRecordedChildTraffic(world) {
-  const entries = (await readFile(world.manifest.trafficLog, 'utf8').catch(() => ''))
+  const entries = (await readFile(world.manifest.trafficLog, 'utf8').catch(error => {
+    // No attempts need not create a log. Every other read failure is lost evidence.
+    if (error?.code === 'ENOENT') return '';
+    throw new HarnessFailure('isolation-evidence-unavailable', 'Child traffic evidence could not be read.');
+  }))
     .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const prohibited = entries.filter((entry) => !entry.permitted);
   if (prohibited.length) {
@@ -246,12 +332,37 @@ export async function assertRecordedChildTraffic(world) {
   return entries;
 }
 
-export async function stopPinnedHost(child) {
-  if (child.exitCode !== null) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  child.kill('SIGTERM');
-  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 2_000))]);
-  if (child.exitCode === null) { child.kill('SIGKILL'); await exited; }
+function childExited(child) { return child.exitCode !== null || child.signalCode !== null; }
+
+async function boundedCompletion(operation, timeoutMs, category) {
+  let timer;
+  try {
+    await Promise.race([operation, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new HarnessFailure(category, `Host lifecycle exceeded ${timeoutMs} ms`)), timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+export function stopPinnedHost(child) {
+  if (childExited(child)) return Promise.resolve();
+  if (stoppingChildren.has(child)) return stoppingChildren.get(child);
+  const stopping = (async () => {
+    let onExit;
+    const exited = new Promise(resolve => { onExit = resolve; child.once('exit', onExit); });
+    try {
+      child.kill('SIGTERM');
+      try { await boundedCompletion(exited, 2_000, 'host-stop'); }
+      catch (error) {
+        if (error.category !== 'host-stop') throw error;
+        if (!childExited(child)) child.kill('SIGKILL');
+        await boundedCompletion(exited, 2_000, 'host-stop');
+      }
+      if (!childExited(child)) throw new HarnessFailure('host-stop', 'Host exit was not proven');
+    } finally { child.off('exit', onExit); }
+  })();
+  stoppingChildren.set(child, stopping);
+  stopping.finally(() => stoppingChildren.delete(child)).catch(() => {});
+  return stopping;
 }
 
 function abortableDelay(delayMs, signal) {

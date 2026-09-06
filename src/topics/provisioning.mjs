@@ -1,9 +1,14 @@
-import { lstat, readdir, realpath, rmdir } from 'node:fs/promises';
+import { lstat, readdir, realpath } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { createSessionAdapter } from '../sources/sessions.mjs';
 import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
 import { sourceError } from '../sources/errors.mjs';
-import { conventionalSessionLabel, ensureConventionalFolder, findConventionalFolder, validateParaCategory, validateTopicName } from './conventions.mjs';
+import { readNoteFolderIdentity } from '../sources/note-folder-identity.mjs';
+import { ownsNoteFilesystem, withNoteFilesystemOwner } from '../sources/note-filesystem-owner.mjs';
+import { conventionalFolderPath, conventionalSessionLabel, ensureConventionalFolder, findConventionalFolder, resolveProvisioningFolderPath, validateParaCategory, validateTopicName } from './conventions.mjs';
+import { finishConditionalProvisioning } from './provisioning-primary.mjs';
+import { CONDITIONAL_PRIMARY_MODE } from '../metadata/provisioning-primary.mjs';
 
 function nowDefault() { return new Date().toISOString(); }
 
@@ -55,6 +60,11 @@ export class TopicProvisioningService {
     const paraCategory = validateParaCategory(input.paraCategory, { allowArchive: false });
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const existing = this.metadata.getTopicOperation(logicalOperationId);
+    if (runtime.provisioningAuthority !== undefined || existing?.intent?.primaryMode === CONDITIONAL_PRIMARY_MODE) {
+      const folderPath = resolveProvisioningFolderPath({ noteVaultRoots: this.noteVaultRoots, name, paraCategory, folderPath: input.folderPath ?? existing?.intent?.folderPath });
+      return this.runConditional({ logicalOperationId, topicId: input.topicId ?? existing?.topicId ?? randomUUID(), name, paraCategory, folderPath,
+        preparationDigest: input.preparationDigest ?? existing?.intent?.preparationDigest ?? null }, runtime);
+    }
     if (existing) {
       if (existing.operationKind !== 'topics.create' || existing.intent?.name !== name || existing.intent?.paraCategory !== paraCategory) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Topic create intent.');
       if (existing.state === 'applied') return this.result(logicalOperationId);
@@ -72,14 +82,22 @@ export class TopicProvisioningService {
     if (!operation || operation.operationKind !== 'topics.create') throw sourceError('not-found', 'The Topic provisioning operation was not found.');
     if (input.topicId !== operation.topicId) throw sourceError('conflict', 'Provisioning retry must name the Topic reserved by the create operation.');
     const topic = this.metadata.getTopic(operation.topicId);
+    if (operation.intent?.primaryMode === CONDITIONAL_PRIMARY_MODE) {
+      if (!topic || input.expectedRevision !== topic.revision) throw sourceError('conflict', 'Provisioning retry Topic revision is stale.');
+      return this.runConditional({ logicalOperationId, topicId: operation.topicId, name: operation.intent.name, paraCategory: operation.intent.paraCategory, folderPath: operation.intent.folderPath,
+        preparationDigest: operation.intent.preparationDigest ?? null }, runtime);
+    }
     if (operation.state === 'applied') return this.result(operation.logicalOperationId);
     if (!topic || !Number.isInteger(input.expectedRevision) || input.expectedRevision !== topic.revision) throw sourceError('conflict', 'Provisioning retry Topic revision is stale.', { currentRevision: topic?.revision, expectedRevision: input.expectedRevision });
     return this.run(operation.logicalOperationId, input.requestId ?? input.logicalOperationId, runtime);
   }
 
   async run(logicalOperationId, requestId, runtime = {}) {
+    if (!ownsNoteFilesystem(this.metadata)) return withNoteFilesystemOwner(this.metadata, () => this.run(logicalOperationId, requestId, runtime));
     const { operation } = operationSummary(this.metadata, logicalOperationId);
     const intent = operation.intent;
+    if (intent.primaryMode === CONDITIONAL_PRIMARY_MODE) throw sourceError('provisioning-owner-required', 'Conditional provisioning cannot enter the legacy runner.');
+    if (operation.state === 'applied') return this.result(logicalOperationId);
     const topicId = intent.topicId;
     try {
       let topic = this.metadata.getTopic(topicId);
@@ -132,13 +150,17 @@ export class TopicProvisioningService {
     });
   }
 
-  async bindFolder(topicId, intent) {
+  async bindFolder(topicId, intent, scope = {}) {
+    if (!ownsNoteFilesystem(this.metadata)) return withNoteFilesystemOwner(this.metadata, () => this.bindFolder(topicId, intent, scope));
+    scope.assertCurrent?.();
+    const topic = this.metadata.getTopic(topicId);
+    if (!topic || topic.lifecycle !== 'provisioning' || topic.name !== intent.name || topic.paraCategory !== intent.paraCategory) throw sourceError('conflict', 'The original provisioning Topic intent no longer matches.');
     const referenceId = `note-folder:${topicId}`;
-    const existingReference = this.metadata.getSourceReference(referenceId);
     const existingLocator = this.metadata.getSourceLocator?.(referenceId);
     let folder;
     if (existingLocator) {
-      const candidate = await findConventionalFolder({ noteVaultRoots: this.noteVaultRoots, paraCategory: intent.paraCategory, name: intent.name, metadata: this.metadata, topicId });
+      const candidate = await findConventionalFolder({ noteVaultRoots: this.noteVaultRoots, paraCategory: intent.paraCategory, name: intent.name, folderPath: intent.folderPath, metadata: this.metadata, topicId });
+      scope.assertCurrent?.();
       if (candidate.status === 'missing' || candidate.path !== existingLocator.locator || !existingLocator.observedRevision || candidate.revision !== existingLocator.observedRevision) {
         const error = sourceError('source-recovery', 'The bound provisioning Note Folder identity is missing or changed; explicit recovery is required.');
         await this.recordFolderRecovery(topicId, referenceId, existingLocator, error);
@@ -147,14 +169,16 @@ export class TopicProvisioningService {
       folder = { ...candidate, ownership: existingLocator.ownership, status: 'existing' };
     }
     else {
-      if (typeof this.folderEnsurer === 'function') folder = await this.folderEnsurer({ noteVaultRoot: this.noteVaultRoot, noteVaultRoots: this.noteVaultRoots, paraCategory: intent.paraCategory, name: intent.name, metadata: this.metadata, topicId });
-      else folder = await ensureConventionalFolder({ noteVaultRoots: this.noteVaultRoots, paraCategory: intent.paraCategory, name: intent.name, metadata: this.metadata, topicId });
+      if (typeof this.folderEnsurer === 'function') folder = await this.folderEnsurer({ noteVaultRoot: this.noteVaultRoot, noteVaultRoots: this.noteVaultRoots, paraCategory: intent.paraCategory, name: intent.name, folderPath: intent.folderPath, metadata: this.metadata, topicId, ...scope });
+      else folder = await ensureConventionalFolder({ noteVaultRoots: this.noteVaultRoots, paraCategory: intent.paraCategory, name: intent.name, folderPath: intent.folderPath, metadata: this.metadata, topicId, ...scope });
     }
+    scope.assertCurrent?.();
     if (!folder?.path) throw sourceError('source-recovery', 'The conventional Note Folder did not return an exact path.');
-    if (!existingReference) this.metadata.createSourceReference({ version: 1, referenceId, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: `note-folder:${topicId}` });
-    if (!existingLocator) this.metadata.setSourceLocator({ referenceId, locator: folder.path, ownership: folder.ownership ?? 'external', observedRevision: folder.revision ?? null });
-    this.metadata.setSourceConventionState({ referenceId, aspect: 'name', state: 'managed', expectedValue: intent.name });
-    this.metadata.setSourceConventionState({ referenceId, aspect: 'location', state: 'managed', expectedValue: folder.path });
+    this.metadata.bindProvisioningNoteFolder({ topicId, name: intent.name, paraCategory: intent.paraCategory,
+      expectedRevision: topic.revision, expectedLocatorVersion: existingLocator?.locatorVersion ?? 0,
+      expectedSourceRevision: existingLocator?.observedRevision ?? null,
+      locator: folder.path, observedRevision: folder.revision, ownership: folder.ownership ?? 'external',
+      managedConvention: intent.folderPath === undefined || this.noteVaultRoots.some(root => conventionalFolderPath(root, intent.paraCategory, intent.name) === folder.path) }, scope.assertCurrent);
     return { referenceId, ...folder };
   }
 
@@ -184,10 +208,71 @@ export class TopicProvisioningService {
     const canonical = stat && stat.isDirectory() && !stat.isSymbolicLink()
       ? await realpath(locator.locator).catch(() => null)
       : null;
-    const identity = stat ? `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}` : null;
+    const identity = stat ? await readNoteFolderIdentity(locator.locator).catch(() => null) : null;
     if (!stat || !stat.isDirectory() || stat.isSymbolicLink() || canonical !== locator.locator || identity !== locator.observedRevision) {
       throw sourceError('source-recovery', 'The exact provisioning Note Folder could not be verified before activation.');
     }
+    if (this.metadata.getSourceLocator(referenceId)?.locatorVersion !== locator.locatorVersion) throw sourceError('source-recovery', 'The provisioning Note Folder binding changed during verification.');
+  }
+
+  async prepare(input = {}, runtime = {}, mode = 'execute') {
+    if (!['preflight', 'execute', 'resume', 'verify'].includes(mode)) throw sourceError('preparation-mode-invalid', 'Unknown preparation mode.');
+    const name = validateTopicName(input.name);
+    const paraCategory = validateParaCategory(input.paraCategory, { allowArchive: false });
+    const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
+    const folderPath = resolveProvisioningFolderPath({ noteVaultRoots: this.noteVaultRoots, name, paraCategory, folderPath: input.folderPath });
+    return this.runConditional({ logicalOperationId, topicId: input.topicId, name, paraCategory, folderPath, preparationDigest: input.preparationDigest ?? null }, runtime, mode);
+  }
+
+  async runConditional(input, runtime, mode = 'execute') {
+    const metadata = this.metadata; const sessionStore = this.sessionStore;
+    const read = sessionStore?.getSessionEntry; const patch = sessionStore?.patchSessionEntry;
+    const env = Object.freeze({ ...(runtime.env ?? process.env) }); const folderEnsurer = this.folderEnsurer;
+    const roots = [...this.noteVaultRoots]; const authority = runtime.provisioningAuthority; const guard = authority?.assertCurrent;
+    const check = () => {
+      if (typeof guard !== 'function' || runtime.provisioningAuthority !== authority || authority.assertCurrent !== guard ||
+        this.metadata !== metadata || this.sessionStore !== sessionStore || sessionStore?.getSessionEntry !== read || sessionStore?.patchSessionEntry !== patch || this.folderEnsurer !== folderEnsurer || this.noteVaultRoot !== roots[0] || roots.length !== this.noteVaultRoots.length || roots.some((root, index) => root !== this.noteVaultRoots[index]) || guard.call(authority)?.then) {
+        throw sourceError('provisioning-authority-unavailable', 'Current explicit preparation authority and unchanged source bindings are required.');
+      }
+    };
+    check();
+    resolveProvisioningFolderPath({ noteVaultRoots: roots, ...input });
+    if (typeof read !== 'function') throw sourceError('capability-unavailable', 'Preparation requires the native Session reader.');
+    if (mode === 'preflight' || mode === 'verify') {
+      const inspected = metadata.inspectConditionalProvisioning(input, check);
+      if (mode === 'verify' && inspected.primaryReceipt?.phase !== 'applied') throw sourceError('preparation-incomplete', 'Verification requires completed preparation.');
+      const candidate = await findConventionalFolder({ noteVaultRoots: roots, ...input, metadata });
+      check();
+      const locator = metadata.getSourceLocator(`note-folder:${input.topicId}`);
+      if (locator && (candidate.status === 'missing' || candidate.path !== locator.locator || candidate.revision !== locator.observedRevision)) throw sourceError('source-recovery', 'The original preparation folder changed.');
+      const primary = inspected.primary;
+      const entry = read.call(sessionStore, { agentId: primary.agentId, sessionKey: primary.sessionKey, env, readConsistency: 'latest' });
+      const phase = inspected.primaryReceipt?.phase;
+      if (!phase || phase === 'reserved') {
+        if (entry) throw sourceError('provisioning-primary-conflict', 'The planned Primary destination is occupied.');
+      } else if (!entry || entry.sessionId !== primary.sessionId || entry.lifecycleRevision !== primary.lifecycleRevision || entry.sendPolicy === 'deny') {
+        throw sourceError(!entry && phase === 'creating' ? 'provisioning-creation-unknown' : 'source-recovery', 'The exact Primary effect is unavailable.');
+      }
+      const finalInspection = metadata.inspectConditionalProvisioning(input, check);
+      if (!isDeepStrictEqual(finalInspection, inspected)) throw sourceError('stale-revision', 'Preparation changed during inspection.');
+      if (mode === 'preflight') return { status: 'preflight' };
+      await finishConditionalProvisioning({ metadata, sessionStore, env, parentOperationId: input.logicalOperationId,
+        expectedTopicRevision: inspected.primaryReceipt.intent.topicRevision, assertCurrent: check, mode: 'verify' });
+      check(); return this.result(input.logicalOperationId);
+    }
+    await this.runConditional(input, runtime, 'preflight');
+    check();
+    return withNoteFilesystemOwner(metadata, async () => {
+      check();
+      if (mode === 'resume' && !metadata.inspectConditionalProvisioning(input, check).operation) throw sourceError('preparation-reservation-missing', 'Resume requires an existing preparation.');
+      const operation = metadata.reserveConditionalProvisioning(input, check);
+      const prior = metadata.getProvisioningPrimary(input.logicalOperationId);
+      const topic = metadata.getTopic(input.topicId);
+      const expectedTopicRevision = prior?.intent.topicRevision ?? topic.revision;
+      if (!prior) { await this.bindFolder(input.topicId, operation.intent, { assertCurrent: check, enrollmentOperationId: input.logicalOperationId }); check(); }
+      await finishConditionalProvisioning({ metadata, sessionStore, env, parentOperationId: input.logicalOperationId, expectedTopicRevision, assertCurrent: check });
+      check(); return this.result(input.logicalOperationId);
+    });
   }
 
   async verifySessionBinding(topicId, referenceId, adapter) {
@@ -205,6 +290,7 @@ export class TopicProvisioningService {
   async rollback(input = {}) {
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const replay = this.metadata.getTopicOperation(logicalOperationId);
+    if (replay?.intent?.primaryMode === CONDITIONAL_PRIMARY_MODE) throw sourceError('unsupported-operation', 'Conditional provisioning retains source evidence; legacy rollback is not permitted.');
     if (replay?.operationKind !== 'topics.create') throw sourceError('not-found', 'The Topic provisioning operation was not found.');
     if (replay.state === 'not-applied' && replay.currentStep === 'rolled-back') {
       if (input.topicId !== replay.result?.topicId) throw sourceError('intent-mismatch', 'Provisioning rollback replay must name the original Topic.');
@@ -219,12 +305,12 @@ export class TopicProvisioningService {
     if (locator?.ownership === 'created') {
       const stat = await lstat(locator.locator).catch(() => null);
       const entries = stat?.isDirectory() ? await readdir(locator.locator) : [];
-      const identity = stat ? `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}` : null;
+      const identity = stat ? await readNoteFolderIdentity(locator.locator).catch(() => null) : null;
       if (!stat || stat.isSymbolicLink() || entries.length > 0 || locator.observedRevision !== identity) throw sourceError('unknown', 'Created-folder cleanup is not proven safe; the provisioning record remains visible.');
-      if (stat) {
-        if (this.folderRemover) await this.folderRemover(locator.locator);
-        else await rmdir(locator.locator);
-      }
+      // A marker-backed directory is not empty. There is no conditional unlink
+      // for its marker, so keep the owned artifact and provisioning state visible
+      // rather than claiming a rollback that could remove an external replacement.
+      throw sourceError('unknown', 'Created-folder identity marker cleanup requires explicit recovery; the provisioning record remains visible.');
     }
     for (const reference of this.metadata.listSourceReferences(topic.topicId)) {
       if (reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session') {

@@ -4,8 +4,14 @@ import test from 'node:test';
 import { build } from '../src/build.mjs';
 import { assertPerformanceBaselineBuildIdentity, assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, deriveReleaseThresholds, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
 
+test('first-live performance names retained native actions without claiming deferred work', () => {
+  assert.equal(RELEASE_PERFORMANCE_BASELINE_VERSION, 3);
+  assert.deepEqual(RELEASE_FIXTURE_COUNTS, { largeNoteBytes: 8388609, conversations: 101, noteFiles: 5000, conversationMessages: 5000 });
+  assert.deepEqual(RELEASE_MEASUREMENTS, ['startupReadinessMs', 'topicsLoadMs', 'topicOpenMs', 'chatSendMs', 'conversationCreateMs', 'largeNoteReadMs', 'conversationNextPageMs', 'noteNextPageMs']);
+});
+
 async function readReleasePerformanceBaseline() {
-  return validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v2.json', import.meta.url), 'utf8')));
+  return validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v3.json', import.meta.url), 'utf8')));
 }
 
 test('release performance baseline pins the measured corpus and immutable first successful capture', async () => {
@@ -13,12 +19,12 @@ test('release performance baseline pins the measured corpus and immutable first 
   const baseline = await readReleasePerformanceBaseline();
   assert.equal(assertPerformanceBaselineBuildIdentity(baseline, `sha256:${buildReceipt.digest}`), true);
   assert.deepEqual(baseline.viewport, { width: 1440, height: 900 });
-  assert.deepEqual(baseline.fixtureCounts, { largeNoteBytes: 8388609, conversations: 101, activityRecords: 101, actionCards: 2, indexedNotes: 5000, indexedConversationMessages: 5000 });
-  assert.deepEqual(RELEASE_MEASUREMENTS, ['startupReadinessMs', 'dashboardLoadMs', 'topicOpenCreateMs', 'chatSendMs', 'conversationLifecycleMs', 'largeNoteLifecycleMs', 'indexedSearchMs', 'activityNextPageMs', 'topicReviewApplyMs']);
+  assert.deepEqual(baseline.fixtureCounts, { largeNoteBytes: 8388609, conversations: 101, noteFiles: 5000, conversationMessages: 5000 });
+  assert.deepEqual(RELEASE_MEASUREMENTS, ['startupReadinessMs', 'topicsLoadMs', 'topicOpenMs', 'chatSendMs', 'conversationCreateMs', 'largeNoteReadMs', 'conversationNextPageMs', 'noteNextPageMs']);
   assert.equal(baseline.fixtureIdentity, RELEASE_FIXTURE_IDENTITY);
   assert.equal(baseline.capture.successfulRunOrdinal, 1);
   assert.equal(baseline.browser.version, '151.0.7922.34');
-  assert.equal(baseline.hostReceipt.commit, '2309e6542d0ba631178c8e647a2dc8b4763651bd');
+  assert.equal(baseline.hostReceipt.commit, 'c1d67aaa14b62d6172cd2c57f8b3ceff9aed350f');
   assert.deepEqual(baseline.thresholds, deriveReleaseThresholds(baseline.observations));
   assert.throws(() => validateReleasePerformanceBaselineSeed(baseline), /unsupported field|seed/u);
   for (const name of RELEASE_MEASUREMENTS) {
@@ -57,6 +63,17 @@ test('release performance baseline rejects host version drift', () => {
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostVersion: 'fictional-other-host' }), /pinned/u);
 });
 
+test('measured fractional timings retain exact immutable ceiling checks', () => {
+  const { baseline } = coherentGeneratedBaseline();
+  const name = 'topicsLoadMs';
+  assert.equal(assertPerformanceObservationWithinBaseline(name, 0.25, baseline), true);
+  assert.equal(assertPerformanceObservationWithinBaseline(name, baseline.thresholds[name], baseline), true);
+  assert.throws(() => assertPerformanceObservationWithinBaseline(name, baseline.thresholds[name] + 0.01, baseline), /exceeded/u);
+  for (const value of [0, -1, NaN, Infinity, -Infinity, '1', null, undefined]) {
+    assert.throws(() => assertPerformanceObservationWithinBaseline(name, value, baseline), /positive finite/u);
+  }
+});
+
 test('release performance baseline rejects host receipt drift', () => {
   const { baseline } = coherentGeneratedBaseline();
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostReceipt: { ...baseline.hostReceipt, contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }), /pinned host identity/u);
@@ -82,19 +99,19 @@ test('release performance baseline rejects conversation corpus drift', () => {
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, conversations: 100 } }), /conversations must be 101/);
 });
 
-test('release performance baseline rejects Activity corpus drift', () => {
+test('release performance baseline rejects Note corpus drift', () => {
   const { baseline } = coherentGeneratedBaseline();
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, activityRecords: 102 } }), /activityRecords must be 101/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, fixtureCounts: { ...baseline.fixtureCounts, noteFiles: 4999 } }), /noteFiles must be 5000/);
 });
 
 test('release performance baseline rejects a zero observation', () => {
   const { baseline } = coherentGeneratedBaseline();
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: 0 } }), /first positive/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, largeNoteReadMs: 0 } }), /first positive/);
 });
 
 test('release performance baseline rejects a missing observation', () => {
   const { baseline } = coherentGeneratedBaseline();
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, indexedSearchMs: undefined } }), /first positive/);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, observations: { ...baseline.observations, largeNoteReadMs: undefined } }), /first positive/);
 });
 
 test('release performance baseline rejects a later capture ordinal', () => {

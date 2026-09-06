@@ -1,21 +1,9 @@
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
+import { readBoundedJson } from '../http/json-body.mjs';
 
 export const searchRebuildRoute = '/plugins/command-center/api/search/rebuild';
 const fields = Object.freeze(['schemaVersion', 'topicId', 'logicalOperationId']);
 const invalid = (message) => Object.assign(new Error(message), { code: 'invalid-request' });
-
-function allowOpaqueFrame(req, res) {
-  const origin = req.headers?.origin;
-  const requestedMethod = String(req.headers?.['access-control-request-method'] ?? '').toUpperCase();
-  const requestedHeaders = String(req.headers?.['access-control-request-headers'] ?? '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean);
-  const validPreflight = req.method !== 'OPTIONS' || (requestedMethod === 'POST' && requestedHeaders.length === 1 && requestedHeaders[0] === 'content-type');
-  if ((origin !== undefined && origin !== 'null') || !validPreflight) return false;
-  res.setHeader?.('Access-Control-Allow-Origin', 'null');
-  res.setHeader?.('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader?.('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader?.('Vary', 'Origin');
-  return true;
-}
 
 function send(res, statusCode, value) {
   let body = JSON.stringify(value);
@@ -31,18 +19,7 @@ function send(res, statusCode, value) {
 
 async function parse(req) {
   if (!/^application\/json(?:\s*;|$)/iu.test(String(req.headers?.['content-type'] ?? ''))) throw invalid('JSON content type is required.');
-  let body = req.body;
-  if (typeof body === 'string') body = JSON.parse(body);
-  else if (Buffer.isBuffer(body) || body instanceof Uint8Array) body = JSON.parse(Buffer.from(body).toString('utf8'));
-  else if (body === undefined && typeof req?.readBody === 'function') body = JSON.parse(await req.readBody());
-  else if (body === undefined && req && typeof req[Symbol.asyncIterator] === 'function') {
-    let encoded = '';
-    for await (const chunk of req) {
-      encoded += chunk;
-      if (Buffer.byteLength(encoded) > 2048) throw invalid('Search rebuild request is too large.');
-    }
-    body = JSON.parse(encoded || '{}');
-  }
+  const { body } = await readBoundedJson(req, 2048);
   if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => !fields.includes(key))) throw invalid('A closed Search rebuild request is required.');
   if (body.schemaVersion !== 1 || !isCanonicalUuid(body.topicId) || !isCanonicalUuid(body.logicalOperationId)) throw invalid('Schema version 1 and canonical Topic and operation IDs are required.');
   return body;
@@ -50,8 +27,6 @@ async function parse(req) {
 
 export function createSearchRebuildHttpHandler(service) {
   return async (req, res) => {
-    if (!allowOpaqueFrame(req, res)) { send(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed', message: 'Search rebuild origin is not allowed.' }); return true; }
-    if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return true; }
     if (req.method !== 'POST') { send(res, 405, { schemaVersion: 1, status: 'error', code: 'method-not-allowed', message: 'Search rebuild is POST-only.' }); return true; }
     try {
       const body = await parse(req);

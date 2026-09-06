@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { assertSafeDirectory } from '../sources/note-path.mjs';
+import { enrollNoteFolderIdentity, readNoteFolderIdentity } from '../sources/note-folder-identity.mjs';
+import { withNoteFilesystemOwner } from '../sources/note-filesystem-owner.mjs';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { normalizeLegacyDiscordMigration, normalizeOptionalLegacyDiscordMigration, legacyDiscordMigrationConfigDigest } from './config.mjs';
 import { readLegacyDiscordExport, selectMappedLegacyDiscordChannels } from './export-v1.mjs';
@@ -152,7 +154,11 @@ export class LegacyDiscordMigrationService {
     const completion = this.metadata?.getMigrationCompletion?.();
     if (completion) {
       try {
-        this.metadata.reconcileCompletedLegacyDiscordTopics({ configDigest: completion.configDigest, verifiedTopicCount: completion.verifiedChannelCount, verifiedAt: completion.verifiedAt });
+        await withNoteFilesystemOwner(this.metadata, async () => {
+          const folders = this.metadata.listSourceReferences().filter(reference => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder' && reference.observedRevision === `legacy-discord-owner:${completion.configDigest}`);
+          for (const folder of folders) await this.verifyFolderBinding(folder.referenceId);
+          this.metadata.reconcileCompletedLegacyDiscordTopics({ configDigest: completion.configDigest, verifiedTopicCount: completion.verifiedChannelCount, verifiedAt: completion.verifiedAt });
+        });
       } catch (error) {
         return this.statusShape('review', null, [], [{ failureCode: 'completed-activation-conflict', failureSummary: String(error?.message ?? error).slice(0, 300) }]);
       }
@@ -201,6 +207,9 @@ export class LegacyDiscordMigrationService {
       if (state && (state.configDigest !== configDigest || (state.sourceDigest !== ZERO_DIGEST && state.sourceDigest !== sourceDigest))) throw Object.assign(new Error('Migration source identity changed.'), { code: 'source-changed' });
       selected = await this.preflightFolders(selected);
       this.preflightDestinations(selected);
+      await withNoteFilesystemOwner(this.metadata, async () => {
+        for (const item of selected) if (this.metadata.getTopic(item.mapping.topicId)) await this.verifyFolderBinding(`migration:folder:${item.channel.channelId}`, { mapping: item.mapping });
+      });
       await this.preflightSessions(selected);
       this.metadata.setMigrationState({ stateId: MIGRATION_ID, schemaVersion: 1, configDigest, sourceDigest, phase: state.phase === 'review' ? 'pending' : state.phase, failureCode: null, failureSummary: null, failureCount: state.failureCount ?? 0, updatedAt: this.now() });
       phaseHook(this.hooks, 'beforeRun', { logicalOperationId, resume, configDigest, sourceDigest });
@@ -208,11 +217,14 @@ export class LegacyDiscordMigrationService {
       await this.provision(selected, { configDigest, sourceDigest });
       await this.import(selected, { configDigest, sourceDigest });
       this.failureBoundary = 'verification';
-      await this.verify(selected, { configDigest, sourceDigest });
       const verifiedChannels = selected.length;
       const verifiedOccurrences = selected.reduce((total, item) => total + item.channel.occurrences.length, 0);
-      this.failureBoundary = 'metadata-completion';
-      this.metadata.completeLegacyDiscordMigration({ configDigest, sourceDigest, verifiedChannelCount: verifiedChannels, verifiedOccurrenceCount: verifiedOccurrences, completionRevision: this.metadata.getMigrationState()?.revision ?? 1, verifiedAt: this.now() });
+      await withNoteFilesystemOwner(this.metadata, async () => {
+        const folderBindings = await this.verify(selected, { configDigest, sourceDigest });
+        for (const expected of folderBindings) await this.verifyFolderBinding(expected.referenceId, { expected });
+        this.failureBoundary = 'metadata-completion';
+        this.metadata.completeLegacyDiscordMigration({ configDigest, sourceDigest, verifiedChannelCount: verifiedChannels, verifiedOccurrenceCount: verifiedOccurrences, completionRevision: this.metadata.getMigrationState()?.revision ?? 1, verifiedAt: this.now(), folderBindings });
+      });
       phaseHook(this.hooks, 'afterComplete', { logicalOperationId });
       return this.status();
     } catch (error) {
@@ -249,7 +261,7 @@ export class LegacyDiscordMigrationService {
       const durableBootstrapOwnership = topic?.lifecycle === 'provisioning' && references.length > 0 && references.every((reference) => expectedReferences.has(reference.referenceId)) && references.some((reference) => reference.referenceId === `migration:folder:${channel.channelId}` && reference.observedRevision === ownershipMarker);
       if (topic && !row && !durableBootstrapOwnership) throw Object.assign(new Error('Configured destination Topic already exists outside this migration ledger.'), { code: 'topic-conflict', channelId: channel.channelId });
       const expectedFolderReferenceId = `migration:folder:${channel.channelId}`;
-      const folderOwners = allReferences.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder' && reference.externalSourceId === mapping.noteFolderPath);
+      const folderOwners = allReferences.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder' && (reference.externalSourceId === mapping.noteFolderPath || this.metadata.getSourceLocator?.(reference.referenceId)?.locator === mapping.noteFolderPath));
       if (folderOwners.some((reference) => reference.referenceId !== expectedFolderReferenceId || reference.topicId !== mapping.topicId)) throw Object.assign(new Error('Configured Note Folder is already bound outside this migration destination.'), { code: 'folder-conflict', channelId: channel.channelId });
       const expectedLifecycle = row?.phase === 'complete' ? 'active' : 'provisioning';
       if (row && (row.topicId !== mapping.topicId || topic?.lifecycle !== expectedLifecycle)) throw Object.assign(new Error('Migration destination Topic ownership differs from its durable ledger.'), { code: 'topic-conflict', channelId: channel.channelId });
@@ -265,6 +277,19 @@ export class LegacyDiscordMigrationService {
       if (matches.length > 1 || (matches.length === 1 && !expectedReference)) throw Object.assign(new Error('The deterministic Primary Session is unavailable or not owned by this migration.'), { code: 'session-conflict', channelId: channel.channelId });
       if (this.sessionStore && matches.length === 1 && readSessionId(matches[0]) !== deterministicSessionId(expectedSessionKey)) throw Object.assign(new Error('The deterministic Primary Session key is owned by a different Session identity.'), { code: 'session-conflict', channelId: channel.channelId });
     }
+  }
+
+  async verifyFolderBinding(referenceId, { mapping, expected } = {}) {
+    const reference = this.metadata.getSourceReference(referenceId);
+    const binding = this.metadata.getSourceLocator(referenceId);
+    const proof = value => value && ({ referenceId: value.referenceId, locator: value.locator, locatorVersion: value.locatorVersion, ownership: value.ownership, observedRevision: value.observedRevision });
+    if (!reference || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder' || !binding?.observedRevision?.startsWith('note-folder:1:') || binding.ownership !== 'external'
+      || mapping && (reference.topicId !== mapping.topicId || reference.externalSourceId !== mapping.noteFolderPath || binding.locator !== mapping.noteFolderPath || binding.locatorVersion !== 1)
+      || expected && digest(proof(binding)) !== digest(expected)) throw Object.assign(new Error('The migration Note Folder binding requires explicit Source Recovery.'), { code: 'source-recovery' });
+    const canonical = await assertSafeDirectory(binding.locator);
+    const identity = await readNoteFolderIdentity(canonical);
+    if (canonical !== binding.locator || identity !== binding.observedRevision || digest(proof(this.metadata.getSourceLocator(referenceId))) !== digest(proof(binding))) throw Object.assign(new Error('The migration Note Folder identity or locator generation changed.'), { code: 'source-recovery' });
+    return Object.freeze(proof(binding));
   }
 
   async sessionMatches(expectedSessionKey, channelId) {
@@ -330,7 +355,14 @@ export class LegacyDiscordMigrationService {
       let topicCreated = false;
       if (!topic) {
         if (typeof this.metadata.createMigrationTopicBinding !== 'function') throw Object.assign(new Error('Atomic migration Topic binding persistence is unavailable.'), { code: 'destination-corrupt', channelId: channel.channelId });
-        this.metadata.createMigrationTopicBinding({ topic: { topicId: mapping.topicId, name: channel.displayName.trim() || mapping.topicId, paraCategory: mapping.paraCategory, lifecycle: 'provisioning', createdAt: this.now(), updatedAt: this.now() }, reference: { version: 1, referenceId: `migration:folder:${channel.channelId}`, topicId: mapping.topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: mapping.noteFolderPath, observedRevision: `legacy-discord-owner:${configDigest}`, createdAt: this.now(), updatedAt: this.now() } });
+        await withNoteFilesystemOwner(this.metadata, async () => {
+          this.preflightDestinations([item]);
+          if (this.metadata.getTopic(mapping.topicId)) return this.verifyFolderBinding(`migration:folder:${channel.channelId}`, { mapping });
+          const canonical = await assertSafeDirectory(mapping.noteFolderPath);
+          if (canonical !== mapping.noteFolderPath) throw Object.assign(new Error('Mapped Note Folder identity changed.'), { code: 'folder-conflict', channelId: channel.channelId });
+          const observedRevision = await enrollNoteFolderIdentity(canonical);
+          this.metadata.createMigrationTopicBinding({ topic: { topicId: mapping.topicId, name: channel.displayName.trim() || mapping.topicId, paraCategory: mapping.paraCategory, lifecycle: 'provisioning', createdAt: this.now(), updatedAt: this.now() }, reference: { version: 1, referenceId: `migration:folder:${channel.channelId}`, topicId: mapping.topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: canonical, observedRevision: `legacy-discord-owner:${configDigest}`, createdAt: this.now(), updatedAt: this.now() }, locator: { locator: canonical, ownership: 'external', observedRevision } });
+        });
         topicCreated = true;
         references = this.metadata.listSourceReferences(mapping.topicId);
         phaseHook(this.hooks, 'afterTopicBinding', { channelId: channel.channelId, topicId: mapping.topicId });
@@ -508,10 +540,12 @@ export class LegacyDiscordMigrationService {
   }
 
   async verify(selected, { configDigest, sourceDigest }) {
+    const folderBindings = [];
     this.metadata.setMigrationState({ stateId: MIGRATION_ID, schemaVersion: 1, configDigest, sourceDigest, phase: 'verifying', updatedAt: this.now() });
     for (const item of selected) {
       try { await this.folderVerifier(item.mapping.noteFolderPath); }
       catch (error) { throw Object.assign(new Error('The configured Note Folder failed final verification.', { cause: error }), { code: error?.code ?? 'folder-unavailable', channelId: item.channel.channelId }); }
+      const folderBinding = await this.verifyFolderBinding(`migration:folder:${item.channel.channelId}`, { mapping: item.mapping });
       const row = this.metadata.getMigrationChannel(item.channel.channelId);
       const topic = this.metadata.getTopic(row?.topicId);
       const references = topic ? this.metadata.listSourceReferences(row.topicId) : [];
@@ -570,9 +604,12 @@ export class LegacyDiscordMigrationService {
               if (!replay || digest(authoritativeAnchor) !== checkpoints[index].destinationAnchorDigest) throw Object.assign(new Error('Migration occurrence generation or raw anchor changed before activation.'), { code: 'verification-failed', channelId: item.channel.channelId });
             }
           }
-          if (!completedChannel) this.metadata.completeLegacyDiscordMigrationChannel(item.channel.channelId, this.now());
+          await this.verifyFolderBinding(folderBinding.referenceId, { mapping: item.mapping, expected: folderBinding });
+          if (!completedChannel) this.metadata.completeLegacyDiscordMigrationChannel(item.channel.channelId, this.now(), folderBinding);
       });
+      folderBindings.push(folderBinding);
     }
+    return folderBindings;
   }
 
   async recordReview(error, selected = []) {

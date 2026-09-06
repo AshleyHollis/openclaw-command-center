@@ -71,11 +71,16 @@ export async function build() {
   await rm(distRoot, { recursive: true, force: true });
   await mkdir(distRoot, { recursive: true });
   await cp(path.join(sourceRoot, 'src', 'plugin.mjs'), path.join(distRoot, 'plugin.mjs'));
+  // Resolve the single authored schema at build time. Built modules never read
+  // mutable package-root configuration outside their verified dist receipt.
+  const pluginManifest = JSON.parse(await readFile(path.join(sourceRoot, 'openclaw.plugin.json'), 'utf8'));
+  await writeFile(path.join(distRoot, 'plugin-config.mjs'), `export const pluginConfigSchema = ${JSON.stringify(pluginManifest.configSchema)};\n`);
   await cp(path.join(sourceRoot, 'src', 'plugin-service.mjs'), path.join(distRoot, 'plugin-service.mjs'));
+  await cp(path.join(sourceRoot, 'src', 'release-scope.mjs'), path.join(distRoot, 'release-scope.mjs'));
   await cp(path.join(sourceRoot, 'src', 'compatibility.mjs'), path.join(distRoot, 'compatibility.mjs'));
   await cp(path.join(sourceRoot, 'src', 'asset-handler.mjs'), path.join(distRoot, 'asset-handler.mjs'));
   await cp(path.join(sourceRoot, 'src', 'metadata'), path.join(distRoot, 'metadata'), { recursive: true, verbatimSymlinks: true });
-  for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'search', 'topics', 'dashboard', 'notifications', 'http']) {
+  for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'search', 'topics', 'dashboard', 'notifications', 'http', 'native-ui']) {
     await cp(path.join(sourceRoot, 'src', directory), path.join(distRoot, directory), { recursive: true, verbatimSymlinks: true });
   }
   await cp(path.join(sourceRoot, 'src', 'compatibility-tuple.json'), path.join(distRoot, 'compatibility-tuple.json'));

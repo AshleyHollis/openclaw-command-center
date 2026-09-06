@@ -74,14 +74,6 @@ async function invokeTopicPageHandler(handler, body) {
   return { ok: response.statusCode >= 200 && response.statusCode < 300, status: response.statusCode, body: JSON.parse(response.body) };
 }
 
-function boundedOpaqueText(value, maximum = 160) {
-  return String(value ?? 'unavailable').replace(/[\u0000-\u001f\u007f]/gu, ' ').slice(0, maximum);
-}
-
-function boundedOpaqueEvidence(value) {
-  return JSON.stringify(value).slice(0, 2_048);
-}
-
 async function listenLoopback(server, host) {
   await new Promise((resolve, reject) => {
     const onError = (error) => reject(error);
@@ -123,166 +115,45 @@ test('shared action dialog works inside the exact scripts-only opaque sandbox', 
   } finally { await closeGuardedPage(page); }
 });
 
-test('opaque sandboxed Topic Page frame preflights and applies through the real action handler', async () => {
-  const guard = new TrafficGuard(); guard.assert('127.0.0.1', 'Topic Page preflight browser'); guard.assert('127.0.0.2', 'Topic Page action browser');
-  const topicId = '11111111-1111-4111-8111-111111111111'; const methods = []; const preflightEvidence = []; const calls = [];
-  let preflightComplete = false;
+test('opaque sandbox cannot bypass the parent relay with a direct HTTP mutation', async () => {
+  const calls = []; const methods = [];
   const handler = createTopicPageActionsHandler({
-    topics: { get: () => ({ topicId, revision: 4, lifecycle: 'active' }) },
+    topics: { get: () => ({ topicId: 'fictional', revision: 4, lifecycle: 'active' }) },
     async sessionsCreate(input) { calls.push(input); return { status: 'applied' }; }
   });
-  const actionServer = createServer(async (request, response) => {
-    const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
-    if (pathname === '/plugins/command-center/api/topic/actions') {
-      methods.push(request.method);
-      if (request.method === 'OPTIONS') {
-        const requestedHeaders = String(request.headers['access-control-request-headers'] ?? '').toLowerCase().split(',').map((value) => value.trim());
-        const requestedMethod = request.headers['access-control-request-method'];
-        const requestValid = request.headers.origin === 'null' && requestedMethod === 'POST' && requestedHeaders.includes('content-type');
-        await handler(request, response);
-        const responseValid = response.statusCode === 204 && response.getHeader('access-control-allow-origin') === 'null' && response.getHeader('access-control-allow-methods') === 'POST, OPTIONS' && response.getHeader('access-control-allow-headers') === 'Content-Type' && response.getHeader('access-control-allow-private-network') === 'true';
-        preflightComplete = requestValid && responseValid;
-        if (preflightEvidence.length < 4) preflightEvidence.push({
-          origin: boundedOpaqueText(request.headers.origin ?? 'absent', 32),
-          method: boundedOpaqueText(request.headers['access-control-request-method'] ?? 'absent', 16),
-          headers: boundedOpaqueText(request.headers['access-control-request-headers'] ?? 'absent', 64),
-          privateNetwork: boundedOpaqueText(request.headers['access-control-request-private-network'] ?? 'absent', 16),
-          status: response.statusCode,
-          mutationCalls: calls.length,
-          allowOrigin: boundedOpaqueText(response.getHeader('access-control-allow-origin') ?? 'absent', 32),
-          allowMethods: boundedOpaqueText(response.getHeader('access-control-allow-methods') ?? 'absent', 32),
-          allowHeaders: boundedOpaqueText(response.getHeader('access-control-allow-headers') ?? 'absent', 32),
-          allowPrivateNetwork: boundedOpaqueText(response.getHeader('access-control-allow-private-network') ?? 'absent', 16)
-        });
-        return;
-      }
-      if (request.method === 'POST' && !preflightComplete) {
-        response.statusCode = 428;
-        response.setHeader('Access-Control-Allow-Origin', 'null');
-        response.setHeader('Content-Type', 'application/json; charset=utf-8');
-        response.end(JSON.stringify({ schemaVersion: 1, status: 'error', code: 'preflight-required' }));
-        return;
-      }
-      await handler(request, response); return;
+  const server = createServer(async (request, response) => {
+    if (request.url === '/plugins/command-center/api/topic/actions') {
+      methods.push(request.method); await handler(request, response); return;
     }
-    response.statusCode = 404; response.end('Not found');
+    response.setHeader('Content-Type', 'text/html');
+    response.end(request.url === '/frame' ? '<p>Opaque frame</p>' : '<iframe sandbox="allow-scripts" src="/frame"></iframe>');
   });
-  let actionUrl;
-  const frameServer = createServer((request, response) => {
-    const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
-    response.setHeader('Content-Type', 'text/html; charset=utf-8');
-    if (pathname === '/frame') {
-      response.end(`<p id="result">pending</p><script>
-        const terminal = document.querySelector('#result');
-        const bounded = (value) => String(value ?? 'unavailable').replace(/[\\u0000-\\u001f\\u007f]/gu, ' ').slice(0, 160);
-        const fail = (failedPhase, detail) => { terminal.textContent = 'failed:' + failedPhase + ':' + bounded(detail); };
-        globalThis.runOpaqueAction = async () => {
-          let phase = 'POST';
-          try {
-            const response = await fetch('${actionUrl}', { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: '${topicId}', label: 'Opaque Fictional Conversation', expectedRevision: 4, logicalOperationId: '33333333-3333-4333-8333-333333333333', authoritativeSession: { key: 'agent:main:dashboard:opaque', sessionId: 'opaque-session', revision: '1', idempotencyKey: '33333333-3333-4333-8333-333333333333', label: 'Opaque Fictional Conversation' } }) });
-            phase = 'http-status';
-            if (!response.ok) { fail(phase, response.status); return; }
-            phase = 'json-parse';
-            let value;
-            try { value = await response.json(); }
-            catch (error) { fail(phase, error?.name); return; }
-            phase = 'POST';
-            if (value?.status !== 'applied') { fail(phase, value?.status); return; }
-            terminal.textContent = 'applied';
-          } catch (error) {
-            fail('fetch-rejection', error?.name);
-          }
-        };
-      </script>`);
-      return;
-    }
-    response.end('<iframe title="Opaque Topic Page" sandbox="allow-scripts" src="/frame"></iframe>');
-  });
-  try {
-    await listenLoopback(actionServer, '127.0.0.2');
-    const actionAddress = actionServer.address();
-    actionUrl = `http://127.0.0.2:${actionAddress.port}/plugins/command-center/api/topic/actions`;
-    await listenLoopback(frameServer, '127.0.0.1');
-  } catch (error) {
-    try { await closeLoopbackServer(frameServer); }
-    finally { await closeLoopbackServer(actionServer); }
-    assert.fail(`opaque frame setup failed: ${boundedOpaqueEvidence({ phase: 'servers-listen', error: boundedOpaqueText(error?.message) })}`);
-  }
-  const frameAddress = frameServer.address();
-  let context;
   let page;
-  const requestFailures = [];
-  const consoleEvidence = [];
   try {
-    context = await browser.newContext();
-    page = await context.newPage();
-  } catch (error) {
-    try { if (page) await closeGuardedPage(page); }
-    finally {
-      try { if (context) await context.close(); }
-      finally {
-        try { await closeLoopbackServer(frameServer); }
-        finally { await closeLoopbackServer(actionServer); }
-      }
-    }
-    assert.fail(`opaque frame setup failed: ${boundedOpaqueEvidence({ phase: 'browser-context', error: boundedOpaqueText(error?.message) })}`);
-  }
-  page.on('requestfailed', (request) => {
-    if (requestFailures.length >= 8) return;
-    let path = 'unparseable';
-    try { path = new URL(request.url()).pathname; } catch { /* retain bounded fallback */ }
-    requestFailures.push({ method: request.method(), path: boundedOpaqueText(path), error: boundedOpaqueText(request.failure()?.errorText) });
-  });
-  page.on('console', (message) => {
-    if (consoleEvidence.length < 8) consoleEvidence.push({ type: boundedOpaqueText(message.type(), 32), text: boundedOpaqueText(message.text()) });
-  });
-  try {
-    await guardBrowserTraffic(page, 'Topic Page preflight browser');
-    await page.goto(`http://127.0.0.1:${frameAddress.port}/`);
-    const result = page.frameLocator('iframe').locator('#result');
-    await result.waitFor();
-    // Playwright HTTP routing can bypass Chromium's CORS machinery. Release it only
-    // after the isolated fixture is loaded so the opaque frame produces a genuine
-    // browser-generated OPTIONS request before its JSON POST.
+    await listenLoopback(server, '127.0.0.1');
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    page = await browser.newPage();
+    await guardBrowserTraffic(page, 'direct opaque HTTP denial');
+    await page.goto(origin);
+    const frame = page.frameLocator('iframe').locator('p');
+    await frame.waitFor();
+    // Let Chromium perform its real preflight; route interception can bypass CORS.
     await page.unroute('**/*');
-    await result.evaluate(() => globalThis.runOpaqueAction());
-    try {
-      await result.filter({ hasText: /^(?:applied|failed:)/u }).waitFor({ timeout: 10_000 });
-    } catch {
-      const terminal = await result.textContent().catch(() => 'unavailable');
-      assert.fail(`opaque frame did not reach a terminal result: ${boundedOpaqueEvidence({ terminal: boundedOpaqueText(terminal), methods: methods.slice(0, 8), preflightEvidence, requestFailures, consoleEvidence })}`);
-    }
-    const terminal = await result.textContent();
-    const failedBoundary = methods.includes('OPTIONS') && !methods.includes('POST') ? 'post-dispatch' : methods.length === 0 ? 'preflight-dispatch' : 'response';
-    assert.equal(terminal, 'applied', `opaque frame action failed: ${boundedOpaqueEvidence({ failedBoundary, terminal: boundedOpaqueText(terminal), methods: methods.slice(0, 8), preflightEvidence, requestFailures, consoleEvidence })}`);
-    assert.equal(methods[0], 'OPTIONS');
-    assert.equal(methods.filter((method) => method === 'OPTIONS').length >= 1, true);
-    assert.equal(preflightComplete, true, `opaque frame preflight contract failed: ${boundedOpaqueEvidence(preflightEvidence)}`);
-    assert.equal(preflightEvidence.length, 1);
-    assert.equal(preflightEvidence[0].origin, 'null');
-    assert.equal(preflightEvidence[0].method, 'POST');
-    assert.equal(preflightEvidence[0].headers.split(',').map((value) => value.trim()).includes('content-type'), true);
-    assert.equal(preflightEvidence.every((evidence) => evidence.status === 204), true);
-    assert.equal(preflightEvidence.every((evidence) => evidence.mutationCalls === 0), true);
-    assert.equal(preflightEvidence.every((evidence) => evidence.allowOrigin === 'null'), true);
-    assert.equal(preflightEvidence.every((evidence) => evidence.allowMethods === 'POST, OPTIONS'), true);
-    assert.equal(preflightEvidence.every((evidence) => evidence.allowHeaders === 'Content-Type'), true);
-    assert.equal(preflightEvidence.every((evidence) => evidence.allowPrivateNetwork === 'true'), true);
-    assert.equal(methods.filter((method) => method === 'POST').length, 1);
-    assert.equal(methods.every((method) => method === 'OPTIONS' || method === 'POST'), true);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].isPrimary, false);
-    guard.assertClean();
+    const result = await frame.evaluate(async (_node, origin) => {
+      try {
+        await fetch(`${origin}/plugins/command-center/api/topic/actions`, {
+          method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create' })
+        });
+        return 'unexpected-response';
+      } catch { return 'blocked'; }
+    }, origin);
+    assert.equal(result, 'blocked');
+    assert.deepEqual(methods, ['OPTIONS']);
+    assert.equal(calls.length, 0);
   } finally {
-    try {
-      if (page) await closeGuardedPage(page);
-    } finally {
-      try { if (context) await context.close(); }
-      finally {
-        try { await closeLoopbackServer(frameServer); }
-        finally { await closeLoopbackServer(actionServer); }
-      }
-    }
+    try { if (page) await closeGuardedPage(page); }
+    finally { await closeLoopbackServer(server); }
   }
 });
 
@@ -394,7 +265,8 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
       }
     };
 
-    globalThis.fetch = async (_url, options) => {
+    globalThis.fetch = async () => { throw new Error('Private HTTP must use the parent relay.'); };
+    globalThis.__relayHttpFixture = async (_url, options) => {
       if (String(_url).endsWith('/api/search/rebuild')) { if (fixture.deferProjectionRebuild) { fixture.deferProjectionRebuild = false; fixture.projectionRebuildPending = true; await new Promise((resolve) => { fixture.projectionRebuildResolver = resolve; }); fixture.projectionRebuildPending = false; } return { ok: true, status: 200, async json() { return { schemaVersion: 1, status: 'applied' }; } }; }
       const body = JSON.parse(options.body); fixture.calls.push({ transport: 'http', ...copy(body) });
       const routed = await globalThis.__invokeTopicPageAction(body);
@@ -415,9 +287,16 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
     window.addEventListener('message', async (event) => {
       if (event.data?.type !== 'openclaw:capability-bridge-send') return;
       const payload = event.data.payload;
-      if (payload.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'sessions.create', 'ui.session.navigateResolved'] } }, '*'); return; }
+      if (payload.type === 'openclaw:capability-bridge-hello') { window.postMessage({ type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.sources.status', 'command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'sessions.create', 'ui.session.navigateResolved', 'ui.http.get', 'ui.http.post'] } }, '*'); return; }
       if (payload.type !== 'openclaw:capability-bridge-request') return;
       fixture.calls.push({ transport: 'bridge', method: payload.method, params: copy(payload.params), operationId: payload.operationId });
+      if (payload.method === 'ui.http.get' || payload.method === 'ui.http.post') {
+        try {
+          const response = await globalThis.__relayHttpFixture(payload.params.path, { method: payload.method === 'ui.http.post' ? 'POST' : 'GET', body: payload.params.body });
+          respond(payload.requestId, { status: response.status, body: JSON.stringify(await response.json()) });
+        } catch { respond(payload.requestId, null, { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Fictional interrupted relay response.' }); }
+        return;
+      }
       if (payload.method === 'ui.session.navigateResolved' && fixture.failNativeNavigation) { respond(payload.requestId, null, { code: 'UNAVAILABLE', message: 'Native Chat is unavailable.' }); return; }
       if (payload.method === 'ui.session.navigateResolved' && fixture.deferNativeNavigation) { fixture.deferNativeNavigation = false; fixture.resolveNativeNavigation = () => respond(payload.requestId, {}); return; }
       if (payload.method === 'sessions.create' && fixture.unknownNextSessionCreate) { fixture.unknownNextSessionCreate = false; respond(payload.requestId, null, { code: 'MUTATION_OUTCOME_UNKNOWN', message: 'Fictional unknown Session creation outcome.' }); return; }

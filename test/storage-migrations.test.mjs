@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { metadataSchemaV1Sql, metadataSchemaV2Sql, metadataSchemaV5Sql } from '../src/metadata/schema.mjs';
+import { metadataSchemaV1Sql, metadataSchemaV2Sql, metadataSchemaV3Sql, metadataSchemaV4Sql, metadataSchemaV5Sql, metadataSchemaV6Sql, metadataSchemaV7Sql } from '../src/metadata/schema.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
 import { MIGRATION_DIGEST, V1_TO_V2_MIGRATION_DIGEST, V1_TO_V2_MIGRATION_ID, V2_TO_V3_MIGRATION_DIGEST, V2_TO_V3_MIGRATION_ID, V3_TO_V4_MIGRATION_DIGEST, V3_TO_V4_MIGRATION_ID, V4_TO_V5_MIGRATION_DIGEST, V4_TO_V5_MIGRATION_ID, V5_TO_V6_MIGRATION_ID, V6_TO_V7_MIGRATION_DIGEST, V6_TO_V7_MIGRATION_ID, V7_TO_V8_MIGRATION_DIGEST, V7_TO_V8_MIGRATION_ID, applyV1ToV2Migration, applyV2ToV3Migration, applyV5ToV6Migration, validateMigrationLedger } from '../src/metadata/migration-ledger.mjs';
 import { ensureRecoverySnapshot, expectedRollbackRelease, verifyRollbackMaterial } from '../src/metadata/recovery.mjs';
@@ -20,6 +20,80 @@ function open(options) {
   const service = openCommandCenterMetadataService({ ...options, capabilities: options.capabilities ?? availableCapabilities });
   openServices.add(service);
   return service;
+}
+
+const migratableSchemas = [metadataSchemaV1Sql, metadataSchemaV2Sql, metadataSchemaV3Sql, metadataSchemaV4Sql, metadataSchemaV5Sql, metadataSchemaV6Sql, metadataSchemaV7Sql];
+async function seedMigratableSchema(stateDir, schemaVersion, topicId = 'topic-rollback') {
+  const databasePath = resolveCommandCenterDatabasePath(stateDir);
+  await mkdir(path.dirname(databasePath), { recursive: true });
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec(migratableSchemas[schemaVersion - 1]);
+    database.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(topicId, 'area', 'active', 'fictional-created', 'fictional-created');
+  } finally { database.close(); }
+  return databasePath;
+}
+
+for (const [schemaVersion, snapshotSchema] of [3, 4, 5, 6, 7].flatMap((version) => [[version, version], [version, version - 1]])) test(`schema-${schemaVersion} cannot adopt another store's prepared schema-${snapshotSchema} recovery snapshot`, async () => {
+  await withState(async (sourceStateDir) => {
+    const sourcePath = await seedMigratableSchema(sourceStateDir, snapshotSchema, 'topic-other-store');
+    const material = ensureRecoverySnapshot({ stateDir: sourceStateDir, databasePath: sourcePath, sourceSchemaVersion: snapshotSchema });
+    assert.equal(material.manifest.state, 'prepared');
+    await withState(async (stateDir) => {
+      const databasePath = await seedMigratableSchema(stateDir, schemaVersion);
+      const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(stateDir);
+      await cp(material.directory, recoveryDirectory, { recursive: true });
+      const manifestPath = path.join(recoveryDirectory, 'manifest.json');
+      const snapshotPath = path.join(recoveryDirectory, 'metadata.sqlite.snapshot');
+      const beforeDatabase = await readFile(databasePath);
+      const beforeManifest = await readFile(manifestPath);
+      const beforeSnapshot = await readFile(snapshotPath);
+      const service = open({ stateDir });
+      const status = service.getOperatingStatus();
+      assert.equal(status.mode, 'recovery-only', JSON.stringify(status));
+      assert.equal(status.diagnostics[0].code, 'recovery-snapshot-mismatch');
+      service.close();
+      assert.deepEqual(await readFile(databasePath), beforeDatabase);
+      assert.deepEqual(await readFile(manifestPath), beforeManifest);
+      assert.deepEqual(await readFile(snapshotPath), beforeSnapshot);
+    });
+  });
+});
+
+for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7]) {
+  test(`restored committed schema-${schemaVersion} snapshot stays Recovery-only without auto-migration`, async () => {
+    await withState(async (stateDir) => {
+      const databasePath = await seedMigratableSchema(stateDir, schemaVersion);
+      const migrated = open({ stateDir });
+      assert.equal(migrated.getOperatingStatus().mode, 'ready', JSON.stringify(migrated.getOperatingStatus()));
+      const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(stateDir);
+      const manifestPath = path.join(recoveryDirectory, 'manifest.json');
+      const snapshotPath = path.join(recoveryDirectory, 'metadata.sqlite.snapshot');
+      const manifestBytes = await readFile(manifestPath);
+      const manifest = JSON.parse(manifestBytes);
+      assert.equal(manifest.state, 'committed');
+      assert.equal(migrated.verifyRollbackSnapshot({ snapshotId: manifest.snapshotId, priorRelease: expectedRollbackRelease(stateDir) }).sourceSchema, schemaVersion);
+      migrated.close();
+      await copyFile(snapshotPath, databasePath);
+      await chmod(databasePath, 0o600);
+      const restoredBytes = await readFile(databasePath);
+      const recoveryFiles = await readdir(recoveryDirectory);
+
+      for (let restart = 0; restart < 2; restart += 1) {
+        const restored = open({ stateDir });
+        const status = restored.getOperatingStatus();
+        assert.equal(status.mode, 'recovery-only', JSON.stringify(status));
+        assert.equal(status.schemaVersion, schemaVersion);
+        assert.equal(status.diagnostics[0].code, 'rollback-snapshot-detected');
+        assert.throws(() => restored.createTopic({ topicId: 'blocked', paraCategory: 'area', lifecycle: 'active' }), (error) => error.code === 'recovery-only');
+        restored.close();
+        assert.deepEqual(await readFile(databasePath), restoredBytes);
+        assert.deepEqual(await readFile(snapshotPath), restoredBytes);
+        assert.deepEqual(await readFile(manifestPath), manifestBytes);
+        assert.deepEqual(await readdir(recoveryDirectory), recoveryFiles);
+      }
+    });
+  });
 }
 
 test('schema-5 to schema-8 preserves Topic Search bookkeeping and backfills exact current locators', async () => {
@@ -184,22 +258,56 @@ test('direct schema-2 to schema-8 migration retains a verified snapshot and cont
   });
 });
 
-test('direct schema-2 migration reconciles prepared recovery material after transaction boundaries', async () => {
+for (const schemaVersion of [3, 4, 5, 6, 7]) test(`prepared schema-2 evidence resumes after process death at intermediate schema-${schemaVersion}`, async () => {
+  await withState(async (stateDir) => {
+    const databasePath = await seedMigratableSchema(stateDir, 2);
+    const script = `
+      import { openCommandCenterMetadataService } from ${JSON.stringify(new URL('../src/metadata/service.mjs', import.meta.url).href)};
+      openCommandCenterMetadataService({ stateDir: process.argv[1],
+        [Symbol.for('openclaw.command-center.test.migration-hooks')]: {
+          beforeTransaction({ migration }) {
+            if (migration.fromVersion === Number(process.argv[2])) process.kill(process.pid, 'SIGKILL');
+          }
+        }
+      });`;
+    const child = spawnSync(process.execPath, ['--input-type=module', '--eval', script, stateDir, String(schemaVersion)], { env: { ...process.env, NODE_ENV: 'test' }, encoding: 'utf8' });
+    assert.notEqual(child.status, 0, child.stderr);
+    const interrupted = new DatabaseSync(databasePath, { readOnly: true });
+    try { assert.equal(interrupted.prepare('PRAGMA user_version').get().user_version, schemaVersion); } finally { interrupted.close(); }
+    const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(stateDir);
+    const snapshotPath = path.join(recoveryDirectory, 'metadata.sqlite.snapshot');
+    const manifestPath = path.join(recoveryDirectory, 'manifest.json');
+    const snapshotBytes = await readFile(snapshotPath);
+    assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).state, 'prepared');
+    const resumed = open({ stateDir });
+    assert.equal(resumed.getOperatingStatus().mode, 'ready', JSON.stringify(resumed.getOperatingStatus()));
+    assert.equal(resumed.getTopic('topic-rollback').paraCategory, 'area');
+    resumed.close();
+    assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).state, 'committed');
+    assert.deepEqual(await readFile(snapshotPath), snapshotBytes);
+  });
+});
+
+for (const schemaVersion of [2, 3, 4, 5, 6, 7]) test(`direct schema-${schemaVersion} migration reconciles prepared recovery material after transaction boundaries`, async () => {
   for (const boundary of ['after-commit', 'before-commit']) {
     await withState(async (stateDir) => {
-      const databasePath = await seedV2(stateDir);
+      const databasePath = await seedMigratableSchema(stateDir, schemaVersion);
       const args = [fileURLToPath(new URL('./fixtures/migration-crash.mjs', import.meta.url)), stateDir];
       if (boundary === 'before-commit') args.push('before-commit');
       const child = spawnSync(process.execPath, args, { env: { ...process.env, NODE_ENV: 'test' }, encoding: 'utf8' });
       assert.notEqual(child.status, 0, child.stderr);
       const manifestPath = path.join(resolveCommandCenterRecoveryMigrationPath(stateDir), 'manifest.json');
       assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).state, 'prepared');
+      const snapshotPath = path.join(resolveCommandCenterRecoveryMigrationPath(stateDir), 'metadata.sqlite.snapshot');
+      const snapshotBeforeRestart = await readFile(snapshotPath);
       const restarted = open({ stateDir });
       assert.equal(restarted.getOperatingStatus().mode, 'ready', `${boundary}: ${JSON.stringify(restarted.getOperatingStatus())}`);
+      assert.equal(restarted.getTopic('topic-rollback').paraCategory, 'area');
       restarted.close();
       const database = new DatabaseSync(databasePath, { readOnly: true });
       try { assert.equal(database.prepare('PRAGMA user_version').get().user_version, 8); } finally { database.close(); }
       assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).state, 'committed');
+      assert.deepEqual(await readFile(snapshotPath), snapshotBeforeRestart);
     });
   }
 });

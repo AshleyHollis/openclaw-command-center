@@ -205,6 +205,15 @@ test('bounded slices cancel and await cleanup below the controller inactivity bo
   await assert.rejects(() => runBoundedAcceptanceSlice('invalid-bound', async () => {}, { timeoutMs: 290_000, cleanupTimeoutMs: 10_000 }), /below the controller inactivity timeout/u);
 });
 
+test('a fatal shutdown rejection after cancellation is preserved by the bounded owner', async () => {
+  const failure = new Error('fictional host-stop failed after cancellation');
+  failure.fatalAcceptanceCleanup = true;
+  await assert.rejects(runBoundedAcceptanceSlice('shutdown-refusal', async signal => {
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    throw failure;
+  }, { timeoutMs: 10, cleanupTimeoutMs: 100 }), error => error === failure && error.fatalAcceptanceCleanup === true);
+});
+
 test('a cooperatively cancelled timed-out scenario records failure and later siblings still run', async () => {
   const reached = [];
   const coordinator = createAcceptanceScenarioCoordinator({

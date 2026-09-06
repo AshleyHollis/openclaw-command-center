@@ -3,6 +3,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
 import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
+import { enrollNoteFolderIdentity, readNoteFolderIdentity } from '../sources/note-folder-identity.mjs';
+import { ownsNoteFilesystem, withNoteFilesystemOwner } from '../sources/note-filesystem-owner.mjs';
 
 function bounded(value) { return String(value ?? '').slice(0, 180); }
 function unboundRevision(referenceId) { return `unbound:${referenceId}`; }
@@ -37,8 +39,8 @@ export class TopicRecoveryService {
     return { logicalOperationId, replay: null };
   }
 
-  finishMutation(logicalOperationId, operationKind, intent, result) {
-    const completed = this.metadata.completeTopicRecoveryMutation({ logicalOperationId, operationKind, intent, result, recovery: result.recovery, expectedRevision: intent.expectedRevision, updatedAt: this.now() });
+  finishMutation(logicalOperationId, operationKind, intent, result, folderBinding = undefined) {
+    const completed = this.metadata.completeTopicRecoveryMutation({ logicalOperationId, operationKind, intent, result, recovery: result.recovery, ...(folderBinding ? { folderBinding } : {}), expectedRevision: intent.expectedRevision, updatedAt: this.now() });
     return { ...result, recovery: completed.recovery, topicRevision: completed.topic.revision };
   }
 
@@ -66,7 +68,7 @@ export class TopicRecoveryService {
     if (await realpath(candidate) !== candidate) throw sourceError('unsafe-path', 'The replacement Note Folder cannot be a path alias.');
     const owner = (this.metadata.listSourceLocators?.() ?? []).find((item) => item.locator === candidate);
     if (owner && owner.referenceId !== referenceId) throw sourceError('conflict', 'The explicit replacement Note Folder is already bound to another Source Reference.');
-    return { locator: candidate, observedRevision: `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}` };
+    return { locator: candidate, observedRevision: await enrollNoteFolderIdentity(candidate) };
   }
 
   async inspect(topicId, referenceId) {
@@ -76,6 +78,7 @@ export class TopicRecoveryService {
     const locator = locatorRecord?.locator ?? reference.externalSourceId;
     let available = false;
     let failure = null;
+    let folderIdentity = null;
     if (reference.sourceSystem === 'obsidian') {
       const stat = await lstat(locator).catch((error) => { failure = error?.code ?? 'not-found'; return null; });
       if (stat?.isSymbolicLink() || !stat?.isDirectory()) failure = 'unsafe-or-not-directory';
@@ -83,7 +86,8 @@ export class TopicRecoveryService {
         const canonical = await realpath(locator).catch(() => null);
         if (canonical !== locator) failure = 'locator-alias';
         else {
-          const identity = `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+          const identity = await readNoteFolderIdentity(locator).catch(() => null);
+          folderIdentity = identity;
           if (!locatorRecord?.observedRevision) failure = 'exact-folder-identity-unverified';
           else if (locatorRecord.observedRevision !== identity) failure = 'exact-folder-identity-mismatch';
           else available = true;
@@ -103,30 +107,45 @@ export class TopicRecoveryService {
         else failure = matches.length === 0 ? 'exact-session-missing' : 'exact-session-ambiguous';
       }
     } else failure = 'unsupported-source-kind';
-    return { available, failure, locator, reference };
+    return { available, failure, locator, reference, folderIdentity };
   }
 
   async verify(input = {}) {
-    const topicId = String(input.topicId ?? '').trim();
     const referenceId = String(input.referenceId ?? '').trim();
+    const folder = this.metadata.getSourceReference(referenceId);
+    if (folder?.sourceSystem === 'obsidian' && folder.sourceKind === 'note_folder' && !ownsNoteFilesystem(this.metadata)) return withNoteFilesystemOwner(this.metadata, () => this.verify(input));
+    const topicId = String(input.topicId ?? '').trim();
     const operationKind = 'topics.recovery.verify';
     const intent = { topicId, referenceId, expectedRevision: input.expectedRevision, expectedSourceRevision: input.expectedSourceRevision, replacementLocator: input.replacementLocator ?? null };
+    const reference = this.metadata.getSourceReference(referenceId);
+    const previous = this.metadata.getTopicOperation(input.logicalOperationId);
+    if (reference?.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder') {
+      // Capture approval against the durable binding, not against whatever
+      // generation happens to exist after asynchronous filesystem verification.
+      const version = previous ? previous.intent.expectedLocatorVersion : this.metadata.getSourceLocator(referenceId)?.locatorVersion ?? 0;
+      if (version !== undefined) intent.expectedLocatorVersion = version;
+    }
     const operation = this.prepareMutation(input, operationKind, intent);
     if (operation.replay) return operation.replay;
-    const reference = this.metadata.getSourceReference(referenceId);
     if (!reference || reference.topicId !== topicId) throw sourceError('source-recovery', 'The exact Topic-owned Source Reference was not found.');
     let inspection = await this.ensureRequiredOrDetected(topicId, referenceId);
     const currentRevision = this.metadata.getSourceLocator?.(referenceId)?.observedRevision ?? reference.observedRevision ?? unboundRevision(referenceId);
     let state = 'resolved';
+    let folderBinding;
     if (input.replacementLocator !== undefined) {
       if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder') throw sourceError('unsupported-operation', 'A replacementLocator applies only to Note Folder Source References.');
+      if (!Number.isInteger(intent.expectedLocatorVersion)) throw sourceError('unknown', 'The interrupted Folder recovery lacks binding-generation approval; use a new explicit recovery operation.');
+      const binding = this.metadata.getSourceLocator(referenceId);
+      const recoveryIdentity = this.metadata.listSourceRecovery(topicId).find((item) => item.referenceId === referenceId)?.lastIdentity;
+      if (input.expectedSourceRevision !== currentRevision && input.expectedSourceRevision !== recoveryIdentity) throw sourceError('conflict', 'Source Recovery replacement revision is stale.');
       const replacement = await this.exactReplacementLocator(input.replacementLocator, referenceId);
-      this.metadata.applyFolderRecoveryBinding({ referenceId, locator: replacement.locator, observedRevision: replacement.observedRevision, expectedSourceRevision: input.expectedSourceRevision, updatedAt: this.now() });
-      this.metadata.setSourceConventionState?.({ referenceId, aspect: 'location', state: 'customized', expectedValue: replacement.locator, updatedAt: this.now() });
+      if (this.metadata.getTopic(topicId)?.revision !== input.expectedRevision || this.metadata.getSourceLocator(referenceId)?.locatorVersion !== binding?.locatorVersion) throw sourceError('conflict', 'The Source Recovery owner changed during folder enrollment.');
+      folderBinding = { ...replacement, expectedLocatorVersion: intent.expectedLocatorVersion };
       inspection = { ...inspection, available: true, failure: null, locator: replacement.locator };
       state = 'replaced';
     } else if (input.expectedSourceRevision !== currentRevision) throw sourceError('conflict', 'Source Recovery verification revision is stale.', { currentRevision, expectedRevision: input.expectedSourceRevision });
     if (!inspection.available) throw sourceError('source-recovery', `Explicit Source Recovery verification failed: ${inspection.failure}.`, { topicId, referenceId, lastLocator: inspection.locator });
+    if (!folderBinding && reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder') folderBinding = { locator: inspection.locator, observedRevision: inspection.folderIdentity, expectedLocatorVersion: intent.expectedLocatorVersion };
     const recovery = {
       recoveryId: `recovery:${referenceId}`,
       topicId,
@@ -139,7 +158,7 @@ export class TopicRecoveryService {
       diagnostics: [{ topicId, referenceId, sourceKind: inspection.reference.sourceKind, check: state === 'replaced' ? 'explicit-replacement' : 'exact-identity', result: 'verified' }],
       updatedAt: this.now()
     };
-    return this.finishMutation(operation.logicalOperationId, operationKind, intent, { status: state, recovery });
+    return this.finishMutation(operation.logicalOperationId, operationKind, intent, { status: state, recovery }, folderBinding);
   }
 
   async relink(input = {}) {

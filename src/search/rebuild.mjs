@@ -1,5 +1,5 @@
 import { openProjectionStore, SEARCH_PROJECTION_VERSIONS, withGroupedProjectionPublication } from './projection-store.mjs';
-import { hasTopicSearchInvalidationMarker } from './freshness.mjs';
+import { assertTopicSearchFreshness, hasTopicSearchInvalidationMarker, readTopicSearchFreshness } from './freshness.mjs';
 import { readTopicSourceSnapshot } from './source-snapshot.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
@@ -29,7 +29,8 @@ function topicIds(metadata, requested) {
   throw sourceError('source-recovery', 'Topic ownership metadata is unavailable.');
 }
 
-export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory, noteAdapter, api, gateway, transcriptReader, topicId, authoritativeSources, sourceSnapshotFactory = readTopicSourceSnapshot, onProgress, signal } = {}) {
+export async function prepareTopicSearchSnapshot({ stateDir, metadata, noteAdapterFactory, noteAdapter, api, gateway, transcriptReader, topicId, authoritativeSources, sourceSnapshotFactory = readTopicSourceSnapshot, onProgress, signal } = {}) {
+  const freshness = readTopicSearchFreshness(stateDir);
   const topics = topicIds(metadata, topicId);
   const notes = [];
   const conversations = [];
@@ -58,7 +59,8 @@ export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory,
   const noteSourceRevision = sourceDigest({ projection: 'notes', revisions: noteRevisions });
   const conversationSourceRevision = sourceDigest({ projection: 'conversations', revisions: conversationRevisions });
   const sourceRevision = sourceDigest({ notes: noteSourceRevision, conversations: conversationSourceRevision });
-  return Object.freeze({ topicId: topicId ?? null, topicIds: Object.freeze(topics), notes: Object.freeze(notes), conversations: Object.freeze(conversations), noteSourceRevision, conversationSourceRevision, sourceRevision });
+  assertTopicSearchFreshness(stateDir, freshness);
+  return Object.freeze({ topicId: topicId ?? null, topicIds: Object.freeze(topics), notes: Object.freeze(notes), conversations: Object.freeze(conversations), noteSourceRevision, conversationSourceRevision, sourceRevision, freshness });
 }
 
 export async function publishTopicSearchSnapshot({ stateDir, prepared, metadata, signal } = {}) {
@@ -71,16 +73,19 @@ export async function publishTopicSearchSnapshot({ stateDir, prepared, metadata,
   // both empty generations so startup never confuses "no Topics" with a lost
   // or partially created projection.
   return withGroupedProjectionPublication({ stateDir }, async (_groupLease) => {
+    assertTopicSearchFreshness(stateDir, prepared.freshness);
     const notesResult = await noteStore.rebuild({ topicId: prepared.topicId, topicIds: prepared.topicIds, rows: prepared.notes, sourceRevision: prepared.noteSourceRevision, _groupLease, signal });
     signal?.throwIfAborted();
     const conversationsResult = await conversationStore.rebuild({ topicId: prepared.topicId, topicIds: prepared.topicIds, rows: prepared.conversations, sourceRevision: prepared.conversationSourceRevision, _groupLease, signal });
     signal?.throwIfAborted();
+    const freshness = { ...prepared.freshness, projections: [notesResult.generation, conversationsResult.generation] };
+    assertTopicSearchFreshness(stateDir, freshness);
     metadata?.setProjectionBookkeepingBatch?.([notesResult, conversationsResult].map((projection) => ({
       projectionId: projection.projectionId,
       sourceRevision: projection.sourceRevision,
       inputDigest: projection.inputDigest
     })));
-    return Object.freeze({ notes: notesResult, conversations: conversationsResult, topicIds: notesResult.topicIds });
+    return Object.freeze({ notes: notesResult, conversations: conversationsResult, topicIds: notesResult.topicIds, freshness });
   });
 }
 

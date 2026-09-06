@@ -7,13 +7,14 @@ import { createMetadataService, runtimeHostIdentity } from '../src/plugin-servic
 
 const pluginSource = async () => `${await readFile(new URL('../src/plugin.mjs', import.meta.url), 'utf8')}\n${await readFile(new URL('../src/plugin-service.mjs', import.meta.url), 'utf8')}`;
 
-test('plugin uses the published entry and external-tab descriptor seams', async () => {
+test('plugin uses the published entry and native manifest contribution', async () => {
   const source = await pluginSource();
+  const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
   assert.match(source, /from 'openclaw\/plugin-sdk\/plugin-entry'/);
   assert.match(source, /definePluginEntry\(/);
   assert.doesNotMatch(source, /openclaw\/plugin-sdk';/);
-  assert.match(source, /api\.session\.controls\.registerControlUiDescriptor\(/);
-  assert.match(source, /surface:\s*'tab'/);
+  assert.equal(manifest.controlUi.entry, 'dist/native-ui/entry.mjs');
+  assert.doesNotMatch(source, /registerControlUiDescriptor\(/);
   assert.doesNotMatch(source, /registerControlUiExternalTab/);
 });
 
@@ -23,7 +24,7 @@ test('plugin registers an authenticated shell with credentialless immutable subr
   assert.doesNotMatch(source, /auth:\s*'gateway',[\s\S]*?match:\s*'prefix'/);
   assert.doesNotMatch(source, /\[`\$\{pluginPath\}\/`, \['index\.html'/);
   assert.match(source, /api\.registerHttpRoute\(/);
-  assert.match(source, /path:\s*'\/plugins\/command-center\/api\/attention\/actions',[\s\S]*?auth:\s*'plugin',[\s\S]*?match:\s*'exact'/);
+  assert.match(source, /path:\s*'\/plugins\/command-center\/api\/attention\/actions',[\s\S]*?auth:\s*'gateway',[\s\S]*?match:\s*'exact'/);
   assert.doesNotMatch(source, /\/command-center\/v1\/attention\/actions/);
   assert.doesNotMatch(source, /\/plugins\/command-center\/actions/);
 });
@@ -35,7 +36,7 @@ test('plugin service retains runtime state and source capability wiring', async 
   assert.match(source, /api\.runtime\.state\.resolveStateDir\(process\.env\)/);
   assert.match(source, /gatewayAvailable = typeof api\.runtime\?\.gateway\?\.request === 'function'/);
   assert.match(source, /typeof api\.runtime\.gateway\.isAvailable === 'function'/);
-  assert.match(source, /sessions: gatewayAvailable && configuredSourceCapabilities\.sessions !== false/);
+  assert.match(source, /sessions: \(gatewayAvailable \|\| sessionCatalogAvailable\) && configuredSourceCapabilities\.sessions !== false/);
   assert.match(source, /scheduler: gatewayAvailable && configuredSourceCapabilities\.scheduler !== false/);
 });
 
@@ -69,8 +70,8 @@ test('Conversation ingestion uses the pinned host identity and history gateway m
   const source = await readFile(new URL('../src/search/source-snapshot.mjs', import.meta.url), 'utf8');
   assert.match(source, /request\('sessions\.describe'/);
   assert.match(source, /includeDerivedTitles:\s*true/);
-  assert.match(source, /request\('chat\.history', \{ sessionKey: reference\.externalSourceId, limit, offset \}\)/);
-  assert.match(source, /assertSessionIdentity\(page, reference, expectedSessionId/);
+  assert.match(source, /request\('chat\.history', \{ sessionKey, limit, offset \}\)/);
+  assert.match(source, /assertSessionIdentity\(page, sessionKey, expectedSessionId/);
   assert.doesNotMatch(source, /session-transcript-runtime|transcriptPath|storePath/);
 });
 
@@ -82,22 +83,13 @@ test('Topics UI preserves Topic Search capability navigation and uses the dedica
   assert.match(source, /bridgeRequest\('ui\.session\.navigateResolved', \{/);
   assert.match(source, /expectedSessionKey: target\.sessionKey/);
   assert.doesNotMatch(source, /bridgeRequest\('ui\.session\.navigate'/);
-  assert.match(source, /fetch\(HTTP_ROUTE, \{ method: 'POST'/);
+  assert.match(source, /relayHttp\(HTTP_ROUTE, \{ method: 'POST'/);
   assert.doesNotMatch(source, /window\.location\.(?:assign|replace)|parent\.location/);
 });
 
-test('Topic workspace declares the exact external-tab capability bridge and bounded mutation route', async () => {
+test('retained legacy Topic assets preserve their guarded routes until native workflow cutover', async () => {
   const source = await readFile(new URL('../src/plugin.mjs', import.meta.url), 'utf8');
-  for (const method of ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigateResolved']) assert.match(source, new RegExp(method.replaceAll('.', '\\.'), 'u'));
-  assert.match(source, /capabilityBridge:[\s\S]*protocolVersion:\s*1/u);
-  assert.match(source, /sessionNavigationResolver: 'command-center\.v1\.sessions\.resolve-native'/u);
-  const requiredMethods = /requiredMethods:\s*\[([\s\S]*?)\]/u.exec(source)?.[1] ?? '';
-  assert.match(requiredMethods, /command-center\.v1\.sessions\.send/u);
-  assert.doesNotMatch(requiredMethods, /['"]chat\.send['"]/u);
-  assert.match(requiredMethods, /command-center\.v1\.topics\.list/u);
-  assert.doesNotMatch(requiredMethods, /command-center\.v1\.sessions\.list/u);
-  assert.match(source, /path:\s*'\/plugins\/command-center\/api\/topic\/actions',[\s\S]*auth:\s*'plugin',[\s\S]*match:\s*'exact'/u);
-  assert.match(requiredMethods, /sessions\.create/u);
+  assert.match(source, /path:\s*'\/plugins\/command-center\/api\/topic\/actions',[\s\S]*auth:\s*'gateway',[\s\S]*match:\s*'exact'/u);
   const html = await readFile(new URL('../src/ui/index.html', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /<script type="module"/u);
   assert.match(html, /app\.js/u);
@@ -108,7 +100,7 @@ test('Topic workspace declares the exact external-tab capability bridge and boun
   assert.match(app, /import\(markdownModuleUrl\)/u);
   assert.match(app, /bridgeReady\.then\(loadOperatingState\)/u);
   assert.match(app, /if \(requestedTopicId === null\) void loadTopics\(\)/u);
-  assert.match(app, /fetch\(PAGE_ACTION_ROUTE, \{ method: 'POST', credentials: 'omit'/u);
+  assert.match(app, /relayHttp\(PAGE_ACTION_ROUTE, \{ method: 'POST', credentials: 'omit'/u);
   assert.match(app, /bridgeRequest\('sessions\.create', \{ agentId: 'main', label \}, logicalOperationId\)/u);
   assert.match(app, /bridgeRequest\('command-center\.v1\.sessions\.navigate', \{ schemaVersion: 1, topicId: operation\.topicId, referenceId: operation\.referenceId, nativeChat: true \}\)/u);
   assert.doesNotMatch(app, /bridgeRequest\('command-center\.v1\.sessions\.send'/u);

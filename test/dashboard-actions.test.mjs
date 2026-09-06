@@ -10,17 +10,6 @@ async function invoke(handler, { method = 'GET', url = '/', body, headers = {} }
   const res = response(); await handler(req, res); return { statusCode: res.statusCode, headers: res.headers, body: res.body ? JSON.parse(res.body) : null };
 }
 
-function assertOpaquePreflight(result, method, headers) {
-  assert.equal(result.statusCode, 204);
-  assert.equal(result.body, null);
-  assert.equal(result.headers['Access-Control-Allow-Origin'], 'null');
-  assert.equal(result.headers['Access-Control-Allow-Methods'], `${method}, OPTIONS`);
-  assert.equal(result.headers['Access-Control-Allow-Headers'], headers);
-  assert.equal(result.headers['Access-Control-Allow-Private-Network'], 'true');
-  assert.equal(result.headers['Access-Control-Allow-Credentials'], undefined);
-  assert.equal(result.headers.Vary, 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers, Access-Control-Request-Private-Network');
-}
-
 test('Dashboard read is bounded and mutation settings use only the closed POST contract', async () => {
   let reads = 0; let update;
   const service = { dashboard: { async get(input) { reads += 1; assert.equal(input.activityLimit, 50); return { schemaVersion: 1, serverTime: '2026-08-27T12:00:00.000Z', attention: [], attentionBadgeCount: 0, inProgress: [], comingUp: [], topics: [], activity: { records: [], nextOffset: null, hasMore: false }, activityOffset: 0, activityLimit: 50 }; } }, async dashboardUpdateSettings(input) { update = input; return { revision: 2 }; } };
@@ -35,21 +24,13 @@ test('Dashboard read is bounded and mutation settings use only the closed POST c
   assert.equal((await invoke(createDashboardActionsHttpHandler(service), { method: 'GET' })).statusCode, 405);
 });
 
-test('Dashboard routes admit only exact opaque-frame CORS preflights', async () => {
-  let calls = 0;
-  const service = { dashboard: { async get() { calls += 1; return {}; } }, async dashboardUpdateSettings() { calls += 1; return {}; } };
-  const privateNetwork = { origin: 'null', 'access-control-request-private-network': 'true' };
-  assertOpaquePreflight(await invoke(createDashboardReadHttpHandler(service), { method: 'OPTIONS', headers: { ...privateNetwork, 'access-control-request-method': 'GET' } }), 'GET', undefined);
-  assertOpaquePreflight(await invoke(createDashboardActionsHttpHandler(service), { method: 'OPTIONS', headers: { ...privateNetwork, 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } }), 'POST', 'Content-Type');
-  for (const request of [
-    { handler: createDashboardReadHttpHandler(service), headers: { origin: 'https://example.invalid', 'access-control-request-method': 'GET' } },
-    { handler: createDashboardReadHttpHandler(service), headers: { origin: 'null', 'access-control-request-method': 'POST' } },
-    { handler: createDashboardActionsHttpHandler(service), headers: { origin: 'null', 'access-control-request-method': 'POST' } },
-    { handler: createDashboardActionsHttpHandler(service), headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization, content-type' } }
-  ]) assert.equal((await invoke(request.handler, { method: 'OPTIONS', headers: request.headers })).statusCode, 403);
-  assert.equal((await invoke(createDashboardReadHttpHandler(service), { headers: { origin: 'https://example.invalid' } })).statusCode, 403);
-  assert.equal((await invoke(createDashboardActionsHttpHandler(service), { method: 'POST', headers: { origin: 'https://example.invalid', 'content-type': 'application/json' }, body: {} })).statusCode, 403);
-  assert.equal(calls, 0);
+test('private Dashboard handlers expose no opaque CORS bypass', async () => {
+  const service = { dashboard: { get: async () => ({}) }, dashboardUpdateSettings: async () => ({}) };
+  for (const handler of [createDashboardReadHttpHandler(service), createDashboardActionsHttpHandler(service)]) {
+    const result = await invoke(handler, { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST' } });
+    assert.equal(result.statusCode, 405);
+    assert.equal(result.headers['Access-Control-Allow-Origin'], undefined);
+  }
 });
 
 test('Dashboard read responses remain byte-bounded without widening mutation requests or receipts', async () => {

@@ -1,9 +1,10 @@
+import { readBoundedJson } from '../http/json-body.mjs';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
-import { allowOpaqueFrameRequest } from '../http/opaque-frame-cors.mjs';
 
 const MAX_BODY = 64 * 1024;
-function response(res, status, value) { const body = JSON.stringify(value); if (body.length > 256 * 1024) return response(res, 500, { status: 'error', code: 'bounded-response', message: 'Topic Analysis response exceeded its bound.' }); res.statusCode = status; res.setHeader?.('content-type', 'application/json; charset=utf-8'); res.end(body); }
-async function body(req) { let size = 0; const chunks = []; for await (const chunk of req) { size += chunk.length; if (size > MAX_BODY) throw Object.assign(new Error('Request body is too large.'), { code: 'invalid-request' }); chunks.push(chunk); } if (!chunks.length) return {}; try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Object.assign(new Error('Request body must be JSON.'), { code: 'invalid-request' }); } }
+export const TOPIC_ANALYSIS_ACTIONS = Object.freeze(['schedule.update', 'analysis.run', 'proposal.approve', 'proposal.adjust', 'proposal.keep-as-is', 'review.snooze', 'review.apply']);
+function response(res, status, value) { const body = JSON.stringify(value); if (Buffer.byteLength(body) > 256 * 1024) return response(res, 500, { status: 'error', code: 'bounded-response', message: 'Topic Analysis response exceeded its bound.' }); res.statusCode = status; res.setHeader?.('content-type', 'application/json; charset=utf-8'); res.end(body); }
+async function body(req) { return (await readBoundedJson(req, MAX_BODY)).body; }
 function closed(value, allowed) { if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !allowed.includes(key))) throw Object.assign(new Error('Request contains unsupported fields.'), { code: 'invalid-request' }); }
 function failure(error) {
   const code = error?.code ?? 'invalid-request';
@@ -13,8 +14,6 @@ function failure(error) {
 
 export function createTopicAnalysisReadHttpHandler(service) {
   return async function topicAnalysisRead(req, res) {
-    if (!allowOpaqueFrameRequest(req, res, { method: 'GET' })) return response(res, 403, { status: 'error', code: 'origin-not-allowed' });
-    if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('cache-control', 'no-store'); return res.end(); }
     if (req.method !== 'GET') return response(res, 405, { status: 'error', code: 'method-not-allowed' });
     try {
       const schedule = service.topicAnalysisSchedule?.peekSettings?.() ?? service.analysisSchedule?.peekSettings?.() ?? service.getTopicAnalysisSettings?.() ?? null;
@@ -27,13 +26,11 @@ export function createTopicAnalysisReadHttpHandler(service) {
 
 export function createTopicAnalysisActionsHttpHandler(service) {
   return async function topicAnalysisActions(req, res) {
-    if (!allowOpaqueFrameRequest(req, res, { method: 'POST', headers: ['Content-Type'] })) return response(res, 403, { status: 'error', code: 'origin-not-allowed' });
-    if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('cache-control', 'no-store'); return res.end(); }
     if (req.method !== 'POST') return response(res, 405, { status: 'error', code: 'method-not-allowed' });
     try {
       if (!/^application\/json(?:\s*;|$)/iu.test(String(req.headers?.['content-type'] ?? ''))) throw Object.assign(new Error('JSON content type is required.'), { code: 'invalid-request' });
       const input = await body(req); closed(input, ['schemaVersion', 'action', 'logicalOperationId', 'expectedRevision', 'settings', 'trigger', 'proposalId', 'expectedProposalRevision', 'adjustment', 'reviewId', 'expectedReviewRevision', 'snoozedUntil', 'applicationId', 'planRevision', 'confirm', 'approvedProposalRevisions']);
-      if (input.schemaVersion !== 1 || typeof input.action !== 'string' || !isCanonicalUuid(input.logicalOperationId)) throw Object.assign(new Error('Closed Topic Analysis action fields are required.'), { code: 'invalid-request' });
+      if (input.schemaVersion !== 1 || !TOPIC_ANALYSIS_ACTIONS.includes(input.action) || !isCanonicalUuid(input.logicalOperationId)) throw Object.assign(new Error('Closed Topic Analysis action fields are required.'), { code: 'invalid-request' });
       let result;
       if (input.action === 'schedule.update') result = await (service.topicAnalysisSchedule ?? service.analysisSchedule).update(input);
       else if (input.action === 'analysis.run') result = await (service.topicAnalysisRun ? service.topicAnalysisRun({ ...input, trigger: input.trigger ?? 'manual' }) : (service.topicAnalysisRunner ?? service.analysisRunner).run({ ...input, trigger: input.trigger ?? 'manual' }));

@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, rename } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
+import { createMigrationFixtureService } from './fixtures/migration-folders.mjs';
 
 const fixture = new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url);
 
 test('migration Review retains bounded SQLite classification without exposing exception content', async () => {
   let saved;
-  const service = createLegacyDiscordMigrationService({ metadata: { getMigrationState: () => ({ phase: 'importing' }), setMigrationState: (value) => { saved = value; } } });
+  const service = createMigrationFixtureService({ metadata: { getMigrationState: () => ({ phase: 'importing' }), setMigrationState: (value) => { saved = value; } } });
   service.failureBoundary = 'authoritative-append';
   await service.recordReview(Object.assign(new Error('Fictional private SQL and path must not escape'), { code: 'ERR_SQLITE_ERROR', errcode: 517 }));
   assert.equal(saved.failureCode, 'ERR_SQLITE_ERROR');
@@ -28,7 +28,7 @@ test('malformed or changed source and unavailable capabilities remain bounded Re
     const malformedPath = path.join(root, 'malformed.json');
     await writeFile(malformedPath, JSON.stringify({ schemaVersion: 1, source: 'discord', channels: [{ channelId: 'fictional-channel-alpha', displayName: 'fictional', messages: [], unexpected: true }] }));
     metadata = openCommandCenterMetadataService({ stateDir: path.join(root, 'state-malformed'), capabilities: { notes: true, sessions: true } });
-    const malformed = createLegacyDiscordMigrationService({ metadata, config: { schemaVersion: 1, exportPath: malformedPath, channels: [channel] }, gateway: { request: async () => ({ ['k' + 'ey']: 'fictional', sessionId: 'fictional' }) }, transcriptRuntime: runtime(), folderVerifier: async () => undefined });
+    const malformed = createMigrationFixtureService({ metadata, config: { schemaVersion: 1, exportPath: malformedPath, channels: [channel] }, gateway: { request: async () => ({ ['k' + 'ey']: 'fictional', sessionId: 'fictional' }) }, transcriptRuntime: runtime() });
     const malformedStatus = await malformed.start();
     assert.equal(malformedStatus.phase, 'review');
     assert.equal(malformedStatus.failures[0].failureCode, 'invalid-export');
@@ -40,7 +40,7 @@ test('malformed or changed source and unavailable capabilities remain bounded Re
     metadata = openCommandCenterMetadataService({ stateDir: path.join(root, 'state-changed'), capabilities: { notes: true, sessions: true } });
     let interrupted = true;
     const changedRuntime = runtime();
-    const changed = createLegacyDiscordMigrationService({ metadata, config: { schemaVersion: 1, exportPath: changedPath, channels: [{ ...channel, topicId: 'fictional-topic-changed' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-changed' }) }, transcriptRuntime: changedRuntime, folderVerifier: async () => undefined, hooks: { afterAppend() { if (interrupted) { interrupted = false; throw new Error('fictional interruption'); } } } });
+    const changed = createMigrationFixtureService({ metadata, config: { schemaVersion: 1, exportPath: changedPath, channels: [{ ...channel, topicId: 'fictional-topic-changed' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-changed' }) }, transcriptRuntime: changedRuntime, hooks: { afterAppend() { if (interrupted) { interrupted = false; throw new Error('fictional interruption'); } } } });
     await changed.start();
     const altered = JSON.parse(await readFile(changedPath, 'utf8'));
     altered.channels[0].messages[0].text = 'Fictional changed source.';
@@ -62,17 +62,17 @@ test('unconfigured export drift does not change configured migration identity', 
     await writeFile(exportPath, JSON.stringify(exported));
     metadata = openCommandCenterMetadataService({ stateDir: path.join(root, 'state'), capabilities: { notes: true, sessions: true } });
     let interrupted = true;
-    const service = createLegacyDiscordMigrationService({ metadata, config: { schemaVersion: 1, exportPath, channels: [{ ...channel, topicId: 'fictional-topic-unconfigured-drift' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params['k' + 'ey'], sessionId: 'fictional-unconfigured-drift' }) }, transcriptRuntime: runtime(), folderVerifier: async () => undefined, hooks: { afterAppend() { if (interrupted) { interrupted = false; throw Object.assign(new Error('fictional interruption'), { channelId: channel.channelId }); } } } });
+    const service = createMigrationFixtureService({ metadata, config: { schemaVersion: 1, exportPath, channels: [{ ...channel, topicId: 'fictional-topic-unconfigured-drift' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params['k' + 'ey'], sessionId: 'fictional-unconfigured-drift' }) }, transcriptRuntime: runtime(), hooks: { afterAppend() { if (interrupted) { interrupted = false; throw Object.assign(new Error('fictional interruption'), { channelId: channel.channelId }); } } } });
     await service.start();
     exported.channels[1].displayName = 'Unconfigured changed';
     await writeFile(exportPath, JSON.stringify(exported));
     const durableDigest = metadata.getMigrationState().configDigest;
-    const removed = createLegacyDiscordMigrationService({ metadata, transcriptRuntime: runtime(), folderVerifier: async () => undefined });
+    const removed = createMigrationFixtureService({ metadata, transcriptRuntime: runtime() });
     const removedStatus = await removed.start();
     assert.equal(removedStatus.phase, 'review');
     assert.equal(removedStatus.complete, false);
     assert.equal(removedStatus.actions.length, 2);
-    const malformed = createLegacyDiscordMigrationService({ metadata, config: { schemaVersion: 999 }, transcriptRuntime: runtime(), folderVerifier: async () => undefined });
+    const malformed = createMigrationFixtureService({ metadata, config: { schemaVersion: 999 }, transcriptRuntime: runtime() });
     assert.equal((await malformed.start()).phase, 'review');
     assert.equal(metadata.getMigrationState().configDigest, durableDigest);
     assert.equal((await service.resume({ logicalOperationId: randomUUID(), expectedMigrationRevision: metadata.getMigrationState().revision })).complete, true);
@@ -93,8 +93,7 @@ test('a verified channel activates independently while another channel remains r
     ];
     metadata = openCommandCenterMetadataService({ stateDir: path.join(root, 'state'), capabilities: { notes: true, sessions: true } });
     let interrupted = true;
-    let failCompletedAlpha = false;
-    const service = createLegacyDiscordMigrationService({ metadata, config: { schemaVersion: 1, exportPath, channels }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params['k' + 'ey'], sessionId: `fictional-${params['k' + 'ey']}` }) }, transcriptRuntime: runtime(), folderVerifier: async (folderPath) => { if (failCompletedAlpha && folderPath === channel.noteFolderPath) throw new Error('fictional transient folder failure'); }, hooks: { afterVerify({ channelId }) { if (channelId === 'fictional-channel-beta' && interrupted) { interrupted = false; throw Object.assign(new Error('fictional beta verification interruption'), { channelId }); } } } });
+    const service = createMigrationFixtureService({ metadata, config: { schemaVersion: 1, exportPath, channels }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params['k' + 'ey'], sessionId: `fictional-${params['k' + 'ey']}` }) }, transcriptRuntime: runtime(), hooks: { afterVerify({ channelId }) { if (channelId === 'fictional-channel-beta' && interrupted) { interrupted = false; throw Object.assign(new Error('fictional beta verification interruption'), { channelId }); } } } });
     const failed = await service.start();
     assert.equal(failed.phase, 'review');
     assert.equal(metadata.getTopic('fictional-topic-partial-alpha').lifecycle, 'active');
@@ -103,12 +102,14 @@ test('a verified channel activates independently while another channel remains r
     assert.equal(metadata.getMigrationChannel('fictional-channel-beta').phase, 'review');
     metadata.createSourceReference({ version: 1, referenceId: 'fictional-ordinary-secondary', topicId: 'fictional-topic-partial-alpha', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:fictional-ordinary-secondary', observedRevision: null });
     metadata.setSessionState({ referenceId: 'fictional-ordinary-secondary', sessionId: 'fictional-ordinary-secondary', status: 'open', isPrimary: false });
-    failCompletedAlpha = true;
+    const alphaFolder = service.config.channels[0].noteFolderPath;
+    const parkedFolder = `${alphaFolder}-parked`;
+    await rename(alphaFolder, parkedFolder);
     assert.equal((await service.resume({ logicalOperationId: randomUUID(), expectedMigrationRevision: metadata.getMigrationState().revision })).phase, 'review');
     assert.equal(metadata.getMigrationChannel('fictional-channel-alpha').phase, 'complete');
-    assert.equal(metadata.getMigrationChannel('fictional-channel-alpha').failureCode, 'folder-unavailable');
+    assert.equal(metadata.getMigrationChannel('fictional-channel-alpha').failureCode, 'not-found');
     assert.equal(metadata.getTopic('fictional-topic-partial-alpha').lifecycle, 'active');
-    failCompletedAlpha = false;
+    await rename(parkedFolder, alphaFolder);
     assert.equal((await service.resume({ logicalOperationId: randomUUID(), expectedMigrationRevision: metadata.getMigrationState().revision })).complete, true);
   } finally { metadata?.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -118,7 +119,7 @@ test('malformed migration configuration enters Review instead of escaping startu
   let metadata;
   try {
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
-    const service = createLegacyDiscordMigrationService({ metadata, config: { schemaVersion: 1, exportPath: fixture.pathname, channels: [], unexpected: true }, folderVerifier: async () => undefined });
+    const service = createMigrationFixtureService({ metadata, config: { schemaVersion: 1, exportPath: fixture.pathname, channels: [], unexpected: true } });
     const status = await service.start();
     assert.equal(status.phase, 'review');
     assert.equal(status.failures[0].failureCode, 'invalid-migration-config');
@@ -131,7 +132,7 @@ test('missing Sessions capability never activates a partially provisioned Topic'
   let metadata;
   try {
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: false } });
-    const service = createLegacyDiscordMigrationService({ metadata, config: { schemaVersion: 1, exportPath: fixture.pathname, channels: [{ ...channel, topicId: 'fictional-topic-capability' }] }, folderVerifier: async () => undefined });
+    const service = createMigrationFixtureService({ metadata, config: { schemaVersion: 1, exportPath: fixture.pathname, channels: [{ ...channel, topicId: 'fictional-topic-capability' }] } });
     const status = await service.start();
     assert.equal(status.phase, 'review');
     assert.equal(metadata.getTopic('fictional-topic-capability'), null);
@@ -144,7 +145,7 @@ test('Resume rejects a stale revision and permanently records a reusable logical
   try {
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
     let interrupted = true;
-    const service = createLegacyDiscordMigrationService({ metadata, config: { schemaVersion: 1, exportPath: fixture.pathname, channels: [{ ...channel, topicId: 'fictional-topic-revision' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-revision' }) }, transcriptRuntime: runtime(), folderVerifier: async () => undefined, hooks: { afterAppend() { if (interrupted) { interrupted = false; throw new Error('fictional interruption'); } } } });
+    const service = createMigrationFixtureService({ metadata, config: { schemaVersion: 1, exportPath: fixture.pathname, channels: [{ ...channel, topicId: 'fictional-topic-revision' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-revision' }) }, transcriptRuntime: runtime(), hooks: { afterAppend() { if (interrupted) { interrupted = false; throw new Error('fictional interruption'); } } } });
     await service.start();
     const stale = metadata.getMigrationState().revision - 1;
     await assert.rejects(() => service.resume({ logicalOperationId: randomUUID(), expectedMigrationRevision: stale }), (error) => error.code === 'stale-revision');

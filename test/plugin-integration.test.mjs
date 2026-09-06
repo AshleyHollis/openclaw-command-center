@@ -61,17 +61,24 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
   };
 }
 
-test('Control UI descriptor grants the operating-status read used to unlock mutations', async () => {
+test('native registration exposes authenticated Topic methods without an iframe descriptor API', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-descriptor-'));
   let service;
   try {
     const host = fakePublishedApi(stateDir);
+    delete host.api.session;
     plugin.register(host.api);
-    assert.equal(host.descriptors.length, 1);
-    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sources.status'));
-    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.attention.act'));
-    assert.equal(host.descriptors[0].capabilityBridge.sessionNavigationResolver, 'command-center.v1.sessions.resolve-native');
-    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('ui.session.navigateResolved'));
+    assert.equal(host.descriptors.length, 0);
+    for (const method of [
+      'command-center.v1.sources.status', 'command-center.v1.attention.act',
+      'command-center.v1.topics.list', 'command-center.v1.topics.get',
+      'command-center.v1.sessions.browse', 'command-center.v1.sessions.history',
+      'command-center.v1.sessions.navigate', 'command-center.v1.sessions.resolve-native',
+      'command-center.v1.notes.browse', 'command-center.v1.notes.read',
+      'command-center.v1.search.query'
+    ]) assert.equal(host.methods.has(method), true, `${method} remains registered without the iframe API`);
+    assert.equal(host.methods.has('chat.send'), false, 'native Chat owns message sending');
+    assert.equal(host.methods.has('sessions.create'), false, 'host Session creation must not be shadowed');
     service = host.services[0];
     await service.start();
     service.sourceService.sessionsNavigate = async (input) => {
@@ -97,6 +104,15 @@ test('Session cleanup does not stop the plugin-wide service; disable and restart
   } finally { await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('CLI metadata discovery does not acquire runtime services or notification authority', () => {
+  plugin.register({
+    registrationMode: 'cli-metadata',
+    get notifications() { throw new Error('Notification registration is unavailable during CLI metadata discovery.'); },
+    get runtime() { throw new Error('Runtime is unavailable during CLI metadata discovery.'); },
+    registerService() { assert.fail('CLI metadata discovery must not register background services.'); }
+  });
+});
+
 test('started plugin keeps authenticated Topic reads alive across Session delete and reset cleanup', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-live-cleanup-'));
   let service;
@@ -118,16 +134,27 @@ test('started plugin keeps authenticated Topic reads alive across Session delete
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
-test('unsupported actual bridge declaration refuses activation before touching any published API', async () => {
-  const entryUrl = new URL('../src/plugin.mjs', import.meta.url);
-  const source = await readFile(entryUrl, 'utf8');
-  assert.equal(source.split('protocolVersion: 1,').length - 1, 1);
-  const variant = source.replace('protocolVersion: 1,', 'protocolVersion: 2,').replace(/from '(\.[^']+|openclaw\/[^']+)'/gu, (_match, specifier) => `from '${specifier.startsWith('.') ? new URL(specifier, entryUrl).href : import.meta.resolve(specifier)}'`);
-  const { default: incompatible } = await import(`data:text/javascript;base64,${Buffer.from(variant).toString('base64')}`);
-  const touched = [];
-  const forbiddenApi = new Proxy({}, { get(_target, key) { touched.push(key); throw new Error('Registration acquired a side effect before release admission'); } });
-  assert.throws(() => incompatible.register(forbiddenApi), /requires a capability bridge protocol/u);
-  assert.deepEqual(touched, []);
+test('native manifest declares only bounded exact authenticated plugin routes', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
+  assert.deepEqual(Object.keys(manifest.controlUi).sort(), ['entry', 'httpRoutes']);
+  assert.equal(manifest.controlUi.entry, 'dist/native-ui/entry.mjs');
+  assert.deepEqual(manifest.contracts.gatewayMethodDispatch, ['authenticated-request']);
+  const host = fakePublishedApi(path.join(os.tmpdir(), 'fictional-native-registration'));
+  delete host.api.session;
+  plugin.register(host.api);
+  const declared = manifest.controlUi.httpRoutes;
+  assert.equal(new Set(declared.map((route) => `${route.method}:${route.path}`)).size, declared.length);
+  for (const declaration of declared) {
+    const routes = host.routes.filter((route) => route.path === declaration.path);
+    assert.equal(routes.length, 1);
+    assert.equal(routes[0].auth, 'gateway');
+    assert.equal(routes[0].match, 'exact');
+    assert.ok(['GET', 'POST'].includes(declaration.method));
+    assert.ok(Number.isSafeInteger(declaration.maxRequestBytes) && declaration.maxRequestBytes >= 0 && declaration.maxRequestBytes <= 12 * 1024 * 1024);
+    assert.ok(Number.isSafeInteger(declaration.maxResponseBytes) && declaration.maxResponseBytes > 0 && declaration.maxResponseBytes <= 1024 * 1024);
+    if (declaration.method === 'GET') assert.equal(declaration.maxRequestBytes, 0);
+  }
+  assert.ok(declared.some((route) => route.path === '/plugins/command-center/api/topic/actions' && route.method === 'POST' && route.maxRequestBytes === 12 * 1024 * 1024));
 });
 
 test('production plugin exposes Ready analysis and replays its durable bridge result without redispatch', async () => {
@@ -242,6 +269,12 @@ test('plugin startup does not dispatch Gateway work before the host request cont
   let requests = 0;
   let availabilityChecks = 0;
   let rebuilds = 0;
+  const scheduled = [];
+  const dueAt = new Date(Date.now() - 60_000).toISOString();
+  const seed = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, scheduler: true, activity: true, search: true, analysis: true, attention: true } });
+  try {
+    seed.setTopicAnalysisSettings({ schemaVersion: 1, enabled: true, weekday: 1, localTime: '07:00', timeZone: 'UTC', nextDueAt: dueAt, initialized: true, updatedAt: dueAt });
+  } finally { seed.close(); }
   const api = {
     runtime: {
       state: { resolveStateDir: () => stateDir },
@@ -257,11 +290,21 @@ test('plugin startup does not dispatch Gateway work before the host request cont
     searchRebuildServiceFactory: () => ({ async rebuild() { rebuilds += 1; } })
   });
   try {
-    await service.start();
+    await service.start({ getCron: () => ({
+      list: async () => scheduled,
+      add: async (input) => {
+        const job = { ...input, id: 'fictional-weekly-analysis', configRevision: 'revision-1' };
+        scheduled.push(job);
+        return job;
+      }
+    }) });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(availabilityChecks, 0, 'activation must not enter the lazily loaded Gateway runtime before binding');
     assert.equal(requests, 0);
     assert.equal(rebuilds, 0);
+    assert.equal(scheduled.length, 1, 'service-owned scheduling must not wait for an operator request');
+    assert.equal(scheduled[0].payload.kind, 'agentTurn');
+    assert.ok(service.topicAnalysisSchedule.getSettings().nextDueAt > dueAt, 'native startup must advance the missed slot through catch-up');
   } finally {
     await service.stop();
     await rm(stateDir, { recursive: true, force: true });
@@ -296,18 +339,14 @@ test('real plugin registers one required emitter and reconciles in the backgroun
   const host = fakePublishedApi(stateDir);
   try {
     plugin.register(host.api);
-    assert.deepEqual(host.declarations, [{ version: 1, id: 'command-center-attention-v1', requiredScopes: ['operator.read'], destinations: [{ id: 'attention-card', tabId: 'command-center' }] }]);
-    assert.equal(host.descriptors.length, 1);
-    assert.deepEqual({ ...host.descriptors[0], capabilityBridge: undefined }, { surface: 'tab', id: 'command-center', label: 'Command Center', group: 'control', path: '/plugins/command-center', capabilityBridge: undefined });
-    assert.equal(host.descriptors[0].capabilityBridge.protocolVersion, 1);
-    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sources.status'));
-    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sessions.browse'));
+    assert.deepEqual(host.declarations, [{ version: 1, id: 'command-center-attention-v1', requiredScopes: ['operator.read'], destinations: [{ id: 'attention-card', pageId: 'attention' }] }]);
+    assert.equal(host.descriptors.length, 0);
     assert.equal(host.services.length, 1);
     assert.equal(host.routes.some((route) => route.path === '/plugins/command-center' && route.auth === 'gateway'), true);
     assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/app.js' && route.auth === 'plugin'), true);
     assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/styles.css' && route.auth === 'plugin'), true);
     assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/markdown.js' && route.auth === 'plugin'), true);
-    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/api/search/rebuild' && route.auth === 'plugin' && route.match === 'exact'), true);
+    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/api/search/rebuild' && route.auth === 'gateway' && route.match === 'exact'), true);
     const service = host.services[0];
     await service.start();
     service.notificationService.updateSettings({
@@ -356,7 +395,7 @@ test('plugin activation refuses a host without the published notification emitte
   assert.throws(() => plugin.register(refused.api), /registration was refused/u);
 });
 
-test('isolated grant loss withholds the tab and rejects every public mutation route', async () => {
+test('explicit Control UI mutation disablement retains reads and rejects every public mutation route', async () => {
   const host = fakePublishedApi(path.join(os.tmpdir(), 'fictional-command-center-grant-state'), { pluginConfig: { controlUiGrant: false } });
   plugin.register(host.api);
   assert.equal(host.descriptors.length, 0);

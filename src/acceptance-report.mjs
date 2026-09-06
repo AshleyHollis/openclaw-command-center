@@ -1,6 +1,6 @@
 import { RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from './performance-baseline.mjs';
 
-export const ACCEPTANCE_REPORT_VERSION = 2;
+export const ACCEPTANCE_REPORT_VERSION = 3;
 export const RELEASE_ROW_IDS = Object.freeze(['pinned-host-startup', 'desktop-primary-journey', 'desktop-keyboard-journey', 'scale-performance', 'degraded-bridge-grants', 'degraded-source-availability', 'recovery-only-compatibility', 'destructive-migration-restoration', 'privacy-artifact-output']);
 export const FINALIZATION_PHASES = Object.freeze(['browser-close', 'host-stop', 'browser-traffic', 'host-traffic', 'child-traffic', 'build-digest']);
 
@@ -36,42 +36,50 @@ function exactMap(value, expected, label) {
   for (const [key, expectedValue] of Object.entries(expected)) if (value[key] !== expectedValue) invalid(`${label}.${key} does not match the frozen identity`);
 }
 
+function exactNames(value, required, label) {
+  if (!Array.isArray(value) || value.length !== required.length || new Set(value).size !== required.length || required.some((name) => !value.includes(name))) invalid(`${label} must contain each required retained action or state exactly once`);
+}
+
 function validatePassedEvidence(id, evidence, buildDigest, performanceBaseline) {
   let encoded;
   try { encoded = JSON.stringify(evidence); } catch { invalid(`${id} is not serializable`); }
   if (!encoded || Buffer.byteLength(encoded) > MAX_EVIDENCE_BYTES) invalid(`${id} is empty or unbounded`);
-  if (evidence?.schemaVersion !== 1) invalid(`${id}.schemaVersion must be 1`);
+  if (evidence?.schemaVersion !== 2) invalid(`${id}.schemaVersion must be 2`);
   switch (id) {
     case 'pinned-host-startup': {
-      closed(evidence, ['schemaVersion', 'hostReceipt', 'buildDigest', 'startupMigrationVerified', 'routeGrantObserved', 'scriptsOnlyFrame', 'secureOrigin', 'notificationLifecycle'], id);
+      closed(evidence, ['schemaVersion', 'hostReceipt', 'buildDigest', 'startupMigrationVerified', 'routeGrantObserved', 'secureOrigin', 'nativeUi'], id);
       if (evidence.buildDigest !== buildDigest) invalid(`${id}.buildDigest is stale`);
       exactMap(evidence.hostReceipt, releasePerformanceIdentity.hostReceipt, `${id}.hostReceipt`);
-      for (const key of ['startupMigrationVerified', 'routeGrantObserved', 'scriptsOnlyFrame']) yes(evidence[key], `${id}.${key}`);
+      for (const key of ['startupMigrationVerified', 'routeGrantObserved']) yes(evidence[key], `${id}.${key}`);
       closed(evidence.secureOrigin, ['protocol', 'hostname', 'loopbackOnly'], `${id}.secureOrigin`);
       if (evidence.secureOrigin.protocol !== 'https:' || !evidence.secureOrigin.hostname.endsWith('.fictional.ts.net')) invalid(`${id}.secureOrigin is not fictional HTTPS`);
       yes(evidence.secureOrigin.loopbackOnly, `${id}.secureOrigin.loopbackOnly`);
-      closed(evidence.notificationLifecycle, ['closedTabDelivered', 'cleared', 'bindingRevoked', 'bindingReconciled'], `${id}.notificationLifecycle`);
-      for (const value of Object.values(evidence.notificationLifecycle)) yes(value, `${id}.notificationLifecycle`);
+      closed(evidence.nativeUi, ['pluginId', 'revision', 'activationObserved', 'authenticatedHttpObserved'], `${id}.nativeUi`);
+      if (evidence.nativeUi.pluginId !== 'command-center') invalid(`${id}.nativeUi.pluginId is not Command Center`);
+      nonempty(evidence.nativeUi.revision, `${id}.nativeUi.revision`);
+      if (!evidence.nativeUi.revision.trim()) invalid(`${id}.nativeUi.revision must be nonblank`);
+      yes(evidence.nativeUi.activationObserved, `${id}.nativeUi.activationObserved`);
+      yes(evidence.nativeUi.authenticatedHttpObserved, `${id}.nativeUi.authenticatedHttpObserved`);
       return;
     }
     case 'desktop-primary-journey': {
       closed(evidence, ['schemaVersion', 'topicId', 'authoritativeReadback', 'actions'], id);
       nonempty(evidence.topicId, `${id}.topicId`);
-      const readbacks = ['primarySession', 'conversation', 'closedConversation', 'note', 'attention', 'activity', 'topicReview'];
+      const readbacks = ['existingTopics', 'primarySession', 'conversation', 'note', 'chatSend', 'conversationAfterRestart'];
       closed(evidence.authoritativeReadback, readbacks, `${id}.authoritativeReadback`);
       for (const value of Object.values(evidence.authoritativeReadback)) yes(value, `${id}.authoritativeReadback`);
-      if (!Array.isArray(evidence.actions) || evidence.actions.length < 12 || evidence.actions.length > 40 || evidence.actions.some((value) => typeof value !== 'string' || value.length > 80)) invalid(`${id}.actions is incomplete or unbounded`);
+      exactNames(evidence.actions, ['existing-topic-open', 'note-read', 'native-chat-open', 'native-chat-send', 'conversation-create', 'conversation-replay', 'conversation-refresh', 'native-return'], `${id}.actions`);
       return;
     }
     case 'desktop-keyboard-journey': {
       closed(evidence, ['schemaVersion', 'viewport', 'keyboardOnly', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'noPageOverflow', 'states'], id);
       exactMap(evidence.viewport, { width: 1440, height: 900 }, `${id}.viewport`);
       for (const key of ['keyboardOnly', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'noPageOverflow']) yes(evidence[key], `${id}.${key}`);
-      if (!Array.isArray(evidence.states) || evidence.states.length < 8 || evidence.states.length > 40) invalid(`${id}.states is incomplete or unbounded`);
+      exactNames(evidence.states, ['topics-navigation', 'notes-list', 'note-reader', 'native-chat-handoff', 'conversation-create', 'unknown-creation', 'source-unavailable', 'permission-refused'], `${id}.states`);
       return;
     }
     case 'scale-performance': {
-      closed(evidence, ['schemaVersion', 'fixtureIdentity', 'fixtureCounts', 'observations', 'thresholds', 'activityPage', 'search'], id);
+      closed(evidence, ['schemaVersion', 'fixtureIdentity', 'fixtureCounts', 'observations', 'thresholds', 'conversationPage', 'notes'], id);
       if (!DIGEST.test(evidence.fixtureIdentity)) invalid(`${id}.fixtureIdentity is invalid`);
       if (evidence.fixtureIdentity !== RELEASE_FIXTURE_IDENTITY) invalid(`${id}.fixtureIdentity does not match the release fixture`);
       exactMap(evidence.fixtureCounts, RELEASE_FIXTURE_COUNTS, `${id}.fixtureCounts`);
@@ -83,20 +91,18 @@ function validatePassedEvidence(id, evidence, buildDigest, performanceBaseline) 
         const threshold = evidence.thresholds[metric];
         if (typeof observed !== 'number' || !Number.isFinite(observed) || observed <= 0 || !Number.isSafeInteger(threshold) || threshold < 1 || observed > threshold) invalid(`${id}.${metric} exceeds its immutable first-observation ceiling`);
       }
-      closed(evidence.activityPage, ['firstPageCount', 'secondPageCount', 'thirdPageCount', 'unique', 'orderPreserved'], `${id}.activityPage`);
-      if (evidence.activityPage.firstPageCount !== 50 || evidence.activityPage.secondPageCount !== 50 || evidence.activityPage.thirdPageCount !== 1) invalid(`${id}.activityPage is incomplete`);
-      yes(evidence.activityPage.unique, `${id}.activityPage.unique`); yes(evidence.activityPage.orderPreserved, `${id}.activityPage.orderPreserved`);
-      closed(evidence.search, ['missingProjectionRebuilt', 'staleProjectionRebuilt', 'indexedQuery'], `${id}.search`);
-      for (const value of Object.values(evidence.search)) yes(value, `${id}.search`);
+      exactMap(evidence.conversationPage, { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true }, `${id}.conversationPage`);
+      exactMap(evidence.notes, { largeNoteBytes: RELEASE_FIXTURE_COUNTS.largeNoteBytes, readOnly: true, paginationVerified: true }, `${id}.notes`);
       return;
     }
     case 'degraded-bridge-grants': {
       closed(evidence, ['schemaVersion', 'mode', 'safeReadObserved', 'mutationRejected', 'bridge'], id);
       if (evidence.mode !== 'degraded') invalid(`${id}.mode is stale`);
       yes(evidence.safeReadObserved, `${id}.safeReadObserved`); yes(evidence.mutationRejected, `${id}.mutationRejected`);
-      closed(evidence.bridge, ['protocolVersion', 'writeGrant', 'observedFromBootstrap'], `${id}.bridge`);
-      if (evidence.bridge.protocolVersion !== 1 || evidence.bridge.writeGrant !== false) invalid(`${id}.bridge is not degraded`);
-      yes(evidence.bridge.observedFromBootstrap, `${id}.bridge.observedFromBootstrap`);
+      // Native asset admission is independent of the retained action's write
+      // grant. Only an observed authenticated refusal can prove this boundary.
+      exactMap(evidence.bridge, { protocolVersion: 1, writeGrant: false, observedFromAuthenticatedAction: true,
+        action: 'conversations.create', httpStatus: 422, errorCode: 'capability-unavailable' }, `${id}.bridge`);
       return;
     }
     case 'degraded-source-availability': {
@@ -104,7 +110,7 @@ function validatePassedEvidence(id, evidence, buildDigest, performanceBaseline) 
       if (evidence.mode !== 'degraded') invalid(`${id}.mode is stale`);
       yes(evidence.safeReadObserved, `${id}.safeReadObserved`); yes(evidence.mutationRejected, `${id}.mutationRejected`);
       closed(evidence.source, ['capability', 'available', 'bindingObserved'], `${id}.source`);
-      nonempty(evidence.source.capability, `${id}.source.capability`);
+      if (evidence.source.capability !== 'sessions') invalid(`${id}.source.capability must exercise retained Sessions`);
       if (evidence.source.available !== false) invalid(`${id}.source must be unavailable`);
       yes(evidence.source.bindingObserved, `${id}.source.bindingObserved`);
       return;

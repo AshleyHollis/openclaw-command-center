@@ -157,13 +157,16 @@ export async function runBoundedAcceptanceSlice(id, run, { timeoutMs = 240_000, 
   controller.abort(new Error(`Acceptance slice ${id} exceeded its ${timeoutMs} ms deadline`));
   const cleanupDeadline = Symbol('acceptance-slice-cleanup-deadline');
   let cleanupTimer;
-  const cleanup = await Promise.race([task.then(() => true, () => true), new Promise((resolve) => { cleanupTimer = setTimeout(() => resolve(cleanupDeadline), cleanupTimeoutMs); })]);
+  const cleanup = await Promise.race([task.then(() => ({ settled: true }), error => ({ settled: true, error })), new Promise((resolve) => { cleanupTimer = setTimeout(() => resolve(cleanupDeadline), cleanupTimeoutMs); })]);
   clearTimeout(cleanupTimer);
   if (cleanup === cleanupDeadline) {
     const error = new Error(`Acceptance slice ${id} did not settle within ${cleanupTimeoutMs} ms after cancellation`);
     error.fatalAcceptanceCleanup = true;
     throw error;
   }
+  // Settlement is not proof of safe shutdown. Preserve the owner's fatal
+  // cleanup outcome so callers cannot admit more hosts after cancellation.
+  if (cleanup.error?.fatalAcceptanceCleanup === true) throw cleanup.error;
   throw controller.signal.reason;
 }
 

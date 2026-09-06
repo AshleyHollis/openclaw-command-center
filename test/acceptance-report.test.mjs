@@ -13,15 +13,15 @@ const finalization = () => FINALIZATION_PHASES.map((phase) => ({ phase }));
 
 function validEvidence(id) {
   const values = {
-    'pinned-host-startup': { schemaVersion: 1, hostReceipt: { ...releasePerformanceIdentity.hostReceipt }, buildDigest: BUILD, startupMigrationVerified: true, routeGrantObserved: true, scriptsOnlyFrame: true, secureOrigin: { protocol: 'https:', hostname: 'command-center.fictional.ts.net', loopbackOnly: true }, notificationLifecycle: { closedTabDelivered: true, cleared: true, bindingRevoked: true, bindingReconciled: true } },
-    'desktop-primary-journey': { schemaVersion: 1, topicId: 'fictional-topic', authoritativeReadback: { primarySession: true, conversation: true, closedConversation: true, note: true, attention: true, activity: true, topicReview: true }, actions: Array.from({ length: 12 }, (_, index) => `action-${index}`) },
-    'desktop-keyboard-journey': { schemaVersion: 1, viewport: { width: 1440, height: 900 }, keyboardOnly: true, forcedColors: true, reducedMotion: true, focusRestored: true, announcements: true, colorIndependent: true, noPageOverflow: true, states: ['navigation', 'topic', 'conversation', 'note-dialog', 'note-preview', 'search', 'attention', 'review'] },
-    'scale-performance': { schemaVersion: 1, fixtureIdentity: RELEASE_FIXTURE_IDENTITY, fixtureCounts: { ...RELEASE_FIXTURE_COUNTS }, observations: { ...observations }, thresholds: { ...thresholds }, activityPage: { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true }, search: { missingProjectionRebuilt: true, staleProjectionRebuilt: true, indexedQuery: true } },
-    'degraded-bridge-grants': { schemaVersion: 1, mode: 'degraded', safeReadObserved: true, mutationRejected: true, bridge: { protocolVersion: 1, writeGrant: false, observedFromBootstrap: true } },
-    'degraded-source-availability': { schemaVersion: 1, mode: 'degraded', safeReadObserved: true, mutationRejected: true, source: { capability: 'sessions', available: false, bindingObserved: true } },
-    'recovery-only-compatibility': { schemaVersion: 1, mode: 'recovery-only', safeReadObserved: true, mutationsRejected: true, mismatches: ['host', 'build', 'pluginApi', 'bridgeProtocol', 'binding', 'schema'] },
-    'destructive-migration-restoration': { schemaVersion: 1, snapshotId: 'fictional-snapshot', writesBlockedBeforeValidation: true, exactIdentityValidated: true, postValidationMutation: true, boundaries: { beforeCommit: true, afterCommitBeforeManifest: true } },
-    'privacy-artifact-output': { schemaVersion: 1, repository: true, generated: true, capturedOutput: true, browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: true }
+    'pinned-host-startup': { schemaVersion: 2, hostReceipt: { ...releasePerformanceIdentity.hostReceipt }, buildDigest: BUILD, startupMigrationVerified: true, routeGrantObserved: true, secureOrigin: { protocol: 'https:', hostname: 'command-center.fictional.ts.net', loopbackOnly: true }, nativeUi: { pluginId: 'command-center', revision: 'fictional-native-revision', activationObserved: true, authenticatedHttpObserved: true } },
+    'desktop-primary-journey': { schemaVersion: 2, topicId: 'fictional-topic', authoritativeReadback: { existingTopics: true, primarySession: true, conversation: true, note: true, chatSend: true, conversationAfterRestart: true }, actions: ['existing-topic-open', 'note-read', 'native-chat-open', 'native-chat-send', 'conversation-create', 'conversation-replay', 'conversation-refresh', 'native-return'] },
+    'desktop-keyboard-journey': { schemaVersion: 2, viewport: { width: 1440, height: 900 }, keyboardOnly: true, forcedColors: true, reducedMotion: true, focusRestored: true, announcements: true, colorIndependent: true, noPageOverflow: true, states: ['topics-navigation', 'notes-list', 'note-reader', 'native-chat-handoff', 'conversation-create', 'unknown-creation', 'source-unavailable', 'permission-refused'] },
+    'scale-performance': { schemaVersion: 2, fixtureIdentity: RELEASE_FIXTURE_IDENTITY, fixtureCounts: { ...RELEASE_FIXTURE_COUNTS }, observations: { ...observations }, thresholds: { ...thresholds }, conversationPage: { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true }, notes: { largeNoteBytes: 8_388_609, readOnly: true, paginationVerified: true } },
+    'degraded-bridge-grants': { schemaVersion: 2, mode: 'degraded', safeReadObserved: true, mutationRejected: true, bridge: { protocolVersion: 1, writeGrant: false, observedFromAuthenticatedAction: true, action: 'conversations.create', httpStatus: 422, errorCode: 'capability-unavailable' } },
+    'degraded-source-availability': { schemaVersion: 2, mode: 'degraded', safeReadObserved: true, mutationRejected: true, source: { capability: 'sessions', available: false, bindingObserved: true } },
+    'recovery-only-compatibility': { schemaVersion: 2, mode: 'recovery-only', safeReadObserved: true, mutationsRejected: true, mismatches: ['host', 'build', 'pluginApi', 'bridgeProtocol', 'binding', 'schema'] },
+    'destructive-migration-restoration': { schemaVersion: 2, snapshotId: 'fictional-snapshot', writesBlockedBeforeValidation: true, exactIdentityValidated: true, postValidationMutation: true, boundaries: { beforeCommit: true, afterCommitBeforeManifest: true } },
+    'privacy-artifact-output': { schemaVersion: 2, repository: true, generated: true, capturedOutput: true, browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: true }
   };
   return structuredClone(values[id]);
 }
@@ -30,62 +30,34 @@ async function validRows() {
   return runAcceptanceRows(RELEASE_ROW_IDS.map((id) => ({ id, run: async () => validEvidence(id) })));
 }
 
-test('real-host aggregate reports scenario children and Session interleaving coverage', async () => {
+test('scope-v2 acceptance requires report version 3 and native retained evidence version 2', async () => {
+  const report = createAcceptanceReport({ buildDigest: BUILD, rows: await validRows(), finalization: finalization() });
+  assert.equal(report.schemaVersion, 3);
+  assert.equal(assertAcceptanceReportPassed(report), true);
+  assert.equal(report.rows.length, 9);
+  assert.equal(report.finalization.length, 6);
+  for (const row of report.rows) assert.equal(row.evidence.schemaVersion, 2);
+});
+
+test('real-host release dispatches native producers and preserves the controller receipt boundary', async () => {
+  // Static wiring checks complement the real coordinator tests; not runtime qualification.
   const source = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
-  const sessionSource = await readFile(new URL('./session-adapter.test.mjs', import.meta.url), 'utf8');
-  const bridgeSource = await readFile(new URL('./bridge-contract.test.mjs', import.meta.url), 'utf8');
-  assert.match(source, /await testContext\.test\(`release scenario:/u);
-  for (const boundary of ['startup-migration-channel-count', 'startup-migration-occurrence-count', 'startup-authenticated-history', 'startup-imported-history-text', 'startup-imported-history-provenance', 'migrated-scale-conversation-seeding', 'startup-projection-recovery', 'invalidated-projection-recovery', 'missing-projection-recovery', 'stale-projection-recovery', 'malformed-topic-route-rejection']) assert.match(source, new RegExp(`collectScenario\\('${boundary}'`, 'u'));
-  assert.match(source, /migrationFixtureEvidence = retainPreparedMigrationFixtureEvidence\(migrationExport\)/u);
-  assert.match(source, /prepared migration fixture evidence must remain available after fixture preparation/u);
-  assert.doesNotMatch(source, /fictional-topic-(?:alpha|scale)/u);
-  assert.match(source, /RELEASE_ALPHA_TOPIC_ID/u);
-  assert.match(source, /RELEASE_SCALE_TOPIC_ID/u);
-  assert.match(source, /startIsolatedSlice/u);
-  assert.match(source, /isolatedResult\('degraded-source-availability'\)/u);
-  assert.doesNotMatch(source, /requireScenario\(/u);
-  assert.match(source, /testContext\.diagnostic\(/u);
-  assert.match(source, /if \(acceptancePlan\.kind !== 'release'\) return;\s+assert\.ok\(emittedBaseline,[^;]+;\s+testContext\.diagnostic\(`acceptance-result=/u, 'focused diagnostics must not claim complete release acceptance');
-  assert.match(source, /timeout: 2_400_000/u);
-  const finalization = source.indexOf('const finalizationErrors = await finalizeAcceptanceJourney');
-  const isolatedCompletion = source.indexOf("await Promise.all([...isolatedSlices.keys()]", finalization);
-  const privacyPreflight = source.indexOf('await scanRepositorySafety', isolatedCompletion);
-  const baselineComparison = source.indexOf('for (const name of RELEASE_MEASUREMENTS) assertPerformanceObservationWithinBaseline', privacyPreflight);
-  const reportRows = source.indexOf('const rows = await runAcceptanceRows', finalization);
-  const reportValidation = source.indexOf('assertAcceptanceReportPassed(report)', reportRows);
-  const capturedOutputScan = source.indexOf('scanPublicEvidence([JSON.stringify(report)', reportValidation);
-  const baselineCommit = source.indexOf('releaseState.baseline = qualifiedBaseline', capturedOutputScan);
-  assert.ok(finalization > 0 && finalization < isolatedCompletion && isolatedCompletion < privacyPreflight && privacyPreflight < baselineComparison && baselineComparison < reportRows && reportRows < reportValidation && reportValidation < capturedOutputScan && capturedOutputScan < baselineCommit, 'primary finalization must precede independent worlds; all isolated slices, privacy, immutable baseline comparison, report validation, and captured-output scanning must precede baseline commitment');
-  assert.match(source, /capturePerformanceBaseline = process\.env\.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE === '1'/u);
-  assert.match(source, /captureFirstReleasePerformanceBaseline\(baselineSeed, scaleJourney\.measurement\)/u);
-  assert.match(source, /writeFile\(capturedPerformanceBaselinePath,[\s\S]*\{ flag: 'wx' \}\)/u);
-  assert.doesNotMatch(source, /const passed = await (?:testContext\.test|isolatedRunPromises)/u);
-  assert.doesNotMatch(source, /withDeadline\(`isolated release slice/u);
-  assert.match(source, /runBoundedAcceptanceSlice/u);
-  assert.match(source, /timeoutMs: 240_000, cleanupTimeoutMs: 15_000/u);
-  assert.match(source, /release preparation: candidate build and authenticated descriptor/u);
-  assert.match(source, /release preparation: deterministic source fixtures/u);
-  assert.match(source, /release preparation: pinned host launch/u);
-  assert.match(source, /fetchWithRuntimeDispatcher as fetch/u);
-  for (const category of ['bootstrap-http-', 'bootstrap-invalid-response', 'metadata-not-ready']) assert.match(source, new RegExp(category, 'u'));
-  assert.match(source, /api\/topics\/actions`.*, \{ method: 'POST'/u);
-  assert.equal(source.match(/await seedAuthoritativeSessionCatalog\(/gu)?.length, 2, 'both real-host 100-Conversation fixtures must use the bounded authoritative seeding path');
-  assert.match(source, /const batch = await Promise\.all\(indexes\.map/u);
-  assert.match(source, /metadata\.setSessionState\(/u);
-  assert.doesNotMatch(source, /runSettledAcceptanceBatch/u);
-  assert.match(source, /session-create-catalog-readback/u);
-  assert.match(source, /session-create-idempotent-replay/u);
-  assert.match(source, /migrated-scale-conversation-seeding/u);
-  assert.match(source, /const key = `agent:main:command-center:acceptance-scale:\$\{topicId\}:\$\{index\}`/u);
-  assert.match(source, /params: \{ agentId: 'main', key, label \}/u);
-  assert.doesNotMatch(source, /ensureVerifiedActivityFixture|createAttentionService/u);
-  assert.match(source, /data-activity-receipt/u);
-  assert.match(source, /method: 'command-center\.v1\.activity\.get'.*activityId: actionReceipt\.activityId/u);
-  assert.ok(source.indexOf("collectScenario('scale-performance'") < source.indexOf("collectScenario('verified-activity-readback'"), 'verified Activity readback must follow the keyboard source action that produced its receipt');
-  assert.match(source, /performanceBaseline: emittedBaseline/u);
-  assert.match(source, /browser\.version\(\), baseline\.browser\.version/u);
-  assert.match(sessionSource, /overlapping Session creates preserve every distinct plugin-owned key/u);
-  assert.match(bridgeSource, /registered Session create bridge preserves independent durable identities under reversed completion/u);
+  const start = source.indexOf("if (acceptancePlan.kind === 'release') {\n    assert.ok(descriptor");
+  const end = source.indexOf('const isolatedEvidence = new Map()', start);
+  assert.ok(start > 0 && end > start);
+  const release = source.slice(start, end);
+  assert.match(source, /nativeDiagnostic \|\| acceptancePlan\.kind === 'release'/u, 'release admission requires sealed inputs');
+  assert.match(release, /await runNativeReleaseCapture\(/u);
+  for (const producer of ['exerciseNativeControlUiActivation', 'exerciseNativeKeyboardJourney', 'exerciseSecureHostVariant', 'exerciseNativeDegradedBridgeHostVariant', 'exerciseNativeDegradedSourceRow', 'exerciseNativeReleaseMismatchVariant', 'exerciseNativePluginApiMismatchVariant', 'exerciseNativeBindingMismatchHostVariant', 'exerciseNativeForeignDatabaseRestorationVariant', 'exerciseNativeRecoveryOnlyHostVariant', 'exerciseNativeRestorationMatrix', 'exerciseNativeScaleJourney']) assert.ok(release.includes(producer), `${producer} must be wired`);
+  assert.match(release, /signal, onFinalization/u);
+  const scan = release.indexOf('scanPublicEvidence([JSON.stringify(report), JSON.stringify(result)])');
+  const commit = release.indexOf('await writeFile(capturedPerformanceBaselinePath');
+  const emit = release.indexOf('testContext.diagnostic(`acceptance-result=');
+  assert.ok(scan > 0 && scan < commit && commit < emit);
+  assert.match(release, /\{ flag: 'wx' \}/u);
+  assert.match(release, /acceptance-report=\$\{JSON\.stringify\(report\)\}/u);
+  assert.doesNotMatch(release.slice(release.indexOf('const result ='), scan), /acceptanceReport:/u, 'keep the seven-field controller completion envelope');
+  assert.match(release, /return;\s+\}\s*$/u, 'native release must not fall through into historical iframe journeys');
 });
 
 test('release rows all execute and collect failures in canonical order', async () => {
@@ -161,14 +133,14 @@ test('release report binds closed evidence and finalization to one build digest'
   assert.equal(report.rows.length, 9);
   assert.equal(report.performanceBaseline.capture.identityDigest, performanceBaseline.capture.identityDigest);
   assert.equal(Object.isFrozen(report.rows[3].evidence.thresholds), true);
-  assert.throws(() => { report.rows[3].evidence.thresholds.dashboardLoadMs += 1; }, /read only|Cannot assign/iu);
+  assert.throws(() => { report.rows[3].evidence.thresholds.topicsLoadMs += 1; }, /read only|Cannot assign/iu);
   assert.equal(assertAcceptanceReportPassed(report), true);
   const reloaded = JSON.parse(JSON.stringify(report));
   assert.equal(assertAcceptanceReportPassed(reloaded), true);
   assert.equal(Object.isFrozen(reloaded.rows[3].evidence.thresholds), true);
   const widened = JSON.parse(JSON.stringify(report));
-  widened.rows[3].evidence.observations.dashboardLoadMs += 10;
-  widened.rows[3].evidence.thresholds.dashboardLoadMs += 10;
+  widened.rows[3].evidence.observations.topicsLoadMs += 10;
+  widened.rows[3].evidence.thresholds.topicsLoadMs += 10;
   assert.throws(() => assertAcceptanceReportPassed(widened), /frozen identity/u);
   const staleBuild = JSON.parse(JSON.stringify(report));
   staleBuild.buildDigest = 'b'.repeat(64);
@@ -189,18 +161,18 @@ test('release report rejects a different scale fixture identity', async () => {
 test('release report accepts faster subsequent observations and rejects immutable-threshold regressions', async () => {
   const fasterRows = await validRows();
   const scale = fasterRows.find((row) => row.id === 'scale-performance').evidence;
-  scale.observations.dashboardLoadMs = Math.max(0.25, scale.thresholds.dashboardLoadMs - 0.5);
+  scale.observations.topicsLoadMs = Math.max(0.25, scale.thresholds.topicsLoadMs - 0.5);
   assert.equal(createAcceptanceReport({ rows: fasterRows, buildDigest: BUILD, finalization: finalization() }).outcome, 'passed');
 
   const slowerRows = await validRows();
   const slowerScale = slowerRows.find((row) => row.id === 'scale-performance').evidence;
-  slowerScale.observations.dashboardLoadMs = slowerScale.thresholds.dashboardLoadMs + 0.01;
+  slowerScale.observations.topicsLoadMs = slowerScale.thresholds.topicsLoadMs + 0.01;
   assert.throws(() => createAcceptanceReport({ rows: slowerRows, buildDigest: BUILD, finalization: finalization() }), /immutable first-observation ceiling/u);
 
   const widenedRows = await validRows();
   const widenedScale = widenedRows.find((row) => row.id === 'scale-performance').evidence;
-  widenedScale.observations.dashboardLoadMs = widenedScale.thresholds.dashboardLoadMs + 10;
-  widenedScale.thresholds.dashboardLoadMs += 10;
+  widenedScale.observations.topicsLoadMs = widenedScale.thresholds.topicsLoadMs + 10;
+  widenedScale.thresholds.topicsLoadMs += 10;
   assert.throws(() => createAcceptanceReport({ rows: widenedRows, buildDigest: BUILD, finalization: finalization() }), /frozen identity/u);
 });
 
@@ -225,4 +197,136 @@ test('release report fails closed after every row ran and redacts bounded diagno
   assert.equal(report.outcome, 'failed');
   assert.equal(report.rows.find((row) => row.id === 'scale-performance').error, ['to', 'ken=[redacted]'].join(''));
   assert.throws(() => assertAcceptanceReportPassed(report), /scale-performance/u);
+});
+
+test('historical report and evidence versions cannot qualify the retained native release', async () => {
+  const report = createAcceptanceReport({ buildDigest: BUILD, rows: await validRows(), finalization: finalization() });
+  for (const schemaVersion of [1, 2]) assert.throws(() => assertAcceptanceReportPassed({ ...structuredClone(report), schemaVersion }), /schemaVersion is unsupported/u);
+  for (const id of RELEASE_ROW_IDS) {
+    const rows = await validRows();
+    rows.find(row => row.id === id).evidence.schemaVersion = 1;
+    assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /schemaVersion must be 2/u);
+    const stored = structuredClone(report);
+    stored.rows.find(row => row.id === id).evidence.schemaVersion = 1;
+    assert.throws(() => assertAcceptanceReportPassed(stored), /schemaVersion must be 2/u);
+  }
+});
+
+test('native activation must identify the plugin revision and observed authenticated HTTP', async () => {
+  const cases = [
+    evidence => { evidence.nativeUi.pluginId = 'other-plugin'; },
+    evidence => { evidence.nativeUi.revision = '   '; },
+    evidence => { evidence.nativeUi.revision = 'x'.repeat(257); },
+    evidence => { evidence.nativeUi.activationObserved = false; },
+    evidence => { evidence.nativeUi.authenticatedHttpObserved = false; },
+    evidence => { evidence.scriptsOnlyFrame = true; },
+    evidence => { evidence.notificationLifecycle = { closedTabDelivered: true }; },
+    evidence => { evidence.secureOrigin.protocol = 'http:'; },
+    evidence => { evidence.hostReceipt.commit = 'b'.repeat(40); }
+  ];
+  for (const change of cases) {
+    const rows = await validRows();
+    change(rows[0].evidence);
+    assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /pinned-host-startup/u);
+  }
+});
+
+test('desktop retained journey requires each exact action and authoritative readback', async () => {
+  const required = ['existing-topic-open', 'note-read', 'native-chat-open', 'native-chat-send', 'conversation-create', 'conversation-replay', 'conversation-refresh', 'native-return'];
+  for (const omitted of required) {
+    const rows = await validRows();
+    const desktop = rows[1].evidence;
+    desktop.actions = desktop.actions.filter(action => action !== omitted);
+    assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /desktop-primary-journey.actions/u);
+  }
+  for (const replacement of [required[0], 'arbitrary-action', '', 42]) {
+    const rows = await validRows();
+    rows[1].evidence.actions[1] = replacement;
+    assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /desktop-primary-journey.actions/u);
+  }
+  for (const key of ['existingTopics', 'primarySession', 'conversation', 'note', 'chatSend', 'conversationAfterRestart']) {
+    const rows = await validRows();
+    rows[1].evidence.authoritativeReadback[key] = false;
+    assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /authoritativeReadback/u);
+  }
+  const rows = await validRows();
+  rows[1].evidence.authoritativeReadback.attention = true;
+  assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /unsupported field attention/u);
+});
+
+test('keyboard evidence requires retained navigation and failure states, not arbitrary counts', async () => {
+  for (const state of ['topics-navigation', 'notes-list', 'note-reader', 'native-chat-handoff', 'conversation-create', 'unknown-creation', 'source-unavailable', 'permission-refused']) {
+    const rows = await validRows();
+    rows[2].evidence.states = rows[2].evidence.states.filter(value => value !== state);
+    assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /desktop-keyboard-journey.states/u);
+  }
+  const rows = await validRows();
+  rows[2].evidence.states = Array(8).fill('note-reader');
+  assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /desktop-keyboard-journey.states/u);
+  for (const field of ['keyboardOnly', 'forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'noPageOverflow']) {
+    const rows = await validRows();
+    rows[2].evidence[field] = false;
+    assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), new RegExp(field));
+  }
+});
+
+test('retained performance evidence requires exact Conversation pages and read-only Note scale', async () => {
+  const changes = [
+    scale => { scale.conversationPage.thirdPageCount = 0; },
+    scale => { scale.conversationPage.unique = false; },
+    scale => { scale.conversationPage.orderPreserved = false; },
+    scale => { scale.notes.largeNoteBytes = 8_388_608; },
+    scale => { scale.notes.readOnly = false; },
+    scale => { scale.notes.paginationVerified = false; },
+    scale => { scale.fixtureCounts.noteFiles = 4_999; },
+    scale => { scale.fixtureCounts.conversations = 100; },
+    scale => { scale.activityPage = scale.conversationPage; },
+    scale => { scale.search = { indexedQuery: true }; },
+    scale => { scale.observations.noteReadMs = 1; },
+    scale => { delete scale.observations.noteNextPageMs; }
+  ];
+  for (const change of changes) {
+    const rows = await validRows();
+    change(rows[3].evidence);
+    assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /scale-performance/u);
+  }
+});
+
+test('degraded native write evidence cannot infer refusal from bootstrap asset grants', async () => {
+  const rows = await validRows();
+  rows.find(row => row.id === 'degraded-bridge-grants').evidence.bridge = {
+    protocolVersion: 1, writeGrant: false, observedFromBootstrap: true
+  };
+  assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /degraded-bridge-grants.bridge/u);
+  const valid = createAcceptanceReport({ buildDigest: BUILD, rows: await validRows(), finalization: finalization() });
+  for (const change of [
+    bridge => { bridge.observedFromAuthenticatedAction = false; },
+    bridge => { bridge.action = 'notes.edit'; },
+    bridge => { bridge.httpStatus = 200; },
+    bridge => { bridge.errorCode = 'feature-unavailable'; }
+  ]) {
+    const stored = structuredClone(valid);
+    change(stored.rows.find(row => row.id === 'degraded-bridge-grants').evidence.bridge);
+    assert.throws(() => assertAcceptanceReportPassed(stored), /degraded-bridge-grants.bridge/u);
+  }
+});
+
+test('degraded source evidence cannot substitute a deferred capability for Sessions', async () => {
+  const validReport = createAcceptanceReport({ buildDigest: BUILD, rows: await validRows(), finalization: finalization() });
+  for (const capability of ['search', 'analysis', 'notifications', 'cron', 'unknown']) {
+    const rows = await validRows();
+    rows.find(row => row.id === 'degraded-source-availability').evidence.source.capability = capability;
+    assert.throws(() => createAcceptanceReport({ buildDigest: BUILD, rows, finalization: finalization() }), /degraded-source-availability.source.capability/u);
+    const stored = structuredClone(validReport);
+    stored.rows.find(row => row.id === 'degraded-source-availability').evidence.source.capability = capability;
+    assert.throws(() => assertAcceptanceReportPassed(stored), /degraded-source-availability.source.capability/u);
+  }
+});
+
+test('each finalization failure prevents a passing release even with complete retained evidence', async () => {
+  for (const phase of ['browser-close', 'host-stop', 'browser-traffic', 'host-traffic', 'child-traffic', 'build-digest']) {
+    const report = createAcceptanceReport({ buildDigest: BUILD, rows: await validRows(), finalization: finalization().map(entry => entry.phase === phase ? { ...entry, error: new Error('fictional cleanup failure') } : entry) });
+    assert.equal(report.outcome, 'failed');
+    assert.throws(() => assertAcceptanceReportPassed(report), new RegExp(phase));
+  }
 });

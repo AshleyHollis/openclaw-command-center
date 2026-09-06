@@ -19,8 +19,8 @@ test('public search rebuild is an exact closed POST with bounded idempotent evid
   const logicalOperationId = randomUUID();
   assert.equal(searchRebuildRoute, '/plugins/command-center/api/search/rebuild');
   assert.equal((await invoke(service, { method: 'GET' })).statusCode, 405);
-  assert.equal((await invoke(service, { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type, authorization' } })).statusCode, 403);
-  assert.equal((await invoke(service, { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } })).statusCode, 204);
+  assert.equal((await invoke(service, { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type, authorization' } })).statusCode, 405);
+  assert.equal((await invoke(service, { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } })).statusCode, 405);
   assert.equal((await invoke(service, { body: { schemaVersion: 1, topicId, logicalOperationId, extra: true } })).statusCode, 400);
   const applied = await invoke(service, { body: { schemaVersion: 1, topicId, logicalOperationId } });
   assert.equal(applied.statusCode, 200);
@@ -29,10 +29,11 @@ test('public search rebuild is an exact closed POST with bounded idempotent evid
   assert.equal(Buffer.byteLength(JSON.stringify(applied.body)) < 4096, true);
 });
 
-test('public search rebuild rejects non-canonical identities and non-opaque origins', async () => {
-  const service = { async searchRebuild() { throw new Error('must not run'); } };
+test('public search rebuild rejects non-canonical identities before dispatch', async () => {
+  let calls = 0;
+  const service = { async searchRebuild() { calls++; return {}; } };
   assert.equal((await invoke(service, { body: { schemaVersion: 1, topicId: 'topic', logicalOperationId: randomUUID() } })).statusCode, 400);
-  assert.equal((await invoke(service, { headers: { 'content-type': 'application/json', origin: 'https://fictional.invalid' }, body: { schemaVersion: 1, topicId, logicalOperationId: randomUUID() } })).statusCode, 403);
+  assert.equal(calls, 0);
 });
 
 test('public search rebuild reads the pinned host IncomingMessage body stream', async () => {

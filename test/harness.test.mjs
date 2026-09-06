@@ -4,6 +4,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { createServer } from 'node:net';
+import * as hostHarness from '../src/host-harness.mjs';
+import { build } from '../src/build.mjs';
+import { createIsolatedWorld, disposeIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 
 const sourceDigest = `sha256:${'a'.repeat(64)}`;
@@ -14,12 +18,11 @@ function hostDescriptor({ checkout = '/fixture', executable = pinnedHost.executa
   return JSON.stringify({ checkout, executable, args, commit, integrity, ...rest });
 }
 
-async function temporaryHost() {
+async function temporaryHost(contents = '#!/usr/bin/env node\nconsole.log("fixture host");\n') {
   const parent = await mkdtemp(path.join(os.tmpdir(), 'command-center-host-'));
   const root = path.join(parent, 'openclaw-host');
   await mkdir(root);
   const wrapper = path.join(root, pinnedHost.executable);
-  const contents = '#!/usr/bin/env node\nconsole.log("fixture host");\n';
   await Promise.all([
     writeFile(wrapper, contents),
     writeFile(path.join(root, 'package.json'), JSON.stringify({ version: pinnedHost.packageVersion }))
@@ -60,7 +63,7 @@ test('categorizes absent and malformed host descriptors', () => {
 });
 
 test('runtime checkout identity remains distinct from the compatibility and performance receipt identities', () => {
-  assert.equal(pinnedHost.commit, '2309e6542d0ba631178c8e647a2dc8b4763651bd');
+  assert.equal(pinnedHost.commit, 'c1d67aaa14b62d6172cd2c57f8b3ceff9aed350f');
   assert.doesNotThrow(() => parseHostDescriptor(hostDescriptor()));
   assert.throws(() => parseHostDescriptor(hostDescriptor({ commit: '19686a23834910173df0fd1f77bd762ffcda2afd' })), (error) => error.category === 'invalid-commit');
 });
@@ -251,4 +254,190 @@ test('reports bounded source and destination evidence for prohibited child traff
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('expected plugin rejection cannot hide a later authentication failure across output chunks', () => {
+  for (const chunks of [
+    ['plugin not found: command-center\n', 'bootstrap authentication failed\n'],
+    ['plugin not found: command-center\nbootstrap authentication failed\n'],
+    ['plugin not found: command-center\n', 'bootstrap authenti', 'cation denied\n']
+  ]) {
+    const diagnostics = {};
+    const observe = createHostOutputClassifier(diagnostics);
+    for (const chunk of chunks) observe(chunk);
+    assert.equal(diagnostics.category, 'plugin-not-found');
+    assert.deepEqual(diagnostics.fatalCategories, ['plugin-not-found', 'bootstrap-authentication-failure']);
+    assert.throws(() => assertNoFatalHostOutput(diagnostics, { expectedPluginNotFound: true }), error => error.category === 'bootstrap-authentication-failure');
+  }
+  const expected = {};
+  const observe = createHostOutputClassifier(expected);
+  for (let index = 0; index < 20; index += 1) observe('plugin not found: command-center\n');
+  assert.deepEqual(expected.fatalCategories, ['plugin-not-found']);
+  assert.doesNotThrow(() => assertNoFatalHostOutput(expected, { expectedPluginNotFound: true }));
+  assert.throws(() => assertNoFatalHostOutput(expected), error => error.category === 'plugin-not-found');
+  assert.throws(() => assertNoFatalHostOutput({ category: 'plugin-not-found' }, { expectedPluginNotFound: true }), /complete fatal output/u);
+});
+
+test('unreadable child traffic evidence fails closed rather than passing as no traffic', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-evidence-'));
+  try {
+    await assert.rejects(assertRecordedChildTraffic({ manifest: { trafficLog: root } }), error => error instanceof HarnessFailure && error.category === 'isolation-evidence-unavailable');
+    assert.deepEqual(await assertRecordedChildTraffic({ manifest: { trafficLog: path.join(root, 'absent.jsonl') } }), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+// A real process/socket/SQLite fixture, not an OpenClaw activation proof. Only
+// Git is an external fixture; wrapper, package, receipt and build hashes are real.
+const restartWrapper = `import { createServer } from 'node:net';
+import { readFileSync, statSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import path from 'node:path';
+const world = JSON.parse(readFileSync(process.env.COMMAND_CENTER_FIXTURE_MANIFEST));
+const config = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH));
+const db = new DatabaseSync(path.join(world.database, 'restart.sqlite'));
+db.exec('CREATE TABLE IF NOT EXISTS generations (id INTEGER PRIMARY KEY)');
+db.prepare('INSERT INTO generations DEFAULT VALUES').run();
+const generation = db.prepare('SELECT COUNT(*) AS n FROM generations').get().n;
+const server = createServer(socket => socket.end('generation=' + generation));
+process.on('SIGTERM', () => { console.log('STOPPING:' + generation); server.close(() => { db.close(); console.log('DRAINED:' + generation); }); });
+server.listen(config.gateway.port, config.gateway.bind === 'loopback' ? '127.0.0.1' : 'invalid', () => {
+ console.log('READY:' + JSON.stringify({ generation, pid: process.pid, root: world.root, inode: statSync(path.join(world.vault, 'fixture-note.md')).ino, databaseInode: statSync(path.join(world.database, 'restart.sqlite')).ino }));
+});
+`;
+let restartBuild;
+async function restartFixture(t, contents = restartWrapper) {
+  const fixture = await temporaryHost(contents);
+  const world = await createIsolatedWorld({ candidateRoot: process.cwd() });
+  await writeFile(path.join(world.paths.vault, 'fixture-note.md'), '# Fictional retained Note\nUnchanged between host generations.\n');
+  const runs = [];
+  t.after(async () => {
+    for (const run of runs.reverse()) {
+      await hostHarness.stopPinnedHost(run.child);
+      await run.outputDrained;
+    }
+    await disposeIsolatedWorld(world);
+    await rm(fixture.parent, { recursive: true, force: true });
+  });
+  restartBuild ??= build();
+  const options = {
+    descriptor: parseHostDescriptor(hostDescriptor({ checkout: fixture.root, executable: undefined, args: undefined,
+      command: { executable: process.execPath, args: [pinnedHost.executable, ...pinnedHost.args] }, integrity: fixture.integrity })),
+    world, buildReceipt: await restartBuild, hostVerificationOptions: { gitCommand: hostGit({ blob: fixture.blob }) }
+  };
+  return { fixture, world, runs, options };
+}
+async function fixtureReady(run) {
+  await waitForConsecutiveReadiness(() => /READY:/u.test(run.diagnostics.stdout), run.earlyExit, { deadlineMs: 10_000, delayMs: 10 });
+  return JSON.parse(run.diagnostics.stdout.match(/READY:(.*)/u)[1]);
+}
+
+test('restart stops and drains the actual predecessor and preserves world, Note inode and SQLite', async t => {
+  const { world, runs, options } = await restartFixture(t);
+  const manifest = await readFile(world.manifestPath);
+  const config = await readFile(world.manifest.configPath);
+  const first = await hostHarness.launchPinnedHost(options); runs.push(first);
+  const firstReady = await fixtureReady(first);
+  const second = await hostHarness.restartPinnedHost(first); runs.push(second);
+  const secondReady = await fixtureReady(second);
+  assert.equal(first.child.exitCode, 0);
+  assert.match(first.diagnostics.stdout, /DRAINED:1/u);
+  assert.equal(secondReady.generation, 2);
+  assert.notEqual(secondReady.pid, firstReady.pid);
+  assert.equal(secondReady.inode, firstReady.inode);
+  assert.equal(secondReady.databaseInode, firstReady.databaseInode);
+  assert.equal(secondReady.root, firstReady.root);
+  assert.equal(second.endpoint, first.endpoint);
+  assert.equal(second.generations.length, 2);
+  assert.equal(second.generations[0].diagnostics, first.diagnostics);
+  assert.deepEqual(await readFile(world.manifestPath), manifest);
+  assert.deepEqual(await readFile(world.manifest.configPath), config);
+  await assert.rejects(hostHarness.restartPinnedHost(first), error => error.category === 'restart-owner');
+});
+
+test('restart refuses a real competing same-port listener without changing the world', async t => {
+  const { world, runs, options } = await restartFixture(t);
+  const first = await hostHarness.launchPinnedHost(options); runs.push(first);
+  await fixtureReady(first);
+  await hostHarness.stopPinnedHost(first.child);
+  await first.outputDrained;
+  const competitor = createServer(socket => socket.destroy());
+  await new Promise((resolve, reject) => { competitor.once('error', reject); competitor.listen(world.gateway.port, world.gateway.host, resolve); });
+  try {
+    await assert.rejects(hostHarness.restartPinnedHost(first), { code: 'EADDRINUSE' });
+    assert.equal(world.gatewayReservation.isReserved(), false);
+  } finally { await new Promise(resolve => competitor.close(resolve)); }
+  const second = await hostHarness.restartPinnedHost(first); runs.push(second);
+  assert.equal((await fixtureReady(second)).generation, 2);
+});
+
+test('restart owns the exact run and refuses concurrent launch or restart transitions', async t => {
+  const { runs, options } = await restartFixture(t);
+  const first = await hostHarness.launchPinnedHost(options); runs.push(first);
+  await fixtureReady(first);
+  await assert.rejects(hostHarness.launchPinnedHost(options), error => error.category === 'restart-owner');
+  await assert.rejects(hostHarness.restartPinnedHost({ ...first }), error => error.category === 'restart-owner');
+  const pending = hostHarness.restartPinnedHost(first);
+  await assert.rejects(hostHarness.restartPinnedHost(first), error => error.category === 'restart-owner');
+  const second = await pending; runs.push(second);
+  assert.equal((await fixtureReady(second)).generation, 2);
+});
+
+test('restart proves SIGKILL exit when a real child refuses SIGTERM and stopping is repeatable', async t => {
+  const contents = restartWrapper.replace("process.on('SIGTERM', () => {", "process.on('SIGTERM', () => { return;");
+  const { runs, options } = await restartFixture(t, contents);
+  const first = await hostHarness.launchPinnedHost(options); runs.push(first);
+  await fixtureReady(first);
+  const second = await hostHarness.restartPinnedHost(first); runs.push(second);
+  assert.equal(first.child.signalCode, 'SIGKILL');
+  await hostHarness.stopPinnedHost(first.child);
+  assert.equal((await fixtureReady(second)).generation, 2);
+});
+
+test('cancelled restart stops its predecessor without creating a successor, and successor abort drains', async t => {
+  const { runs, options, world } = await restartFixture(t);
+  const first = await hostHarness.launchPinnedHost(options); runs.push(first);
+  await fixtureReady(first);
+  const cancelled = new AbortController(); cancelled.abort(new Error('fixture restart cancelled'));
+  await assert.rejects(hostHarness.restartPinnedHost(first, { signal: cancelled.signal }), /fixture restart cancelled/u);
+  assert.equal(first.child.exitCode, 0);
+  assert.equal(world.gatewayReservation.isReserved(), false);
+  const successorAbort = new AbortController();
+  const second = await hostHarness.restartPinnedHost(first, { signal: successorAbort.signal }); runs.push(second);
+  await fixtureReady(second);
+  successorAbort.abort();
+  await second.abortCleanup;
+  assert.equal(second.child.exitCode, 0);
+  assert.match(second.diagnostics.stdout, /DRAINED:2/u);
+});
+
+test('restart rechecks real immutable wrapper bytes before spawning the successor', async t => {
+  const { fixture, runs, options, world } = await restartFixture(t);
+  const first = await hostHarness.launchPinnedHost(options); runs.push(first);
+  await fixtureReady(first);
+  await writeFile(path.join(fixture.root, pinnedHost.executable), `${restartWrapper}\n// changed fixture bytes\n`);
+  await assert.rejects(hostHarness.restartPinnedHost(first), error => ['host-integrity', 'wrapper-mismatch'].includes(error.category));
+  assert.equal(first.child.exitCode, 0);
+  assert.equal(world.gatewayReservation.isReserved(), false);
+});
+
+test('restart refuses while a real descendant retains predecessor output after its exit', async t => {
+  const contents = `import { spawn } from 'node:child_process';\n${restartWrapper.replace("console.log('STOPPING:' + generation);", "console.log('STOPPING:' + generation); spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: ['ignore', 1, 2] }).unref();")}`;
+  const { runs, options, world } = await restartFixture(t, contents);
+  const first = await hostHarness.launchPinnedHost(options); runs.push(first);
+  await fixtureReady(first);
+  await assert.rejects(hostHarness.restartPinnedHost(first), error => error.category === 'host-output-drain');
+  assert.equal(first.child.exitCode, 0);
+  assert.equal(world.gatewayReservation.isReserved(), false);
+  assert.equal(first.generations.length, 1);
+});
+
+test('restart cannot discard a fatal predecessor marker emitted during its final drain', async t => {
+  const contents = restartWrapper.replace("console.log('DRAINED:' + generation);", "console.log('DRAINED:' + generation); console.error('plugin not found: command-center');");
+  const { runs, options, world } = await restartFixture(t, contents);
+  const first = await hostHarness.launchPinnedHost(options); runs.push(first);
+  await fixtureReady(first);
+  await assert.rejects(hostHarness.restartPinnedHost(first), error => error.category === 'plugin-not-found');
+  assert.match(first.diagnostics.stderr, /plugin not found/u);
+  assert.equal(first.child.exitCode, 0);
+  assert.equal(world.gatewayReservation.isReserved(), false);
 });

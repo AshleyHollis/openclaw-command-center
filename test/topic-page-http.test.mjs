@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createTopicPageActionsHandler, topicPageActionRoute } from '../src/topics/page-http.mjs';
 import { createSessionAdapter } from '../src/sources/sessions.mjs';
@@ -43,11 +44,11 @@ function fixtureService() {
   return service;
 }
 
-async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json' } } = {}) {
+async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json' }, handlerOptions } = {}) {
   const request = Readable.from([Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]);
   Object.assign(request, { method, headers });
   const response = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(value) { this.body = value; } };
-  await createTopicPageActionsHandler(service)(request, response);
+  await createTopicPageActionsHandler(service, handlerOptions)(request, response);
   return { statusCode: response.statusCode, headers: response.headers, body: response.body ? JSON.parse(response.body) : null };
 }
 
@@ -65,37 +66,9 @@ test('Topic Page actions are POST-only, closed, bounded, and content-free', asyn
   const service = fixtureService();
   assert.equal(topicPageActionRoute, '/plugins/command-center/api/topic/actions');
   assert.equal((await invoke(service, { method: 'GET' })).statusCode, 405);
-  const preflight = await invoke(service, { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type', 'access-control-request-private-network': 'true' } });
-  assert.equal(preflight.statusCode, 204);
-  assert.equal(preflight.body, null);
-  assert.equal(preflight.headers['Access-Control-Allow-Origin'], 'null');
-  assert.equal(preflight.headers['Access-Control-Allow-Credentials'], undefined);
-  assert.equal(preflight.headers['Access-Control-Allow-Methods'], 'POST, OPTIONS');
-  assert.equal(preflight.headers['Access-Control-Allow-Headers'], 'Content-Type');
-  assert.equal(preflight.headers['Access-Control-Allow-Private-Network'], 'true');
-  for (const headers of [
-    { origin: 'null' },
-    { origin: 'null', 'access-control-request-method': 'GET', 'access-control-request-headers': 'content-type' },
-    { origin: 'null', 'access-control-request-method': 'POST' },
-    { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type, authorization' },
-    {},
-    { 'access-control-request-method': 'GET', 'access-control-request-headers': 'content-type' },
-    { 'access-control-request-method': 'POST' },
-    { 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type, authorization' }
-  ]) {
-    const malformed = await invoke(service, { method: 'OPTIONS', headers });
-    assert.equal(malformed.statusCode, 403);
-    assert.equal(malformed.headers['Access-Control-Allow-Origin'], undefined);
-  }
-  const opaqueSameSitePreflight = await invoke(service, { method: 'OPTIONS', headers: { 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } });
-  assert.equal(opaqueSameSitePreflight.statusCode, 204);
-  assert.equal(opaqueSameSitePreflight.headers['Access-Control-Allow-Origin'], 'null');
-  assert.equal(opaqueSameSitePreflight.headers['Access-Control-Allow-Methods'], 'POST, OPTIONS');
-  assert.equal(opaqueSameSitePreflight.headers['Access-Control-Allow-Headers'], 'Content-Type');
-  assert.equal(opaqueSameSitePreflight.headers['Access-Control-Allow-Private-Network'], 'true');
-  const rejectedPrivateNetwork = await invoke(service, { method: 'OPTIONS', headers: { origin: 'https://fictional.invalid', 'access-control-request-method': 'POST', 'access-control-request-private-network': 'true' } });
-  assert.equal(rejectedPrivateNetwork.statusCode, 403);
-  assert.equal(rejectedPrivateNetwork.headers['Access-Control-Allow-Private-Network'], undefined);
+  const preflight = await invoke(service, { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } });
+  assert.equal(preflight.statusCode, 405);
+  assert.equal(preflight.headers['Access-Control-Allow-Origin'], undefined);
   assert.equal(service.calls.length, 0);
   assert.equal((await invoke(service, { body: { ...base('conversations.create', { expectedRevision: 4 }), extra: true } })).statusCode, 400);
   for (const obsoleteAction of ['session.create', 'session.send', 'session.close', 'session.reopen', 'note.create', 'note.edit', 'note.rename', 'note.move']) {
@@ -114,6 +87,36 @@ test('Topic Page actions are POST-only, closed, bounded, and content-free', asyn
   const oversizedResponse = await invoke(service, { body: conversationCreate() });
   assert.equal(oversizedResponse.statusCode, 507);
   assert.equal(Buffer.byteLength(JSON.stringify(oversizedResponse.body)) < 32 * 1024, true);
+});
+
+test('native Conversation creation supplies a fresh authenticated request dispatcher without a browser-created Session', async () => {
+  const service = fixtureService();
+  const runtimes = [];
+  service.sessionsCreate = async (_input, runtime) => {
+    runtimes.push(runtime);
+    return { status: 'applied', referenceId: 'session:native' };
+  };
+  for (let index = 0; index < 2; index += 1) {
+    const response = await invoke(service, { body: base('conversations.create', { expectedRevision: 4, label: 'Native Conversation' }) });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.result.referenceId, 'session:native');
+  }
+  assert.equal(typeof runtimes[0].gatewayRequest, 'function');
+  assert.equal(runtimes[0].authoritativeSession, undefined);
+  assert.notEqual(runtimes[0].gatewayRequest, runtimes[1].gatewayRequest);
+});
+
+test('conditional Conversation HTTP delegates the original Topic revision and captured authority to its owner', async () => {
+  const service = fixtureService(); const inputs = [];
+  const runtime = { creationAuthority: { principalId: 'fictional-operator', assertCurrent() {} }, gatewayRequest: async () => ({}) };
+  let captures = 0;
+  service.topics.get = () => { assert.fail('The transport must not replace the conditional owner revision check.'); };
+  service.sessionsCreate = async (input, receivedRuntime) => { inputs.push(input); assert.equal(receivedRuntime, runtime); return { status: 'applied', referenceId: 'session:conditional' }; };
+  const body = base('conversations.create', { expectedRevision: 4, label: 'Conditional Conversation' });
+  const response = await invoke(service, { body, handlerOptions: { createConversationRuntime: async () => { captures += 1; return runtime; } } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(captures, 1);
+  assert.deepEqual(inputs, [{ schemaVersion: 1, topicId, label: 'Conditional Conversation', isPrimary: false, logicalOperationId: body.logicalOperationId, expectedTopicRevision: 4 }]);
 });
 
 test('Conversation creation adopts only the authenticated external-tab Session envelope', async () => {
@@ -185,7 +188,7 @@ test('a migrated canonical scale Topic creates 99 Conversations through the publ
     metadata: migratedMetadata,
     config: {
       schemaVersion: 1,
-      exportPath: new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url).pathname,
+      exportPath: fileURLToPath(new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url)),
       channels: [{ channelId: 'fictional-channel-alpha', topicId: scaleTopicId, paraCategory: 'resource', noteFolderPath: '/fictional/vault/scale' }]
     },
     gateway: { request: gatewayRequest },
@@ -286,14 +289,12 @@ test('Note actions verify exact Topic/source revisions and reach the guarded ser
   assert.equal(tooLarge.statusCode, 400);
 });
 
-test('Conversation close uses the exact Source Reference and rejects disallowed origins', async () => {
+test('Conversation close accepts authenticated parent-origin requests without opaque CORS', async () => {
   const service = fixtureService();
-  const applied = await invoke(service, { body: base('conversations.close', { referenceId: sessionId, expectedRevision: 4 }), headers: { 'content-type': 'application/json', origin: 'null' } });
+  const applied = await invoke(service, { body: base('conversations.close', { referenceId: sessionId, expectedRevision: 4 }), headers: { 'content-type': 'application/json', origin: 'https://fictional.invalid' } });
   assert.equal(applied.statusCode, 200);
-  assert.equal(applied.headers['Access-Control-Allow-Origin'], 'null');
+  assert.equal(applied.headers['Access-Control-Allow-Origin'], undefined);
   assert.equal(service.calls[0][0], 'sessionsClose');
-  const rejected = await invoke(service, { body: base('conversations.close', { referenceId: sessionId, expectedRevision: 4 }), headers: { 'content-type': 'application/json', origin: 'https://fictional.invalid' } });
-  assert.equal(rejected.statusCode, 403);
 });
 
 test('Session send dispatches the exact selected Source Reference without a Topic revision', async () => {

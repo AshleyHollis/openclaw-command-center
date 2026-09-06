@@ -38,6 +38,21 @@ test('real-host acceptance defaults to the complete release plan', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('  '), { kind: 'release', scenarioIds: null });
 });
 
+test('native activation diagnosis selects only its sealed real-host boundary', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('native-control-ui-activation'), {
+    kind: 'focused', scenarioIds: ['native-control-ui-activation']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan(), { kind: 'release', scenarioIds: null });
+  assert.throws(() => resolveRealHostAcceptancePlan('native-control-ui-activation,scale-performance'), /Unsupported real-host acceptance scenario/u);
+});
+
+test('desktop keyboard diagnosis selects the retained native journey without deferred corpus prerequisites', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('desktop-keyboard-journey'), {
+    kind: 'focused', scenarioIds: ['desktop-keyboard-journey']
+  });
+  assert.throws(() => resolveRealHostAcceptancePlan('desktop-keyboard-journey,scale-performance'), /Unsupported real-host acceptance scenario/u);
+});
+
 test('Session recovery diagnostic uses the exact shared revocation/replacement contract without corpus journeys', async () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('session-recovery-contract'), { kind: 'focused', scenarioIds: ['pinned-host-startup', 'focused-session-recovery'] });
   const source = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
@@ -121,11 +136,12 @@ test('real-host acceptance exposes a focused Topic Review projection plan', () =
   });
 });
 
-test('real-host acceptance keeps exact Activity readback with its full-corpus scale action', () => {
+test('scale diagnosis selects the retained native corpus without deferred Activity or Search prerequisites', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('scale-performance'), {
     kind: 'focused',
-    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'scale-performance', 'verified-activity-readback']
+    scenarioIds: ['scale-performance']
   });
+  assert.throws(() => resolveRealHostAcceptancePlan('scale-performance,desktop-keyboard-journey'), /Unsupported real-host acceptance scenario/u);
 });
 
 test('combined journey diagnostic retains dependent desktop, scale, Activity, keyboard and review checks', () => {
@@ -152,10 +168,20 @@ test('ordinary suite serializes browser-heavy files without deselecting them', (
   assert.deepEqual(ordinaryTestLanes([
     'test/storage-recovery.test.mjs',
     'test/topic-page.acceptance.test.mjs',
+    'test/native-ui-editing.test.mjs',
     'test/dashboard-ui.test.mjs'
   ]), [
     { id: 'parallel', argv: ['--test', '--test-concurrency=4', 'test/storage-recovery.test.mjs'] },
-    { id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/topic-page.acceptance.test.mjs', 'test/dashboard-ui.test.mjs'] }
+    { id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/topic-page.acceptance.test.mjs', 'test/native-ui-editing.test.mjs', 'test/dashboard-ui.test.mjs'] }
+  ]);
+});
+
+test('first-live safety tests stay in the ticket suite and native UI browsers run serially', () => {
+  const entries = ['first-live-registration.test.mjs', 'first-live-startup.test.mjs', 'first-live-package.test.mjs', 'first-live-note-read-only.test.mjs', 'first-live-native-ui.test.mjs', 'native-operating-mode.test.mjs', 'conversation-creation.test.mjs', 'conversation-recovery-http.test.mjs', 'first-live-migration-bindings.test.mjs', 'test-runtime.test.mjs', 'migration-preservation-bundle.test.mjs', 'imported-history-owner.test.mjs', 'preserved-history-transcript.test.mjs'];
+  assert.deepEqual(selectIssue32TicketTestFiles(entries), [...entries].sort().map(entry => `test/${entry}`));
+  assert.deepEqual(ordinaryTestLanes(['test/first-live-native-ui.test.mjs', 'test/first-live-registration.test.mjs']), [
+    { id: 'parallel', argv: ['--test', '--test-concurrency=4', 'test/first-live-registration.test.mjs'] },
+    { id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/first-live-native-ui.test.mjs'] }
   ]);
 });
 
@@ -199,12 +225,20 @@ test('Topic Page runner selects only its explicit ticket-owned tests', () => {
 test('issue 32 selection keeps owning plugin contracts out of its standalone blocking set', () => {
   const entries = [
     'plugin-contract.test.mjs',
+    'native-startup-capabilities.test.mjs',
+    'native-ui-attention.test.mjs',
+    'note-process-death.test.mjs',
+    'native-ui-editing.test.mjs',
     'plugin-integration.test.mjs',
     'bridge-contract.test.mjs',
     'real-host.acceptance.test.mjs'
   ];
   assert.deepEqual(selectIssue32TicketTestFiles(entries), [
     'test/bridge-contract.test.mjs',
+    'test/native-startup-capabilities.test.mjs',
+    'test/native-ui-attention.test.mjs',
+    'test/native-ui-editing.test.mjs',
+    'test/note-process-death.test.mjs',
     'test/plugin-integration.test.mjs',
     'test/real-host.acceptance.test.mjs'
   ]);

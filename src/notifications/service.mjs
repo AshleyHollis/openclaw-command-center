@@ -136,6 +136,7 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     getSettings();
     db.exec('BEGIN IMMEDIATE');
     try {
+      metadata.assertUnclaimedReconciliationOperation(logicalOperationId);
       const existingOperation = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
       if (existingOperation) {
         if (existingOperation.intent_digest !== intentDigest) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different notification settings intent.');

@@ -1,34 +1,33 @@
 import { createHash } from 'node:crypto';
 
-export const RELEASE_PERFORMANCE_BASELINE_VERSION = 2;
+// ADR 0004 changes measured actions, not just their labels. Historical mixed
+// write/Search/Review observations cannot qualify these native read journeys.
+export const RELEASE_PERFORMANCE_BASELINE_VERSION = 3;
 
 export const RELEASE_FIXTURE_COUNTS = Object.freeze({
   largeNoteBytes: 8_388_609,
   conversations: 101,
-  activityRecords: 101,
-  actionCards: 2,
-  indexedNotes: 5_000,
-  indexedConversationMessages: 5_000
+  noteFiles: 5_000,
+  conversationMessages: 5_000
 });
 
 export const RELEASE_PERFORMANCE_VIEWPORT = Object.freeze({ width: 1_440, height: 900 });
 
 export const RELEASE_MEASUREMENTS = Object.freeze([
   'startupReadinessMs',
-  'dashboardLoadMs',
-  'topicOpenCreateMs',
+  'topicsLoadMs',
+  'topicOpenMs',
   'chatSendMs',
-  'conversationLifecycleMs',
-  'largeNoteLifecycleMs',
-  'indexedSearchMs',
-  'activityNextPageMs',
-  'topicReviewApplyMs'
+  'conversationCreateMs',
+  'largeNoteReadMs',
+  'conversationNextPageMs',
+  'noteNextPageMs'
 ]);
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest']);
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
-const HOST_COMMIT = '2309e6542d0ba631178c8e647a2dc8b4763651bd';
-const HOST_VERSION = '2026.9.1';
+const HOST_COMMIT = 'c1d67aaa14b62d6172cd2c57f8b3ceff9aed350f';
+const HOST_VERSION = '2026.9.2';
 const PLAYWRIGHT_VERSION = '1.62.1';
 export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
   schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION,
@@ -114,10 +113,14 @@ function assertObservations(value) {
   const result = {};
   for (const name of RELEASE_MEASUREMENTS) {
     const observation = value[name];
-    if (typeof observation !== 'number' || !Number.isFinite(observation) || observation <= 0) invalid(`observations.${name} must be the first positive finite observation`);
+    assertPositiveObservation(observation, `observations.${name}`);
     result[name] = observation;
   }
   return Object.freeze(result);
+}
+
+function assertPositiveObservation(value, label) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) invalid(`${label} must be the first positive finite observation`);
 }
 
 function assertThresholds(value, observations) {
@@ -177,7 +180,7 @@ export function validateReleasePerformanceBaseline(value) {
 
 export function assertPerformanceObservationWithinBaseline(name, observation, baseline) {
   if (!RELEASE_MEASUREMENTS.includes(name)) invalid(`unknown observation ${name}`);
-  positiveInteger(observation, `observation.${name}`);
+  assertPositiveObservation(observation, `observation.${name}`);
   const validated = validateReleasePerformanceBaseline(baseline);
   if (observation > validated.thresholds[name]) throw new Error(`Release performance baseline: ${name} exceeded ${validated.thresholds[name]} ms`);
   return true;

@@ -2,7 +2,7 @@ import { openProjectionStore, SEARCH_PROJECTION_VERSIONS } from './projection-st
 import { validateSearchRequest } from './query.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { effectiveSourceLocator } from '../sources/reference.mjs';
-import { clearTopicSearchInvalidationMarker, hasTopicSearchInvalidationMarker, markTopicSearchInvalidated } from './freshness.mjs';
+import { clearTopicSearchInvalidationMarker, hasTopicSearchInvalidationMarker, markTopicSearchInvalidated, readTopicSearchFreshness } from './freshness.mjs';
 
 function exactReference(metadata, topicId, referenceId) {
   const reference = metadata?.getSourceReference?.(referenceId);
@@ -172,6 +172,7 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
   let notes = noteStore;
   let conversations = conversationStore;
   let rebuildQueue = Promise.resolve();
+  let reconciliationTask;
   let invalidated = hasTopicSearchInvalidationMarker(stateDir);
   let freshnessEpoch = invalidated ? 1 : 0;
   const stores = async () => {
@@ -203,7 +204,16 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
     const run = async () => {
       const result = await runRebuild(input);
       if (rebuildEpoch !== freshnessEpoch) return result;
-      if (!await hasCommittedProjectionSet()) {
+      const committed = await hasCommittedProjectionSet();
+      if (rebuildEpoch !== freshnessEpoch) return result;
+      const currentFreshness = readTopicSearchFreshness(stateDir);
+      if (currentFreshness && (!result?.freshness
+        || JSON.stringify(result.freshness.projections) !== JSON.stringify(currentFreshness.projections)
+        || (currentFreshness.attempt !== null && result.freshness.attempt !== currentFreshness.attempt)
+        || (currentFreshness.invalidation !== null && result.freshness.invalidation !== currentFreshness.invalidation))) {
+        throw sourceError('conflict', 'The Search receipt does not own the current source generation. Rebuild with a new operation.');
+      }
+      if (!committed) {
         invalidated = true;
         try { markTopicSearchInvalidated(stateDir); } catch { /* Existing metadata denial remains authoritative. */ }
         throw sourceError('projection-unavailable', 'Topic Search rebuild did not commit both projections and bookkeeping.');
@@ -218,6 +228,24 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
   const service = {
     rebuild: rebuild ? queueRebuild : undefined,
     rebuildPrepared: preparedRebuild ? (input = {}) => queueRebuildOperation(preparedRebuild, input) : undefined,
+    async reconcile(input = {}) {
+      // Deny stale reads before waiting behind any older publication. Runtime
+      // events are hints: rebuild from authoritative sources, never their body.
+      await service.invalidate({ preserveCommittedProjection: true });
+      reconciliationTask ??= (async () => {
+        for (;;) {
+          input.signal?.throwIfAborted();
+          const epoch = freshnessEpoch;
+          try {
+            const result = await queueRebuild(input);
+            if (epoch === freshnessEpoch) return result;
+          } catch (error) {
+            if (epoch === freshnessEpoch || input.signal?.aborted) throw error;
+          }
+        }
+      })().finally(() => { reconciliationTask = undefined; });
+      return reconciliationTask;
+    },
     async invalidate(input = {}) {
       freshnessEpoch += 1;
       invalidated = true;

@@ -3,6 +3,8 @@ import { access, mkdir, mkdtemp, rename as fsRename, rm, symlink } from 'node:fs
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import filesystem from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSourceReference } from '../src/sources/reference.mjs';
@@ -416,7 +418,7 @@ test('Source Recovery reconciles an interrupted folder binding before preserving
     const reference = metadata.listSourceReferences(topicId).find((item) => item.sourceKind === 'note_folder');
     const original = metadata.getSourceLocator(reference.referenceId);
     assert.equal(original.ownership, 'adopted');
-    assert.match(original.observedRevision, /^fs:/u);
+    assert.match(original.observedRevision, /^note-folder:1:/u);
     await rm(original.locator, { recursive: true });
     await topics.markSourceMissing(topicId, reference.referenceId, 'interrupted exact folder recovery');
     const replacement = path.join(vault, 'Custom', 'Interrupted Folder Recovery');
@@ -483,12 +485,10 @@ test('interrupted provisioning retries exact identities and rollback preserves t
     const rollbackTopicId = metadata.getTopicOperation(rollbackOperationId).topicId;
     const rollbackFolder = metadata.getSourceLocator(`note-folder:${rollbackTopicId}`).locator;
     await assert.rejects(rollbackTopics.rollback({ topicId: rollbackTopicId, expectedRevision: metadata.getTopic(rollbackTopicId).revision + 1, logicalOperationId: rollbackOperationId }), /revision is stale/i);
-    const rolledBack = await rollbackTopics.rollback({ topicId: rollbackTopicId, expectedRevision: metadata.getTopic(rollbackTopicId).revision, logicalOperationId: rollbackOperationId });
-    assert.equal(rolledBack.status, 'not-applied');
-    assert.deepEqual(await rollbackTopics.rollback({ topicId: rollbackTopicId, expectedRevision: 0, logicalOperationId: rollbackOperationId }), rolledBack);
-    assert.equal(metadata.getTopic(rollbackTopicId), null);
-    assert.equal(metadata.getTopicOperation(rollbackOperationId).state, 'not-applied');
-    await assert.rejects(access(rollbackFolder));
+    await assert.rejects(rollbackTopics.rollback({ topicId: rollbackTopicId, expectedRevision: metadata.getTopic(rollbackTopicId).revision, logicalOperationId: rollbackOperationId }), /cleanup is not proven safe/i);
+    assert.equal(metadata.getTopic(rollbackTopicId).lifecycle, 'provisioning');
+    assert.notEqual(metadata.getTopicOperation(rollbackOperationId).state, 'not-applied');
+    await access(rollbackFolder);
 
     const unsafeRollbackId = randomUUID();
     await assert.rejects(rollbackTopics.create({ name: 'Changed Rollback Context', paraCategory: 'area', logicalOperationId: unsafeRollbackId }), /rollback interruption/);
@@ -655,6 +655,7 @@ test('concurrent same-intent provisioning retries converge without downgrading a
 
 test('provisioning rollback preserves an unverifiable created Session after activation interruption', async () => {
   await fixture(async ({ vault, metadata }) => {
+    await mkdir(path.join(vault, 'Projects', 'Post Session Rollback'), { recursive: true });
     const boundary = pluginSessionBoundary({ sessionId: () => 'rollback-session-id', updatedAt: () => 73 });
     let interruptActivation = true;
     const interruptingMetadata = {
@@ -687,15 +688,67 @@ test('concurrent distinct provisioning operations cannot claim one conventional 
       left.create({ name: 'Exclusive Folder Claim', paraCategory: 'project', logicalOperationId: randomUUID() }),
       right.create({ name: 'Exclusive Folder Claim', paraCategory: 'project', logicalOperationId: randomUUID() })
     ]);
-    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1, JSON.stringify(results.map((result) => ({ status: result.status, code: result.reason?.code, message: result.reason?.message }))));
     assert.equal(results.filter((result) => result.status === 'rejected' && /owned|locator|conflict/i.test(result.reason?.message)).length, 1);
     const claims = metadata.listSourceLocators().filter((locator) => locator.locator === path.join(vault, 'Projects', 'Exclusive Folder Claim'));
     assert.equal(claims.length, 1);
   });
 });
 
+test('concurrent enrollment waits for marker durability and refuses the losing Folder claim as a conflict', async () => {
+  await fixture(async ({ vault, metadata, sessionAdapterFactory }) => {
+    await mkdir(path.join(vault, 'Projects', 'Enrollment Boundary'), { recursive: true });
+    const originalOpen = filesystem.open;
+    const gate = Promise.withResolvers();
+    const entered = Promise.withResolvers();
+    let timer;
+    let completed = 0;
+    let calls = [];
+    filesystem.open = async function (target, flags, ...args) {
+      const handle = await originalOpen.call(this, target, flags, ...args);
+      if (String(target).endsWith('/.command-center-folder-identity')) {
+        const sync = handle.sync.bind(handle);
+        handle.sync = async (...values) => {
+          entered.resolve();
+          // Publication now uses host-owned atomic staging. Hold the actual
+          // post-publication durability sync, not a mocked domain owner.
+          // Only the test releases it after observing both pending callers.
+          await gate.promise;
+          return sync(...values);
+        };
+      }
+      return handle;
+    };
+    syncBuiltinESMExports();
+    try {
+      calls = [0, 1].map(() => createTopicService({ metadata, noteVaultRoot: vault, sessionAdapterFactory })
+        .create({ name: 'Enrollment Boundary', paraCategory: 'project', logicalOperationId: randomUUID() })
+        .then(value => { completed++; return { status: 'fulfilled', value }; }, reason => { completed++; return { status: 'rejected', reason }; }));
+      await Promise.race([entered.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('marker sync was not reached')), 45_000); })]);
+      clearTimeout(timer);
+      // Give the competing lock claimant a turn while the actual sync is held.
+      await new Promise(resolve => setTimeout(resolve, 50));
+      assert.equal(completed, 0, 'no caller may complete before marker durability');
+      assert.deepEqual(metadata.listSessionStates(), [], 'no Primary may bind before marker durability');
+      gate.resolve();
+      const results = await Promise.all(calls);
+      const evidence = JSON.stringify(results.map((result) => ({ status: result.status, code: result.reason?.code, message: result.reason?.message })));
+      assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1, evidence);
+      assert.equal(results.filter((result) => result.status === 'rejected' && result.reason?.code === 'conflict').length, 1, evidence);
+      assert.equal(metadata.listSourceLocators().filter((locator) => locator.locator === path.join(vault, 'Projects', 'Enrollment Boundary')).length, 1);
+    } finally {
+      gate.resolve(); clearTimeout(timer);
+      await Promise.all(calls);
+      filesystem.open = originalOpen; syncBuiltinESMExports();
+    }
+  });
+});
+
 async function withInterruptedPluginSessionProvisioning(run) {
   await fixture(async ({ vault, metadata }) => {
+    // This seam verifies Session cleanup; the pre-existing folder is adopted,
+    // while created marker-bearing folder cleanup has its own conservative test.
+    await mkdir(path.join(vault, 'Projects', 'Restart Rollback Context'), { recursive: true });
     const boundary = pluginSessionBoundary();
     let interrupted = false;
     const interruptingMetadata = {

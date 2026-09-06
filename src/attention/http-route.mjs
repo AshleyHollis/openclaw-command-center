@@ -1,26 +1,8 @@
+import { readBoundedJson } from '../http/json-body.mjs';
 import { validateBridgeRequest } from '../bridge/contracts.mjs';
 import { allowOpaqueFrameRequest } from '../http/opaque-frame-cors.mjs';
 
-async function readJsonBody(req) {
-  if (req?.body && typeof req.body === 'object') { if (JSON.stringify(req.body).length > 32768) throw new Error('request body is too large'); return req.body; }
-  if (typeof req?.body === 'string') { if (req.body.length > 32768) throw new Error('request body is too large'); return JSON.parse(req.body); }
-  if (typeof req?.readBody === 'function') { const body = await req.readBody(); if (body.length > 32768) throw new Error('request body is too large'); return JSON.parse(body); }
-  if (req && typeof req.on === 'function') {
-    return new Promise((resolve, reject) => {
-      let body = '';
-      let size = 0;
-      req.setEncoding?.('utf8');
-      req.on('data', (chunk) => {
-        size += Buffer.byteLength(chunk);
-        if (size > 32768) { reject(new Error('request body is too large')); req.destroy?.(); return; }
-        body += chunk;
-      });
-      req.on('end', () => { try { resolve(JSON.parse(body || '{}')); } catch (error) { reject(error); } });
-      req.on('error', reject);
-    });
-  }
-  return {};
-}
+async function readJsonBody(req) { return (await readBoundedJson(req, 32768)).body; }
 
 export function createAttentionActionHandler() {
   return async (req, res) => {

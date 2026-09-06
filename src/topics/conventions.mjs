@@ -3,6 +3,8 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { paraCategories } from '../metadata/schema.mjs';
 import { sourceError } from '../sources/errors.mjs';
+import { enrollNoteFolderIdentity, readNoteFolderIdentity, inspectNoteFolderCandidate, withBootstrapNoteFolder } from '../sources/note-folder-identity.mjs';
+import { ownsNoteFilesystem, withNoteFilesystemOwner } from '../sources/note-filesystem-owner.mjs';
 
 export const PARA_DIRECTORY_NAMES = Object.freeze({ project: 'Projects', area: 'Areas', resource: 'Resources', archive: 'Archive' });
 export const ACTIVE_PARA_CATEGORIES = Object.freeze(['project', 'area', 'resource']);
@@ -56,6 +58,34 @@ function safeCaseFold(value) {
   return value.normalize('NFKC').toLocaleLowerCase('en-US');
 }
 
+function selectedRoots(options) {
+  const roots = configuredRoots(options);
+  if (options.folderPath === undefined) return roots;
+  const candidate = options.folderPath;
+  if (typeof candidate !== 'string' || !path.isAbsolute(candidate) || path.resolve(candidate) !== candidate) throw sourceError('unsafe-path', 'An explicit Note Folder must be canonical and absolute.');
+  const category = validateParaCategory(options.paraCategory);
+  const selected = roots.filter(root => {
+    const relative = path.relative(root, candidate);
+    const parts = relative.split(path.sep);
+    return !path.isAbsolute(relative) && parts.length === 2 && safeCaseFold(parts[0]) === safeCaseFold(PARA_DIRECTORY_NAMES[category]) && validateTopicName(parts[1]) === parts[1];
+  });
+  if (selected.length !== 1) throw sourceError('unsafe-path', 'The explicit Note Folder must belong to one configured PARA root.');
+  return selected;
+}
+
+export function resolveProvisioningFolderPath(options) {
+  const roots = selectedRoots(options);
+  return options.folderPath ?? conventionalFolderPath(roots[0], options.paraCategory, options.name);
+}
+
+async function enrollCandidate(candidate, options) {
+  if (options.assertCurrent === undefined) return enrollNoteFolderIdentity(candidate.path);
+  options.assertCurrent();
+  const witness = await inspectNoteFolderCandidate(candidate.path);
+  return withBootstrapNoteFolder(candidate.path, { expectedDirectoryIdentity: witness.directoryIdentity,
+    expectedIdentity: witness.markerIdentity, markerId: options.enrollmentOperationId, assertCurrent: options.assertCurrent }, held => held.identity);
+}
+
 function similarName(left, right) {
   return safeCaseFold(left) === safeCaseFold(right) || left.trim() === right.trim();
 }
@@ -70,10 +100,10 @@ function ownedLocator(metadata, candidate) {
 }
 
 export async function findConventionalFolder(options = {}) {
-  const roots = configuredRoots(options);
+  const roots = selectedRoots(options);
   const candidates = [];
   for (const root of roots) {
-    const exactPath = conventionalFolderPath(root, options.paraCategory, options.name);
+    const exactPath = options.folderPath ?? conventionalFolderPath(root, options.paraCategory, options.name);
     const rootStat = await lstat(root).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error));
     if (!rootStat || !rootStat.isDirectory() || rootStat.isSymbolicLink()) throw sourceError('capability-unavailable', 'Every configured Note root must be an existing real directory.');
     if (await realpath(root) !== root) throw sourceError('unsafe-path', 'A configured Note root cannot be a path alias.');
@@ -94,31 +124,36 @@ export async function findConventionalFolder(options = {}) {
     if (await realpath(exactPath) !== exactPath) throw sourceError('unsafe-path', 'The conventional Note Folder cannot be a path alias.');
     const owner = ownedLocator(options.metadata, exactPath);
     if (owner && owner.topicId !== options.topicId) throw sourceError('conflict', 'The exact conventional Note Folder is already owned by another Topic.');
-    candidates.push({ path: exactPath, exactName, status: 'existing', ownership: 'adopted', revision: `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}` });
+    const revision = await readNoteFolderIdentity(exactPath).catch((error) => { if (error.code === 'source-recovery') return null; throw error; });
+    candidates.push({ path: exactPath, exactName, status: 'existing', ownership: 'adopted', revision });
   }
   if (candidates.length > 1) throw sourceError('conflict', 'Multiple configured Note roots contain the exact conventional Note Folder.');
   if (candidates.length === 1) return Object.freeze(candidates[0]);
-  const exactPath = conventionalFolderPath(roots[0], options.paraCategory, options.name);
+  const exactPath = options.folderPath ?? conventionalFolderPath(roots[0], options.paraCategory, options.name);
   return Object.freeze({ path: exactPath, exactName: path.basename(exactPath), status: 'missing', ownership: null });
 }
 
 export async function ensureConventionalFolder(options = {}) {
+  if (!ownsNoteFilesystem(options.metadata)) return withNoteFilesystemOwner(options.metadata, () => ensureConventionalFolder(options));
   const candidate = await findConventionalFolder(options);
-  if (candidate.status === 'existing') return candidate;
+  options.assertCurrent?.();
+  if (candidate.status === 'existing') return Object.freeze({ ...candidate, revision: await enrollCandidate(candidate, options) });
   const categoryPath = path.dirname(candidate.path);
   await mkdir(categoryPath, { recursive: true, mode: 0o700 });
   const category = await open(categoryPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
     const descriptorRoot = process.platform === 'linux' ? '/proc/self/fd' : process.platform === 'darwin' ? '/dev/fd' : null;
     if (!descriptorRoot) throw sourceError('capability-unavailable', 'Descriptor-anchored folder creation is unavailable.');
+    options.assertCurrent?.();
     await mkdir(path.join(descriptorRoot, String(category.fd), path.basename(candidate.path)), { recursive: false, mode: 0o700 });
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error;
-    return findConventionalFolder(options);
+    const existing = await findConventionalFolder(options);
+    return Object.freeze({ ...existing, revision: await enrollCandidate(existing, options) });
   } finally { await category.close(); }
   const stat = await lstat(candidate.path);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw sourceError('unsafe-path', 'The created Note Folder is not a real directory.');
-  return Object.freeze({ ...candidate, status: 'created', ownership: 'created', revision: `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}` });
+  return Object.freeze({ ...candidate, status: 'created', ownership: 'created', revision: await enrollCandidate(candidate, options) });
 }
 
 export function sourceConventionManaged(states, aspect) {

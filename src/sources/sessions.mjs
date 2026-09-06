@@ -4,6 +4,7 @@ import { assertLogicalOperationId } from './operation-journal.mjs';
 import { createMutationCoordinator } from './mutation-coordinator.mjs';
 import { assertPrimaryMayClose } from './session-state.mjs';
 import { explicitSessionReplacements, unavailableReplacedSession } from './session-replacement.mjs';
+import { createTopicConversation, inspectTopicConversation, reconcileTopicConversation, acknowledgeTopicConversation } from './topic-conversation-creation.mjs';
 
 function responseKey(value) {
   return value?.key ?? value?.sessionKey ?? value?.session?.key ?? null;
@@ -16,9 +17,9 @@ function messageIdempotencyKey(value) {
 }
 
 const creationQueues = new WeakMap();
-// The pinned host retains sessions.create idempotency results for five minutes
-// and documents four minutes as its safe retry window. Never risk creating a
-// second authoritative Session after that public replay boundary expires.
+// Legacy provisioning retains its historical time-limited replay path. Native
+// deduplication is process-local, not restart proof. First-live conditional
+// creation uses the separate durable create-once owner below, never this retry.
 const SESSION_CREATE_REPLAY_WINDOW_MS = 4 * 60_000;
 
 function authoritativeCreation(value, { logicalOperationId, displayName }) {
@@ -89,7 +90,14 @@ export class SessionAdapter {
     throw sourceError('capability-unavailable', `The Session store does not support ${method}.`);
   }
 
+  creationInspect(input = {}, runtime = {}) { return inspectTopicConversation(this, input, runtime); }
+  creationReconcile(input = {}, runtime = {}) { return reconcileTopicConversation(this, input, runtime); }
+  creationAcknowledge(input = {}, runtime = {}) { return acknowledgeTopicConversation(this, input, runtime); }
+
   async create(input = {}, runtime = {}) {
+    // First-live HTTP supplies both fields. Never fall through to legacy retry
+    // semantics when either half of the retained authority contract is present.
+    if ('expectedTopicRevision' in input || runtime.creationAuthority !== undefined) return createTopicConversation(this, input, runtime);
     assertNoUnexpectedKeys(input, ['schemaVersion', 'logicalOperationId', 'requestId', 'label', 'isPrimary'], 'Session create request');
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const displayName = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : `Topic Conversation ${logicalOperationId}`;
@@ -118,7 +126,14 @@ export class SessionAdapter {
     const createParams = Object.freeze({ agentId: 'main', label: displayName, idempotencyKey: logicalOperationId });
     const readCreatedCatalogEntry = async ({ expectedKey } = {}) => {
       if (!expectedKey) return { matched: false };
-      const rows = await catalogRows();
+      // A newly created Session need not appear in the first catalog page.
+      // Resolve its exact returned key through the public latest-read owner.
+      const exactEntry = this.sessionStore?.getSessionEntry
+        ? await this.sessionStore.getSessionEntry({ agentId: 'main', sessionKey: expectedKey, readConsistency: 'latest' })
+        : undefined;
+      const rows = this.sessionStore?.getSessionEntry
+        ? (exactEntry ? [{ sessionKey: expectedKey, entry: exactEntry }] : [])
+        : await catalogRows();
       const matches = rows.filter((row) => responseKey(row) === expectedKey);
       if (matches.length > 1) throw sourceError('conflict', 'The Session catalog contains duplicate results for one logical creation operation.');
       if (matches.length === 0) return { matched: false };

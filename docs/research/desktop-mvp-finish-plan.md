@@ -1,5 +1,7 @@
 # Desktop-first MVP: finish plan
 
+This is a historical scope-v1 plan. The user-approved [first-live scope v2](first-live-release-scope-v2.md) supersedes its feature list for the initial release, while retaining applicable desktop, security, recovery, performance, independent evaluation and safe-release guarantees. Deferred journeys are not passing journeys.
+
 ## Stabilization update (supersedes the pending implementation notes below)
 
 Candidate `0cac7f0` passed 136 Linux affected checks, all 16 independent non-performance slices in two lanes, and the desktop keyboard real-host journey. Its exclusive scale replay newly passed `verified-activity-readback`, including the exact Reminder Complete receipt. The remaining original desktop frontier is `scale-performance`; mobile remains deferred/unpassed. Full release qualification is not claimed by these diagnostic results.
