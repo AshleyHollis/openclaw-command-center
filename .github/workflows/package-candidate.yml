@@ -46,15 +46,18 @@ jobs:
               node --test test/plugin-artifact.test.mjs
               node scripts/package-candidate.mjs --output /output/artifact
             '
+          # Container output is private to its UID until the child has exited.
+          # Transfer directory access before inspecting the fixed output files.
+          sudo chown --no-dereference "$(id -u):$(id -g)" "$RUNNER_TEMP/candidate-package"
           test -d "$RUNNER_TEMP/candidate-package/artifact"
           test ! -L "$RUNNER_TEMP/candidate-package/artifact"
+          sudo chown --no-dereference "$(id -u):$(id -g)" "$RUNNER_TEMP/candidate-package/artifact"
           for member in command-center.tgz receipt.json; do
             file="$RUNNER_TEMP/candidate-package/artifact/$member"
             test -f "$file" && test ! -L "$file"
             test "$(stat -c %h "$file")" = 1
             sudo chown --no-dereference "$(id -u):$(id -g)" "$file"
           done
-          sudo chown --no-dereference "$(id -u):$(id -g)" "$RUNNER_TEMP/candidate-package/artifact" "$RUNNER_TEMP/candidate-package"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: command-center-candidate-${{ github.sha }}
