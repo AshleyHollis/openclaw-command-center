@@ -1,17 +1,10 @@
+import { readBoundedJson } from '../http/json-body.mjs';
 import { invokeBridgeMethod } from '../bridge/register.mjs';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { publicTopicDestination } from './snapshot.mjs';
+import { createRequestScopedGatewayRequest } from '../bridge/gateway-method-dispatch.mjs';
 
-async function readJson(req) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 32_768) throw new Error('Request body exceeds 32 KiB.');
-    chunks.push(chunk);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-}
+async function readJson(req) { return (await readBoundedJson(req, 32768)).body; }
 
 function sendJson(res, statusCode, value) {
   const body = JSON.stringify(value);
@@ -24,7 +17,7 @@ function sendJson(res, statusCode, value) {
   res.end(body);
 }
 
-const topicActions = Object.freeze({
+export const topicActions = Object.freeze({
   create: 'command-center.v1.topics.create',
   'provisioning.retry': 'command-center.v1.topics.provisioning.retry',
   'provisioning.rollback': 'command-center.v1.topics.provisioning.rollback',
@@ -203,31 +196,22 @@ export function createTopicsSearchHttpHandler(service) {
   };
 }
 
-export function createTopicsHttpHandler(service) {
+export function createTopicsHttpHandler(service, { mutationAllowed = true } = {}) {
   return async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
-    // The external tab deliberately runs without allow-same-origin, so its
-    // origin is serialized as `null`. Keep this CORS exception limited to that
-    // scripts-only frame and the route's single JSON POST surface.
-    const origin = req.headers?.origin;
-    if (origin === 'null') {
-      res.setHeader('Access-Control-Allow-Origin', 'null');
-      res.setHeader('Vary', 'Origin');
-    } else if (origin !== undefined) {
-      res.statusCode = 403;
-      res.end(JSON.stringify({ schemaVersion: 1, status: 'error', code: 'origin-not-allowed' }));
-      return true;
-    }
+    // Gateway authentication owns admission; the parent relay is same-origin.
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ schemaVersion: 1, status: 'error', code: 'method-not-allowed' })); return true; }
+    if (!mutationAllowed) { sendJson(res, 422, { schemaVersion: 1, status: 'error', code: 'capability-unavailable', message: 'Topics request failed.' }); return true; }
     try {
       if (String(req.headers?.['content-type'] ?? '').toLowerCase() !== 'application/json') throw Object.assign(new Error('JSON content type is required.'), { code: 'invalid-request' });
       const body = await readJson(req);
       if (!body || typeof body.action !== 'string') throw Object.assign(new Error('A closed Topic action request is required.'), { code: 'invalid-request' });
       const method = topicActions[body.action];
-      if (!method || Object.keys(body).some((key) => !['action', ...['schemaVersion', 'topicId', 'name', 'paraCategory', 'logicalOperationId', 'expectedRevision', 'expectedSourceRevision', 'structuralChangeId', 'previewDigest', 'expectedRevisions', 'referenceId', 'replacementLocator', 'sessionKey', 'sessionId']].includes(key))) throw Object.assign(new Error('The route accepts only closed Topic lifecycle actions.'), { code: 'invalid-request' });
+      if (!method || Object.keys(body).some((key) => !['action', ...['schemaVersion', 'topicId', 'name', 'paraCategory', 'logicalOperationId', 'authoritativeSession', 'expectedRevision', 'expectedSourceRevision', 'structuralChangeId', 'previewDigest', 'expectedRevisions', 'referenceId', 'replacementLocator', 'sessionKey', 'sessionId']].includes(key))) throw Object.assign(new Error('The route accepts only closed Topic lifecycle actions.'), { code: 'invalid-request' });
       if (!isCanonicalUuid(body.logicalOperationId) || body.action !== 'create' && (!isCanonicalUuid(body.topicId) || !Number.isInteger(body.expectedRevision))) throw Object.assign(new Error('Canonical operation identity, exact Topic identity, and Topic revision are required.'), { code: 'invalid-request' });
       const { action: _action, ...params } = body;
+      const runtime = body.authoritativeSession === undefined ? { gatewayRequest: createRequestScopedGatewayRequest() } : {};
       const result = body.action === 'restore' && !body.previewDigest
         ? await (async () => {
             const current = service.topics.get(params.topicId);
@@ -235,7 +219,7 @@ export function createTopicsHttpHandler(service) {
             const preview = service.topics.restorePreview(params);
             return { value: await service.topics.restoreConfirm({ ...params, structuralChangeId: preview.structuralChangeId, previewDigest: preview.digest, expectedRevisions: preview.expectedRevisions }) };
           })()
-        : await invokeBridgeMethod(service, method, params);
+        : await invokeBridgeMethod(service, method, params, null, null, runtime);
       const frameResult = sanitizeFrameResult(method, result);
       const destination = await mutationDestination(service);
       if (frameResult.value) frameResult.value.destination = destination;

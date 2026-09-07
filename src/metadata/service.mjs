@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readSync, rmSync, unlinkSync } from 'node:fs';
+import { closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -45,7 +45,12 @@ import {
   readRecoveryMaterial,
   verifyRollbackMaterial
 } from './recovery.mjs';
-import { proposalIdentity, sanitizedPublicValue } from '../topics/analysis-evidence.mjs';
+import { canonicalJson, proposalIdentity, sanitizedPublicValue } from '../topics/analysis-evidence.mjs';
+import { topicAnalysisCronDeclaration } from '../topics/analysis-schedule.mjs';
+import { IMPORTED_HISTORY_OPERATION, NATIVE_HISTORY_OPERATION, installImportedHistoryMetadata } from './imported-history.mjs';
+import { TOPIC_BOOTSTRAP_OPERATION, installTopicBootstrapMetadata } from './topic-bootstrap.mjs';
+import { RECONCILIATION_OPERATION, installReconciliationMetadata } from './reconciliation.mjs';
+import { CONDITIONAL_PRIMARY_MODE, PROVISIONING_PRIMARY_OPERATION, installProvisioningPrimaryMetadata, assertConditionalFolderClaims } from './provisioning-primary.mjs';
 
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii');
 const diagnosticLimit = 300;
@@ -305,10 +310,11 @@ function inspectSchemaOneDatabase(database, schemaVersion) {
   return null;
 }
 
-function validateCurrentSchema(databasePath, stateDir) {
+function validateCurrentSchema(databasePath, stateDir, options = {}) {
   let database;
   try {
-    database = new DatabaseSync(databasePath, { readOnly: true });
+    database = options.database ?? new DatabaseSync(databasePath, { readOnly: true });
+    if (options.readOnly && readSchemaVersion(database) !== COMMAND_CENTER_SCHEMA_VERSION) return coreFailure('current-schema-required', 'Read-only inspection requires an existing current-schema database.', 'Run the normal approved startup or migration separately.');
     const baseFailure = inspectSchemaOneDatabase(database, COMMAND_CENTER_SCHEMA_VERSION);
     if (baseFailure) return baseFailure;
     const ledger = validateMigrationLedger(database, { allowEmpty: true });
@@ -322,6 +328,7 @@ function validateCurrentSchema(databasePath, stateDir) {
       if (!material.exists) return coreFailure('recovery-material-missing', 'The committed migration recovery material is missing.', 'Restore the retained recovery directory before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
       if (ledger.rows.some((row) => row.snapshot_id !== material.manifest.snapshotId)) return coreFailure('recovery-ledger-mismatch', 'The migration ledger does not identify the retained recovery snapshot.', 'Restore matching recovery material before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
       if (material.manifest.state === 'prepared') {
+        if (options.readOnly) return coreFailure('recovery-reconciliation-required', 'Read-only inspection cannot complete pending recovery.', 'Run the normal approved recovery separately.', COMMAND_CENTER_SCHEMA_VERSION);
         try { material = markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
       }
       if (material.manifest.state !== 'committed') return coreFailure('recovery-manifest-invalid', 'The migration recovery manifest is not committed.', 'Complete recovery reconciliation before allowing metadata mutations.', COMMAND_CENTER_SCHEMA_VERSION);
@@ -332,7 +339,7 @@ function validateCurrentSchema(databasePath, stateDir) {
       ? coreFailure('storage-access-failure', 'The Command Center database could not be opened for inspection.', 'Check storage access and retry Command Center startup.', COMMAND_CENTER_SCHEMA_VERSION)
       : recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION);
   } finally {
-    closeQuietly(database);
+    if (!options.database) closeQuietly(database);
   }
 }
 
@@ -389,10 +396,30 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   // lightweight classification handle before opening that validation handle.
   if (schemaVersion === COMMAND_CENTER_SCHEMA_VERSION) return validateCurrentSchema(databasePath, stateDir);
 
+  // A restored committed snapshot requires its prior release, regardless of
+  // which supported migration would otherwise run. Prepared recovery may resume.
+  let material;
+  try {
+    material = readRecoveryMaterial(stateDir);
+    if (isRollbackSnapshot(databasePath, material)) return coreFailure('rollback-snapshot-detected', 'The database is the retained source-schema rollback snapshot.', 'Install the exact prior compatible release before using this restored database.', schemaVersion);
+    if (material.exists && material.manifest.snapshot.schemaVersion === schemaVersion && !inspectDatabaseAgainstRecoverySnapshot(databasePath, material)) return coreFailure('recovery-snapshot-mismatch', 'The retained recovery snapshot does not match the current source-schema database.', 'Do not overwrite recovery evidence; restore a matching database or complete recovery externally.', schemaVersion);
+    if (material.exists && material.manifest.snapshot.schemaVersion !== schemaVersion) {
+      let boundToSnapshot = false;
+      if (material.manifest.snapshot.schemaVersion < schemaVersion) {
+        let ledgerDatabase;
+        try {
+          ledgerDatabase = new DatabaseSync(databasePath, { readOnly: true });
+          const ledger = validateMigrationLedger(ledgerDatabase, { snapshotId: material.manifest.snapshotId });
+          boundToSnapshot = ledger.valid && ledger.rows[0]?.from_version === material.manifest.snapshot.schemaVersion
+            && ledger.rows.every((row) => row.snapshot_id === material.manifest.snapshotId);
+        } finally { closeQuietly(ledgerDatabase); }
+      }
+      if (!boundToSnapshot) return coreFailure('recovery-snapshot-mismatch', 'The retained recovery snapshot is not bound to this intermediate-schema database.', 'Restore matching recovery evidence before continuing the ordered upgrade.', schemaVersion);
+    }
+  } catch (error) { return recoveryFailure(error, schemaVersion); }
+
   if (schemaVersion === SCHEMA_SEVEN_COMMAND_CENTER_VERSION) {
-    let material;
     try {
-      material = readRecoveryMaterial(stateDir);
       if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: SCHEMA_SEVEN_COMMAND_CENTER_VERSION });
     } catch (error) { return recoveryFailure(error, SCHEMA_SEVEN_COMMAND_CENTER_VERSION); }
     let migrationDatabase;
@@ -409,9 +436,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   }
 
   if (schemaVersion === SCHEMA_SIX_COMMAND_CENTER_VERSION) {
-    let material;
     try {
-      material = readRecoveryMaterial(stateDir);
       if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: SCHEMA_SIX_COMMAND_CENTER_VERSION });
     } catch (error) { return recoveryFailure(error, SCHEMA_SIX_COMMAND_CENTER_VERSION); }
     let migrationDatabase;
@@ -429,10 +454,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   }
 
   if (schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION) {
-    let material;
     try {
-      material = readRecoveryMaterial(stateDir);
-      if (material.exists && isRollbackSnapshot(databasePath, material)) return coreFailure('rollback-snapshot-detected', 'The database is the retained schema-3 rollback snapshot.', 'Install the prior compatible release before using this restored database.', PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
       if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: PRIOR_COMMAND_CENTER_SCHEMA_VERSION });
     } catch (error) { return recoveryFailure(error, PRIOR_COMMAND_CENTER_SCHEMA_VERSION); }
     let migrationDatabase;
@@ -451,9 +473,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   }
 
   if (schemaVersion === ATTENTION_METADATA_SCHEMA_VERSION) {
-    let material;
     try {
-      material = readRecoveryMaterial(stateDir);
       if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: ATTENTION_METADATA_SCHEMA_VERSION });
     } catch (error) { return recoveryFailure(error, ATTENTION_METADATA_SCHEMA_VERSION); }
     let migrationDatabase;
@@ -473,9 +493,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   }
 
   if (schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION) {
-    let material;
     try {
-      material = readRecoveryMaterial(stateDir);
       if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: LEGACY_MIGRATION_SCHEMA_VERSION });
     } catch (error) { return recoveryFailure(error, LEGACY_MIGRATION_SCHEMA_VERSION); }
     let migrationDatabase;
@@ -496,18 +514,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
   }
 
   if (schemaVersion === LEGACY_METADATA_SCHEMA_VERSION) {
-    let material;
     try {
-      material = readRecoveryMaterial(stateDir);
-      if (material.exists && isRollbackSnapshot(databasePath, material)) return coreFailure('rollback-snapshot-detected', 'The database is the retained source-schema rollback snapshot.', 'Install the exact prior compatible release before using this restored database.', LEGACY_METADATA_SCHEMA_VERSION);
-      if (material.exists && material.manifest.snapshot.schemaVersion === SOURCE_SCHEMA_VERSION) {
-        let sourceLedgerDatabase;
-        try {
-          sourceLedgerDatabase = new DatabaseSync(databasePath, { readOnly: true });
-          const ledger = validateMigrationLedger(sourceLedgerDatabase, { snapshotId: material.manifest.snapshotId });
-          if (!ledger.valid || ledger.rows.length !== 1 || ledger.rows[0].to_version !== LEGACY_METADATA_SCHEMA_VERSION) return coreFailure('recovery-snapshot-mismatch', 'The retained schema-1 recovery snapshot is not bound to this schema-2 database.', 'Restore matching recovery evidence before continuing the ordered upgrade.', LEGACY_METADATA_SCHEMA_VERSION);
-        } finally { closeQuietly(sourceLedgerDatabase); }
-      } else if (material.exists && !inspectDatabaseAgainstRecoverySnapshot(databasePath, material)) return coreFailure('recovery-snapshot-mismatch', 'The retained recovery snapshot does not match the current schema-2 database.', 'Do not overwrite recovery evidence; restore a matching database or complete recovery externally.', LEGACY_METADATA_SCHEMA_VERSION);
       if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: LEGACY_METADATA_SCHEMA_VERSION });
     } catch (error) { return recoveryFailure(error, LEGACY_METADATA_SCHEMA_VERSION); }
     let migrationDatabase;
@@ -529,15 +536,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     return validateCurrentSchema(databasePath, stateDir);
   }
 
-  let material;
   try {
-    material = readRecoveryMaterial(stateDir);
-    if (material.exists && isRollbackSnapshot(databasePath, material)) {
-      return coreFailure('rollback-snapshot-detected', 'The database is the retained schema-1 rollback snapshot.', 'Install the exact prior openclaw-command-center@0.1.0 release before using this restored database.', SOURCE_SCHEMA_VERSION);
-    }
-    if (material.exists && !inspectDatabaseAgainstRecoverySnapshot(databasePath, material)) {
-      return coreFailure('recovery-snapshot-mismatch', 'The retained recovery snapshot does not match the current schema-1 database.', 'Do not overwrite recovery evidence; restore a matching database or complete recovery externally.', SOURCE_SCHEMA_VERSION);
-    }
     if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath });
   } catch (error) {
     return recoveryFailure(error, SOURCE_SCHEMA_VERSION);
@@ -657,7 +656,9 @@ function openCore(stateDir, explicitDatabasePath, migrationHooks) {
   if (core.mode === 'ready') {
     try {
       database = new DatabaseSync(databasePath);
-      database.exec('PRAGMA foreign_keys = ON;');
+      // Runtime writes may briefly overlap an external read snapshot. Wait at the
+      // SQLite lock boundary; never replay the operation or change journal mode.
+      database.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 1000;');
     } catch {
       closeQuietly(database);
       core = coreFailure('storage-access-failure', 'The Command Center database could not be opened for use.', 'Check storage access and retry Command Center startup.', core.schemaVersion);
@@ -666,10 +667,28 @@ function openCore(stateDir, explicitDatabasePath, migrationHooks) {
   return Object.freeze({ databasePath, core, database });
 }
 
-function createService(stateDir, databasePath, capabilities, migrationHooks) {
+function openReadOnlyCore(stateDir, explicitDatabasePath) {
+  const databasePath = explicitDatabasePath ?? resolveCommandCenterDatabasePath(stateDir);
+  let database;
+  try {
+    assertPluginDirectoryChain(databasePath);
+    const stat = lstatSync(databasePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('unsafe database');
+    database = new DatabaseSync(databasePath, { readOnly: true });
+    const core = validateCurrentSchema(databasePath, stateDir, { database, readOnly: true });
+    if (core.mode !== 'ready') throw new CommandCenterMetadataError(core.diagnostics?.[0]?.code ?? 'current-schema-required', 'An existing validated current-schema database is required for read-only inspection.');
+    return Object.freeze({ databasePath, database, core });
+  } catch (error) {
+    closeQuietly(database);
+    if (error instanceof CommandCenterMetadataError) throw error;
+    throw new CommandCenterMetadataError('existing-metadata-required', 'Read-only inspection cannot create or migrate metadata.');
+  }
+}
+
+function createService(stateDir, databasePath, capabilities, migrationHooks, readOnly = false) {
   const normalizedCapabilities = normalizeCapabilities(capabilities);
   const resolvedStateDir = stateDir ?? path.resolve(databasePath, '..', '..', '..');
-  const opened = openCore(resolvedStateDir, databasePath, migrationHooks);
+  const opened = readOnly ? openReadOnlyCore(resolvedStateDir, databasePath) : openCore(resolvedStateDir, databasePath, migrationHooks);
   const operating = evaluateOperatingMode({ core: opened.core, capabilities: normalizedCapabilities });
   let database = opened.database;
   let closed = false;
@@ -710,6 +729,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
 
   function assertMutation(capability = null) {
     if (closed) throw new CommandCenterMetadataError('service-closed', 'The Command Center metadata service is closed.');
+    if (readOnly) throw new CommandCenterMetadataError('read-only', 'Read-only metadata cannot accept mutations.');
     if (operating.mode === 'recovery-only') throw new CommandCenterMetadataError('recovery-only', 'Command Center metadata is recovery-only; mutations are blocked.', { mode: operating.mode });
     if (capability && normalizedCapabilities[capability]?.available === false) throw new CommandCenterMetadataError('capability-unavailable', `${capability} capability is unavailable; this mutation is blocked.`, { mode: operating.mode, capability });
     if (!database) throw new CommandCenterMetadataError('storage-unavailable', 'Command Center metadata storage is unavailable.', { mode: operating.mode });
@@ -724,6 +744,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     assertOpen();
     return database.prepare(sql).all(...values).map(mapper);
   }
+
+  const inspect = operation => { assertOpen(); return operation(database); };
 
   service.readProjectionSnapshot = () => {
     assertOpen();
@@ -817,6 +839,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   service.deleteTopic = (topicId) => {
     requiredString(topicId, 'topicId');
     return mutate(null, (db) => {
+      if (db.prepare('SELECT intent_json FROM topic_operations WHERE topic_id=?').all(topicId).some(row => jsonValue(row.intent_json, {}).primaryMode === CONDITIONAL_PRIMARY_MODE)) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning evidence cannot be removed by legacy cleanup.');
       const topic = db.prepare('SELECT activated_at FROM topics WHERE topic_id = ?').get(topicId);
       if (topic?.activated_at) throw new CommandCenterMetadataError('unsupported-operation', 'An activated Topic cannot be permanently deleted.');
       if (db.prepare('SELECT 1 FROM source_references WHERE topic_id = ? LIMIT 1').get(topicId)) {
@@ -872,14 +895,42 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     return mutate(capabilityForSourceSystem(value.sourceSystem), (db) => insertSourceReference(db, value, timestamp(undefined, 'createdAt')));
   };
 
-  service.createMigrationTopicBinding = ({ topic: topicInputValue, reference: referenceInputValue } = {}) => {
+  service.observeSourceReferences = (inputs = []) => {
+    if (!Array.isArray(inputs)) throw new CommandCenterMetadataError('invalid-value', 'Source Reference observations must be an array.');
+    const values = inputs.map(referenceInput);
+    return mutate(null, (db) => {
+      const now = timestamp(undefined, 'updatedAt');
+      return values.map((value) => {
+        const current = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(value.referenceId);
+        if (!current) {
+          mutateCapabilityInsideTransaction(value.sourceSystem);
+          return insertSourceReference(db, value, now);
+        }
+        for (const [field, column] of [['topicId', 'topic_id'], ['sourceSystem', 'source_system'], ['sourceKind', 'source_kind'], ['externalSourceId', 'external_source_id']]) {
+          if (value[field] !== current[column]) throw new CommandCenterMetadataError('identity-change', 'Source Reference identity is immutable.');
+        }
+        mutateCapabilityInsideTransaction(current.source_system);
+        db.prepare('UPDATE source_references SET last_observed_revision = ?, updated_at = ? WHERE reference_id = ?').run(value.observedRevision, value.updatedAt ?? now, value.referenceId);
+        return mapSourceReference(db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(value.referenceId));
+      });
+    });
+  };
+
+  service.createMigrationTopicBinding = ({ topic: topicInputValue, reference: referenceInputValue, locator: locatorInput } = {}) => {
     const topic = topicInput(topicInputValue);
     const reference = referenceInput(referenceInputValue);
     if (topic.lifecycle !== 'provisioning' || reference.topicId !== topic.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder') throw new CommandCenterMetadataError('invalid-value', 'Migration Topic bootstrap requires its exact provisioning Note Folder binding.');
+    const locator = objectValue(locatorInput, 'Migration Note Folder locator');
+    allowedKeys(locator, ['locator', 'ownership', 'observedRevision'], 'Migration Note Folder locator');
+    if (locator.locator !== reference.externalSourceId || locator.ownership !== 'external' || !/^note-folder:1:[0-9a-f-]{36}:[0-9a-f]{64}$/u.test(locator.observedRevision ?? '')) throw new CommandCenterMetadataError('invalid-value', 'Migration Note Folder requires its exact enrolled identity.');
     return mutate('notes', (db) => {
+      const owner = db.prepare("SELECT reference.reference_id FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id WHERE reference.source_system = 'obsidian' AND reference.source_kind = 'note_folder' AND (reference.external_source_id = ? OR locator.locator = ?)").get(locator.locator, locator.locator);
+      if (owner) throw new CommandCenterMetadataError('conflict', 'The mapped Note Folder already belongs to another binding.');
       const now = topic.createdAt ?? timestamp(undefined, 'createdAt');
       db.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, revision, name, activated_at, created_at, updated_at) VALUES (?, ?, ?, 0, ?, NULL, ?, ?)').run(topic.topicId, topic.paraCategory, topic.lifecycle, topic.name, now, topic.updatedAt ?? now);
-      return Object.freeze({ topic: mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(topic.topicId)), reference: insertSourceReference(db, reference, now) });
+      const boundReference = insertSourceReference(db, reference, now);
+      db.prepare('INSERT INTO source_locators (reference_id, locator, locator_version, ownership, observed_revision, updated_at) VALUES (?, ?, 1, ?, ?, ?)').run(reference.referenceId, locator.locator, locator.ownership, locator.observedRevision, now);
+      return Object.freeze({ topic: mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(topic.topicId)), reference: boundReference, locator: mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(reference.referenceId)) });
     });
   };
 
@@ -935,6 +986,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
       if (topic.lifecycle !== 'provisioning' || topic.activated_at !== null) throw new CommandCenterMetadataError('unsupported-operation', 'Only an unactivated Provisioning Topic may remove a Source Reference.');
       if (topic.revision !== expectedTopicRevision) throw new CommandCenterMetadataError('conflict', 'Topic revision is stale.');
       const operation = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(provisioningOperationId);
+      if (operation && jsonValue(operation.intent_json, {}).primaryMode === CONDITIONAL_PRIMARY_MODE) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning evidence cannot be removed by legacy cleanup.');
       if (!operation || operation.topic_id !== topicId || operation.operation_kind !== 'topics.create' || operation.state === 'applied') throw new CommandCenterMetadataError('conflict', 'The exact durable Provisioning operation does not authorize Source Reference cleanup.');
       const current = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId);
       if (!current || current.topic_id !== topicId) throw new CommandCenterMetadataError('conflict', 'The Source Reference is not owned by the exact Provisioning Topic.');
@@ -1097,6 +1149,11 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     const updatedAt = timestamp(value.updatedAt, 'updatedAt', now);
     return mutate(null, (db) => {
       const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
+      if ([IMPORTED_HISTORY_OPERATION, NATIVE_HISTORY_OPERATION].includes(operationKind) || [IMPORTED_HISTORY_OPERATION, NATIVE_HISTORY_OPERATION].includes(existing?.operation_kind)) throw new CommandCenterMetadataError('history-owner-required', 'Imported History receipts require their dedicated owner.');
+      if (operationKind === TOPIC_BOOTSTRAP_OPERATION || existing?.operation_kind === TOPIC_BOOTSTRAP_OPERATION) throw new CommandCenterMetadataError('bootstrap-owner-required', 'Topic bootstrap receipts require their dedicated owner.');
+      if (operationKind === RECONCILIATION_OPERATION || existing?.operation_kind === RECONCILIATION_OPERATION) throw new CommandCenterMetadataError('reconciliation-owner-required', 'Reconciliation receipts require their dedicated owner.');
+      if (operationKind === PROVISIONING_PRIMARY_OPERATION || existing?.operation_kind === PROVISIONING_PRIMARY_OPERATION) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning receipts require their dedicated owner.');
+      reconciliationClaims.assertChildClaim(db, { logicalOperationId, operationKind, intentDigest }, true);
       if (existing && existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
       db.prepare(`INSERT INTO operation_journal
         (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
@@ -1202,6 +1259,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     const channelId = requiredString(sourceChannelId, 'sourceChannelId');
     if (!Array.isArray(occurrences)) throw new CommandCenterMetadataError('invalid-value', 'migration occurrences must be an array');
     return mutate(null, (db) => {
+      const affected = [];
       for (const occurrence of occurrences) {
         const value = objectValue(occurrence, 'migration occurrence');
         allowedKeys(value, ['occurrenceId', 'occurrenceDigest', 'displayOrder', 'destinationMessageId', 'destinationAnchor'], 'migration occurrence');
@@ -1214,10 +1272,12 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
         if (destinationAnchorJson && destinationAnchorJson.length > 2000) throw new CommandCenterMetadataError('invalid-value', 'destinationAnchor is too large.');
         const existing = db.prepare('SELECT occurrence_digest, display_order, destination_message_id, destination_anchor_json, destination_anchor_digest FROM migration_occurrences WHERE source_channel_id = ? AND occurrence_id = ?').get(channelId, occurrenceId);
         if (existing && (existing.occurrence_digest !== occurrenceDigest || existing.display_order !== displayOrder || (existing.destination_message_id && destinationMessageId && existing.destination_message_id !== destinationMessageId) || (existing.destination_anchor_json && destinationAnchorJson && existing.destination_anchor_json !== destinationAnchorJson))) throw new CommandCenterMetadataError('conflict', 'Migration occurrence identity cannot be rebound.');
-        db.prepare(`INSERT INTO migration_occurrences (source_channel_id, occurrence_id, occurrence_digest, display_order, destination_message_id, destination_anchor_json, destination_anchor_digest) VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(source_channel_id, occurrence_id) DO UPDATE SET destination_message_id = COALESCE(migration_occurrences.destination_message_id, excluded.destination_message_id), destination_anchor_json = COALESCE(migration_occurrences.destination_anchor_json, excluded.destination_anchor_json), destination_anchor_digest = COALESCE(migration_occurrences.destination_anchor_digest, excluded.destination_anchor_digest)`).run(channelId, occurrenceId, occurrenceDigest, displayOrder, destinationMessageId, destinationAnchorJson, destinationAnchorDigest);
+        const persisted = db.prepare(`INSERT INTO migration_occurrences (source_channel_id, occurrence_id, occurrence_digest, display_order, destination_message_id, destination_anchor_json, destination_anchor_digest) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_channel_id, occurrence_id) DO UPDATE SET destination_message_id = COALESCE(migration_occurrences.destination_message_id, excluded.destination_message_id), destination_anchor_json = COALESCE(migration_occurrences.destination_anchor_json, excluded.destination_anchor_json), destination_anchor_digest = COALESCE(migration_occurrences.destination_anchor_digest, excluded.destination_anchor_digest)
+          RETURNING *`).get(channelId, occurrenceId, occurrenceDigest, displayOrder, destinationMessageId, destinationAnchorJson, destinationAnchorDigest);
+        affected.push(mapMigrationOccurrence(persisted));
       }
-      return service.listMigrationOccurrences(channelId);
+      return affected;
     });
   };
 
@@ -1260,12 +1320,18 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     return true;
   });
 
-  service.completeLegacyDiscordMigrationChannel = (sourceChannelId, verifiedAt) => {
+  function assertMigrationFolderBinding(db, referenceId, expected) {
+    const current = mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId));
+    if (!current || !expected || expected.referenceId !== referenceId || ['locator', 'locatorVersion', 'ownership', 'observedRevision'].some(field => current[field] !== expected[field]) || current.ownership !== 'external' || !current.observedRevision?.startsWith('note-folder:1:')) throw new CommandCenterMetadataError('source-recovery', 'Migration completion requires its unchanged verified Note Folder binding.');
+  }
+
+  service.completeLegacyDiscordMigrationChannel = (sourceChannelId, verifiedAt, folderBinding) => {
     requiredString(sourceChannelId, 'sourceChannelId');
     const completedAt = timestamp(verifiedAt, 'verifiedAt');
     return mutate(null, (db) => {
       const channel = db.prepare('SELECT * FROM migration_channels WHERE source_channel_id = ?').get(sourceChannelId);
       if (!channel) throw new CommandCenterMetadataError('not-found', 'Migration channel was not found.');
+      assertMigrationFolderBinding(db, channel.note_folder_reference_id, folderBinding);
       const topic = db.prepare('SELECT lifecycle FROM topics WHERE topic_id = ?').get(channel.topic_id);
       if (channel.phase === 'complete') {
         if (!topic || topic.lifecycle !== 'active') throw new CommandCenterMetadataError('conflict', 'Completed migration Topic is not active.');
@@ -1277,15 +1343,41 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
       const session = references.filter((reference) => reference.reference_id === channel.session_reference_id && reference.source_system === 'openclaw' && reference.source_kind === 'session');
       const sessionState = db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(channel.session_reference_id);
       if (references.length !== 2 || folder.length !== 1 || session.length !== 1 || session[0].external_source_id !== `agent:main:command-center:legacy-discord:${channel.source_channel_id}` || !sessionState || sessionState.session_id !== channel.session_id || sessionState.status !== 'open' || sessionState.is_primary !== 1) throw new CommandCenterMetadataError('conflict', 'Migration channel activation requires exact authoritative Topic bindings.');
-      db.prepare("UPDATE topics SET lifecycle = 'active', updated_at = ? WHERE topic_id = ?").run(completedAt, channel.topic_id);
+      db.prepare("UPDATE topics SET lifecycle = 'active', activated_at = COALESCE(activated_at, ?), revision = revision + 1, updated_at = ? WHERE topic_id = ?").run(completedAt, completedAt, channel.topic_id);
       db.prepare("UPDATE migration_channels SET phase = 'complete', failure_code = NULL, failure_summary = NULL, updated_at = ? WHERE source_channel_id = ?").run(completedAt, sourceChannelId);
       return mapMigrationChannel(db.prepare('SELECT * FROM migration_channels WHERE source_channel_id = ?').get(sourceChannelId));
     });
   };
 
+  service.reconcileCompletedLegacyDiscordTopics = ({ configDigest, verifiedTopicCount, verifiedAt } = {}) => {
+    const ownershipMarker = `legacy-discord-owner:${requiredString(configDigest, 'configDigest')}`;
+    const expectedCount = integerValue(verifiedTopicCount, 'verifiedTopicCount', { minimum: 0 });
+    const completedAt = timestamp(verifiedAt, 'verifiedAt');
+    return mutate(null, (db) => {
+      const topics = db.prepare(`SELECT DISTINCT topic.*, state.status AS migration_session_status, state.is_primary AS migration_session_is_primary FROM topics topic
+        JOIN source_references folder ON folder.topic_id = topic.topic_id
+        JOIN source_references session ON session.topic_id = topic.topic_id AND session.reference_id = replace(folder.reference_id, 'migration:folder:', 'migration:session:')
+        JOIN session_state state ON state.reference_id = session.reference_id
+        WHERE folder.source_system = 'obsidian' AND folder.source_kind = 'note_folder' AND folder.reference_id LIKE 'migration:folder:%' AND folder.last_observed_revision = ?
+          AND session.source_system = 'openclaw' AND session.source_kind = 'session'
+          AND session.external_source_id = 'agent:main:command-center:legacy-discord:' || substr(folder.reference_id, length('migration:folder:') + 1)
+          AND state.session_id IS NOT NULL
+        ORDER BY topic.topic_id`).all(ownershipMarker);
+      if (topics.length !== expectedCount) throw new CommandCenterMetadataError('conflict', `Completed migration Topic ownership count ${topics.length} does not match ${expectedCount}.`);
+      for (const topic of topics) {
+        if (topic.lifecycle !== 'active') throw new CommandCenterMetadataError('conflict', 'Completed migration Topic is not active.');
+        if (topic.revision >= 1 && topic.activated_at) continue;
+        if (topic.revision !== 0 || topic.activated_at !== null) throw new CommandCenterMetadataError('conflict', 'Completed migration Topic activation metadata is inconsistent.');
+        if (topic.migration_session_status !== 'open' || topic.migration_session_is_primary !== 1) throw new CommandCenterMetadataError('conflict', 'Legacy activation repair requires its original open Primary Session binding.');
+        db.prepare('UPDATE topics SET activated_at = ?, revision = 1, updated_at = ? WHERE topic_id = ? AND lifecycle = ? AND revision = 0 AND activated_at IS NULL').run(completedAt, completedAt, topic.topic_id, 'active');
+      }
+      return topics.map((topic) => mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(topic.topic_id)));
+    });
+  };
+
   service.completeLegacyDiscordMigration = (input) => {
     const value = objectValue(input, 'migration completion');
-    allowedKeys(value, ['configDigest', 'sourceDigest', 'verifiedChannelCount', 'verifiedOccurrenceCount', 'completionRevision', 'verifiedAt'], 'migration completion');
+    allowedKeys(value, ['configDigest', 'sourceDigest', 'verifiedChannelCount', 'verifiedOccurrenceCount', 'completionRevision', 'verifiedAt', 'folderBindings'], 'migration completion');
     const configDigest = requiredString(value.configDigest, 'configDigest');
     const sourceDigest = requiredString(value.sourceDigest, 'sourceDigest');
     const verifiedChannelCount = integerValue(value.verifiedChannelCount, 'verifiedChannelCount', { minimum: 0 });
@@ -1301,7 +1393,9 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
       const channels = db.prepare('SELECT * FROM migration_channels').all();
       if (channels.length === 0 || channels.some((row) => row.phase !== 'complete')) throw new CommandCenterMetadataError('conflict', 'Migration completion requires every channel to pass verification.');
       if (channels.length !== verifiedChannelCount || channels.reduce((sum, row) => sum + row.expected_count, 0) !== verifiedOccurrenceCount) throw new CommandCenterMetadataError('conflict', 'Migration completion counts do not match verified channels.');
+      if (!Array.isArray(value.folderBindings) || value.folderBindings.length !== channels.length || new Set(value.folderBindings.map(binding => binding.referenceId)).size !== channels.length) throw new CommandCenterMetadataError('source-recovery', 'Migration completion requires the exact verified Note Folder set.');
       for (const row of channels) {
+        assertMigrationFolderBinding(db, row.note_folder_reference_id, value.folderBindings.find(binding => binding.referenceId === row.note_folder_reference_id));
         const topic = db.prepare('SELECT lifecycle FROM topics WHERE topic_id = ?').get(row.topic_id);
         if (!topic || topic.lifecycle !== 'active') throw new CommandCenterMetadataError('conflict', 'Migration Topic binding is missing or already rebound.');
         const references = db.prepare('SELECT * FROM source_references WHERE topic_id = ? ORDER BY reference_id').all(row.topic_id);
@@ -1352,19 +1446,71 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   // The JSON columns are deliberately not a generic metadata escape hatch:
   // each public writer below has an explicit field allowlist and bounded data.
   service.getTopicAnalysisSettings = () => readOne('SELECT * FROM topic_analysis_settings WHERE settings_id = ?', ['global'], mapAnalysisSettings) || null;
-  service.setTopicAnalysisSettings = (input = {}) => mutate(null, (db) => {
+  function writeAnalysisSettings(db, input) {
     allowedKeys(input, ['schemaVersion', 'settingsId', 'enabled', 'weekday', 'localTime', 'timeZone', 'revision', 'expectedRevision', 'nextDueAt', 'initialized', 'updatedAt'], 'Topic Analysis settings');
     if (input.schemaVersion !== 1 || (input.settingsId !== undefined && input.settingsId !== 'global')) throw new CommandCenterMetadataError('unsupported-version', 'Topic Analysis settings schemaVersion or identity is invalid.');
     const current = db.prepare('SELECT * FROM topic_analysis_settings WHERE settings_id = ?').get('global');
     if (current && input.expectedRevision !== undefined && input.expectedRevision !== current.revision) throw new CommandCenterMetadataError('conflict', 'Topic Analysis settings revision is stale.');
     const now = timestamp(input.updatedAt, 'updatedAt');
     const revision = input.revision ?? (current?.revision ?? 0) + 1;
-    const values = ['global', 1, input.enabled ?? (current ? current.enabled === 1 : true), input.weekday ?? (current?.weekday ?? 1), input.localTime ?? (current?.local_time ?? '07:00'), input.timeZone ?? (current?.time_zone ?? 'UTC'), revision, input.nextDueAt ?? current?.next_due_at ?? null, input.initialized ?? (current?.initialized === 1 ? true : false), now];
+    const nextDueAt = input.nextDueAt !== undefined ? input.nextDueAt : current?.next_due_at ?? null;
+    const values = ['global', 1, input.enabled ?? (current ? current.enabled === 1 : true), input.weekday ?? (current?.weekday ?? 1), input.localTime ?? (current?.local_time ?? '07:00'), input.timeZone ?? (current?.time_zone ?? 'UTC'), revision, nextDueAt, input.initialized ?? (current?.initialized === 1 ? true : false), now];
     if (!Number.isInteger(values[3]) || values[3] < 1 || values[3] > 7 || typeof values[4] !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/u.test(values[4]) || typeof values[5] !== 'string' || !values[5].trim() || typeof values[2] !== 'boolean' || !Number.isInteger(values[6]) || values[6] < 1 || typeof values[8] !== 'boolean' || (values[7] !== null && (typeof values[7] !== 'string' || !Number.isFinite(Date.parse(values[7])))) ) throw new CommandCenterMetadataError('invalid-value', 'Topic Analysis settings are invalid.');
     try { new Intl.DateTimeFormat('en-US', { timeZone: values[5] }).format(); } catch { throw new CommandCenterMetadataError('invalid-value', 'Topic Analysis timeZone must be a valid IANA timezone.'); }
     db.prepare(`INSERT INTO topic_analysis_settings (settings_id, schema_version, enabled, weekday, local_time, time_zone, revision, next_due_at, initialized, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(settings_id) DO UPDATE SET enabled=excluded.enabled, weekday=excluded.weekday, local_time=excluded.local_time, time_zone=excluded.time_zone, revision=excluded.revision, next_due_at=excluded.next_due_at, initialized=excluded.initialized, updated_at=excluded.updated_at`).run(values[0], values[1], values[2] ? 1 : 0, values[3], values[4], values[5], values[6], values[7], values[8] ? 1 : 0, values[9]);
     return mapAnalysisSettings(db.prepare('SELECT * FROM topic_analysis_settings WHERE settings_id = ?').get('global'));
+  }
+  function pendingAnalysisSettingsUpdate(db) {
+    const pending = db.prepare("SELECT * FROM operation_journal WHERE operation_kind = 'schedule.update' AND state <> 'applied' ORDER BY created_at, logical_operation_id LIMIT 2").all();
+    if (pending.length > 1) throw new CommandCenterMetadataError('source-recovery', 'Multiple unresolved Topic Analysis Settings updates require recovery.');
+    return pending[0] ?? null;
+  }
+  service.getPendingAnalysisSettingsUpdate = () => { assertOpen(); return mapOperation(pendingAnalysisSettingsUpdate(database)) ?? null; };
+  service.setTopicAnalysisSettings = (input = {}) => mutate(null, (db) => {
+    if (pendingAnalysisSettingsUpdate(db)) throw new CommandCenterMetadataError('conflict', 'An unresolved Topic Analysis Settings update owns the settings.');
+    return writeAnalysisSettings(db, input);
+  });
+  service.beginAnalysisSettingsUpdate = (input = {}) => mutate(null, (db) => {
+    allowedKeys(input, ['logicalOperationId', 'intentDigest', 'settings', 'declaration'], 'Topic Analysis Settings update');
+    const id = requiredString(input.logicalOperationId, 'logicalOperationId');
+    const intentDigest = requiredString(input.intentDigest, 'intentDigest');
+    reconciliationClaims.assertChildClaim(db, { logicalOperationId: id }, true);
+    const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(id);
+    if (existing) {
+      if (existing.operation_kind !== 'schedule.update' || existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with different Settings intent.');
+      return mapOperation(existing);
+    }
+    if (pendingAnalysisSettingsUpdate(db)) throw new CommandCenterMetadataError('conflict', 'Another unresolved Topic Analysis Settings update owns the settings.');
+    const current = db.prepare("SELECT * FROM topic_analysis_settings WHERE settings_id = 'global'").get();
+    if (!current || input.settings?.expectedRevision !== current.revision || input.settings?.revision !== current.revision + 1) throw new CommandCenterMetadataError('conflict', 'Topic Analysis Settings revision is stale.');
+    const settings = writeAnalysisSettings(db, input.settings);
+    const declaration = objectValue(input.declaration, 'Topic Analysis Cron declaration');
+    if (canonicalJson(declaration) !== canonicalJson(topicAnalysisCronDeclaration(settings))) throw new CommandCenterMetadataError('invalid-value', 'Topic Analysis Settings require their exact closed Cron declaration.');
+    const envelope = JSON.stringify({ schemaVersion: 1, settings, declaration });
+    if (Buffer.byteLength(envelope) > 16 * 1024) throw new CommandCenterMetadataError('invalid-value', 'Topic Analysis Settings intent exceeds its bound.');
+    const now = timestamp(input.settings.updatedAt, 'updatedAt');
+    db.prepare(`INSERT INTO operation_journal (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
+      VALUES (?, ?, ?, 'schedule.update', 'pending', 'pending', ?, ?, ?, ?)`).run(id, id, intentDigest, envelope, String(settings.revision), now, now);
+    return mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(id));
+  });
+  service.completeAnalysisSettingsUpdate = (input = {}) => mutate(null, (db) => {
+    allowedKeys(input, ['logicalOperationId', 'intentDigest', 'result'], 'Topic Analysis Settings completion');
+    const id = requiredString(input.logicalOperationId, 'logicalOperationId');
+    const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(id);
+    if (!existing || existing.operation_kind !== 'schedule.update' || existing.intent_digest !== input.intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Topic Analysis Settings completion has no matching intent.');
+    if (existing.state === 'applied') return mapOperation(existing);
+    if (existing.state !== 'pending' || pendingAnalysisSettingsUpdate(db)?.logical_operation_id !== id) throw new CommandCenterMetadataError('source-recovery', 'Topic Analysis Settings completion lost its pending owner.');
+    const envelope = jsonValue(existing.result_identity);
+    const result = objectValue(input.result, 'Topic Analysis Settings result');
+    allowedKeys(result, ['settings', 'declaration', 'job'], 'Topic Analysis Settings result');
+    const current = mapAnalysisSettings(db.prepare("SELECT * FROM topic_analysis_settings WHERE settings_id = 'global'").get());
+    if (envelope?.schemaVersion !== 1 || canonicalJson(envelope.settings) !== canonicalJson(current) || canonicalJson(result.settings) !== canonicalJson(envelope.settings) || canonicalJson(result.declaration) !== canonicalJson(envelope.declaration)) throw new CommandCenterMetadataError('conflict', 'Topic Analysis Settings completion does not match its frozen intent.');
+    if (!isNonBlankString(result.job?.id) || !isNonBlankString(result.job?.configRevision) || Object.keys(envelope.declaration).some((field) => canonicalJson(result.job[field]) !== canonicalJson(envelope.declaration[field]))) throw new CommandCenterMetadataError('source-recovery', 'Topic Analysis Settings completion lacks exact Cron declaration proof.');
+    const serialized = JSON.stringify(result);
+    if (Buffer.byteLength(serialized) > 64 * 1024) throw new CommandCenterMetadataError('invalid-value', 'Topic Analysis Settings result exceeds its bound.');
+    db.prepare("UPDATE operation_journal SET state = 'applied', result_status = 'applied', result_identity = ?, updated_at = ? WHERE logical_operation_id = ?").run(serialized, timestamp(undefined, 'updatedAt'), id);
+    return mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(id));
   });
   service.getTopicAnalysisRun = (runId) => readOne('SELECT * FROM topic_analysis_runs WHERE run_id = ?', [requiredString(runId, 'runId')], mapAnalysisRun) || null;
   service.listTopicAnalysisRuns = () => readMany('SELECT * FROM topic_analysis_runs ORDER BY started_at, run_id', [], mapAnalysisRun);
@@ -1489,22 +1635,323 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
       ON CONFLICT(reference_id) DO UPDATE SET locator = excluded.locator, locator_version = excluded.locator_version, ownership = excluded.ownership, observed_revision = excluded.observed_revision, updated_at = excluded.updated_at`).run(referenceId, requiredString(input.locator, 'locator'), integerValue(locatorVersion, 'locatorVersion', { minimum: 1 }), input.ownership ?? existing?.ownership ?? 'external', input.observedRevision ?? null, timestamp(input.updatedAt, 'updatedAt'));
     return mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId));
   });
+  service.bindProvisioningNoteFolder = (input = {}, assertCurrent) => mutate('notes', (db) => {
+    const check = () => { if (assertCurrent !== undefined && (typeof assertCurrent !== 'function' || assertCurrent()?.then)) throw new CommandCenterMetadataError('provisioning-authority-unavailable', 'Folder binding requires synchronous current authority.'); };
+    check();
+    const topicId = requiredString(input.topicId, 'topicId');
+    const referenceId = `note-folder:${topicId}`;
+    const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(topicId);
+    if (!topic || topic.lifecycle !== 'provisioning' || topic.activated_at !== null || topic.revision !== input.expectedRevision || topic.name !== input.name || topic.para_category !== input.paraCategory) throw new CommandCenterMetadataError('conflict', 'The original provisioning Topic basis changed.');
+    const locator = requiredString(input.locator, 'locator');
+    const observedRevision = requiredString(input.observedRevision, 'observedRevision');
+    if (!path.isAbsolute(locator) || path.resolve(locator) !== locator || !/^note-folder:1:[0-9a-f-]{36}:[0-9a-f]{64}$/u.test(observedRevision)) throw new CommandCenterMetadataError('invalid-value', 'Folder binding requires a verified canonical marker-backed locator.');
+    const conditional = db.prepare("SELECT logical_operation_id,intent_json FROM topic_operations WHERE topic_id=? AND operation_kind='topics.create'").all(topicId)
+      .map(row => ({ id: row.logical_operation_id, intent: JSON.parse(row.intent_json) })).filter(row => row.intent.primaryMode === CONDITIONAL_PRIMARY_MODE);
+    if (conditional.length) {
+      if (typeof assertCurrent !== 'function') throw new CommandCenterMetadataError('provisioning-authority-unavailable', 'Conditional Folder binding requires current authority.');
+      const original = conditional[0].intent;
+      if (conditional.length !== 1 || original.topicId !== topicId || original.name !== input.name || original.paraCategory !== input.paraCategory || original.folderPath !== locator || input.expectedRevision !== 0) throw new CommandCenterMetadataError('provisioning-primary-conflict', 'Conditional Folder binding must retain its original intent.');
+    }
+    assertConditionalFolderClaims(db, locator, conditional[0]?.id, CommandCenterMetadataError);
+    const overlapsFolder = other => [path.relative(other, locator), path.relative(locator, other)].some(relative => relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)));
+    if (service.listTopicBootstraps().some(row => overlapsFolder(row.intent.folder.path))) throw new CommandCenterMetadataError('preparation-folder-conflict', 'A bootstrap owns this Note Folder.');
+    const current = db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId);
+    if ((current?.locator_version ?? 0) !== input.expectedLocatorVersion || (current?.observed_revision ?? null) !== input.expectedSourceRevision || (current && (current.locator !== locator || current.observed_revision !== observedRevision))) throw new CommandCenterMetadataError('conflict', 'The original provisioning Folder binding changed.');
+    const reference = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId);
+    if (reference && (reference.topic_id !== topicId || reference.source_system !== 'obsidian' || reference.source_kind !== 'note_folder' || reference.external_source_id !== referenceId)) throw new CommandCenterMetadataError('conflict', 'The provisioning Source Reference has a different owner.');
+    const other = db.prepare(`SELECT reference.reference_id FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+      WHERE reference.source_system = 'obsidian' AND reference.source_kind = 'note_folder' AND reference.reference_id <> ?
+      AND (reference.topic_id = ? OR COALESCE(locator.locator, reference.external_source_id) = ?) LIMIT 1`).get(referenceId, topicId, locator);
+    if (other) throw new CommandCenterMetadataError('conflict', 'The Topic or Note Folder already has another binding owner.');
+    const now = timestamp(input.updatedAt, 'updatedAt');
+    if (!reference) insertSourceReference(db, referenceInput({ version: 1, referenceId, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: referenceId }), now);
+    if (!current) db.prepare('INSERT INTO source_locators (reference_id, locator, locator_version, ownership, observed_revision, updated_at) VALUES (?, ?, 1, ?, ?, ?)').run(referenceId, locator, input.ownership ?? 'external', observedRevision, now);
+    // Retried binding may fill a legacy partial record, but never reset a
+    // convention explicitly customized since the original enrollment.
+    const convention = db.prepare('INSERT INTO source_convention_state (reference_id, aspect, state, expected_value, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(reference_id, aspect) DO NOTHING');
+    const conventionState = input.managedConvention === false ? 'customized' : 'managed';
+    convention.run(referenceId, 'name', conventionState, input.managedConvention === false ? path.basename(locator) : input.name, now);
+    convention.run(referenceId, 'location', conventionState, locator, now);
+    check();
+    return mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId));
+  });
+  function relocateNoteFolder(db, input = {}) {
+    const folder = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(requiredString(input.referenceId, 'referenceId'));
+    const current = db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(input.referenceId);
+    if (!folder || folder.source_system !== 'obsidian' || folder.source_kind !== 'note_folder' || !current) throw new CommandCenterMetadataError('not-found', 'The exact Note Folder binding was not found.');
+    const from = requiredString(input.from, 'from');
+    const to = requiredString(input.to, 'to');
+    if (!path.isAbsolute(from) || !path.isAbsolute(to) || from === to) throw new CommandCenterMetadataError('invalid-value', 'Note Folder relocation requires distinct absolute locators.');
+    if (current.locator !== from || current.locator_version !== input.expectedLocatorVersion || current.observed_revision !== input.expectedSourceRevision) throw new CommandCenterMetadataError('conflict', 'Note Folder locator revision is stale.');
+    const notes = db.prepare(`SELECT reference.*, locator.locator, locator.locator_version, locator.ownership, locator.observed_revision AS locator_revision
+      FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+      WHERE reference.source_system = 'obsidian' AND reference.source_kind = 'note'`).all();
+    const moves = [];
+    for (const note of notes) {
+      if (note.topic_id !== folder.topic_id) continue;
+      const effective = note.locator ?? note.external_source_id;
+      if (!path.isAbsolute(effective)) continue;
+      const relative = path.relative(from, effective);
+      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+      moves.push({ note, destination: `${to.replace(/[\\/]+$/u, '')}/${relative.split(path.sep).join('/')}` });
+    }
+    const destinations = new Set();
+    const movingIds = new Set(moves.map(({ note }) => note.reference_id));
+    const stationary = new Set(notes.filter((note) => !movingIds.has(note.reference_id)).map((note) => path.resolve(note.locator ?? note.external_source_id)));
+    for (const { destination } of moves) {
+      const exact = path.resolve(destination);
+      if (destinations.has(exact) || stationary.has(exact)) throw new CommandCenterMetadataError('conflict', 'A relocated Note destination is already owned or ambiguous.');
+      destinations.add(exact);
+    }
+    const now = timestamp(input.updatedAt, 'updatedAt');
+    const save = db.prepare(`INSERT INTO source_locators (reference_id, locator, locator_version, ownership, observed_revision, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(reference_id) DO UPDATE SET locator=excluded.locator, locator_version=excluded.locator_version, ownership=excluded.ownership, observed_revision=excluded.observed_revision, updated_at=excluded.updated_at`);
+    for (const { note, destination } of moves) save.run(note.reference_id, destination, (note.locator_version ?? 0) + 1, note.ownership ?? 'external', note.locator_revision ?? note.last_observed_revision, now);
+    save.run(folder.reference_id, to, current.locator_version + 1, current.ownership, current.observed_revision, now);
+    return mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(folder.reference_id));
+  }
+  service.relocateNoteFolder = (input = {}) => mutate('notes', db => relocateNoteFolder(db, input));
   service.getSourceLocator = (referenceId) => readOne('SELECT * FROM source_locators WHERE reference_id = ?', [requiredString(referenceId, 'referenceId')], mapLocator) || null;
   service.listSourceLocators = (topicId = undefined) => topicId === undefined
     ? readMany('SELECT * FROM source_locators ORDER BY reference_id', [], mapLocator)
     : readMany('SELECT locator.* FROM source_locators AS locator JOIN source_references AS reference ON reference.reference_id = locator.reference_id WHERE reference.topic_id = ? ORDER BY locator.reference_id', [requiredString(topicId, 'topicId')], mapLocator);
 
-  service.recordTopicOperation = (input = {}) => mutate(null, (db) => {
+  function recordTopicOperation(db, input = {}, structural = false) {
     const logicalOperationId = requiredString(input.logicalOperationId, 'logicalOperationId');
     const existing = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId);
+    if (input.intent?.primaryMode === CONDITIONAL_PRIMARY_MODE || (existing && jsonValue(existing.intent_json, {}).primaryMode === CONDITIONAL_PRIMARY_MODE)) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning progress requires its dedicated owner.');
+    reconciliationClaims.assertChildClaim(db, { logicalOperationId }, true);
     const intentJson = JSON.stringify(input.intent ?? {});
     if (existing && (existing.operation_kind !== input.operationKind || existing.intent_json !== intentJson)) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
+    if (structural && existing?.state === 'applied') return mapTopicOperation(existing);
     const createdAt = existing?.created_at ?? timestamp(input.createdAt, 'createdAt');
     const updatedAt = timestamp(input.updatedAt, 'updatedAt');
     db.prepare(`INSERT INTO topic_operations (logical_operation_id, topic_id, operation_kind, state, current_step, intent_json, result_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(logical_operation_id) DO UPDATE SET topic_id = excluded.topic_id, state = excluded.state, current_step = excluded.current_step, result_json = excluded.result_json, updated_at = excluded.updated_at`).run(logicalOperationId, input.topicId ?? existing?.topic_id ?? null, requiredString(input.operationKind, 'operationKind'), input.state ?? 'pending', input.currentStep ?? 'pending', intentJson, input.result === undefined ? existing?.result_json ?? null : JSON.stringify(input.result), createdAt, updatedAt);
     return mapTopicOperation(db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId));
+  }
+  service.recordTopicOperation = (input = {}) => mutate(null, db => recordTopicOperation(db, input));
+
+  // Retained Conversation creation has no executable replay. Its local claim,
+  // native result evidence, and atomic attachment use the existing two ledgers.
+  const conversationKind = 'sessions.create.once';
+  function conversationBasis(db, topicId) {
+    const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(topicId);
+    if (!topic || topic.lifecycle !== 'active' || topic.para_category === 'archive') throw new CommandCenterMetadataError('source-recovery', 'Conversation creation requires an active writable Topic.');
+    if (db.prepare("SELECT 1 FROM source_recovery WHERE topic_id = ? AND source_kind = 'session' AND state = 'required'").get(topicId)) throw new CommandCenterMetadataError('source-recovery', 'Conversation creation requires resolved Session sources.');
+    const references = db.prepare("SELECT reference.* FROM source_references AS reference JOIN session_state AS state ON state.reference_id = reference.reference_id WHERE reference.topic_id = ? AND reference.source_system = 'openclaw' AND reference.source_kind = 'session' AND state.is_primary = 1").all(topicId);
+    if (references.length !== 1) throw new CommandCenterMetadataError('source-recovery', 'Conversation creation requires exactly one Primary.');
+    const reference = references[0];
+    const state = db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(reference.reference_id);
+    if (state.status !== 'open' || !isNonBlankString(state.session_id)) throw new CommandCenterMetadataError('source-recovery', 'Conversation creation requires its exact open Primary identity.');
+    return {
+      topic: { topicId, revision: topic.revision, lifecycle: topic.lifecycle, paraCategory: topic.para_category },
+      primary: { reference: mapSourceReference(reference), state: mapSessionState(state), locator: mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(reference.reference_id)) ?? null }
+    };
+  }
+  function conversationRequest(input) {
+    const request = objectValue(input.request, 'Conversation request');
+    allowedKeys(request, ['topicId', 'expectedTopicRevision', 'principalId', 'label'], 'Conversation request');
+    if (!Number.isInteger(request.expectedTopicRevision) || request.expectedTopicRevision < 0) throw new CommandCenterMetadataError('invalid-value', 'Conversation creation requires its original Topic revision.');
+    const value = { topicId: requiredString(request.topicId, 'topicId'), expectedTopicRevision: request.expectedTopicRevision, principalId: requiredString(request.principalId, 'principalId'), label: requiredString(request.label, 'label') };
+    if (value.label.length > 300) throw new CommandCenterMetadataError('invalid-value', 'Conversation label is too long.');
+    return value;
+  }
+  function ownedConversation(db, input) {
+    const request = conversationRequest(input);
+    const operation = mapTopicOperation(db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(input.logicalOperationId));
+    if (!operation || operation.operationKind !== conversationKind || operation.topicId !== request.topicId || canonicalJson(operation.intent.request) !== canonicalJson(request)) throw new CommandCenterMetadataError('intent-mismatch', 'This operator and original intent do not own the Conversation operation.');
+    const journal = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(input.logicalOperationId);
+    const digest = `sha256:${createHash('sha256').update(canonicalJson(operation.intent)).digest('hex')}`;
+    if (!journal || journal.operation_kind !== conversationKind || journal.intent_digest !== digest) throw new CommandCenterMetadataError('source-recovery', 'Conversation ownership evidence is incomplete.');
+    return operation;
+  }
+  function assertConversationBasis(db, operation) {
+    const current = conversationBasis(db, operation.topicId);
+    if (canonicalJson(current) !== canonicalJson({ topic: operation.intent.topic, primary: operation.intent.primary })) throw new CommandCenterMetadataError('conflict', 'The original Topic or Primary changed before Conversation attachment.');
+  }
+  function recoveryConversation(db, input) {
+    const operation = mapTopicOperation(db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(requiredString(input.logicalOperationId, 'logicalOperationId')));
+    if (!operation || operation.operationKind !== conversationKind || operation.topicId !== requiredString(input.topicId, 'topicId') || operation.intent?.request?.principalId !== requiredString(input.principalId, 'principalId')) throw new CommandCenterMetadataError('source-recovery', 'The owned Conversation recovery record is unavailable.');
+    return ownedConversation(db, { logicalOperationId: input.logicalOperationId, request: operation.intent.request });
+  }
+  service.readTopicConversationCreation = (input, assertCurrent) => mutate('sessions', db => {
+    allowedKeys(input, ['topicId', 'principalId', 'logicalOperationId'], 'Conversation recovery lookup');
+    if (typeof assertCurrent !== 'function') throw new CommandCenterMetadataError('invalid-value', 'Current Conversation authority is required.');
+    assertCurrent();
+    const operation = recoveryConversation(db, input);
+    assertCurrent();
+    return operation;
   });
+  service.inspectTopicConversationCreation = (input, assertCurrent) => mutate('sessions', db => {
+    allowedKeys(input, ['topicId', 'principalId'], 'Conversation recovery inspection');
+    if (typeof assertCurrent !== 'function') throw new CommandCenterMetadataError('invalid-value', 'Current Conversation authority is required.');
+    assertCurrent();
+    const rows = db.prepare("SELECT * FROM topic_operations WHERE topic_id = ? AND operation_kind = ? AND NOT (state = 'applied' AND current_step = 'acknowledged') LIMIT 2").all(requiredString(input.topicId, 'topicId'), conversationKind);
+    const principalId = requiredString(input.principalId, 'principalId');
+    let result = { schemaVersion: 1, status: rows.length ? 'blocked' : 'clear' };
+    if (rows.length === 1 && mapTopicOperation(rows[0]).intent?.request?.principalId === principalId) {
+      const operation = recoveryConversation(db, { ...input, logicalOperationId: rows[0].logical_operation_id });
+      const applied = operation.state === 'applied';
+      if (applied && !operation.result?.value?.sourceReference?.referenceId) throw new CommandCenterMetadataError('source-recovery', 'Conversation completion receipt is unavailable.');
+      result = { schemaVersion: 1, status: applied ? 'applied' : 'unknown', logicalOperationId: operation.logicalOperationId,
+        expectedTopicRevision: operation.intent.request.expectedTopicRevision, label: operation.intent.request.label,
+        ...(applied ? { referenceId: operation.result.value.sourceReference.referenceId } : {}) };
+    }
+    assertCurrent();
+    return result;
+  });
+  service.acknowledgeTopicConversationCreation = (input, assertCurrent) => mutate('sessions', db => {
+    allowedKeys(input, ['topicId', 'principalId', 'logicalOperationId', 'referenceId'], 'Conversation acknowledgement');
+    if (typeof assertCurrent !== 'function') throw new CommandCenterMetadataError('invalid-value', 'Current Conversation authority is required.');
+    assertCurrent();
+    const operation = recoveryConversation(db, input);
+    if (operation.state !== 'applied' || !operation.result?.nativeResult || !operation.result?.value) throw new CommandCenterMetadataError('unknown', 'The Conversation outcome has not been proven applied.');
+    const referenceId = requiredString(input.referenceId, 'referenceId');
+    if (operation.result.value.sourceReference?.referenceId !== referenceId) throw new CommandCenterMetadataError('conflict', 'Acknowledgement must identify the exact Conversation receipt.');
+    const reference = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId);
+    const state = db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(referenceId);
+    const locator = db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId);
+    const native = operation.result.nativeResult;
+    if (!reference || reference.topic_id !== operation.topicId || reference.source_system !== 'openclaw' || reference.source_kind !== 'session' || (locator?.locator ?? reference.external_source_id) !== native.key || state?.session_id !== native.sessionId) throw new CommandCenterMetadataError('source-recovery', 'The exact attached Conversation is unavailable.');
+    if (operation.currentStep !== 'acknowledged') db.prepare("UPDATE topic_operations SET current_step = 'acknowledged', updated_at = ? WHERE logical_operation_id = ?").run(timestamp(undefined, 'updatedAt'), input.logicalOperationId);
+    assertCurrent();
+    return { schemaVersion: 1, status: 'acknowledged', logicalOperationId: input.logicalOperationId, referenceId };
+  });
+  service.claimTopicConversationCreation = (input, assertCurrent) => mutate('sessions', db => {
+    if (typeof assertCurrent !== 'function') throw new CommandCenterMetadataError('invalid-value', 'Current Conversation authority is required.');
+    assertCurrent();
+    const request = conversationRequest(input);
+    const logicalOperationId = requiredString(input.logicalOperationId, 'logicalOperationId');
+    if (db.prepare('SELECT 1 FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId)) return { dispatch: false, operation: ownedConversation(db, input) };
+    reconciliationClaims.assertChildClaim(db, { logicalOperationId }, true);
+    if (db.prepare('SELECT 1 FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID already belongs to another command.');
+    if (db.prepare("SELECT 1 FROM topic_operations WHERE topic_id = ? AND operation_kind = ? AND NOT (state = 'applied' AND current_step = 'acknowledged')").get(request.topicId, conversationKind)) throw new CommandCenterMetadataError('source-recovery', 'An earlier Conversation outcome requires recovery or acknowledgement before another creation.');
+    const basis = conversationBasis(db, request.topicId);
+    if (basis.topic.revision !== request.expectedTopicRevision) throw new CommandCenterMetadataError('conflict', 'The original Topic revision is stale.');
+    const intent = { version: 1, request, ...basis };
+    const now = timestamp(undefined, 'createdAt');
+    const digest = `sha256:${createHash('sha256').update(canonicalJson(intent)).digest('hex')}`;
+    const operation = recordTopicOperation(db, { logicalOperationId, topicId: request.topicId, operationKind: conversationKind, intent, state: 'unknown', currentStep: 'dispatch-claimed', createdAt: now, updatedAt: now });
+    db.prepare('INSERT INTO operation_journal (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(logicalOperationId, logicalOperationId, digest, conversationKind, 'unknown', 'unknown', now, now);
+    assertCurrent();
+    return { dispatch: true, operation };
+  });
+  service.assertTopicConversationCreation = (input, assertCurrent) => mutate('sessions', db => {
+    if (typeof assertCurrent !== 'function') throw new CommandCenterMetadataError('invalid-value', 'Current Conversation authority is required.');
+    assertCurrent();
+    assertConversationBasis(db, ownedConversation(db, input));
+  });
+  service.observeTopicConversationCreation = (input) => mutate('sessions', db => {
+    const operation = ownedConversation(db, input);
+    const value = objectValue(input.result, 'native Conversation result');
+    allowedKeys(value, ['key', 'sessionId', 'creationRevision'], 'native Conversation result');
+    const nativeResult = { key: requiredString(value.key, 'key'), sessionId: requiredString(value.sessionId, 'sessionId'), creationRevision: requiredString(value.creationRevision, 'creationRevision') };
+    if (operation.result?.nativeResult) {
+      if (canonicalJson(operation.result.nativeResult) !== canonicalJson(nativeResult)) throw new CommandCenterMetadataError('conflict', 'Conversation creation cannot acquire another native result.');
+      return operation;
+    }
+    if (operation.state !== 'unknown' || operation.currentStep !== 'dispatch-claimed') throw new CommandCenterMetadataError('source-recovery', 'Conversation dispatch ownership is unavailable.');
+    const now = timestamp(undefined, 'updatedAt');
+    db.prepare("UPDATE topic_operations SET current_step = 'native-result', result_json = ?, updated_at = ? WHERE logical_operation_id = ?").run(JSON.stringify({ nativeResult }), now, input.logicalOperationId);
+    db.prepare('UPDATE operation_journal SET result_identity = ?, observed_revision = ?, updated_at = ? WHERE logical_operation_id = ?').run(nativeResult.key, nativeResult.creationRevision, now, input.logicalOperationId);
+    return ownedConversation(db, input);
+  });
+  service.completeTopicConversationCreation = (input, assertCurrent) => mutate('sessions', db => {
+    if (typeof assertCurrent !== 'function') throw new CommandCenterMetadataError('invalid-value', 'Current Conversation authority is required.');
+    assertCurrent();
+    const operation = ownedConversation(db, input);
+    if (operation.state === 'applied') {
+      if (!operation.result?.value) throw new CommandCenterMetadataError('source-recovery', 'Conversation completion receipt is unavailable.');
+      return operation.result.value;
+    }
+    const nativeResult = operation.result?.nativeResult;
+    if (!nativeResult) throw new CommandCenterMetadataError('unknown', 'Conversation creation has no known native result.');
+    assertConversationBasis(db, operation);
+    const owner = db.prepare("SELECT reference.reference_id FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id WHERE reference.source_system = 'openclaw' AND reference.source_kind = 'session' AND (reference.external_source_id = ? OR locator.locator = ?)").get(nativeResult.key, nativeResult.key);
+    if (owner) throw new CommandCenterMetadataError('conflict', 'The created Conversation is already linked.');
+    const now = timestamp(undefined, 'updatedAt');
+    const referenceId = `conversation:${input.logicalOperationId}`;
+    const reference = insertSourceReference(db, { referenceId, topicId: operation.topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: nativeResult.key, observedRevision: nativeResult.creationRevision }, now);
+    db.prepare('INSERT INTO session_state (reference_id, session_id, status, is_primary, was_primary, display_name, updated_at) VALUES (?, ?, ?, 0, 0, ?, ?)').run(referenceId, nativeResult.sessionId, 'open', operation.intent.request.label, now);
+    const value = { ...nativeResult, sourceReference: reference };
+    db.prepare("UPDATE topic_operations SET state = 'applied', current_step = 'complete', result_json = ?, updated_at = ? WHERE logical_operation_id = ?").run(JSON.stringify({ nativeResult, value }), now, input.logicalOperationId);
+    db.prepare("UPDATE operation_journal SET state = 'applied', result_status = 'applied', updated_at = ? WHERE logical_operation_id = ?").run(now, input.logicalOperationId);
+    assertCurrent();
+    return value;
+  });
+  service.recordStructuralChange = (input = {}) => mutate(null, db => {
+    if (!['topics.rename', 'topics.recategorize', 'topics.archive', 'topics.restore', 'topics.replace-primary-session'].includes(input.operationKind)) throw new CommandCenterMetadataError('invalid-value', 'Unsupported Structural Change command.');
+    if (input.topicId !== input.intent?.topicId || !['pending', 'unknown', 'conflict'].includes(input.state ?? 'pending')) throw new CommandCenterMetadataError('invalid-value', 'Structural Change progress must retain its Topic and cannot publish completion.');
+    return recordTopicOperation(db, input, true);
+  });
+
+  // Closed Structural Change completion. Source effects are verified by the
+  // lifecycle owner; local bindings, classification and its receipt share one CAS.
+  service.completeStructuralChange = (input = {}) => mutate(null, (db) => {
+    const operation = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(input.logicalOperationId);
+    const allowed = ['topics.rename', 'topics.recategorize', 'topics.archive', 'topics.restore', 'topics.replace-primary-session'];
+    if (!operation || !allowed.includes(operation.operation_kind) || operation.operation_kind !== input.operationKind || operation.topic_id !== input.intent?.topicId || operation.intent_json !== JSON.stringify(input.intent)) throw new CommandCenterMetadataError('intent-mismatch', 'Structural Change completion does not own this intent.');
+    if (operation.state === 'applied') {
+      const previous = JSON.parse(operation.result_json ?? '{}');
+      if (!previous.snapshot) throw new CommandCenterMetadataError('source-recovery', 'Legacy completion has no immutable Structural Change receipt.');
+      return previous.snapshot;
+    }
+    const basis = input.intent.completion;
+    const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(operation.topic_id);
+    const originalRevision = input.intent.expectedRevision ?? input.intent.preview?.expectedRevisions.find(item => item.source === 'topic' && item.id === operation.topic_id)?.revision;
+    if (!basis || basis.expectedRevision !== originalRevision || !Number.isInteger(basis.expectedRevision) || topic?.revision !== basis.expectedRevision || topic.lifecycle !== 'active') throw new CommandCenterMetadataError('conflict', 'Structural Change original Topic revision is stale.');
+    if (service.listSourceRecovery(topic.topic_id).some(item => item.state === 'required')) throw new CommandCenterMetadataError('source-recovery', 'Structural Change cannot complete while Source Recovery is required.');
+    const currentConventions = service.listSourceReferences(topic.topic_id).flatMap(reference => service.getSourceConventionState(reference.referenceId));
+    if (JSON.stringify(currentConventions) !== JSON.stringify(basis.conventions)) throw new CommandCenterMetadataError('conflict', 'Structural Change source conventions changed.');
+    if (basis.folder) {
+      const current = service.getSourceLocator(basis.folder.referenceId);
+      const reference = service.getSourceReference(basis.folder.referenceId);
+      if (reference?.topicId !== topic.topic_id || reference.sourceKind !== 'note_folder' || JSON.stringify(current) !== JSON.stringify(basis.folder)) throw new CommandCenterMetadataError('conflict', 'Structural Change original folder binding changed.');
+    }
+    if (basis.primary) {
+      const primary = service.getSessionState(basis.primary.referenceId);
+      if (JSON.stringify(primary) !== JSON.stringify(basis.primary)) throw new CommandCenterMetadataError('conflict', 'Structural Change original Primary Session changed.');
+    }
+    const now = timestamp(input.updatedAt, 'updatedAt');
+    if (operation.operation_kind === 'topics.replace-primary-session') {
+      mutateCapabilityInsideTransaction('openclaw');
+      const replacement = JSON.parse(operation.result_json ?? '{}').replacement;
+      const reference = replacement ? service.getSourceReference(replacement.referenceId) : null;
+      const current = replacement ? service.getSessionState(replacement.referenceId) : null;
+      if (!basis.primary || reference?.topicId !== topic.topic_id || reference.sourceKind !== 'session' || !replacement?.sessionId || replacement.status !== 'open' || replacement.isPrimary || JSON.stringify(current) !== JSON.stringify(replacement)) throw new CommandCenterMetadataError('conflict', 'Replacement Primary Session proof is stale.');
+      db.prepare('UPDATE session_state SET is_primary = 0, was_primary = 1, updated_at = ? WHERE reference_id = ?').run(now, basis.primary.referenceId);
+      db.prepare('UPDATE session_state SET is_primary = 1, updated_at = ? WHERE reference_id = ?').run(now, replacement.referenceId);
+      db.prepare("INSERT INTO source_convention_state (reference_id, aspect, state, expected_value, updated_at) VALUES (?, 'display_label', 'managed', NULL, ?)").run(replacement.referenceId, now);
+    }
+    const relocation = input.intent.relocation ?? input.intent.preview?.changes.find(change => change.aspect === 'note-folder-location');
+    if (relocation) {
+      mutateCapabilityInsideTransaction('obsidian');
+      const proof = JSON.parse(operation.result_json ?? '{}').moveProof;
+      if (!basis.folder || !proof || proof.identity !== basis.folder.observedRevision || proof.sourcePath !== relocation.from || proof.destinationPath !== relocation.to || input.verifiedFolderIdentity !== proof.identity) throw new CommandCenterMetadataError('conflict', 'Structural Change folder effect has no owned identity proof.');
+      relocateNoteFolder(db, { referenceId: basis.folder.referenceId, from: relocation.from, to: relocation.to, expectedLocatorVersion: basis.folder.locatorVersion, expectedSourceRevision: basis.folder.observedRevision, updatedAt: now });
+      db.prepare("UPDATE source_convention_state SET expected_value = ?, updated_at = ? WHERE reference_id = ? AND aspect = 'location' AND state = 'managed'").run(relocation.to, now, basis.folder.referenceId);
+    }
+    for (const change of input.conventionChanges ?? []) {
+      const reference = service.getSourceReference(change.referenceId);
+      const ownAspect = change.referenceId === basis.folder?.referenceId && change.aspect === 'name' || change.referenceId === basis.primary?.referenceId && change.aspect === 'display_label';
+      if (operation.operation_kind !== 'topics.rename' || !ownAspect || reference?.topicId !== topic.topic_id) throw new CommandCenterMetadataError('conflict', 'Structural Change cannot change an unrelated convention.');
+      enumValue(change.state, conventionStates, 'state');
+      mutateCapabilityInsideTransaction(reference.sourceSystem);
+      if (!basis.conventions.some(item => item.referenceId === change.referenceId && item.aspect === change.aspect)) throw new CommandCenterMetadataError('conflict', 'Structural Change cannot introduce an unrelated convention.');
+      db.prepare('UPDATE source_convention_state SET state = ?, expected_value = ?, updated_at = ? WHERE reference_id = ? AND aspect = ?').run(change.state, change.expectedValue ?? null, now, change.referenceId, change.aspect);
+    }
+    const name = operation.operation_kind === 'topics.rename' ? requiredString(input.intent.name, 'name') : topic.name;
+    const category = operation.operation_kind === 'topics.archive' ? 'archive' : ['topics.recategorize', 'topics.restore'].includes(operation.operation_kind) ? input.intent.paraCategory : topic.para_category;
+    db.prepare('UPDATE topics SET name = ?, para_category = ?, revision = revision + 1, updated_at = ? WHERE topic_id = ?').run(name, category, now, topic.topic_id);
+    const updated = service.getTopic(topic.topic_id);
+    const references = service.listSourceReferences(topic.topic_id);
+    const snapshot = { ...updated, name: updated.name, revision: updated.revision, sourceReferences: references, locators: service.listSourceLocators(topic.topic_id), convention: references.flatMap(reference => service.getSourceConventionState(reference.referenceId)), recovery: service.listSourceRecovery(topic.topic_id) };
+    const result = { ...JSON.parse(operation.result_json ?? '{}'), snapshot };
+    db.prepare("UPDATE topic_operations SET state = 'applied', current_step = 'complete', result_json = ?, updated_at = ? WHERE logical_operation_id = ?").run(JSON.stringify(result), now, input.logicalOperationId);
+    return snapshot;
+  });
+
   service.getTopicOperation = (logicalOperationId) => readOne('SELECT * FROM topic_operations WHERE logical_operation_id = ?', [requiredString(logicalOperationId, 'logicalOperationId')], mapTopicOperation) || null;
   service.listTopicOperations = (topicId = undefined) => topicId === undefined ? readMany('SELECT * FROM topic_operations ORDER BY created_at, logical_operation_id', [], mapTopicOperation) : readMany('SELECT * FROM topic_operations WHERE topic_id = ? ORDER BY created_at, logical_operation_id', [requiredString(topicId, 'topicId')], mapTopicOperation);
 
@@ -1520,6 +1967,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   service.listSourceRecovery = (topicId = undefined) => topicId === undefined ? readMany('SELECT * FROM source_recovery ORDER BY recovery_id', [], mapRecovery) : readMany('SELECT * FROM source_recovery WHERE topic_id = ? ORDER BY recovery_id', [requiredString(topicId, 'topicId')], mapRecovery);
 
   service.completeTopicProvisioning = (input = {}) => mutate(null, (db) => {
+    const parent = db.prepare('SELECT intent_json FROM topic_operations WHERE logical_operation_id=?').get(input.logicalOperationId);
+    if (parent && jsonValue(parent.intent_json, {}).primaryMode === CONDITIONAL_PRIMARY_MODE) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning activation requires its dedicated owner.');
     const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.topicId);
     if (topic?.lifecycle === 'active' && topic.activated_at) {
       db.prepare("UPDATE topic_operations SET state = 'applied', current_step = 'complete', result_json = ?, updated_at = ? WHERE logical_operation_id = ?").run(JSON.stringify(input.result ?? {}), timestamp(input.updatedAt, 'updatedAt'), input.logicalOperationId);
@@ -1533,13 +1982,31 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     return Object.freeze({ topic: mapTopic(db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.topicId)), operation: mapTopicOperation(operation) });
   });
 
-  service.applyFolderRecoveryBinding = ({ referenceId, locator, observedRevision, expectedSourceRevision, updatedAt } = {}) => {
-    const current = service.getSourceLocator(referenceId);
-    const recovery = service.listSourceRecovery().find((item) => item.referenceId === referenceId && item.state === 'required');
-    if (!current || current.observedRevision !== expectedSourceRevision && recovery?.lastIdentity !== expectedSourceRevision) throw new CommandCenterMetadataError('conflict', 'Source locator revision is stale.');
-    return service.setSourceLocator({ referenceId, locator, observedRevision, locatorVersion: current.locatorVersion + 1, ownership: 'external', updatedAt });
-  };
-  service.applySessionRecoveryRelink = ({ referenceId, sessionKey, sessionId, expectedSourceRevision, updatedAt } = {}) => mutate(null, (db) => {
+  function applyFolderRecoveryBinding(db, { topicId, referenceId, locator, observedRevision, expectedSourceRevision, expectedLocatorVersion, replacement, updatedAt }) {
+    const reference = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId);
+    if (!reference || reference.topic_id !== topicId || reference.source_system !== 'obsidian' || reference.source_kind !== 'note_folder') throw new CommandCenterMetadataError('conflict', 'Folder recovery requires the exact Topic-owned Note Folder.');
+    const current = db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId);
+    const recovery = db.prepare("SELECT * FROM source_recovery WHERE reference_id = ? AND state = 'required'").get(referenceId);
+    const version = integerValue(expectedLocatorVersion, 'expectedLocatorVersion', { minimum: 0 });
+    if ((current?.locator_version ?? 0) !== version) throw new CommandCenterMetadataError('conflict', 'Source locator generation is stale.');
+    const unbound = reference.last_observed_revision ?? `unbound:${referenceId}`;
+    const expected = current?.observed_revision ?? unbound;
+    if (expected !== expectedSourceRevision && !(current?.observed_revision === null && recovery?.last_identity === expectedSourceRevision)) throw new CommandCenterMetadataError('conflict', 'Source locator revision is stale.');
+    if (!path.isAbsolute(locator) || path.resolve(locator) !== locator || !/^note-folder:1:[0-9a-f-]{36}:[0-9a-f]{64}$/u.test(observedRevision)) throw new CommandCenterMetadataError('invalid-value', 'Folder recovery requires a verified canonical marker-backed locator.');
+    const owner = db.prepare(`SELECT reference.reference_id FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+      WHERE reference.source_system = 'obsidian' AND reference.source_kind = 'note_folder' AND reference.reference_id <> ? AND COALESCE(locator.locator, reference.external_source_id) = ? LIMIT 1`).get(referenceId, locator);
+    if (owner) throw new CommandCenterMetadataError('conflict', 'Note Folder authority is already owned by another Source Reference.');
+    if (!replacement) {
+      if (!current || current.locator !== locator || current.observed_revision !== observedRevision) throw new CommandCenterMetadataError('conflict', 'The verified Folder proof no longer matches its binding.');
+      return;
+    }
+    const now = timestamp(updatedAt, 'updatedAt');
+    db.prepare(`INSERT INTO source_locators (reference_id, locator, locator_version, ownership, observed_revision, updated_at) VALUES (?, ?, ?, 'external', ?, ?)
+      ON CONFLICT(reference_id) DO UPDATE SET locator=excluded.locator, locator_version=excluded.locator_version, ownership=excluded.ownership, observed_revision=excluded.observed_revision, updated_at=excluded.updated_at`).run(referenceId, locator, version + 1, observedRevision, now);
+    db.prepare(`INSERT INTO source_convention_state (reference_id, aspect, state, expected_value, updated_at) VALUES (?, 'location', 'customized', ?, ?)
+      ON CONFLICT(reference_id, aspect) DO UPDATE SET state=excluded.state, expected_value=excluded.expected_value, updated_at=excluded.updated_at`).run(referenceId, locator, now);
+  }
+  function applySessionRecoveryRelink(db, { referenceId, sessionKey, sessionId, expectedSourceRevision, updatedAt }) {
     const current = db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId);
     const state = db.prepare('SELECT * FROM session_state WHERE reference_id = ?').get(referenceId);
     if (!current || current.observed_revision !== expectedSourceRevision && state?.session_id !== expectedSourceRevision) throw new CommandCenterMetadataError('conflict', 'Session locator revision is stale.');
@@ -1549,10 +2016,27 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
     db.prepare('UPDATE source_locators SET locator = ?, locator_version = locator_version + 1, observed_revision = ?, ownership = ?, updated_at = ? WHERE reference_id = ?').run(sessionKey, sessionId, 'external', timestamp(updatedAt, 'updatedAt'), referenceId);
     db.prepare('UPDATE session_state SET session_id = ?, updated_at = ? WHERE reference_id = ?').run(sessionId, timestamp(updatedAt, 'updatedAt'), referenceId);
     return mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId));
-  });
+  }
+  service.applySessionRecoveryRelink = (input = {}) => mutate(null, db => applySessionRecoveryRelink(db, input));
   service.completeTopicRecoveryMutation = (input = {}) => mutate(null, (db) => {
     const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(input.intent.topicId);
     if (!topic || topic.revision !== input.expectedRevision) throw new CommandCenterMetadataError('conflict', 'Topic revision is stale.');
+    const recoveryReference = input.operationKind === 'topics.recovery.verify' ? db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(input.intent.referenceId) : null;
+    if (input.folderBinding && (recoveryReference?.source_system !== 'obsidian' || recoveryReference.source_kind !== 'note_folder')) throw new CommandCenterMetadataError('conflict', 'Folder recovery proof has lost its exact Source Reference owner.');
+    if (recoveryReference?.source_system === 'obsidian' && recoveryReference.source_kind === 'note_folder') {
+      const operation = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(input.logicalOperationId);
+      if (topic.lifecycle !== 'active' || input.expectedRevision !== input.intent.expectedRevision || !operation || operation.topic_id !== topic.topic_id || operation.operation_kind !== input.operationKind || operation.intent_json !== JSON.stringify(input.intent) || operation.state === 'applied') throw new CommandCenterMetadataError('conflict', 'Folder recovery operation authority is stale.');
+      const binding = input.folderBinding;
+      const replacement = input.intent.replacementLocator !== null && input.intent.replacementLocator !== undefined;
+      if (!binding || (replacement && binding.locator !== path.resolve(input.intent.replacementLocator)) || binding.expectedLocatorVersion !== input.intent.expectedLocatorVersion) throw new CommandCenterMetadataError('conflict', 'Folder recovery proof does not match its approved intent.');
+      if (input.recovery?.topicId !== topic.topic_id || input.recovery.referenceId !== input.intent.referenceId || input.recovery.sourceKind !== 'note_folder' || input.recovery.state !== (replacement ? 'replaced' : 'resolved') || input.recovery.lastLocator !== binding.locator) throw new CommandCenterMetadataError('conflict', 'Folder recovery receipt does not match its verified binding.');
+      applyFolderRecoveryBinding(db, { topicId: topic.topic_id, referenceId: input.intent.referenceId, locator: binding.locator, observedRevision: binding.observedRevision, expectedSourceRevision: input.intent.expectedSourceRevision, expectedLocatorVersion: binding.expectedLocatorVersion, replacement, updatedAt: input.updatedAt });
+    }
+    // A Session relink changes only local metadata: binding, recovery and receipt
+    // belong to this one transaction, never to independently committed steps.
+    if (input.operationKind === 'topics.recovery.relink' && input.intent.addReference === false) {
+      applySessionRecoveryRelink(db, { ...input.intent, updatedAt: input.updatedAt });
+    }
     const recovery = input.recovery;
     const existing = db.prepare('SELECT * FROM source_recovery WHERE recovery_id = ?').get(recovery.recoveryId);
     const now = timestamp(input.updatedAt, 'updatedAt');
@@ -1576,6 +2060,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
 
   function projections() {
     assertOpen();
+    if (readOnly) throw new CommandCenterMetadataError('read-only', 'Read-only metadata cannot initialize derived storage.');
     if (!projectionService) projectionService = openCommandCenterProjectionService({ stateDir: resolvedStateDir, metadataService: service });
     return projectionService;
   }
@@ -1587,15 +2072,56 @@ function createService(stateDir, databasePath, capabilities, migrationHooks) {
   service.getProjectionStatus = () => projections().getStatus();
   service.queryProjections = () => projections().queryProjections();
 
+  const reconciliationClaims = installReconciliationMetadata(service, { mutate, readMany, assertMutation, ErrorType: CommandCenterMetadataError });
+  installImportedHistoryMetadata(service, { mutate, inspect, readMany, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
+  installTopicBootstrapMetadata(service, { mutate, inspect, readMany, assertMutation, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
+  installProvisioningPrimaryMetadata(service, { mutate, inspect, readMany, assertMutation, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
   return Object.freeze(service);
 }
 
+// Explicit local-operator initialization. Existing stores are inspected read-only:
+// this command is neither a migration nor an import, and an existing compatible
+// database is not claimed as an effect created by this invocation. The caller
+// holds exclusive access to its approved offline state directory.
+export function initializeCommandCenterMetadata({ stateDir, expectedSchemaVersion } = {}) {
+  if (expectedSchemaVersion !== COMMAND_CENTER_SCHEMA_VERSION) throw new CommandCenterMetadataError('initialization-schema-mismatch', 'Initialization requires the explicitly approved current schema.');
+  if (typeof stateDir !== 'string' || !path.isAbsolute(stateDir)) throw new CommandCenterMetadataError('initialization-state-invalid', 'Initialization requires an absolute approved state directory.');
+  if (path.resolve(realpathSync(stateDir)) !== path.resolve(stateDir) || !lstatSync(stateDir).isDirectory()) throw new CommandCenterMetadataError('initialization-state-invalid', 'Initialization requires an existing canonical state directory.');
+  const databasePath = resolveCommandCenterDatabasePath(stateDir);
+  assertPluginDirectoryChain(databasePath);
+  let disposition = 'existing';
+  try { lstatSync(databasePath); }
+  catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    // The existing creation owner commits with a no-replace hard link. A
+    // concurrently appearing database is a conflict, never an overwrite.
+    createNewDatabase(databasePath);
+    disposition = 'created';
+  }
+  const service = openCommandCenterMetadataService({ stateDir, readOnly: true });
+  let schemaVersion;
+  try {
+    schemaVersion = service.getOperatingStatus().schemaVersion;
+  } finally { service.close(); }
+  // SQLite commit durability does not cover the later no-replace publication.
+  // Also finish these flushes on execute retry after a lost response/sync error.
+  // Unsupported directory-sync semantics fail explicitly; never report success
+  // or delete a published database when its durability remains uncertain.
+  for (const [filename, directory] of [[databasePath, false], [path.dirname(databasePath), true],
+    [path.join(stateDir, 'plugins'), true], [stateDir, true]]) {
+    const descriptor = openSync(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (directory ? (constants.O_DIRECTORY ?? 0) : 0));
+    try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+  }
+  return { phase: 'verified', schemaVersion, disposition };
+}
+
 export function openCommandCenterMetadataService(options = {}) {
-  const { stateDir, databasePath, capabilities } = options;
+  const { stateDir, databasePath, capabilities, readOnly = false } = options;
   const migrationHooks = process.env.NODE_ENV === 'test' ? options[migrationTestHooksSymbol] : undefined;
   if (databasePath !== undefined && (typeof databasePath !== 'string' || databasePath.trim() === '')) throw new TypeError('databasePath must be a non-empty string');
   if (databasePath === undefined && (typeof stateDir !== 'string' || stateDir.trim() === '')) throw new TypeError('stateDir must be a non-empty string');
-  return createService(stateDir, databasePath, capabilities, migrationHooks);
+  if (typeof readOnly !== 'boolean') throw new TypeError('readOnly must be a boolean');
+  return createService(stateDir, databasePath, capabilities, migrationHooks, readOnly);
 }
 
 export { metadataTableNames };

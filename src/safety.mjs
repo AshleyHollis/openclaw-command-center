@@ -26,11 +26,24 @@ async function gitPaths(root, args) {
   return (await gitText(root, args)).split('\0').filter(Boolean);
 }
 
-export async function repositoryPaths(root, generated = []) {
-  const [tracked, staged, untracked] = await Promise.all([
-    gitPaths(root, ['ls-files', '-z']), gitPaths(root, ['diff', '--cached', '--name-only', '-z']), gitPaths(root, ['ls-files', '--others', '--exclude-standard', '-z'])
-  ]);
-  return [...new Set([...tracked, ...staged, ...untracked, ...generated])].map((value) => path.resolve(root, value));
+async function exactGitRoot(root) {
+  try {
+    const discovered = path.resolve((await gitText(root, ['rev-parse', '--show-toplevel'])).trim());
+    return discovered === path.resolve(root);
+  } catch { return false; }
+}
+
+export async function repositoryPaths(root, generated = [], { isGitRoot = undefined } = {}) {
+  const useGit = isGitRoot ?? await exactGitRoot(root);
+  if (useGit) {
+    const [tracked, staged, untracked] = await Promise.all([
+      gitPaths(root, ['ls-files', '-z']), gitPaths(root, ['diff', '--cached', '--name-only', '-z']), gitPaths(root, ['ls-files', '--others', '--exclude-standard', '-z'])
+    ]);
+    return [...new Set([...tracked, ...staged, ...untracked, ...generated])].map((value) => path.resolve(root, value));
+  }
+  const excludedSnapshotEntries = new Set(['.git', 'node_modules', '.codex-ticket-ssd.json', '.bundle-digest']);
+  const snapshotEntries = (await readdir(root)).filter((value) => !excludedSnapshotEntries.has(value));
+  return [...new Set([...snapshotEntries, ...generated])].map((value) => path.resolve(root, value));
 }
 
 function within(root, filename) {
@@ -75,15 +88,28 @@ function inspectContent(findings, relative, content) {
   if (matched >= 0) findings.push({ path: relative, rule: `content-${matched + 1}` });
 }
 
-async function scanPath(root, filename, findings, read, visited, excludedRoots) {
+export function scanPublicEvidence(values, { label = 'runtime-evidence' } = {}) {
+  const findings = [];
+  for (const [index, value] of values.entries()) {
+    const content = String(value).replace(/\b(?:token|password|secret|key)=\[redacted\]/giu, 'redacted-field');
+    inspectContent(findings, `${label}[${index}]`, content);
+  }
+  if (findings.length) throw new Error(`Public evidence safety scan failed: ${findings.map((finding) => `${finding.path} (${finding.rule})`).join(', ')}`);
+  return Object.freeze([]);
+}
+
+async function scanPath(root, filename, findings, read, statPath, visited, excludedRoots) {
   const relative = path.relative(root, filename);
   if (!within(root, filename) || isExcludedControllerPath(filename, excludedRoots) || visited.has(filename)) return;
   visited.add(filename);
-  const stat = await lstat(filename).catch(() => undefined);
-  if (!stat) return;
+  const stat = await statPath(filename).catch(() => undefined);
+  if (!stat) { findings.push({ path: relative, rule: 'missing-or-unreadable-entry' }); return; }
   if (stat.isSymbolicLink()) { findings.push({ path: relative, rule: 'symlink' }); return; }
   if (stat.isDirectory()) {
-    for (const entry of await readdir(filename)) await scanPath(root, path.join(filename, entry), findings, read, visited, excludedRoots);
+    let entries;
+    try { entries = await readdir(filename); }
+    catch { findings.push({ path: relative, rule: 'missing-or-unreadable-entry' }); return; }
+    for (const entry of entries) await scanPath(root, path.join(filename, entry), findings, read, statPath, visited, excludedRoots);
     return;
   }
   if (!stat.isFile()) return;
@@ -91,12 +117,17 @@ async function scanPath(root, filename, findings, read, visited, excludedRoots) 
   catch { findings.push({ path: relative, rule: 'unreadable-content' }); }
 }
 
-export async function scanRepositorySafety(root, { generated = [], read = readFile, controllerRoots = [] } = {}) {
+export async function scanRepositorySafety(root, { generated = [], read = readFile, stat = lstat, controllerRoots = [] } = {}) {
   const findings = [];
   const visited = new Set();
   const excludedRoots = excludedControllerRoots(root, controllerRoots);
-  for (const filename of await repositoryPaths(root, generated)) {
-    await scanPath(root, filename, findings, read, visited, excludedRoots);
+  const isGitRoot = await exactGitRoot(root);
+  for (const filename of await repositoryPaths(root, generated, { isGitRoot })) {
+    await scanPath(root, filename, findings, read, stat, visited, excludedRoots);
+  }
+  if (!isGitRoot) {
+    if (findings.length) throw new Error(`Repository safety scan failed: ${findings.map((finding) => `${finding.path} (${finding.rule})`).join(', ')}`);
+    return findings;
   }
   const staged = await gitPaths(root, ['diff', '--cached', '--name-only', '-z']);
   for (const relative of staged) {

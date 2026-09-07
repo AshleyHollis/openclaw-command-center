@@ -1,5 +1,5 @@
 import { openProjectionStore, SEARCH_PROJECTION_VERSIONS, withGroupedProjectionPublication } from './projection-store.mjs';
-import { hasTopicSearchInvalidationMarker } from './freshness.mjs';
+import { assertTopicSearchFreshness, hasTopicSearchInvalidationMarker, readTopicSearchFreshness } from './freshness.mjs';
 import { readTopicSourceSnapshot } from './source-snapshot.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
@@ -13,7 +13,10 @@ function topicIds(metadata, requested) {
     ? (metadata?.listUsableTopics?.() ?? metadata?.listTopics?.()?.filter((topic) => topic.lifecycle === 'active'))
     : metadata?.listTopics?.();
   if (Array.isArray(topics)) {
-    const ids = topics.map((topic) => topic.topicId).sort((left, right) => left.localeCompare(right));
+    const globallySearchable = requested === undefined && typeof metadata?.listSourceReferences === 'function'
+      ? topics.filter((topic) => metadata.listSourceReferences(topic.topicId).filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder').length === 1)
+      : topics;
+    const ids = globallySearchable.map((topic) => topic.topicId).sort((left, right) => left.localeCompare(right));
     if (requested !== undefined) {
       if (!ids.includes(String(requested))) throw sourceError('source-recovery', 'The requested Topic does not exist.');
       const topic = topics.find((item) => item.topicId === String(requested));
@@ -26,7 +29,8 @@ function topicIds(metadata, requested) {
   throw sourceError('source-recovery', 'Topic ownership metadata is unavailable.');
 }
 
-export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory, noteAdapter, api, gateway, topicId, authoritativeSources, sourceSnapshotFactory = readTopicSourceSnapshot, onProgress } = {}) {
+export async function prepareTopicSearchSnapshot({ stateDir, metadata, noteAdapterFactory, noteAdapter, api, gateway, transcriptReader, topicId, authoritativeSources, sourceSnapshotFactory = readTopicSourceSnapshot, onProgress, signal } = {}) {
+  const freshness = readTopicSearchFreshness(stateDir);
   const topics = topicIds(metadata, topicId);
   const notes = [];
   const conversations = [];
@@ -37,10 +41,13 @@ export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory,
     ? async (input) => authoritativeSources.readTopicSnapshot?.(input) ?? authoritativeSources.readTopic(input)
     : sourceSnapshotFactory;
   for (const id of topics) {
+    signal?.throwIfAborted();
     const snapshot = await suppliedFactory({
-      topicId: id, metadata, api, gateway,
+      topicId: id, metadata, api, gateway, transcriptReader,
       noteAdapter: noteAdapterFactory ? await noteAdapterFactory(id) : noteAdapter,
+      signal,
     });
+    signal?.throwIfAborted();
     notes.push(...(snapshot.notes ?? snapshot.note?.notes ?? []));
     conversations.push(...(snapshot.conversations ?? snapshot.conversation?.conversations ?? []));
     noteRevisions.push([id, snapshot.note?.sourceRevision ?? snapshot.sourceRevision ?? null]);
@@ -52,10 +59,12 @@ export async function prepareTopicSearchSnapshot({ metadata, noteAdapterFactory,
   const noteSourceRevision = sourceDigest({ projection: 'notes', revisions: noteRevisions });
   const conversationSourceRevision = sourceDigest({ projection: 'conversations', revisions: conversationRevisions });
   const sourceRevision = sourceDigest({ notes: noteSourceRevision, conversations: conversationSourceRevision });
-  return Object.freeze({ topicId: topicId ?? null, topicIds: Object.freeze(topics), notes: Object.freeze(notes), conversations: Object.freeze(conversations), noteSourceRevision, conversationSourceRevision, sourceRevision });
+  assertTopicSearchFreshness(stateDir, freshness);
+  return Object.freeze({ topicId: topicId ?? null, topicIds: Object.freeze(topics), notes: Object.freeze(notes), conversations: Object.freeze(conversations), noteSourceRevision, conversationSourceRevision, sourceRevision, freshness });
 }
 
-export async function publishTopicSearchSnapshot({ stateDir, prepared, metadata } = {}) {
+export async function publishTopicSearchSnapshot({ stateDir, prepared, metadata, signal } = {}) {
+  signal?.throwIfAborted();
   if (typeof stateDir !== 'string' || !stateDir.trim()) throw new TypeError('stateDir must be a non-empty string');
   if (!prepared || !Array.isArray(prepared.topicIds) || !Array.isArray(prepared.notes) || !Array.isArray(prepared.conversations) || typeof prepared.noteSourceRevision !== 'string' || typeof prepared.conversationSourceRevision !== 'string') throw sourceError('source-incomplete', 'A complete prepared Topic Search snapshot is required.');
   const noteStore = await openProjectionStore({ stateDir, kind: 'note' });
@@ -64,14 +73,19 @@ export async function publishTopicSearchSnapshot({ stateDir, prepared, metadata 
   // both empty generations so startup never confuses "no Topics" with a lost
   // or partially created projection.
   return withGroupedProjectionPublication({ stateDir }, async (_groupLease) => {
-    const notesResult = await noteStore.rebuild({ topicId: prepared.topicId, topicIds: prepared.topicIds, rows: prepared.notes, sourceRevision: prepared.noteSourceRevision, _groupLease });
-    const conversationsResult = await conversationStore.rebuild({ topicId: prepared.topicId, topicIds: prepared.topicIds, rows: prepared.conversations, sourceRevision: prepared.conversationSourceRevision, _groupLease });
+    assertTopicSearchFreshness(stateDir, prepared.freshness);
+    const notesResult = await noteStore.rebuild({ topicId: prepared.topicId, topicIds: prepared.topicIds, rows: prepared.notes, sourceRevision: prepared.noteSourceRevision, _groupLease, signal });
+    signal?.throwIfAborted();
+    const conversationsResult = await conversationStore.rebuild({ topicId: prepared.topicId, topicIds: prepared.topicIds, rows: prepared.conversations, sourceRevision: prepared.conversationSourceRevision, _groupLease, signal });
+    signal?.throwIfAborted();
+    const freshness = { ...prepared.freshness, projections: [notesResult.generation, conversationsResult.generation] };
+    assertTopicSearchFreshness(stateDir, freshness);
     metadata?.setProjectionBookkeepingBatch?.([notesResult, conversationsResult].map((projection) => ({
       projectionId: projection.projectionId,
       sourceRevision: projection.sourceRevision,
       inputDigest: projection.inputDigest
     })));
-    return Object.freeze({ notes: notesResult, conversations: conversationsResult, topicIds: prepared.topicIds });
+    return Object.freeze({ notes: notesResult, conversations: conversationsResult, topicIds: notesResult.topicIds, freshness });
   });
 }
 
@@ -89,18 +103,26 @@ export async function reconcileTopicSearchBookkeeping({ stateDir, metadata } = {
     if (error?.code === 'ENOENT') return false;
     throw error;
   }
-  const notes = await openProjectionStore({ stateDir, kind: 'note' });
-  const conversations = await openProjectionStore({ stateDir, kind: 'conversation' });
-  const manifests = [notes.manifest(), conversations.manifest()];
-  if (manifests.every((manifest) => manifest === null)) return false;
-  if (manifests.some((manifest) => manifest === null)) return false;
-  metadata.setProjectionBookkeepingBatch(manifests.map((manifest) => ({ projectionId: manifest.projectionId, sourceRevision: manifest.sourceRevision, inputDigest: manifest.inputDigest })));
-  return true;
+  let notes;
+  let conversations;
+  try {
+    notes = await openProjectionStore({ stateDir, kind: 'note' });
+    conversations = await openProjectionStore({ stateDir, kind: 'conversation' });
+    const manifests = [notes.manifest(), conversations.manifest()];
+    if (manifests.every((manifest) => manifest === null)) return false;
+    if (manifests.some((manifest) => manifest === null)) return false;
+    metadata.setProjectionBookkeepingBatch(manifests.map((manifest) => ({ projectionId: manifest.projectionId, sourceRevision: manifest.sourceRevision, inputDigest: manifest.inputDigest })));
+    return true;
+  } finally {
+    notes?.close();
+    conversations?.close();
+  }
 }
 
 export async function rebuildTopicSearchProjections(options = {}) {
   const prepared = await prepareTopicSearchSnapshot(options);
-  return publishTopicSearchSnapshot({ stateDir: options.stateDir, prepared, metadata: options.metadata });
+  options.signal?.throwIfAborted();
+  return publishTopicSearchSnapshot({ stateDir: options.stateDir, prepared, metadata: options.metadata, signal: options.signal });
 }
 
 export const rebuildSearchProjections = rebuildTopicSearchProjections;
@@ -160,6 +182,22 @@ function reserveReceiptSlot(stateDir) {
   if (receipts.length >= MAX_DURABLE_REBUILD_RECEIPTS) throw sourceError('source-unavailable', 'Too many durable rebuild operations are pending.');
 }
 
+async function hasReusableProjectionSet(stateDir) {
+  let notes;
+  let conversations;
+  try {
+    notes = await openProjectionStore({ stateDir, kind: 'note' });
+    conversations = await openProjectionStore({ stateDir, kind: 'conversation' });
+    const manifests = [notes.manifest(), conversations.manifest()];
+    return manifests.every(Boolean)
+      && JSON.stringify(manifests[0].topicIds) === JSON.stringify(manifests[1].topicIds);
+  } catch { return false; }
+  finally {
+    notes?.close();
+    conversations?.close();
+  }
+}
+
 export function createSearchRebuildService(options = {}) {
   const operations = new Map();
   const preparedTtlMs = 30_000;
@@ -175,6 +213,7 @@ export function createSearchRebuildService(options = {}) {
       if (typeof topicId !== 'string' || !topicId.trim()) throw sourceError('invalid-request', 'One exact Topic ID is required for authenticated rebuild preparation.');
       const operationId = assertLogicalOperationId(logicalOperationId);
       const intentDigest = rebuildIntentDigest(topicId);
+      topicIds(options.metadata, topicId);
       prune();
       const receipt = readReceipt(options.stateDir, operationId);
       if (receipt) {
@@ -189,12 +228,17 @@ export function createSearchRebuildService(options = {}) {
       }
       if (!existing && operations.size >= 8) throw sourceError('source-unavailable', 'Too many authenticated rebuild operations are active.');
       const operation = { topicId, intentDigest, status: 'preparing', expiresAt: Number.POSITIVE_INFINITY, prepared: null, result: null, promise: null };
-      operation.promise = prepareTopicSearchSnapshot({ ...options, topicId, gateway }).then((prepared) => {
+      // Reuse an intact committed set for a Topic-scoped replacement. If no
+      // complete set exists, rebuild every active Topic so recovery can never
+      // narrow global coverage.
+      operation.promise = hasReusableProjectionSet(options.stateDir)
+        .then((reusable) => prepareTopicSearchSnapshot({ ...options, topicId: reusable ? topicId : undefined, gateway }))
+        .then((prepared) => {
         operation.prepared = prepared;
         operation.status = 'prepared';
         operation.expiresAt = clock() + preparedTtlMs;
         return prepared;
-      }).catch((error) => {
+        }).catch((error) => {
         operations.delete(operationId);
         throw error;
       });
@@ -227,13 +271,22 @@ export function createSearchRebuildService(options = {}) {
       }
       const operation = existing ?? { topicId, intentDigest, status: 'prepared', expiresAt: Number.POSITIVE_INFINITY, prepared: null, result: null, promise: null };
       operation.status = 'committing';
-      operation.promise = (operation.prepared
-        ? publishTopicSearchSnapshot({ stateDir: options.stateDir, prepared: operation.prepared, metadata: options.metadata })
+      const prepared = operation.prepared;
+      // Publication owns the snapshot through its local promise chain. Drop
+      // the operation-map reference immediately so a completed heavy rebuild
+      // cannot retain the full authoritative corpus until the replay TTL.
+      operation.prepared = null;
+      operation.promise = (prepared
+        ? publishTopicSearchSnapshot({ stateDir: options.stateDir, prepared, metadata: options.metadata })
         : rebuildTopicSearchProjections({ ...options, topicId })).then((result) => {
         operation.result = result;
         operation.status = 'applied';
         operation.expiresAt = clock() + preparedTtlMs;
         writeReceipt(options.stateDir, { schemaVersion: 1, logicalOperationId: operationId, topicId, intentDigest, state: 'applied', result, createdAt, updatedAt: new Date(clock()).toISOString() });
+        // The durable applied receipt is now the replay authority. Keeping the
+        // settled promise in the active map needlessly retains its publication
+        // closure and counts completed work against the active-operation cap.
+        operations.delete(operationId);
         return result;
       }).catch((error) => {
         operations.delete(operationId);

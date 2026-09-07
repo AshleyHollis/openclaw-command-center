@@ -21,7 +21,7 @@ export function createTopicContextTool({ policy } = {}) {
       crossTopicBasis: { type: 'string', enum: ['explicit-reference', 'task-necessity'] }, limit: { type: 'integer', minimum: 1, maximum: 8 }
     }, required: ['query'] }),
     async execute(_toolCallId, params) {
-      const result = await policy.retrieve({ ...validateToolInput(params), sessionKey: this?.sessionKey });
+      const result = await policy.retrieve({ ...validateToolInput(params), sessionKey: this?.sessionKey, sessionId: this?.sessionId });
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
     }
   });
@@ -31,7 +31,7 @@ export function topicContextToolFactory(policy) {
   return (context) => {
     const tool = createTopicContextTool({ policy });
     return Object.freeze({ ...tool, execute: async (_toolCallId, params) => {
-      const result = await policy.retrieve({ ...validateToolInput(params), sessionKey: context?.sessionKey });
+      const result = await policy.retrieve({ ...validateToolInput(params), sessionKey: context?.sessionKey, sessionId: context?.sessionId });
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
     } });
   };

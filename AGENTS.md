@@ -34,6 +34,8 @@ Do not inspect or mutate live OpenClaw state without explicit task-specific auth
 
 ## Source-of-truth boundaries
 
+Before changing any mutation or delayed publication, read `docs/agents/mutations.md`.
+
 - OpenClaw Sessions remain authoritative for conversations.
 - Workboard remains authoritative for actionable work where suitable.
 - OpenClaw Tasks are execution and activity records, not a personal to-do store.

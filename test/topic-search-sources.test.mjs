@@ -7,6 +7,7 @@ import { readConversationSourceSnapshot, readNoteSourceSnapshot } from '../src/s
 import { canonicalImportedUserMessage } from '../src/migration/transcript.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { NoteAdapter } from '../src/sources/notes.mjs';
+import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 
 const topic = { topicId: 'topic-one', paraCategory: 'project' };
 const noteFolder = { version: 1, referenceId: 'folder:one', topicId: 'topic-one', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/topic-one', observedRevision: null };
@@ -50,6 +51,28 @@ test('Note source snapshot reads only the exact Topic Folder and preserves headi
   await assert.rejects(() => readNoteSourceSnapshot({ topicId: topic.topicId, metadata: metadata(), noteAdapter: { browse: async () => [{ path: 'foreign.md', sourceReference: { ...noteReference, topicId: 'topic-two' } }], read: async () => ({}) } }), /foreign|identity/i);
 });
 
+test('production source snapshots settle when startup rebuild cancellation interrupts pending authority reads', async () => {
+  const noteAbort = new AbortController();
+  const noteSnapshot = readNoteSourceSnapshot({
+    topicId: topic.topicId,
+    metadata: metadata(),
+    signal: noteAbort.signal,
+    noteAdapter: { browse: () => new Promise(() => {}), read: async () => ({}) }
+  });
+  noteAbort.abort(new Error('cancel pending Note snapshot'));
+  await assert.rejects(noteSnapshot, /cancel pending Note snapshot/u);
+
+  const sessionAbort = new AbortController();
+  const conversationSnapshot = readConversationSourceSnapshot({
+    topicId: topic.topicId,
+    metadata: metadata(),
+    signal: sessionAbort.signal,
+    gateway: { request: () => new Promise(() => {}) }
+  });
+  sessionAbort.abort(new Error('cancel pending Session snapshot'));
+  await assert.rejects(conversationSnapshot, /cancel pending Session snapshot/u);
+});
+
 test('Note source snapshot indexes sections and preserves null headings with stable Note identities', async () => {
   const calls = [];
   const snapshot = await readNoteSourceSnapshot({ topicId: topic.topicId, metadata: metadata(), noteAdapter: {
@@ -59,6 +82,17 @@ test('Note source snapshot indexes sections and preserves null headings with sta
   assert.deepEqual(snapshot.notes.map(({ heading }) => heading), [null, 'First', 'Second']);
   assert.deepEqual(calls.map((input) => input.observe), [true, true, false]);
   assert.equal(calls[1].referenceId, noteReference.referenceId);
+});
+
+test('Note source snapshot reuses content from the authoritative stable browse when supplied', async () => {
+  const calls = [];
+  const entry = { path: 'one.md', text: '# Heading\n\nalpha', revision: 'sha256:one', sourceReference: noteReference };
+  const snapshot = await readNoteSourceSnapshot({ topicId: topic.topicId, metadata: metadata(), noteAdapter: {
+    browse: async (input) => { calls.push(input); return [entry]; },
+    read: async () => { throw new Error('stable browse content must not be read twice'); }
+  } });
+  assert.equal(snapshot.notes[0].text, '# Heading\n\nalpha');
+  assert.deepEqual(calls, [{ observe: true, includeText: true }, { observe: false }]);
 });
 
 test('production Note snapshot registers the exact authoritative Note identity for navigation', async () => {
@@ -73,6 +107,8 @@ test('production Note snapshot registers the exact authoritative Note identity f
     durable.createTopic({ topicId: 'topic-note-snapshot', paraCategory: 'project', lifecycle: 'active' });
     durable.createSourceReference({ version: 1, referenceId: 'folder:note-snapshot', topicId: 'topic-note-snapshot', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
     adapter = new NoteAdapter({ topicId: 'topic-note-snapshot', metadata: durable, root: vault, fsSafeRootFactory });
+    await assert.rejects(readNoteSourceSnapshot({ topicId: 'topic-note-snapshot', metadata: durable, noteAdapter: adapter }), error => error.code === 'source-recovery');
+    await enrollFixtureFolder(durable, 'folder:note-snapshot', vault);
     const before = durable.listSourceReferences('topic-note-snapshot');
     const snapshot = await readNoteSourceSnapshot({ topicId: 'topic-note-snapshot', metadata: durable, noteAdapter: adapter });
     assert.equal(snapshot.notes[0].path, 'fixture.md');
@@ -105,8 +141,66 @@ test('Conversation snapshot uses exact public transcript identities and preserve
   assert.equal(calls.filter((call) => call.method === 'chat.history').length, 2, 'a stable verification read is required');
   assert.equal(snapshot.conversations.length, 2);
   assert.ok(snapshot.conversations.every((row) => row.closed));
-  assert.equal(snapshot.conversations.find((row) => row.provenance === 'imported').importedFrom, 'legacy-discord-v1');
+  const imported = snapshot.conversations.find((row) => row.provenance === 'imported');
+  assert.equal(imported.importedFrom, 'legacy-discord-v1');
+  assert.equal(imported.messageId, 'fictional-imported-message');
   assert.equal(snapshot.conversations[0].contextAfter, 'imported message');
+});
+
+test('Conversation snapshot indexes an empty Session by its authoritative display name', async () => {
+  const emptyMetadata = {
+    ...metadata(),
+    getSessionState: (id) => id === sessionReference.referenceId ? {
+      referenceId: id,
+      sessionId: 'session-one',
+      status: 'closed',
+      isPrimary: false,
+      displayName: 'Empty Fictional Conversation',
+      updatedAt: '2026-08-23T00:03:00.000Z'
+    } : null
+  };
+  const snapshot = await readConversationSourceSnapshot({
+    topicId: topic.topicId,
+    metadata: emptyMetadata,
+    gateway: visibleGateway([])
+  });
+  assert.equal(snapshot.conversations.length, 1);
+  assert.deepEqual(snapshot.conversations[0], {
+    topicId: topic.topicId,
+    sourceReference: sessionReference,
+    sessionKey: sessionReference.externalSourceId,
+    sessionId: 'session-one',
+    messageId: null,
+    name: 'Fictional conversation',
+    date: '2026-08-23T00:03:00.000Z',
+    originatingTopicId: null,
+    role: 'metadata',
+    historyProvenance: 'ordinary',
+    closed: true,
+    primaryState: 'ordinary',
+    provenance: 'native',
+    importedFrom: null,
+    text: 'Fictional conversation',
+    contextBefore: '',
+    contextAfter: ''
+  });
+});
+
+test('Conversation snapshot uses the published exact-identity transcript reader without trusted Gateway authority', async () => {
+  const calls = [];
+  const snapshot = await readConversationSourceSnapshot({
+    topicId: topic.topicId,
+    metadata: metadata(),
+    transcriptReader: async (identity) => {
+      calls.push(identity);
+      return [{ entryId: 'reader-message', createdAt: '2026-08-23T00:02:00.000Z', message: { role: 'user', content: 'published reader message' } }];
+    },
+    gateway: { request: async () => { throw new Error('trusted Gateway authority must not be requested'); } }
+  });
+  assert.equal(calls.length, 2, 'the published transcript reader must receive a stable verification read');
+  assert.deepEqual(calls[0], { agentId: 'main', sessionKey: sessionReference.externalSourceId, sessionId: 'session-one' });
+  assert.equal(snapshot.conversations[0].messageId, 'reader-message');
+  assert.equal(snapshot.conversations[0].text, 'published reader message');
 });
 
 test('Conversation snapshot rejects missing, resetting, malformed, and changing transcript pages', async () => {

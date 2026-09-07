@@ -96,6 +96,12 @@ test('owned projection store publishes a versioned disposable SQLite FTS store',
     };
     const conversationResponse = { schemaVersion: 1, topicId: 'topic-one', query: 'alpha', notes: { results: [] }, conversations: { results: [conversationResult] } };
     await createSearchAdapter({ provider: { query: async () => conversationResponse } }).query({ schemaVersion: 1, topicId: 'topic-one', query: 'alpha' });
+    const emptyConversation = structuredClone(conversationResult);
+    emptyConversation.messageId = null;
+    emptyConversation.navigation.messageId = null;
+    const emptyAdapted = await createSearchAdapter({ provider: { query: async () => ({ ...conversationResponse, conversations: { results: [emptyConversation] } }) } }).query({ schemaVersion: 1, topicId: 'topic-one', query: 'alpha' });
+    assert.equal(emptyAdapted.conversations.results[0].messageId, null);
+    assert.equal(sanitizeBridgeResult('command-center.v1.search.query', emptyAdapted).conversations.results[0].navigation.messageId, null);
     const mismatchedSession = structuredClone(conversationResult);
     mismatchedSession.sourceReference.externalSourceId = 'agent:main:other';
     await assert.rejects(

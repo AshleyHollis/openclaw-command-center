@@ -42,6 +42,11 @@ export function revisionForBytes(bytes) {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
+// A locator may move; the Source Reference identity must not.
+export function effectiveSourceLocator(metadata, reference) {
+  return metadata?.getSourceLocator?.(reference?.referenceId)?.locator ?? reference?.externalSourceId;
+}
+
 export function intentDigest(input) {
   const canonicalize = (value) => {
     if (Array.isArray(value)) return value.map(canonicalize);

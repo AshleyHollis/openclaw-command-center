@@ -3,10 +3,56 @@ import { access, mkdir, mkdtemp, rename as fsRename, rm, symlink } from 'node:fs
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import filesystem from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSourceReference } from '../src/sources/reference.mjs';
 import { createTopicService } from '../src/topics/service.mjs';
+import { createSessionAdapter } from '../src/sources/sessions.mjs';
+import { NoteAdapter } from '../src/sources/notes.mjs';
+import { readConversationSourceSnapshot, readNoteSourceSnapshot } from '../src/search/source-snapshot.mjs';
+import { AuthoritativeSourceService } from '../src/sources/service.mjs';
+
+function pluginSessionBoundary({ sessionId = () => randomUUID(), updatedAt = () => Date.now() } = {}) {
+  const entries = new Map();
+  let ordinal = 0;
+  const sessionStore = {
+    listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })),
+    getSessionEntry: ({ sessionKey }) => entries.get(sessionKey),
+    async patchSessionEntry({ sessionKey, fallbackEntry, replaceEntry, update }) {
+      const existingEntry = entries.get(sessionKey);
+      const current = existingEntry ?? fallbackEntry;
+      if (!current) return null;
+      const patch = await update(current, { existingEntry });
+      if (!patch) return null;
+      const next = replaceEntry ? patch : { ...current, ...patch };
+      entries.set(sessionKey, next);
+      return next;
+    }
+  };
+  const gateway = { async request(method, params) {
+    if (method === 'sessions.create') {
+      assert.equal(params.agentId, 'main');
+      assert.equal(params.key, undefined);
+      assert.match(params.idempotencyKey, /^[0-9a-f-]{36}$/u);
+      assert.equal(params.category, undefined);
+      const key = `agent:main:dashboard:command-center-${++ordinal}`;
+      const entry = {
+        sessionId: sessionId({ key, ordinal, params }),
+        updatedAt: updatedAt({ key, ordinal, params }),
+        label: params.label,
+        category: null,
+        pluginOwnerId: 'command-center'
+      };
+      entries.set(key, entry);
+      return { key, entry };
+    }
+    if (method === 'sessions.list') return { sessions: [...entries].map(([key, entry]) => ({ key, sessionId: entry.sessionId, updatedAt: entry.updatedAt, label: entry.label, category: entry.category })) };
+    throw new Error(`Unexpected ${method}`);
+  } };
+  return { entries, gateway, sessionStore };
+}
 
 async function fixture(run) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-topics-'));
@@ -69,6 +115,10 @@ test('Topic provisioning is durable, grouped only when usable, and preserves ide
     const referenceIds = metadata.listSourceReferences(topicId).map((item) => item.referenceId).sort();
     assert.equal(topics.listGrouped().project.length, 1);
     assert.equal(topics.listGrouped().area.length, 0);
+    const destinationTopic = topics.listDestination().activeGroups.project[0];
+    assert.equal(destinationTopic.noteFolderReferenceId, metadata.listSourceReferences(topicId).find((item) => item.sourceKind === 'note_folder').referenceId);
+    assert.equal(destinationTopic.sourceReferences, undefined);
+    assert.equal(destinationTopic.locators, undefined);
     const before = topics.get(topicId);
     assert.equal(Number.isInteger(before.revision), true);
     const initialLocatorVersion = before.locators.find((item) => item.referenceId.startsWith('note-folder:')).locatorVersion;
@@ -99,6 +149,33 @@ test('Topic provisioning is durable, grouped only when usable, and preserves ide
   });
 });
 
+test('Topic rename preserves a nested Note reference across adapter reopen', async () => {
+  await fixture(async ({ metadata, topics }) => {
+    const created = await topics.create({ name: 'Fictional Note Identity', paraCategory: 'project', logicalOperationId: randomUUID() });
+    const topicId = created.topic.topicId;
+    const folder = metadata.listSourceReferences(topicId).find((reference) => reference.sourceKind === 'note_folder');
+    const options = { metadata, topicId, noteFolderReferenceId: folder.referenceId };
+    const adapter = new NoteAdapter(options);
+    let reopened;
+    try {
+      const original = (await adapter.create({ path: 'nested/evidence.md', text: 'Fictional durable evidence' })).note;
+      await topics.rename({ topicId, name: 'Fictional Note Identity Renamed', expectedRevision: topics.get(topicId).revision, logicalOperationId: randomUUID() });
+      adapter.close();
+      reopened = new NoteAdapter(options);
+      const note = (await reopened.browse()).find((entry) => entry.path === original.path);
+      assert.deepEqual({ referenceId: note.sourceReference.referenceId, revision: note.revision, path: note.path }, { referenceId: original.sourceReference.referenceId, revision: original.revision, path: original.path });
+      const read = await reopened.read({ path: note.path, referenceId: original.sourceReference.referenceId });
+      assert.equal(read.text, original.text);
+      const snapshot = await readNoteSourceSnapshot({ topicId, metadata, noteAdapter: reopened });
+      assert.equal(snapshot.notes[0].sourceReference.referenceId, original.sourceReference.referenceId);
+      assert.equal(snapshot.notes[0].sourceReference.externalSourceId, original.sourceReference.externalSourceId);
+      const service = Object.assign(Object.create(AuthoritativeSourceService.prototype), { metadata });
+      assert.equal(service.assertExactNoteReference({ topicId, referenceId: original.sourceReference.referenceId, path: original.path }).referenceId, original.sourceReference.referenceId);
+      assert.throws(() => service.assertExactNoteReference({ topicId, referenceId: original.sourceReference.referenceId, path: 'unrelated.md' }), /does not match/);
+    } finally { adapter.close(); reopened?.close(); }
+  });
+});
+
 test('structural changes reject a symlinked Note-root ancestor before moving', async () => {
   await fixture(async ({ root, vault, topics }) => {
     const created = await topics.create({ name: 'Ancestor Guard', paraCategory: 'project', logicalOperationId: randomUUID() });
@@ -115,26 +192,25 @@ test('structural changes reject a symlinked Note-root ancestor before moving', a
 test('Topic provisioning activates through the pinned public Session store and verifies the exact durable identity', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-runtime-session-'));
   const vault = path.join(root, 'vault');
-  const entries = new Map();
-  const sessionStore = {
-    listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })),
-    async upsertSessionEntry({ sessionKey, entry }) { entries.set(sessionKey, entry); }
-  };
+  const boundary = pluginSessionBoundary();
   await mkdir(vault, { recursive: true });
   const metadata = openCommandCenterMetadataService({ stateDir: path.join(root, 'state'), capabilities: { notes: true, sessions: true } });
   try {
     const topics = createTopicService({
       metadata,
       noteVaultRoot: vault,
-      sessionStore,
+      gateway: boundary.gateway,
+      sessionStore: boundary.sessionStore,
       schedulerFactory: () => ({ async list() { return []; } })
     });
     const logicalOperationId = randomUUID();
     const created = await topics.create({ name: 'Runtime Session Context', paraCategory: 'project', logicalOperationId });
-    const sessionKey = `agent:main:command-center:${logicalOperationId}`;
+    const sessionKey = metadata.listSourceReferences(created.topic.topicId).find((item) => item.sourceKind === 'session').externalSourceId;
 
     assert.equal(created.topic.lifecycle, 'active');
-    assert.equal(entries.get(sessionKey).label, 'Runtime Session Context');
+    assert.equal(boundary.entries.get(sessionKey).label, 'Runtime Session Context');
+    assert.equal(boundary.entries.get(sessionKey).category, null);
+    assert.equal(boundary.entries.get(sessionKey).pluginOwnerId, 'command-center');
     assert.equal((await topics.listDestinationVerified()).activeGroups.project[0].topicId, created.topic.topicId);
     const archive = await topics.archivePreview({ topicId: created.topic.topicId });
     assert.deepEqual(archive.commitments, []);
@@ -342,7 +418,7 @@ test('Source Recovery reconciles an interrupted folder binding before preserving
     const reference = metadata.listSourceReferences(topicId).find((item) => item.sourceKind === 'note_folder');
     const original = metadata.getSourceLocator(reference.referenceId);
     assert.equal(original.ownership, 'adopted');
-    assert.match(original.observedRevision, /^fs:/u);
+    assert.match(original.observedRevision, /^note-folder:1:/u);
     await rm(original.locator, { recursive: true });
     await topics.markSourceMissing(topicId, reference.referenceId, 'interrupted exact folder recovery');
     const replacement = path.join(vault, 'Custom', 'Interrupted Folder Recovery');
@@ -409,12 +485,10 @@ test('interrupted provisioning retries exact identities and rollback preserves t
     const rollbackTopicId = metadata.getTopicOperation(rollbackOperationId).topicId;
     const rollbackFolder = metadata.getSourceLocator(`note-folder:${rollbackTopicId}`).locator;
     await assert.rejects(rollbackTopics.rollback({ topicId: rollbackTopicId, expectedRevision: metadata.getTopic(rollbackTopicId).revision + 1, logicalOperationId: rollbackOperationId }), /revision is stale/i);
-    const rolledBack = await rollbackTopics.rollback({ topicId: rollbackTopicId, expectedRevision: metadata.getTopic(rollbackTopicId).revision, logicalOperationId: rollbackOperationId });
-    assert.equal(rolledBack.status, 'not-applied');
-    assert.deepEqual(await rollbackTopics.rollback({ topicId: rollbackTopicId, expectedRevision: 0, logicalOperationId: rollbackOperationId }), rolledBack);
-    assert.equal(metadata.getTopic(rollbackTopicId), null);
-    assert.equal(metadata.getTopicOperation(rollbackOperationId).state, 'not-applied');
-    await assert.rejects(access(rollbackFolder));
+    await assert.rejects(rollbackTopics.rollback({ topicId: rollbackTopicId, expectedRevision: metadata.getTopic(rollbackTopicId).revision, logicalOperationId: rollbackOperationId }), /cleanup is not proven safe/i);
+    assert.equal(metadata.getTopic(rollbackTopicId).lifecycle, 'provisioning');
+    assert.notEqual(metadata.getTopicOperation(rollbackOperationId).state, 'not-applied');
+    await access(rollbackFolder);
 
     const unsafeRollbackId = randomUUID();
     await assert.rejects(rollbackTopics.create({ name: 'Changed Rollback Context', paraCategory: 'area', logicalOperationId: unsafeRollbackId }), /rollback interruption/);
@@ -519,17 +593,8 @@ test('provisioning verifies exact authoritative bindings before activation and r
 
 test('provisioning accepts the pinned host entry identity through durable metadata', async () => {
   await fixture(async ({ vault, metadata }) => {
-    const sessions = [];
-    const gateway = { request: async (method, params) => {
-      if (method === 'sessions.create') {
-        const created = { ['k' + 'ey']: params['k' + 'ey'], entry: { sessionId: 'pinned-entry-session', updatedAt: 42 } };
-        sessions.push({ ['k' + 'ey']: params['k' + 'ey'], sessionId: created.entry.sessionId, updatedAt: created.entry.updatedAt });
-        return created;
-      }
-      if (method === 'sessions.list') return { sessions };
-      throw new Error(`Unexpected ${method}`);
-    } };
-    const topics = createTopicService({ metadata, noteVaultRoot: vault, gateway });
+    const boundary = pluginSessionBoundary({ sessionId: () => 'pinned-entry-session', updatedAt: () => 42 });
+    const topics = createTopicService({ metadata, noteVaultRoot: vault, gateway: boundary.gateway, sessionStore: boundary.sessionStore });
     const created = await topics.create({ name: 'Pinned Entry Shape', paraCategory: 'area', logicalOperationId: randomUUID() });
     assert.equal(created.topic.lifecycle, 'active');
     const session = metadata.listSourceReferences(created.topic.topicId).find((item) => item.sourceKind === 'session');
@@ -541,6 +606,11 @@ test('provisioning accepts the pinned host entry identity through durable metada
 test('concurrent same-intent provisioning retries converge without downgrading applied state', async () => {
   await fixture(async ({ vault, metadata }) => {
     let verificationFailure = true;
+    let releaseVerification;
+    let signalVerificationEntered;
+    const verificationEntered = new Promise((resolve) => { signalVerificationEntered = resolve; });
+    const verificationRelease = new Promise((resolve) => { releaseVerification = resolve; });
+    let deferVerification = false;
     const sessionAdapterFactory = ({ metadata: store, topicId }) => ({
       async create() {
         const referenceId = `session:${topicId}`;
@@ -553,8 +623,12 @@ test('concurrent same-intent provisioning retries converge without downgrading a
         return { sourceReference: reference, sessionId: `session-id:${topicId}` };
       },
       async resolveExact({ referenceId }) {
-        await Promise.resolve();
         if (verificationFailure) throw new Error('fictional initial verification failure');
+        if (deferVerification) {
+          deferVerification = false;
+          signalVerificationEntered();
+          await verificationRelease;
+        }
         return store.getSourceReference(referenceId);
       }
     });
@@ -563,8 +637,13 @@ test('concurrent same-intent provisioning retries converge without downgrading a
     await assert.rejects(topics.create({ name: 'Concurrent Provisioning', paraCategory: 'resource', logicalOperationId }), /initial verification failure/);
     const topicId = metadata.getTopicOperation(logicalOperationId).topicId;
     verificationFailure = false;
+    deferVerification = true;
     const input = { topicId, expectedRevision: metadata.getTopic(topicId).revision, logicalOperationId };
-    const [first, second] = await Promise.all([topics.retry(input), topics.retry(input)]);
+    const firstPending = topics.retry(input);
+    await verificationEntered;
+    const secondPending = topics.retry(input);
+    releaseVerification();
+    const [first, second] = await Promise.all([firstPending, secondPending]);
     assert.equal(first.status, 'applied');
     assert.equal(second.status, 'applied');
     assert.equal(metadata.getTopic(topicId).lifecycle, 'active');
@@ -576,16 +655,8 @@ test('concurrent same-intent provisioning retries converge without downgrading a
 
 test('provisioning rollback preserves an unverifiable created Session after activation interruption', async () => {
   await fixture(async ({ vault, metadata }) => {
-    const sessions = [];
-    const gateway = { request: async (method, params) => {
-      if (method === 'sessions.create') {
-        const created = { ['k' + 'ey']: params['k' + 'ey'], sessionId: 'rollback-session-id' };
-        sessions.push(created);
-        return created;
-      }
-      if (method === 'sessions.list') return { sessions };
-      throw new Error(`Unexpected ${method}`);
-    } };
+    await mkdir(path.join(vault, 'Projects', 'Post Session Rollback'), { recursive: true });
+    const boundary = pluginSessionBoundary({ sessionId: () => 'rollback-session-id', updatedAt: () => 73 });
     let interruptActivation = true;
     const interruptingMetadata = {
       ...metadata,
@@ -594,11 +665,13 @@ test('provisioning rollback preserves an unverifiable created Session after acti
         return metadata.completeTopicProvisioning(input);
       }
     };
-    const topics = createTopicService({ metadata: interruptingMetadata, noteVaultRoot: vault, gateway });
+    const topics = createTopicService({ metadata: interruptingMetadata, noteVaultRoot: vault, gateway: boundary.gateway, sessionStore: boundary.sessionStore });
     const logicalOperationId = randomUUID();
     await assert.rejects(topics.create({ name: 'Post Session Rollback', paraCategory: 'project', logicalOperationId }), /activation interruption/);
     const topicId = metadata.getTopicOperation(logicalOperationId).topicId;
     const sessionReference = metadata.listSourceReferences(topicId).find((item) => item.sourceKind === 'session');
+    const locator = metadata.getSourceLocator(sessionReference.referenceId);
+    metadata.setSourceLocator({ ...locator, observedRevision: null });
     assert.equal(metadata.getSourceLocator(sessionReference.referenceId).observedRevision, null);
     await assert.rejects(topics.rollback({ topicId, expectedRevision: metadata.getTopic(topicId).revision, logicalOperationId }), /lacks an authoritative creation revision/);
     assert.equal(metadata.getTopic(topicId).lifecycle, 'provisioning');
@@ -615,27 +688,68 @@ test('concurrent distinct provisioning operations cannot claim one conventional 
       left.create({ name: 'Exclusive Folder Claim', paraCategory: 'project', logicalOperationId: randomUUID() }),
       right.create({ name: 'Exclusive Folder Claim', paraCategory: 'project', logicalOperationId: randomUUID() })
     ]);
-    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1, JSON.stringify(results.map((result) => ({ status: result.status, code: result.reason?.code, message: result.reason?.message }))));
     assert.equal(results.filter((result) => result.status === 'rejected' && /owned|locator|conflict/i.test(result.reason?.message)).length, 1);
     const claims = metadata.listSourceLocators().filter((locator) => locator.locator === path.join(vault, 'Projects', 'Exclusive Folder Claim'));
     assert.equal(claims.length, 1);
   });
 });
 
-test('provisioning rollback removes an exact unchanged Session through the public store seam after restart', async () => {
-  await fixture(async ({ vault, metadata }) => {
-    const entries = new Map();
-    const sessionStore = {
-      listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })),
-      async patchSessionEntry(input) {
-        const existingEntry = entries.get(input.sessionKey);
-        const base = existingEntry ?? input.fallbackEntry;
-        const patch = await input.update(base, { existingEntry });
-        const next = input.replaceEntry ? patch : { ...base, ...patch };
-        entries.set(input.sessionKey, next);
-        return next;
+test('concurrent enrollment waits for marker durability and refuses the losing Folder claim as a conflict', async () => {
+  await fixture(async ({ vault, metadata, sessionAdapterFactory }) => {
+    await mkdir(path.join(vault, 'Projects', 'Enrollment Boundary'), { recursive: true });
+    const originalOpen = filesystem.open;
+    const gate = Promise.withResolvers();
+    const entered = Promise.withResolvers();
+    let timer;
+    let completed = 0;
+    let calls = [];
+    filesystem.open = async function (target, flags, ...args) {
+      const handle = await originalOpen.call(this, target, flags, ...args);
+      if (String(target).endsWith('/.command-center-folder-identity')) {
+        const sync = handle.sync.bind(handle);
+        handle.sync = async (...values) => {
+          entered.resolve();
+          // Publication now uses host-owned atomic staging. Hold the actual
+          // post-publication durability sync, not a mocked domain owner.
+          // Only the test releases it after observing both pending callers.
+          await gate.promise;
+          return sync(...values);
+        };
       }
+      return handle;
     };
+    syncBuiltinESMExports();
+    try {
+      calls = [0, 1].map(() => createTopicService({ metadata, noteVaultRoot: vault, sessionAdapterFactory })
+        .create({ name: 'Enrollment Boundary', paraCategory: 'project', logicalOperationId: randomUUID() })
+        .then(value => { completed++; return { status: 'fulfilled', value }; }, reason => { completed++; return { status: 'rejected', reason }; }));
+      await Promise.race([entered.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('marker sync was not reached')), 45_000); })]);
+      clearTimeout(timer);
+      // Give the competing lock claimant a turn while the actual sync is held.
+      await new Promise(resolve => setTimeout(resolve, 50));
+      assert.equal(completed, 0, 'no caller may complete before marker durability');
+      assert.deepEqual(metadata.listSessionStates(), [], 'no Primary may bind before marker durability');
+      gate.resolve();
+      const results = await Promise.all(calls);
+      const evidence = JSON.stringify(results.map((result) => ({ status: result.status, code: result.reason?.code, message: result.reason?.message })));
+      assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1, evidence);
+      assert.equal(results.filter((result) => result.status === 'rejected' && result.reason?.code === 'conflict').length, 1, evidence);
+      assert.equal(metadata.listSourceLocators().filter((locator) => locator.locator === path.join(vault, 'Projects', 'Enrollment Boundary')).length, 1);
+    } finally {
+      gate.resolve(); clearTimeout(timer);
+      await Promise.all(calls);
+      filesystem.open = originalOpen; syncBuiltinESMExports();
+    }
+  });
+});
+
+async function withInterruptedPluginSessionProvisioning(run) {
+  await fixture(async ({ vault, metadata }) => {
+    // This seam verifies Session cleanup; the pre-existing folder is adopted,
+    // while created marker-bearing folder cleanup has its own conservative test.
+    await mkdir(path.join(vault, 'Projects', 'Restart Rollback Context'), { recursive: true });
+    const boundary = pluginSessionBoundary();
     let interrupted = false;
     const interruptingMetadata = {
       ...metadata,
@@ -645,46 +759,66 @@ test('provisioning rollback removes an exact unchanged Session through the publi
       }
     };
     const logicalOperationId = randomUUID();
-    const first = createTopicService({ metadata: interruptingMetadata, noteVaultRoot: vault, sessionStore });
+    const first = createTopicService({ metadata: interruptingMetadata, noteVaultRoot: vault, gateway: boundary.gateway, sessionStore: boundary.sessionStore });
     await assert.rejects(first.create({ name: 'Restart Rollback Context', paraCategory: 'project', logicalOperationId }), /activation interruption/);
     const topicId = metadata.getTopicOperation(logicalOperationId).topicId;
-    const sessionKey = `agent:main:command-center:${logicalOperationId}`;
-    const restarted = createTopicService({
-      metadata,
-      noteVaultRoot: vault,
-      sessionStore,
-      sessionMessages: async () => ({ messages: [] }),
-      sessionRemover: async ({ sessionKey: exactKey, sessionId, expectedRevision }) => {
-        const entry = entries.get(exactKey);
-        assert.equal(exactKey, sessionKey);
-        assert.equal(entry.sessionId, sessionId);
-        assert.equal(String(entry.updatedAt), expectedRevision);
-        entries.delete(exactKey);
-      }
-    });
+    const sessionReference = metadata.listSourceReferences(topicId).find((item) => item.sourceKind === 'session');
+    await run({ boundary, logicalOperationId, metadata, sessionKey: sessionReference.externalSourceId, topicId, vault });
+  });
+}
+
+test('provisioning rollback refuses an exact Session when history proof is unavailable', async () => {
+  await withInterruptedPluginSessionProvisioning(async ({ boundary, logicalOperationId, metadata, sessionKey, topicId, vault }) => {
     let removalAttempted = false;
     const unverifiable = createTopicService({
       metadata,
       noteVaultRoot: vault,
-      sessionStore,
+      gateway: boundary.gateway,
+      sessionStore: boundary.sessionStore,
       sessionRemover: async () => { removalAttempted = true; }
     });
     await assert.rejects(unverifiable.rollback({ topicId, expectedRevision: metadata.getTopic(topicId).revision, logicalOperationId }), /authoritative proof.*no history/i);
     assert.equal(removalAttempted, false);
-    assert.equal(entries.has(sessionKey), true);
+    assert.equal(boundary.entries.has(sessionKey), true);
+  });
+});
+
+test('provisioning rollback refuses an exact Session that contains history', async () => {
+  await withInterruptedPluginSessionProvisioning(async ({ boundary, logicalOperationId, metadata, sessionKey, topicId, vault }) => {
+    let removalAttempted = false;
     const nonempty = createTopicService({
       metadata,
       noteVaultRoot: vault,
-      sessionStore,
+      gateway: boundary.gateway,
+      sessionStore: boundary.sessionStore,
       sessionMessages: async () => ({ messages: [{ role: 'user', content: 'must be retained' }] }),
       sessionRemover: async () => { removalAttempted = true; }
     });
     await assert.rejects(nonempty.rollback({ topicId, expectedRevision: metadata.getTopic(topicId).revision, logicalOperationId }), /contains history/i);
     assert.equal(removalAttempted, false);
-    assert.equal(entries.has(sessionKey), true);
+    assert.equal(boundary.entries.has(sessionKey), true);
+  });
+});
+
+test('provisioning rollback removes an exact unchanged Session through the public store seam after restart', async () => {
+  await withInterruptedPluginSessionProvisioning(async ({ boundary, logicalOperationId, metadata, sessionKey, topicId, vault }) => {
+    const restarted = createTopicService({
+      metadata,
+      noteVaultRoot: vault,
+      gateway: boundary.gateway,
+      sessionStore: boundary.sessionStore,
+      sessionMessages: async () => ({ messages: [] }),
+      sessionRemover: async ({ sessionKey: exactKey, sessionId, expectedRevision }) => {
+        const entry = boundary.entries.get(exactKey);
+        assert.equal(exactKey, sessionKey);
+        assert.equal(entry.sessionId, sessionId);
+        assert.equal(String(entry.updatedAt), expectedRevision);
+        boundary.entries.delete(exactKey);
+      }
+    });
     const rolledBack = await restarted.rollback({ topicId, expectedRevision: metadata.getTopic(topicId).revision, logicalOperationId });
     assert.equal(rolledBack.status, 'not-applied');
-    assert.equal(entries.has(sessionKey), false);
+    assert.equal(boundary.entries.has(sessionKey), false);
     assert.equal(metadata.getTopic(topicId), null);
   });
 });
@@ -771,7 +905,7 @@ test('missing replacement Primary recovers the exact reference and resumes lifec
   });
 });
 
-test('Session Source Recovery relinks or replaces exact identities while retaining Topic, former reference, and recovery history', async () => {
+test('Session Source Recovery relinks or replaces exact identities while retaining Topic, former reference, and recovery history', async (t) => {
   await fixture(async ({ vault, metadata, sessionAdapterFactory }) => {
     let sessions = [];
     const gateway = { request: async (method) => method === 'sessions.list' ? { sessions } : (() => { throw new Error(`Unexpected ${method}`); })() };
@@ -808,6 +942,30 @@ test('Session Source Recovery relinks or replaces exact identities while retaini
     assert.equal(recoveryRows.length, 1);
     assert.equal(recoveryRows[0].state, 'replaced');
     assert.match(recoveryRows[0].failure, /replacement/);
+    await t.test('browse retains replaced history without blocking the exact replacement', async () => {
+      const sessionStore = { listSessionEntries: () => sessions.map(({ key, ...entry }) => ({ sessionKey: key, entry })) };
+      const adapter = createSessionAdapter({ metadata, topicId, gateway, sessionStore });
+      const listed = await adapter.list();
+      const former = listed.conversations.find((row) => row.referenceId === reference.referenceId);
+      assert.equal(former.availability, 'replaced-unavailable');
+      assert.equal(former.isPrimary, false);
+      assert.equal(listed.conversations.find((row) => row.isPrimary).referenceId, replacement.replacementReferenceId);
+      await assert.rejects(adapter.navigate({ referenceId: reference.referenceId }), /missing or replaced/);
+      await assert.rejects(adapter.history({ referenceId: reference.referenceId }), /missing or replaced/);
+      await assert.rejects(adapter.send({ referenceId: reference.referenceId, logicalOperationId: randomUUID(), message: 'must not dispatch' }), /missing or replaced/);
+    });
+    await t.test('search snapshots exclude unavailable replaced content, not live sources', async () => {
+      const reads = [];
+      const api = { runtime: { agent: { session: { listSessionEntries: () => sessions.map(({ key, ...entry }) => ({ sessionKey: key, entry })) } } } };
+      const snapshot = await readConversationSourceSnapshot({ metadata, topicId, gateway, api, transcriptReader: async ({ sessionKey }) => {
+        reads.push(sessionKey);
+        assert.equal(sessionKey, sessions[0].key, 'deleted former Session must not be read or represented as empty history');
+        return [];
+      } });
+      assert.equal(snapshot.conversations.length, 1);
+      assert.equal(snapshot.conversations[0].sourceReference.referenceId, replacement.replacementReferenceId);
+      assert.equal(reads.length, 2, 'replacement history retains its independent verification read');
+    });
   });
 });
 
@@ -910,32 +1068,18 @@ test('managed Session rename is fenced by exact Session identity and lifecycle r
 test('managed Session rename uses the public Session store with exact identity and revision fencing', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-runtime-rename-'));
   const vault = path.join(root, 'vault');
-  const entries = new Map();
-  const sessionStore = {
-    listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })),
-    async upsertSessionEntry({ sessionKey, entry }) { entries.set(sessionKey, entry); },
-    async patchSessionEntry({ sessionKey, fallbackEntry, replaceEntry, update }) {
-      const existingEntry = entries.get(sessionKey);
-      const current = existingEntry ?? fallbackEntry;
-      if (!current) return null;
-      const patch = await update(current, { existingEntry });
-      if (!patch) return null;
-      const next = replaceEntry ? patch : { ...current, ...patch };
-      entries.set(sessionKey, next);
-      return next;
-    }
-  };
+  const boundary = pluginSessionBoundary();
   await mkdir(vault, { recursive: true });
   const metadata = openCommandCenterMetadataService({ stateDir: path.join(root, 'state'), capabilities: { notes: true, sessions: true } });
   try {
-    const topics = createTopicService({ metadata, noteVaultRoot: vault, sessionStore });
+    const topics = createTopicService({ metadata, noteVaultRoot: vault, gateway: boundary.gateway, sessionStore: boundary.sessionStore });
     const created = await topics.create({ name: 'Runtime Rename', paraCategory: 'project', logicalOperationId: randomUUID() });
     const session = metadata.listSourceReferences(created.topic.topicId).find((item) => item.sourceKind === 'session');
     await topics.rename({ topicId: created.topic.topicId, name: 'Runtime Renamed', expectedRevision: created.topic.revision, logicalOperationId: randomUUID() });
-    assert.equal(entries.get(session.externalSourceId).label, 'Runtime Renamed');
-    entries.set(session.externalSourceId, { ...entries.get(session.externalSourceId), label: 'Customized Session Label' });
+    assert.equal(boundary.entries.get(session.externalSourceId).label, 'Runtime Renamed');
+    boundary.entries.set(session.externalSourceId, { ...boundary.entries.get(session.externalSourceId), label: 'Customized Session Label' });
     await topics.rename({ topicId: created.topic.topicId, name: 'Topic Renamed Again', expectedRevision: topics.get(created.topic.topicId).revision, logicalOperationId: randomUUID() });
-    assert.equal(entries.get(session.externalSourceId).label, 'Customized Session Label');
+    assert.equal(boundary.entries.get(session.externalSourceId).label, 'Customized Session Label');
     assert.equal(metadata.getSourceConventionState(session.referenceId).find((item) => item.aspect === 'display_label').state, 'customized');
   } finally {
     metadata.close();

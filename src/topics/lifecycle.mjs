@@ -7,6 +7,8 @@ import { sourceError } from '../sources/errors.mjs';
 import { conventionalFolderPath, conventionalSessionLabel, sourceConventionManaged, validateParaCategory, validateTopicName } from './conventions.mjs';
 import { createSessionAdapter } from '../sources/sessions.mjs';
 import { assertPreviewConfirmation, freezePlan } from './structural-change.mjs';
+import { readNoteFolderIdentity } from '../sources/note-folder-identity.mjs';
+import { ownsNoteFilesystem, withNoteFilesystemOwner } from '../sources/note-filesystem-owner.mjs';
 
 function nowDefault() { return new Date().toISOString(); }
 
@@ -30,19 +32,7 @@ function revisionsFor(metadata, topicId, extra = []) {
   return [{ source: 'topic', id: topicId, revision: topic?.revision ?? null }, ...extra.map((item) => ({ source: 'reference', id: item.referenceId, revision: item.revision ?? item.observedRevision ?? null }))];
 }
 
-function updateMovedLocator(metadata, referenceId, destination) {
-  const current = metadata.getSourceLocator(referenceId);
-  return metadata.setSourceLocator({
-    referenceId,
-    locator: destination,
-    locatorVersion: current.locatorVersion + 1,
-    ownership: current.ownership,
-    observedRevision: current.observedRevision,
-    createdAt: current.createdAt
-  });
-}
-
-function filesystemIdentity(stat) { return stat ? `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}` : null; }
+async function filesystemIdentity(root) { return readNoteFolderIdentity(root).catch(() => null); }
 
 async function configuredRootFor(candidate, roots) {
   const exact = path.resolve(candidate);
@@ -76,7 +66,8 @@ async function createMoveProof(sourcePath, destinationPath, roots, expectedIdent
   await assertAncestorChain(destinationPath, roots);
   const source = await lstat(sourcePath).catch(() => null);
   if (!source || source.isSymbolicLink() || !source.isDirectory() || await realpath(sourcePath) !== path.resolve(sourcePath)) throw sourceError('source-recovery', 'The exact Note Folder source cannot be proven before relocation.');
-  const identity = filesystemIdentity(source);
+  const identity = await filesystemIdentity(sourcePath);
+  if (!identity) throw sourceError('source-recovery', 'The Note Folder identity marker cannot be proven before relocation.');
   if (expectedIdentity !== null && identity !== expectedIdentity) throw sourceError('source-recovery', 'The exact Note Folder identity changed before relocation.');
   return { sourcePath, destinationPath, identity };
 }
@@ -87,12 +78,12 @@ async function moveReadiness(sourcePath, destinationPath, proof = null, roots = 
   const source = await lstat(sourcePath).catch(() => null);
   const destination = await lstat(destinationPath).catch(() => null);
   if (!source && destination) {
-    if (proof?.sourcePath === sourcePath && proof?.destinationPath === destinationPath && proof?.identity === filesystemIdentity(destination) && destination.isDirectory() && !destination.isSymbolicLink()) return { applied: true };
+    if (proof?.identity && proof.sourcePath === sourcePath && proof.destinationPath === destinationPath && proof.identity === await filesystemIdentity(destinationPath) && destination.isDirectory() && !destination.isSymbolicLink()) return { applied: true };
     throw sourceError('source-recovery', 'The source is missing and the occupied destination cannot be proven to be this operation\'s move.');
   }
   if (!source) throw sourceError('source-recovery', 'The exact Note Folder locator is missing; recovery verification is required.');
   if (source.isSymbolicLink() || !source.isDirectory() || await realpath(sourcePath) !== path.resolve(sourcePath)) throw sourceError('unsafe-path', 'The Note Folder locator is not a real canonical directory.');
-  if (proof && (proof.sourcePath !== sourcePath || proof.destinationPath !== destinationPath || proof.identity !== filesystemIdentity(source))) throw sourceError('source-recovery', 'The exact Note Folder identity changed before relocation.');
+  if (proof && (proof.sourcePath !== sourcePath || proof.destinationPath !== destinationPath || !proof.identity || proof.identity !== await filesystemIdentity(sourcePath))) throw sourceError('source-recovery', 'The exact Note Folder identity changed before relocation.');
   if (destination) throw sourceError('conflict', 'The Structural Change destination is occupied.');
   return { applied: false };
 }
@@ -206,15 +197,49 @@ export class TopicLifecycleService {
     });
   }
 
-  async assertRequiredSourcesAvailable(topicId) {
+  completionBasis(topicId) {
+    const current = this.snapshot(topicId);
+    const folder = current.sourceReferences.find(item => item.sourceSystem === 'obsidian' && item.sourceKind === 'note_folder');
+    const primary = current.sourceReferences.find(reference => reference.sourceKind === 'session' && this.metadata.getSessionState(reference.referenceId)?.isPrimary);
+    return structuredClone({ expectedRevision: current.revision, folder: folder ? this.metadata.getSourceLocator(folder.referenceId) : null, conventions: current.convention, primary: primary ? this.metadata.getSessionState(primary.referenceId) : null });
+  }
+
+  completedSnapshot(operation) {
+    if (!operation.result?.snapshot) throw sourceError('source-recovery', 'Legacy Structural Change has no immutable completion receipt.');
+    return structuredClone(operation.result.snapshot);
+  }
+
+  readinessSessionStates(snapshot) {
+    return snapshot.sourceReferences.filter(reference => reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session').map(reference => this.metadata.getSessionState(reference.referenceId));
+  }
+
+  assertReadinessSnapshot(snapshot, sessionStates) {
+    const current = this.snapshot(snapshot.topicId);
+    if (current.recovery.some(item => item.state === 'required')) throw sourceError('source-recovery', 'Required Topic source recovery must be resolved before this lifecycle operation.');
+    if (JSON.stringify(current) !== JSON.stringify(snapshot) || JSON.stringify(this.readinessSessionStates(current)) !== JSON.stringify(sessionStates)) throw sourceError('conflict', 'Topic sources changed during readiness verification; prepare a current preview.');
+  }
+
+  async assertRequiredSourcesAvailable(topicId, operation = null) {
+    if (!ownsNoteFilesystem(this.metadata)) {
+      const retainedOperation = operation === null ? null : structuredClone(operation);
+      return withNoteFilesystemOwner(this.metadata, () => this.assertRequiredSourcesAvailable(topicId, retainedOperation));
+    }
     const current = this.snapshot(topicId);
     if (current.recovery.some((item) => item.state === 'required')) throw sourceError('source-recovery', 'Required Topic source recovery must be resolved before this lifecycle operation.');
+    const sessionStates = this.readinessSessionStates(current);
     const folder = current.sourceReferences.find((item) => item.sourceSystem === 'obsidian' && item.sourceKind === 'note_folder');
     const folderLocator = folder ? this.metadata.getSourceLocator?.(folder.referenceId) : null;
-    const folderPath = folderLocator?.locator;
+    let folderPath = folderLocator?.locator;
+    const proof = operation?.result?.moveProof;
+    if (proof && proof.sourcePath === folderPath && proof.identity === folderLocator?.observedRevision) {
+      const readiness = await moveReadiness(proof.sourcePath, proof.destinationPath, proof, this.noteVaultRoots);
+      if (readiness.applied) folderPath = proof.destinationPath;
+    }
     const folderStat = folderPath ? await lstat(folderPath).catch(() => null) : null;
-    const observedIdentity = folderStat ? filesystemIdentity(folderStat) : null;
-    if (!folder || !folderLocator?.observedRevision || !folderStat?.isDirectory() || folderStat.isSymbolicLink() || await realpath(folderPath).catch(() => null) !== path.resolve(folderPath) || observedIdentity !== folderLocator.observedRevision) {
+    const observedIdentity = folderStat ? await filesystemIdentity(folderPath) : null;
+    const canonicalFolderPath = folderStat ? await realpath(folderPath).catch(() => null) : null;
+    this.assertReadinessSnapshot(current, sessionStates);
+    if (!folder || !folderLocator?.observedRevision || !folderStat?.isDirectory() || folderStat.isSymbolicLink() || canonicalFolderPath !== path.resolve(folderPath) || observedIdentity !== folderLocator.observedRevision) {
       const error = sourceError('source-recovery', 'The exact required Note Folder identity is unavailable or changed.');
       await this.recordFolderRecovery(topicId, error);
       throw error;
@@ -234,6 +259,7 @@ export class TopicLifecycleService {
       const adapter = this.sessionAdapterFactory({ metadata: this.metadata, gateway: this.gateway, sessionStore: this.sessionStore, topicId });
       verified = adapter?.resolveExact ? Boolean(await adapter.resolveExact({ referenceId: primary.referenceId })) : true;
     }
+    this.assertReadinessSnapshot(current, sessionStates);
     if (!verified) {
       const error = sourceError('source-recovery', 'The exact required Primary Session is unavailable.');
       await this.recordSessionRecovery(topicId, error, primary?.referenceId);
@@ -243,84 +269,101 @@ export class TopicLifecycleService {
   }
 
   async rename(input = {}) {
+    input = structuredClone(input);
+    if (!ownsNoteFilesystem(this.metadata)) return withNoteFilesystemOwner(this.metadata, () => this.rename(input));
     const topicId = String(input.topicId ?? '').trim();
     const name = validateTopicName(input.name);
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
+    input = structuredClone(input);
+    const previous = this.metadata.getTopicOperation(logicalOperationId);
+    if (previous) {
+      if (previous.operationKind !== 'topics.rename' || previous.intent?.topicId !== topicId || previous.intent?.name !== name || previous.intent?.expectedRevision !== input.expectedRevision) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different rename intent.');
+      if (previous.state === 'applied') return this.completedSnapshot(previous);
+    }
     const current = this.snapshot(topicId);
+    const completion = previous?.intent?.completion ?? this.completionBasis(topicId);
+    const conventionChanges = structuredClone(previous?.intent?.preparedConventions ?? []);
     if (current.lifecycle !== 'active' || current.paraCategory === 'archive' || current.recovery.some((item) => item.state === 'required')) throw sourceError('archived-read-only', 'Only an active Topic without unresolved Source Recovery can be renamed.');
     if (!Number.isInteger(input.expectedRevision) || input.expectedRevision !== current.revision) throw sourceError('conflict', 'Topic revision is stale.', { currentRevision: current.revision, expectedRevision: input.expectedRevision });
-    await this.assertRequiredSourcesAvailable(topicId);
-    const previous = this.metadata.getTopicOperation(logicalOperationId);
+    await this.assertRequiredSourcesAvailable(topicId, previous);
     const folder = sourceRef(this.metadata, topicId, 'obsidian', 'note_folder');
     const folderLocator = folder ? this.metadata.getSourceLocator?.(folder.referenceId) : null;
     const folderStates = folder ? this.metadata.getSourceConventionState(folder.referenceId) : [];
     const folderNameState = folderStates.find((item) => item.aspect === 'name');
     const folderNameCustomized = Boolean(!previous && folder && folderLocator && folderNameState?.state === 'managed' && folderNameState.expectedValue && path.basename(folderLocator.locator) !== folderNameState.expectedValue);
     if (folderNameCustomized) {
-      this.metadata.setSourceConventionState({ referenceId: folder.referenceId, aspect: 'name', state: 'customized', expectedValue: folderNameState.expectedValue });
+      conventionChanges.push({ referenceId: folder.referenceId, aspect: 'name', state: 'customized', expectedValue: folderNameState.expectedValue });
     }
-    const relocation = previous?.intent?.relocation ?? (folder && folderLocator && !folderNameCustomized && sourceConventionManaged(folderStates, 'name')
+    const relocation = previous ? previous.intent.relocation : (folder && folderLocator && !folderNameCustomized && sourceConventionManaged(folderStates, 'name')
       ? { referenceId: folder.referenceId, from: folderLocator.locator, to: path.join(path.dirname(folderLocator.locator), name) }
       : null);
-    const intent = { topicId, name, expectedRevision: previous?.intent?.expectedRevision ?? current.revision, relocation };
+    const intent = { topicId, name, expectedRevision: input.expectedRevision, relocation, completion, preparedConventions: structuredClone(conventionChanges) };
     if (previous) {
       if (previous.intent?.topicId !== topicId || previous.intent?.name !== name) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different rename intent.');
-      if (previous.state === 'applied') return this.snapshot(topicId);
-    } else this.metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.rename', state: 'pending', currentStep: 'prepare', intent, updatedAt: this.now() });
+      if (previous.state === 'applied') return this.completedSnapshot(previous);
+    } else this.metadata.recordStructuralChange({ logicalOperationId, topicId, operationKind: 'topics.rename', state: 'pending', currentStep: 'prepare', intent, updatedAt: this.now() });
     try {
       if (relocation) {
         const moveProof = previous?.result?.moveProof ?? await createMoveProof(relocation.from, relocation.to, this.noteVaultRoots, folderLocator.observedRevision);
-        this.metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.rename', state: 'pending', currentStep: 'folder-move', intent, result: { moveProof }, updatedAt: this.now() });
+        this.metadata.recordStructuralChange({ logicalOperationId, topicId, operationKind: 'topics.rename', state: 'pending', currentStep: 'folder-move', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), moveProof }, updatedAt: this.now() });
         await checkedMove(relocation.from, relocation.to, moveProof, this.noteVaultRoots);
-        if (this.metadata.getSourceLocator(relocation.referenceId).locator !== relocation.to) updateMovedLocator(this.metadata, relocation.referenceId, relocation.to);
-        this.metadata.setSourceConventionState({ referenceId: relocation.referenceId, aspect: 'name', state: 'managed', expectedValue: name });
+        conventionChanges.push({ referenceId: relocation.referenceId, aspect: 'name', state: 'managed', expectedValue: name });
       }
-      this.metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.rename', state: 'pending', currentStep: 'session-label', intent, result: this.metadata.getTopicOperation(logicalOperationId)?.result, updatedAt: this.now() });
+      this.metadata.recordStructuralChange({ logicalOperationId, topicId, operationKind: 'topics.rename', state: 'pending', currentStep: 'session-label', intent, result: this.metadata.getTopicOperation(logicalOperationId)?.result, updatedAt: this.now() });
       const sessions = this.metadata.listSourceReferences(topicId).filter((reference) => reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session');
       const session = sessions.find((reference) => this.metadata.getSessionState?.(reference.referenceId)?.isPrimary) ?? sessions[0];
       const sessionStates = session ? this.metadata.getSourceConventionState(session.referenceId) : [];
       const sessionLabelState = sessionStates.find((item) => item.aspect === 'display_label');
       const observedSessionLabel = session ? await this.observeSessionLabel(session) : null;
       if (session && sessionLabelState?.state === 'managed' && sessionLabelState.expectedValue && observedSessionLabel !== null && observedSessionLabel !== sessionLabelState.expectedValue) {
-        this.metadata.setSourceConventionState({ referenceId: session.referenceId, aspect: 'display_label', state: 'customized', expectedValue: sessionLabelState.expectedValue });
+        conventionChanges.push({ referenceId: session.referenceId, aspect: 'display_label', state: 'customized', expectedValue: sessionLabelState.expectedValue });
       } else if (session && sourceConventionManaged(sessionStates, 'display_label')) {
         const label = conventionalSessionLabel(topicId, name);
         await this.renameSession(session, label, logicalOperationId);
-        this.metadata.setSourceConventionState({ referenceId: session.referenceId, aspect: 'display_label', state: 'managed', expectedValue: label });
+        conventionChanges.push({ referenceId: session.referenceId, aspect: 'display_label', state: 'managed', expectedValue: label });
       }
-      this.metadata.setTopicName({ topicId, name, expectedRevision: intent.expectedRevision });
-      this.metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.rename', state: 'applied', currentStep: 'complete', intent, result: { topicId, name }, updatedAt: this.now() });
-      return this.snapshot(topicId);
+      const verifiedFolderIdentity = relocation ? await filesystemIdentity(relocation.to) : undefined;
+      return this.metadata.completeStructuralChange({ logicalOperationId, operationKind: 'topics.rename', intent, conventionChanges, verifiedFolderIdentity, updatedAt: this.now() });
     } catch (error) {
       if (error?.code === 'source-recovery') {
         if (String(error?.message ?? '').toLowerCase().includes('session')) await this.recordSessionRecovery(topicId, error);
         else await this.recordFolderRecovery(topicId, error);
       }
-      this.metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.rename', state: error?.code === 'conflict' ? 'conflict' : 'unknown', currentStep: 'interrupted', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), error: String(error?.code ?? 'rename-failed') }, updatedAt: this.now() });
+      this.metadata.recordStructuralChange({ logicalOperationId, topicId, operationKind: 'topics.rename', state: error?.code === 'conflict' ? 'conflict' : 'unknown', currentStep: 'interrupted', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), error: String(error?.code ?? 'rename-failed') }, updatedAt: this.now() });
       throw error;
     }
   }
 
-  async replacePrimarySession(input = {}) {
+  async replacePrimarySession(input = {}, runtime = {}) {
+    input = structuredClone(input);
     const topicId = String(input.topicId ?? '').trim();
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
-    const current = this.snapshot(topicId);
-    if (current.lifecycle !== 'active' || current.paraCategory === 'archive' || current.recovery.some((item) => item.state === 'required')) throw sourceError('conflict', 'Primary Session replacement requires a writable active Topic.');
-    if (!Number.isInteger(input.expectedRevision) || input.expectedRevision !== current.revision) throw sourceError('conflict', 'Topic revision is stale.');
     const existing = this.metadata.getTopicOperation(logicalOperationId);
     if (existing) {
-      if (existing.operationKind !== 'topics.replace-primary-session' || existing.intent?.topicId !== topicId) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Primary Session replacement intent.');
-      if (existing.state === 'applied') return this.snapshot(topicId);
-    } else this.metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.replace-primary-session', state: 'pending', currentStep: 'create-session', intent: { topicId, expectedRevision: current.revision }, updatedAt: this.now() });
-    const factory = this.sessionAdapterFactory ?? ((options) => createSessionAdapter(options));
+      if (existing.operationKind !== 'topics.replace-primary-session' || existing.intent?.topicId !== topicId || existing.intent?.expectedRevision !== input.expectedRevision) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Primary Session replacement intent.');
+      if (existing.state === 'applied') return this.completedSnapshot(existing);
+      const retained = existing.intent.completion;
+      if (!retained || !Number.isInteger(retained.expectedRevision) || retained.expectedRevision !== input.expectedRevision || !Array.isArray(retained.conventions) || !retained.primary?.referenceId || !retained.primary?.sessionId || !retained.folder?.observedRevision || !Number.isInteger(retained.folder?.locatorVersion)) throw sourceError('source-recovery', 'Pending Primary replacement lacks its original completion basis; explicit recovery is required before native creation.');
+    }
+    const current = this.snapshot(topicId);
+    if (current.lifecycle !== 'active' || current.paraCategory === 'archive' || current.recovery.some(item => item.state === 'required')) throw sourceError('conflict', 'Primary Session replacement requires a writable active Topic.');
+    if (!Number.isInteger(input.expectedRevision) || input.expectedRevision !== current.revision) throw sourceError('conflict', 'Topic revision is stale.');
+    const completion = existing ? existing.intent.completion : this.completionBasis(topicId);
+    const intent = { topicId, expectedRevision: input.expectedRevision, completion };
+    if (!existing) this.metadata.recordStructuralChange({ logicalOperationId, topicId, operationKind: 'topics.replace-primary-session', state: 'pending', currentStep: 'create-session', intent, updatedAt: this.now() });
+    const factory = this.sessionAdapterFactory ?? (options => createSessionAdapter(options));
     const adapter = factory({ metadata: this.metadata, gateway: this.gateway, sessionStore: this.sessionStore, topicId });
-    const created = unwrap(await adapter.create({ label: conventionalSessionLabel(topicId, current.name), isPrimary: true, logicalOperationId, requestId: logicalOperationId }));
+    const created = unwrap(await adapter.create({ label: conventionalSessionLabel(topicId, current.name), isPrimary: false, logicalOperationId, requestId: logicalOperationId }, runtime));
+    const afterCreate = this.metadata.getTopicOperation(logicalOperationId);
+    if (afterCreate?.operationKind !== 'topics.replace-primary-session' || afterCreate.topicId !== topicId || JSON.stringify(afterCreate.intent) !== JSON.stringify(intent)) throw sourceError('intent-mismatch', 'Primary Session creation no longer owns its original Structural Change intent.');
+    // A duplicate may finish creation readback after its peer promoted the same
+    // Session. Return that exact receipt before interpreting the now-Primary state.
+    if (afterCreate.state === 'applied') return this.completedSnapshot(afterCreate);
     const reference = created?.sourceReference ?? this.metadata.getSourceReference(created?.referenceId);
-    if (!reference || !this.metadata.getSessionState(reference.referenceId)?.isPrimary) throw sourceError('source-recovery', 'Replacement Session did not become the exact Primary Session.');
-    this.metadata.setSourceConventionState({ referenceId: reference.referenceId, aspect: 'display_label', state: 'managed' });
-    this.metadata.updateTopic({ topicId, paraCategory: current.paraCategory, expectedRevision: current.revision });
-    this.metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.replace-primary-session', state: 'applied', currentStep: 'complete', intent: { topicId, expectedRevision: current.revision }, result: { referenceId: reference.referenceId }, updatedAt: this.now() });
-    return this.snapshot(topicId);
+    const replacement = reference ? this.metadata.getSessionState(reference.referenceId) : null;
+    if (!reference || reference.topicId !== topicId || !replacement?.sessionId || replacement.status !== 'open' || replacement.isPrimary) throw sourceError('source-recovery', 'Replacement creation did not retain the exact non-Primary Session.');
+    this.metadata.recordStructuralChange({ logicalOperationId, topicId, operationKind: 'topics.replace-primary-session', state: 'pending', currentStep: 'select-primary', intent, result: { replacement }, updatedAt: this.now() });
+    return this.metadata.completeStructuralChange({ logicalOperationId, operationKind: 'topics.replace-primary-session', intent, updatedAt: this.now() });
   }
 
   async renameSession(reference, label, logicalOperationId) {
@@ -394,40 +437,46 @@ export class TopicLifecycleService {
   }
 
   async recategorizeConfirm(input = {}) {
+    input = structuredClone(input);
+    if (!ownsNoteFilesystem(this.metadata)) return withNoteFilesystemOwner(this.metadata, () => this.recategorizeConfirm(input));
+    input = structuredClone(input);
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const completed = this.metadata.getTopicOperation(logicalOperationId);
+    if (completed) {
+      if (completed.operationKind !== 'topics.recategorize' || completed.intent?.topicId !== input.topicId || completed.intent?.previewDigest !== (input.previewDigest ?? input.digest) || (input.paraCategory !== undefined && input.paraCategory !== completed.intent?.preview?.to)) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Structural Change request.');
+      assertPreviewConfirmation(completed.intent.preview, input);
+    }
     if (completed?.state === 'applied') {
       if (completed.intent?.topicId !== input.topicId || completed.intent?.previewDigest !== input.previewDigest) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Structural Change intent.');
-      return this.snapshot(input.topicId);
+      return this.completedSnapshot(completed);
     }
     const preview = completed?.intent?.preview ?? this.recategorizePreview({ topicId: input.topicId, paraCategory: input.paraCategory ?? input.preview?.to });
     assertPreviewConfirmation(preview, input);
+    const completion = completed?.intent?.completion ?? this.completionBasis(preview.topicId);
     const previous = this.metadata.getTopicOperation(logicalOperationId);
     if (previous?.state === 'applied') {
       if (previous.intent?.previewDigest !== preview.digest || previous.intent?.topicId !== preview.topicId || previous.intent?.paraCategory !== preview.to) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Structural Change intent.');
-      return this.snapshot(preview.topicId);
+      return this.completedSnapshot(previous);
     }
-    const current = await this.assertRequiredSourcesAvailable(preview.topicId);
+    await this.assertRequiredSourcesAvailable(preview.topicId, completed);
     this.assertExpectedRevisions(preview.topicId, preview.expectedRevisions);
-    const intent = { previewDigest: preview.digest, topicId: preview.topicId, paraCategory: preview.to, preview };
-    this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.recategorize', state: 'pending', currentStep: 'relocate', intent, result: previous?.result, updatedAt: this.now() });
+    const intent = { previewDigest: preview.digest, topicId: preview.topicId, paraCategory: preview.to, preview, completion };
+    this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.recategorize', state: 'pending', currentStep: 'relocate', intent, result: previous?.result, updatedAt: this.now() });
     try {
       const relocation = preview.changes.find((change) => change.aspect === 'note-folder-location');
       if (relocation) {
         const folder = sourceRef(this.metadata, preview.topicId, 'obsidian', 'note_folder');
         const folderLocator = this.metadata.getSourceLocator(folder.referenceId);
         const moveProof = previous?.result?.moveProof ?? await createMoveProof(relocation.from, relocation.to, this.noteVaultRoots, folderLocator?.observedRevision ?? null);
-        this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.recategorize', state: 'pending', currentStep: 'folder-move', intent, result: { moveProof }, updatedAt: this.now() });
+        this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.recategorize', state: 'pending', currentStep: 'folder-move', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), moveProof }, updatedAt: this.now() });
         await checkedMove(relocation.from, relocation.to, moveProof, this.noteVaultRoots);
-        if (this.metadata.getSourceLocator(folder.referenceId).locator !== relocation.to) updateMovedLocator(this.metadata, folder.referenceId, relocation.to);
       }
-      const latest = this.metadata.getTopic(preview.topicId);
-      this.metadata.updateTopic({ topicId: preview.topicId, paraCategory: preview.to, expectedRevision: latest.revision });
-      this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.recategorize', state: 'applied', currentStep: 'complete', intent, result: { topicId: preview.topicId, paraCategory: preview.to }, updatedAt: this.now() });
-      return this.snapshot(preview.topicId);
+      const move = intent.preview.changes.find(change => change.aspect === 'note-folder-location');
+      const verifiedFolderIdentity = move ? await filesystemIdentity(move.to) : undefined;
+      return this.metadata.completeStructuralChange({ logicalOperationId, operationKind: 'topics.recategorize', intent, verifiedFolderIdentity, updatedAt: this.now() });
     } catch (error) {
       if (error?.code === 'source-recovery') await this.recordFolderRecovery(preview.topicId, error);
-      this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.recategorize', state: error?.code === 'conflict' ? 'conflict' : 'unknown', currentStep: 'interrupted', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), error: String(error?.code ?? 'recategorization-failed') }, updatedAt: this.now() });
+      this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.recategorize', state: error?.code === 'conflict' ? 'conflict' : 'unknown', currentStep: 'interrupted', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), error: String(error?.code ?? 'recategorization-failed') }, updatedAt: this.now() });
       throw error;
     }
   }
@@ -456,10 +505,14 @@ export class TopicLifecycleService {
   }
 
   async archivePreview(input = {}) {
+    input = structuredClone(input);
+    if (!ownsNoteFilesystem(this.metadata)) return withNoteFilesystemOwner(this.metadata, () => this.archivePreview(input));
     const topicId = String(input.topicId ?? '').trim();
     const current = await this.assertRequiredSourcesAvailable(topicId);
     if (current.lifecycle !== 'active' || current.paraCategory === 'archive') throw sourceError('invalid-request', 'Only an active non-Archive Topic can be archived.');
+    const sessionStates = this.readinessSessionStates(current);
     const commitments = await this.listCommitmentRecords(topicId);
+    this.assertReadinessSnapshot(current, sessionStates);
     if (commitments.some((item) => typeof item.revision !== 'string' || item.revision.trim() === '' || typeof item.enabled !== 'boolean')) {
       throw sourceError('source-recovery', 'Archive commitment accounting requires an exact revision and enabled state for every linked commitment.');
     }
@@ -467,24 +520,33 @@ export class TopicLifecycleService {
     const locator = folder ? current.locators.find((item) => item.referenceId === folder.referenceId) : null;
     const folderStates = folder ? current.convention.filter((item) => item.referenceId === folder.referenceId) : [];
     const destination = locator && sourceConventionManaged(folderStates, 'location') ? conventionalFolderPath(this.noteRootFor(locator.locator), 'archive', path.basename(locator.locator)) : null;
-    return freezePlan({ kind: 'archive', topicId, expectedRevisions: revisionsFor(this.metadata, topicId, commitments), commitments: commitments.map(({ referenceId, revision, kind, enabled }) => ({ referenceId, revision, kind, enabled, disposition: enabled ? 'disable-and-retain' : 'no-op' })), changes: [{ aspect: 'category', from: current.paraCategory, to: 'archive' }, ...(destination ? [{ aspect: 'note-folder-location', from: locator.locator, to: destination, managed: true }] : [])], policy: 'disable-and-retain' });
+    const expectedRevisions = [{ source: 'topic', id: topicId, revision: current.revision }, ...commitments.map(item => ({ source: 'reference', id: item.referenceId, revision: item.revision }))];
+    return freezePlan({ kind: 'archive', topicId, expectedRevisions, commitments: commitments.map(({ referenceId, revision, kind, enabled }) => ({ referenceId, revision, kind, enabled, disposition: enabled ? 'disable-and-retain' : 'no-op' })), changes: [{ aspect: 'category', from: current.paraCategory, to: 'archive' }, ...(destination ? [{ aspect: 'note-folder-location', from: locator.locator, to: destination, managed: true }] : [])], policy: 'disable-and-retain' });
   }
 
   async archiveConfirm(input = {}) {
+    input = structuredClone(input);
+    if (!ownsNoteFilesystem(this.metadata)) return withNoteFilesystemOwner(this.metadata, () => this.archiveConfirm(input));
+    input = structuredClone(input);
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const completed = this.metadata.getTopicOperation(logicalOperationId);
+    if (completed) {
+      if (completed.operationKind !== 'topics.archive' || completed.intent?.topicId !== input.topicId || completed.intent?.previewDigest !== (input.previewDigest ?? input.digest) || (input.paraCategory !== undefined && input.paraCategory !== completed.intent?.preview?.to)) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Structural Change request.');
+      assertPreviewConfirmation(completed.intent.preview, input);
+    }
     if (completed?.state === 'applied') {
       if (completed.intent?.topicId !== input.topicId || completed.intent?.previewDigest !== input.previewDigest) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Archive intent.');
-      return this.snapshot(input.topicId);
+      return this.completedSnapshot(completed);
     }
     const preview = completed?.intent?.preview ?? await this.archivePreview({ topicId: input.topicId });
     assertPreviewConfirmation(preview, input);
+    const completion = completed?.intent?.completion ?? this.completionBasis(preview.topicId);
     const previous = this.metadata.getTopicOperation(logicalOperationId);
     if (previous?.state === 'applied') {
       if (previous.intent?.previewDigest !== preview.digest || previous.intent?.topicId !== preview.topicId) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Archive intent.');
-      return this.snapshot(preview.topicId);
+      return this.completedSnapshot(previous);
     }
-    await this.assertRequiredSourcesAvailable(preview.topicId);
+    await this.assertRequiredSourcesAvailable(preview.topicId, completed);
     this.assertExpectedRevisions(preview.topicId, preview.expectedRevisions.filter((item) => item.source === 'topic'));
     const observedCommitments = await this.listCommitmentRecords(preview.topicId);
     const reconciledCommitments = new Set(previous?.result?.reconciledCommitments ?? []);
@@ -495,9 +557,9 @@ export class TopicLifecycleService {
       const retryableOperationPostcondition = previous?.state === 'unknown' && operationOwnedAttempt && item.enabled === true && observed?.kind === item.kind && observed.enabled === false;
       return !exact && !retryableOperationPostcondition;
     })) throw sourceError('conflict', 'Archive commitment accounting changed after preview.');
-    const intent = { previewDigest: preview.digest, topicId: preview.topicId, commitments: preview.commitments, preview };
+    const intent = { previewDigest: preview.digest, topicId: preview.topicId, commitments: preview.commitments, preview, completion };
     const relocation = preview.changes.find((change) => change.aspect === 'note-folder-location');
-    this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: 'pending', currentStep: 'relocate', intent, result: previous?.result, updatedAt: this.now() });
+    this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: 'pending', currentStep: 'relocate', intent, result: previous?.result, updatedAt: this.now() });
     try {
       const scheduler = this.schedulerFactory?.(preview.topicId);
       for (const commitment of preview.commitments) {
@@ -505,13 +567,13 @@ export class TopicLifecycleService {
         if (!observed) throw sourceError('conflict', 'A previewed archive commitment can no longer be resolved.');
         if (commitment.enabled && !reconciledCommitments.has(commitment.referenceId)) {
           const dispositionOperationId = derivedUuid(`${logicalOperationId}:${commitment.disposition}:${commitment.referenceId}`);
-          this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: 'pending', currentStep: `commitment:${commitment.referenceId}`, intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), attemptingCommitment: commitment.referenceId, reconciledCommitments: [...reconciledCommitments] }, updatedAt: this.now() });
+          this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: 'pending', currentStep: `commitment:${commitment.referenceId}`, intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), attemptingCommitment: commitment.referenceId, reconciledCommitments: [...reconciledCommitments] }, updatedAt: this.now() });
           if (commitment.disposition !== 'disable-and-retain') throw sourceError('invalid-request', 'Archive commitments require disable-and-retain accounting.');
           if (!scheduler?.setEnabled) throw sourceError('capability-unavailable', 'Scheduler capability cannot disable archive commitments.');
           await scheduler.setEnabled({ referenceId: commitment.referenceId, enabled: false, expectedConfigRevision: commitment.revision, logicalOperationId: dispositionOperationId });
         }
         reconciledCommitments.add(commitment.referenceId);
-        this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: 'pending', currentStep: `commitment:${commitment.referenceId}`, intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), reconciledCommitments: [...reconciledCommitments] }, updatedAt: this.now() });
+        this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: 'pending', currentStep: `commitment:${commitment.referenceId}`, intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), reconciledCommitments: [...reconciledCommitments] }, updatedAt: this.now() });
       }
       if ((await this.listCommitments(preview.topicId)).length) throw sourceError('conflict', 'Archive commitment disables could not be verified.');
       let moveProof = this.metadata.getTopicOperation(logicalOperationId)?.result?.moveProof;
@@ -520,20 +582,18 @@ export class TopicLifecycleService {
         const folderLocator = folder ? this.metadata.getSourceLocator(folder.referenceId) : null;
         moveProof ??= await createMoveProof(relocation.from, relocation.to, this.noteVaultRoots, folderLocator?.observedRevision ?? null);
         await moveReadiness(relocation.from, relocation.to, moveProof, this.noteVaultRoots);
-        this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: 'pending', currentStep: 'relocation-proof', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), moveProof }, updatedAt: this.now() });
+        this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: 'pending', currentStep: 'relocation-proof', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), moveProof }, updatedAt: this.now() });
       }
       if (relocation) {
         const folder = sourceRef(this.metadata, preview.topicId, 'obsidian', 'note_folder');
         await checkedMove(relocation.from, relocation.to, moveProof, this.noteVaultRoots);
-        if (this.metadata.getSourceLocator(folder.referenceId).locator !== relocation.to) updateMovedLocator(this.metadata, folder.referenceId, relocation.to);
       }
-      const latest = this.metadata.getTopic(preview.topicId);
-      this.metadata.updateTopic({ topicId: preview.topicId, paraCategory: 'archive', expectedRevision: latest.revision });
-      this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: 'applied', currentStep: 'complete', intent, result: { topicId: preview.topicId, paraCategory: 'archive' }, updatedAt: this.now() });
-      return this.snapshot(preview.topicId);
+      const move = intent.preview.changes.find(change => change.aspect === 'note-folder-location');
+      const verifiedFolderIdentity = move ? await filesystemIdentity(move.to) : undefined;
+      return this.metadata.completeStructuralChange({ logicalOperationId, operationKind: 'topics.archive', intent, verifiedFolderIdentity, updatedAt: this.now() });
     } catch (error) {
       if (error?.code === 'source-recovery') await this.recordFolderRecovery(preview.topicId, error);
-      this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: error?.code === 'conflict' ? 'conflict' : 'unknown', currentStep: 'interrupted', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), error: String(error?.code ?? 'archive-failed') }, updatedAt: this.now() });
+      this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.archive', state: error?.code === 'conflict' ? 'conflict' : 'unknown', currentStep: 'interrupted', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), error: String(error?.code ?? 'archive-failed') }, updatedAt: this.now() });
       throw error;
     }
   }
@@ -551,41 +611,47 @@ export class TopicLifecycleService {
   }
 
   async restoreConfirm(input = {}) {
+    input = structuredClone(input);
+    if (!ownsNoteFilesystem(this.metadata)) return withNoteFilesystemOwner(this.metadata, () => this.restoreConfirm(input));
+    input = structuredClone(input);
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const completed = this.metadata.getTopicOperation(logicalOperationId);
+    if (completed) {
+      if (completed.operationKind !== 'topics.restore' || completed.intent?.topicId !== input.topicId || completed.intent?.previewDigest !== (input.previewDigest ?? input.digest) || (input.paraCategory !== undefined && input.paraCategory !== completed.intent?.preview?.to)) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Structural Change request.');
+      assertPreviewConfirmation(completed.intent.preview, input);
+    }
     if (completed?.state === 'applied') {
       if (completed.intent?.topicId !== input.topicId || completed.intent?.previewDigest !== input.previewDigest) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Restore intent.');
-      return this.snapshot(input.topicId);
+      return this.completedSnapshot(completed);
     }
     const preview = completed?.intent?.preview ?? this.restorePreview({ topicId: input.topicId, paraCategory: input.paraCategory ?? input.preview?.to });
     assertPreviewConfirmation(preview, input);
-    await this.assertRequiredSourcesAvailable(preview.topicId);
+    const completion = completed?.intent?.completion ?? this.completionBasis(preview.topicId);
+    await this.assertRequiredSourcesAvailable(preview.topicId, completed);
     const previous = this.metadata.getTopicOperation(logicalOperationId);
     if (previous?.state === 'applied') {
       if (previous.intent?.previewDigest !== preview.digest || previous.intent?.topicId !== preview.topicId || previous.intent?.paraCategory !== preview.to) throw sourceError('intent-mismatch', 'Logical operation ID was reused with a different Restore intent.');
-      return this.snapshot(preview.topicId);
+      return this.completedSnapshot(previous);
     }
     const current = this.snapshot(preview.topicId);
     this.assertExpectedRevisions(preview.topicId, preview.expectedRevisions);
-    const intent = { previewDigest: preview.digest, topicId: preview.topicId, paraCategory: preview.to, preview };
-    this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.restore', state: 'pending', currentStep: 'relocate', intent, result: previous?.result, updatedAt: this.now() });
+    const intent = { previewDigest: preview.digest, topicId: preview.topicId, paraCategory: preview.to, preview, completion };
+    this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.restore', state: 'pending', currentStep: 'relocate', intent, result: previous?.result, updatedAt: this.now() });
     try {
       const relocation = preview.changes.find((change) => change.aspect === 'note-folder-location');
       if (relocation) {
         const folder = sourceRef(this.metadata, preview.topicId, 'obsidian', 'note_folder');
         const folderLocator = this.metadata.getSourceLocator(folder.referenceId);
         const moveProof = previous?.result?.moveProof ?? await createMoveProof(relocation.from, relocation.to, this.noteVaultRoots, folderLocator?.observedRevision ?? null);
-        this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.restore', state: 'pending', currentStep: 'folder-move', intent, result: { moveProof }, updatedAt: this.now() });
+        this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.restore', state: 'pending', currentStep: 'folder-move', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), moveProof }, updatedAt: this.now() });
         await checkedMove(relocation.from, relocation.to, moveProof, this.noteVaultRoots);
-        if (this.metadata.getSourceLocator(folder.referenceId).locator !== relocation.to) updateMovedLocator(this.metadata, folder.referenceId, relocation.to);
       }
-      const latest = this.metadata.getTopic(preview.topicId);
-      this.metadata.updateTopic({ topicId: preview.topicId, paraCategory: preview.to, expectedRevision: latest.revision });
-      this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.restore', state: 'applied', currentStep: 'complete', intent, result: { topicId: preview.topicId, paraCategory: preview.to }, updatedAt: this.now() });
-      return this.snapshot(preview.topicId);
+      const move = intent.preview.changes.find(change => change.aspect === 'note-folder-location');
+      const verifiedFolderIdentity = move ? await filesystemIdentity(move.to) : undefined;
+      return this.metadata.completeStructuralChange({ logicalOperationId, operationKind: 'topics.restore', intent, verifiedFolderIdentity, updatedAt: this.now() });
     } catch (error) {
       if (error?.code === 'source-recovery') await this.recordFolderRecovery(preview.topicId, error);
-      this.metadata.recordTopicOperation({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.restore', state: error?.code === 'conflict' ? 'conflict' : 'unknown', currentStep: 'interrupted', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), error: String(error?.code ?? 'restore-failed') }, updatedAt: this.now() });
+      this.metadata.recordStructuralChange({ logicalOperationId, topicId: preview.topicId, operationKind: 'topics.restore', state: error?.code === 'conflict' ? 'conflict' : 'unknown', currentStep: 'interrupted', intent, result: { ...(this.metadata.getTopicOperation(logicalOperationId)?.result ?? {}), error: String(error?.code ?? 'restore-failed') }, updatedAt: this.now() });
       throw error;
     }
   }

@@ -2,6 +2,10 @@
 
 Vocabulary for the OpenClaw plugin that provides a global attention surface and focused PARA Topics inside the Control UI.
 
+## MVP delivery scope
+
+The approved first live release is existing Topics, read-only Notes and native Topic conversations. Domain definitions below describe the full product, not a promise that every workflow is enabled in that release. See [ADR 0004](docs/adr/0004-first-live-release-core-topics-notes-chat.md) and [scope v2](docs/research/first-live-release-scope-v2.md) for the current decision; the earlier desktop finish plan is historical.
+
 ## Navigation and context
 
 **Command Center**:
@@ -35,7 +39,7 @@ _Avoid_: Archived Topic, deleted Topic
 The recorded predecessor-and-successor relationship created by a Topic merge or split. It keeps historical links and provenance resolvable across topology changes.
 
 **Topic Page**:
-The focused Command Center destination for one Topic, combining its Chat, Notes, search, and later Topic-specific detail.
+The focused Command Center destination for one Topic, combining its overview, Notes, search, and linked Conversations. Its Chat action opens the exact linked native OpenClaw conversation; Command Center does not own an active Chat composer or transcript renderer. Closed Conversations and Archived Topics retain a history-only source view because native Chat does not provide a read-only navigation contract.
 _Avoid_: channel page
 
 ## Knowledge and conversation
@@ -46,8 +50,28 @@ A durable knowledge document whose authoritative content lives in the user's Obs
 **Note Folder**:
 The single Obsidian folder that forms the authoritative boundary for a Topic's Notes.
 
+**Note Draft**:
+Unsaved editing state for one exact Topic-owned Note. It retains the authoritative content revision on which editing began until a confirmed save or identity-preserving relocation advances that base. Opening another Note does not transfer the draft.
+_Avoid_: authoritative Note, cached Note
+
+**Source Locator**:
+The verified current location of a source. Explicit Source Recovery may change a Session's locator without rewriting the durable Source Reference that identifies its Topic ownership and provenance.
+_Avoid_: source identity
+
 **Primary Session**:
-The replaceable Topic Conversation that receives messages sent through a Topic's main Chat. A former Primary remains linked as an ordinary Topic Conversation; migrated history forms an immutable prefix of the initial Primary Session.
+The replaceable Topic Conversation selected by default for a Topic's native Chat action. A former Primary remains linked as an ordinary Topic Conversation; separately imported historical Conversations do not replace the active Primary.
+
+**Imported History**:
+Read-only conversation history preserved from an approved source with its original content, identities and provenance. It may be associated with a Topic, but reporting history does not require a Topic or a Note Folder.
+
+**Conversation Group**:
+A presentation grouping of separately addressable conversations around a shared purpose. It is not an agent, a shared transcript, or a Topic and does not require its own Note Folder.
+
+**Reporting Conversation**:
+An ongoing conversation in which the user can read an automation's reports and discuss them with an agent. It remains distinct from each automation execution and from separately preserved Imported History.
+
+**Main-agent Chat**:
+The existing cross-context conversation with the main agent, retaining that agent's configured access to other Sessions. It is not an exclusively Topic-owned Primary Session.
 
 **Topic Conversation**:
 An isolated OpenClaw session associated with exactly one Topic at a time. Reassignment preserves its identity, transcript, and originating-Topic provenance without inheriting another Topic Conversation's transcript.
@@ -85,6 +109,9 @@ A decision-ready recommendation produced by Topic Analysis for one exact Structu
 _Avoid_: suggestion, recommendation, Attention Item, Action Card
 
 ## Attention and activity
+
+**Automation Report**:
+An automation's reported output, distinct from a durable knowledge Topic. It may relate to a Topic without owning a Note Folder or becoming an Attention Item merely because it was delivered.
 
 **Attention**:
 The user-facing Global Dashboard inbox of non-terminal Attention Items that currently require a decision or action.

@@ -4,10 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { registerBridgeMethods } from '../src/bridge/register.mjs';
+import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/register.mjs';
+import { readNativeNote } from '../src/native-ui/note-read.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
 import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
+import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 
 const fsSafeRootFactory = async (rootDir) => ({ rootDir, rootReal: rootDir, resolve: async (relative) => path.join(rootDir, relative), open: async (relative) => ({ handle: await (await import('node:fs/promises')).open(path.join(rootDir, relative), 'r') }) });
 
@@ -126,6 +128,40 @@ test('conversation creation verifies the exact Primary Session and records recov
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('native Conversation creation uses only its request-local Gateway and retains exact Primary ownership', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-native-session-create-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
+    const topicId = randomUUID();
+    const primaryKey = 'agent:main:dashboard:fictional-primary';
+    const createdKey = 'agent:main:dashboard:fictional-created';
+    metadata.createTopic({ topicId, paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'fictional-primary', topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: primaryKey, observedRevision: null });
+    metadata.setSessionState({ referenceId: 'fictional-primary', sessionId: 'fictional-primary-id', status: 'open', isPrimary: true });
+    const entries = new Map([[primaryKey, { sessionId: 'fictional-primary-id', updatedAt: 1 }]]);
+    const sessionStore = { listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })) };
+    const service = createAuthoritativeSourceService({ metadata, sessionStore, capabilities: { sessions: true } });
+    const gatewayRequest = async (method) => {
+      if (method === 'sessions.create') {
+        entries.set(createdKey, { sessionId: 'fictional-created-id', updatedAt: 2 });
+        return { key: createdKey, sessionId: 'fictional-created-id', entry: { updatedAt: 2 } };
+      }
+      if (method === 'sessions.list') return { sessions: sessionStore.listSessionEntries() };
+      throw new Error(`Unexpected method ${method}`);
+    };
+    const result = await service.sessionsCreate({ topicId, label: 'Native Conversation', logicalOperationId: randomUUID() }, { gatewayRequest });
+    assert.equal(result.value.sourceReference.externalSourceId, createdKey);
+    assert.equal(result.value.sessionId, 'fictional-created-id');
+    assert.equal(metadata.getSessionState('fictional-primary').isPrimary, true);
+    await assert.rejects(() => service.sessionsCreate({ topicId, label: 'Detached request', logicalOperationId: randomUUID() }), { code: 'capability-unavailable' });
+    assert.equal(entries.size, 2);
+    entries.delete(primaryKey);
+    await assert.rejects(() => service.sessionsCreate({ topicId, label: 'Missing Primary', logicalOperationId: randomUUID() }, { gatewayRequest }), { code: 'source-recovery' });
+    assert.equal(entries.size, 1);
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('public source service writes durable authoritative Markdown and keeps metadata free of content', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-integration-'));
   const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-vault-'));
@@ -134,6 +170,7 @@ test('public source service writes durable authoritative Markdown and keeps meta
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, scheduler: true } });
     metadata.createTopic({ topicId: 'topic-integration', paraCategory: 'project', lifecycle: 'active' });
     metadata.createSourceReference({ version: 1, referenceId: 'folder-integration', topicId: 'topic-integration', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    await enrollFixtureFolder(metadata, 'folder-integration', vault);
     const service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true, sessions: true, scheduler: true, activity: true, search: true, analysis: false, attention: false } });
     const logicalOperationId = randomUUID();
     const created = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/note.md', text: 'authoritative text', logicalOperationId, requestId: 'frame-integration' });
@@ -152,6 +189,15 @@ test('public source service writes durable authoritative Markdown and keeps meta
     assert.deepEqual({ byteOffset: firstChunk.byteOffset, nextOffset: firstChunk.nextOffset, totalBytes: firstChunk.totalBytes, complete: firstChunk.complete, decodedBytes: Buffer.from(firstChunk.contentBase64, 'base64').length }, { byteOffset: 0, nextOffset: 524_288, totalBytes: 524_289, complete: false, decodedBytes: 524_288 });
     const finalChunk = await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', referenceId: chunkReference.referenceId, path: 'nested/chunked.md', offset: firstChunk.nextOffset, observedRevision: firstChunk.revision });
     assert.deepEqual({ byteOffset: finalChunk.byteOffset, nextOffset: finalChunk.nextOffset, complete: finalChunk.complete, text: Buffer.from(finalChunk.contentBase64, 'base64').toString('utf8') }, { byteOffset: 524_288, nextOffset: 524_289, complete: true, text: 'x' });
+    const compressible = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/compressible.md', text: 'z'.repeat(2 * 1024 * 1024), logicalOperationId: randomUUID() });
+    const compressed = await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', referenceId: compressible.value.note.sourceReference.referenceId, path: 'nested/compressible.md', offset: 0 });
+    assert.deepEqual({ contentEncoding: compressed.contentEncoding, nextOffset: compressed.nextOffset, totalBytes: compressed.totalBytes, complete: compressed.complete }, { contentEncoding: 'gzip', nextOffset: 2 * 1024 * 1024, totalBytes: 2 * 1024 * 1024, complete: true });
+    const native = await readNativeNote({ signal: new AbortController().signal,
+      request: async (method, input) => ({ result: await invokeBridgeMethod(service, method, input) })
+    }, { topicId: 'topic-integration', referenceId: compressible.value.note.sourceReference.referenceId,
+      path: 'nested/compressible.md', observedRevision: compressed.revision });
+    assert.equal(native.text, 'z'.repeat(2 * 1024 * 1024));
+    assert.equal(native.revision, compressed.revision);
     assert.equal((await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/note.md' })).text, 'authoritative text');
     assert.throws(() => service.analysisRead({ schemaVersion: 1, topicId: 'topic-integration' }), (error) => error.code === 'capability-unavailable');
   } finally {
@@ -169,6 +215,7 @@ test('a moved Note receives a new immutable Source Reference across reopen and l
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     metadata.createTopic({ topicId: 'topic-moved-note', paraCategory: 'project', lifecycle: 'active' });
     metadata.createSourceReference({ version: 1, referenceId: 'folder-moved-note', topicId: 'topic-moved-note', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    await enrollFixtureFolder(metadata, 'folder-moved-note', vault);
     let service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
     const created = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-moved-note', path: 'before.md', text: 'before', logicalOperationId: randomUUID(), requestId: 'frame-create' });
     const moved = await service.notesMove({ schemaVersion: 1, topicId: 'topic-moved-note', path: 'before.md', destinationPath: 'after.md', expectedRevision: created.value.note.revision, logicalOperationId: randomUUID(), requestId: 'frame-move' });
@@ -199,6 +246,7 @@ test('move then recreate uses distinct durable Note identities without partial m
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     metadata.createTopic({ topicId: 'topic-recreate-note', paraCategory: 'project', lifecycle: 'active' });
     metadata.createSourceReference({ version: 1, referenceId: 'folder-recreate-note', topicId: 'topic-recreate-note', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    await enrollFixtureFolder(metadata, 'folder-recreate-note', vault);
     const service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
     const created = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-recreate-note', path: 'before.md', text: 'first', logicalOperationId: randomUUID(), requestId: 'frame-first' });
     const moved = await service.notesMove({ schemaVersion: 1, topicId: 'topic-recreate-note', path: 'before.md', destinationPath: 'after.md', expectedRevision: created.value.note.revision, logicalOperationId: randomUUID(), requestId: 'frame-move' });
@@ -229,11 +277,12 @@ test('external Note reads persist current observations across metadata restart',
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     metadata.createTopic({ topicId: 'topic-observed-note', paraCategory: 'resource', lifecycle: 'active' });
     metadata.createSourceReference({ version: 1, referenceId: 'folder-observed-note', topicId: 'topic-observed-note', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    await enrollFixtureFolder(metadata, 'folder-observed-note', vault);
     await writeFile(path.join(vault, 'external.md'), 'external revision one');
     let service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
     const observed = await service.notesRead({ schemaVersion: 1, topicId: 'topic-observed-note', path: 'external.md' });
     await writeFile(path.join(vault, 'browsed.md'), 'browse observation');
-    const browsed = (await service.notesBrowse({ schemaVersion: 1, topicId: 'topic-observed-note' })).find((note) => note.path === 'browsed.md');
+    const browsed = (await service.notesBrowse({ schemaVersion: 1, topicId: 'topic-observed-note' })).notes.find((note) => note.path === 'browsed.md');
     metadata.close();
 
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
@@ -252,25 +301,22 @@ test('external Note reads persist current observations across metadata restart',
   }
 });
 
-test('registered authenticated bridge persists request-bound Note effects across reopen without side effects', async () => {
+test('deferred Note owner persists request-bound effects across reopen without side effects', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-bridge-integration-'));
   const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-bridge-vault-'));
   let metadata;
-  const registrations = new Map();
   const sideEffects = { attention: 0, push: 0 };
-  const api = { registerGatewayMethod: (method, handler, options) => registrations.set(method, { handler, options }) };
+  let service;
   const invoke = async (method, params, requestId) => {
-    let response;
-    await registrations.get(method).handler({ req: { id: requestId }, params, context: { authenticated: true, operator: 'fictional' }, respond: (...args) => { response = args; } });
-    assert.equal(response[0], true, JSON.stringify(response[2]));
-    return response[1];
+    const result = await invokeBridgeMethod(service, method, params, requestId);
+    return { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId: params.logicalOperationId ?? null, result };
   };
   try {
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     metadata.createTopic({ topicId: 'topic-bridge-integration', paraCategory: 'project', lifecycle: 'active' });
     metadata.createSourceReference({ version: 1, referenceId: 'folder-bridge-integration', topicId: 'topic-bridge-integration', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
-    let service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true }, attentionDelivery: () => { sideEffects.attention += 1; }, push: () => { sideEffects.push += 1; } });
-    registerBridgeMethods(api, service);
+    await enrollFixtureFolder(metadata, 'folder-bridge-integration', vault);
+    service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true }, attentionDelivery: () => { sideEffects.attention += 1; }, push: () => { sideEffects.push += 1; } });
     const logicalOperationId = randomUUID();
     const created = await invoke('command-center.v1.notes.create', { schemaVersion: 1, topicId: 'topic-bridge-integration', referenceId: 'folder-bridge-integration', path: 'bridge.md', text: 'bridge authoritative text', logicalOperationId }, 'gateway-frame-create');
     assert.equal(created.requestId, 'gateway-frame-create');
@@ -282,8 +328,6 @@ test('registered authenticated bridge persists request-bound Note effects across
 
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true }, attentionDelivery: () => { sideEffects.attention += 1; }, push: () => { sideEffects.push += 1; } });
-    registrations.clear();
-    registerBridgeMethods(api, service);
     const replayed = await invoke('command-center.v1.notes.create', { schemaVersion: 1, topicId: 'topic-bridge-integration', referenceId: 'folder-bridge-integration', path: 'bridge.md', text: 'bridge authoritative text', logicalOperationId }, 'gateway-frame-replay');
     assert.equal(replayed.requestId, 'gateway-frame-replay');
     assert.equal(replayed.result.value.note.path, 'bridge.md');
@@ -364,6 +408,32 @@ test('authoritative creates reject a missing Topic before provider dispatch', as
     (error) => error.code === 'source-recovery'
   );
   assert.deepEqual(calls, []);
+});
+
+test('Reminder creation ingests its exact scheduler result without a redundant readback', async () => {
+  const topicId = 'topic-reminder-create';
+  const logicalOperationId = randomUUID();
+  const calls = [];
+  const observations = [];
+  const sourceReference = { referenceId: 'reminder:fictional-reminder', externalSourceId: 'fictional-reminder', observedRevision: 'revision-1' };
+  const job = { id: 'fictional-reminder', enabled: true, configRevision: 'revision-1', schedule: { kind: 'at', at: '2026-08-29T23:59:00.000Z' } };
+  const metadata = {
+    getTopic: (requestedTopicId) => requestedTopicId === topicId ? { topicId, lifecycle: 'active', paraCategory: 'project' } : null
+  };
+  const scheduler = {
+    async createReminder(input) {
+      calls.push(['create', input]);
+      return { schemaVersion: 1, status: 'applied', logicalOperationId, value: { job, sourceReference } };
+    }
+  };
+  const attentionService = { async ingest(input) { observations.push(input); }, sourceOccurrenceContext: () => null, allEpisodes: () => [] };
+  const service = createAuthoritativeSourceService({ metadata, attentionService, now: () => '2026-08-30T00:00:00.000Z', capabilities: { scheduler: true } });
+  service.forTopic = () => ({ scheduler });
+  const declaration = { name: 'Fictional reminder', enabled: true, schedule: job.schedule, payload: { kind: 'systemEvent', text: 'Fictional reminder payload' } };
+  const result = await service.remindersCreate({ schemaVersion: 1, topicId, logicalOperationId, declaration });
+  assert.equal(result.logicalOperationId, logicalOperationId);
+  assert.deepEqual(calls, [['create', { schemaVersion: 1, logicalOperationId, declaration }]]);
+  assert.deepEqual(observations.map((observation) => ({ stableSubjectId: observation.stableSubjectId, sourceReferenceId: observation.sourceReferenceId, reminderDue: observation.evidenceFacts.reminderDue })), [{ stableSubjectId: job.id, sourceReferenceId: sourceReference.referenceId, reminderDue: true }]);
 });
 
 test('migration-configured Topics require exact authoritative bindings and completion before normal admission', () => {

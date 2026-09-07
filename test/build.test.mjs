@@ -9,6 +9,7 @@ import test from 'node:test';
 async function withIsolatedBuild(run) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-build-'));
   try {
+    await cp(path.resolve('openclaw.plugin.json'), path.join(root, 'openclaw.plugin.json'));
     await cp(path.resolve('src'), path.join(root, 'src'), { recursive: true, verbatimSymlinks: true });
     const buildModule = await import(`${pathToFileURL(path.join(root, 'src', 'build.mjs')).href}?test=${Date.now()}-${Math.random()}`);
     await run(buildModule, root);
@@ -18,13 +19,21 @@ async function withIsolatedBuild(run) {
 }
 
 test('build is deterministic and bound to its launch digest', async () => {
-  await withIsolatedBuild(async ({ assertBuiltDigest, build, digestFileName, distRoot }) => {
+  await withIsolatedBuild(async ({ assertBuiltDigest, build, readBuiltReceipt, digestFileName, distRoot }) => {
+    await assert.rejects(readBuiltReceipt(), (error) => error.code === 'ENOENT');
     const first = await build();
     const second = await build();
     assert.deepEqual(second, first);
+    assert.deepEqual(await readBuiltReceipt(), second);
+    for (const { path: relative } of second.files.filter((entry) => entry.path.endsWith('.mjs'))) {
+      const modulePath = path.join(distRoot, relative);
+      const source = await readFile(modulePath, 'utf8');
+      for (const match of source.matchAll(/\bfrom\s+['"](\.[^'"]+)['"]/gu)) await access(new URL(match[1], pathToFileURL(modulePath)));
+    }
     await assertBuiltDigest(second);
     await writeFile(path.join(distRoot, 'ui', 'index.html'), '<changed>');
     await assert.rejects(assertBuiltDigest(second), /digest drift/);
+    await assert.rejects(readBuiltReceipt(), /digest drift/);
 
     const forgedFiles = second.files.map((entry) => entry.path === 'ui/index.html'
       ? { ...entry, sha256: createHash('sha256').update('<changed>').digest('hex') }
@@ -37,6 +46,27 @@ test('build is deterministic and bound to its launch digest', async () => {
     await writeFile(path.join(distRoot, digestFileName), `${JSON.stringify(forgedManifest)}\n`);
     await assert.rejects(assertBuiltDigest(second), /digest drift/);
     await build();
+  });
+});
+
+test('built runtime schema is a digest-bound snapshot of the canonical manifest', async () => {
+  await withIsolatedBuild(async ({ build, assertBuiltDigest, distRoot }, root) => {
+    const manifestPath = path.join(root, 'openclaw.plugin.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const receipt = await build();
+    const configPath = path.join(distRoot, 'plugin-config.mjs');
+    const { pluginConfigSchema } = await import(pathToFileURL(configPath).href);
+    assert.deepEqual(pluginConfigSchema, manifest.configSchema);
+    assert.ok(receipt.files.some(entry => entry.path === 'plugin-config.mjs'));
+    const original = await readFile(configPath, 'utf8');
+    manifest.configSchema.properties.preservedHistorySource.additionalProperties = true;
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    assert.equal(await readFile(configPath, 'utf8'), original);
+    assert.equal(pluginConfigSchema.properties.preservedHistorySource.additionalProperties, false);
+    await assertBuiltDigest(receipt);
+    await writeFile(configPath, `${original}\n// changed runtime input\n`);
+    await assert.rejects(assertBuiltDigest(receipt), /digest drift/);
+    assert.notEqual((await build()).digest, receipt.digest);
   });
 });
 
@@ -58,6 +88,8 @@ test('mounted shell assets resolve beneath the external-tab plugin path', async 
     await build();
     await access(path.join(distRoot, 'asset-handler.mjs'));
     await access(path.join(distRoot, 'plugin-service.mjs'));
+    await access(path.join(distRoot, 'native-ui', 'entry.mjs'));
+    await access(path.join(distRoot, 'native-ui', 'topic-navigation.mjs'));
     await import(`${pathToFileURL(path.join(distRoot, 'plugin-service.mjs')).href}?test=${Date.now()}-${Math.random()}`);
     await access(path.join(distRoot, 'metadata', 'service.mjs'));
     await access(path.join(distRoot, 'metadata', 'schema.mjs'));
@@ -65,8 +97,10 @@ test('mounted shell assets resolve beneath the external-tab plugin path', async 
     await access(path.join(distRoot, 'metadata', 'path.mjs'));
     await access(path.join(distRoot, 'search', 'service.mjs'));
     await access(path.join(distRoot, 'search', 'source-snapshot.mjs'));
+    await access(path.join(distRoot, 'http', 'opaque-frame-cors.mjs'));
     await access(path.join(distRoot, 'ui', 'app.js'));
     const shell = await readFile(path.join(distRoot, 'ui', 'index.html'), 'utf8');
+    assert.doesNotMatch(shell, /<base\b/u);
     assert.match(shell, /href="\/plugins\/command-center\/styles\.css"/);
     assert.match(shell, /src="\/plugins\/command-center\/app\.js"/);
   });

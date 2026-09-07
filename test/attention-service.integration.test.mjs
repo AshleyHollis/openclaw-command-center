@@ -8,12 +8,23 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createAttentionService as createAttentionServiceBase } from '../src/attention/service.mjs';
 
 const capabilities = { notes: true, sessions: true, scheduler: true, activity: true, analysis: true, attention: true, search: true };
-const createAttentionService = (options) => createAttentionServiceBase({ operatorId: 'operator-1', host: 'host-1', ...options });
+const fixtureServices = new WeakMap();
+const createAttentionService = (options) => {
+  const service = createAttentionServiceBase({ operatorId: 'operator-1', host: 'host-1', ...options });
+  fixtureServices.get(options.metadata)?.add(service);
+  return service;
+};
 
 async function withService(run) {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-attention-'));
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
-  try { return await run({ stateDir, metadata }); } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+  const services = new Set();
+  fixtureServices.set(metadata, services);
+  try { return await run({ stateDir, metadata }); } finally {
+    for (const service of services) service.close();
+    metadata.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
 }
 
 function occurrence(overrides = {}) {

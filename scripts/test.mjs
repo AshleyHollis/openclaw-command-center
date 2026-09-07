@@ -1,10 +1,12 @@
-import { spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
-import { ordinaryTestArgv, selectOrdinaryTestFiles } from '../src/test-selection.mjs';
+import { selectOrdinaryTestFiles } from '../src/test-selection.mjs';
+import { prepareTestRuntimeEnvironment } from './test-runtime.mjs';
+import { runTestLanes } from './test-lanes.mjs';
 
 const files = selectOrdinaryTestFiles(readdirSync(new URL('../test/', import.meta.url)));
 if (files.length === 0) throw new Error('No ordinary test files were selected.');
+const environment = await prepareTestRuntimeEnvironment();
 
-const result = spawnSync(process.execPath, ordinaryTestArgv(files), { stdio: 'inherit' });
+const result = runTestLanes(files, { env: environment });
 if (result.error) throw result.error;
-process.exitCode = result.status ?? 1;
+if (result.status !== 0) process.exitCode = result.status;

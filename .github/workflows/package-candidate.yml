@@ -1,0 +1,68 @@
+name: Package rehearsal candidate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      # Fixed packaging toolchain only; this is not the deployed host identity.
+      # No credentials, live mounts or network are passed to candidate commands.
+      - name: Build and verify candidate archive
+        env:
+          TOOLCHAIN: ghcr.io/ashleyhollis/openclaw@sha256:1154a8fdd314ddf2e87be56f8e33eef78c7bd2eb93d3bd325723d4e9ca03d9c0
+        run: |
+          set -euo pipefail
+          docker pull "$TOOLCHAIN"
+          sudo install -d -o 10001 -g 10001 -m 0700 "$RUNNER_TEMP/candidate-package"
+          # The interruption fixture executes a temporary npm wrapper. Exec is
+          # confined to this networkless test container, not an import profile.
+          docker run --rm --init --network none --read-only \
+            --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges \
+            --cpus 2 --memory 8g --pids-limit 256 \
+            --tmpfs /tmp:rw,exec,nosuid,nodev,size=1073741824,mode=1777 \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/candidate,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/candidate-package,dst=/output" \
+            --entrypoint /bin/sh "$TOOLCHAIN" -eu -c '
+              cp -R /candidate /tmp/source
+              mkdir /tmp/source/node_modules
+              ln -s /app /tmp/source/node_modules/openclaw
+              cd /tmp/source
+              node --test test/plugin-artifact.test.mjs
+              node scripts/package-candidate.mjs --output /output/artifact
+            '
+          test -d "$RUNNER_TEMP/candidate-package/artifact"
+          test ! -L "$RUNNER_TEMP/candidate-package/artifact"
+          for member in command-center.tgz receipt.json; do
+            file="$RUNNER_TEMP/candidate-package/artifact/$member"
+            test -f "$file" && test ! -L "$file"
+            test "$(stat -c %h "$file")" = 1
+            sudo chown --no-dereference "$(id -u):$(id -g)" "$file"
+          done
+          sudo chown --no-dereference "$(id -u):$(id -g)" "$RUNNER_TEMP/candidate-package/artifact" "$RUNNER_TEMP/candidate-package"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: command-center-candidate-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/candidate-package/artifact/command-center.tgz
+            ${{ runner.temp }}/candidate-package/artifact/receipt.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Record qualification boundary
+        run: |
+          printf '%s\n' 'Candidate archive only. Matching-host rehearsal, performance, coherent acceptance and independent evaluation remain required before deployment.' >> "$GITHUB_STEP_SUMMARY"

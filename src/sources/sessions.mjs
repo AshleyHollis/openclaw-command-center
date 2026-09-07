@@ -1,8 +1,10 @@
 import { sourceError, assertNoUnexpectedKeys, nonBlank } from './errors.mjs';
-import { createSourceReference } from './reference.mjs';
+import { createSourceReference, effectiveSourceLocator } from './reference.mjs';
 import { assertLogicalOperationId } from './operation-journal.mjs';
 import { createMutationCoordinator } from './mutation-coordinator.mjs';
 import { assertPrimaryMayClose } from './session-state.mjs';
+import { explicitSessionReplacements, unavailableReplacedSession } from './session-replacement.mjs';
+import { createTopicConversation, inspectTopicConversation, reconcileTopicConversation, acknowledgeTopicConversation } from './topic-conversation-creation.mjs';
 
 function responseKey(value) {
   return value?.key ?? value?.sessionKey ?? value?.session?.key ?? null;
@@ -14,10 +16,44 @@ function messageIdempotencyKey(value) {
   return value?.idempotencyKey ?? value?.__openclaw?.idempotencyKey ?? value?.metadata?.idempotencyKey ?? value?.message?.idempotencyKey ?? null;
 }
 
+const creationQueues = new WeakMap();
+// Legacy provisioning retains its historical time-limited replay path. Native
+// deduplication is process-local, not restart proof. First-live conditional
+// creation uses the separate durable create-once owner below, never this retry.
+const SESSION_CREATE_REPLAY_WINDOW_MS = 4 * 60_000;
+
+function authoritativeCreation(value, { logicalOperationId, displayName }) {
+  if (value === undefined) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw sourceError('invalid-request', 'The authoritative Session result must be an object.');
+  const allowed = ['key', 'sessionId', 'revision', 'idempotencyKey', 'label'];
+  for (const key of Object.keys(value)) if (!allowed.includes(key)) throw sourceError('invalid-request', `Unsupported authoritative Session result field: ${key}`);
+  for (const key of allowed) if (typeof value[key] !== 'string' || value[key].trim() === '') throw sourceError('invalid-request', `The authoritative Session result requires ${key}.`);
+  if (!value.key.startsWith('agent:main:dashboard:bridge-')) throw sourceError('source-recovery', 'The authoritative Session result was not created by the authenticated external-tab authority.');
+  if (!value.key.endsWith(`-${logicalOperationId}`)) throw sourceError('intent-mismatch', 'The authoritative Session key belongs to a different logical operation.');
+  if (value.idempotencyKey !== logicalOperationId) throw sourceError('intent-mismatch', 'The authoritative Session result belongs to a different logical operation.');
+  if (value.label !== displayName) throw sourceError('intent-mismatch', 'The authoritative Session result belongs to a different label.');
+  return Object.freeze({ ...value });
+}
+
+async function serializeCreation(owner, logicalOperationId, run) {
+  if (!owner || typeof owner !== 'object') return run();
+  let queue = creationQueues.get(owner);
+  if (!queue) { queue = new Map(); creationQueues.set(owner, queue); }
+  const previous = queue.get(logicalOperationId) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(run);
+  queue.set(logicalOperationId, current);
+  try { return await current; }
+  finally {
+    if (queue.get(logicalOperationId) === current) queue.delete(logicalOperationId);
+    if (queue.size === 0) creationQueues.delete(owner);
+  }
+}
+
 export class SessionAdapter {
   constructor({ api, gateway, sessionStore, transcriptReader, metadata, topicId, coordinator, now } = {}) {
     this.api = api;
     this.gateway = gateway ?? api?.runtime?.gateway;
+    this.creationGateway = this.gateway;
     this.sessionStore = sessionStore ?? api?.runtime?.agent?.session;
     this.transcriptReader = transcriptReader;
     if (!this.gateway?.request && !this.sessionStore?.listSessionEntries) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' });
@@ -43,12 +79,6 @@ export class SessionAdapter {
     if (this.gateway?.request) return this.gateway.request(method, params, options);
     const rows = this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
     if (method === 'sessions.list') return { sessions: rows.map((row) => ({ sessionKey: row.sessionKey, ...(row.entry ?? {}) })) };
-    if (method === 'sessions.create') {
-      const entry = { sessionId: params.sessionId ?? params.key, label: params.label, updatedAt: Date.now() };
-      if (this.sessionStore.upsertSessionEntry) await this.sessionStore.upsertSessionEntry({ agentId: 'main', sessionKey: params.key, entry });
-      else await this.sessionStore.patchSessionEntry({ agentId: 'main', sessionKey: params.key, fallbackEntry: entry, replaceEntry: true, update: async () => entry });
-      return { sessionKey: params.key, entry };
-    }
     if (method === 'sessions.patch') {
       const row = rows.find((item) => item.sessionKey === params.key);
       if (!row) throw sourceError('source-recovery', 'The exact Session is unavailable.');
@@ -60,51 +90,93 @@ export class SessionAdapter {
     throw sourceError('capability-unavailable', `The Session store does not support ${method}.`);
   }
 
-  async create(input = {}) {
+  creationInspect(input = {}, runtime = {}) { return inspectTopicConversation(this, input, runtime); }
+  creationReconcile(input = {}, runtime = {}) { return reconcileTopicConversation(this, input, runtime); }
+  creationAcknowledge(input = {}, runtime = {}) { return acknowledgeTopicConversation(this, input, runtime); }
+
+  async create(input = {}, runtime = {}) {
+    // First-live HTTP supplies both fields. Never fall through to legacy retry
+    // semantics when either half of the retained authority contract is present.
+    if ('expectedTopicRevision' in input || runtime.creationAuthority !== undefined) return createTopicConversation(this, input, runtime);
     assertNoUnexpectedKeys(input, ['schemaVersion', 'logicalOperationId', 'requestId', 'label', 'isPrimary'], 'Session create request');
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
-    const requestedKey = `agent:main:command-center:${logicalOperationId}`;
     const displayName = typeof input.label === 'string' && input.label.trim() ? input.label.trim() : `Topic Conversation ${logicalOperationId}`;
-    const execute = async ({ requestId }) => {
-      let result;
-      if (this.sessionStore?.listSessionEntries) {
-        const existing = this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true }).find((row) => row.sessionKey === requestedKey);
-        if (existing) throw sourceError('conflict', 'The deterministic Session key already exists.');
-        const initialEntry = { sessionId: logicalOperationId, updatedAt: Date.now(), label: displayName, agentHarnessId: 'command-center', modelSelectionLocked: true, pluginExtensions: { commandCenter: { logicalOperationId, topicId: this.topicId } } };
-        if (this.sessionStore.createSessionEntry) result = await this.sessionStore.createSessionEntry({ cfg: this.api?.config, agentId: 'main', ['key']: requestedKey, label: displayName, initialEntry });
-        else if (this.sessionStore.patchSessionEntry) {
-          const entry = await this.sessionStore.patchSessionEntry({ agentId: 'main', sessionKey: requestedKey, fallbackEntry: initialEntry, replaceEntry: true, update: async (_current, { existingEntry } = {}) => {
-            if (existingEntry) throw sourceError('conflict', 'The deterministic Session key already exists.');
-            return initialEntry;
-          } });
-          result = { ['key']: requestedKey, entry };
-        } else {
-          await this.sessionStore.upsertSessionEntry({ agentId: 'main', sessionKey: requestedKey, entry: initialEntry });
-          result = { ['key']: requestedKey, entry: initialEntry };
+    const adopted = authoritativeCreation(runtime.authoritativeSession, { logicalOperationId, displayName });
+    const gatewayRequest = typeof runtime.gatewayRequest === 'function'
+      ? runtime.gatewayRequest
+      : this.creationGateway?.request?.bind(this.creationGateway);
+    const catalogRows = async () => {
+      if (adopted) {
+        if (this.sessionStore?.listSessionEntries) return this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
+        if (gatewayRequest) {
+          const listing = await gatewayRequest('sessions.list', { agentId: 'main', limit: 200 });
+          return Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
         }
-      } else {
-        const params = { agentId: 'main', label: displayName };
-        params['k' + 'ey'] = requestedKey;
-        result = await this.request('sessions.create', params, { requestId });
+        throw sourceError('capability-unavailable', 'Authoritative Session catalog readback is unavailable.', { capability: 'sessions' });
       }
-      const sessionKey = responseKey(result);
-      if (sessionKey !== requestedKey) throw sourceError('unavailable', 'sessions.create returned an unexpected Session key.');
-      const sessionId = responseSessionId(result);
-      const reference = await this.persistReference({ ['k' + 'ey']: sessionKey, sessionId, isPrimary: input.isPrimary ?? false, displayName });
-      return { ['k' + 'ey']: sessionKey, sessionId, creationRevision: responseRevision(result), sourceReference: reference };
+      // Ordinary plugin-created Sessions are owned through the authenticated
+      // Gateway catalog. The runtime store remains useful for exact latest-row
+      // readback, but it must not replace that public ownership boundary.
+      if (gatewayRequest) {
+        const listing = await gatewayRequest('sessions.list', { agentId: 'main', limit: 200 });
+        return Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
+      }
+      return this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true });
     };
-    const reconcile = async ({ applied = false } = {}) => {
-      const listing = await this.request('sessions.list', {});
-      const rows = Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
-      const matches = rows.filter((row) => responseKey(row) === requestedKey);
-      if (matches.length !== 1) return { matched: false };
+    const createParams = Object.freeze({ agentId: 'main', label: displayName, idempotencyKey: logicalOperationId });
+    const readCreatedCatalogEntry = async ({ expectedKey } = {}) => {
+      if (!expectedKey) return { matched: false };
+      // A newly created Session need not appear in the first catalog page.
+      // Resolve its exact returned key through the public latest-read owner.
+      const exactEntry = this.sessionStore?.getSessionEntry
+        ? await this.sessionStore.getSessionEntry({ agentId: 'main', sessionKey: expectedKey, readConsistency: 'latest' })
+        : undefined;
+      const rows = this.sessionStore?.getSessionEntry
+        ? (exactEntry ? [{ sessionKey: expectedKey, entry: exactEntry }] : [])
+        : await catalogRows();
+      const matches = rows.filter((row) => responseKey(row) === expectedKey);
+      if (matches.length > 1) throw sourceError('conflict', 'The Session catalog contains duplicate results for one logical creation operation.');
+      if (matches.length === 0) return { matched: false };
       const row = matches[0];
-      const marker = row?.pluginExtensions?.commandCenter?.logicalOperationId ?? row?.entry?.pluginExtensions?.commandCenter?.logicalOperationId;
-      if (this.sessionStore && marker !== logicalOperationId) throw sourceError('conflict', 'The deterministic Session key is owned by another operation.');
-      const reference = await this.persistReference({ ['k' + 'ey']: requestedKey, sessionId: responseSessionId(row), isPrimary: input.isPrimary ?? false, displayName, preserveState: applied });
-      return { matched: true, value: { ['k' + 'ey']: requestedKey, sessionId: responseSessionId(row), creationRevision: responseRevision(row), sourceReference: reference } };
+      const sessionKey = responseKey(row);
+      const listed = row?.entry ?? row;
+      if (!sessionKey || !listed) throw sourceError('unavailable', 'The created Session identity did not survive authoritative catalog readback.');
+      if (listed.pluginOwnerId !== undefined && listed.pluginOwnerId !== 'command-center') throw sourceError('conflict', 'The created Session is not owned by Command Center.');
+      if (listed.label !== undefined && listed.label !== displayName) throw sourceError('conflict', 'The created Session label did not match authoritative catalog readback.');
+      const sessionId = responseSessionId(row);
+      const revision = responseRevision(row);
+      if (typeof sessionId !== 'string' || sessionId.trim() === '' || revision === null) throw sourceError('unavailable', 'The created Session readback omitted its exact identity or revision.');
+      return { matched: true, sessionKey, sessionId, revision };
     };
-    if (this.coordinator) return this.coordinator.mutate({ operationKind: 'sessions.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, topicId: this.topicId, intent: { requestedKey, label: input.label ?? null, isPrimary: input.isPrimary ?? false }, execute, reconcile });
+    const execute = async ({ requestId }) => {
+      if (!adopted && !gatewayRequest) throw sourceError('capability-unavailable', 'Plugin-scoped Session creation is unavailable.', { capability: 'sessions' });
+      const result = adopted ?? await gatewayRequest('sessions.create', createParams, { requestId });
+      const createdKey = responseKey(result);
+      if (!createdKey) throw sourceError('unavailable', 'sessions.create omitted its created Session key.');
+      const readback = await readCreatedCatalogEntry({ expectedKey: createdKey });
+      if (!readback.matched) throw sourceError('unavailable', 'The created Session was not returned by authoritative catalog readback.');
+      const { sessionKey, sessionId, revision } = readback;
+      const responseId = responseSessionId(result);
+      const responseRev = responseRevision(result);
+      if (responseId !== null && responseId !== sessionId || responseRev !== null && responseRev !== revision) throw sourceError('conflict', 'sessions.create did not match authoritative catalog readback.');
+      const reference = await this.persistReference({ ['k' + 'ey']: sessionKey, sessionId, isPrimary: input.isPrimary ?? false, displayName });
+      return { ['k' + 'ey']: sessionKey, sessionId, creationRevision: revision, sourceReference: reference };
+    };
+    const reconcile = async ({ applied = false, resultIdentity, operationCreatedAt } = {}) => {
+      let expectedKey = resultIdentity ?? adopted?.key;
+      if (!expectedKey) {
+        const createdAtMs = Date.parse(operationCreatedAt);
+        const observedAtMs = Date.parse(this.now());
+        if (!Number.isFinite(createdAtMs) || !Number.isFinite(observedAtMs) || observedAtMs < createdAtMs || observedAtMs - createdAtMs > SESSION_CREATE_REPLAY_WINDOW_MS) return { outcome: 'unknown' };
+        const replay = await gatewayRequest('sessions.create', createParams, { requestId: input.requestId ?? logicalOperationId });
+        expectedKey = responseKey(replay);
+      }
+      const readback = await readCreatedCatalogEntry({ expectedKey });
+      if (!readback.matched) return { matched: false };
+      const reference = await this.persistReference({ ['k' + 'ey']: readback.sessionKey, sessionId: readback.sessionId, isPrimary: input.isPrimary ?? false, displayName, preserveState: applied });
+      return { matched: true, value: { ['k' + 'ey']: readback.sessionKey, sessionId: readback.sessionId, creationRevision: readback.revision, sourceReference: reference } };
+    };
+    if (this.coordinator) return serializeCreation(this.metadata ?? this.coordinator, logicalOperationId, () => this.coordinator.mutate({ operationKind: 'sessions.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, topicId: this.topicId, intent: { idempotencyKey: logicalOperationId, label: input.label ?? null, isPrimary: input.isPrimary ?? false, ...(adopted ? { authoritativeSession: adopted } : {}) }, idempotent: true, execute, reconcile }));
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
   }
 
@@ -123,6 +195,7 @@ export class SessionAdapter {
   async history(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId', 'requestId', 'limit', 'offset', 'messageId'], 'Session history request');
     const reference = this.resolveReference(input);
+    if (explicitSessionReplacements(this.metadata, this.topicId).has(reference.referenceId)) await this.resolveExact({ referenceId: reference.referenceId });
     if (this.sessionStore) {
       const exact = await this.resolveExact({ referenceId: reference.referenceId });
       if (!this.transcriptReader) return { messages: [], sessionKey: exact.sessionKey, sessionId: exact.sessionId };
@@ -149,7 +222,7 @@ export class SessionAdapter {
     return result;
   }
 
-  async send(input = {}) {
+  async send(input = {}, runtime = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId', 'requestId', 'logicalOperationId', 'message'], 'Session send request');
     const reference = this.resolveReference(input);
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
@@ -157,7 +230,9 @@ export class SessionAdapter {
     const execute = async ({ requestId }) => {
       const { state, exact } = await this.resolveStableState(reference.referenceId);
       if (state?.status === 'closed') throw sourceError('conflict', 'A Closed Conversation is read-only and cannot receive Chat messages.');
-      const result = await this.request('chat.send', { sessionKey: exact.sessionKey, message: input.message, idempotencyKey: logicalOperationId }, { requestId });
+      const result = typeof runtime.agentTurnDispatch === 'function'
+        ? await runtime.agentTurnDispatch({ sessionKey: exact.sessionKey, sessionId: exact.sessionId, message: input.message, runId: logicalOperationId })
+        : await this.request('chat.send', { sessionKey: exact.sessionKey, message: input.message, idempotencyKey: logicalOperationId }, { requestId });
       if (result?.runId !== logicalOperationId) throw sourceError('unavailable', 'chat.send returned an unexpected idempotency result.');
       return result;
     };
@@ -181,13 +256,18 @@ export class SessionAdapter {
     const status = input.status ?? 'open';
     if (!['open', 'closed', 'all'].includes(status)) throw sourceError('invalid-request', 'Session list status must be open, closed, or all.');
     const conversations = [];
+    const catalogRows = await this.authoritativeRows();
+    // Gateway sessions.list is bounded/filtered and cannot prove absence.
+    const replacements = this.sessionStore?.listSessionEntries ? explicitSessionReplacements(this.metadata, this.topicId) : new Set();
     for (const reference of this.references()) {
-      const { state } = await this.resolveStableState(reference.referenceId);
+      const unavailable = unavailableReplacedSession(this.metadata, reference, catalogRows, replacements);
+      const { state } = unavailable ? { state: this.metadata.getSessionState(reference.referenceId) } : await this.resolveStableState(reference.referenceId, { catalogRows });
       if (typeof state.updatedAt !== 'string' || state.updatedAt.trim() === '') throw sourceError('source-recovery', 'A linked Conversation has incomplete persisted presentation state.');
       if (status !== 'all' && state.status !== status) continue;
       conversations.push({
         referenceId: reference.referenceId,
         sessionId: state.sessionId,
+        ...(unavailable ? { availability: 'replaced-unavailable' } : {}),
         displayName: state.displayName || (state.isPrimary ? 'Primary Conversation' : 'Conversation'),
         status: state.status,
         isPrimary: state.isPrimary === true,
@@ -238,29 +318,35 @@ export class SessionAdapter {
   }
 
   async navigate(input = {}) {
-    assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId'], 'Session navigation request');
+    assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'sessionReferenceId', 'requestId', 'nativeChat'], 'Session navigation request');
+    if (input.nativeChat !== undefined && typeof input.nativeChat !== 'boolean') throw sourceError('invalid-request', 'nativeChat must be a boolean.');
     const reference = this.resolveReference(input);
-    const { state } = await this.resolveStableState(reference.referenceId);
-    return Object.freeze({ schemaVersion: 1, status: 'applied', sessionKey: reference.externalSourceId, sessionId: state.sessionId, sourceReference: reference });
+    const { state, exact } = await this.resolveStableState(reference.referenceId);
+    if (input.nativeChat === true && state.status !== 'open') throw sourceError('read-only', 'Closed Conversations are read-only. Reopen the Conversation before opening native Chat.');
+    return Object.freeze({ schemaVersion: 1, status: 'applied', sessionKey: exact.sessionKey, sessionId: state.sessionId, sourceReference: reference });
   }
 
-  async resolveStableState(referenceId) {
-    const exact = await this.resolveExact({ referenceId });
+  async resolveStableState(referenceId, options) {
+    const exact = await this.resolveExact({ referenceId }, options);
     const state = this.metadata?.getSessionState?.(referenceId);
     if (!state || typeof state.sessionId !== 'string' || state.sessionId.trim() === '' || !['open', 'closed'].includes(state.status)) throw sourceError('source-recovery', 'The linked Session state is missing or incomplete.');
-    if (state.sessionId !== exact.sessionId) throw sourceError('source-recovery', 'The exact persisted Session identity changed during authoritative resolution.');
+    if (state.sessionId !== exact.sessionId || effectiveSourceLocator(this.metadata, this.metadata.getSourceReference(referenceId)) !== exact.sessionKey) throw sourceError('source-recovery', 'The exact persisted Session identity changed during authoritative resolution.');
     return { state, exact };
   }
 
-  async resolveExact(input = {}) {
-    const reference = this.resolveReference(input);
-    const state = this.metadata?.getSessionState?.(reference.referenceId);
-    const sessionKey = this.metadata?.getSourceLocator?.(reference.referenceId)?.locator ?? reference.externalSourceId;
-    if (!state?.sessionId) throw sourceError('source-recovery', 'The linked Session does not have an exact persisted identity.');
+  async authoritativeRows() {
     const listing = this.sessionStore?.listSessionEntries
       ? this.sessionStore.listSessionEntries({ agentId: 'main', readOnly: true }).map((row) => ({ sessionKey: row.sessionKey, ...(row.entry ?? {}) }))
       : await this.request('sessions.list', {});
-    const rows = Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
+    return Array.isArray(listing) ? listing : listing?.sessions ?? listing?.items ?? [];
+  }
+
+  async resolveExact(input = {}, { catalogRows } = {}) {
+    const reference = this.resolveReference(input);
+    const state = this.metadata?.getSessionState?.(reference.referenceId);
+    const sessionKey = effectiveSourceLocator(this.metadata, reference);
+    if (!state?.sessionId) throw sourceError('source-recovery', 'The linked Session does not have an exact persisted identity.');
+    const rows = catalogRows ?? await this.authoritativeRows();
     const matches = rows.filter((row) => responseKey(row) === sessionKey && responseSessionId(row) === state.sessionId);
     if (matches.length !== 1) throw sourceError('source-recovery', 'The exact authoritative Session is missing or replaced.');
     return { sessionKey, sessionId: state.sessionId, row: matches[0] };

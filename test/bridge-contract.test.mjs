@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, validateBridgeRequest } from '../src/bridge/contracts.mjs';
-import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/register.mjs';
+import { ADMIN_METHODS, BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, validateBridgeRequest } from '../src/bridge/contracts.mjs';
+import { invokeBridgeMethod, registerBridgeMethods, registerNativeSessionNavigation, createAuthenticatedCoreGateway } from '../src/bridge/register.mjs';
 import { randomUUID } from 'node:crypto';
 import { AuthoritativeSourceService } from '../src/sources/service.mjs';
 
@@ -13,7 +13,7 @@ test('registers the complete closed versioned bridge inventory with least-privil
   assert.deepEqual(registered, [...READ_METHODS, ...WRITE_METHODS]);
   assert.deepEqual(registrations.map(([method, , options]) => [method, options.scope]), [
     ...READ_METHODS.map((method) => [method, 'operator.read']),
-    ...WRITE_METHODS.map((method) => [method, 'operator.write'])
+    ...WRITE_METHODS.map((method) => [method, ADMIN_METHODS.includes(method) ? 'operator.admin' : 'operator.write'])
   ]);
   for (const method of registered) {
     assert.equal(BRIDGE_CONTRACTS[method].closed, true);
@@ -39,6 +39,7 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.notes.edit', { schemaVersion: 1, topicId: 'topic', referenceId: 'note:a', path: 'a.md', expectedRevision: 'sha256:x', text: 'x', logicalOperationId: randomUUID() }));
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.edit', { schemaVersion: 1, topicId: 'topic', path: 'a.md', expectedRevision: 'sha256:x', text: 'x', logicalOperationId: randomUUID() }), /referenceId/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.reminders.complete', { schemaVersion: 1, topicId: 'topic', referenceId: 'reminder', expectedConfigRevision: 'revision', patch: { payload: {} }, logicalOperationId: randomUUID() }), /unsupported.*patch/i);
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.reminders.create', { schemaVersion: 1, topicId: 'topic', declaration: { name: 'Fictional reminder', schedule: { kind: 'at', at: '2026-08-30T00:00:00.000Z' }, payload: { kind: 'systemEvent', text: 'Fictional reminder' } }, logicalOperationId: randomUUID() }));
   assert.throws(() => validateBridgeRequest('command-center.v1.schedules.set-enabled', { schemaVersion: 1, topicId: 'topic', referenceId: 'schedule', expectedConfigRevision: 'revision', enabled: false, patch: { schedule: {} }, logicalOperationId: randomUUID() }), /unsupported.*patch/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.send', { schemaVersion: 1, topicId: 'topic', message: 'fictional', logicalOperationId: randomUUID() }), /exact Source Reference/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.schedules.run', { schemaVersion: 1, topicId: 'topic', logicalOperationId: randomUUID() }), /exact Source Reference/i);
@@ -46,10 +47,17 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.read', { schemaVersion: 1, topicId: 42, referenceId: 'note:a', path: 'a.md', offset: 0 }), /topicId.*string/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.schedules.set-enabled', { schemaVersion: 1, topicId: 'topic', referenceId: 'schedule', expectedConfigRevision: 'revision', enabled: 'false', logicalOperationId: randomUUID() }), /enabled.*boolean/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.search.query', { schemaVersion: 1, topicId: 'topic', query: 'fictional', limit: 0 }), /limit/i);
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.search.prepare-rebuild', { schemaVersion: 1, topicId: randomUUID(), logicalOperationId: randomUUID() }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.search.prepare-rebuild', { schemaVersion: 1, topicId: randomUUID(), logicalOperationId: randomUUID(), credential: 'forbidden' }), /unsupported.*credential/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.metadata.read', { schemaVersion: 1, referenceId: 'foreign-reference' }), /topicId/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.history', { schemaVersion: 1, topicId: 'topic', referenceId: 'session', sessionId: 'foreign-session' }), /unsupported.*sessionId/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic' }));
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic', includeClosed: true }));
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: 'topic', limit: 100, offset: 0, cursor: 'opaque-snapshot' }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: 'topic', limit: 101, offset: 0 }), /limit/i);
+  assert.throws(() => validateBridgeRequest('command-center.v1.sessions.create', { schemaVersion: 1, topicId: 'topic', label: 'Authenticated Conversation', isPrimary: false, logicalOperationId: randomUUID() }), /original Topic revision/i);
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.create', { schemaVersion: 1, topicId: 'topic', label: 'Authenticated Conversation', isPrimary: false, expectedRevision: 4, logicalOperationId: randomUUID() }));
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.create', { schemaVersion: 1, topicId: randomUUID(), name: 'Authenticated Topic', paraCategory: 'project', logicalOperationId: randomUUID() }));
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic', includeClosed: 'true' }), /includeClosed.*boolean/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.list', { schemaVersion: 1, topicId: 'topic' }), /unsupported.*bridge method/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.structural-change.confirm', { schemaVersion: 1, topicId: randomUUID(), structuralChangeId: randomUUID(), paraCategory: 'area', previewDigest: 'sha256:preview', expectedRevision: 4, expectedRevisions: [], logicalOperationId: randomUUID() }));
@@ -85,24 +93,186 @@ test('handlers preserve authenticated request context and echo request and logic
   assert.deepEqual(response[1], { schemaVersion: 1, status: 'applied', requestId: 'gateway-frame-1', logicalOperationId: null, result: { mode: 'ready' } });
 });
 
-test('Topic mutation handlers await the public service and return sanitized durable results', async () => {
+test('native Chat navigation intent is an optional boolean on the closed resolver contract', () => {
+  const method = 'command-center.v1.sessions.navigate';
+  const params = { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-session', nativeChat: true };
+  assert.doesNotThrow(() => validateBridgeRequest(method, params));
+  assert.throws(() => validateBridgeRequest(method, { ...params, nativeChat: 'true' }));
+  assert.throws(() => validateBridgeRequest(method, { ...params, url: 'https://example.invalid/chat' }));
+});
+
+test('host navigation resolver always enforces native Chat policy and exact Session identity', async () => {
+  let handler; const observed = [];
+  registerNativeSessionNavigation({ registerGatewayMethod(method, callback, options) {
+    assert.equal(method, 'command-center.v1.sessions.resolve-native');
+    assert.equal(options.scope, 'operator.read'); handler = callback;
+  } }, { sessionsNavigate(input) { observed.push(input); return { sessionKey: 'agent:main:fictional', sessionId: 'fictional-id' }; } });
+  const input = { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-reference', expectedSessionId: 'fictional-id' };
+  const call = async (params, context = {}) => { let response; await handler({ params, context, req: { id: 'fictional-request' }, respond: (...args) => { response = args; } }); return response; };
+  assert.deepEqual(await call(input), [true, { sessionKey: 'agent:main:fictional' }]);
+  assert.equal(observed[0].nativeChat, true);
+  assert.equal((await call({ ...input, nativeChat: false }))[0], false);
+  assert.equal((await call({ ...input, expectedSessionId: 'replacement-id' }))[0], false);
+  assert.equal((await call(input, { authenticated: false }))[0], false);
+  assert.equal(observed.length, 2);
+});
+
+test('Note browse bridge exposes only one bounded opaque catalog page', async () => {
+  const reference = { version: 1, referenceId: 'note:page', topicId: 'topic-page', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/vault/page.md', observedRevision: 'sha256:page', createdAt: '2026-09-05T00:00:00.000Z', updatedAt: '2026-09-05T00:00:00.000Z' };
+  const result = await invokeBridgeMethod({
+    notesBrowse: async () => ({ schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'page.md', revision: 'sha256:page', sourceReference: reference, privateField: 'withheld' }], total: 5_001, offset: 0, nextOffset: 100, hasMore: true, cursor: 'opaque-page-snapshot', privateField: 'withheld' })
+  }, 'command-center.v1.notes.browse', { schemaVersion: 1, topicId: 'topic-page', limit: 100, offset: 0 });
+  assert.deepEqual(result, { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'page.md', revision: 'sha256:page', sourceReference: reference }], total: 5_001, offset: 0, nextOffset: 100, hasMore: true, cursor: 'opaque-page-snapshot' });
+});
+
+test('registered deferred Session send refuses before reaching a host turn', async () => {
   const registrations = [];
-  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
-    topics: {
-      create: async () => ({ status: 'applied', logicalOperationId: 'logical-topic-create', topic: { topicId: 'topic-fictional', name: 'Fictional Topic', sourceReferences: [{ version: 1, referenceId: 'session:fictional', topicId: 'topic-fictional', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:private-session' }], locators: [{ referenceId: 'note-folder:fictional', locatorVersion: 1, locator: '/fictional/private/Topics/Fictional Topic', observedRevision: 'fs:1:2:3' }], privateField: 'withheld' } })
-    }
-  });
-  const handler = registrations.find(([method]) => method === 'command-center.v1.topics.create')[1];
-  let response;
+  const dispatched = [];
   const logicalOperationId = randomUUID();
-  await handler({ req: { id: 'gateway-frame-topic' }, params: { schemaVersion: 1, name: 'Fictional Topic', paraCategory: 'project', logicalOperationId }, context: { authenticated: true }, respond: (...args) => { response = args; } });
-  assert.equal(response[0], true);
-  assert.equal(response[1].result.value.status, 'applied');
-  assert.equal(response[1].result.value.topic.topicId, 'topic-fictional');
-  assert.equal(response[1].result.value.topic.privateField, undefined);
-  assert.equal(response[1].result.value.topic.sourceReferences[0].externalSourceId, undefined);
-  assert.equal(response[1].result.value.topic.locators[0].locator, undefined);
+  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
+    sessionsSend: async (input, runtime) => ({
+      schemaVersion: 1,
+      status: 'applied',
+      logicalOperationId: input.logicalOperationId,
+      value: await runtime.agentTurnDispatch({
+        sessionKey: 'agent:main:dashboard:bridge-fictional',
+        sessionId: 'fictional-session-id',
+        message: input.message,
+        runId: input.logicalOperationId
+      })
+    })
+  });
+  const handler = registrations.find(([method]) => method === 'command-center.v1.sessions.send')[1];
+  let response;
+  const client = { authenticatedUserId: 'fictional-operator' };
+  const isWebchatConnect = () => false;
+  await handler({
+    req: { id: 'gateway-send-1' },
+    params: { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'session:fictional', message: 'Fictional authenticated message', logicalOperationId },
+    client,
+    isWebchatConnect,
+    context: {
+      authenticated: true,
+      getGatewayMethodRegistry: () => ({
+        getHandler: (method) => {
+          assert.equal(method, 'sessions.send');
+          return async (request) => {
+            assert.equal(request.client, client);
+            assert.equal(request.isWebchatConnect, isWebchatConnect);
+            dispatched.push(request);
+            request.respond(true, { runId: logicalOperationId, status: 'started' });
+          };
+        }
+      })
+    },
+    respond: (...args) => { response = args; }
+  });
+  assert.equal(response[0], false);
+  assert.equal(response[2].code, 'feature-unavailable');
+  assert.deepEqual(dispatched, []);
+});
+
+test('authenticated Search rebuild preparation exposes only bounded operation evidence', async () => {
+  const logicalOperationId = randomUUID();
+  const result = await invokeBridgeMethod({
+    searchPrepareRebuild: async () => ({ schemaVersion: 1, status: 'prepared', topicIds: ['fictional-topic'] })
+  }, 'command-center.v1.search.prepare-rebuild', { schemaVersion: 1, topicId: 'fictional-topic', logicalOperationId });
+  assert.deepEqual(result, { schemaVersion: 1, status: 'prepared', topicIds: ['fictional-topic'] });
+});
+
+test('direct Session create contract preserves independent durable identities under reversed completion', async () => {
+  const completions = [];
+  let releaseReady;
+  const ready = Promise.race([
+    new Promise((resolve) => { releaseReady = resolve; }),
+    new Promise((resolve) => setTimeout(() => resolve(false), 1_000))
+  ]);
+  const durable = new Map();
+  const service = {
+    sessionsCreate: ({ topicId, logicalOperationId }) => new Promise((resolve) => { completions.push(() => {
+      const ordinal = durable.size + 1;
+      const value = { key: `agent:main:dashboard:bridge-${ordinal}`, sessionId: `fictional-bridge-session-${ordinal}`, creationRevision: String(ordinal), sourceReference: { version: 1, referenceId: `session:${topicId}:bridge-${ordinal}`, topicId, sourceSystem: 'openclaw', sourceKind: 'session' } };
+      durable.set(logicalOperationId, value);
+      resolve({ schemaVersion: 1, status: 'applied', logicalOperationId, value });
+    }); if (completions.length === 3) releaseReady(true); })
+  };
+    const operations = Array.from({ length: 3 }, () => randomUUID());
+    const responses = [];
+  const pending = operations.map((logicalOperationId, index) => invokeBridgeMethod(service, 'command-center.v1.sessions.create', { schemaVersion: 1, topicId: 'topic-bridge-interleaving', label: `Bridge ${index}`, isPrimary: false, logicalOperationId, authoritativeSession: { key: `agent:main:dashboard:${index}`, sessionId: `session-${index}`, revision: String(index + 1), idempotencyKey: logicalOperationId, label: `Bridge ${index}` } }, `bridge-create-${index}`).then(result => { responses[index] = result; }));
+  assert.equal(await ready, true, 'Direct Session creates did not reach the controlled completion barrier');
+  for (const complete of completions.reverse()) complete();
+  await Promise.all(pending);
+    assert.equal(responses.every(result => result.status === 'applied'), true);
+    assert.equal(new Set(responses.map(result => result.value.key)).size, operations.length);
+  for (const operationId of operations) assert.ok(durable.has(operationId));
+});
+
+test('Direct Reminder contract accepts a scheduler declaration without a pre-existing reference', async () => {
+  const calls = [];
+  const service = {
+    remindersCreate: async (input) => { calls.push(input); return { schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, value: { job: { id: 'fictional-reminder', enabled: true, schedule: { kind: 'at', at: '2026-08-30T00:00:00.000Z' }, payload: { kind: 'systemEvent', text: 'Fictional reminder' } } } }; }
+  };
+  const logicalOperationId = randomUUID();
+  const response = await invokeBridgeMethod(service, 'command-center.v1.reminders.create', { schemaVersion: 1, topicId: 'topic-fictional', declaration: { name: 'Fictional reminder', enabled: true, schedule: { kind: 'at', at: '2026-08-30T00:00:00.000Z' }, payload: { kind: 'systemEvent', text: 'Fictional reminder' } }, logicalOperationId }, 'gateway-reminder-create');
+  assert.equal(calls[0].topicId, 'topic-fictional');
+  assert.equal(response.value.job.id, 'fictional-reminder');
+});
+
+test('direct Reminder contract forwards authenticated core gateway principal and operation identity', async () => {
+  const dispatched = [];
+  const logicalOperationId = randomUUID();
+  const service = {
+    remindersCreate: async (input, runtime) => ({ schemaVersion: 1, status: 'applied', logicalOperationId, value: await runtime.gateway.request('cron.add', input.declaration, { requestId: input.logicalOperationId }) })
+  };
+  const client = { authenticatedUserId: 'fictional-operator' };
+  const gateway = createAuthenticatedCoreGateway({
+    req: { id: 'gateway-reminder-create' },
+    client,
+    context: { authenticated: true, getGatewayMethodRegistry: () => ({ getHandler: (method) => async (request) => { dispatched.push({ method, request }); request.respond(true, { job: { id: 'fictional-reminder' } }); } }) }
+  });
+  const response = await invokeBridgeMethod(service, 'command-center.v1.reminders.create', { schemaVersion: 1, topicId: 'topic-fictional', declaration: { name: 'Fictional reminder', enabled: true, schedule: { kind: 'at', at: '2026-08-30T00:00:00.000Z' }, payload: { kind: 'systemEvent', text: 'Fictional reminder' } }, logicalOperationId }, 'gateway-reminder-create', null, { gateway });
+  assert.equal(dispatched[0].method, 'cron.add');
+  assert.equal(dispatched[0].request.client, client);
+  assert.equal(dispatched[0].request.req.id, logicalOperationId);
+  assert.equal(response.value.job.id, 'fictional-reminder');
+});
+
+test('Direct Topic mutation contracts await the public service and return sanitized durable results', async () => {
+  const service = {
+    topics: {
+      create: async () => ({ status: 'applied', logicalOperationId: 'logical-topic-create', topic: { topicId: 'topic-fictional', name: 'Fictional Topic', activatedAt: '2026-08-30T12:00:00.000Z', sourceReferences: [{ version: 1, referenceId: 'session:fictional', topicId: 'topic-fictional', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:private-session' }], locators: [{ referenceId: 'note-folder:fictional', locatorVersion: 1, locator: '/fictional/private/Topics/Fictional Topic', observedRevision: 'fs:1:2:3' }], privateField: 'withheld' } })
+    }
+  };
+  const logicalOperationId = randomUUID();
+  const response = await invokeBridgeMethod(service, 'command-center.v1.topics.create', { schemaVersion: 1, topicId: randomUUID(), name: 'Fictional Topic', paraCategory: 'project', logicalOperationId, authoritativeSession: { key: 'agent:main:dashboard:topic', sessionId: 'session-topic', revision: '1', idempotencyKey: logicalOperationId, label: 'Fictional Topic' } }, 'gateway-frame-topic');
+  assert.equal(response.value.status, 'applied');
+  assert.equal(response.value.topic.topicId, 'topic-fictional');
+  assert.equal(response.value.topic.activatedAt, '2026-08-30T12:00:00.000Z');
+  assert.equal(response.value.topic.privateField, undefined);
+  assert.equal(response.value.topic.sourceReferences[0].externalSourceId, undefined);
+  assert.equal(response.value.topic.locators[0].locator, undefined);
   assert.doesNotMatch(JSON.stringify(response), /private-session|fictional\/private/);
+});
+
+test('envelope-free WebSocket Topic creation fails before entering provisioning', async () => {
+  const handlers = new Map();
+  let provisions = 0;
+  let response;
+  registerBridgeMethods({ registerGatewayMethod(method, handler) { handlers.set(method, handler); } }, {
+    topics: { async create() { provisions += 1; return { status: 'applied' }; } }
+  });
+  await handlers.get('command-center.v1.topics.create')({
+    req: { id: 'native-websocket-create' }, context: { authenticated: true },
+    params: { schemaVersion: 1, topicId: randomUUID(), name: 'Requires HTTP', paraCategory: 'project', logicalOperationId: randomUUID() },
+    respond: (...args) => { response = args; }
+  });
+  assert.equal(provisions, 0);
+  assert.equal(response[0], false);
+  assert.equal(response[2].code, 'feature-unavailable');
+  await assert.rejects(invokeBridgeMethod({ topics: { create: () => { provisions++; } } }, 'command-center.v1.topics.create', {
+    schemaVersion: 1, topicId: randomUUID(), name: 'Requires HTTP', paraCategory: 'project', logicalOperationId: randomUUID()
+  }), { code: 'capability-unavailable' });
+  assert.equal(provisions, 0);
 });
 
 test('Topic get withholds raw locators and external source identities', async () => {
@@ -113,10 +283,12 @@ test('Topic get withholds raw locators and external source identities', async ()
     revision: 4,
     paraCategory: 'project',
     lifecycle: 'active',
+    activatedAt: '2026-08-30T12:00:00.000Z',
     sourceReferences: [{ version: 1, referenceId: 'note-folder:fictional', topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/private/Topics/Fictional Topic', observedRevision: 'fs:1:2:3' }],
     locators: [{ referenceId: 'note-folder:fictional', locatorVersion: 2, locator: '/fictional/private/Topics/Fictional Topic', ownership: 'managed', observedRevision: 'fs:1:2:3' }]
   };
   const result = await invokeBridgeMethod({ topics: { getVerified: async () => topic } }, 'command-center.v1.topics.get', { schemaVersion: 1, topicId });
+  assert.equal(result.topic.activatedAt, topic.activatedAt);
   assert.equal(result.topic.sourceReferences[0].externalSourceId, undefined);
   assert.equal(result.topic.locators[0].locator, undefined);
   assert.equal(result.topic.locators[0].observedRevision, 'fs:1:2:3');
@@ -134,24 +306,17 @@ test('handlers bound raw provider failures without exposing their messages', asy
   assert.doesNotMatch(JSON.stringify(response[2]), /fictional-secret|private\/path/);
 });
 
-test('handlers enforce closed result schemas and withhold unexpected provider fields', async () => {
-  const registrations = [];
-  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
+test('direct deferred contracts enforce closed result schemas and withhold unexpected provider fields', async () => {
+  const service = {
     sessionsHistory: async () => ({ sessionKey: 'fictional-session', messages: [], unexpectedPrivateField: '/fictional/private/path' }),
     schedulesCreate: async () => ({ status: 'applied', value: { job: { id: 'fictional-job', configRevision: 'revision', sessionKey: 'agent:main:foreign', lastRunError: 'secret /fictional/private', schedule: { kind: 'every', everyMs: 1000, privatePath: '/fictional/private' }, payload: { kind: 'systemEvent', text: 'fictional', secretUrl: 'https://fictional.invalid' }, providerSecret: 'private' }, sourceReference: { version: 1, referenceId: 'schedule:new', topicId: 'topic', sourceSystem: 'scheduler', sourceKind: 'schedule', externalSourceId: 'fictional-job', observedRevision: 'revision', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z', ['sec' + 'ret']: 'private' }, unexpectedNested: 'private' } })
-  });
-  const handler = registrations.find(([method]) => method === 'command-center.v1.sessions.history')[1];
-  let response;
-  await handler({ req: { id: 'gateway-frame-history' }, params: { schemaVersion: 1, topicId: 'topic', referenceId: 'session' }, context: { authenticated: true }, respond: (...args) => { response = args; } });
-  assert.equal(response[0], true);
-  assert.deepEqual(response[1].result, { sessionKey: 'fictional-session', messages: [] });
+  };
+  let response = await invokeBridgeMethod(service, 'command-center.v1.sessions.history', { schemaVersion: 1, topicId: 'topic', referenceId: 'session' }, 'gateway-frame-history');
+  assert.deepEqual(response, { sessionKey: 'fictional-session', messages: [] });
   assert.doesNotMatch(JSON.stringify(response), /unexpectedPrivateField|private\/path/);
 
-  const scheduleHandler = registrations.find(([method]) => method === 'command-center.v1.schedules.create')[1];
-  response = undefined;
   const logicalOperationId = randomUUID();
-  await scheduleHandler({ req: { id: 'gateway-frame-schedule' }, params: { schemaVersion: 1, topicId: 'topic', referenceId: 'schedule:new', logicalOperationId, declaration: { name: 'fictional', schedule: { kind: 'every', everyMs: 1000 }, payload: { kind: 'systemEvent', text: 'fictional' } } }, context: { authenticated: true }, respond: (...args) => { response = args; } });
-  assert.equal(response[0], true);
+  response = await invokeBridgeMethod(service, 'command-center.v1.schedules.create', { schemaVersion: 1, topicId: 'topic', referenceId: 'schedule:new', logicalOperationId, declaration: { name: 'fictional', schedule: { kind: 'every', everyMs: 1000 }, payload: { kind: 'systemEvent', text: 'fictional' } } }, 'gateway-frame-schedule');
   assert.doesNotMatch(JSON.stringify(response), /privatePath|secretUrl|providerSecret|unexpectedNested|lastRunError|sessionKey|foreign|fictional\/private|"secret"/);
 });
 
@@ -185,9 +350,13 @@ test('generic Topic-owned metadata writes honor archived read-only policy', asyn
 });
 
 test('Topics list sanitizes active, provisioning, recovery, archived, and retired collections', async () => {
-  const topic = { topicId: 'topic-list', name: 'Fictional', revision: 'r1', paraCategory: 'project', lifecycle: 'active', usable: true, recovery: [], sourceReferences: [], locators: [], privateField: 'withheld' };
+  const topic = { topicId: 'topic-list', name: 'Fictional', revision: 'r1', paraCategory: 'project', lifecycle: 'active', activatedAt: '2026-08-30T12:00:00.000Z', usable: true, noteFolderReferenceId: 'note-folder:fictional', recovery: [], sourceReferences: [], locators: [], privateField: 'withheld' };
   const result = await invokeBridgeMethod({ topics: { listDestination: () => ({ activeGroups: { project: [topic], area: [], resource: [] }, provisioning: [topic], recovery: [topic], archived: [topic], retired: [topic] }) } }, 'command-center.v1.topics.list', { schemaVersion: 1 });
   assert.deepEqual(Object.keys(result).sort(), ['activeGroups', 'archived', 'provisioning', 'recovery', 'retired']);
+  for (const publicTopic of [result.activeGroups.project[0], result.provisioning[0], result.recovery[0], result.archived[0], result.retired[0]]) {
+    assert.equal(publicTopic.activatedAt, topic.activatedAt);
+    assert.equal(publicTopic.noteFolderReferenceId, topic.noteFolderReferenceId);
+  }
   assert.equal(result.archived[0].privateField, undefined);
   assert.equal(result.retired[0].privateField, undefined);
 });
@@ -207,6 +376,15 @@ test('Source Recovery status is bounded and omits authoritative identities', asy
   const serialized = JSON.stringify(response[1]);
   assert.doesNotMatch(serialized, /fictional\/private|private-identity|private failure/);
   assert.deepEqual(response[1].result.recovery.diagnostics[0], { topicId, referenceId: 'note-folder:fictional', sourceKind: 'note_folder', expectedIdentity: 'exact Note Folder identity', check: 'exact-folder-resolution', status: 'recovery-required', retryable: true });
+});
+
+test('Session recovery replacement exposes only the durable replacement reference identity', async () => {
+  const topicId = randomUUID();
+  const replacementReferenceId = `session:${topicId}:replacement`;
+  const result = await invokeBridgeMethod({ topics: { recoveryReplace: async () => ({ schemaVersion: 1, status: 'replaced', replacementReferenceId, privateLocator: 'agent:main:private' }) } }, 'command-center.v1.topics.recovery.replace', {
+    schemaVersion: 1, topicId, referenceId: `session:${topicId}:revoked`, sessionKey: 'agent:main:dashboard:replacement', sessionId: 'fictional-replacement-session', expectedRevision: 4, expectedSourceRevision: 'fictional-revoked-session', logicalOperationId: randomUUID()
+  });
+  assert.deepEqual(result, { schemaVersion: 1, status: 'replaced', replacementReferenceId });
 });
 
 test('Structural Change bridge previews omit private Note Folder locators', async () => {
