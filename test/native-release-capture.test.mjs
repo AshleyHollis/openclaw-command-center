@@ -3,7 +3,7 @@ import test from 'node:test';
 import { runNativeReleaseCapture } from './support/first-live-native-release.mjs';
 import * as nativeRelease from './support/first-live-native-release.mjs';
 import { FINALIZATION_PHASES, RELEASE_ROW_IDS } from '../src/acceptance-report.mjs';
-import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
+import { RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 
 // These fictional runner doubles test the orchestration boundary only. They
 // neither launch OpenClaw nor qualify any native/runtime acceptance frontier.
@@ -107,6 +107,42 @@ function prerequisiteOptions(state) {
     return { repository: true, generated: true, capturedOutput: true };
   } };
 }
+
+test('pure orchestration: failed performance retains every numeric comparison without accepting or replacing the baseline', async () => {
+  const seed = setup();
+  const { capturedBaseline } = await runNativeReleaseCapture(seed.options);
+  const before = JSON.stringify(capturedBaseline);
+  const state = setup();
+  state.options.capturePerformanceBaseline = false;
+  state.options.baseline = capturedBaseline;
+  state.evidence.scale.observations.startupReadinessMs = 102.5;
+  state.evidence.scale.observations.chatSendMs = 42.5;
+  await assert.rejects(runNativeReleaseCapture(state.options), error => {
+    assert.match(error.message, /immutable first-observation ceiling/u);
+    const comparison = JSON.parse(error.message.split('; performance-comparison=')[1]);
+    assert.deepEqual(Object.keys(comparison), RELEASE_MEASUREMENTS);
+    assert.deepEqual(comparison.startupReadinessMs, { observedMs: 102.5, limitMs: 101 });
+    assert.deepEqual(comparison.chatSendMs, { observedMs: 42.5, limitMs: 41 });
+    assert.match(error.cause.message, /startupReadinessMs exceeds/u);
+    return true;
+  });
+  assert.equal(JSON.stringify(capturedBaseline), before);
+  assert.equal(state.events.at(-1), 'scan');
+});
+
+test('pure orchestration: malformed timing diagnostics never echo nonnumeric evidence', async () => {
+  const { capturedBaseline } = await runNativeReleaseCapture(setup().options);
+  const state = setup();
+  state.options.capturePerformanceBaseline = false;
+  state.options.baseline = capturedBaseline;
+  state.evidence.scale.observations.startupReadinessMs = 'fictional-private-content';
+  await assert.rejects(runNativeReleaseCapture(state.options), error => {
+    const comparison = JSON.parse(error.message.split('; performance-comparison=')[1]);
+    assert.equal(comparison.startupReadinessMs.observedMs, null);
+    assert.doesNotMatch(error.message, /fictional-private-content/u);
+    return true;
+  });
+});
 
 test('pure orchestration: early prerequisites run fourteen participants in two lanes without claiming release or performance', async () => {
   const state = setup();

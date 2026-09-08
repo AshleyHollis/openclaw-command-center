@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createAcceptanceReport, assertAcceptanceReportPassed, assertNonPerformanceAcceptanceEvidence, NON_PERFORMANCE_ROW_IDS, FINALIZATION_PHASES, RELEASE_ROW_IDS } from '../../src/acceptance-report.mjs';
 import { runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices } from '../../src/acceptance-scenario-coordinator.mjs';
-import { captureFirstReleasePerformanceBaseline, validateReleasePerformanceBaseline, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_IDENTITY, releasePerformanceIdentity } from '../../src/performance-baseline.mjs';
+import { captureFirstReleasePerformanceBaseline, validateReleasePerformanceBaseline, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../../src/performance-baseline.mjs';
 
 // Two fixed subsystem lanes, not an extensible workflow registry. Each pair
 // settles before the next is admitted; scale never shares their resources.
@@ -237,9 +237,23 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
   requireFacts(scanned, ['repository', 'generated', 'capturedOutput'], 'scanArtifacts');
   rowEvidence.push({ schemaVersion: 2, repository: scanned.repository, generated: scanned.generated, capturedOutput: scanned.capturedOutput,
     browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: true });
-  const report = createAcceptanceReport({ buildDigest: sealedDigest,
-    rows: RELEASE_ROW_IDS.map((id, index) => ({ id, outcome: 'passed', evidence: rowEvidence[index] })),
-    finalization: FINALIZATION_PHASES.map(phase => ({ phase })), performanceBaseline: qualifiedBaseline });
+  let report;
+  try {
+    report = createAcceptanceReport({ buildDigest: sealedDigest,
+      rows: RELEASE_ROW_IDS.map((id, index) => ({ id, outcome: 'passed', evidence: rowEvidence[index] })),
+      finalization: FINALIZATION_PHASES.map(phase => ({ phase })), performanceBaseline: qualifiedBaseline });
+  } catch (error) {
+    // TAP retains the outer message, not custom fields or nested evidence. Keep
+    // all eight comparisons on failure, but never echo arbitrary source values.
+    const performanceFailure = RELEASE_MEASUREMENTS.some(metric => error.message ===
+      `Acceptance report evidence: scale-performance.${metric} exceeds its immutable first-observation ceiling`);
+    if (!performanceFailure) throw error;
+    const comparison = Object.fromEntries(RELEASE_MEASUREMENTS.map(metric => [metric, {
+      observedMs: Number.isFinite(scale.observations[metric]) ? scale.observations[metric] : null,
+      limitMs: qualifiedBaseline.thresholds[metric]
+    }]));
+    throw new TypeError(`${error.message}; performance-comparison=${JSON.stringify(comparison)}`, { cause: error });
+  }
   assertAcceptanceReportPassed(report);
   return Object.freeze({ report, capturedBaseline: capturePerformanceBaseline ? report.performanceBaseline : undefined });
 }
