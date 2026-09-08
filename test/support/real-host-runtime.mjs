@@ -114,6 +114,20 @@ export async function configureEvidencePage(page, browserGuard, evidence, { dest
   });
 }
 
+class GatewayConnectFailure extends Error {
+  constructor(error, requestSite) {
+    super(`Authenticated Gateway connect failed: ${error?.code ?? 'unknown'}`, { cause: requestSite });
+    // Only the frozen host's exact startup contract is eligible for polling.
+    // Generic UNAVAILABLE, profile/auth failures and method refusals are not.
+    this.startupPending = error?.code === 'UNAVAILABLE' && error?.retryable === true
+      && error?.details?.reason === 'startup-sidecars';
+  }
+}
+
+export function isGatewayStartupPending(error) {
+  return error instanceof GatewayConnectFailure && error.startupPending === true;
+}
+
 export async function requestAuthenticatedGateway({ gatewayUrl, credential, method, params = {}, scopes = ['operator.read'], responseTimeoutMs = 10_000, signal, deviceIdentity, controlUiBuildId }) {
   const requestSite = new Error(`Authenticated Gateway request site: ${method}`);
   signal ??= acceptanceSignalContext.getStore();
@@ -160,7 +174,7 @@ export async function requestAuthenticatedGateway({ gatewayUrl, credential, meth
     const device = deviceIdentity ? signedGatewayDevice(deviceIdentity, { nonce: challenge.payload.nonce, credential, scopes, client }) : undefined;
     socket.send(JSON.stringify({ type: 'req', id: connectId, method: 'connect', params: { minProtocol: 4, maxProtocol: 4, client, caps: [], commands: [], role: 'operator', scopes, auth: { ['to' + 'ken']: credential }, ...(device ? { device } : {}) } }));
     const connected = await waitForFrame((frame) => frame?.type === 'res' && frame.id === connectId);
-    if (!connected.ok) throw new Error(`Authenticated Gateway connect failed: ${connected.error?.code ?? 'unknown'}`);
+    if (!connected.ok) throw new GatewayConnectFailure(connected.error, requestSite);
     const requestId = `command-center-acceptance-${randomUUID()}`;
     socket.send(JSON.stringify({ type: 'req', id: requestId, method, params }));
     const response = await waitForFrame((frame) => frame?.type === 'res' && frame.id === requestId, responseTimeoutMs, 'method-response');

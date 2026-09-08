@@ -14,7 +14,7 @@ import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs
 import { enrollNoteFolderIdentity } from '../../src/sources/note-folder-identity.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isCommandCenterMigrationReady, readCommandCenterMigrationProgress, recordStartupObservation } from '../../src/acceptance-readiness.mjs';
 import { scanPublicEvidence } from '../../src/safety.mjs';
-import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory } from './real-host-runtime.mjs';
+import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory, isGatewayStartupPending } from './real-host-runtime.mjs';
 import { exerciseNativeKeyboardStates } from './first-live-native-keyboard.mjs';
 import { prepareNativeLegacyBootstrap, readNativeLegacyBootstrap } from './first-live-native-bootstrap.mjs';
 import { prepareNativeScaleConversations, exerciseNativeScaleStates, openNativeSessionRoster } from './first-live-native-scale.mjs';
@@ -53,6 +53,18 @@ export async function seedNativeExistingTopic({ world, host, signal }) {
     metadata.setSessionState({ referenceId: sessionReferenceId, sessionId: created.sessionId, status: 'open', isPrimary: true, displayName: name });
   } finally { metadata.close(); }
   return Object.freeze({ topicId, name, sessionReferenceId, sessionKey, sessionId: created.sessionId, notePath, noteText, folder });
+}
+
+export async function readNativeControlUiReadiness({ world, signal }) {
+  try {
+    const catalog = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url,
+      credential: world.gatewayCredential, method: 'plugins.controlUi.list', signal });
+    return !!catalog?.plugins?.find(entry => entry.pluginId === 'command-center')?.revision;
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (isGatewayStartupPending(error)) return false;
+    throw error;
+  }
 }
 
 async function waitForNativeControlUiReadiness({ world, host, signal, scale, observations }) {
@@ -95,11 +107,8 @@ async function waitForNativeControlUiReadiness({ world, host, signal, scale, obs
   }, host.earlyExit, { required: 2, deadlineMs: scale ? 180_000 : 120_000, delayMs: 250, signal });
   // Static bootstrap HTTP can be available before authenticated Gateway
   // admission opens. Probe the read-only route before issuing any mutations.
-  await waitForConsecutiveReadiness(async () => {
-    const catalog = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url,
-      credential: world.gatewayCredential, method: 'plugins.controlUi.list', signal });
-    return !!catalog?.plugins?.find(entry => entry.pluginId === 'command-center')?.revision;
-  }, host.earlyExit, { required: 1, deadlineMs: 30_000, delayMs: 250, signal });
+  await waitForConsecutiveReadiness(probeSignal => readNativeControlUiReadiness({ world, signal: probeSignal }),
+    host.earlyExit, { required: 1, deadlineMs: 30_000, delayMs: 250, signal });
 }
 
 export async function exerciseNativeControlUiActivation({ descriptor, buildReceipt, signal, onFinalization }) {

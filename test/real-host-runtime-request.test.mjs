@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { createPublicKey, verify } from 'node:crypto';
 import test from 'node:test';
-import { createGatewayDeviceIdentity, requestAuthenticatedGateway } from './support/real-host-runtime.mjs';
+import { createGatewayDeviceIdentity, requestAuthenticatedGateway, isGatewayStartupPending } from './support/real-host-runtime.mjs';
+import { readNativeControlUiReadiness } from './support/first-live-native-journey.mjs';
+import { waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 
 // Protocol doubles check the test transport only, not host authorization.
 // The non-measuring real-host Conversation preparation proves that boundary.
-function transport(t, { refusal = false } = {}) {
+function transport(t, { refusal = false, connectErrors = [], methodPayload } = {}) {
   const sockets = [];
   class Socket extends EventTarget {
     readyState = 1;
@@ -21,9 +23,14 @@ function transport(t, { refusal = false } = {}) {
     frame(value) { this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(value) })); }
     send(raw) {
       const request = JSON.parse(raw); this.requests.push(request);
+      const connectError = request.method === 'connect' ? connectErrors[sockets.indexOf(this)] : undefined;
+      if (connectError) {
+        queueMicrotask(() => this.frame({ type: 'res', id: request.id, ok: false, error: connectError }));
+        return;
+      }
       queueMicrotask(() => this.frame({ type: 'res', id: request.id,
         ok: request.method === 'connect' || !refusal,
-        payload: { accepted: request.method }, error: { code: 'FORBIDDEN', message: 'Fictional refusal' } }));
+        payload: request.method !== 'connect' && methodPayload ? methodPayload : { accepted: request.method }, error: { code: 'FORBIDDEN', message: 'Fictional refusal' } }));
     }
     close() { this.closed = true; this.readyState = 3; }
   }
@@ -73,4 +80,61 @@ test('test transport preserves refusal and closes without retrying the mutation'
   await assert.rejects(requestAuthenticatedGateway(base), /FORBIDDEN/);
   assert.equal(sockets[0].requests.length, 2);
   assert.equal(sockets[0].closed, true);
+});
+
+const starting = { code: 'UNAVAILABLE', retryable: true, details: { reason: 'startup-sidecars' } };
+const world = { gateway: { url: base.gatewayUrl }, gatewayCredential: base.credential };
+
+test('native readiness polls the exact startup refusal, then reads the actual authenticated catalog', async t => {
+  const sockets = transport(t, { connectErrors: [starting], methodPayload: { plugins: [{ pluginId: 'command-center', revision: 'fictional-revision' }] } });
+  await waitForConsecutiveReadiness(signal => readNativeControlUiReadiness({ world, signal }), new Promise(() => {}),
+    { required: 1, attempts: 2, delayMs: 1 });
+  assert.equal(sockets.length, 2);
+  assert.deepEqual(sockets.map(socket => socket.requests.map(request => request.method)), [['connect'], ['connect', 'plugins.controlUi.list']]);
+  assert.equal(sockets.every(socket => socket.closed), true);
+});
+
+for (const refusal of [
+  { code: 'UNAVAILABLE' }, { ...starting, retryable: false },
+  { ...starting, details: { reason: 'authenticated-profile-unavailable' } },
+  { ...starting, code: 'FORBIDDEN' }, { code: 'UNAUTHORIZED' }, { code: 'INVALID_REQUEST' }
+]) {
+  test(`native readiness preserves non-startup refusal ${JSON.stringify(refusal)}`, async t => {
+    const sockets = transport(t, { connectErrors: [refusal] });
+    await assert.rejects(readNativeControlUiReadiness({ world }), error => !isGatewayStartupPending(error));
+    assert.equal(sockets.length, 1);
+    assert.deepEqual(sockets[0].requests.map(request => request.method), ['connect']);
+    assert.equal(sockets[0].closed, true);
+  });
+}
+
+test('a mutation caller never retries even an exact startup connect refusal', async t => {
+  const sockets = transport(t, { connectErrors: [starting] });
+  await assert.rejects(requestAuthenticatedGateway(base), isGatewayStartupPending);
+  assert.equal(sockets.length, 1);
+  assert.deepEqual(sockets[0].requests.map(request => request.method), ['connect']);
+  assert.equal(sockets[0].closed, true);
+});
+
+test('native readiness stops at its bound if startup stays pending', async t => {
+  const sockets = transport(t, { connectErrors: [starting, starting] });
+  await assert.rejects(waitForConsecutiveReadiness(signal => readNativeControlUiReadiness({ world, signal }), new Promise(() => {}),
+    { required: 1, attempts: 2, delayMs: 1 }), /consecutive readiness/);
+  assert.equal(sockets.length, 2);
+  assert.equal(sockets.every(socket => socket.closed), true);
+});
+
+test('native readiness does not convert a method refusal into startup polling', async t => {
+  const sockets = transport(t, { refusal: true });
+  await assert.rejects(readNativeControlUiReadiness({ world }), /FORBIDDEN/);
+  assert.equal(sockets.length, 1);
+  assert.equal(sockets[0].requests.length, 2);
+  assert.equal(sockets[0].closed, true);
+});
+
+test('cancelled native readiness opens no connection', async t => {
+  const sockets = transport(t);
+  const failure = new Error('Fictional cancellation');
+  await assert.rejects(readNativeControlUiReadiness({ world, signal: AbortSignal.abort(failure) }), error => error === failure);
+  assert.equal(sockets.length, 0);
 });
