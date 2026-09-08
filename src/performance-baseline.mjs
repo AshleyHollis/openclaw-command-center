@@ -192,6 +192,47 @@ export function assertPerformanceObservationWithinBaseline(name, observation, ba
   return true;
 }
 
+// The first-capture artifact and its historical ceilings stay immutable. The
+// separately versioned qualification policy was approved before new samples;
+// it is an engineering allowance, not a statistical confidence interval.
+const QUALIFICATION_ALLOWANCE = Object.freeze({ policy: 'bounded-relative-allowance-v1',
+  relativeAllowance: 0.20, minimumAllowanceMs: 50, maximumAllowanceMs: 2000 });
+
+export function deriveReleasePerformanceBudget(baseline) {
+  const validated = validateReleasePerformanceBaseline(baseline);
+  const thresholds = Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map(name => {
+    const first = validated.observations[name];
+    const limit = Math.ceil(first + Math.min(QUALIFICATION_ALLOWANCE.maximumAllowanceMs,
+      Math.max(QUALIFICATION_ALLOWANCE.minimumAllowanceMs, first * QUALIFICATION_ALLOWANCE.relativeAllowance)));
+    return [name, positiveInteger(limit, `budget.thresholds.${name}`)];
+  })));
+  return Object.freeze({ schemaVersion: 1, ...QUALIFICATION_ALLOWANCE, policyDigest: canonicalDigest(QUALIFICATION_ALLOWANCE),
+    baselineIdentityDigest: validated.capture.identityDigest,
+    baselineObservationsDigest: validated.capture.observationsDigest, thresholds });
+}
+
+export function validateReleasePerformanceBudget(value, baseline) {
+  const expected = deriveReleasePerformanceBudget(baseline);
+  closed(value, Object.keys(expected), 'budget');
+  for (const key of Object.keys(expected).filter(key => key !== 'thresholds')) {
+    if (value[key] !== expected[key]) invalid(`budget.${key} does not match the frozen budget`);
+  }
+  closed(value.thresholds, RELEASE_MEASUREMENTS, 'budget.thresholds');
+  for (const name of RELEASE_MEASUREMENTS) {
+    if (value.thresholds[name] !== expected.thresholds[name]) invalid(`budget.thresholds.${name} does not match the frozen budget`);
+  }
+  return expected;
+}
+
+export function assertPerformanceObservationWithinBudget(name, observation, baseline) {
+  if (!RELEASE_MEASUREMENTS.includes(name)) invalid(`unknown observation ${name}`);
+  assertPositiveObservation(observation, `observation.${name}`);
+  const budget = deriveReleasePerformanceBudget(baseline);
+  const limit = budget.thresholds[name];
+  if (observation > limit) throw new Error(`Release performance budget: ${name} observed ${observation} ms exceeded ${limit} ms`);
+  return true;
+}
+
 export function assertPerformanceBaselineBuildIdentity(baseline, expectedBuildDigest) {
   const validated = validateReleasePerformanceBaseline(baseline);
   digest(expectedBuildDigest, 'expectedBuildDigest');

@@ -1,6 +1,6 @@
-import { RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline } from './performance-baseline.mjs';
+import { RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline, deriveReleasePerformanceBudget, validateReleasePerformanceBudget } from './performance-baseline.mjs';
 
-export const ACCEPTANCE_REPORT_VERSION = 3;
+export const ACCEPTANCE_REPORT_VERSION = 4;
 export const RELEASE_ROW_IDS = Object.freeze(['pinned-host-startup', 'desktop-primary-journey', 'desktop-keyboard-journey', 'scale-performance', 'degraded-bridge-grants', 'degraded-source-availability', 'recovery-only-compatibility', 'destructive-migration-restoration', 'privacy-artifact-output']);
 export const FINALIZATION_PHASES = Object.freeze(['browser-close', 'host-stop', 'browser-traffic', 'host-traffic', 'child-traffic', 'build-digest']);
 
@@ -85,11 +85,11 @@ function validatePassedEvidence(id, evidence, buildDigest, performanceBaseline) 
       exactMap(evidence.fixtureCounts, RELEASE_FIXTURE_COUNTS, `${id}.fixtureCounts`);
       closed(evidence.observations, RELEASE_MEASUREMENTS, `${id}.observations`);
       closed(evidence.thresholds, RELEASE_MEASUREMENTS, `${id}.thresholds`);
-      exactMap(evidence.thresholds, performanceBaseline.thresholds, `${id}.thresholds`);
+      exactMap(evidence.thresholds, deriveReleasePerformanceBudget(performanceBaseline).thresholds, `${id}.thresholds`);
       for (const metric of RELEASE_MEASUREMENTS) {
         const observed = evidence.observations[metric];
         const threshold = evidence.thresholds[metric];
-        if (typeof observed !== 'number' || !Number.isFinite(observed) || observed <= 0 || !Number.isSafeInteger(threshold) || threshold < 1 || observed > threshold) invalid(`${id}.${metric} exceeds its immutable first-observation ceiling`);
+        if (typeof observed !== 'number' || !Number.isFinite(observed) || observed <= 0 || !Number.isSafeInteger(threshold) || threshold < 1 || observed > threshold) invalid(`${id}.${metric} exceeds its frozen performance budget`);
       }
       exactMap(evidence.conversationPage, { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true }, `${id}.conversationPage`);
       exactMap(evidence.notes, { largeNoteBytes: RELEASE_FIXTURE_COUNTS.largeNoteBytes, readOnly: true, paginationVerified: true }, `${id}.notes`);
@@ -154,10 +154,11 @@ export function assertNonPerformanceAcceptanceEvidence({ buildDigest, rows }) {
 }
 
 function validateStoredAcceptanceReport(report) {
-  closed(report, ['schemaVersion', 'buildDigest', 'outcome', 'performanceBaseline', 'rows', 'finalization'], 'report');
+  closed(report, ['schemaVersion', 'buildDigest', 'outcome', 'performanceBaseline', 'performanceBudget', 'rows', 'finalization'], 'report');
   if (report.schemaVersion !== ACCEPTANCE_REPORT_VERSION) invalid('report.schemaVersion is unsupported');
   if (typeof report.buildDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(report.buildDigest)) invalid('report.buildDigest is invalid');
   const baseline = validateReleasePerformanceBaseline(report.performanceBaseline);
+  validateReleasePerformanceBudget(report.performanceBudget, baseline);
   if (baseline.pluginBuildDigest !== `sha256:${report.buildDigest}`) invalid('report.performanceBaseline is not bound to the exact build digest');
   if (!Array.isArray(report.rows) || report.rows.length !== RELEASE_ROW_IDS.length || report.rows.some((row, index) => row.id !== RELEASE_ROW_IDS[index])) invalid('report.rows are not in canonical order');
   for (const row of report.rows) {
@@ -268,7 +269,7 @@ export function createAcceptanceReport({ buildDigest, rows, finalization, perfor
     return Object.freeze({ phase, outcome: error ? 'failed' : 'passed', ...(error ? { error: boundedError(error) } : {}) });
   });
   const passed = rows.every((row) => row.outcome === 'passed') && finalizationResults.every((result) => result.outcome === 'passed');
-  return validateStoredAcceptanceReport({ schemaVersion: ACCEPTANCE_REPORT_VERSION, buildDigest, outcome: passed ? 'passed' : 'failed', performanceBaseline: structuredClone(validatedBaseline), rows: structuredClone(rows), finalization: structuredClone(finalizationResults) });
+  return validateStoredAcceptanceReport({ schemaVersion: ACCEPTANCE_REPORT_VERSION, buildDigest, outcome: passed ? 'passed' : 'failed', performanceBaseline: structuredClone(validatedBaseline), performanceBudget: deriveReleasePerformanceBudget(validatedBaseline), rows: structuredClone(rows), finalization: structuredClone(finalizationResults) });
 }
 
 export function assertAcceptanceReportPassed(report) {

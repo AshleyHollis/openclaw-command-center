@@ -23,3 +23,23 @@ remains tabbable; the composer and all other controls still require visible
 focus. Names, visibility, keyboard traversal, modal containment, focus return,
 forced colors, reduced motion and all eight retained keyboard states remain
 required. No host runtime change or general focus-check waiver is authorized.
+
+## Performance qualification allowance — 2026-09-08
+
+The user approved replacing the first-observation-only ceiling with a documented
+variance-aware engineering budget. Preserve the v3 baseline byte-for-byte,
+including its original observations, ceilings, identities and first-capture
+provenance. For qualification only, use the fixed policy
+`bounded-relative-allowance-v1`: `ceil(B + min(2000, max(50, 0.20 * B)))`
+milliseconds, where B is the original observation. This policy was frozen before
+collecting new timing results. It is not an estimated variance or confidence
+interval; the allowance is a deliberate tradeoff, not a demonstrated speedup.
+
+Report v4 includes the separately identified budget and its baseline identity
+and observation digests. Recompute every limit on read; reject caller-selected
+limits, stale identities and older report versions. Retain all failed attempts
+and all eight numeric comparisons. No retry-until-green, baseline replacement,
+deadline extension, scope reduction or runtime permission change is authorized.
+Exclusive performance, final coherent nine-boundary acceptance, independent
+evaluation and protected live admission remain required. See the
+[research and fixed limits](../research/release-performance-budget-policy.md).

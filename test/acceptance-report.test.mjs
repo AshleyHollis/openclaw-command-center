@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { assertAcceptanceReportPassed, createAcceptanceReport as createAcceptanceReportBase, FINALIZATION_PHASES, RELEASE_ROW_IDS, runAcceptanceRows } from '../src/acceptance-report.mjs';
-import { captureFirstReleasePerformanceBaseline, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../src/performance-baseline.mjs';
+import { captureFirstReleasePerformanceBaseline, deriveReleasePerformanceBudget, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 
 const BUILD = 'a'.repeat(64);
 const observations = Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map((name, index) => [name, index + 0.25])));
-const thresholds = Object.freeze(Object.fromEntries(RELEASE_MEASUREMENTS.map((name) => [name, Math.ceil(observations[name])])));
 const performanceBaseline = captureFirstReleasePerformanceBaseline({ schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION, hostVersion: releasePerformanceIdentity.hostVersion, hostReceipt: releasePerformanceIdentity.hostReceipt, pluginBuildDigest: `sha256:${BUILD}`, browser: { engine: 'chromium', playwrightVersion: releasePerformanceIdentity.playwrightVersion, version: '151.0.7922.34' }, viewport: releasePerformanceIdentity.viewport, fixtureIdentity: RELEASE_FIXTURE_IDENTITY, fixtureCounts: RELEASE_FIXTURE_COUNTS, capture: { policy: 'first-successful-pinned-harness-observation', successfulRunOrdinal: null } }, observations);
 const createAcceptanceReport = (input) => createAcceptanceReportBase({ ...input, performanceBaseline: input.performanceBaseline ?? performanceBaseline });
+const thresholds = deriveReleasePerformanceBudget(performanceBaseline).thresholds;
 const finalization = () => FINALIZATION_PHASES.map((phase) => ({ phase }));
 
 function validEvidence(id) {
@@ -30,9 +30,10 @@ async function validRows() {
   return runAcceptanceRows(RELEASE_ROW_IDS.map((id) => ({ id, run: async () => validEvidence(id) })));
 }
 
-test('scope-v2 acceptance requires report version 3 and native retained evidence version 2', async () => {
+test('scope-v2 acceptance requires report version 4, a separate budget and native retained evidence version 2', async () => {
   const report = createAcceptanceReport({ buildDigest: BUILD, rows: await validRows(), finalization: finalization() });
-  assert.equal(report.schemaVersion, 3);
+  assert.equal(report.schemaVersion, 4);
+  assert.deepEqual(report.performanceBudget, deriveReleasePerformanceBudget(performanceBaseline));
   assert.equal(assertAcceptanceReportPassed(report), true);
   assert.equal(report.rows.length, 9);
   assert.equal(report.finalization.length, 6);
@@ -171,7 +172,7 @@ test('release report accepts faster subsequent observations and rejects immutabl
   const slowerRows = await validRows();
   const slowerScale = slowerRows.find((row) => row.id === 'scale-performance').evidence;
   slowerScale.observations.topicsLoadMs = slowerScale.thresholds.topicsLoadMs + 0.01;
-  assert.throws(() => createAcceptanceReport({ rows: slowerRows, buildDigest: BUILD, finalization: finalization() }), /immutable first-observation ceiling/u);
+  assert.throws(() => createAcceptanceReport({ rows: slowerRows, buildDigest: BUILD, finalization: finalization() }), /frozen performance budget/u);
 
   const widenedRows = await validRows();
   const widenedScale = widenedRows.find((row) => row.id === 'scale-performance').evidence;
@@ -205,7 +206,7 @@ test('release report fails closed after every row ran and redacts bounded diagno
 
 test('historical report and evidence versions cannot qualify the retained native release', async () => {
   const report = createAcceptanceReport({ buildDigest: BUILD, rows: await validRows(), finalization: finalization() });
-  for (const schemaVersion of [1, 2]) assert.throws(() => assertAcceptanceReportPassed({ ...structuredClone(report), schemaVersion }), /schemaVersion is unsupported/u);
+  for (const schemaVersion of [1, 2, 3]) assert.throws(() => assertAcceptanceReportPassed({ ...structuredClone(report), schemaVersion }), /schemaVersion is unsupported/u);
   for (const id of RELEASE_ROW_IDS) {
     const rows = await validRows();
     rows.find(row => row.id === id).evidence.schemaVersion = 1;
@@ -214,6 +215,20 @@ test('historical report and evidence versions cannot qualify the retained native
     stored.rows.find(row => row.id === id).evidence.schemaVersion = 1;
     assert.throws(() => assertAcceptanceReportPassed(stored), /schemaVersion must be 2/u);
   }
+});
+
+test('stored report refuses omitted, forged and jointly widened performance budgets', async () => {
+  const report = createAcceptanceReport({ buildDigest: BUILD, rows: await validRows(), finalization: finalization() });
+  const missing = structuredClone(report);
+  delete missing.performanceBudget;
+  assert.throws(() => assertAcceptanceReportPassed(missing), /performanceBudget/u);
+  const forged = structuredClone(report);
+  forged.performanceBudget.policy = 'caller-policy';
+  assert.throws(() => assertAcceptanceReportPassed(forged), /frozen budget/u);
+  const widened = structuredClone(report);
+  widened.performanceBudget.thresholds.topicsLoadMs += 1;
+  widened.rows.find(row => row.id === 'scale-performance').evidence.thresholds.topicsLoadMs += 1;
+  assert.throws(() => assertAcceptanceReportPassed(widened), /frozen budget/u);
 });
 
 test('native activation must identify the plugin revision and observed authenticated HTTP', async () => {

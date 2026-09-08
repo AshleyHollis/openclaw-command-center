@@ -115,14 +115,14 @@ test('pure orchestration: failed performance retains every numeric comparison wi
   const state = setup();
   state.options.capturePerformanceBaseline = false;
   state.options.baseline = capturedBaseline;
-  state.evidence.scale.observations.startupReadinessMs = 102.5;
-  state.evidence.scale.observations.chatSendMs = 42.5;
+  state.evidence.scale.observations.startupReadinessMs = 152.5;
+  state.evidence.scale.observations.chatSendMs = 92.5;
   await assert.rejects(runNativeReleaseCapture(state.options), error => {
-    assert.match(error.message, /immutable first-observation ceiling/u);
+    assert.match(error.message, /frozen performance budget/u);
     const comparison = JSON.parse(error.message.split('; performance-comparison=')[1]);
     assert.deepEqual(Object.keys(comparison), RELEASE_MEASUREMENTS);
-    assert.deepEqual(comparison.startupReadinessMs, { observedMs: 102.5, limitMs: 101 });
-    assert.deepEqual(comparison.chatSendMs, { observedMs: 42.5, limitMs: 41 });
+    assert.deepEqual(comparison.startupReadinessMs, { observedMs: 152.5, limitMs: 151 });
+    assert.deepEqual(comparison.chatSendMs, { observedMs: 92.5, limitMs: 91 });
     assert.match(error.cause.message, /startupReadinessMs exceeds/u);
     return true;
   });
@@ -309,8 +309,8 @@ test('pure orchestration: a pinned baseline is reused without recapture and bind
   otherBrowser.evidence.scale.browser.version = 'fictional-browser-2';
   await assert.rejects(runNativeReleaseCapture({ ...otherBrowser.options, capturePerformanceBaseline: false, baseline: first.capturedBaseline }), /browser/u);
   const slower = setup();
-  slower.evidence.scale.observations.topicsLoadMs = 22;
-  await assert.rejects(runNativeReleaseCapture({ ...slower.options, capturePerformanceBaseline: false, baseline: first.capturedBaseline }), /immutable first-observation ceiling/u);
+  slower.evidence.scale.observations.topicsLoadMs = 72;
+  await assert.rejects(runNativeReleaseCapture({ ...slower.options, capturePerformanceBaseline: false, baseline: first.capturedBaseline }), /frozen performance budget/u);
   const recapture = setup();
   await assert.rejects(runNativeReleaseCapture({ ...recapture.options, baseline: first.capturedBaseline }), /must not replace/u);
   assert.equal(recapture.events.length, 0);

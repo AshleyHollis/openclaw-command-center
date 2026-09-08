@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createAcceptanceReport, assertAcceptanceReportPassed, assertNonPerformanceAcceptanceEvidence, NON_PERFORMANCE_ROW_IDS, FINALIZATION_PHASES, RELEASE_ROW_IDS } from '../../src/acceptance-report.mjs';
 import { runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices } from '../../src/acceptance-scenario-coordinator.mjs';
-import { captureFirstReleasePerformanceBaseline, validateReleasePerformanceBaseline, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../../src/performance-baseline.mjs';
+import { captureFirstReleasePerformanceBaseline, validateReleasePerformanceBaseline, deriveReleasePerformanceBudget, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../../src/performance-baseline.mjs';
 
 // Two fixed subsystem lanes, not an extensible workflow registry. Each pair
 // settles before the next is admitted; scale never shares their resources.
@@ -220,6 +220,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
     capture: { policy: 'first-successful-pinned-harness-observation', successfulRunOrdinal: null }
   };
   const qualifiedBaseline = capturePerformanceBaseline ? captureFirstReleasePerformanceBaseline(seed, scale.observations) : existingBaseline;
+  const performanceBudget = deriveReleasePerformanceBudget(qualifiedBaseline);
   if (existingBaseline) {
     for (const key of ['hostReceipt', 'browser', 'viewport', 'fixtureIdentity', 'fixtureCounts']) assert.deepEqual(seed[key], existingBaseline[key], `Scale ${key} must match the immutable baseline`);
   }
@@ -228,7 +229,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
   assert.equal(terminalEvidence.size, PARTICIPANTS.length);
   const rowEvidence = [
     ...prerequisiteRows.slice(0, 3).map(row => row.evidence),
-    { schemaVersion: 2, fixtureIdentity: seed.fixtureIdentity, fixtureCounts: scale.fixtureCounts, observations: scale.observations, thresholds: qualifiedBaseline.thresholds, conversationPage: scale.conversationPage, notes: scale.notes },
+    { schemaVersion: 2, fixtureIdentity: seed.fixtureIdentity, fixtureCounts: scale.fixtureCounts, observations: scale.observations, thresholds: performanceBudget.thresholds, conversationPage: scale.conversationPage, notes: scale.notes },
     ...prerequisiteRows.slice(3).map(row => row.evidence)
   ];
   const scanned = await runBoundedAcceptanceSlice('final-artifact-privacy', signal => scanArtifacts({ signal,
@@ -246,11 +247,11 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
     // TAP retains the outer message, not custom fields or nested evidence. Keep
     // all eight comparisons on failure, but never echo arbitrary source values.
     const performanceFailure = RELEASE_MEASUREMENTS.some(metric => error.message ===
-      `Acceptance report evidence: scale-performance.${metric} exceeds its immutable first-observation ceiling`);
+      `Acceptance report evidence: scale-performance.${metric} exceeds its frozen performance budget`);
     if (!performanceFailure) throw error;
     const comparison = Object.fromEntries(RELEASE_MEASUREMENTS.map(metric => [metric, {
       observedMs: Number.isFinite(scale.observations[metric]) ? scale.observations[metric] : null,
-      limitMs: qualifiedBaseline.thresholds[metric]
+      limitMs: performanceBudget.thresholds[metric]
     }]));
     throw new TypeError(`${error.message}; performance-comparison=${JSON.stringify(comparison)}`, { cause: error });
   }
