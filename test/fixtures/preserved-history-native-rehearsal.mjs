@@ -11,6 +11,61 @@ import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs
 import { preparePreservedHistoryMessages } from '../../src/migration/preserved-history-transcript.mjs';
 import { createPreservationFixture } from './discord-preservation.mjs';
 
+test('native redaction preserves import identity and interruption recovery without admitting changed content', { timeout: 120_000 }, async t => {
+  const stateDir = process.env.COMMAND_CENTER_REHEARSAL_STATE_DIR;
+  assert.ok(stateDir);
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+  process.env.OPENCLAW_CONFIG_PATH = path.join(stateDir, 'openclaw.json');
+  const require = createRequire(process.env.COMMAND_CENTER_REHEARSAL_HOST_PACKAGE);
+  const sessionStore = await import(pathToFileURL(require.resolve('openclaw/plugin-sdk/session-store-runtime')).href);
+  const transcripts = await import(pathToFileURL(require.resolve('openclaw/plugin-sdk/session-transcript-runtime')).href);
+  const { runPreservedHistoryImport, readVerifiedPreservedHistory } = await import('../../src/migration/preserved-history-import.mjs');
+  const metadata = openCommandCenterMetadataService({ stateDir: path.join(stateDir, 'redaction-metadata'), capabilities: { sessions: true } });
+  t.after(() => metadata.close());
+  const prepared = preparePreservedHistoryMessages({ sourceManifestSha256: 'a'.repeat(64), channel: {
+    channel: { id: 'fictional-redaction' }, messages: [{ id: 'fictional-redacted-message', channel_id: 'fictional-redaction',
+      author: { id: 'fictional-person', username: 'Fictional Person' }, timestamp: '2026-01-01T00:00:00.000Z',
+      content: 'Retain this report; password = fictional-password-value', attachments: [] }], reactions: [] }, attachments: [] });
+  const reservation = metadata.reserveImportedHistory({ logicalOperationId: randomUUID(), intent: {
+    schemaVersion: 1, sourceManifestSha256: 'a'.repeat(64), trustedPublicKeySha256: 'b'.repeat(64),
+    sourceChannelId: prepared.sourceChannelId, sourceDigest: prepared.sourceDigest, expectedCount: 1,
+    agentId: 'main', topicId: null, expectedTopicRevision: null } }, () => {});
+  const options = { metadata, historyId: reservation.historyId, prepared, sessionStore, transcripts,
+    storePath: path.join(stateDir, 'redaction-sessions.json'), config: {}, assertCurrent: () => {} };
+  await assert.rejects(runPreservedHistoryImport({ ...options, allowCreate: true,
+    transcripts: { ...transcripts, redactSessionTranscriptMessage: undefined } }), { code: 'history-redaction-unavailable' });
+  assert.deepEqual(metadata.getImportedHistory(reservation.historyId), reservation);
+  assert.equal(sessionStore.getSessionEntry({ ...reservation.target, storePath: options.storePath, readConsistency: 'latest' }), undefined);
+  await assert.rejects(runPreservedHistoryImport({ ...options, allowCreate: true,
+    afterNativeAppend: () => { throw Object.assign(new Error('Fictional interruption'), { code: 'fictional-interruption' }); }
+  }), { code: 'fictional-interruption' });
+  assert.equal(metadata.getImportedHistory(reservation.historyId).verifiedCount, 0);
+  const completed = await runPreservedHistoryImport(options);
+  assert.equal(completed.phase, 'verified');
+  const verified = await readVerifiedPreservedHistory(options);
+  assert.equal(verified.entries.length, 1);
+  assert.notDeepEqual(verified.entries[0].message, prepared.entries[0].message);
+  assert.ok(!verified.entries[0].message.content.includes('fictional-password-value'));
+  assert.ok(prepared.entries[0].message.content.includes('fictional-password-value'));
+  assert.deepEqual(await runPreservedHistoryImport(options), completed);
+  const changedSource = structuredClone(prepared);
+  changedSource.entries[0].message.content = changedSource.entries[0].message.content.replace('fictional-password-value', 'fictional-different-value');
+  assert.deepEqual(transcripts.redactSessionTranscriptMessage(changedSource.entries[0].message, {}),
+    transcripts.redactSessionTranscriptMessage(prepared.entries[0].message, {}));
+  await assert.rejects(runPreservedHistoryImport({ ...options, prepared: changedSource }), { code: 'history-source-conflict' });
+  await assert.rejects(readVerifiedPreservedHistory({ ...options, config: { logging: { redactPatterns: ['Retain this report'] } } }),
+    { code: 'history-prefix-conflict' });
+  const { withPreservedHistoryDestination } = await import('../../src/migration/preserved-history-destination.mjs');
+  await withPreservedHistoryDestination({ ...options, reservation: completed }, async destination => {
+    assert.equal(destination.matchesMessage(prepared.entries[0].message, prepared.entries[0]), false,
+      'never normalize actual bytes to conceal an unredacted replacement');
+    const changed = structuredClone(prepared.entries[0]);
+    changed.message.content = 'An unrelated replacement';
+    await assert.rejects(destination.verifyExisting(changed));
+    assert.equal((await destination.read()).length, 1);
+  });
+});
+
 test('real native history destination preserves Primary and provenance, rejects revoked writes and verifies replay without appending', { timeout: 120_000 }, async t => {
   const stateDir = process.env.COMMAND_CENTER_REHEARSAL_STATE_DIR;
   assert.ok(stateDir, 'parent-owned isolated state directory is required');

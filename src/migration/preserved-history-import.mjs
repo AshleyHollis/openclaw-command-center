@@ -49,6 +49,9 @@ async function run(options, readOnly) {
   if (readOnly && row?.phase !== 'verified') fail('history-incomplete');
   if (!row) fail('history-source-conflict');
   assertPrepared(row.intent, prepared);
+  // Refuse an unsupported host before reserving the external creation effect;
+  // a dispatched-but-missing destination cannot safely be recreated on resume.
+  if (typeof options.transcripts?.redactSessionTranscriptMessage !== 'function') fail('history-redaction-unavailable');
   const originalIntent = row.intent;
   const logicalOperationId = row.logicalOperationId;
   const assertOperation = () => {
@@ -88,7 +91,7 @@ async function run(options, readOnly) {
     for (let index = 0; index < prefix.length; index++) {
       const actual = prefix[index];
       const expected = prepared.entries[index];
-      if (actual.entryId !== expected.eventId || actual.parentId !== expected.parentId || !isDeepStrictEqual(actual.message, expected.message)) fail('history-prefix-conflict');
+      if (actual.entryId !== expected.eventId || actual.parentId !== expected.parentId || !destination.matchesMessage(actual.message, expected)) fail('history-prefix-conflict');
       addAnchor(await destination.verifyExisting(expected), index);
     }
     if (row.phase !== 'creating') {
@@ -112,7 +115,7 @@ async function run(options, readOnly) {
     if (final.length !== prepared.expectedCount) fail('history-prefix-conflict');
     for (let index = 0; index < final.length; index++) {
       const expected = prepared.entries[index];
-      if (final[index].entryId !== expected.eventId || final[index].parentId !== expected.parentId || !isDeepStrictEqual(final[index].message, expected.message) || !isDeepStrictEqual(await destination.verifyExisting(expected), anchors[index])) fail('history-prefix-conflict');
+      if (final[index].entryId !== expected.eventId || final[index].parentId !== expected.parentId || !destination.matchesMessage(final[index].message, expected) || !isDeepStrictEqual(await destination.verifyExisting(expected), anchors[index])) fail('history-prefix-conflict');
     }
     row = metadata.completeImportedHistory({ historyId, logicalOperationId, expectedRevision: row.revision, proof: proof() }, () => { assertOperation(); destination.assertOwner(); });
     return row;
