@@ -41,7 +41,7 @@ const HOST_RECEIPT = Object.freeze({
   executableDigest: 'sha256:4f4d29770da4f86dbd0e07cbd4d46deab785905dd89ac719033fcfd866fb5d17',
   contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6',
   packageDigest: 'sha256:34ba5a7340d0ecdea61ea5e7d86725d992f15f303583e9f441d0461e09e144a2',
-  runtimeDigest: 'sha256:f9672cfd017536e0e8457fc4e9df7d73f537debedc7aa0fcdb61de16ec2830f5'
+  runtimeDigest: 'sha256:dc12fbe44844784c20dcd851d97f9b4e6ee860487e6999c437fc4ef88892c632'
 });
 
 function invalid(message) {
