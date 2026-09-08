@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertPerformanceBaselineBuildIdentity, assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, deriveReleaseThresholds, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
+import { assertPerformanceHostIdentity, assertPerformanceBaselineBuildIdentity, assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, deriveReleaseThresholds, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
+
+test('performance capture binds the actual packaged descriptor before measuring', () => {
+  const { schemaVersion, commit, ...integrity } = releasePerformanceIdentity.hostReceipt;
+  assert.deepEqual(assertPerformanceHostIdentity({ schemaVersion, commit, integrity }), releasePerformanceIdentity.hostReceipt);
+  for (const key of Object.keys(integrity)) {
+    assert.throws(() => assertPerformanceHostIdentity({ schemaVersion, commit, integrity: { ...integrity, [key]: `sha256:${'a'.repeat(64)}` } }), /pinned host/u);
+  }
+  assert.throws(() => assertPerformanceHostIdentity({ schemaVersion: 1, commit, integrity }), /pinned host/u);
+  assert.throws(() => assertPerformanceHostIdentity({ commit, integrity }), /pinned host/u);
+  assert.throws(() => assertPerformanceHostIdentity({ schemaVersion, commit: 'a'.repeat(40), integrity }), /pinned host/u);
+});
 
 test('first-live performance names retained native actions without claiming deferred work', () => {
   assert.equal(RELEASE_PERFORMANCE_BASELINE_VERSION, 3);
@@ -26,7 +37,7 @@ function coherentGeneratedBaseline() {
 }
 
 test('release performance baseline generates one coherent pending capture', () => {
-  assert.equal(releasePerformanceIdentity.hostReceipt.sourceDigest, 'sha256:565dda3682e3291944d02a25ac692458074f0445a58003812c79c09b66b177af');
+  assert.equal(releasePerformanceIdentity.hostReceipt.sourceDigest, 'sha256:2ef9ce915f9e3f0148bd6077d45dbaff2e8f91d0b2f8a895edae5899fae2d45d');
   const { seed, firstObservations, baseline } = coherentGeneratedBaseline();
   assert.deepEqual(validateReleasePerformanceBaselineSeed(seed).capture, seed.capture);
   assert.deepEqual(baseline.thresholds, deriveReleaseThresholds(firstObservations));

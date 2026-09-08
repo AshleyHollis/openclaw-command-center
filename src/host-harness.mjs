@@ -6,12 +6,14 @@ import { fetchWithRuntimeDispatcher } from 'openclaw/plugin-sdk/runtime-fetch';
 import { assertBuiltDigest } from './build.mjs';
 import { fixtureEnvironment } from './fixtures.mjs';
 import { boundedTrafficEvidence, describeTrafficEvidence, TrafficGuard } from './isolation.mjs';
+import { packagedHostDigest } from './packaged-host-integrity.mjs';
 
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 export const pinnedHost = Object.freeze({
   // The evaluator checkout is the exact authenticated first-live host receipt.
   packageVersion: '2026.9.2',
-  commit: '7b8feb46889988f408c09e387a795be01e5eeb6c',
+  commit: '4378606e28f3dcd9fd93e30fb82d5a759f1e0b80',
+  packageDigest: 'sha256:34ba5a7340d0ecdea61ea5e7d86725d992f15f303583e9f441d0461e09e144a2',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
@@ -22,7 +24,7 @@ export class HarnessFailure extends Error {
   constructor(category, message) { super(message); this.name = 'HarnessFailure'; this.category = category; }
 }
 
-function parseIntegrity(value) {
+function parseIntegrity(value, packaged = false) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new HarnessFailure('descriptor-invalid', 'Host descriptor requires authenticated source and executable integrity');
   }
@@ -33,7 +35,10 @@ function parseIntegrity(value) {
     || !sha256Digest.test(contractDigest)) {
     throw new HarnessFailure('descriptor-invalid', 'Host descriptor integrity is incomplete');
   }
-  return Object.freeze({ sourceDigest, executableDigest, contractDigest });
+  if (packaged && (!sha256Digest.test(value.packageDigest) || !sha256Digest.test(value.runtimeDigest))) {
+    throw new HarnessFailure('descriptor-invalid', 'Packaged host requires archive and installed-runtime integrity');
+  }
+  return Object.freeze({ sourceDigest, executableDigest, contractDigest, ...(packaged ? { packageDigest: value.packageDigest, runtimeDigest: value.runtimeDigest } : {}) });
 }
 
 function under(root, value) {
@@ -66,8 +71,14 @@ export function parseHostDescriptor(raw = process.env[descriptorEnvironment]) {
     throw new HarnessFailure('wrapper-mismatch', 'Host descriptor does not name the controller-owned wrapper');
   }
   if (descriptor.commit !== pinnedHost.commit) throw new HarnessFailure('invalid-commit', 'Host descriptor commit is not pinned');
-  const integrity = parseIntegrity(descriptor.integrity);
-  return Object.freeze({ checkout: descriptor.checkout, executable: wrapper, runtimeExecutable, args: Object.freeze([...args]), integrity });
+  const packaged = descriptor.schemaVersion === 2;
+  if (descriptor.schemaVersion !== undefined && ![1, 2].includes(descriptor.schemaVersion)) throw new HarnessFailure('descriptor-invalid', 'Unsupported host descriptor version');
+  if (packaged && (typeof descriptor.runtimeRoot !== 'string' || wrapper !== 'node_modules/openclaw/openclaw.mjs')) {
+    throw new HarnessFailure('descriptor-invalid', 'Packaged host requires the exact installed layout');
+  }
+  const integrity = parseIntegrity(descriptor.integrity, packaged);
+  if (packaged && integrity.packageDigest !== pinnedHost.packageDigest) throw new HarnessFailure('host-integrity', 'Host archive is not the pinned package');
+  return Object.freeze({ commit: descriptor.commit, checkout: descriptor.checkout, executable: wrapper, runtimeExecutable, args: Object.freeze([...args]), integrity, ...(packaged ? { schemaVersion: 2, runtimeRoot: descriptor.runtimeRoot } : {}) });
 }
 
 function git(checkout, args) {
@@ -96,13 +107,14 @@ async function assertHostIntegrity(checkout, descriptor, read) {
   } catch {
     throw new HarnessFailure('host-integrity', 'Host source-integrity receipt is unavailable');
   }
-  if (receipt?.schemaVersion !== 1 || receipt.commit !== pinnedHost.commit
+  if (receipt?.schemaVersion !== (descriptor.schemaVersion === 2 ? 2 : 1) || receipt.commit !== pinnedHost.commit
     || !sha256Digest.test(receipt.sourceDigest)
     || !sha256Digest.test(receipt.executableDigest)
     || !sha256Digest.test(receipt.contractDigest)
     || receipt.sourceDigest !== descriptor.integrity.sourceDigest
     || receipt.executableDigest !== descriptor.integrity.executableDigest
-    || receipt.contractDigest !== descriptor.integrity.contractDigest) {
+    || receipt.contractDigest !== descriptor.integrity.contractDigest
+    || (descriptor.schemaVersion === 2 && (receipt.packageDigest !== descriptor.integrity.packageDigest || receipt.runtimeDigest !== descriptor.integrity.runtimeDigest))) {
     throw new HarnessFailure('host-integrity', 'Host source/runtime integrity receipt differs from the descriptor');
   }
 }
@@ -110,10 +122,17 @@ async function assertHostIntegrity(checkout, descriptor, read) {
 /** Injectable filesystem/Git seams keep host-integrity category tests offline. */
 export async function verifyHost(descriptor, { gitCommand = git, resolvePath = realpath, read = readFile, stat = lstat } = {}) {
   const checkout = await resolvePath(descriptor.checkout).catch(() => { throw new HarnessFailure('descriptor-invalid', 'Host checkout is not accessible'); });
-  const wrapper = path.resolve(checkout, descriptor.executable);
-  if (!under(checkout, wrapper)) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper escapes its checkout');
-  const wrapperRelative = path.relative(checkout, wrapper);
-  await assertNoSymlinkPath(checkout, wrapperRelative, stat);
+  const packaged = descriptor.schemaVersion === 2;
+  let runtimeRoot = checkout;
+  if (packaged) {
+    const expectedRoot = path.join(path.dirname(checkout), 'runtime');
+    if (path.resolve(descriptor.runtimeRoot) !== expectedRoot || (await stat(expectedRoot)).isSymbolicLink()) throw new HarnessFailure('host-integrity', 'Packaged runtime must be the separate sibling handoff');
+    runtimeRoot = await resolvePath(expectedRoot);
+  }
+  const wrapper = path.resolve(runtimeRoot, descriptor.executable);
+  if (!under(runtimeRoot, wrapper)) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper escapes its runtime');
+  const wrapperRelative = packaged ? pinnedHost.executable : path.relative(checkout, wrapper);
+  await assertNoSymlinkPath(runtimeRoot, path.relative(runtimeRoot, wrapper), stat);
   if (descriptor.runtimeExecutable) {
     const [declaredRuntime, controllerRuntime] = await Promise.all([resolvePath(descriptor.runtimeExecutable), resolvePath(process.execPath)]).catch(() => {
       throw new HarnessFailure('wrapper-mismatch', 'Controller runtime is not available');
@@ -137,7 +156,15 @@ export async function verifyHost(descriptor, { gitCommand = git, resolvePath = r
   const wrapperSha256 = createHash('sha256').update(contents).digest('hex');
   if (descriptor.integrity.executableDigest.slice('sha256:'.length) !== wrapperSha256) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper integrity assertion differs');
   await assertHostIntegrity(checkout, descriptor, read);
-  return Object.freeze({ checkout, wrapper, commit, runtimeExecutable: descriptor.runtimeExecutable });
+  if (packaged) {
+    const installed = path.dirname(wrapper);
+    const installedPackage = JSON.parse(await read(path.join(installed, 'package.json'), 'utf8'));
+    const build = JSON.parse(await read(path.join(installed, 'dist/build-info.json'), 'utf8'));
+    if (installedPackage.name !== 'openclaw' || installedPackage.version !== pinnedHost.packageVersion || build.commit !== pinnedHost.commit || build.version !== pinnedHost.packageVersion) throw new HarnessFailure('host-integrity', 'Packaged build identity differs from pinned source');
+    const actual = await packagedHostDigest(runtimeRoot).catch(() => { throw new HarnessFailure('host-integrity', 'Packaged runtime inventory is unsafe'); });
+    if (actual !== descriptor.integrity.runtimeDigest) throw new HarnessFailure('host-integrity', 'Installed runtime differs from its preparation receipt');
+  }
+  return Object.freeze({ checkout: packaged ? path.dirname(wrapper) : checkout, wrapper, commit, runtimeExecutable: descriptor.runtimeExecutable });
 }
 
 export function redact(text, maximum = 4096) {

@@ -9,6 +9,16 @@ import * as hostHarness from '../src/host-harness.mjs';
 import { build } from '../src/build.mjs';
 import { createIsolatedWorld, disposeIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
+import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
+import { assertPerformanceHostIdentity, releasePerformanceIdentity } from '../src/performance-baseline.mjs';
+
+test('parsed packaged descriptor retains the identity required by performance capture', () => {
+  const { schemaVersion, commit, ...integrity } = releasePerformanceIdentity.hostReceipt;
+  const descriptor = parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
+    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args }));
+  assert.deepEqual(assertPerformanceHostIdentity(descriptor), releasePerformanceIdentity.hostReceipt);
+  assert.throws(() => assertPerformanceHostIdentity({ ...descriptor, schemaVersion: 1 }), /pinned host/u);
+});
 
 const sourceDigest = `sha256:${'a'.repeat(64)}`;
 const placeholderExecutableDigest = `sha256:${'b'.repeat(64)}`;
@@ -43,6 +53,35 @@ function hostGit({ commit = pinnedHost.commit, status = '', blob } = {}) {
   };
 }
 
+test('packaged host binds installed build and dependencies independently of clean source', async () => {
+  const fixture = await temporaryHost();
+  try {
+    const runtimeRoot = path.join(fixture.parent, 'runtime');
+    const installed = path.join(runtimeRoot, 'node_modules/openclaw');
+    await mkdir(path.join(installed, 'dist'), { recursive: true });
+    await writeFile(path.join(installed, 'openclaw.mjs'), await readFile(path.join(fixture.root, 'openclaw.mjs')));
+    await writeFile(path.join(installed, 'package.json'), JSON.stringify({ name: 'openclaw', version: pinnedHost.packageVersion }));
+    await writeFile(path.join(installed, 'dist/build-info.json'), JSON.stringify({ commit: pinnedHost.commit, version: pinnedHost.packageVersion }));
+    const dependency = path.join(runtimeRoot, 'node_modules/dependency.js');
+    await writeFile(dependency, 'export const dependency = true;');
+    const integrity = { ...fixture.integrity, packageDigest: pinnedHost.packageDigest, runtimeDigest: await packagedHostDigest(runtimeRoot) };
+    await writeFile(path.join(fixture.parent, 'receipt.json'), JSON.stringify({ schemaVersion: 2, commit: pinnedHost.commit, ...integrity }));
+    const raw = hostDescriptor({ schemaVersion: 2, checkout: fixture.root, runtimeRoot, executable: 'node_modules/openclaw/openclaw.mjs', integrity });
+    const descriptor = parseHostDescriptor(raw);
+    const options = { gitCommand: hostGit({ blob: fixture.blob }) };
+    assert.equal((await verifyHost(descriptor, options)).checkout, installed);
+    assert.throws(() => parseHostDescriptor(JSON.stringify({ ...JSON.parse(raw), integrity: { ...integrity, packageDigest: sourceDigest } })), error => error.category === 'host-integrity');
+    await assert.rejects(verifyHost({ ...descriptor, runtimeRoot: fixture.root }, options), error => error.category === 'host-integrity');
+    await writeFile(dependency, 'tampered');
+    await assert.rejects(verifyHost(descriptor, options), error => error.category === 'host-integrity');
+    await writeFile(dependency, 'export const dependency = true;');
+    await writeFile(path.join(installed, 'dist/build-info.json'), JSON.stringify({ commit: 'wrong', version: pinnedHost.packageVersion }));
+    await assert.rejects(verifyHost(descriptor, options), error => error.category === 'host-integrity');
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true });
+  }
+});
+
 test('categorizes absent and malformed host descriptors', () => {
   // The acceptance test supplies the mandatory descriptor through the process
   // environment, so make the absent-descriptor unit case independent of it.
@@ -63,7 +102,7 @@ test('categorizes absent and malformed host descriptors', () => {
 });
 
 test('runtime checkout identity remains distinct from the compatibility and performance receipt identities', () => {
-  assert.equal(pinnedHost.commit, '7b8feb46889988f408c09e387a795be01e5eeb6c');
+  assert.equal(pinnedHost.commit, '4378606e28f3dcd9fd93e30fb82d5a759f1e0b80');
   assert.doesNotThrow(() => parseHostDescriptor(hostDescriptor()));
   assert.throws(() => parseHostDescriptor(hostDescriptor({ commit: '19686a23834910173df0fd1f77bd762ffcda2afd' })), (error) => error.category === 'invalid-commit');
 });

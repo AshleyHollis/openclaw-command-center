@@ -212,8 +212,13 @@ export async function packagePluginArtifact({ expectedBuildReceipt, outputDirect
     const { stdout } = await promisify(execFile)('npm', ['pack', '--ignore-scripts', '--offline', '--json', '--pack-destination', scratch,
       '--cache', path.join(scratch, 'cache'), '--userconfig', userConfig, '--globalconfig', globalConfig],
     { cwd: staged, timeout: 60_000, maxBuffer: 4 * 1024 * 1024, windowsHide: true });
-    const packed = JSON.parse(stdout);
-    if (packed.length !== 1 || !/^[a-zA-Z0-9._-]+\.tgz$/.test(packed[0].filename)) fail('artifact-pack-result-invalid');
+    const result = JSON.parse(stdout);
+    // npm 12 keys JSON pack results by package name; earlier supported npm
+    // versions return an array. Both must describe exactly this staged package.
+    const packed = Array.isArray(result) ? result : result && typeof result === 'object' &&
+      Object.keys(result).length === 1 && Object.hasOwn(result, pkg.name) ? [result[pkg.name]] : [];
+    if (packed.length !== 1 || packed[0]?.name !== pkg.name || packed[0]?.version !== pkg.version ||
+        !/^[a-zA-Z0-9._-]+\.tgz$/.test(packed[0].filename)) fail('artifact-pack-result-invalid');
     const archivePath = path.join(scratch, packed[0].filename);
     const archiveBytes = await readMember(archivePath);
     const receipt = { formatVersion: 1, kind: 'command-center-plugin-artifact', package: pkg, pluginId: 'command-center',

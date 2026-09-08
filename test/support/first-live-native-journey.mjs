@@ -530,7 +530,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         primary: { schemaVersion: 2, topicId: fixture.topicId,
           authoritativeReadback: { existingTopics: true, primarySession: true, conversation: true, note: true, chatSend: true, conversationAfterRestart: true },
           actions: ['existing-topic-open', 'note-read', 'native-chat-open', 'native-chat-send', 'conversation-create', 'conversation-replay', 'conversation-refresh', 'native-return'] },
-        startup: { hostReceipt: { schemaVersion: 1, commit: host.host.commit, ...descriptor.integrity }, startupMigrationVerified: !!bootstrapped.completion, routeGrantObserved: true,
+        startup: { hostReceipt: { schemaVersion: descriptor.schemaVersion ?? 1, commit: host.host.commit, ...descriptor.integrity }, startupMigrationVerified: !!bootstrapped.completion, routeGrantObserved: true,
           nativeUi: { pluginId: 'command-center', revision: native.revision, activationObserved: activation.status === 'activated', authenticatedHttpObserved: true } } };
       }
     } catch (error) { failure = error; }

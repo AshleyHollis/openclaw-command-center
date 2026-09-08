@@ -24,9 +24,9 @@ export const RELEASE_MEASUREMENTS = Object.freeze([
   'noteNextPageMs'
 ]);
 
-const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest']);
+const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest', 'packageDigest', 'runtimeDigest']);
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
-const HOST_COMMIT = '7b8feb46889988f408c09e387a795be01e5eeb6c';
+const HOST_COMMIT = '4378606e28f3dcd9fd93e30fb82d5a759f1e0b80';
 const HOST_VERSION = '2026.9.2';
 const PLAYWRIGHT_VERSION = '1.62.1';
 export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
@@ -35,11 +35,13 @@ export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
   fixtureCounts: RELEASE_FIXTURE_COUNTS
 });
 const HOST_RECEIPT = Object.freeze({
-  schemaVersion: 1,
-  sourceDigest: 'sha256:565dda3682e3291944d02a25ac692458074f0445a58003812c79c09b66b177af',
+  schemaVersion: 2,
+  sourceDigest: 'sha256:2ef9ce915f9e3f0148bd6077d45dbaff2e8f91d0b2f8a895edae5899fae2d45d',
   commit: HOST_COMMIT,
   executableDigest: 'sha256:4f4d29770da4f86dbd0e07cbd4d46deab785905dd89ac719033fcfd866fb5d17',
-  contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6'
+  contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6',
+  packageDigest: 'sha256:34ba5a7340d0ecdea61ea5e7d86725d992f15f303583e9f441d0461e09e144a2',
+  runtimeDigest: 'sha256:f9672cfd017536e0e8457fc4e9df7d73f537debedc7aa0fcdb61de16ec2830f5'
 });
 
 function invalid(message) {
@@ -94,6 +96,10 @@ function assertHostReceipt(value) {
     if (value[key] !== HOST_RECEIPT[key]) invalid('hostReceipt is not the pinned host identity');
   }
   return HOST_RECEIPT;
+}
+
+export function assertPerformanceHostIdentity(descriptor) {
+  return assertHostReceipt({ schemaVersion: descriptor.schemaVersion ?? 1, commit: descriptor.commit, ...descriptor.integrity });
 }
 
 function assertBrowser(value) {
