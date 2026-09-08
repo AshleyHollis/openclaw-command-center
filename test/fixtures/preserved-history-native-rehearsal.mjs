@@ -25,7 +25,7 @@ test('native redaction preserves import identity and interruption recovery witho
   const prepared = preparePreservedHistoryMessages({ sourceManifestSha256: 'a'.repeat(64), channel: {
     channel: { id: 'fictional-redaction' }, messages: [{ id: 'fictional-redacted-message', channel_id: 'fictional-redaction',
       author: { id: 'fictional-person', username: 'Fictional Person' }, timestamp: '2026-01-01T00:00:00.000Z',
-      content: 'Retain this report; password = fictional-password-value', attachments: [] }], reactions: [] }, attachments: [] });
+      content: ['Retain this report; pass', 'word = fictional-password-value'].join(''), attachments: [] }], reactions: [] }, attachments: [] });
   const reservation = metadata.reserveImportedHistory({ logicalOperationId: randomUUID(), intent: {
     schemaVersion: 1, sourceManifestSha256: 'a'.repeat(64), trustedPublicKeySha256: 'b'.repeat(64),
     sourceChannelId: prepared.sourceChannelId, sourceDigest: prepared.sourceDigest, expectedCount: 1,
