@@ -6,7 +6,7 @@ import { RELEASE_MEASUREMENTS, RELEASE_PERFORMANCE_BASELINE_VERSION } from '../s
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
 
 test('desktop-first release requires keyboard evidence and versions its changed report contract', () => {
-  assert.equal(ACCEPTANCE_REPORT_VERSION, 3);
+  assert.equal(ACCEPTANCE_REPORT_VERSION, 4);
   assert.equal(RELEASE_ROW_IDS.includes('desktop-keyboard-journey'), true);
   assert.equal(RELEASE_ROW_IDS.includes('mobile-accessibility-journey'), false);
   assert.equal(resolveRealHostAcceptancePlan('combined-journey').scenarioIds.includes('desktop-keyboard-journey'), true);
@@ -24,7 +24,7 @@ test('mobile remains explicit opt-in rather than a silent pass in either non-per
   assert.ok(resolveRealHostAcceptancePlan('desktop-keyboard-journey').scenarioIds.includes('desktop-keyboard-journey'));
 });
 
-test('desktop performance retains all nine non-mobile measurements under a new baseline version', () => {
+test('desktop performance retains all eight non-mobile measurements under baseline version 3', () => {
   assert.equal(RELEASE_PERFORMANCE_BASELINE_VERSION, 3);
   assert.deepEqual(RELEASE_MEASUREMENTS, ['startupReadinessMs', 'topicsLoadMs', 'topicOpenMs', 'chatSendMs', 'conversationCreateMs', 'largeNoteReadMs', 'conversationNextPageMs', 'noteNextPageMs']);
 });
