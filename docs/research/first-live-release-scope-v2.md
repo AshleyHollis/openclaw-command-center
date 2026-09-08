@@ -39,6 +39,12 @@ Existing attachments #213, automatic Notes #214, mobile #216 and strategic revie
 
 ### Progress accounting
 
+The 2026-09-08 native transcript presentation exception in ADR 0004 is tracked
+by #228: retain OpenClaw's existing unoutlined intermediate Chat transcript
+Tab stop for MVP, record every observed deferral, and keep all other keyboard
+assertions. This is one known accessibility limitation, not a passing fix or
+an additional completed acceptance frontier.
+
 Historical scope-v1 snapshot remains S7: approximately 40% finish-plan milestone score, 19/27 integrated focused-tested issue groups, eight lacking a complete passing fix. New scope percentages require a dependency/coverage audit; removing requirements must not be reported as fixes. No new acceptance frontier or deployment is certified by this scope decision. First-live release is not completion of all deferred app functionality.
 
 ## Current prioritization map — approved scope v2, 2026-09-06

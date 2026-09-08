@@ -11,3 +11,15 @@ Finish applicable conditional-write contracts and all four safeguards for retain
 This deliberately supersedes the broader first-release feature scope, not ADR 0001 identity or ADR 0002 recovery guarantees. ADR 0003 native operator-authority integration remains. Keep desktop usability, measured exclusive performance for retained functionality, final coherent capture, independent evaluation and normal backup/rollback/live admission. Historical progress remains historical; reduced scope is not additional completion credit.
 
 The executable matrix must be aligned before qualification. See [scope and deferred tickets](../research/first-live-release-scope-v2.md) and [release ticket #32](https://github.com/AshleyHollis/openclaw-command-center/issues/32).
+
+## Native transcript presentation exception — 2026-09-08
+
+The user approved retaining native OpenClaw's intentional absence of a focus
+outline on its keyboard-scrollable Chat transcript for this MVP. Track its
+visible-focus improvement in #228; do not report it as fixed or accessible.
+Only that exact intermediate native transcript stop is exempt from the
+indicator assertion, with each observation explicitly recorded. Native Chat
+remains tabbable; the composer and all other controls still require visible
+focus. Names, visibility, keyboard traversal, modal containment, focus return,
+forced colors, reduced motion and all eight retained keyboard states remain
+required. No host runtime change or general focus-check waiver is authorized.

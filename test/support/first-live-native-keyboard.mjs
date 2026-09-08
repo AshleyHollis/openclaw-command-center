@@ -70,12 +70,22 @@ async function requireExactFocus(page, target, label) {
 // Called only after the shared native owner admits the pinned host, imports the
 // exact revisioned entry and mounts its real page. It owns no alternate runtime.
 export async function exerciseNativeKeyboardStates({ page, world, host: initialHost, fixture, native, signal, restartHost, browserGuard }) {
+  page.setDefaultTimeout(30_000);
+  const progress = phase => console.log(`native-keyboard-progress=${JSON.stringify({ phase })}`);
   let host = initialHost;
   const states = [];
   const audits = [];
   const announcements = [];
   let focusRestored = false;
   const nativePage = page.locator('openclaw-plugin-page');
+  const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+  // Approved first-live scope exception, tracked in #228. Native OpenClaw
+  // deliberately leaves this scrollable transcript without a focus outline.
+  // Observe every traversal without calling that missing indicator a pass.
+  const deferredIndicator = {
+    locator: chatPane.locator('.chat-thread[role="log"][tabindex="0"]'),
+    record: () => console.log('keyboard-focus-deferral={"issue":228,"scope":"native-chat-transcript","indicator":"missing","status":"deferred"}')
+  };
   const button = name => nativePage.getByRole('button', { name, exact: true });
   const note = nativePage.getByRole('region', { name: 'Note content', exact: true });
   const creation = nativePage.locator('form').filter({ has: page.getByRole('heading', { name: 'New Conversation', exact: true }) });
@@ -84,7 +94,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   const ready = predicate => waitForConsecutiveReadiness(predicate, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
   const press = async (target, { reverse = false } = {}) => {
     signal.throwIfAborted();
-    await tabTo(target, { reverse });
+    await tabTo(target, { reverse, deferredIndicator });
     await page.keyboard.press('Enter');
   };
   const type = async (target, value) => {
@@ -102,6 +112,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   const complete = async (state, surface = nativePage) => {
     audits.push(await auditNativeState(page, surface, state));
     states.push(state);
+    progress(`${state}:passed`);
   };
   const topicCatalog = () => gatewayRead('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: fixture.topicId, includeClosed: false });
   const exactConversation = async (referenceId, count) => {
@@ -121,13 +132,12 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     assert.ok(target.sessionKey);
     return target;
   };
-  const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
   const verifyChat = async target => {
     await chatPane.waitFor({ timeout: 30_000 });
     await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, target.sessionKey, { timeout: 30_000 });
     // Reach the actual host composer through its composed tab order. No message
     // is sent in this row; native send/readback belongs to the primary journey.
-    await tabTo(chatPane.locator('.agent-chat__composer-combobox textarea'));
+    await tabTo(chatPane.locator('.agent-chat__composer-combobox textarea'), { deferredIndicator });
     await assertKeyboardFocus(page);
   };
   const openNotes = async () => {
@@ -136,9 +146,15 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     await button(`Read ${fixture.notePath}`).waitFor();
   };
   const returnFromChat = async () => {
-    await press(page.locator('openclaw-app-sidebar openclaw-plugin-contributions').getByRole('link', { name: 'Topics', exact: true }));
+    const returnLink = page.locator('openclaw-app-sidebar openclaw-plugin-contributions').getByRole('link', { name: 'Topics', exact: true });
+    await press(returnLink);
     await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
-    await requireExactFocus(page, button('Refresh Topics'), 'Native return must restore focus to the mounted Topics page');
+    // Native sidebar navigation retains its invoker; it does not call the
+    // plugin view's optional focus() hook. Verify that contract, then traverse
+    // into the mounted page without a programmatic focus correction.
+    await requireExactFocus(page, returnLink, 'Native return must retain visible focus on its exact navigation link');
+    await tabTo(button('Refresh Topics'));
+    await requireExactFocus(page, button('Refresh Topics'), 'The mounted Topics page must remain keyboard reachable');
     await openNotes();
   };
   const readNote = async () => {
@@ -291,6 +307,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     sourceReferences: topic.sourceReferences.map(({ updatedAt, ...reference }) => reference)
   });
   for (const state of ['source-unavailable', 'permission-refused']) {
+    progress(`${state}:started`);
     // Change only the supported isolated plugin configuration. This is source
     // availability / plugin write-grant refusal, not operator-profile revocation.
     await press(button('All Topics'));
@@ -300,19 +317,24 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     if (state === 'source-unavailable') plugin.sourceCapabilities = { ...plugin.sourceCapabilities, sessions: false };
     else plugin.controlUiGrant = false;
     await writeFile(world.manifest.configPath, `${JSON.stringify(config)}\n`);
+    progress(`${state}:restart-started`);
     host = await restartHost();
+    progress(`${state}:restart-launched`);
     await ready(async () => {
       try { const catalog = await gatewayRead('plugins.controlUi.list', {}); return catalog.plugins?.some(row => row.pluginId === 'command-center' && row.revision === native.revision); }
       catch { signal.throwIfAborted(); return false; }
     });
+    progress(`${state}:catalog-ready`);
     const status = await gatewayRead('command-center.v1.sources.status');
     assert.equal(status.mode, 'degraded');
     assert.equal(status.unavailableCapabilities.includes('sessions'), state === 'source-unavailable');
     assert.equal(status.unavailableCapabilities.includes('control-ui-grant'), state === 'permission-refused');
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
+    progress(`${state}:page-reloaded`);
     await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
     await announced(nativePage, /Degraded · some capabilities are unavailable/u);
     await openNotes(); await readNote();
+    progress(`${state}:note-read`);
     const currentNotes = await gatewayRead('command-center.v1.notes.browse', { schemaVersion: 1, topicId: fixture.topicId, offset: 0, limit: 50 });
     assert.equal(currentNotes.notes.length, 1);
     assert.equal(currentNotes.notes[0].sourceReference.referenceId, originalNote.sourceReference.referenceId);
@@ -328,7 +350,14 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
       await press(creation.getByRole('button', { name: 'Refresh creation status', exact: true }));
       const response = await inspection;
       assert.equal(response.observed, true); assert.equal(response.value.status(), 422);
-      await announced(creation, /Control UI grant is unavailable/u);
+      const refusal = await response.value.json();
+      assert.equal(refusal.code, 'capability-unavailable');
+      assert.equal(refusal.message, 'Control UI grant is unavailable.');
+      // The native response owner intentionally does not render raw server
+      // messages. An unrecognized non-success keeps creation unavailable.
+      await announced(creation, /^Creation status is unavailable\./u);
+      await announced(creation, /Source Recovery is required before another write\./u);
+      assert.equal(await createButton().isDisabled(), true);
       await ready(() => creation.getByRole('button', { name: 'Refresh creation status', exact: true }).isEnabled());
     }
     const beforeRefusal = await gatewayRead('command-center.v1.topics.get', { schemaVersion: 1, topicId: fixture.topicId });

@@ -5,6 +5,75 @@ import { hasKeyboardFocusIndicator } from '../src/browser-evidence.mjs';
 import { afterKeyboardPaint } from './support/keyboard-paint.mjs';
 import { assertKeyboardFocus, tabTo } from './support/keyboard-navigation.mjs';
 
+test('explicit indicator deferral covers only its exact intermediate stop and is recorded', async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<style>:focus-visible { outline: 3px solid blue; }
+      [role=log]:focus-visible { outline: none; }</style>
+      <button id="before">Before</button><div id="transcript" role="log" tabindex="0">Fictional transcript</div>
+      <button id="after">After</button>`);
+    const before = page.locator('#before');
+    const transcript = page.locator('#transcript');
+    const after = page.locator('#after');
+    let observations = 0;
+    const deferredIndicator = { locator: transcript, record: () => { observations += 1; } };
+    await tabTo(before);
+    await assert.rejects(tabTo(after), /Keyboard focus must remain visible/);
+    await tabTo(before);
+    await tabTo(after, { deferredIndicator });
+    assert.equal(observations, 1);
+    await tabTo(before, { reverse: true, deferredIndicator });
+    assert.equal(observations, 2);
+    await assert.rejects(tabTo(transcript, { deferredIndicator }), /Keyboard focus must remain visible/);
+    await assert.rejects(tabTo(transcript, { deferredIndicator }), /Keyboard focus must remain visible/);
+    await tabTo(before);
+    await assert.rejects(tabTo(after, { deferredIndicator: { ...deferredIndicator, locator: before } }), /Keyboard focus must remain visible/);
+    await tabTo(before);
+    await page.locator('#transcript').evaluate(node => { node.textContent = ''; node.style.minHeight = '20px'; });
+    await assert.rejects(tabTo(after, { deferredIndicator }), /unnamed/);
+    assert.equal(observations, 2);
+    await assert.rejects(tabTo(after, { deferredIndicator: { locator: transcript } }), /must be recorded/);
+  } finally { await browser.close(); }
+});
+
+test('a popup may close back to its trigger, but a repeated unchanged focus path still fails', async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<style>:focus-visible { outline: 3px solid blue; }</style><button id="before">Before</button><button id="trigger">Preview</button><button id="after">After</button>');
+    await page.evaluate(() => {
+      const trigger = document.querySelector('#trigger');
+      let returning = false;
+      let card;
+      trigger.addEventListener('focus', () => {
+        if (returning) return;
+        card = document.createElement('button'); card.textContent = 'Preview action';
+        document.body.append(card);
+        card.addEventListener('keydown', event => {
+          if (event.key !== 'Tab') return;
+          event.preventDefault(); card.remove(); card = null;
+          returning = true; trigger.focus(); returning = false;
+        });
+      });
+      trigger.addEventListener('keydown', event => {
+        if (event.key === 'Tab' && !event.shiftKey && card) { event.preventDefault(); card.focus(); }
+      });
+      window.focusTrace = [];
+      document.addEventListener('focusin', event => { if (event.target.matches('button')) window.focusTrace.push(event.target.textContent); });
+    });
+    await tabTo(page.locator('#before'));
+    await tabTo(page.locator('#after'));
+    assert.deepEqual(await page.evaluate(() => window.focusTrace), ['Before', 'Preview', 'Preview action', 'Preview', 'After']);
+    await page.locator('#before').evaluate(node => {
+      const trap = event => { if (event.key === 'Tab') { event.preventDefault(); node.focus(); } };
+      node.addEventListener('keydown', trap);
+    });
+    await page.locator('#before').focus();
+    await assert.rejects(tabTo(page.locator('#after')), /cycled/);
+  } finally { await browser.close(); }
+});
+
 test('already-focused shadow target cannot pass after focus moves during its paint wait', async () => {
   const browser = await chromium.launch({ headless: true });
   try {
