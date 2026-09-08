@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS } from '../../src/performance-baseline.mjs';
 import { fetchJsonWithDeadline, waitForConsecutiveReadiness } from '../../src/host-harness.mjs';
 import { observeBrowserResponse, hasSuccessfulBrowserResponse } from '../../src/browser-evidence.mjs';
-import { requestAuthenticatedGateway, readAuthenticatedHistory } from './real-host-runtime.mjs';
+import { requestAuthenticatedGateway, readAuthenticatedHistory, createGatewayDeviceIdentity } from './real-host-runtime.mjs';
 import { assertNativeScaleSourcesUnchanged, readNativeLegacyBootstrap } from './first-live-native-bootstrap.mjs';
 
 // The shared journey owns launch, authentication, assets and all six finalizers.
@@ -32,6 +32,14 @@ async function action(world, signal, input) {
 }
 
 export async function prepareNativeScaleConversations({ world, signal, fixture }) {
+  const deviceIdentity = createGatewayDeviceIdentity();
+  const bootstrap = await fetchJsonWithDeadline(`${world.gateway.url}/__openclaw__/control-ui-config.json`, {
+    headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal
+  }, { label: 'native scale authenticated build identity', timeoutMs: 10_000 });
+  assert.equal(bootstrap.response.ok, true);
+  assert.equal(bootstrap.parseError, undefined);
+  const controlUiBuildId = bootstrap.body.serverBuildId;
+  assert.ok(typeof controlUiBuildId === 'string' && controlUiBuildId.trim());
   const references = new Set([fixture.sessionReferenceId]);
   for (let index = 1; index < 100; index += 1) {
     signal.throwIfAborted();
@@ -39,17 +47,25 @@ export async function prepareNativeScaleConversations({ world, signal, fixture }
     assert.equal(topic.topicId, fixture.topicId);
     assert.equal(topic.usable, true);
     const logicalOperationId = randomUUID();
-    const created = await action(world, signal, { action: 'conversations.create', topicId: fixture.topicId,
-      expectedRevision: topic.revision, logicalOperationId, label: `Fictional Native Scale ${String(index).padStart(3, '0')}` });
-    assert.equal(created.status, 'applied');
-    assert.equal(created.result.action, 'conversations.create');
-    assert.equal(typeof created.result.referenceId, 'string');
-    assert.equal(references.has(created.result.referenceId), false);
-    references.add(created.result.referenceId);
+    // Native creation requires a live authenticated connection, not a synthetic
+    // HTTP identity. Use the existing Gateway command and its domain owner.
+    const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url,
+      credential: world.gatewayCredential, method: 'command-center.v1.sessions.create',
+      params: { schemaVersion: 1, topicId: fixture.topicId, expectedRevision: topic.revision,
+        logicalOperationId, label: `Fictional Native Scale ${String(index).padStart(3, '0')}` },
+      scopes: ['operator.read', 'operator.write'], signal, deviceIdentity, controlUiBuildId });
+    const created = response?.result ?? response;
+    assert.equal(created.status, 'applied', `Conversation corpus preparation step ${index}: ${JSON.stringify(created)}`);
+    assert.equal(created.logicalOperationId, logicalOperationId);
+    const reference = created.value.sourceReference;
+    assert.equal(reference.topicId, fixture.topicId);
+    assert.equal(typeof reference.referenceId, 'string');
+    assert.equal(references.has(reference.referenceId), false);
+    references.add(reference.referenceId);
     const acknowledged = await action(world, signal, { action: 'conversations.creation.acknowledge',
-      topicId: fixture.topicId, logicalOperationId, referenceId: created.result.referenceId });
+      topicId: fixture.topicId, logicalOperationId, referenceId: reference.referenceId });
     assert.equal(acknowledged.status, 'acknowledged');
-    assert.equal(acknowledged.result.referenceId, created.result.referenceId);
+    assert.equal(acknowledged.result.referenceId, reference.referenceId);
   }
   const catalog = await request(world, signal, 'sessions.browse', { topicId: fixture.topicId, includeClosed: false });
   assert.equal(catalog.topicId, fixture.topicId);

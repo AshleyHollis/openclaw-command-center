@@ -93,6 +93,13 @@ async function waitForNativeControlUiReadiness({ world, host, signal, scale, obs
       record(observation);
     }
   }, host.earlyExit, { required: 2, deadlineMs: scale ? 180_000 : 120_000, delayMs: 250, signal });
+  // Static bootstrap HTTP can be available before authenticated Gateway
+  // admission opens. Probe the read-only route before issuing any mutations.
+  await waitForConsecutiveReadiness(async () => {
+    const catalog = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url,
+      credential: world.gatewayCredential, method: 'plugins.controlUi.list', signal });
+    return !!catalog?.plugins?.find(entry => entry.pluginId === 'command-center')?.revision;
+  }, host.earlyExit, { required: 1, deadlineMs: 30_000, delayMs: 250, signal });
 }
 
 export async function exerciseNativeControlUiActivation({ descriptor, buildReceipt, signal, onFinalization }) {
@@ -100,20 +107,32 @@ export async function exerciseNativeControlUiActivation({ descriptor, buildRecei
 }
 
 export async function exerciseNativeScaleStartup({ descriptor, buildReceipt, signal, onFinalization, onDiagnostic }) {
+  return exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinalization, onDiagnostic }, { scale: true, conversations: false });
+}
+
+// Non-measuring reproduction of the preparation boundary. It shares startup,
+// authenticated source reads and finalization, but never restarts for timing or
+// launches the measured browser journey.
+export async function exerciseNativeConversationPreparation(options, { scale = true } = {}) {
+  return exerciseNativeStartup(options, { scale, conversations: true });
+}
+
+async function exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinalization, onDiagnostic }, { scale, conversations }) {
   return withIsolatedWorld(async (world) => {
-    const bootstrap = await prepareNativeLegacyBootstrap({ world, signal, scale: true });
+    const bootstrap = await prepareNativeLegacyBootstrap({ world, signal, scale });
     const host = await withDeadline('native scale host launch', launchSignal => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
     const removeAbortCleanup = stopHostOnAbort(signal, host);
     const readinessAttempts = [];
     let failure;
     let result;
     try {
-      await waitForNativeControlUiReadiness({ world, host, signal, scale: true, observations: readinessAttempts });
+      await waitForNativeControlUiReadiness({ world, host, signal, scale, observations: readinessAttempts });
       const catalog = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'plugins.controlUi.list', signal });
       const plugin = catalog?.plugins?.find(entry => entry.pluginId === 'command-center');
       assert.ok(plugin?.revision);
       const imported = await readNativeLegacyBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 1 });
-      result = Object.freeze({ schemaVersion: 1, pluginId: 'command-center', revision: plugin.revision, fixtureCounts: Object.freeze({ noteBytes: 8_388_609, noteFiles: bootstrap.scaleNotes.length + 1, conversationMessages: bootstrap.prepared.occurrenceCount, conversations: 1 }), readinessAttempts: Object.freeze([...readinessAttempts]), migrationReady: Boolean(imported.completion) });
+      if (conversations) await prepareNativeScaleConversations({ world, host, signal, fixture: imported.fixture });
+      result = Object.freeze({ schemaVersion: 1, pluginId: 'command-center', revision: plugin.revision, fixtureCounts: Object.freeze({ noteBytes: Buffer.byteLength(bootstrap.noteText), noteFiles: (bootstrap.scaleNotes?.length ?? 0) + 1, conversationMessages: bootstrap.prepared.occurrenceCount, conversations: conversations ? 100 : 1 }), readinessAttempts: Object.freeze([...readinessAttempts]), migrationReady: Boolean(imported.completion) });
     } catch (error) { failure = error; }
     finally {
       const cleanup = await finalizeAcceptanceJourney({
@@ -128,7 +147,7 @@ export async function exerciseNativeScaleStartup({ descriptor, buildReceipt, sig
       removeAbortCleanup();
       if (cleanup.length) failure = new AggregateError([...(failure ? [failure] : []), ...cleanup.map(entry => entry.error)], 'Native scale startup finalization failed');
     }
-    const diagnostic = Object.freeze({ schemaVersion: 1, scenario: 'diagnostic-scale-startup', outcome: failure ? 'failed' : 'passed',
+    const diagnostic = Object.freeze({ schemaVersion: 1, scenario: conversations ? 'diagnostic-conversation-preparation' : 'diagnostic-scale-startup', outcome: failure ? 'failed' : 'passed',
       readinessAttempts: Object.freeze([...readinessAttempts]), host: boundedHostEvidence(host.diagnostics) });
     scanPublicEvidence([JSON.stringify(diagnostic)]);
     // Publish after cleanup and privacy checks, including on failure. The outer

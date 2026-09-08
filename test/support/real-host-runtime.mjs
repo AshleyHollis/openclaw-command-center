@@ -114,11 +114,16 @@ export async function configureEvidencePage(page, browserGuard, evidence, { dest
   });
 }
 
-export async function requestAuthenticatedGateway({ gatewayUrl, credential, method, params = {}, scopes = ['operator.read'], responseTimeoutMs = 10_000, signal, deviceIdentity }) {
+export async function requestAuthenticatedGateway({ gatewayUrl, credential, method, params = {}, scopes = ['operator.read'], responseTimeoutMs = 10_000, signal, deviceIdentity, controlUiBuildId }) {
   const requestSite = new Error(`Authenticated Gateway request site: ${method}`);
   signal ??= acceptanceSignalContext.getStore();
   signal?.throwIfAborted();
-  const socket = new WebSocket(gatewayUrl.replace(/^http/u, 'ws'));
+  const controlUi = controlUiBuildId !== undefined;
+  if (controlUi) assert.ok(typeof controlUiBuildId === 'string' && controlUiBuildId.trim());
+  if (controlUi) assert.ok(deviceIdentity, 'Control UI preparation requires a signed device identity');
+  const socket = controlUi
+    ? new WebSocket(gatewayUrl.replace(/^http/u, 'ws'), { headers: { Origin: new URL(gatewayUrl).origin } })
+    : new WebSocket(gatewayUrl.replace(/^http/u, 'ws'));
   const waitForFrame = createGatewayFrameWaiter(socket, { method, signal, requestSite });
   const abortSocket = () => socket.close();
   signal?.addEventListener('abort', abortSocket, { once: true });
@@ -150,7 +155,8 @@ export async function requestAuthenticatedGateway({ gatewayUrl, credential, meth
     const [, challenge] = await Promise.all([openedPromise, challengePromise]);
     assert.equal(typeof challenge.payload?.nonce, 'string');
     const connectId = `command-center-acceptance-connect-${randomUUID()}`;
-    const client = { id: 'cli', version: '1', platform: 'test', mode: 'cli' };
+    const client = controlUi ? { id: 'openclaw-control-ui', version: '1', platform: 'test', mode: 'ui', buildId: controlUiBuildId }
+      : { id: 'cli', version: '1', platform: 'test', mode: 'cli' };
     const device = deviceIdentity ? signedGatewayDevice(deviceIdentity, { nonce: challenge.payload.nonce, credential, scopes, client }) : undefined;
     socket.send(JSON.stringify({ type: 'req', id: connectId, method: 'connect', params: { minProtocol: 4, maxProtocol: 4, client, caps: [], commands: [], role: 'operator', scopes, auth: { ['to' + 'ken']: credential }, ...(device ? { device } : {}) } }));
     const connected = await waitForFrame((frame) => frame?.type === 'res' && frame.id === connectId);
