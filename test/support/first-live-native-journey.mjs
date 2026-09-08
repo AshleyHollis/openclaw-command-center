@@ -107,7 +107,8 @@ export async function exerciseNativeControlUiActivation({ descriptor, buildRecei
 }
 
 export async function exerciseNativeScaleStartup({ descriptor, buildReceipt, signal, onFinalization, onDiagnostic }) {
-  return exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinalization, onDiagnostic }, { scale: true, conversations: false });
+  // Qualify the complete preparation/restart transition before measurement.
+  return exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinalization, onDiagnostic }, { scale: true, conversations: true, restart: true });
 }
 
 // Non-measuring reproduction of the preparation boundary. It shares startup,
@@ -117,11 +118,23 @@ export async function exerciseNativeConversationPreparation(options, { scale = t
   return exerciseNativeStartup(options, { scale, conversations: true });
 }
 
-async function exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinalization, onDiagnostic }, { scale, conversations }) {
+export async function exerciseNativeRetainedStartup(options, { scale = true, conversations = true } = {}) {
+  return exerciseNativeStartup(options, { scale, conversations, restart: true });
+}
+
+export async function readRetainedNativeBootstrap(options, { waitForReady = waitForNativeControlUiReadiness, readBootstrap = readNativeLegacyBootstrap } = {}) {
+  // A spawned successor is not yet an authenticated, listening Gateway.
+  // This wait remains inside the caller's startup measurement and deadline.
+  await waitForReady({ ...options, scale: false });
+  return readBootstrap(options);
+}
+
+async function exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinalization, onDiagnostic }, { scale, conversations, restart = false }) {
   return withIsolatedWorld(async (world) => {
     const bootstrap = await prepareNativeLegacyBootstrap({ world, signal, scale });
-    const host = await withDeadline('native scale host launch', launchSignal => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
-    const removeAbortCleanup = stopHostOnAbort(signal, host);
+    let host = await withDeadline('native scale host launch', launchSignal => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
+    let removeAbortCleanup = stopHostOnAbort(signal, host);
+    const stages = [];
     const readinessAttempts = [];
     let failure;
     let result;
@@ -132,14 +145,26 @@ async function exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinal
       assert.ok(plugin?.revision);
       const imported = await readNativeLegacyBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 1 });
       if (conversations) await prepareNativeScaleConversations({ world, host, signal, fixture: imported.fixture });
-      result = Object.freeze({ schemaVersion: 1, pluginId: 'command-center', revision: plugin.revision, fixtureCounts: Object.freeze({ noteBytes: Buffer.byteLength(bootstrap.noteText), noteFiles: (bootstrap.scaleNotes?.length ?? 0) + 1, conversationMessages: bootstrap.prepared.occurrenceCount, conversations: conversations ? 100 : 1 }), readinessAttempts: Object.freeze([...readinessAttempts]), migrationReady: Boolean(imported.completion) });
+      stages.push('initial-readback-passed');
+      if (restart) {
+        await stopPinnedHost(host.child);
+        await host.outputDrained;
+        stages.push('predecessor-stopped');
+        host = await withDeadline('native retained diagnostic restart', restartSignal => restartPinnedHost(host, { signal: restartSignal }), 120_000, signal);
+        removeAbortCleanup();
+        removeAbortCleanup = stopHostOnAbort(signal, host);
+        stages.push('successor-launched');
+        await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: conversations ? 100 : 1 });
+        stages.push('retained-readback-passed');
+      }
+      result = Object.freeze({ schemaVersion: 1, pluginId: 'command-center', revision: plugin.revision, fixtureCounts: Object.freeze({ noteBytes: Buffer.byteLength(bootstrap.noteText), noteFiles: (bootstrap.scaleNotes?.length ?? 0) + 1, conversationMessages: bootstrap.prepared.occurrenceCount, conversations: conversations ? 100 : 1 }), readinessAttempts: Object.freeze([...readinessAttempts]), migrationReady: Boolean(imported.completion), retainedRestartVerified: restart });
     } catch (error) { failure = error; }
     finally {
       const cleanup = await finalizeAcceptanceJourney({
         closeBrowser: async () => {},
-        stopHost: async () => { await stopPinnedHost(host.child); await host.outputDrained; },
+        stopHost: async () => { for (const generation of [...host.generations].reverse()) { await stopPinnedHost(generation.child); await generation.outputDrained; } },
         assertBrowserTraffic: () => {},
-        assertHostTraffic: () => { host.diagnostics.guard.assertClean(); assertNoFatalHostOutput(host.diagnostics); if (host.diagnostics.cleanupError) throw host.diagnostics.cleanupError; },
+        assertHostTraffic: () => { for (const generation of host.generations) { generation.diagnostics.guard.assertClean(); assertNoFatalHostOutput(generation.diagnostics); if (generation.diagnostics.cleanupError) throw generation.diagnostics.cleanupError; } },
         assertChildTraffic: () => assertRecordedChildTraffic(world),
         assertBuildDigest: () => assertBuiltDigest(buildReceipt),
         onProgress: onFinalization
@@ -147,8 +172,8 @@ async function exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinal
       removeAbortCleanup();
       if (cleanup.length) failure = new AggregateError([...(failure ? [failure] : []), ...cleanup.map(entry => entry.error)], 'Native scale startup finalization failed');
     }
-    const diagnostic = Object.freeze({ schemaVersion: 1, scenario: conversations ? 'diagnostic-conversation-preparation' : 'diagnostic-scale-startup', outcome: failure ? 'failed' : 'passed',
-      readinessAttempts: Object.freeze([...readinessAttempts]), host: boundedHostEvidence(host.diagnostics) });
+    const diagnostic = Object.freeze({ schemaVersion: 1, scenario: restart ? 'diagnostic-retained-startup' : conversations ? 'diagnostic-conversation-preparation' : 'diagnostic-scale-startup', outcome: failure ? 'failed' : 'passed',
+      stages: Object.freeze(stages), readinessAttempts: Object.freeze([...readinessAttempts]), host: boundedHostEvidence(host.diagnostics) });
     scanPublicEvidence([JSON.stringify(diagnostic)]);
     // Publish after cleanup and privacy checks, including on failure. The outer
     // slice may replace a timeout error, so error properties alone lose evidence.
@@ -229,7 +254,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         await host.outputDrained;
         const started = performance.now();
         await restartHost();
-        bootstrapped = await readNativeLegacyBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 100,
+        bootstrapped = await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 100,
           onReady: () => { startupReadinessMs = performance.now() - started; } });
       }
       const fixture = keyboard ? await seedNativeExistingTopic({ world, host, signal }) : bootstrapped.fixture;
