@@ -34,9 +34,16 @@ export const interruptedSettingsInput = Object.freeze({ schemaVersion: 1, logica
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [stateDir, phase] = process.argv.slice(2);
   if (!stateDir || !['before-effect', 'after-effect'].includes(phase)) throw new Error('An isolated fixture and exact kill phase are required.');
-  // Keep the paused worker alive until the parent explicitly sends SIGKILL.
-  process.on('message', () => {});
-  const pause = async () => { process.send({ phase }); await new Promise(() => {}); };
+  if (typeof global.gc !== 'function') throw new Error('The kill-boundary fixture requires explicit GC support.');
+  // Root the pending operation in a real external completion source. A forever
+  // unresolved, unreferenced Promise can be collected together with its SQLite
+  // handle even while an unrelated IPC listener keeps the process alive.
+  const pause = async () => {
+    await new Promise(resolve => {
+      process.once('message', resolve);
+      setImmediate(() => { global.gc(); process.send({ phase, gcForced: true }); });
+    });
+  };
   const cron = durableFictionalCron(stateDir, phase === 'before-effect' ? { beforeEffect: pause } : { afterEffect: pause });
   const metadata = openCommandCenterMetadataService({ stateDir });
   try {

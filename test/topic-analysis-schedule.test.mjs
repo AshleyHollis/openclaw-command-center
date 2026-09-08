@@ -164,13 +164,13 @@ for (const phase of ['before-effect', 'after-effect']) test(`Settings startup re
     const initial = createTopicAnalysisScheduleService({ metadata, getCron: () => cron, now: () => Date.parse('2026-08-23T06:59:00Z') });
     await initial.reconcile();
     metadata.close();
-    child = fork(new URL('./fixtures/analysis-settings-process-death.mjs', import.meta.url), [stateDir, phase], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    child = fork(new URL('./fixtures/analysis-settings-process-death.mjs', import.meta.url), [stateDir, phase], { execArgv: [...process.execArgv, '--expose-gc'], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
     let errors = '';
     child.stderr.on('data', (chunk) => { errors += chunk; });
     exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({ code, signal })); });
     const boundary = new Promise((resolve, reject) => {
       deadline = setTimeout(() => reject(new Error(`Fixture missed its kill boundary: ${errors}`)), 10_000);
-      child.once('message', (message) => { if (message.phase === phase) resolve(); else reject(new Error('Wrong fixture boundary')); });
+      child.once('message', (message) => { if (message.phase === phase && message.gcForced === true) resolve(); else reject(new Error('Wrong fixture boundary or missing GC proof')); });
       child.once('exit', () => reject(new Error(`Fixture exited before kill boundary: ${errors}`)));
     });
     await boundary;
