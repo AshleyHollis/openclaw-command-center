@@ -17,7 +17,7 @@ import { scanPublicEvidence } from '../../src/safety.mjs';
 import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory } from './real-host-runtime.mjs';
 import { exerciseNativeKeyboardStates } from './first-live-native-keyboard.mjs';
 import { prepareNativeLegacyBootstrap, readNativeLegacyBootstrap } from './first-live-native-bootstrap.mjs';
-import { prepareNativeScaleConversations, exerciseNativeScaleStates } from './first-live-native-scale.mjs';
+import { prepareNativeScaleConversations, exerciseNativeScaleStates, openNativeSessionRoster } from './first-live-native-scale.mjs';
 
 // The receipt wrapper and future retained variants share this actual native
 // journey. Host admission, exact source proofs and finalization stay mandatory.
@@ -190,7 +190,10 @@ export async function exerciseNativeKeyboardJourney({ descriptor, buildReceipt, 
   return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, keyboard: true });
 }
 
-export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, scale = false, onFinalization }) {
+export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, scale = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
+  if (scaleDiagnostic) assert.equal(process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE, undefined);
+  const scaleNow = scaleDiagnostic ? () => 0 : () => performance.now();
+  const progress = stage => { if (scaleDiagnostic) onScaleProgress?.({ stage }); };
   assert.equal(keyboard && scale, false, 'Performance qualification cannot share a keyboard diagnostic');
   return withIsolatedWorld(async (world) => {
     const bootstrap = keyboard ? null : await prepareNativeLegacyBootstrap({ world, signal, scale });
@@ -219,6 +222,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
     };
     try {
       let catalog;
+      progress('initial-readiness');
       // Startup-only diagnosis and measured scale use this exact owner.
       await waitForNativeControlUiReadiness({ world, host, signal, scale });
       await waitForConsecutiveReadiness(async () => {
@@ -247,21 +251,25 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       let bootstrapped = keyboard ? null : await readNativeLegacyBootstrap({ world, host, signal, bootstrap });
       let startupReadinessMs;
       if (scale) {
+        progress('conversation-preparation');
         await prepareNativeScaleConversations({ world, host, signal, fixture: bootstrapped.fixture });
         // Corpus preparation is not timed. Stop the setup generation before the
         // measured restart; reuse the issued owner, state and reserved endpoint.
         await stopPinnedHost(host.child);
         await host.outputDrained;
-        const started = performance.now();
+        progress('retained-restart');
+        const started = scaleNow();
         await restartHost();
         bootstrapped = await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 100,
-          onReady: () => { startupReadinessMs = performance.now() - started; } });
+          onReady: () => { startupReadinessMs = scaleNow() - started; } });
       }
       const fixture = keyboard ? await seedNativeExistingTopic({ world, host, signal }) : bootstrapped.fixture;
+      progress('browser-launch');
       managedBrowser = await withDeadline('native browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }), 60_000, signal);
       const page = await managedBrowser.browser.newPage({ viewport: { width: 1440, height: 900 } });
       if (keyboard) await page.emulateMedia({ forcedColors: 'active', reducedMotion: 'reduce' });
       await configureEvidencePage(page, browserGuard, evidence);
+      if (scaleDiagnostic) page.setDefaultTimeout(10_000);
       let browserTopics;
       let browserNavigation;
       let browserNote;
@@ -307,7 +315,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const entryResponse = observeBrowserResponse(page.waitForResponse((candidate) => candidate.request().method() === 'GET' && candidate.url() === entryUrl.href, { timeout: 60_000 }), (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       // Navigate only through the real host router; its native loader imports
       // the revisioned entry and reports activation on its own live connection.
-      const topicsStarted = performance.now();
+      progress('native-page-load');
+      const topicsStarted = scaleNow();
       await page.goto(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topics', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       const loadedEntry = await entryResponse;
       assert.equal(hasSuccessfulBrowserResponse(loadedEntry), true, 'The actual native loader must fetch its granted revisioned asset');
@@ -315,11 +324,15 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const nativePage = page.locator('openclaw-plugin-page');
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor({ timeout: 30_000 });
       assert.equal(await nativePage.locator('iframe').count(), 0, 'Native activation must not fall back to the legacy iframe');
-      if (keyboard) {
+      if (scaleDiagnostic && diagnosticBoundary === 'roster-navigation') {
+        progress('native-roster');
+        await openNativeSessionRoster(page);
+        result = { performanceQualified: false, rosterNavigation: true };
+      } else if (keyboard) {
         result = await exerciseNativeKeyboardStates({ page, world, host, fixture, native, signal, restartHost, browserGuard });
       } else if (scale) {
         result = await exerciseNativeScaleStates({ page, world, host, signal, fixture, bootstrap, conversationLabel, messageText,
-          startupReadinessMs, topicsStarted,
+          startupReadinessMs, topicsStarted, measure: !scaleDiagnostic, onProgress: progress,
           observed: () => ({ topics: browserTopics, navigation: browserNavigation, chatSend: browserChatSend, chatAcknowledgement: browserChatAcknowledgement, ...scaleResponses }) });
         const playwrightPackage = JSON.parse(await readFile(new URL(import.meta.resolve('playwright-core/package.json')), 'utf8'));
         result = { ...result, browser: { engine: 'chromium', playwrightVersion: playwrightPackage.version, version: managedBrowser.browser.version() }, viewport: page.viewportSize() };

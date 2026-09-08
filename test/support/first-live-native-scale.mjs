@@ -73,29 +73,47 @@ export async function prepareNativeScaleConversations({ world, signal, fixture }
   assert.deepEqual(new Set(catalog.conversations.map(row => row.referenceId)), references);
 }
 
+export async function openNativeSessionRoster(page) {
+  const sidebar = page.locator('openclaw-app-sidebar');
+  const sessions = sidebar.getByRole('link', { name: 'Sessions', exact: true });
+  // Native sidebar preferences need not pin Sessions. Open the host's own
+  // overflow menu without changing preferences or bypassing its navigation.
+  if (!await sessions.isVisible()) {
+    await sidebar.getByRole('button', { name: 'Edit pinned items', exact: true }).click();
+  }
+  await sessions.click();
+  const roster = page.locator('openclaw-sessions-page');
+  await roster.waitFor();
+  return roster;
+}
+
 export async function exerciseNativeScaleStates({ page, world, host, signal, fixture, bootstrap,
-  conversationLabel, messageText, startupReadinessMs, topicsStarted, observed }) {
+  conversationLabel, messageText, startupReadinessMs, topicsStarted, observed, measure = true, onProgress = () => {} }) {
+  const now = measure ? () => performance.now() : () => 0;
   const observations = { startupReadinessMs };
   const ready = (probe) => waitForConsecutiveReadiness(probe, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
   const nativePage = page.locator('openclaw-plugin-page');
+  onProgress('topics-ready');
   await ready(async () => !!observed().topics?.activeGroups?.project?.some(topic => topic.topicId === fixture.topicId && topic.usable));
   await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).waitFor();
-  observations.topicsLoadMs = performance.now() - topicsStarted;
+  observations.topicsLoadMs = now() - topicsStarted;
   const authoritativeTopics = await request(world, signal, 'topics.list');
   assert.deepEqual(observed().topics.activeGroups, authoritativeTopics.activeGroups);
 
-  let started = performance.now();
+  onProgress('topic-open');
+  let started = now();
   await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).click();
   await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
   await ready(async () => observed().notes?.value?.offset === 0 && observed().notes?.value?.total === 5_000);
   await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).waitFor();
-  observations.topicOpenMs = performance.now() - started;
-  started = performance.now();
+  observations.topicOpenMs = now() - started;
+  onProgress('large-note-read');
+  started = now();
   await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).click();
   const content = nativePage.getByRole('region', { name: 'Note content', exact: true });
   await ready(async () => (await content.textContent())?.length === 8_388_609);
   assert.equal(await content.textContent(), bootstrap.noteText);
-  observations.largeNoteReadMs = performance.now() - started;
+  observations.largeNoteReadMs = now() - started;
   assert.equal(Buffer.byteLength(await content.textContent(), 'utf8'), 8_388_609);
   assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
   assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
@@ -103,6 +121,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   const notePaths = [];
   let offset = 0;
   while (true) {
+    onProgress(`notes-page-${offset}`);
     const catalog = observed().notes.value;
     assert.equal(observed().notes.input.topicId, fixture.topicId);
     assert.equal(catalog.offset, offset);
@@ -118,23 +137,24 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     if (!catalog.hasMore) break;
     assert.equal(catalog.nextOffset, offset + 50);
     offset = catalog.nextOffset;
-    started = performance.now();
+    started = now();
     await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).click();
     await ready(async () => observed().notes?.value?.offset === offset);
     await nativePage.getByText(`Notes ${offset + 1}–${offset + 50} of 5000.`, { exact: true }).waitFor();
-    if (offset === 50) observations.noteNextPageMs = performance.now() - started;
+    if (offset === 50) observations.noteNextPageMs = now() - started;
   }
   assert.equal(notePaths.length, 5_000);
   assert.equal(new Set(notePaths).size, 5_000);
   assert.deepEqual(notePaths, [bootstrap.notePath, ...bootstrap.scaleNotes.map(note => note.path)]);
   assert.equal(await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).isDisabled(), true);
 
+  onProgress('conversation-create');
   const creationResponse = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'POST'
     && new URL(response.url()).origin === new URL(world.gateway.url).origin
     && new URL(response.url()).pathname === '/plugins/command-center/api/topic/actions'
     && response.request().postDataJSON()?.action === 'conversations.create', { timeout: 30_000 }), () => {});
   await nativePage.getByRole('textbox', { name: 'Conversation label', exact: true }).fill(conversationLabel);
-  started = performance.now();
+  started = now();
   await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).click();
   const response = await creationResponse;
   assert.equal(hasSuccessfulBrowserResponse(response), true);
@@ -152,7 +172,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   const chat = page.locator('openclaw-chat-pane[aria-hidden="false"]');
   await chat.waitFor();
   await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, target.sessionKey);
-  observations.conversationCreateMs = performance.now() - started;
+  observations.conversationCreateMs = now() - started;
   assert.notEqual(target.sessionId, fixture.sessionId);
   assert.equal(target.sourceReference.topicId, fixture.topicId);
   const catalog = await request(world, signal, 'sessions.browse', { topicId: fixture.topicId, includeClosed: false });
@@ -160,8 +180,9 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(catalog.conversations.find(row => row.referenceId === receipt.result.referenceId)?.sessionId, target.sessionId);
   assert.equal(catalog.conversations.find(row => row.isPrimary)?.sessionId, fixture.sessionId);
 
+  onProgress('chat-send');
   await chat.locator('.agent-chat__composer-combobox textarea').fill(messageText);
-  started = performance.now();
+  started = now();
   await chat.getByRole('button', { name: 'Send message', exact: true }).click();
   await ready(async () => !!observed().chatAcknowledgement);
   assert.equal(observed().chatAcknowledgement.ok, true);
@@ -175,11 +196,12 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     assert.equal(history.sessionKey, target.sessionKey);
     return containsMessage(history);
   });
-  observations.chatSendMs = performance.now() - started;
+  observations.chatSendMs = now() - started;
 
   // Resolve the complete Topic-owned identity set independently of UI labels.
   // The label below only selects the issued fictional corpus in the native UI.
   const expectedSessions = new Map();
+  onProgress('conversation-identities');
   for (const row of catalog.conversations) {
     assert.equal(row.status, 'open');
     const destination = await request(world, signal, 'sessions.navigate', { topicId: fixture.topicId, referenceId: row.referenceId, nativeChat: true }, ['operator.read', 'operator.write']);
@@ -189,13 +211,13 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     assert.equal(expectedSessions.has(destination.sessionKey), false);
     expectedSessions.set(destination.sessionKey, destination.sessionId);
   }
-  await page.locator('openclaw-app-sidebar').getByRole('link', { name: 'Sessions', exact: true }).click();
-  const roster = page.locator('openclaw-sessions-page');
-  await roster.waitFor();
+  onProgress('native-roster');
+  const roster = await openNativeSessionRoster(page);
   await roster.getByPlaceholder('Filter by key, agent, label, kind…', { exact: true }).fill('Fictional Native Scale');
   await ready(async () => observed().rosters.some(entry => entry.input.search === 'Fictional Native Scale'));
   const rosterRows = new Map();
   while (true) {
+    onProgress(`roster-load-${rosterRows.size}`);
     assert.equal(observed().rosterOverflow, false, 'Native roster response evidence exceeded its bound');
     for (const entry of observed().rosters.filter(entry => entry.input.search === 'Fictional Native Scale')) {
       for (const row of entry.value.sessions) {
@@ -220,13 +242,14 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   const allKeys = [];
   const pageCounts = [];
   for (let pageIndex = 0; pageIndex < 3; pageIndex += 1) {
+    onProgress(`roster-page-${pageIndex}`);
     const expectedPage = expectedKeys.slice(pageIndex * 50, (pageIndex + 1) * 50);
     await ready(async () => JSON.stringify(await keysOnPage()) === JSON.stringify(expectedPage));
-    if (pageIndex === 1) observations.conversationNextPageMs = performance.now() - started;
+    if (pageIndex === 1) observations.conversationNextPageMs = now() - started;
     const actual = await keysOnPage();
     pageCounts.push(actual.length); allKeys.push(...actual);
     if (pageIndex < 2) {
-      started = performance.now();
+      started = now();
       await roster.getByRole('button', { name: 'Next', exact: true }).click();
     }
   }
@@ -235,16 +258,17 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(new Set(allKeys).size, 101);
   assert.equal(await roster.getByRole('button', { name: 'Next', exact: true }).isDisabled(), true);
   // Sending in the new Conversation must not alter the imported Primary corpus.
+  onProgress('final-source-readback');
   await readNativeLegacyBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 101 });
   await assertNativeScaleSourcesUnchanged(bootstrap, signal);
   assert.deepEqual(Object.keys(observations).sort(), [...RELEASE_MEASUREMENTS].sort());
-  for (const value of Object.values(observations)) assert.ok(Number.isFinite(value) && value > 0);
+  if (measure) for (const value of Object.values(observations)) assert.ok(Number.isFinite(value) && value > 0);
   const fixtureCounts = { largeNoteBytes: Buffer.byteLength(bootstrap.noteText), conversations: expectedSessions.size,
     noteFiles: notePaths.length, conversationMessages: bootstrap.prepared.occurrenceCount };
   assert.deepEqual(fixtureCounts, RELEASE_FIXTURE_COUNTS);
   // Corpus messages are the verified immutable Primary prefix; the separately
   // sent user message belongs to the final Conversation, not that denominator.
-  return { observations, fixtureCounts,
+  return { ...(measure ? { observations } : { performanceQualified: false }), fixtureCounts,
     conversationPage: { firstPageCount: pageCounts[0], secondPageCount: pageCounts[1], thirdPageCount: pageCounts[2], unique: true, orderPreserved: true },
     notes: { largeNoteBytes: fixtureCounts.largeNoteBytes, readOnly: true, paginationVerified: true } };
 }
