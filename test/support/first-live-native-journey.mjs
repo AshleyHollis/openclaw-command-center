@@ -359,6 +359,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.ok(fixtureTopic, 'The native journey must exercise an existing Topic, not an empty Topics diagnostic');
       assert.equal(fixtureTopic.usable, true, 'The existing Topic must have verified source bindings');
       assert.equal(fixtureTopic.topicId, fixture.topicId);
+      await organizeNativeTopicConversations({ page, nativePage, fixture });
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
@@ -373,7 +374,6 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const originalNoteRead = structuredClone(browserNote);
       assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
       assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
-      if (!keyboard) await organizeNativeTopicConversations({ page, nativePage, fixture });
       await nativePage.getByRole('button', { name: 'Open Topic in Chat', exact: true }).press('Enter');
       const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
       await chatPane.waitFor({ timeout: 30_000 });

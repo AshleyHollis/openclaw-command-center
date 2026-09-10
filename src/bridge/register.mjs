@@ -258,6 +258,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
           if (Buffer.byteLength(JSON.stringify({ schemaVersion: 1, status: 'applied', requestId, logicalOperationId, result })) > 786_432) throw new SourceServiceError('source-recovery', 'The history response exceeds the bounded page size.');
           assertHistoryRead();
         }
+        if (method === 'command-center.v1.sessions.group') runtime.creationAuthority.assertCurrent();
         respond(true, { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId, result });
       } catch (error) {
         respond(false, null, errorResult(error, { requestId, logicalOperationId: params?.logicalOperationId ?? null }));

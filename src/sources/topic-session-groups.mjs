@@ -33,9 +33,12 @@ export async function groupTopicSession(adapter, input, runtime) {
   const sessionKey = effectiveSourceLocator(adapter.metadata, reference);
   const agent = /^agent:([^:]+):.+$/u.exec(sessionKey);
   if (!agent) throw sourceError('source-recovery', 'The exact native Session locator is unavailable.');
-  const assertCurrent = () => {
+  const assertAuthority = () => {
     if (runtime.creationAuthority !== authority || authority.principalId !== principalId) throw sourceError('unauthenticated', 'The original grouping authority changed.');
     authority.assertCurrent();
+  };
+  const assertCurrent = () => {
+    assertAuthority();
     const topic = adapter.metadata.getTopic(adapter.topicId);
     const currentReference = adapter.resolveReference(input);
     const state = adapter.metadata.getSessionState(reference.referenceId);
@@ -46,7 +49,7 @@ export async function groupTopicSession(adapter, input, runtime) {
   const value = { id: reference.referenceId, referenceId: reference.referenceId, topicId: adapter.topicId, sessionId: expectedSessionId, name };
   // The journal proves a witnessed operation, not today's category. An interrupted
   // native write has no causal receipt; stop as unknown rather than reclaim a group.
-  return adapter.coordinator.mutate({ operationKind: 'sessions.group', requestId: input.requestId ?? logicalOperationId,
+  const receipt = await adapter.coordinator.mutate({ operationKind: 'sessions.group', requestId: input.requestId ?? logicalOperationId,
     logicalOperationId, topicId: adapter.topicId, referenceId: reference.referenceId,
     intent: { principalId, sessionKey, expectedSessionId, expectedLifecycleRevision, expectedCategory: null, expectedTopicRevision: input.expectedTopicRevision, name },
     execute: async () => {
@@ -63,4 +66,8 @@ export async function groupTopicSession(adapter, input, runtime) {
     },
     reconcile: ({ applied, resultIdentity }) => applied && resultIdentity === reference.referenceId ? { matched: true, value } : { outcome: 'unknown' }
   });
+  // Persist the witnessed effect even if access retired while its reply was
+  // pending. Publication (including receipt replay) still needs current access.
+  assertAuthority();
+  return receipt;
 }

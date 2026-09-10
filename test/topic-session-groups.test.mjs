@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -35,7 +36,7 @@ async function fixture(run) {
   const runtime = { creationAuthority: { principalId: 'fixture-operator', assertCurrent() { if (!allowed) throw Object.assign(new Error('revoked'), { code: 'unauthenticated' }); } } };
   const input = { schemaVersion: 1, topicId, logicalOperationId: randomUUID(), referenceId: 'fixture-ref', expectedSessionId: 'original', expectedLifecycleRevision: 'lifecycle-one', expectedTopicRevision: 0, name: 'Sample Project' };
   const apply = (command = input) => invokeBridgeMethod(service, 'command-center.v1.sessions.group', command, null, null, runtime);
-  try { await run({ metadata, entry, input, apply, service, runtime, sessionStore, effects: () => effects, revoke: () => { allowed = false; }, before: fn => { beforeCommit = fn; }, after: fn => { afterCommit = fn; } }); }
+  try { await run({ stateDir, metadata, entry, input, apply, service, runtime, sessionStore, effects: () => effects, revoke: () => { allowed = false; }, before: fn => { beforeCommit = fn; }, after: fn => { afterCommit = fn; } }); }
   finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 }
 
@@ -56,6 +57,64 @@ for (const change of ['category', 'sessionId', 'lifecycleRevision']) test(`group
 
 test('grouping authority is checked again at native commit', () => fixture(async ({ before, revoke, apply, effects }) => {
   before(revoke); await assert.rejects(apply(), /revoked/); assert.equal(effects(), 0);
+}));
+
+test('revocation after the effect blocks publication without losing the witnessed receipt', () => fixture(async ({ after, revoke, apply, effects, metadata, input }) => {
+  after(revoke);
+  await assert.rejects(apply(), /revoked/);
+  assert.equal(effects(), 1);
+  assert.equal(metadata.getOperation(input.logicalOperationId).state, 'applied');
+  await assert.rejects(apply(), /revoked/);
+  assert.equal(effects(), 1);
+}));
+
+test('authority replacement during receipt replay blocks late publication', () => fixture(async ({ apply, runtime, effects, metadata, input }) => {
+  await apply();
+  const pending = apply();
+  runtime.creationAuthority = { principalId: 'replacement', assertCurrent() {} };
+  await assert.rejects(pending, /authority changed/);
+  assert.equal(metadata.getOperation(input.logicalOperationId).state, 'applied');
+  assert.equal(effects(), 1);
+}));
+
+test('competing owners never repeat an in-flight grouping operation', () => fixture(async ({ stateDir, metadata, sessionStore, runtime, input, entry, effects }) => {
+  let release;
+  let entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const otherMetadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
+  const store = { ...sessionStore, async patchSessionEntry(params) { entered(); await blocked; return sessionStore.patchSessionEntry(params); } };
+  const owner = data => new AuthoritativeSourceService({ metadata: data, sessionStore: store, capabilities: { sessions: true, notes: false, scheduler: false } });
+  const first = owner(metadata).sessionGroup(input, runtime);
+  try {
+    await started;
+    await assert.rejects(owner(otherMetadata).sessionGroup(input, runtime), /ambiguous/);
+    assert.equal(effects(), 0);
+    release();
+    assert.equal((await first).status, 'applied');
+    assert.equal(effects(), 1);
+    entry.category = 'Later manual group';
+    assert.equal((await owner(otherMetadata).sessionGroup(input, runtime)).status, 'applied');
+    assert.equal(entry.category, 'Later manual group');
+    assert.equal(effects(), 1);
+  } finally { release(); await first.catch(() => {}); otherMetadata.close(); }
+}));
+
+for (const phase of ['before-effect', 'after-effect', 'after-receipt']) test(`grouping process death ${phase} preserves safe recovery on reopened SQLite`, { skip: process.platform !== 'linux' && 'SIGKILL/reopen qualification requires the Linux deployment runtime' }, () => fixture(async ({ stateDir, input, runtime, sessionStore, entry, effects }) => {
+  const child = spawnSync(process.execPath, ['--import', './test/fixtures/note-runtime-loader.mjs', './test/fixtures/topic-group-interrupted.mjs', stateDir, JSON.stringify(input), phase], { encoding: 'utf8', timeout: 45_000, windowsHide: true });
+  assert.equal(child.signal, 'SIGKILL', child.stderr);
+  const reopened = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
+  try {
+    assert.equal(reopened.getOperation(input.logicalOperationId).state, phase === 'after-receipt' ? 'applied' : 'pending');
+    if (phase === 'before-effect') await assert.rejects(readFile(path.join(stateDir, 'fictional-group-effect.json')), { code: 'ENOENT' });
+    else assert.equal(JSON.parse(await readFile(path.join(stateDir, 'fictional-group-effect.json'), 'utf8')).category, input.name);
+    entry.category = 'Later manual group';
+    const resumed = new AuthoritativeSourceService({ metadata: reopened, sessionStore, capabilities: { sessions: true, notes: false, scheduler: false } });
+    if (phase === 'after-receipt') assert.equal((await resumed.sessionGroup(input, runtime)).status, 'applied');
+    else await assert.rejects(resumed.sessionGroup(input, runtime), /ambiguous/);
+    assert.equal(effects(), 0);
+    assert.equal(entry.category, 'Later manual group');
+  } finally { reopened.close(); }
 }));
 
 test('a Topic revision changed during native grouping preparation prevents the effect', () => fixture(async ({ before, metadata, input, apply, effects }) => {
