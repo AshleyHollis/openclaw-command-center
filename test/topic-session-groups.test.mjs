@@ -55,6 +55,26 @@ for (const change of ['category', 'sessionId', 'lifecycleRevision']) test(`group
   await assert.rejects(apply(), /changed|grouped/); assert.equal(effects(), 0);
 }));
 
+test('ordinary native Sessions without a lifecycle revision use an explicit absence precondition', () => fixture(async ({ entry, input, apply, service, effects }) => {
+  delete entry.lifecycleRevision;
+  const plan = await service.sessionGroupPreview({ topicId: input.topicId });
+  assert.equal(plan.members[0].lifecycleRevision, null);
+  assert.equal(plan.members[0].eligible, true);
+  assert.equal((await apply({ ...input, expectedLifecycleRevision: null })).status, 'applied');
+  assert.equal(effects(), 1);
+}));
+
+test('a lifecycle revision appearing after an absence preview prevents grouping', () => fixture(async ({ entry, input, apply, effects }) => {
+  await assert.rejects(apply({ ...input, expectedLifecycleRevision: null }), /changed/);
+  assert.equal(effects(), 0);
+}));
+
+test('omitting a lifecycle precondition is not an absence precondition', () => fixture(async ({ input, apply, effects }) => {
+  const { expectedLifecycleRevision, ...missing } = input;
+  await assert.rejects(apply(missing), /expectedLifecycleRevision/);
+  assert.equal(effects(), 0);
+}));
+
 test('grouping authority is checked again at native commit', () => fixture(async ({ before, revoke, apply, effects }) => {
   before(revoke); await assert.rejects(apply(), /revoked/); assert.equal(effects(), 0);
 }));

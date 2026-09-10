@@ -13,7 +13,7 @@ export async function previewTopicSessionGroup(adapter) {
     const row = exact.row;
     members.push({ referenceId: reference.referenceId, sessionId: exact.sessionId,
       lifecycleRevision: row.lifecycleRevision ?? null, grouped: row.category != null,
-      label: state.displayName, eligible: row.category == null && typeof row.lifecycleRevision === 'string' });
+      label: state.displayName, eligible: row.category == null && (row.lifecycleRevision == null || typeof row.lifecycleRevision === 'string' && row.lifecycleRevision.trim() !== '') });
   }
   if (adapter.metadata.getTopic(adapter.topicId)?.revision !== topic.revision) throw sourceError('conflict', 'The Topic changed during group preparation.');
   return { schemaVersion: 1, topicId: topic.topicId, name: topic.name, revision: topic.revision, members };
@@ -26,7 +26,9 @@ export async function groupTopicSession(adapter, input, runtime) {
   if (!authority || typeof authority.assertCurrent !== 'function' || !adapter.sessionStore?.patchSessionEntry) throw sourceError('capability-unavailable', 'Authenticated conditional Session grouping is unavailable.');
   const principalId = nonBlank(authority.principalId, 'principalId');
   const expectedSessionId = nonBlank(input.expectedSessionId, 'expectedSessionId');
-  const expectedLifecycleRevision = nonBlank(input.expectedLifecycleRevision, 'expectedLifecycleRevision');
+  // Native ordinary Sessions may have no lifecycle revision. Explicit null
+  // means it must still be absent, never "accept whatever revision is current".
+  const expectedLifecycleRevision = input.expectedLifecycleRevision === null ? null : nonBlank(input.expectedLifecycleRevision, 'expectedLifecycleRevision');
   const name = nonBlank(input.name, 'name');
   if (!Number.isSafeInteger(input.expectedTopicRevision) || input.expectedTopicRevision < 0) throw sourceError('invalid-request', 'The original Topic revision is required.');
   const reference = adapter.resolveReference(input);
@@ -58,10 +60,10 @@ export async function groupTopicSession(adapter, input, runtime) {
         assertCommitAllowed: assertCurrent,
         update(entry) {
           assertCurrent();
-          if (entry.sessionId !== expectedSessionId || entry.lifecycleRevision !== expectedLifecycleRevision || entry.category != null) throw sourceError('conflict', 'The native Conversation changed or was already grouped.');
+          if (entry.sessionId !== expectedSessionId || (entry.lifecycleRevision ?? null) !== expectedLifecycleRevision || entry.category != null) throw sourceError('conflict', 'The native Conversation changed or was already grouped.');
           return { category: name };
         } });
-      if (result?.sessionId !== expectedSessionId || result.lifecycleRevision !== expectedLifecycleRevision || result.category !== name) throw sourceError('delivery-unknown', 'Native grouping returned no exact receipt. Inspect the native group before proceeding.');
+      if (result?.sessionId !== expectedSessionId || (result.lifecycleRevision ?? null) !== expectedLifecycleRevision || result.category !== name) throw sourceError('delivery-unknown', 'Native grouping returned no exact receipt. Inspect the native group before proceeding.');
       return value;
     },
     reconcile: ({ applied, resultIdentity }) => applied && resultIdentity === reference.referenceId ? { matched: true, value } : { outcome: 'unknown' }

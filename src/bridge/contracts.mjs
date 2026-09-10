@@ -101,7 +101,8 @@ const arrayFields = new Set(['expectedRevisions']);
 
 function parameterSchema(field, method) {
   if (field === 'expectedTopicRevision') return Object.freeze({ type: 'integer', minimum: 0 });
-  if (field === 'expectedSessionId' || field === 'expectedLifecycleRevision') return Object.freeze({ type: 'string', minLength: 1 });
+  if (field === 'expectedSessionId') return Object.freeze({ type: 'string', minLength: 1 });
+  if (field === 'expectedLifecycleRevision') return Object.freeze({ type: ['string', 'null'], minLength: 1 });
   if (field === 'schemaVersion') return Object.freeze({ const: 1 });
   if (field === 'includeClosed' && method === 'command-center.v1.sessions.browse') return Object.freeze({ type: 'boolean' });
   if (field === 'expectedRevision') return Object.freeze({ type: method.includes('.topics.') || method === 'command-center.v1.sessions.create' ? 'integer' : 'string' });
@@ -478,6 +479,7 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
     if (params[key] === undefined) continue;
     const expected = schema.type;
     const expectedTypes = Array.isArray(expected) ? expected : [expected];
+    if (params[key] === null && expectedTypes.includes('null')) continue;
     const valid = expected === undefined
       || expectedTypes.includes('integer') && Number.isInteger(params[key])
       || expectedTypes.includes(typeof params[key])
@@ -490,7 +492,11 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
     if (schema.minimum !== undefined && params[key] < schema.minimum) throw sourceError('invalid-request', `${key} must be at least ${schema.minimum}.`);
     if (schema.maximum !== undefined && params[key] > schema.maximum) throw sourceError('invalid-request', `${key} must be at most ${schema.maximum}.`);
   }
-  for (const key of required[method] ?? []) if (params[key] === undefined || params[key] === null || params[key] === '') throw sourceError('invalid-request', ['referenceId'].includes(key) && method.includes('.sessions.') ? 'Bridge Session request requires an exact Source Reference.' : `Bridge request requires ${key}.`);
+  for (const key of required[method] ?? []) {
+    const type = contract.paramsSchema.properties[key]?.type;
+    const nullable = Array.isArray(type) && type.includes('null');
+    if (params[key] === undefined || params[key] === null && !nullable || params[key] === '') throw sourceError('invalid-request', ['referenceId'].includes(key) && method.includes('.sessions.') ? 'Bridge Session request requires an exact Source Reference.' : `Bridge request requires ${key}.`);
+  }
   if (method === 'command-center.v1.sessions.create' && params.authoritativeSession === undefined && !Number.isInteger(params.expectedRevision)) throw sourceError('invalid-request', 'Native Conversation creation requires the original Topic revision.');
   const requiresPath = method.startsWith('command-center.v1.notes.') && !method.endsWith('.browse');
   if (requiresPath && !(typeof params.path === 'string' || typeof params.notePath === 'string' || typeof params.sourcePath === 'string')) throw sourceError('invalid-request', 'Bridge Note request requires a path.');

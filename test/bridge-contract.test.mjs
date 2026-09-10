@@ -20,7 +20,7 @@ test('registers the complete closed versioned bridge inventory with least-privil
     assert.equal(BRIDGE_CONTRACTS[method].paramsSchema.additionalProperties, false);
     assert.equal(BRIDGE_CONTRACTS[method].resultSchema.additionalProperties, false);
     for (const property of Object.values(BRIDGE_CONTRACTS[method].paramsSchema.properties)) {
-      assert.equal(typeof property.type === 'string' || property.const !== undefined, true);
+      assert.equal(typeof property.type === 'string' || Array.isArray(property.type) && property.type.every(type => ['string', 'null'].includes(type)) || property.const !== undefined, true);
     }
     assert.equal(BRIDGE_CONTRACTS[method].resultSchema.properties.result.additionalProperties, false);
   }
