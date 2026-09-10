@@ -5,7 +5,7 @@ import { build } from '../src/build.mjs';
 import { assertPerformanceBaselineBuildIdentity, assertPerformanceObservationWithinBaseline, deriveReleaseThresholds, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, validateReleasePerformanceBaseline, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
 
 async function readReleasePerformanceBaseline() {
-  return validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v3.json', import.meta.url), 'utf8')));
+  return validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.native-workspace.v3.json', import.meta.url), 'utf8')));
 }
 
 test('release performance baseline pins the measured corpus and immutable first successful capture', async () => {

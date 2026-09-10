@@ -45,7 +45,7 @@ const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
 const READY_CAPABILITIES = Object.freeze(Object.fromEntries(['notes', 'sessions', 'scheduler', 'activity', 'analysis', 'attention', 'search'].map((name) => [name, true])));
 const capturePerformanceBaseline = process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE === '1';
-const capturedPerformanceBaselinePath = new URL('./fixtures/release-performance-baseline.v3.json', import.meta.url);
+const capturedPerformanceBaselinePath = new URL('./fixtures/release-performance-baseline.native-workspace.v3.json', import.meta.url);
 const acceptancePlan = resolveRealHostAcceptancePlan(process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO);
 if (capturePerformanceBaseline && acceptancePlan.kind === 'prerequisites') throw new Error('Native prerequisites cannot capture performance.');
 if (capturePerformanceBaseline && acceptancePlan.kind === 'focused' && !acceptancePlan.scenarioIds?.includes('scale-performance')) throw new Error('Only the focused scale-performance acceptance can capture a performance baseline.');
@@ -1936,7 +1936,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     buildReceipt = await withDeadline('candidate build', () => process.env.COMMAND_CENTER_SEALED_CANDIDATE === '1' ? readBuiltReceipt() : build(), 120_000);
     await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
     if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
-      baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(new URL('./fixtures/release-performance-baseline.v3.json', import.meta.url), 'utf8')));
+      baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(capturedPerformanceBaselinePath, 'utf8')));
       assert.equal(baseline.pluginBuildDigest, `sha256:${buildReceipt.digest}`);
     }
     reportProgress(testContext, 'build:passed');

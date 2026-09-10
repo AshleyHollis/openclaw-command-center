@@ -1,5 +1,17 @@
 # Release performance budget policy
 
+## Native workspace update measurement (2026-09-10)
+
+The native workspace update uses a separately named
+`release-performance-baseline.native-workspace.v3.json` for its own exact host
+and plugin measurements. That artifact does not exist until actual capture;
+missing evidence must fail qualification. The original v3 file below remains
+byte-for-byte unchanged and is not relabelled with the new candidate identity.
+The supervised update must additionally compare both its measured run and final
+coherent capture against the original eight fixed budgets below. A new candidate
+measurement cannot raise those limits or turn an earlier failure into a pass.
+This is release-specific measurement bookkeeping, not a new performance policy.
+
 Decision date: 2026-09-08. The integration owner selected the rule below under
 the user's explicit approval to replace the near-zero-tolerance release ceiling
 with a documented, bounded allowance. This decision precedes new qualification

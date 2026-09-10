@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Exercise only the visible native UI, using the authenticated journey's real
 // Gateway and fixture. No mocked transport, injected app state, or raw writes.
 export async function organizeNativeTopicConversations({ page, nativePage, fixture }) {
-  const row = nativePage.getByRole('listitem').filter({ has: nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }) });
+  const row = nativePage.getByRole('listitem').filter({ has: page.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }) });
   await row.getByRole('button', { name: 'Organize Conversations in native group', exact: true }).click({ timeout: 30_000 });
   await row.getByRole('status').filter({ hasText: '1 Conversations organized. 0 left unchanged.' }).waitFor({ timeout: 30_000 });
   const group = page.locator(`[data-session-section="category:${fixture.name}"]`);

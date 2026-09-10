@@ -48,7 +48,7 @@ export async function runRepositoryChecks({ purpose = 'qualification' } = {}) {
   const buildReceipt = await build();
   const phases = repositoryArtifactCheckPhases(purpose, {
     verifyBaseline: async () => {
-      const performanceBaseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(path.join(root, 'test', 'fixtures', 'release-performance-baseline.v3.json'), 'utf8')));
+      const performanceBaseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(path.join(root, 'test', 'fixtures', 'release-performance-baseline.native-workspace.v3.json'), 'utf8')));
       assertPerformanceBaselineBuildIdentity(performanceBaseline, `sha256:${buildReceipt.digest}`);
     },
     scanGenerated: async () => await scanRepositorySafety(root, { generated: [distRoot] })
