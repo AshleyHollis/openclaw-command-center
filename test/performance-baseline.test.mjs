@@ -37,7 +37,7 @@ function coherentGeneratedBaseline() {
 }
 
 test('release performance baseline generates one coherent pending capture', () => {
-  assert.equal(releasePerformanceIdentity.hostReceipt.sourceDigest, 'sha256:3f113080845fcf23618f64d0e4c08df6c45bb3b2910d6505c576ddad2c6d9f6c');
+  assert.equal(releasePerformanceIdentity.hostReceipt.sourceDigest, 'sha256:1222f1e0f26bd72ac1a52981c184d8f7c85cf7aef3cb04a3e0c3cbdc20ec4b91');
   const { seed, firstObservations, baseline } = coherentGeneratedBaseline();
   assert.deepEqual(validateReleasePerformanceBaselineSeed(seed).capture, seed.capture);
   assert.deepEqual(baseline.thresholds, deriveReleaseThresholds(firstObservations));
