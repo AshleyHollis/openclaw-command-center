@@ -298,7 +298,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         socket.onMessage((payload) => {
           server.send(payload);
           let message; try { message = JSON.parse(String(payload)); } catch { return; }
-          if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', ...(scale ? ['command-center.v1.notes.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || scale && message.method === 'sessions.list') && requests.size < 32) requests.set(message.id, { method: message.method, params: message.params });
+          if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.navigate', ...(scale ? ['command-center.v1.notes.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) requests.set(message.id, { method: message.method, params: message.params });
           if (message?.type === 'req' && message.method === 'chat.send' && message.params?.message === messageText) {
             browserChatSend = message;
           }
@@ -316,7 +316,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           if (request.method === 'command-center.v1.notes.read') browserNote = { input: request.params, value };
           if (request.method === 'command-center.v1.sessions.navigate') browserNavigation = { input: request.params, value };
           if (scale && request.method === 'command-center.v1.notes.browse') scaleResponses.notes = { input: request.params, value };
-          if (scale && request.method === 'sessions.list') {
+          if (request.method === 'sessions.list') {
             if (scaleResponses.rosters.length < 256) scaleResponses.rosters.push({ input: request.params, value });
             else scaleResponses.rosterOverflow = true;
           }
@@ -359,7 +359,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.ok(fixtureTopic, 'The native journey must exercise an existing Topic, not an empty Topics diagnostic');
       assert.equal(fixtureTopic.usable, true, 'The existing Topic must have verified source bindings');
       assert.equal(fixtureTopic.topicId, fixture.topicId);
-      await organizeNativeTopicConversations({ page, nativePage, fixture });
+      await organizeNativeTopicConversations({ page, nativePage, fixture, observedRosters: () => scaleResponses.rosters });
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
