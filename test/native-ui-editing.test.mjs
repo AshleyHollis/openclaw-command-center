@@ -115,7 +115,7 @@ async function fixture(run) {
           }
           return { status: 200, body: JSON.stringify({ schemaVersion: 1, status: 'applied', logicalOperationId: body.logicalOperationId, result }) };
         },
-        ui: { registerPage: (page) => { registrations.set(page.id, page); return () => registrations.delete(page.id); }, registerNavigation: () => () => {} }
+        ui: { registerPanel: () => () => {}, registerPage: (page) => { registrations.set(page.id, page); return () => registrations.delete(page.id); }, registerNavigation: () => () => {} }
       };
       window.stop = plugin.activate(host);
       window.replaceActivation = () => { scope?.abort(); view?.dispose(); window.stop(); window.stop = plugin.activate(host); window.navigate('topic'); };

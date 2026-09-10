@@ -16,7 +16,8 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.topics.get', 'command-center.v1.topics.recovery.status',
     'command-center.v1.notes.browse', 'command-center.v1.notes.read',
     'command-center.v1.sessions.browse', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.create',
-    'command-center.v1.sessions.resolve-native'
+    'command-center.v1.sessions.resolve-native', 'command-center.v1.sessions.topic-context',
+    'command-center.v1.sessions.group-preview', 'command-center.v1.sessions.group'
   ]),
   topicAction: Object.freeze(['conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
 });

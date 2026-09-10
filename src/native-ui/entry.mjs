@@ -1,5 +1,7 @@
 import { createNativeTopicNavigation } from './topic-navigation.mjs';
 import { mountTopicPage } from './topic-page.mjs';
+import { mountTopicNotesPanel } from './topic-notes-panel.mjs';
+import { createTopicGroupSetup } from './topic-group-setup.mjs';
 import { mountHistoryPage } from './history-page.mjs';
 import { createNativeCreationForm } from './creation-form.mjs';
 import { createNativeState } from './mutations.mjs';
@@ -32,10 +34,12 @@ export function mountTopics(container, context, state = createNativeState()) {
   scopeNotice.textContent = 'Existing Topics are available. New Topic creation is not available in this release.';
   container.replaceChildren(heading, status, refresh, ...(creation ? [creation.form] : [scopeNotice]), list);
   let generation = 0;
+  let groupSetups = [];
   const current = (value) => !signal.aborted && presented && host.connection.connected && host.connection.canRead && value === generation;
   const report = (error) => { if (!signal.aborted && error?.name !== 'AbortError') status.textContent = host.redact(error?.message || 'Topics are unavailable.'); };
   async function load() {
     const pending = ++generation;
+    groupSetups.forEach(setup => setup.dispose()); groupSetups = [];
     if (signal.aborted || !presented) return;
     if (!host.connection.connected || !host.connection.canRead) {
       list.replaceChildren();
@@ -85,6 +89,10 @@ export function mountTopics(container, context, state = createNativeState()) {
             host.navigation.openPage({ id: 'topic', params: { topicId: topic.topicId } });
           }, { signal });
           row.append(notes);
+          if (topic.usable === true && mode !== 'recovery-only') {
+            const setup = createTopicGroupSetup({ host, document, topicId: topic.topicId, signal, presented: () => presented && pending === generation });
+            groupSetups.push(setup); row.append(setup.container);
+          }
           if (button.disabled) row.append(document.createTextNode(' — Source Recovery required'));
           group.append(row);
           count += 1;
@@ -131,7 +139,7 @@ export function mountTopics(container, context, state = createNativeState()) {
       if (presented) void load();
     },
     focus() { refresh.focus(); },
-    dispose() { creation?.dispose(); lifetime.abort(); unsubscribe(); container.replaceChildren(); }
+    dispose() { groupSetups.forEach(setup => setup.dispose()); creation?.dispose(); lifetime.abort(); unsubscribe(); container.replaceChildren(); }
   };
 }
 
@@ -140,11 +148,12 @@ export default {
   id: 'command-center',
   activate(host) {
     const state = createNativeState(host.signal);
+    const notesPanel = host.ui.registerPanel({ id: 'topic-notes', label: 'Topic Notes', mount: (container, context) => mountTopicNotesPanel(container, context, state) });
     const page = host.ui.registerPage({ id: 'topics', label: 'Topics', mount: (container, context) => mountTopics(container, context, state) });
     const topic = host.ui.registerPage({ id: 'topic', label: 'Topic Notes', mount: (container, context) => mountTopicPage(container, context, state) });
     const histories = host.ui.registerPage({ id: 'histories', label: 'Imported History', mount: mountHistoryPage });
     const historyNavigation = host.ui.registerNavigation({ id: 'histories', label: 'Imported History', page: { id: 'histories' }, order: 11 });
     const navigation = host.ui.registerNavigation({ id: 'topics', label: 'Topics', page: { id: 'topics' }, order: 10 });
-    return () => { state.retire(); historyNavigation(); histories(); navigation(); topic(); page(); };
+    return () => { state.retire(); notesPanel(); historyNavigation(); histories(); navigation(); topic(); page(); };
   }
 };

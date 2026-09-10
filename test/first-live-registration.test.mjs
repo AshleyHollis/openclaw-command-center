@@ -46,7 +46,7 @@ test('first-live registration needs no notification authority and preserves core
 
 test('registered deferred bridge commands are refused before a service or optional binding is acquired', async () => {
   const h = host(); plugin.register(h.api);
-  const retained = new Set(['sources.status', 'migration.status', 'migration.review-failures', 'topics.list', 'topics.get', 'topics.recovery.status', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.create', 'histories.list', 'histories.read', 'histories.attachment-read'].map(name => `command-center.v1.${name}`));
+  const retained = new Set(['sources.status', 'migration.status', 'migration.review-failures', 'topics.list', 'topics.get', 'topics.recovery.status', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.topic-context', 'sessions.group-preview', 'sessions.group', 'sessions.create', 'histories.list', 'histories.read', 'histories.attachment-read'].map(name => `command-center.v1.${name}`));
   for (const method of [...READ_METHODS, ...WRITE_METHODS].filter(name => !retained.has(name))) {
     let response;
     await h.methods.get(method)({ req: { id: 'fixture-request' }, params: {}, context: { authenticated: true },

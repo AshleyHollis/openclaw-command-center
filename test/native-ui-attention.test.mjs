@@ -30,7 +30,7 @@ async function fixture(run) {
       const host = { signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: true }, redact: (value) => value,
         subscribe: (fn) => { subscribers.add(fn); return () => subscribers.delete(fn); },
         navigation: { openPage: (target) => window.opened.push(target) }, sessions: { open() { throw new Error('Attention must not open arbitrary Sessions'); } },
-        ui: { registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
+        ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
           if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [] } };

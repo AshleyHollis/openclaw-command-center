@@ -5,7 +5,7 @@ import { createNativeCreationForm, createNativeNoteCreationForm } from './creati
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 
 /** Topic policy stays in the backend; OpenClaw owns routing and Chat. */
-export function mountTopicPage(container, context, state = createNativeState()) {
+export function mountTopicPage(container, context, state = createNativeState(), { panel = false, verifyContext } = {}) {
   const host = context.host;
   const lifetime = new AbortController();
   const signal = AbortSignal.any([context.signal, host.signal, lifetime.signal]);
@@ -27,7 +27,7 @@ export function mountTopicPage(container, context, state = createNativeState()) 
   const navigation = createNativeTopicNavigation({ signal, get connection() { return host.connection; },
     request: (method, params) => host.request(method, params), sessions: host.sessions });
   const document = container.ownerDocument;
-  const element = (tag, text) => { const node = document.createElement(tag); if (text) node.textContent = text; return node; };
+  const element = (tag, text) => { const node = document.createElement(tag); if (text) node.textContent = text; if (tag === 'button') node.className = 'btn btn--sm'; return node; };
   const heading = element('h1', 'Topic');
   const status = element('p'); status.setAttribute('role', 'status');
   const back = element('button', 'All Topics'); back.type = 'button';
@@ -35,11 +35,13 @@ export function mountTopicPage(container, context, state = createNativeState()) 
   const history = element('button', 'View Imported History'); history.type = 'button';
   const refresh = element('button', 'Refresh Notes'); refresh.type = 'button';
   const list = element('ul');
+  list.style.listStyle = 'none'; list.style.paddingInlineStart = '0';
   const previous = element('button', 'Previous Notes'); previous.type = 'button'; previous.disabled = true;
   const next = element('button', 'Next Notes'); next.type = 'button'; next.disabled = true;
   const noteTitle = element('h2', 'Select a Note');
   const content = element('pre'); content.setAttribute('role', 'region'); content.setAttribute('aria-label', 'Note content');
   content.style.whiteSpace = 'pre-wrap'; content.style.overflowWrap = 'anywhere'; content.tabIndex = 0;
+  content.style.lineHeight = '1.65'; content.style.maxInlineSize = '80ch';
   const editorLabel = element('label', 'Note draft');
   const editor = element('textarea'); editor.rows = 18; editor.style.inlineSize = '100%'; editor.style.boxSizing = 'border-box'; editorLabel.append(editor);
   const noteState = element('p'); noteState.dataset.noteState = ''; noteState.setAttribute('role', 'status'); noteState.id = `native-note-state-${crypto.randomUUID()}`; noteState.tabIndex = -1;
@@ -50,7 +52,7 @@ export function mountTopicPage(container, context, state = createNativeState()) 
   const discard = element('button', 'Discard draft and use authoritative Note'); discard.type = 'button'; discard.hidden = true;
   const editing = element('section'); editing.hidden = true;
   editing.append(editorLabel, noteState, save, reconcile, reload, discard, element('p', 'Drafts and uncertain save inputs are retained only during this plugin activation. Reloading or reconnecting loses these local drafts; reopening a Note reads authoritative content, not the lost draft. Ctrl+S or Cmd+S saves this Note.'));
-  container.replaceChildren(heading, back, chat, history, refresh, status, element('h2', 'Notes'), list, previous, next, noteTitle, content,
+  container.replaceChildren(heading, ...(panel ? [] : [back, chat, history]), refresh, status, element('h2', 'Notes'), list, previous, next, noteTitle, content,
     ...(FIRST_LIVE_FEATURES.noteWrite ? [editing] : [element('p', 'Notes are read-only in this release. Edit them in your external Note application.')]));
   const readable = () => host.connection.connected && host.connection.canRead;
   const current = (pending) => !signal.aborted && presented && readable() && pending === generation;
@@ -83,14 +85,19 @@ export function mountTopicPage(container, context, state = createNativeState()) 
     selected = descriptor; content.textContent = ''; noteTitle.textContent = note.path; showDraft();
     status.textContent = 'Opening authoritative Note…';
     try {
+      await verifyContext?.();
+      if (readSignal.aborted || !current(pending)) return;
       const result = await readNativeNote({ signal: readSignal, request: (method, params) => host.request(method, params) }, {
         ...descriptor
       });
+      if (readSignal.aborted || !current(pending)) return;
+      await verifyContext?.();
       if (readSignal.aborted || !current(pending)) return;
       content.textContent = result.text;
       // Read-only browsing must not create a local authoring/operation owner.
       if (!FIRST_LIVE_FEATURES.noteWrite) {
         status.textContent = `Note opened · ${result.revision}`;
+        if (panel) context.panel?.showInMain();
         content.focus();
         return;
       }
@@ -150,6 +157,7 @@ export function mountTopicPage(container, context, state = createNativeState()) 
       for (const note of catalog.notes) {
         if (note.sourceReference?.topicId !== topicId || typeof note.sourceReference?.referenceId !== 'string' || typeof note.path !== 'string' || typeof note.revision !== 'string') throw new Error('The exact Note reference is unavailable.');
         const row = element('li'); const button = element('button', `Read ${note.path}`); button.type = 'button';
+        row.style.marginBlock = '4px'; button.style.maxInlineSize = '100%'; button.style.whiteSpace = 'normal'; button.style.overflowWrap = 'anywhere'; button.style.textAlign = 'start';
         button.addEventListener('click', () => void openNote(note), { signal }); row.append(button); fragment.append(row);
       }
       cursor = catalog.cursor; nextOffset = catalog.hasMore ? catalog.nextOffset : null;
@@ -238,7 +246,7 @@ export function mountTopicPage(container, context, state = createNativeState()) 
       if (topicId === next.props.topicId && presented === next.presented) return;
       topicId = next.props.topicId; presented = next.presented; void load();
     },
-    focus() { back.focus(); },
+    focus() { (panel ? refresh : back).focus(); },
     dispose() { cancel(); creation?.dispose(); noteCreation?.dispose(); lifetime.abort(); unsubscribe(); unsubscribeDraft(); container.replaceChildren(); }
   };
 }

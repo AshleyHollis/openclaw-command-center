@@ -99,7 +99,7 @@ async function fixture(run, options = {}) {
             referenceId: 'session:new'
           } }) };
         },
-        ui: { registerPage(page) { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation() { return () => {}; } }
+        ui: { registerPanel() { return () => {}; }, registerPage(page) { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation() { return () => {}; } }
       };
       window.stop = plugin.activate(host); window.registeredPages = [...pages.keys()];
       window.mountDeferredForms = async () => {

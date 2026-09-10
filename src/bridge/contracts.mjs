@@ -23,6 +23,8 @@ export const READ_METHODS = Object.freeze([
   'command-center.v1.sessions.browse',
   'command-center.v1.sessions.history',
   'command-center.v1.sessions.navigate',
+  'command-center.v1.sessions.topic-context',
+  'command-center.v1.sessions.group-preview',
   'command-center.v1.reminders.list',
   'command-center.v1.schedules.list',
   'command-center.v1.schedules.get',
@@ -63,6 +65,7 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.notes.rename',
   'command-center.v1.notes.move',
   'command-center.v1.sessions.create',
+  'command-center.v1.sessions.group',
   'command-center.v1.sessions.send',
   'command-center.v1.sessions.close',
   'command-center.v1.sessions.reopen',
@@ -97,6 +100,8 @@ const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview
 const arrayFields = new Set(['expectedRevisions']);
 
 function parameterSchema(field, method) {
+  if (field === 'expectedTopicRevision') return Object.freeze({ type: 'integer', minimum: 0 });
+  if (field === 'expectedSessionId' || field === 'expectedLifecycleRevision') return Object.freeze({ type: 'string', minLength: 1 });
   if (field === 'schemaVersion') return Object.freeze({ const: 1 });
   if (field === 'includeClosed' && method === 'command-center.v1.sessions.browse') return Object.freeze({ type: 'boolean' });
   if (field === 'expectedRevision') return Object.freeze({ type: method.includes('.topics.') || method === 'command-center.v1.sessions.create' ? 'integer' : 'string' });
@@ -113,6 +118,12 @@ function parameterSchema(field, method) {
 }
 
 function actionResultSchema(method) {
+  if (method === 'command-center.v1.sessions.group-preview') return Object.freeze({ type: 'object', additionalProperties: false, properties: {
+    schemaVersion: { const: 1 }, topicId: { type: 'string' }, name: { type: 'string' }, revision: { type: 'integer' },
+    members: { type: 'array', items: { type: 'object', additionalProperties: false, properties: {
+      referenceId: { type: 'string' }, sessionId: { type: 'string' }, lifecycleRevision: { type: ['string', 'null'] }, grouped: { type: 'boolean' }, label: { type: 'string' }, eligible: { type: 'boolean' }
+    } } }
+  } });
   if (historyResultSchema(method)) return historyResultSchema(method);
   if (method === 'command-center.v1.search.query') {
     const sourceReference = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({
@@ -140,6 +151,7 @@ function actionResultSchema(method) {
   const properties = {
     schemaVersion: Object.freeze({ const: 1 }),
     status: Object.freeze({ type: 'string' }),
+    name: Object.freeze({ type: 'string' }),
     mode: Object.freeze({ type: 'string' }),
     requestId: Object.freeze({ type: ['string', 'null'] }),
     logicalOperationId: Object.freeze({ type: ['string', 'null'] }),
@@ -241,6 +253,8 @@ function actionResultSchema(method) {
       ? ['schemaVersion', 'topicId', 'conversations']
     : method.endsWith('sessions.navigate')
     ? ['schemaVersion', 'status', 'sessionKey', 'sessionId', 'sourceReference']
+    : method.endsWith('sessions.topic-context')
+    ? ['schemaVersion', 'status', 'sessionKey', 'sessionId', 'topicId', 'referenceId', 'name']
     : method.endsWith('schedules.get')
     ? ['schemaVersion', 'sourceReference', 'job']
     : method.endsWith('metadata.read')
@@ -325,6 +339,9 @@ const required = Object.freeze({
   'command-center.v1.sessions.history': ['topicId', 'referenceId'],
   'command-center.v1.sessions.browse': ['topicId'],
   'command-center.v1.sessions.navigate': ['topicId', 'referenceId'],
+  'command-center.v1.sessions.topic-context': ['sessionKey'],
+  'command-center.v1.sessions.group-preview': ['topicId'],
+  'command-center.v1.sessions.group': ['topicId', 'referenceId', 'expectedSessionId', 'expectedLifecycleRevision', 'expectedTopicRevision', 'name'],
   'command-center.v1.sessions.create': ['topicId'],
   'command-center.v1.sessions.send': ['topicId', 'referenceId', 'message'],
   'command-center.v1.sessions.close': ['topicId', 'referenceId'],
@@ -395,6 +412,9 @@ const fields = Object.freeze({
   'command-center.v1.sessions.history': ['topicId', 'referenceId', 'sessionReferenceId', 'limit', 'offset', 'messageId'],
   'command-center.v1.sessions.browse': ['topicId', 'includeClosed'],
   'command-center.v1.sessions.navigate': ['topicId', 'referenceId', 'sessionReferenceId', 'nativeChat'],
+  'command-center.v1.sessions.topic-context': ['sessionKey'],
+  'command-center.v1.sessions.group-preview': ['topicId'],
+  'command-center.v1.sessions.group': ['topicId', 'referenceId', 'expectedSessionId', 'expectedLifecycleRevision', 'expectedTopicRevision', 'name'],
   'command-center.v1.sessions.create': ['topicId', 'label', 'isPrimary', 'expectedRevision', 'logicalOperationId', 'authoritativeSession'],
   'command-center.v1.sessions.send': ['topicId', 'referenceId', 'message', 'logicalOperationId'],
   'command-center.v1.sessions.close': ['topicId', 'referenceId', 'sessionReferenceId', 'isPrimary', 'logicalOperationId'],
@@ -477,7 +497,7 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
   if (['notes.create', 'notes.edit'].some((suffix) => method.endsWith(suffix)) && !(typeof params.text === 'string' || typeof params.content === 'string')) throw sourceError('invalid-request', 'Bridge Note request requires Markdown text.');
   if (method.endsWith('notes.rename') && !(typeof params.newPath === 'string' || typeof params.destinationPath === 'string')) throw sourceError('invalid-request', 'Bridge rename requires a destination path.');
   if (method.endsWith('notes.move') && !(typeof params.newPath === 'string' || typeof params.destinationPath === 'string')) throw sourceError('invalid-request', 'Bridge move requires a destination path.');
-  if (method.includes('.sessions.') && !method.endsWith('.create') && !method.endsWith('.browse') && !(typeof params.referenceId === 'string' || typeof params.sessionReferenceId === 'string')) throw sourceError('invalid-request', 'Bridge Session request requires an exact Source Reference.');
+  if (method.includes('.sessions.') && !method.endsWith('.create') && !method.endsWith('.browse') && !method.endsWith('.topic-context') && !method.endsWith('.group-preview') && !(typeof params.referenceId === 'string' || typeof params.sessionReferenceId === 'string')) throw sourceError('invalid-request', 'Bridge Session request requires an exact Source Reference.');
   if (method.endsWith('.metadata.read') && params.referenceId !== undefined && typeof params.topicId !== 'string') throw sourceError('invalid-request', 'Bridge metadata Source Reference reads require topicId ownership.');
   if ((method.includes('.reminders.') && !method.endsWith('.list') && !method.endsWith('.create')) || (method.includes('.schedules.') && !method.endsWith('.list') && !method.endsWith('.create'))) {
     if (!(typeof params.referenceId === 'string' || typeof params.scheduleReferenceId === 'string')) throw sourceError('invalid-request', 'Bridge scheduler request requires an exact Source Reference.');

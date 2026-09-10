@@ -139,6 +139,9 @@ const handlerMap = Object.freeze({
   'command-center.v1.sessions.history': (service, params) => service.sessionsHistory(params),
   'command-center.v1.sessions.browse': (service, params) => service.sessionsList(params),
   'command-center.v1.sessions.navigate': (service, params) => service.sessionsNavigate(params),
+  'command-center.v1.sessions.topic-context': (service, params) => service.sessionTopicContext(params),
+  'command-center.v1.sessions.group-preview': (service, params) => service.sessionGroupPreview(params),
+  'command-center.v1.sessions.group': (service, params, runtime) => service.sessionGroup(params, runtime),
   'command-center.v1.sessions.create': (service, params, runtime) => {
     const { authoritativeSession, expectedRevision, ...input } = params;
     return service.sessionsCreate({ ...input, ...(expectedRevision === undefined ? {} : { expectedTopicRevision: expectedRevision }) }, {
@@ -219,7 +222,8 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
             runtime = await createRequestScopedConversationRuntime();
           }
         }
-        const assertHistoryRead = method.startsWith('command-center.v1.histories.') ? captureHistoryReadAuthority({ client, context, signal }) : null;
+        if (method === 'command-center.v1.sessions.group') runtime = { creationAuthority: captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization }) };
+        const assertHistoryRead = method.startsWith('command-center.v1.histories.') || ['command-center.v1.sessions.topic-context', 'command-center.v1.sessions.group-preview'].includes(method) ? captureHistoryReadAuthority({ client, context, signal }) : null;
         if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
         if (schedulerRuntimeMethods.has(method) && client) runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;

@@ -357,6 +357,39 @@ export class AuthoritativeSourceService {
     this.requireTopicService(input, { write: input.nativeChat === true, requiredSourceKinds: ['session'] });
     return navigation;
   }
+  async sessionTopicContext(input = {}) {
+    assertNoUnexpectedKeys(input, ['schemaVersion', 'sessionKey', 'requestId'], 'Session Topic context request');
+    if (typeof input.sessionKey !== 'string' || !/^agent:[^:]+:.+$/u.test(input.sessionKey)) throw sourceError('invalid-request', 'An exact native Session key is required.');
+    requireCapability(this.capabilities, 'sessions');
+    // Native groups are presentation only. Resolve existing durable bindings,
+    // never adopt a Session by group name, label, or a reused key.
+    const find = () => this.metadata.listTopics().flatMap((topic) => this.listTopicSourceReferences(topic.topicId)
+      .filter((reference) => reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session' && effectiveSourceLocator(this.metadata, reference) === input.sessionKey));
+    const matches = find();
+    if (matches.length === 0) return { schemaVersion: 1, status: 'unbound', sessionKey: input.sessionKey };
+    if (matches.length !== 1) throw sourceError('source-recovery', 'The native Session has ambiguous Topic ownership.');
+    const reference = matches[0];
+    const service = this.requireTopicService({ topicId: reference.topicId });
+    if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.');
+    const { exact } = await service.sessions.resolveStableState(reference.referenceId);
+    const current = find();
+    this.requireTopicService({ topicId: reference.topicId });
+    if (current.length !== 1 || current[0].referenceId !== reference.referenceId || current[0].topicId !== reference.topicId || exact.sessionKey !== input.sessionKey || this.metadata.getSessionState(reference.referenceId)?.sessionId !== exact.sessionId) throw sourceError('source-recovery', 'Topic membership changed during Session resolution.');
+    return { schemaVersion: 1, status: 'bound', sessionKey: exact.sessionKey, sessionId: exact.sessionId,
+      topicId: reference.topicId, referenceId: reference.referenceId, name: this.metadata.getTopic(reference.topicId).name };
+  }
+  async sessionGroupPreview(input) {
+    const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] });
+    requireCapability(this.capabilities, 'sessions');
+    if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.');
+    return service.sessions.groupPreview();
+  }
+  async sessionGroup(input, runtime) {
+    const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] });
+    requireCapability(this.capabilities, 'sessions');
+    if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.');
+    return service.sessions.group(adapterInput(input), runtime);
+  }
   async verifyPrimarySessionForCreate(topicId, sessions) {
     const primary = (this.metadata.listSourceReferences?.(topicId) ?? []).filter((reference) => reference.topicId === topicId && reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session' && this.metadata.getSessionState?.(reference.referenceId)?.isPrimary === true);
     if (primary.length !== 1) throw sourceError('source-recovery', 'Conversation creation requires exactly one persisted Primary Session identity.');
