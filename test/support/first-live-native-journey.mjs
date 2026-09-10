@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { organizeNativeTopicConversations, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -372,6 +373,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const originalNoteRead = structuredClone(browserNote);
       assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
       assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
+      if (!keyboard) await organizeNativeTopicConversations({ page, nativePage, fixture });
       await nativePage.getByRole('button', { name: 'Open Topic in Chat', exact: true }).press('Enter');
       const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
       await chatPane.waitFor({ timeout: 30_000 });
@@ -383,6 +385,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(browserNavigation?.value.sessionId, fixture.sessionId);
       assert.equal(browserNavigation?.value.sourceReference.topicId, fixture.topicId);
       assert.equal(browserNavigation?.value.sourceReference.referenceId, fixture.sessionReferenceId);
+      if (!keyboard) await verifyNativeTopicNotesPane({ page, fixture });
       // Return through the host's native navigation contribution, not a new
       // page.goto/document or a synthetic plugin activation.
       await page.locator('openclaw-app-sidebar openclaw-plugin-contributions').getByRole('link', { name: 'Topics', exact: true }).press('Enter');

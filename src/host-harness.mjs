@@ -13,7 +13,7 @@ export const pinnedHost = Object.freeze({
   // The evaluator checkout is the exact authenticated first-live host receipt.
   packageVersion: '2026.9.2',
   commit: 'e686a7e7963abedd5e5fa14561a2d3c71692c790',
-  packageDigest: 'sha256:5786103f4d44454d469b5226cecf6441edbd8c201a93248a146467f7f4eb120e',
+  packageDigest: 'sha256:9bfc1504a39942fbdd559679f9e1d542d62b2ca5b263c9c17b3933b7f26b576d',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });

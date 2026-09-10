@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import * as budgetOwner from '../src/performance-baseline.mjs';
 
-const baseline = JSON.parse(readFileSync(new URL('./fixtures/release-performance-baseline.v3.json', import.meta.url), 'utf8'));
+// Formula tests need a fictional baseline before a new runtime is measured.
+// The separate artifact test still requires the actual sealed capture.
+const baseline = budgetOwner.captureFirstReleasePerformanceBaseline({
+  schemaVersion: budgetOwner.RELEASE_PERFORMANCE_BASELINE_VERSION,
+  hostVersion: budgetOwner.releasePerformanceIdentity.hostVersion,
+  hostReceipt: budgetOwner.releasePerformanceIdentity.hostReceipt,
+  pluginBuildDigest: `sha256:${'a'.repeat(64)}`,
+  browser: { engine: 'chromium', playwrightVersion: budgetOwner.releasePerformanceIdentity.playwrightVersion, version: 'fictional-budget-browser' },
+  viewport: budgetOwner.RELEASE_PERFORMANCE_VIEWPORT,
+  fixtureIdentity: budgetOwner.RELEASE_FIXTURE_IDENTITY,
+  fixtureCounts: budgetOwner.RELEASE_FIXTURE_COUNTS,
+  capture: { policy: 'first-successful-pinned-harness-observation', successfulRunOrdinal: null }
+}, { ...Object.fromEntries(budgetOwner.RELEASE_MEASUREMENTS.map(name => [name, 120.5])), startupReadinessMs: 10664.25, conversationNextPageMs: 139.5 });
 const before = JSON.stringify(baseline);
 
 test('qualification uses a separately identified budget without rewriting the first observation', () => {
