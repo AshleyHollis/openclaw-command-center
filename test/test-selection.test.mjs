@@ -1,7 +1,191 @@
 import assert from 'node:assert/strict';
+
+test('Topic Review diagnosis reuses its exact independent real-host fixture', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-topic-review').isolatedSliceIds, ['fresh-review']);
+});
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { ordinaryTestArgv, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
+import { ordinaryTestArgv, ordinaryTestLanes, resolveRealHostAcceptancePlan, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
+import * as selection from '../src/test-selection.mjs';
+
+test('native release prerequisites have a distinct non-capture plan', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('native-release-prerequisites'), { kind: 'prerequisites', scenarioIds: [] });
+  assert.deepEqual(resolveRealHostAcceptancePlan(), { kind: 'release', scenarioIds: null });
+});
+
+test('capture preflight excludes only the measured artifact and retains baseline rejection and browser coverage', () => {
+  const entries = ['performance-baseline-artifact.test.mjs', 'performance-baseline.test.mjs',
+    'first-live-native-ui.test.mjs', 'future-safety.test.mjs', 'real-host.acceptance.test.mjs', 'fixtures'];
+  assert.deepEqual(selection.selectCapturePreflightTestFiles(entries), [
+    'test/first-live-native-ui.test.mjs', 'test/future-safety.test.mjs', 'test/performance-baseline.test.mjs'
+  ]);
+  assert.equal(selectOrdinaryTestFiles(entries).includes('test/performance-baseline-artifact.test.mjs'), true);
+  assert.throws(() => selection.selectCapturePreflightTestFiles(['performance-baseline.test.mjs']), /artifact test inventory/u);
+});
+
+test('actual preflight inventory differs from ordinary qualification by exactly its required artifact test', async () => {
+  const entries = await readdir(new URL('./', import.meta.url));
+  const selected = selection.selectCapturePreflightTestFiles(entries);
+  assert.deepEqual(selectOrdinaryTestFiles(entries).filter(file => !selected.includes(file)), ['test/performance-baseline-artifact.test.mjs']);
+  assert.ok(selected.includes('test/performance-baseline.test.mjs'));
+});
+
+test('native UI and source/recovery diagnostics are the two disjoint non-performance lanes', () => {
+  const plan = resolveRealHostAcceptancePlan('diagnostic-ui-remaining');
+  assert.equal(plan.kind, 'focused');
+  assert.deepEqual(plan.scenarioIds, []);
+  assert.deepEqual(plan.isolatedSliceIds, ['fresh-scale']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-scale').isolatedSliceIds, ['fresh-scale']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-mobile').isolatedSliceIds, ['fresh-mobile']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-compatibility-startup').isolatedSliceIds, ['host-tuple-refusal', 'build-variant']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-native-ui-session-authority'), { kind: 'focused', scenarioIds: ['native-control-ui-activation'] });
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-source-identity-import-recovery').isolatedSliceIds, ['host-tuple-refusal', 'build-variant', 'plugin-api-variant', 'bridge-protocol-variant', 'binding-mismatch', 'foreign-database-restoration', 'secure-origin', 'degraded-bridge-grants', 'degraded-source-availability', 'combined-degraded', 'recovery-only-compatibility', 'destructive-migration-restoration']);
+  const review = resolveRealHostAcceptancePlan('desktop-review-journey');
+  assert.deepEqual(review.scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'desktop-primary-journey-review']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('mobile-primary-journey').scenarioIds, ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'mobile-accessibility-journey']);
+});
+
+test('scale startup diagnostic selects only the unmeasured full-corpus readiness owner', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-scale-startup'), {
+    kind: 'focused',
+    scenarioIds: ['diagnostic-scale-startup']
+  });
+});
+
+test('two non-performance diagnostic lanes partition every independent real-host slice', async () => {
+  const native = resolveRealHostAcceptancePlan('diagnostic-native-ui-session-authority');
+  const source = resolveRealHostAcceptancePlan('diagnostic-source-identity-import-recovery');
+  const plans = [source];
+  const ids = source.isolatedSliceIds;
+  assert.deepEqual(native.scenarioIds, ['native-control-ui-activation']);
+  for (const plan of plans) { assert.equal(plan.kind, 'focused'); assert.deepEqual(plan.scenarioIds, []); }
+  assert.equal(new Set(ids).size, ids.length);
+  const sourceText = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
+  const registered = [...sourceText.matchAll(/\['([^']+)', startIsolatedSlice\(/gu)].map((match) => match[1]);
+  for (const id of ids) assert.equal(registered.includes(id), true, `${id} must have a producer`);
+  assert.equal(ids.includes('fresh-scale'), false);
+  assert.equal(ids.includes('fresh-mobile'), false);
+  assert.match(sourceText, /Only the focused scale-performance acceptance can capture a performance baseline/u);
+});
+
+test('real-host acceptance defaults to the complete release plan', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan(), { kind: 'release', scenarioIds: null });
+  assert.deepEqual(resolveRealHostAcceptancePlan('  '), { kind: 'release', scenarioIds: null });
+});
+
+test('native activation diagnosis selects only its sealed real-host boundary', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('native-control-ui-activation'), {
+    kind: 'focused', scenarioIds: ['native-control-ui-activation']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan(), { kind: 'release', scenarioIds: null });
+  assert.throws(() => resolveRealHostAcceptancePlan('native-control-ui-activation,scale-performance'), /Unsupported real-host acceptance scenario/u);
+});
+
+test('desktop keyboard diagnosis selects the retained native journey without deferred corpus prerequisites', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('desktop-keyboard-journey'), {
+    kind: 'focused', scenarioIds: ['desktop-keyboard-journey']
+  });
+  assert.throws(() => resolveRealHostAcceptancePlan('desktop-keyboard-journey,scale-performance'), /Unsupported real-host acceptance scenario/u);
+});
+
+test('Session recovery diagnostic uses the exact shared revocation/replacement contract without corpus journeys', async () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('session-recovery-contract'), { kind: 'focused', scenarioIds: ['pinned-host-startup', 'focused-session-recovery'] });
+  const source = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
+  assert.equal((source.match(/await recoverExactPrimary\(/gu) ?? []).length, 2);
+  assert.match(source, /expectedSourceRevision: recoveryReference\.expectedRevision/u);
+});
+
+test('real-host acceptance exposes one closed authenticated mount dependency plan', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('authenticated-control-ui-mount'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('authenticated-reminder-create'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-reminder-create']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('closed-tab-notification'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-closed-tab-notification']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('session-create-idempotent-replay'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-session-create-idempotent-replay']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('migrated-scale-conversation-seeding'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('desktop-primary-journey'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('heavy-corpus-mutation-journey'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-heavy-corpus-mutation-journey']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('desktop-to-scale-transition'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('heavy-desktop-to-scale-transition'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-heavy-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('full-corpus-desktop-to-scale-transition'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('full-prefix-to-second-topic'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'startup-projection-recovery', 'invalidated-projection-recovery', 'missing-projection-recovery', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'stale-projection-recovery', 'session-create-catalog-readback', 'session-create-idempotent-replay', 'migrated-scale-conversation-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('repeated-recovery-session-create'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-invalidated-projection-recovery', 'focused-missing-projection-recovery', 'focused-stale-projection-recovery', 'focused-session-create-after-recovery']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('ui-state-regression'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-ui-state-regression']
+  });
+  assert.deepEqual(resolveRealHostAcceptancePlan('scale-workspace-readiness'), {
+    kind: 'focused',
+    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'focused-scale-workspace-readiness']
+  });
+  for (const value of ['unknown', '*', 'authenticated-control-ui-mount,scale-performance']) {
+    assert.throws(() => resolveRealHostAcceptancePlan(value), /Unsupported real-host acceptance scenario/u);
+  }
+});
+
+test('migrated Topic Analysis diagnosis invokes the canonical assertion without the full capture', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('startup-authenticated-topic-analysis'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'focused-verified-note-locator', 'startup-authenticated-topic-analysis']
+  });
+});
+
+test('real-host acceptance exposes a focused Topic Review projection plan', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('topic-review-projection'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-topic-review-projection']
+  });
+});
+
+test('scale diagnosis selects the retained native corpus without deferred Activity or Search prerequisites', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('scale-performance'), {
+    kind: 'focused',
+    scenarioIds: ['scale-performance']
+  });
+  assert.throws(() => resolveRealHostAcceptancePlan('scale-performance,desktop-keyboard-journey'), /Unsupported real-host acceptance scenario/u);
+});
+
+test('combined journey diagnostic retains dependent desktop, scale, Activity, keyboard and review checks', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('combined-journey'), {
+    kind: 'focused',
+    scenarioIds: ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'desktop-keyboard-journey', 'desktop-primary-journey-review']
+  });
+  assert.deepEqual(ordinaryTestLanes(['test/topic-review-focus.test.mjs']), [{ id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/topic-review-focus.test.mjs'] }]);
+});
 
 test('ordinary suite excludes only the separately invoked real-host receipt test', () => {
   assert.deepEqual(selectOrdinaryTestFiles([
@@ -12,6 +196,28 @@ test('ordinary suite excludes only the separately invoked real-host receipt test
   ]), [
     'test/attention-service.integration.test.mjs',
     'test/storage-recovery.test.mjs'
+  ]);
+});
+
+test('ordinary suite serializes browser-heavy files without deselecting them', () => {
+  assert.deepEqual(ordinaryTestLanes([
+    'test/storage-recovery.test.mjs',
+    'test/topic-page.acceptance.test.mjs',
+    'test/native-ui-editing.test.mjs',
+    'test/dashboard-ui.test.mjs'
+  ]), [
+    { id: 'parallel', argv: ['--test', '--test-concurrency=4', 'test/storage-recovery.test.mjs'] },
+    { id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/topic-page.acceptance.test.mjs', 'test/native-ui-editing.test.mjs', 'test/dashboard-ui.test.mjs'] }
+  ]);
+});
+
+test('first-live safety tests stay in the ticket suite and native UI browsers run serially', () => {
+  assert.deepEqual(selectIssue32TicketTestFiles(['native-history-source.test.mjs']), ['test/native-history-source.test.mjs']);
+  const entries = ['first-live-registration.test.mjs', 'first-live-startup.test.mjs', 'first-live-package.test.mjs', 'first-live-note-read-only.test.mjs', 'first-live-native-ui.test.mjs', 'native-operating-mode.test.mjs', 'conversation-creation.test.mjs', 'conversation-recovery-http.test.mjs', 'first-live-migration-bindings.test.mjs', 'test-runtime.test.mjs', 'migration-preservation-bundle.test.mjs', 'imported-history-owner.test.mjs', 'preserved-history-transcript.test.mjs'];
+  assert.deepEqual(selectIssue32TicketTestFiles(entries), [...entries].sort().map(entry => `test/${entry}`));
+  assert.deepEqual(ordinaryTestLanes(['test/first-live-native-ui.test.mjs', 'test/first-live-registration.test.mjs']), [
+    { id: 'parallel', argv: ['--test', '--test-concurrency=4', 'test/first-live-registration.test.mjs'] },
+    { id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/first-live-native-ui.test.mjs'] }
   ]);
 });
 
@@ -52,6 +258,33 @@ test('Topic Page runner selects only its explicit ticket-owned tests', () => {
   ]);
 });
 
+test('issue 32 selection keeps owning plugin contracts out of its standalone blocking set', () => {
+  const entries = [
+    'attention-public-actions.test.mjs',
+    'plugin-contract.test.mjs',
+    'native-startup-capabilities.test.mjs',
+    'native-ui-attention.test.mjs',
+    'note-process-death.test.mjs',
+    'native-ui-editing.test.mjs',
+    'plugin-integration.test.mjs',
+    'bridge-contract.test.mjs',
+    'real-host.acceptance.test.mjs'
+  ];
+  assert.deepEqual(selectIssue32TicketTestFiles(entries), [
+    'test/bridge-contract.test.mjs',
+    'test/native-startup-capabilities.test.mjs',
+    'test/native-ui-attention.test.mjs',
+    'test/native-ui-editing.test.mjs',
+    'test/note-process-death.test.mjs',
+    'test/plugin-integration.test.mjs',
+    'test/real-host.acceptance.test.mjs'
+  ]);
+  assert.equal(selectIssue32TicketTestFiles(entries).includes('test/attention-public-actions.test.mjs'), false);
+  assert.equal(selectOrdinaryTestFiles(entries).includes('test/attention-public-actions.test.mjs'), true);
+  assert.equal(selectOrdinaryTestFiles(entries).includes('test/plugin-contract.test.mjs'), true);
+  assert.equal(selectTopicPageTicketTestFiles(entries).includes('test/plugin-contract.test.mjs'), true);
+});
+
 test('Topic Page browser runner is mandatory, pinned, and included in the ordinary suite', async () => {
   const entries = await readdir(new URL('./', import.meta.url));
   assert.equal(selectOrdinaryTestFiles(entries).includes('test/topic-page.acceptance.test.mjs'), true);
@@ -61,4 +294,8 @@ test('Topic Page browser runner is mandatory, pinned, and included in the ordina
   assert.doesNotMatch(script, /skip|PLAYWRIGHT_BROWSERS_PATH\s*=|npm\s+(?:install|ci)/u);
   assert.match(setup, /PLAYWRIGHT_VERSION = '1\.62\.1'/u);
   assert.match(setup, /evaluator-provided PLAYWRIGHT_BROWSERS_PATH/u);
+});
+test('native Chat diagnostic requires the real authenticated mount and native round trip', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-handoff']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-pointer-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']);
 });

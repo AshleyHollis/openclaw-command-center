@@ -62,3 +62,26 @@ test('public typed operations cover convention, presentation, linkage, proposal,
     reopened.close();
   });
 });
+
+test('Source Reference observations reconcile atomically in one batch', async () => {
+  await withState(async (stateDir) => {
+    const service = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    service.createTopic({ topicId: 'topic-batch', paraCategory: 'resource', lifecycle: 'active' });
+    service.createSourceReference({ version: 1, referenceId: 'note-existing', topicId: 'topic-batch', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/vault/existing.md', observedRevision: 'sha256:old' });
+
+    const observed = service.observeSourceReferences([
+      { version: 1, referenceId: 'note-existing', topicId: 'topic-batch', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/vault/existing.md', observedRevision: 'sha256:new' },
+      { version: 1, referenceId: 'note-new', topicId: 'topic-batch', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/vault/new.md', observedRevision: 'sha256:created' }
+    ]);
+
+    assert.deepEqual(observed.map(({ referenceId, observedRevision }) => ({ referenceId, observedRevision })), [
+      { referenceId: 'note-existing', observedRevision: 'sha256:new' },
+      { referenceId: 'note-new', observedRevision: 'sha256:created' }
+    ]);
+    assert.equal(service.getSourceReference('note-existing').observedRevision, 'sha256:new');
+    assert.equal(service.getSourceReference('note-new').observedRevision, 'sha256:created');
+    assert.throws(() => service.observeSourceReferences([
+      { version: 1, referenceId: 'note-existing', topicId: 'topic-batch', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/vault/changed.md', observedRevision: 'sha256:bad' }
+    ]), (error) => error instanceof CommandCenterMetadataError && error.code === 'identity-change');
+  });
+});

@@ -11,6 +11,7 @@ import { projectionId } from '../src/metadata/projections.mjs';
 import { resolveCommandCenterProjectionRoot } from '../src/metadata/path.mjs';
 import { publishTopicSearchSnapshot, reconcileTopicSearchBookkeeping } from '../src/search/rebuild.mjs';
 import { createTopicSearchService } from '../src/search/service.mjs';
+import { readTopicSearchFreshness } from '../src/search/freshness.mjs';
 import { SEARCH_PROJECTION_VERSIONS } from '../src/search/projection-store.mjs';
 
 const services = new Set();
@@ -208,6 +209,7 @@ test('Topic Search publishes independent v1 projections atomically and preserves
   const session = metadata.createSourceReference({ version: 1, referenceId: 'session:search', topicId: 'topic-search', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:search', observedRevision: null });
   metadata.setSessionState({ referenceId: session.referenceId, sessionId: 'session-search', status: 'closed', isPrimary: false });
   const prepared = {
+    freshness: readTopicSearchFreshness(stateDir),
     topicId: 'topic-search', topicIds: ['topic-search'], sourceRevision: 'fixture-v1', noteSourceRevision: 'fixture-notes-v1', conversationSourceRevision: 'fixture-conversations-v1',
     notes: [{ topicId: 'topic-search', sourceReference: folder, folderReferenceId: folder.referenceId, path: 'one.md', heading: 'One', revision: 'sha256:one', text: 'atomic lexical fixture', provenance: 'native' }],
     conversations: [{ topicId: 'topic-search', sourceReference: session, sessionKey: session.externalSourceId, sessionId: 'session-search', messageId: 'message-search', name: 'Closed search fixture', date: '2026-08-26T00:00:00.000Z', closed: true, primaryState: 'ordinary', role: 'user', provenance: 'native', text: 'atomic lexical fixture' }]
@@ -216,7 +218,7 @@ test('Topic Search publishes independent v1 projections atomically and preserves
   const search = createTopicSearchService({ stateDir, metadata });
   const before = await search.query({ schemaVersion: 1, topicId: 'topic-search', query: 'atomic' });
   assert.deepEqual(await search.projectionVersions(), SEARCH_PROJECTION_VERSIONS);
-  await assert.rejects(() => publishTopicSearchSnapshot({ stateDir, metadata, prepared: { ...prepared, conversationSourceRevision: 'fixture-conversations-v2', conversations: [{ ...prepared.conversations[0], date: null }] } }), /authoritative ISO date/u);
+  await assert.rejects(() => publishTopicSearchSnapshot({ stateDir, metadata, prepared: { ...prepared, freshness: readTopicSearchFreshness(stateDir), conversationSourceRevision: 'fixture-conversations-v2', conversations: [{ ...prepared.conversations[0], date: null }] } }), /authoritative ISO date/u);
   assert.deepEqual(await search.query({ schemaVersion: 1, topicId: 'topic-search', query: 'atomic' }), before);
   assert.deepEqual(metadata.listProjectionBookkeeping().filter(({ projectionId }) => projectionId.includes('topic-')).map(({ projectionId }) => projectionId).sort(), [
     'topic-search-conversations', 'topic-search-notes'
@@ -230,6 +232,7 @@ test('restart preserves fail-closed search invalidation when bookkeeping and reb
   const session = metadata.createSourceReference({ version: 1, referenceId: 'session:search', topicId: 'topic-search', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:search', observedRevision: null });
   metadata.setSessionState({ referenceId: session.referenceId, sessionId: 'session-search', status: 'closed', isPrimary: false });
   const prepared = {
+    freshness: readTopicSearchFreshness(stateDir),
     topicId: 'topic-search', topicIds: ['topic-search'], sourceRevision: 'fixture-v1', noteSourceRevision: 'fixture-notes-v1', conversationSourceRevision: 'fixture-conversations-v1',
     notes: [{ topicId: 'topic-search', sourceReference: folder, folderReferenceId: folder.referenceId, path: 'one.md', heading: 'One', revision: 'sha256:one', text: 'stale lexical fixture', provenance: 'native' }],
     conversations: [{ topicId: 'topic-search', sourceReference: session, sessionKey: session.externalSourceId, sessionId: 'session-search', messageId: 'message-search', name: 'Closed search fixture', date: '2026-08-26T00:00:00.000Z', closed: true, primaryState: 'ordinary', role: 'user', provenance: 'native', text: 'stale lexical fixture' }]

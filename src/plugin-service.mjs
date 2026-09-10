@@ -1,22 +1,18 @@
 import { createHash } from 'node:crypto';
-import { createAttentionService } from './attention/service.mjs';
-import { createNoteMaintenanceService } from './maintenance/notes.mjs';
 import { openCommandCenterMetadataService } from './metadata/service.mjs';
 import { createLegacyDiscordMigrationService } from './migration/service.mjs';
+import { createPreservedHistoryReader } from './migration/preserved-history-read.mjs';
 import { createAuthoritativeSourceService } from './sources/service.mjs';
-import { createSearchRebuildService, reconcileTopicSearchBookkeeping } from './search/rebuild.mjs';
-import { createTopicSearchService } from './search/service.mjs';
-import { createTopicContextPolicy } from './search/context.mjs';
 import { createTopicService } from './topics/service.mjs';
-import { createDashboardService } from './dashboard/service.mjs';
-import { createNotificationService } from './notifications/service.mjs';
-import { createTopicAnalysisRunner } from './topics/analysis-runner.mjs';
-import { createProductionTopicAnalyzer } from './topics/production-analyzer.mjs';
-import { createTopicAnalysisScheduleService } from './topics/analysis-schedule.mjs';
-import { createTopicReviewService } from './topics/review.mjs';
-import { readVisibleSessionTranscriptMessageEntries } from 'openclaw/plugin-sdk/session-transcript-runtime';
+import { SourceServiceError } from './sources/errors.mjs';
+import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 
-let activeMaintenanceService;
+function unavailable(feature) {
+  const reason = FIRST_LIVE_FEATURES[feature] === false
+    ? 'is deferred from the first live release'
+    : 'is not available in this service activation';
+  throw new SourceServiceError('capability-unavailable', `Command Center ${feature} ${reason}.`);
+}
 
 export function runtimeHostIdentity(stateDir) {
   const value = String(stateDir ?? '').trim();
@@ -24,229 +20,119 @@ export function runtimeHostIdentity(stateDir) {
   return `command-center-runtime:${createHash('sha256').update(value).digest('hex')}`;
 }
 
-export function runNoteMaintenance(input) {
-  if (!activeMaintenanceService) throw new Error('Command Center Note maintenance is not ready.');
-  return activeMaintenanceService.run(input);
+export function runNoteMaintenance() { return unavailable('noteMaintenance'); }
+
+// History remains a retained read path. Its host SDK is needed only when that
+// path is requested, not to activate Topics or to launch a background index.
+async function readVisibleTranscript(input) {
+  const { readVisibleSessionTranscriptMessageEntries } = await import('openclaw/plugin-sdk/session-transcript-runtime');
+  return readVisibleSessionTranscriptMessageEntries(input);
 }
 
-export function createMetadataService(api, { notificationEmitter } = {}) {
+export function createMetadataService(api) {
   let metadataService;
   let sourceService;
-  let attentionService;
-  let maintenanceService;
-  let searchService;
-  let searchRebuildService;
-  let contextPolicy;
   let topicService;
-  let dashboardService;
-  let notificationService;
-  let notificationTimer;
-  let topicAnalysisRunner;
-  let topicAnalysisSchedule;
-  let topicReview;
+  let stopPromise;
+  let recoveryOnly = false;
+  const refuseRecovery = () => { throw new SourceServiceError('recovery-only', 'Command Center is recovery-only; authoritative data and mutations remain unavailable.'); };
+  const requireOperational = () => { if (recoveryOnly) refuseRecovery(); };
+  const refuseDeferred = feature => { requireOperational(); return unavailable(feature); };
   return {
     id: 'command-center-metadata',
     async start() {
+      stopPromise = undefined;
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
-      const capabilities = { notes: true, sessions: gatewayAvailable, scheduler: gatewayAvailable, activity: true, search: true, analysis: false, attention: true };
+      const sessionCatalogAvailable = typeof api.runtime?.agent?.session?.listSessionEntries === 'function';
+      const configured = api.pluginConfig?.sourceCapabilities ?? {};
+      const capabilities = {
+        notes: FIRST_LIVE_FEATURES.noteRead && configured.notes !== false,
+        sessions: FIRST_LIVE_FEATURES.conversations && (gatewayAvailable || sessionCatalogAvailable) && configured.sessions !== false,
+        // Lightweight operation receipts remain core metadata. This does not
+        // instantiate the rich Activity/Dashboard presentation or event owners.
+        activity: configured.activity !== false,
+        scheduler: false, search: false, analysis: false, attention: false
+      };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
+      recoveryOnly = metadataService.getOperatingStatus().mode === 'recovery-only';
+      if (recoveryOnly) {
+        // Refused metadata must never be opened independently by a consumer.
+        const closedPresentation = reads => new Proxy(Object.freeze(reads), {
+          get(target, property) { return Object.hasOwn(target, property) ? target[property] : property === 'then' ? undefined : refuseRecovery; }
+        });
+        const destination = () => ({ activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] });
+        sourceService = closedPresentation({
+          status() {
+            const status = metadataService.getOperatingStatus();
+            return { schemaVersion: 1, mode: 'recovery-only', metadataSchemaVersion: status.schemaVersion, diagnostics: status.diagnostics ?? [], unavailableCapabilities: status.unavailableCapabilities ?? [] };
+          },
+          close() {}
+        });
+        topicService = closedPresentation({ listDestination: destination, listDestinationVerified: destination });
+        return sourceService.status();
+      }
       const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: api.pluginConfig?.legacyDiscordMigration, logger: api.logger });
-      attentionService = createAttentionService({
-        metadata: metadataService,
-        host: runtimeHostIdentity(stateDir),
-        timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC',
-        sourceActions: {
-          complete: ({ episode, parameters, logicalOperationId }) => sourceService.forTopic(episode.topicId).reminders.complete({ schemaVersion: 1, referenceId: episode.sourceReferenceId, expectedConfigRevision: parameters.expectedConfigRevision, logicalOperationId }),
-          snooze: ({ episode, parameters, logicalOperationId }) => sourceService.forTopic(episode.topicId).reminders.snooze({ schemaVersion: 1, referenceId: episode.sourceReferenceId, expectedConfigRevision: parameters.expectedConfigRevision, logicalOperationId, patch: { schedule: { kind: 'at', at: parameters.until } } }),
-          verify: async ({ episode, actionId, parameters }) => {
-            const rows = await sourceService.forTopic(episode.topicId).reminders.list({ schemaVersion: 1 });
-            const row = rows.find((item) => item.sourceReference?.referenceId === episode.sourceReferenceId);
-            if (actionId === 'reminder.complete') return row?.job?.enabled === false;
-            return row?.job?.schedule?.kind === 'at' && row.job.schedule.at === parameters.until;
-          }
-        }
-      });
-      attentionService.registerSourceCapability({
-        sourceCapabilityId: 'reminders',
-        sourceKind: 'reminder',
-        monitoring: true,
-        deriveEvidence: (occurrence) => occurrence.evidenceFacts,
-        verifyTransition: (occurrence) => occurrence.transitionEvidence?.verifiedSource === 'scheduler-readback' && occurrence.transitionEvidence?.version === occurrence.occurrenceVersion,
-        actions: []
-      });
-      attentionService.registerSourceCapability({
-        sourceCapabilityId: 'topic-review',
-        sourceKind: 'topic-review',
-        monitoring: true,
-        deriveEvidence: (occurrence) => occurrence.evidenceFacts,
-        verifyTransition: () => true,
-        actions: []
-      });
-      const searchProvider = {
-        query: (input) => searchService.query(input),
-        rebuild: (input) => searchService.rebuild(input),
-        invalidate: (input) => searchService.invalidate(input)
+      const activatedMetadata = metadataService;
+      const historySource = structuredClone(api.pluginConfig?.preservedHistorySource);
+      const nativeHistorySource = structuredClone(api.pluginConfig?.nativeHistorySource);
+      let historyReaderPromise;
+      const historyReader = async () => {
+        const assertActive = () => {
+          requireOperational();
+          if (stopPromise || metadataService !== activatedMetadata) throw new SourceServiceError('capability-unavailable', 'This history reader activation has ended.');
+        };
+        assertActive();
+        if (!historySource && !nativeHistorySource) throw new SourceServiceError('capability-unavailable', 'The preserved history source is not configured.');
+        historyReaderPromise ??= Promise.all([import('openclaw/plugin-sdk/session-store-runtime'), import('openclaw/plugin-sdk/session-transcript-runtime')])
+          .then(([sessionStore, transcripts]) => { assertActive(); return createPreservedHistoryReader({ metadata: activatedMetadata, sourceOptions: historySource, nativeSourceOptions: nativeHistorySource, sessionStore, transcripts, config: api.config }); })
+          .catch(error => { historyReaderPromise = undefined; throw error; });
+        const reader = await historyReaderPromise;
+        assertActive();
+        return reader;
       };
-      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, searchProvider, transcriptReader: readVisibleSessionTranscriptMessageEntries });
-      topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot, searchProvider, schedulerFactory: (topicId) => sourceService.forTopic(topicId).scheduler });
-      searchRebuildService = createSearchRebuildService({
-        stateDir,
-        metadata: metadataService,
-        api,
-        gateway: api.runtime?.gateway,
-        noteAdapterFactory: (topicId) => sourceService.forTopic(topicId).notes
-      });
-      searchService = createTopicSearchService({
-        stateDir,
-        metadata: metadataService,
-        sourceService,
-        rebuild: (input) => searchRebuildService.rebuild(input)
-      });
-      contextPolicy = createTopicContextPolicy({ metadata: metadataService, searchService });
-      const migrationResult = await migrationService.start();
-      await reconcileTopicSearchBookkeeping({ stateDir, metadata: metadataService });
-      try {
-        await searchService.invalidate({});
-        await searchService.rebuild({});
-      }
-      catch { api.logger?.warn?.('Command Center Topic Search remains unavailable until its authoritative sources can be rebuilt.'); }
-      if (gatewayAvailable) {
-        try { await sourceService.refreshReminderAttention(); }
-        catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
-      }
-      dashboardService = createDashboardService({
-        sourceService,
-        attentionService,
-        metadata: metadataService,
-        now: () => new Date().toISOString(),
-        timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC',
-        notificationSettings: () => notificationService?.getSettings?.(),
-        navigationResolver: async (record) => {
-          const referenceId = record?.sourceReferenceId;
-          const topicId = record?.topicId;
-          if (typeof referenceId !== 'string' || typeof topicId !== 'string') return undefined;
-          const reference = metadataService.getSourceReference?.(referenceId);
-          if (!reference || reference.topicId !== topicId) return undefined;
-          if (reference.sourceKind === 'session') {
-            try {
-              const navigation = await sourceService.sessionsNavigate({ schemaVersion: 1, topicId, referenceId });
-              if (navigation?.sessionKey && navigation?.sessionId) return Object.freeze({ kind: 'session', topicId, referenceId, sessionKey: navigation.sessionKey, sessionId: navigation.sessionId, verified: true });
-            } catch { return undefined; }
-          }
-          return Object.freeze({ kind: 'source', topicId, referenceId, sourceKind: reference.sourceKind, verified: true });
-        }
-      });
-      notificationService = createNotificationService({
-        metadata: metadataService,
-        attentionService,
-        sourceService,
-        emitter: notificationEmitter,
-        timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC',
-        now: () => Date.now(),
-        logger: api.logger
-      });
-      topicAnalysisRunner = createTopicAnalysisRunner({
-        metadata: metadataService,
-        topicService,
-        analyzer: createProductionTopicAnalyzer(),
-        now: () => Date.now()
-      });
-      topicReview = createTopicReviewService({ metadata: metadataService, topicService, attentionService, logger: api.logger, now: () => Date.now() });
-      const runAndRefreshTopicReview = async (input) => {
-        const result = await topicAnalysisRunner.run(input);
-        topicReview.refresh();
-        return result;
-      };
-      topicAnalysisSchedule = createTopicAnalysisScheduleService({ metadata: metadataService, notificationService, gateway: api.runtime?.gateway, now: () => Date.now(), runAnalysis: runAndRefreshTopicReview });
-      topicAnalysisSchedule.getSettings();
-      if (gatewayAvailable) {
-        try { await topicAnalysisSchedule.reconcile(); }
-        catch { api.logger?.warn?.('Command Center Topic Analysis scheduling remains pending until its exact Cron declaration can be reconciled.'); }
-      }
-      try { await topicAnalysisSchedule.startupCatchUp(); }
-      catch { api.logger?.warn?.('Command Center Topic Analysis catch-up remains pending after a bounded startup attempt.'); }
-      try { await notificationService.reconcile(); }
-      catch { api.logger?.warn?.('Command Center notification reconciliation remains pending until an authenticated operator binding is available.'); }
-      notificationTimer = setInterval(() => {
-        Promise.resolve(sourceService?.refreshReminderAttention?.())
-          .then(() => notificationService?.reconcile?.())
-          .catch(() => notificationService?.reconcile?.())
-          .catch(() => {});
-      }, 60_000);
-      notificationTimer.unref?.();
-      maintenanceService = createNoteMaintenanceService({ sourceService, metadata: metadataService });
-      activeMaintenanceService = maintenanceService;
-      return migrationResult;
+      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, migration: migrationService, transcriptReader: readVisibleTranscript, historyReader, noteRecoveryEffects: false });
+      topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot });
+      // Existing-data bootstrap and its durable recovery remain required. No
+      // optional Settings, Cron, notification or disposable index is touched.
+      return migrationService.start();
     },
     stop() {
-      if (notificationTimer) clearInterval(notificationTimer);
-      notificationTimer = undefined;
-      notificationService?.close?.();
-      sourceService?.close?.();
-      attentionService?.close?.();
-      metadataService?.close();
-      metadataService = undefined;
-      sourceService = undefined;
-      searchService = undefined;
-      searchRebuildService = undefined;
-      contextPolicy = undefined;
-      topicService = undefined;
-      attentionService = undefined;
-      dashboardService = undefined;
-      notificationService = undefined;
-      topicAnalysisRunner = undefined;
-      topicAnalysisSchedule = undefined;
-      topicReview = undefined;
-      maintenanceService = undefined;
-      activeMaintenanceService = undefined;
+      if (stopPromise) return stopPromise;
+      stopPromise = Promise.resolve().then(() => {
+        sourceService?.close?.();
+        metadataService?.close();
+        metadataService = undefined;
+        sourceService = undefined;
+        topicService = undefined;
+      });
+      return stopPromise;
     },
     get sourceService() { return sourceService; },
-    get attentionService() { return attentionService; },
-    get maintenanceService() { return maintenanceService; },
-    get searchService() { return searchService; },
     get topicService() { return topicService; },
-    get dashboardService() { return dashboardService; },
-    get notificationService() { return notificationService; },
-    get topicAnalysisRunner() { return topicAnalysisRunner; },
-    get topicAnalysisSchedule() { return topicAnalysisSchedule; },
-    get topicReview() { return topicReview; },
-    topicAnalysisRead() {
-      return { schemaVersion: 1, schedule: topicAnalysisSchedule?.peekSettings?.() ?? metadataService?.getTopicAnalysisSettings?.() ?? null, runs: metadataService?.listTopicAnalysisRuns?.() ?? [], review: topicReview?.get?.() ?? null };
-    },
-    topicAnalysisRun(input) {
-      if (!topicAnalysisRunner) throw new Error('Command Center Topic Analysis is not ready.');
-      const trigger = input?.trigger ?? 'manual';
-      const execution = ['weekly', 'catch-up'].includes(trigger) && topicAnalysisSchedule
-        ? topicAnalysisSchedule.weekly({ ...input, trigger })
-        : topicAnalysisRunner.run({ ...input, trigger }).then((result) => { topicReview?.refresh?.(); return result; });
-      return Promise.resolve(execution);
-    },
-    topicAnalysisScheduleUpdate(input) { if (!topicAnalysisSchedule) throw new Error('Command Center Topic Analysis scheduling is not ready.'); return topicAnalysisSchedule.update(input); },
-    topicReviewGet() { return topicReview?.get?.() ?? null; },
-    topicReviewDecide(input) { return topicReview.decide(input); },
-    topicReviewSnooze(input) { return topicReview.snooze(input); },
-    topicReviewCheckpoint(input) { return topicReview.checkpoint(input); },
-    topicReviewApply(input) { return topicReview.apply(input); },
-    async dashboardGet(input) {
-      if (!dashboardService) throw new Error('Command Center Dashboard is not ready.');
-      try { await sourceService?.refreshReminderAttention?.(); } catch { /* the projection omits unavailable scheduler rows */ }
-      await notificationService?.reconcile?.();
-      return dashboardService.get(input);
-    },
-    dashboardUpdateSettings(input) {
-      if (!notificationService) throw new Error('Command Center notification settings are not ready.');
-      return notificationService.updateSettings(input);
-    },
-    notificationReconcile() {
-      return Promise.resolve(sourceService?.refreshReminderAttention?.()).catch(() => undefined).then(() => notificationService?.reconcile?.());
-    },
-    notificationCaptureBinding() {
-      return notificationService?.captureCurrentOperatorBinding?.() ?? false;
-    },
-    topicContextRetrieve(input) {
-      if (!contextPolicy) throw new Error('Command Center Topic context is not ready.');
-      return contextPolicy.retrieve(input);
-    }
+    get attentionService() { return undefined; },
+    get maintenanceService() { return undefined; },
+    get searchService() { return undefined; },
+    get searchRebuildService() { return undefined; },
+    get dashboardService() { return undefined; },
+    get notificationService() { return undefined; },
+    get topicAnalysisRunner() { return undefined; },
+    get topicAnalysisSchedule() { return undefined; },
+    get topicReview() { return undefined; },
+    topicAnalysisRead() { return refuseDeferred('analysis'); },
+    topicAnalysisRun() { return refuseDeferred('analysis'); },
+    topicAnalysisScheduleUpdate() { return refuseDeferred('analysis'); },
+    topicReviewGet() { return refuseDeferred('analysis'); },
+    topicReviewDecide() { return refuseDeferred('analysis'); },
+    topicReviewSnooze() { return refuseDeferred('analysis'); },
+    topicReviewCheckpoint() { return refuseDeferred('analysis'); },
+    topicReviewApply() { return refuseDeferred('analysis'); },
+    async dashboardGet() { return refuseDeferred('dashboard'); },
+    dashboardUpdateSettings() { return refuseDeferred('dashboard'); },
+    notificationReconcile() { return refuseDeferred('notifications'); },
+    notificationCaptureBinding() { return refuseDeferred('notifications'); },
+    topicContextRetrieve() { return refuseDeferred('search'); },
+    async searchRebuild() { return refuseDeferred('search'); },
+    async searchPrepareRebuild() { return refuseDeferred('search'); }
   };
 }

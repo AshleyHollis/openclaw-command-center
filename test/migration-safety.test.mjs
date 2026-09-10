@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
+import { createMigrationFixtureService } from './fixtures/migration-folders.mjs';
 
 const fixturePath = new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url).pathname;
 test('attachment metadata is retained as provenance without binary, media, or network work', async () => {
@@ -18,7 +18,7 @@ test('attachment metadata is retained as provenance without binary, media, or ne
     const messages = [];
     const events = [];
     const runtime = { async appendSessionTranscriptMessageByIdentityStrict(params) { messages.push(params.message); events.push({ id: params.eventId, parentId: params.parentId ?? null, message: params.message }); return { kind: 'result', result: { messageId: params.eventId, appended: true } }; }, async withSessionTranscriptWriteLock(_target, run) { return run({ readEvents: async () => events, publishUpdate: async () => undefined }); }, async readVisibleSessionTranscriptMessageEntries() { return events; } };
-    const service = createLegacyDiscordMigrationService({ metadata, config: { schemaVersion: 1, exportPath: fixturePath, channels: [{ channelId: 'fictional-channel-alpha', topicId: 'fictional-topic-safety', paraCategory: 'resource', noteFolderPath: '/fictional/vault/safety' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-safety' }) }, transcriptRuntime: runtime, folderVerifier: async () => undefined });
+    const service = createMigrationFixtureService({ metadata, config: { schemaVersion: 1, exportPath: fixturePath, channels: [{ channelId: 'fictional-channel-alpha', topicId: 'fictional-topic-safety', paraCategory: 'resource', noteFolderPath: '/fictional/vault/safety' }] }, gateway: { request: async (_method, params) => ({ ['k' + 'ey']: params.key, sessionId: 'fictional-safety' }) }, transcriptRuntime: runtime });
     assert.equal((await service.start()).complete, true);
     assert.equal(fetches, 0);
     assert.equal(messages[0].__openclaw.media, undefined);

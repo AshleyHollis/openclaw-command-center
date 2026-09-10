@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { scanRepositorySafety } from '../src/safety.mjs';
+import { scanPublicEvidence, scanRepositorySafety } from '../src/safety.mjs';
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const execute = promisify(execFile);
@@ -20,6 +20,16 @@ const fictionalEncryptedKeyHeader = ['-----BEGIN ENCRYPTED ', 'PRIVATE KEY-----'
 const fictionalLabeledKeyHeader = ['-----BEGIN DSA ', 'PRIVATE KEY-----'].join('');
 const fictionalRootPath = ['/ro', 'ot/fictional-file'].join('');
 const fictionalWindowsHomePath = ['C:', '\\Users\\fictional-user\\file'].join('');
+
+test('runtime evidence scanning rejects sensitive values without echoing the match', () => {
+  const unsafeEvidence = ['status=failed to', 'ken=fictional-sensitive-value'].join('');
+  assert.throws(() => scanPublicEvidence([unsafeEvidence]), (error) => {
+    assert.match(error.message, /runtime-evidence\[0\]/u);
+    assert.doesNotMatch(error.message, /fictional-sensitive-value/u);
+    return true;
+  });
+  assert.deepEqual(scanPublicEvidence(['status=passed', '{"rows":9}', ['to', 'ken=[redacted]'].join('')]), []);
+});
 
 async function assertUnsafeFixture(label, content) {
   const fixture = path.join(root, `.fictional-safety-${label}.txt`);
@@ -40,6 +50,23 @@ test('scans non-ignored untracked repository content without echoing secrets', a
     await rm(fixture, { force: true });
   }
   await scanRepositorySafety(root);
+});
+
+test('keeps the authenticated historical commit parseable without a raw token-shaped duplicate', async () => {
+  const historicalCommit = ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('');
+  const [packageSource, lockSource, tupleSource, acceptanceSource] = await Promise.all([
+    readFile(path.join(root, 'package.json'), 'utf8'),
+    readFile(path.join(root, 'package-lock.json'), 'utf8'),
+    readFile(path.join(root, 'src', 'compatibility-tuple.json'), 'utf8'),
+    readFile(path.join(root, 'test', 'real-host.acceptance.test.mjs'), 'utf8')
+  ]);
+  assert.equal(JSON.parse(packageSource).commandCenter.compatibilityTuple.priorRelease.host.commit, historicalCommit);
+  assert.equal(JSON.parse(lockSource).packages[''].commandCenter.compatibilityTuple.priorRelease.host.commit, historicalCommit);
+  assert.equal(JSON.parse(tupleSource).priorRelease.host.commit, historicalCommit);
+  // The historical identity is intentionally parseable in the compatibility
+  // metadata. The public acceptance harness must not duplicate that retired
+  // host receipt as an active runtime pin.
+  assert.equal(acceptanceSource.includes(historicalCommit), false);
 });
 
 test('detects credential prefixes and populated assignments of every length', async () => {
@@ -126,4 +153,57 @@ test('fails closed when candidate content cannot be read', async () => {
   } finally {
     await rm(fixture, { force: true });
   }
+});
+
+test('fails closed when an enumerated explicit entry disappears before inspection', async () => {
+  const snapshot = await mkdtemp(path.join(os.tmpdir(), 'command-center-safety-race-'));
+  const fixture = path.join(snapshot, 'captured-output.txt');
+  try {
+    await writeFile(fixture, 'safe bounded output');
+    await assert.rejects(
+      scanRepositorySafety(snapshot, {
+        stat: async (filename) => {
+          if (filename === fixture) {
+            await rm(fixture, { force: true });
+            throw Object.assign(new Error('fictional disappearance'), { code: 'ENOENT' });
+          }
+          return import('node:fs/promises').then(({ lstat }) => lstat(filename));
+        }
+      }),
+      /captured-output\.txt \(missing-or-unreadable-entry\)/u,
+    );
+  } finally { await rm(snapshot, { recursive: true, force: true }); }
+});
+
+async function withIgnoredAncestorSnapshot(run) {
+  const parent = await mkdtemp(path.join(os.tmpdir(), 'command-center-safety-parent-'));
+  try {
+    await execute('git', ['init', '--quiet', parent]);
+    await writeFile(path.join(parent, '.gitignore'), 'tmp/\n');
+    const snapshot = path.join(parent, 'tmp', 'candidate');
+    await mkdir(path.join(snapshot, 'src'), { recursive: true });
+    await writeFile(path.join(snapshot, 'package.json'), '{"name":"fictional-snapshot"}\n');
+    await writeFile(path.join(snapshot, 'src', 'safe.mjs'), 'export const safe = true;\n');
+    await run(snapshot);
+  } finally { await rm(parent, { recursive: true, force: true }); }
+}
+
+test('Gitless snapshot nested beneath an ignored ancestor repository scans safe content', async () => {
+  await withIgnoredAncestorSnapshot(async (snapshot) => {
+    await scanRepositorySafety(snapshot);
+  });
+});
+
+test('Gitless snapshot nested beneath an ignored ancestor repository rejects unsafe source', async () => {
+  await withIgnoredAncestorSnapshot(async (snapshot) => {
+    await writeFile(path.join(snapshot, 'src', 'unsafe.mjs'), fictionalBearer);
+    await assert.rejects(scanRepositorySafety(snapshot), /src\/unsafe\.mjs/u);
+  });
+});
+
+test('Gitless snapshot nested beneath an ignored ancestor repository rejects captured output', async () => {
+  await withIgnoredAncestorSnapshot(async (snapshot) => {
+    await writeFile(path.join(snapshot, 'captured-output.txt'), fictionalBearer);
+    await assert.rejects(scanRepositorySafety(snapshot), /captured-output\.txt/u);
+  });
 });

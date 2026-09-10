@@ -1,4 +1,6 @@
+import { readBoundedJson } from '../http/json-body.mjs';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
+import { createRequestScopedGatewayRequest } from '../bridge/gateway-method-dispatch.mjs';
 
 const ROUTE = '/plugins/command-center/api/topic/actions';
 const MAX_NOTE_BYTES = 8 * 1024 * 1024 + 1;
@@ -6,14 +8,28 @@ const MAX_REQUEST_BYTES = 12 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 32 * 1024;
 
 const ACTION_FIELDS = Object.freeze({
-  'conversations.create': ['schemaVersion', 'action', 'topicId', 'label', 'expectedRevision', 'logicalOperationId'],
+  'conversations.create': ['schemaVersion', 'action', 'topicId', 'label', 'expectedRevision', 'logicalOperationId', 'authoritativeSession'],
+  'conversations.creation.inspect': ['schemaVersion', 'action', 'topicId'],
+  'conversations.creation.reconcile': ['schemaVersion', 'action', 'topicId', 'logicalOperationId'],
+  'conversations.creation.acknowledge': ['schemaVersion', 'action', 'topicId', 'logicalOperationId', 'referenceId'],
   'chat.send': ['schemaVersion', 'action', 'topicId', 'referenceId', 'message', 'logicalOperationId'],
   'conversations.close': ['schemaVersion', 'action', 'topicId', 'referenceId', 'expectedRevision', 'logicalOperationId'],
   'conversations.reopen': ['schemaVersion', 'action', 'topicId', 'referenceId', 'expectedRevision', 'logicalOperationId'],
   'notes.create': ['schemaVersion', 'action', 'topicId', 'referenceId', 'path', 'contentBase64', 'expectedTopicRevision', 'logicalOperationId'],
+  'notes.create.reconcile': ['schemaVersion', 'action', 'topicId', 'referenceId', 'path', 'contentBase64', 'expectedTopicRevision', 'logicalOperationId'],
   'notes.edit': ['schemaVersion', 'action', 'topicId', 'referenceId', 'path', 'contentBase64', 'expectedRevision', 'expectedTopicRevision', 'logicalOperationId'],
+  'notes.edit.reconcile': ['schemaVersion', 'action', 'topicId', 'referenceId', 'path', 'contentBase64', 'expectedRevision', 'expectedTopicRevision', 'logicalOperationId'],
   'notes.rename': ['schemaVersion', 'action', 'topicId', 'referenceId', 'path', 'destinationPath', 'expectedRevision', 'expectedTopicRevision', 'logicalOperationId'],
   'notes.move': ['schemaVersion', 'action', 'topicId', 'referenceId', 'path', 'destinationPath', 'expectedRevision', 'expectedTopicRevision', 'logicalOperationId']
+});
+
+const createsNote = (action) => action === 'notes.create' || action === 'notes.create.reconcile';
+export { ACTION_FIELDS as topicPageActionFields };
+const reconcilesNote = (action) => action === 'notes.create.reconcile' || action === 'notes.edit.reconcile';
+const conversationRecoveryMethods = Object.freeze({
+  'conversations.creation.inspect': 'sessionsCreationInspect',
+  'conversations.creation.reconcile': 'sessionsCreationReconcile',
+  'conversations.creation.acknowledge': 'sessionsCreationAcknowledge'
 });
 
 function invalid(message) { return Object.assign(new Error(message), { code: 'invalid-request' }); }
@@ -33,36 +49,7 @@ function decodeNoteContent(value) {
   return text;
 }
 
-async function readJson(req) {
-  if (req?.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
-    const encoded = JSON.stringify(req.body);
-    if (Buffer.byteLength(encoded) > MAX_REQUEST_BYTES) throw invalid('Request body exceeds the bounded Topic Page limit.');
-    return { body: req.body, bytes: Buffer.byteLength(encoded) };
-  }
-  if (typeof req?.body === 'string') {
-    const bytes = Buffer.byteLength(req.body);
-    if (bytes > MAX_REQUEST_BYTES) throw invalid('Request body exceeds the bounded Topic Page limit.');
-    try { return { body: JSON.parse(req.body), bytes }; } catch { throw invalid('Request body must be valid JSON.'); }
-  }
-  if (typeof req?.readBody === 'function') {
-    const body = await req.readBody();
-    const bytes = Buffer.byteLength(body);
-    if (bytes > MAX_REQUEST_BYTES) throw invalid('Request body exceeds the bounded Topic Page limit.');
-    try { return { body: JSON.parse(body), bytes }; } catch { throw invalid('Request body must be valid JSON.'); }
-  }
-  if (req && typeof req[Symbol.asyncIterator] === 'function') {
-    const chunks = [];
-    let size = 0;
-    for await (const chunk of req) {
-      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-      size += bytes.length;
-      if (size > MAX_REQUEST_BYTES) throw invalid('Request body exceeds the bounded Topic Page limit.');
-      chunks.push(bytes);
-    }
-    try { return { body: JSON.parse(Buffer.concat(chunks).toString('utf8')), bytes: size }; } catch { throw invalid('Request body must be valid JSON.'); }
-  }
-  throw invalid('A JSON request body is required.');
-}
+async function readJson(req) { return readBoundedJson(req, MAX_REQUEST_BYTES); }
 
 function sendJson(res, statusCode, value) {
   const body = JSON.stringify(value);
@@ -75,23 +62,6 @@ function sendJson(res, statusCode, value) {
   res.setHeader?.('Content-Type', 'application/json; charset=utf-8');
   res.setHeader?.('Cache-Control', 'no-store');
   res.end(body);
-}
-
-function allowOpaqueFrame(req, res) {
-  const origin = req.headers?.origin;
-  const allowedOrigin = origin === 'null' || origin === undefined;
-  const requestedMethod = String(req.headers?.['access-control-request-method'] ?? '').toUpperCase();
-  const requestedHeaders = String(req.headers?.['access-control-request-headers'] ?? '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean);
-  const validPreflight = req.method !== 'OPTIONS' || (requestedMethod === 'POST' && requestedHeaders.length === 1 && requestedHeaders[0] === 'content-type');
-  if (allowedOrigin && validPreflight) {
-    res.setHeader?.('Access-Control-Allow-Origin', 'null');
-    res.setHeader?.('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader?.('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') res.setHeader?.('Access-Control-Allow-Private-Network', 'true');
-    res.setHeader?.('Vary', 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers, Access-Control-Request-Private-Network');
-    return true;
-  }
-  return req.method !== 'OPTIONS' && origin === undefined;
 }
 
 function topic(service, topicId) {
@@ -143,17 +113,28 @@ function validateBody(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw invalid('A closed Topic Page action request is required.');
   const fields = ACTION_FIELDS[body.action];
   if (!fields || Object.keys(body).some((key) => !fields.includes(key))) throw invalid('The Topic Page action contains unsupported fields.');
-  if (body.schemaVersion !== 1 || !isCanonicalUuid(body.logicalOperationId)) throw invalid('schemaVersion 1 and a canonical logicalOperationId are required.');
+  if (body.schemaVersion !== 1 || body.action !== 'conversations.creation.inspect' && !isCanonicalUuid(body.logicalOperationId)) throw invalid('schemaVersion 1 and a canonical logicalOperationId are required.');
   if (!isCanonicalUuid(body.topicId)) throw invalid('A canonical topicId is required.');
+  if (Object.hasOwn(conversationRecoveryMethods, body.action)) {
+    if (body.action === 'conversations.creation.acknowledge') nonBlank(body.referenceId, 'referenceId');
+    return body;
+  }
   if (body.action === 'conversations.create') {
     if (!Number.isInteger(body.expectedRevision) || body.expectedRevision < 0) throw invalid('A non-negative expected Topic revision is required.');
     if (body.label !== undefined) nonBlank(body.label, 'label');
+    const session = body.authoritativeSession;
+    if (session !== undefined) {
+      const allowed = ['key', 'sessionId', 'revision', 'idempotencyKey', 'label'];
+      if (!session || typeof session !== 'object' || Array.isArray(session) || Object.keys(session).some((key) => !allowed.includes(key))) throw invalid('A closed authoritative Session result is required.');
+      for (const key of allowed) nonBlank(session[key], `authoritativeSession.${key}`);
+      if (session.idempotencyKey !== body.logicalOperationId || session.label !== body.label) throw invalid('The authoritative Session result must match the exact Conversation operation and label.');
+    }
   } else if (body.action === 'chat.send') {
     nonBlank(body.referenceId, 'referenceId');
     nonBlank(body.message, 'message');
   } else if (body.action.startsWith('notes.')) {
     if (!Number.isInteger(body.expectedTopicRevision) || body.expectedTopicRevision < 0) throw invalid('A non-negative expected Topic revision is required.');
-    if (body.action !== 'notes.create' && (typeof body.expectedRevision !== 'string' || body.expectedRevision.trim() === '')) throw invalid('An exact expected Note revision is required.');
+    if (!createsNote(body.action) && (typeof body.expectedRevision !== 'string' || body.expectedRevision.trim() === '')) throw invalid('An exact expected Note revision is required.');
   } else if (!Number.isInteger(body.expectedRevision) || body.expectedRevision < 0) {
     throw invalid('A non-negative expected Topic revision is required.');
   }
@@ -161,7 +142,7 @@ function validateBody(body) {
   if (body.action.startsWith('notes.')) {
     nonBlank(body.referenceId, 'referenceId');
     nonBlank(body.path, 'path');
-    if (body.action === 'notes.create' || body.action === 'notes.edit') {
+    if (createsNote(body.action) || body.action === 'notes.edit' || body.action === 'notes.edit.reconcile') {
       decodeNoteContent(body.contentBase64);
     } else nonBlank(body.destinationPath, 'destinationPath');
   }
@@ -185,43 +166,79 @@ function mutationValue(value) {
   };
 }
 
-async function execute(service, body) {
+async function execute(service, body, createConversationRuntime) {
   const { action } = body;
+  if (Object.hasOwn(conversationRecoveryMethods, action)) {
+    if (!createConversationRuntime) throw invalid('Conversation recovery requires authenticated native request authority.');
+    const runtime = await createConversationRuntime();
+    return service[conversationRecoveryMethods[action]]({ schemaVersion: 1, topicId: body.topicId,
+      ...(body.logicalOperationId === undefined ? {} : { logicalOperationId: body.logicalOperationId }),
+      ...(body.referenceId === undefined ? {} : { referenceId: body.referenceId }) }, runtime);
+  }
   if (action === 'conversations.create') {
-    assertTopicRevision(service, body.topicId, body.expectedRevision);
-    return service.sessionsCreate({ schemaVersion: 1, topicId: body.topicId, ...(body.label === undefined ? {} : { label: body.label }), isPrimary: false, logicalOperationId: body.logicalOperationId });
+    if (!createConversationRuntime) assertTopicRevision(service, body.topicId, body.expectedRevision);
+    // The full owner contract retains legacy adoption for deferred coverage;
+    // first-live registration refuses that envelope before reaching this path.
+    // Native creation stays inside this authenticated HTTP request's SDK scope.
+    if (createConversationRuntime && body.authoritativeSession !== undefined) throw invalid('Conditional Conversation creation requires native request authority.');
+    const runtime = createConversationRuntime ? await createConversationRuntime() : body.authoritativeSession === undefined
+      ? { gatewayRequest: createRequestScopedGatewayRequest() }
+      : { authoritativeSession: body.authoritativeSession };
+    return service.sessionsCreate({ schemaVersion: 1, topicId: body.topicId, ...(body.label === undefined ? {} : { label: body.label }), isPrimary: false, logicalOperationId: body.logicalOperationId,
+      ...(createConversationRuntime ? { expectedTopicRevision: body.expectedRevision } : {}) }, runtime);
   }
   if (action === 'chat.send') {
     assertConversationReference(service, body);
     return service.sessionsSend({ schemaVersion: 1, topicId: body.topicId, referenceId: body.referenceId, message: body.message, logicalOperationId: body.logicalOperationId });
   }
-  assertTopicRevision(service, body.topicId, body.action.startsWith('notes.') ? body.expectedTopicRevision : body.expectedRevision);
+  // Confirmation uses current ownership, not the optimistic revision precondition
+  // for a new write. The authenticated route still requires write authority.
+  if (!reconcilesNote(action)) assertTopicRevision(service, body.topicId, body.action.startsWith('notes.') ? body.expectedTopicRevision : body.expectedRevision);
   if (action === 'conversations.close' || action === 'conversations.reopen') {
     assertConversationReference(service, body);
     return action.endsWith('close') ? service.sessionsClose({ schemaVersion: 1, topicId: body.topicId, referenceId: body.referenceId, logicalOperationId: body.logicalOperationId }) : service.sessionsReopen({ schemaVersion: 1, topicId: body.topicId, referenceId: body.referenceId, logicalOperationId: body.logicalOperationId });
   }
-  assertNoteReference(service, body, { create: action === 'notes.create' });
-  const method = { 'notes.create': 'notesCreate', 'notes.edit': 'notesEdit', 'notes.rename': 'notesRename', 'notes.move': 'notesMove' }[action];
+  assertNoteReference(service, body, { create: createsNote(action) });
+  const method = { 'notes.create': 'notesCreate', 'notes.create.reconcile': 'notesCreateReconcile', 'notes.edit': 'notesEdit', 'notes.edit.reconcile': 'notesEditReconcile', 'notes.rename': 'notesRename', 'notes.move': 'notesMove' }[action];
   const text = body.contentBase64 === undefined ? undefined : decodeNoteContent(body.contentBase64);
   return service[method]({ schemaVersion: 1, topicId: body.topicId, referenceId: body.referenceId, path: body.path, ...(text === undefined ? {} : { text }), ...(body.destinationPath === undefined ? {} : { destinationPath: body.destinationPath }), ...(body.expectedRevision === undefined ? {} : { expectedRevision: body.expectedRevision }), logicalOperationId: body.logicalOperationId });
 }
 
-export function createTopicPageActionsHandler(service) {
+export function createTopicPageActionsHandler(service, { assertAction, createConversationRuntime } = {}) {
   return async (req, res) => {
-    if (!allowOpaqueFrame(req, res)) { sendJson(res, 403, { schemaVersion: 1, status: 'error', code: 'origin-not-allowed', message: 'Topic Page action origin is not allowed.' }); return true; }
-    if (req.method === 'OPTIONS') { res.statusCode = 204; res.setHeader?.('Cache-Control', 'no-store'); res.end(); return true; }
     if (req.method !== 'POST') { sendJson(res, 405, { schemaVersion: 1, status: 'error', code: 'method-not-allowed', message: 'Topic Page actions are POST-only.' }); return true; }
+    let noteSave = false;
     try {
       if (!/^application\/json(?:\s*;|$)/iu.test(String(req.headers?.['content-type'] ?? ''))) throw invalid('JSON content type is required.');
       const request = await readJson(req);
+      // Registration supplies the build-owned release policy. It runs before
+      // domain validation, source lookup or dispatch and is never caller input.
+      assertAction?.(request.body);
       const body = validateBody(request.body);
+      noteSave = createsNote(body.action) || body.action === 'notes.edit' || body.action === 'notes.edit.reconcile';
       assertRequestBounds(body, request.bytes);
-      const result = await execute(service, body);
-      sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...mutationValue(result) } });
+      const result = await execute(service, body, createConversationRuntime);
+      if (body.action === 'conversations.creation.inspect') {
+        // Only the closed owner projection is exposed. Never return the journal,
+        // principal, native locator or a different operator's stored intent.
+        sendJson(res, 200, { schemaVersion: 1, status: result.status,
+          ...(result.logicalOperationId === undefined ? {} : { logicalOperationId: result.logicalOperationId }),
+          result: { action: body.action, topicId: body.topicId,
+            ...(result.expectedTopicRevision === undefined ? {} : { expectedTopicRevision: result.expectedTopicRevision }),
+            ...(result.label === undefined ? {} : { label: result.label }),
+            ...(result.referenceId === undefined ? {} : { referenceId: result.referenceId }) } });
+        return true;
+      }
+      sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...(reconcilesNote(body.action) ? { path: body.path } : {}), ...mutationValue(result) } });
     } catch (error) {
       const code = String(error?.code ?? 'invalid-request');
+      if (code === 'feature-unavailable') {
+        sendJson(res, 501, { schemaVersion: 1, status: 'error', code, retryable: false, message: 'This feature is not available in the first live release.' });
+        return true;
+      }
       const status = code === 'invalid-request' ? 400 : code === 'conflict' || code === 'primary-session' ? 409 : 422;
-      sendJson(res, status, { schemaVersion: 1, status: 'error', code, message: code === 'conflict' ? 'The Topic Page action conflicted with newer authoritative state.' : 'The Topic Page action was not applied.' });
+      const message = code === 'conflict' ? 'The Topic Page action conflicted with newer authoritative state.' : status === 422 ? noteSave ? 'The Note save outcome is still unknown.' : 'The Topic Page action outcome could not be confirmed.' : 'The Topic Page action was not applied.';
+      sendJson(res, status, { schemaVersion: 1, status: 'error', code, message });
     }
     return true;
   };

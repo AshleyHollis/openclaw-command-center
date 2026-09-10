@@ -1,18 +1,21 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
+import { createMetadataService } from '../src/plugin-service.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
 
-function fakePublishedApi(stateDir, { bindingAvailable = false } = {}) {
+function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {}, gateway } = {}) {
   const declarations = [];
   const descriptors = [];
   const routes = [];
   const methods = new Map();
   const services = [];
+  const lifecycles = [];
   const candidates = [];
   let currentBindingAvailable = bindingAvailable;
   let revoked = false;
@@ -23,11 +26,11 @@ function fakePublishedApi(stateDir, { bindingAvailable = false } = {}) {
   };
   const api = {
     config: { agents: { defaults: { userTimezone: 'UTC' } } },
-    pluginConfig: {},
+    pluginConfig,
     logger: { warn() {} },
-    runtime: { state: { resolveStateDir: () => stateDir } },
+    runtime: { state: { resolveStateDir: () => stateDir }, ...(gateway ? { gateway } : {}) },
     session: { controls: { registerControlUiDescriptor(value) { descriptors.push(structuredClone(value)); } } },
-    lifecycle: { registerRuntimeLifecycle() {} },
+    lifecycle: { registerRuntimeLifecycle(value) { lifecycles.push(value); } },
     notifications: {
       registerEmitter(declaration) {
         declarations.push(structuredClone(declaration));
@@ -40,77 +43,364 @@ function fakePublishedApi(stateDir, { bindingAvailable = false } = {}) {
     registerService(service) { services.push(service); }
   };
   return {
-    api, declarations, descriptors, routes, methods, services, candidates,
+    api, declarations, descriptors, routes, methods, services, lifecycles, candidates,
     async authenticatedGatewayRequest(name, params) {
       const handler = methods.get(name);
       if (!handler) throw new Error(`Missing fake Gateway method ${name}`);
       currentBindingAvailable = true;
       let response;
+      const client = { connId: 'fictional-current-connection', authenticatedUserProfile: { profileId: 'fictional-operator' }, connect: { role: 'operator', scopes: ['operator.read', 'operator.write'] } };
       try {
-        await handler({ req: { id: 'fictional-request' }, params, client: { authenticatedUserId: 'fictional-operator' }, context: { authenticated: true }, respond(ok, result, error) { response = { ok, result, error }; } });
+        await handler({ req: { id: 'fictional-request' }, params, client, context: { authenticated: true, getClientConnIds: predicate => new Set(predicate(client) ? [client.connId] : []) }, respond(ok, result, error) { response = { ok, result, error }; } });
       } finally { currentBindingAvailable = false; }
       if (!response?.ok) throw response?.error ?? new Error('Fake authenticated Gateway request failed');
       return response.result;
     },
     revokeBinding() { revoked = true; },
+    restoreBinding() { revoked = false; },
     get bindingCaptures() { return bindingCaptures; }
   };
 }
 
-test('real plugin registers one required emitter and reconciles in the background with an authenticated binding', async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-notifications-'));
-  const host = fakePublishedApi(stateDir);
+test('native registration exposes authenticated Topic methods without an iframe descriptor API', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-descriptor-'));
+  let service;
   try {
+    const host = fakePublishedApi(stateDir);
+    delete host.api.session;
     plugin.register(host.api);
-    assert.deepEqual(host.declarations, [{ version: 1, id: 'command-center-attention-v1', requiredScopes: ['operator.read'], destinations: [{ id: 'attention-card', tabId: 'command-center' }] }]);
-    assert.equal(host.descriptors.length, 1);
-    assert.deepEqual({ ...host.descriptors[0], capabilityBridge: undefined }, { surface: 'tab', id: 'command-center', label: 'Command Center', group: 'control', path: '/plugins/command-center', capabilityBridge: undefined });
-    assert.equal(host.descriptors[0].capabilityBridge.protocolVersion, 1);
-    assert.ok(host.descriptors[0].capabilityBridge.requiredMethods.includes('command-center.v1.sessions.browse'));
-    assert.equal(host.services.length, 1);
-    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center' && route.auth === 'gateway'), true);
+    assert.equal(host.descriptors.length, 0);
+    for (const method of [
+      'command-center.v1.sources.status', 'command-center.v1.attention.act',
+      'command-center.v1.topics.list', 'command-center.v1.topics.get',
+      'command-center.v1.sessions.browse', 'command-center.v1.sessions.history',
+      'command-center.v1.sessions.navigate', 'command-center.v1.sessions.resolve-native',
+      'command-center.v1.notes.browse', 'command-center.v1.notes.read',
+      'command-center.v1.search.query'
+    ]) assert.equal(host.methods.has(method), true, `${method} remains registered without the iframe API`);
+    assert.equal(host.methods.has('chat.send'), false, 'native Chat owns message sending');
+    assert.equal(host.methods.has('sessions.create'), false, 'host Session creation must not be shadowed');
+    service = host.services[0];
+    await service.start();
+    service.sourceService.sessionsNavigate = async (input) => {
+      assert.equal(input.nativeChat, true);
+      return { schemaVersion: 1, sessionId: 'fictional-session', sessionKey: 'agent:main:fictional' };
+    };
+    const resolved = await host.authenticatedGatewayRequest('command-center.v1.sessions.resolve-native', { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-reference', expectedSessionId: 'fictional-session' });
+    assert.deepEqual(resolved, { sessionKey: 'agent:main:fictional' });
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('Session cleanup does not stop the plugin-wide service; disable and restart do', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-cleanup-'));
+  try {
+    const host = fakePublishedApi(stateDir);
+    plugin.register(host.api);
+    let stops = 0;
+    host.services[0].stop = async () => { stops += 1; };
+    for (const reason of ['delete', 'reset']) await host.lifecycles[0].cleanup({ reason, sessionKey: 'agent:main:fictional-deleted' });
+    assert.equal(stops, 0, 'Session-scoped cleanup must not close Topic services or metadata');
+    for (const reason of ['disable', 'restart']) await host.lifecycles[0].cleanup({ reason });
+    assert.equal(stops, 2, 'plugin-wide lifecycle must still stop its service');
+  } finally { await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('CLI metadata discovery does not acquire runtime services or notification authority', () => {
+  plugin.register({
+    registrationMode: 'cli-metadata',
+    get notifications() { throw new Error('Notification registration is unavailable during CLI metadata discovery.'); },
+    get runtime() { throw new Error('Runtime is unavailable during CLI metadata discovery.'); },
+    registerService() { assert.fail('CLI metadata discovery must not register background services.'); }
+  });
+});
+
+test('started plugin keeps authenticated Topic reads alive across Session delete and reset cleanup', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-live-cleanup-'));
+  let service;
+  try {
+    const host = fakePublishedApi(stateDir);
+    plugin.register(host.api);
+    service = host.services[0];
+    await service.start();
+    const original = service.topicService;
+    const before = await host.authenticatedGatewayRequest('command-center.v1.topics.list', { schemaVersion: 1 });
+    for (const reason of ['delete', 'reset']) {
+      await host.lifecycles[0].cleanup({ reason, sessionKey: 'agent:main:fictional-session' });
+      assert.equal(service.topicService, original);
+      const response = await host.authenticatedGatewayRequest('command-center.v1.topics.list', { schemaVersion: 1 });
+      assert.deepEqual(response.result, before.result);
+    }
+    await host.lifecycles[0].cleanup({ reason: 'disable' });
+    assert.equal(service.topicService, undefined);
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('native manifest declares only bounded exact authenticated plugin routes', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
+  assert.deepEqual(Object.keys(manifest.controlUi).sort(), ['entry', 'httpRoutes']);
+  assert.equal(manifest.controlUi.entry, 'dist/native-ui/entry.mjs');
+  assert.deepEqual(manifest.contracts.gatewayMethodDispatch, ['authenticated-request']);
+  const host = fakePublishedApi(path.join(os.tmpdir(), 'fictional-native-registration'));
+  delete host.api.session;
+  plugin.register(host.api);
+  const declared = manifest.controlUi.httpRoutes;
+  assert.equal(new Set(declared.map((route) => `${route.method}:${route.path}`)).size, declared.length);
+  for (const declaration of declared) {
+    const routes = host.routes.filter((route) => route.path === declaration.path);
+    assert.equal(routes.length, 1);
+    assert.equal(routes[0].auth, 'gateway');
+    assert.equal(routes[0].match, 'exact');
+    assert.ok(['GET', 'POST'].includes(declaration.method));
+    assert.ok(Number.isSafeInteger(declaration.maxRequestBytes) && declaration.maxRequestBytes >= 0 && declaration.maxRequestBytes <= 12 * 1024 * 1024);
+    assert.ok(Number.isSafeInteger(declaration.maxResponseBytes) && declaration.maxResponseBytes > 0 && declaration.maxResponseBytes <= 1024 * 1024);
+    if (declaration.method === 'GET') assert.equal(declaration.maxRequestBytes, 0);
+  }
+  assert.ok(declared.some((route) => route.path === '/plugins/command-center/api/topic/actions' && route.method === 'POST' && route.maxRequestBytes === 12 * 1024 * 1024));
+});
+
+test('production first-live plugin keeps deferred analysis unavailable without dispatch', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-analysis-'));
+  const topicId = 'fictional-production-analysis-topic';
+  const sourceId = 'fictional-production-analysis-source';
+  const logicalOperationId = '7a111111-1111-4111-8111-111111111111';
+  const gateway = { async request(method, input = {}) {
+    if (method === 'cron.list') return { jobs: [] };
+    if (method === 'cron.add') return { id: 'fictional-analysis-cron', declarationKey: input.declarationKey, enabled: true, schedule: input.schedule, sessionTarget: input.sessionTarget, wakeMode: input.wakeMode, payload: input.payload, delivery: input.delivery, configRevision: 'fictional-analysis-cron-r1' };
+    throw new Error(`unexpected production integration Gateway method ${method}`);
+  } };
+  const host = fakePublishedApi(stateDir, { gateway });
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, scheduler: true, activity: true, search: true, analysis: true, attention: true } });
+    try {
+      seed.createTopic({ topicId, name: 'Project: Fictional production analysis', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
+      seed.createSourceReference({ version: 1, referenceId: sourceId, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: 'fictional-production-analysis', observedRevision: 'fictional-analysis-source-r1', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
+      seed.recordTopicAnalysisRun({ runId: 'fictional-prior-analysis-run', schemaVersion: 1, trigger: 'manual', outcome: 'success', baselineCursor: { nextTopicId: null, nextSourceId: null }, successCursor: { nextTopicId: null, nextSourceId: null }, changedCount: 0, evaluatedCount: 0, proposalCount: 0, retainedOverflowCount: 0, startedAt: '2026-08-21T00:00:00.000Z', finishedAt: '2026-08-21T00:00:01.000Z' });
+    } finally { seed.close(); }
+    plugin.register(host.api);
     const service = host.services[0];
     await service.start();
-    service.notificationService.updateSettings({
-      schemaVersion: 1,
-      logicalOperationId: '8f111111-1111-4111-8111-111111111111',
-      expectedRevision: 1,
-      settings: { quietHoursEnabled: false }
-    });
-    service.attentionService.registerSourceCapability({ sourceCapabilityId: 'integration-monitor', sourceKind: 'operational', monitoring: true, deriveEvidence: (occurrence) => occurrence.evidenceFacts, actions: [] });
-    await service.attentionService.ingest({ schemaVersion: 1, sourceCapabilityId: 'integration-monitor', stableSubjectId: 'fictional-high', attentionReason: 'fictional-failure', occurrenceId: 'fictional-high-occurrence', occurredAt: new Date().toISOString(), evidenceFacts: { 'failed-operation': true } });
-    await service.notificationReconcile();
-    assert.equal(host.candidates.length, 0, 'an unbound operator must fail closed');
-    await host.authenticatedGatewayRequest('command-center.v1.topics.list', { schemaVersion: 1 });
-    await service.notificationReconcile();
-    assert.equal(host.candidates.length, 1, 'background reconciliation must not depend on an iframe request');
-    assert.equal(host.bindingCaptures, 1, 'background reconciliation must reuse the opaque request-captured binding');
-    host.revokeBinding();
-    await service.attentionService.ingest({ schemaVersion: 1, sourceCapabilityId: 'integration-monitor', stableSubjectId: 'fictional-high', attentionReason: 'fictional-failure', occurrenceId: 'fictional-critical-occurrence', occurredAt: new Date(Date.now() + 1_000).toISOString(), evidenceFacts: { 'active-security-exposure': true } });
-    await service.notificationReconcile();
-    assert.equal(host.candidates.length, 1, 'a revoked retained binding must fail closed before delivery');
+    const statusEnvelope = await host.authenticatedGatewayRequest('command-center.v1.sources.status', { schemaVersion: 1 });
+    assert.equal(statusEnvelope.result.mode, 'degraded');
+    assert.equal(statusEnvelope.result.unavailableCapabilities.includes('analysis'), true);
 
-    for (const sourceKind of ['chat', 'activity', 'topic-review']) {
-      const sourceCapabilityId = `routine-${sourceKind}`;
-      service.attentionService.registerSourceCapability({ sourceCapabilityId, sourceKind, monitoring: true, deriveEvidence: (occurrence) => occurrence.evidenceFacts, actions: [] });
-      await service.attentionService.ingest({ schemaVersion: 1, sourceCapabilityId, stableSubjectId: `fictional-${sourceKind}`, attentionReason: 'routine-history', occurrenceId: `fictional-${sourceKind}-occurrence`, occurredAt: new Date().toISOString(), evidenceFacts: { context: 'Fictional routine history' } });
-    }
-    await service.notificationReconcile();
-    assert.equal(host.candidates.length, 1, 'routine Chat, Activity, and Topic Review must not emit');
-    service.stop();
+    const params = { schemaVersion: 1, topicId, input: {}, logicalOperationId };
+    await assert.rejects(host.authenticatedGatewayRequest('command-center.v1.analysis.run', params), (error) => error.code === 'feature-unavailable');
+    assert.equal(service.topicAnalysisRunner, undefined);
   } finally {
-    host.services[0]?.stop?.();
+    await host.services[0]?.stop?.();
     await rm(stateDir, { recursive: true, force: true });
   }
 });
 
-test('plugin activation refuses a host without the published notification emitter API', () => {
+test('plugin readiness precedes deferred Search rebuild and shutdown settles the producer', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-deferred-search-'));
+  let releaseRebuild;
+  const rebuild = new Promise((resolve) => { releaseRebuild = resolve; });
+  const events = [];
+  const api = { runtime: { state: { resolveStateDir: () => stateDir } }, logger: { warn: (message) => events.push(['warning', message]) }, pluginConfig: {} };
+  const service = createMetadataService(api, {
+    searchRebuildServiceFactory: () => ({
+      async rebuild() { events.push(['rebuild', 'started']); await rebuild; events.push(['rebuild', 'settled']); }
+    })
+  });
+  try {
+    const startup = service.start().then(() => events.push(['service', 'ready']));
+    await startup;
+    assert.deepEqual(events, [['service', 'ready']], 'plugin readiness must precede disposable projection work');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(events, [['service', 'ready']]);
+    await service.stop();
+    assert.deepEqual(events, [['service', 'ready']]);
+  } finally {
+    releaseRebuild?.();
+    await service.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('plugin Search commit passes through verified freshness publication', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-search-freshness-'));
+  let commits = 0;
+  const service = createMetadataService({ runtime: { state: { resolveStateDir: () => stateDir } }, logger: {}, pluginConfig: {} }, {
+    searchRebuildServiceFactory: () => ({
+      async prepareAuthorized(input) { return { schemaVersion: 1, status: 'prepared', topicIds: [input.topicId] }; },
+      async rebuildPrepared() { commits += 1; return { topicIds: [] }; }
+    })
+  });
+  try {
+    await service.start();
+    await assert.rejects(service.searchPrepareRebuild({ topicId: 'fictional-topic', logicalOperationId: randomUUID() }), (error) => error?.code === 'capability-unavailable');
+    await assert.rejects(service.searchRebuild({ topicId: 'fictional-topic', logicalOperationId: randomUUID() }), (error) => error?.code === 'capability-unavailable');
+    assert.equal(commits, 0, 'first-live refusal must precede the deferred publisher');
+  } finally {
+    await service.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('plugin startup does not dispatch Gateway work before the host request context is active', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-gateway-bind-'));
+  let requests = 0;
+  let availabilityChecks = 0;
+  let rebuilds = 0;
+  const scheduled = [];
+  const dueAt = new Date(Date.now() - 60_000).toISOString();
+  const seed = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, scheduler: true, activity: true, search: true, analysis: true, attention: true } });
+  try {
+    seed.setTopicAnalysisSettings({ schemaVersion: 1, enabled: true, weekday: 1, localTime: '07:00', timeZone: 'UTC', nextDueAt: dueAt, initialized: true, updatedAt: dueAt });
+  } finally { seed.close(); }
+  const api = {
+    runtime: {
+      state: { resolveStateDir: () => stateDir },
+      gateway: {
+        isAvailable: async () => { availabilityChecks += 1; return false; },
+        request: async () => { requests += 1; throw new Error('pre-bind Gateway dispatch'); }
+      }
+    },
+    logger: {},
+    pluginConfig: {}
+  };
+  const service = createMetadataService(api, {
+    searchRebuildServiceFactory: () => ({ async rebuild() { rebuilds += 1; } })
+  });
+  try {
+    await service.start({ getCron: () => ({
+      list: async () => scheduled,
+      add: async (input) => {
+        const job = { ...input, id: 'fictional-weekly-analysis', configRevision: 'revision-1' };
+        scheduled.push(job);
+        return job;
+      }
+    }) });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(availabilityChecks, 0, 'activation must not enter the lazily loaded Gateway runtime before binding');
+    assert.equal(requests, 0);
+    assert.equal(rebuilds, 0);
+    assert.equal(scheduled.length, 0, 'first-live startup must leave native Cron unchanged');
+    assert.equal(service.topicAnalysisSchedule, undefined);
+  } finally {
+    await service.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('plugin shutdown aborts a deferred Search rebuild before closing owned state', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-cancel-search-'));
+  const events = [];
+  const api = { runtime: { state: { resolveStateDir: () => stateDir } }, logger: {}, pluginConfig: {} };
+  const service = createMetadataService(api, {
+    searchRebuildServiceFactory: () => ({
+      async rebuild({ signal }) {
+        events.push('rebuild-started');
+        await new Promise((resolve, reject) => signal.addEventListener('abort', () => { events.push('rebuild-aborted'); reject(signal.reason); }, { once: true }));
+      }
+    })
+  });
+  try {
+    await service.start();
+    await new Promise((resolve) => setImmediate(resolve));
+    await service.stop();
+    assert.deepEqual(events, [], 'deferred Search owner must not be acquired');
+  } finally {
+    await service.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('real first-live plugin does not register or run the deferred notification owner', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-notifications-'));
+  const host = fakePublishedApi(stateDir);
+  try {
+    plugin.register(host.api);
+    assert.deepEqual(host.declarations, []);
+    assert.equal(host.descriptors.length, 0);
+    assert.equal(host.services.length, 1);
+    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center' && route.auth === 'gateway'), true);
+    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/app.js' && route.auth === 'plugin'), true);
+    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/styles.css' && route.auth === 'plugin'), true);
+    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/markdown.js' && route.auth === 'plugin'), true);
+    assert.equal(host.routes.some((route) => route.path === '/plugins/command-center/api/search/rebuild' && route.auth === 'gateway' && route.match === 'exact'), true);
+    const service = host.services[0];
+    await service.start();
+    assert.equal(service.notificationService, undefined);
+    assert.equal(service.attentionService, undefined);
+    assert.equal(host.candidates.length, 0);
+    await service.stop();
+  } finally {
+    await host.services[0]?.stop?.();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('plugin activation does not require the deferred notification emitter API', () => {
   const host = fakePublishedApi(path.join(os.tmpdir(), 'fictional-command-center-state'));
   delete host.api.notifications;
-  assert.throws(() => plugin.register(host.api), /requires the published notification emitter API/u);
+  assert.doesNotThrow(() => plugin.register(host.api));
   const refused = fakePublishedApi(path.join(os.tmpdir(), 'fictional-command-center-state-refused'));
   refused.api.notifications.registerEmitter = () => undefined;
-  assert.throws(() => plugin.register(refused.api), /registration was refused/u);
+  assert.doesNotThrow(() => plugin.register(refused.api));
+  assert.deepEqual(refused.declarations, []);
+});
+
+test('explicit Control UI mutation disablement retains reads and rejects every public mutation route', async () => {
+  const host = fakePublishedApi(path.join(os.tmpdir(), 'fictional-command-center-grant-state'), { pluginConfig: { controlUiGrant: false } });
+  plugin.register(host.api);
+  assert.equal(host.descriptors.length, 0);
+  assert.equal(host.methods.has('command-center.v1.sources.status'), true);
+  const mutationPaths = [
+    '/plugins/command-center/api/attention/actions',
+    '/plugins/command-center/api/dashboard/actions',
+    '/plugins/command-center/api/topics/actions',
+    '/plugins/command-center/api/topic/actions',
+    '/plugins/command-center/api/search/rebuild',
+    '/plugins/command-center/api/topic-analysis/actions'
+  ];
+  for (const routePath of mutationPaths) {
+    const route = host.routes.find((candidate) => candidate.path === routePath);
+    assert.ok(route, `missing mutation route ${routePath}`);
+    let body = '';
+    const response = { setHeader() {}, end(value) { body = value; } };
+    assert.equal(await route.handler({ method: 'POST' }, response), true);
+    assert.equal(response.statusCode, 422);
+    assert.equal(JSON.parse(body).code, 'capability-unavailable');
+  }
+  await assert.rejects(() => host.authenticatedGatewayRequest('command-center.v1.topics.create', {
+    schemaVersion: 1,
+    name: 'Blocked bridge mutation',
+    paraCategory: 'resource',
+    logicalOperationId: randomUUID()
+  }), (error) => error?.code === 'capability-unavailable');
+});
+
+test('isolated source availability produces observable Degraded reads and rejects dependent writes', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-degraded-source-'));
+  const host = fakePublishedApi(stateDir, { pluginConfig: { sourceCapabilities: { sessions: false } } });
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir });
+    try { seed.createTopic({ topicId: 'fictional-degraded-source-topic', paraCategory: 'resource', lifecycle: 'active' }); }
+    finally { seed.close(); }
+    plugin.register(host.api);
+    const service = host.services[0];
+    await service.start();
+    const statusResponse = await host.authenticatedGatewayRequest('command-center.v1.sources.status', { schemaVersion: 1 });
+    const status = statusResponse?.result ?? statusResponse;
+    assert.equal(status.mode, 'degraded');
+    assert.ok(status.unavailableCapabilities.includes('sessions'));
+    assert.ok(status.unavailableCapabilities.includes('scheduler'));
+    const topics = await host.authenticatedGatewayRequest('command-center.v1.topics.list', { schemaVersion: 1 });
+    assert.ok(JSON.stringify(topics).includes('fictional-degraded-source-topic'));
+    const blockedOperationId = randomUUID();
+    await assert.rejects(() => host.authenticatedGatewayRequest('command-center.v1.sessions.create', {
+      schemaVersion: 1,
+      topicId: 'fictional-degraded-source-topic',
+      logicalOperationId: blockedOperationId,
+      expectedRevision: 1,
+      label: 'Blocked source mutation'
+    }), (error) => error?.code === 'capability-unavailable' && error?.details?.status === 'unavailable');
+  } finally {
+    await host.services[0]?.stop?.();
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });
 
 test('background notification reconciliation excludes a future Reminder and routine source kinds', async () => {

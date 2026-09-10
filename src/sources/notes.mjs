@@ -2,9 +2,14 @@ import { closeSync, constants, fstatSync, openSync } from 'node:fs';
 import { link, mkdir, open, readdir, rename, rmdir, writeFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { createSourceReference, revisionForBytes } from './reference.mjs';
+import { createSourceReference, effectiveSourceLocator, revisionForBytes } from './reference.mjs';
 import { SourceServiceError, sourceError, nonBlank } from './errors.mjs';
 import { assertSafeDirectory, assertSafeNotePath, isWithin, normalizeNotePath } from './note-path.mjs';
+import { NoteRecovery } from './note-recovery.mjs';
+import { readNoteFolderIdentity } from './note-folder-identity.mjs';
+
+const NOTE_BROWSE_CONCURRENCY = 32;
+const NOTE_CATALOG_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 
 function bytesForText(value, field = 'text') {
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) return Buffer.from(value);
@@ -18,10 +23,6 @@ function sameStat(left, right) {
 
 function sameIdentity(left, right) {
   return left?.dev === right?.dev && left?.ino === right?.ino;
-}
-
-function directoryRevision(stat) {
-  return `fs:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
 }
 
 function mutationResult(status, note, extra = {}) {
@@ -43,11 +44,14 @@ export class NoteAdapter {
     this.afterRootResolved = options.afterRootResolved;
     this.fsSafeRootFactory = options.fsSafeRootFactory;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.nowMs = options.nowMs ?? (() => Date.now());
+    this.catalogSnapshot = null;
+    this.recovery = new NoteRecovery(this, options);
   }
 
   async resolveRoot() {
     if (this.root && this.metadata && !this.noteFolderReferenceId) {
-      const matches = this.metadata.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder' && reference.externalSourceId === this.root) ?? [];
+      const matches = this.metadata.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder' && effectiveSourceLocator(this.metadata, reference) === this.root) ?? [];
       if (matches.length === 1) this.noteFolderReferenceId = matches[0].referenceId;
     }
     if (this.metadata && this.noteFolderReferenceId) {
@@ -74,16 +78,16 @@ export class NoteAdapter {
       }
     }
     if (!this.root) throw sourceError('source-recovery', 'A Note Folder Source Reference is required.');
+    if (this.recovery.enabled && !this.noteFolderReferenceId) throw sourceError('source-recovery', 'Durable Note access requires an explicitly enrolled Note Folder Source Reference.');
     const checked = await assertSafeDirectory(this.root);
     const before = await lstat(checked);
-    if (this.metadata && this.noteFolderReferenceId && !this.rootObservedRevision) {
-      this.rootObservedRevision = directoryRevision(before);
-      this.metadata.setSourceLocator?.({ referenceId: this.noteFolderReferenceId, locator: checked, ownership: 'external', observedRevision: this.rootObservedRevision });
-    }
-    if (this.rootObservedRevision && directoryRevision(before) !== this.rootObservedRevision) {
+    const binding = this.noteFolderReferenceId ? this.metadata?.getSourceLocator?.(this.noteFolderReferenceId) : null;
+    this.rootLocatorVersion = binding?.locatorVersion ?? null;
+    if (this.metadata && this.noteFolderReferenceId && !this.rootObservedRevision) throw sourceError('source-recovery', 'The Note Folder identity is unbound; explicit enrollment is required.');
+    if (this.rootObservedRevision && await readNoteFolderIdentity(checked) !== this.rootObservedRevision) {
       throw sourceError('source-recovery', 'The Note Folder filesystem identity no longer matches its Source Reference. Explicit recovery is required.');
     }
-    if (!this.fsSafeRoot || this.fsSafeRoot.rootDir !== checked || (this.rootObservedRevision && !sameIdentity(this.rootStat, before))) {
+    if (!this.fsSafeRoot || this.fsSafeRoot.rootDir !== checked || this.boundLocatorVersion !== this.rootLocatorVersion || (this.rootObservedRevision && !sameIdentity(this.rootStat, before))) {
       const factory = this.fsSafeRootFactory ?? (await import('openclaw/plugin-sdk/security-runtime')).root;
       const fsSafeRoot = await factory(checked);
       const rootDescriptor = openSync(checked, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -97,23 +101,35 @@ export class NoteAdapter {
       this.fsSafeRoot = fsSafeRoot;
       this.rootDescriptor = rootDescriptor;
       this.rootStat = held;
+      this.boundLocatorVersion = this.rootLocatorVersion;
     }
     await this.afterRootResolved?.({ root: this.fsSafeRoot.rootReal });
+    this.assertCurrentRoot(this.fsSafeRoot.rootReal);
     return this.fsSafeRoot.rootReal;
   }
 
-  noteReference(root, relativePath, revision) {
+  noteReference(root, relativePath, revision, referencesByExternalSourceId = null) {
+    this.assertCurrentRoot(root);
     const externalSourceId = `${root}/${relativePath}`;
-    const matches = this.metadata?.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note' && reference.externalSourceId === externalSourceId) ?? [];
+    const matches = referencesByExternalSourceId === null
+      ? this.metadata?.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note' && effectiveSourceLocator(this.metadata, reference) === externalSourceId) ?? []
+      : referencesByExternalSourceId.get(externalSourceId) ?? [];
     if (matches.length > 1) throw sourceError('source-recovery', 'The Note Source Reference is ambiguous.');
     return createSourceReference({
       referenceId: matches[0]?.referenceId ?? `note:${randomUUID()}`,
       topicId: this.topicId,
       sourceSystem: 'obsidian',
       sourceKind: 'note',
-      externalSourceId,
+      externalSourceId: matches[0]?.externalSourceId ?? externalSourceId,
       observedRevision: revision
     });
+  }
+
+  assertCurrentRoot(root) {
+    if (!this.noteFolderReferenceId) return;
+    const current = this.metadata?.getSourceLocator?.(this.noteFolderReferenceId);
+    const reference = this.metadata?.getSourceReference?.(this.noteFolderReferenceId);
+    if (!current || reference?.topicId !== this.topicId || current.locator !== root || current.observedRevision !== this.rootObservedRevision || (current.locatorVersion ?? null) !== this.rootLocatorVersion) throw sourceError('conflict', 'The Note Folder binding changed during source access.');
   }
 
   descriptorPath(handle, name = '') {
@@ -133,6 +149,7 @@ export class NoteAdapter {
   }
 
   close() {
+    this.catalogSnapshot = null;
     if (this.rootDescriptor === undefined) return;
     closeSync(this.rootDescriptor);
     this.rootDescriptor = undefined;
@@ -197,6 +214,9 @@ export class NoteAdapter {
   }
 
   async assertChainStable(chain) {
+    this.assertCurrentRoot(this.fsSafeRoot.rootReal);
+    if (this.rootObservedRevision && await readNoteFolderIdentity(this.fsSafeRoot.rootReal) !== this.rootObservedRevision) throw sourceError('source-recovery', 'The Note Folder identity changed during source access.');
+    this.assertCurrentRoot(this.fsSafeRoot.rootReal);
     for (const component of chain) {
       const current = await lstat(component.namedPath).catch(() => null);
       if (!current?.isDirectory() || current.isSymbolicLink() || !sameIdentity(component.stat, current)) {
@@ -228,6 +248,12 @@ export class NoteAdapter {
   }
 
   async hasOnlyInternalAliases(parent, expected) {
+    if (this.recovery.enabled) {
+      const known = await this.recovery.knownAliases(expected);
+      const parentPath = await import('node:fs/promises').then(({ realpath }) => realpath(this.descriptorPath(parent.handle)));
+      known.add(path.join(parentPath, parent.leaf));
+      if (known.size === expected.nlink) return true;
+    }
     const names = await readdir(this.descriptorPath(parent.handle));
     let links = 0;
     for (const name of names) {
@@ -251,6 +277,8 @@ export class NoteAdapter {
   }
 
   async read(input = {}) {
+    if (!this.recovery.owned) return this.recovery.run(() => this.read(input));
+    this.recovery.assertReadAdmission();
     const allowed = new Set(['schemaVersion', 'path', 'notePath', 'referenceId', 'observedRevision', 'observe', 'requestId']);
     for (const key of Object.keys(input)) if (!allowed.has(key)) throw sourceError('invalid-request', `Note read contains unsupported field: ${key}`);
     const root = await this.resolveRoot();
@@ -258,7 +286,7 @@ export class NoteAdapter {
     if (input.referenceId !== undefined && input.referenceId !== this.noteFolderReferenceId) {
       const reference = this.metadata?.getSourceReference?.(input.referenceId);
       const expectedExternalId = `${root}/${state.relativePath}`;
-      if (!reference || reference.topicId !== this.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || reference.externalSourceId !== expectedExternalId) {
+      if (!reference || reference.topicId !== this.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || effectiveSourceLocator(this.metadata, reference) !== expectedExternalId) {
         throw sourceError('source-recovery', 'The Note read does not match the exact Topic-owned Note Source Reference.');
       }
     }
@@ -276,14 +304,24 @@ export class NoteAdapter {
   }
 
   async browse(input = {}) {
+    if (!this.recovery.owned) return this.recovery.run(() => this.browse(input));
+    this.recovery.assertReadAdmission();
     const root = await this.resolveRoot();
     const notes = [];
+    const referencesByExternalSourceId = new Map();
+    for (const reference of this.metadata?.listSourceReferences?.(this.topicId) ?? []) {
+      if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note') continue;
+      const locator = effectiveSourceLocator(this.metadata, reference);
+      const matches = referencesByExternalSourceId.get(locator) ?? [];
+      matches.push(reference);
+      referencesByExternalSourceId.set(locator, matches);
+    }
     const rootStat = this.rootStat;
     const rootHandle = await this.duplicateRootHandle();
     const visit = async (directoryHandle, relative = '', chain = [{ namedPath: root, stat: rootStat }]) => {
       const entries = await readdir(this.descriptorPath(directoryHandle), { withFileTypes: true });
       entries.sort((left, right) => left.name.localeCompare(right.name));
-      for (const entry of entries) {
+      const visitEntry = async (entry) => {
         const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
         await this.beforePathIo?.({ operation: 'browse', path: childRelative });
         const child = this.descriptorPath(directoryHandle, entry.name);
@@ -311,11 +349,23 @@ export class NoteAdapter {
           } finally { await file.close(); }
           await this.assertChainStable(chain);
           const revision = revisionForBytes(bytes);
-          const candidateReference = this.noteReference(root, childRelative, revision);
-          const sourceReference = input.observe === false ? candidateReference : await this.observe(candidateReference);
-          notes.push(Object.freeze({ schemaVersion: 1, path: childRelative, revision, sourceReference }));
+          const sourceReference = this.noteReference(root, childRelative, revision, referencesByExternalSourceId);
+          notes.push({
+            schemaVersion: 1,
+            path: childRelative,
+            revision,
+            sourceReference,
+            ...(input.includeText === true ? { text: bytes.toString('utf8') } : {})
+          });
         } else if (!stat.isFile()) {
           throw sourceError('unsafe-path', 'The Note Folder contains a non-regular entry.');
+        }
+      };
+      if (this.beforePathIo) {
+        for (const entry of entries) await visitEntry(entry);
+      } else {
+        for (let offset = 0; offset < entries.length; offset += NOTE_BROWSE_CONCURRENCY) {
+          await Promise.all(entries.slice(offset, offset + NOTE_BROWSE_CONCURRENCY).map(visitEntry));
         }
       }
     };
@@ -323,10 +373,47 @@ export class NoteAdapter {
       await visit(rootHandle);
       await this.assertChainStable([{ namedPath: root, stat: rootStat }]);
     } finally { await rootHandle.close(); }
-    return Object.freeze(notes);
+    notes.sort((left, right) => left.path.localeCompare(right.path));
+    this.assertCurrentRoot(root);
+    if (input.observe !== false) {
+      const observed = typeof this.metadata?.observeSourceReferences === 'function'
+        ? this.metadata.observeSourceReferences(notes.map((note) => note.sourceReference))
+        : await Promise.all(notes.map((note) => this.observe(note.sourceReference)));
+      for (let index = 0; index < notes.length; index += 1) notes[index].sourceReference = observed[index];
+    }
+    return Object.freeze(notes.map((note) => Object.freeze(note)));
+  }
+
+  async browsePage(input = {}) {
+    if (!this.recovery.owned) return this.recovery.run(() => this.browsePage(input));
+    this.recovery.assertReadAdmission();
+    const limit = input.limit ?? 100;
+    const requestedOffset = input.offset ?? 0;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw sourceError('invalid-request', 'The Note page limit must be between 1 and 100.');
+    if (!Number.isInteger(requestedOffset) || requestedOffset < 0) throw sourceError('invalid-request', 'The Note page offset must be non-negative.');
+    let snapshot = this.catalogSnapshot;
+    if (input.cursor !== undefined) {
+      if (!snapshot || snapshot.cursor !== input.cursor || snapshot.expiresAt <= this.nowMs()) {
+        this.catalogSnapshot = null;
+        throw sourceError('conflict', 'The Note catalog snapshot expired; refresh it before continuing.');
+      }
+    } else {
+      const notes = await this.browse({ observe: input.observe, includeText: input.includeText });
+      snapshot = { cursor: randomUUID(), expiresAt: this.nowMs() + NOTE_CATALOG_SNAPSHOT_TTL_MS, notes };
+      this.catalogSnapshot = snapshot;
+    }
+    const total = snapshot.notes.length;
+    const offset = Math.min(requestedOffset, Math.max(0, Math.floor(Math.max(0, total - 1) / limit) * limit));
+    const notes = snapshot.notes.slice(offset, offset + limit);
+    const nextOffset = offset + notes.length < total ? offset + notes.length : null;
+    return Object.freeze({ schemaVersion: 1, notes, total, offset, nextOffset, hasMore: nextOffset !== null, cursor: snapshot.cursor });
   }
 
   async create(input = {}) {
+    if (!this.recovery.owned) return this.recovery.run(() => this.create(input));
+    const recovered = await this.recovery.reconcile(input, 'create');
+    if (recovered?.outcome === 'applied') return recovered.value;
+    if (recovered && recovered.outcome !== 'not-applied') throw sourceError(recovered.outcome, 'The prior Note create is not safely replayable.');
     const notePath = normalizeNotePath(input.path ?? input.notePath);
     const bytes = bytesForText(input.text ?? input.content);
     const root = await this.resolveRoot();
@@ -336,24 +423,31 @@ export class NoteAdapter {
       throw error;
     });
     if (existing) {
-      const current = existing;
-      if (current.revision === revisionForBytes(bytes)) {
-        await this.observe(current.sourceReference);
-        return mutationResult('reconciled', current, { logicalOperationId: input.logicalOperationId ?? null });
-      }
-      throw sourceError('conflict', 'The destination Note already exists.', { currentRevision: current.revision, currentPath: notePath });
+      throw sourceError('conflict', 'The destination Note already exists.', { currentRevision: existing.revision, currentPath: notePath });
     }
     const parent = await this.openParent(root, notePath, { create: true, operation: 'create' });
-    const temporary = this.descriptorPath(parent.handle, `.${parent.leaf}.command-center-${randomUUID()}.tmp`);
+    let temporary = this.descriptorPath(parent.handle, `.${parent.leaf}.command-center-${randomUUID()}.tmp`);
     let publishedIdentity = null;
+    let recoveryRecord;
+    let sourceReference;
+    const revision = revisionForBytes(bytes);
     try {
       await this.beforePathIo?.({ operation: 'create', path: notePath });
       await this.assertChainStable(parent.chain);
       if (await lstat(parent.target).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))) throw await this.pathConflict(parent.target, notePath, 'The destination Note already exists.');
-      await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
+      sourceReference = this.noteReference(root, notePath, revision);
+      if (this.recovery.enabled) {
+        recoveryRecord = await this.recovery.prepareCreate({ input, root, parent, bytes, sourceReference });
+        temporary = this.descriptorPath(parent.handle, recoveryRecord.result.temporaryName);
+        sourceReference = recoveryRecord.result.sourceReference;
+      } else await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
       await this.beforeAtomicCommit?.({ operation: 'create', path: notePath });
       await this.assertChainStable(parent.chain);
       const temporaryStat = await lstat(temporary);
+      if (recoveryRecord && (!sameIdentity(temporaryStat, recoveryRecord.result.publishedIdentity) || temporaryStat.birthtimeMs !== recoveryRecord.result.publishedIdentity.birthtimeMs)) throw sourceError('conflict', 'The prepared Note create staging inode changed.');
+      // Persist attempt ownership before the syscall: after a crash, absence
+      // cannot distinguish an unstarted create from a published-then-deleted one.
+      if (recoveryRecord) recoveryRecord = this.recovery.record(recoveryRecord, 'pending', 'publication-attempting');
       try {
         await link(temporary, parent.target);
         publishedIdentity = temporaryStat;
@@ -361,41 +455,50 @@ export class NoteAdapter {
         if (error?.code === 'EEXIST') throw await this.pathConflict(parent.target, notePath, 'The destination Note appeared before commit.');
         throw error;
       }
+      await this.afterAtomicPublish?.({ operation: 'create', path: notePath });
+      await this.assertChainStable(parent.chain);
+      const published = await this.recovery.inspect(parent.target);
+      if (!published || !sameIdentity(published.identity, temporaryStat) || published.identity.birthtimeMs !== temporaryStat.birthtimeMs || published.revision !== revision) throw sourceError('conflict', 'The Note create publication no longer matches its prepared inode and bytes.');
       await this.assertChainStable(parent.chain);
       // Keep the staging name as a hard-linked recovery candidate. Node has no
       // conditional unlink primitive, so pathname cleanup cannot safely prove
       // that an already-open descriptor was not modified after validation.
-      const revision = revisionForBytes(bytes);
-      const note = { schemaVersion: 1, path: notePath, text: bytes.toString('utf8'), revision, sourceReference: this.noteReference(root, notePath, revision) };
-      note.sourceReference = await this.observe(note.sourceReference);
-      return mutationResult('applied', note, { logicalOperationId: input.logicalOperationId ?? null });
+      if (recoveryRecord) recoveryRecord = this.recovery.record(recoveryRecord, 'pending', 'filesystem-applied');
     } catch (error) {
-      if (publishedIdentity) await this.unlinkIfIdentity(parent.target, publishedIdentity);
+      if (recoveryRecord) this.recovery.record(recoveryRecord, 'unknown', recoveryRecord.currentStep);
+      else if (publishedIdentity) await this.unlinkIfIdentity(parent.target, publishedIdentity);
       // Unproven staging candidates are intentionally preserved.
       throw error;
     } finally {
       await parent.handle.close();
     }
+    this.assertCurrentRoot(root);
+    const note = { schemaVersion: 1, path: notePath, text: bytes.toString('utf8'), revision, sourceReference };
+    note.sourceReference = await this.observe(note.sourceReference);
+    this.assertCurrentRoot(root);
+    if (recoveryRecord) this.recovery.record(recoveryRecord, 'applied', 'metadata-applied');
+    return mutationResult('applied', note, { logicalOperationId: input.logicalOperationId ?? null });
   }
 
   async edit(input = {}) {
+    if (!this.recovery.owned) return this.recovery.run(() => this.edit(input));
+    const recovered = await this.recovery.reconcile(input, 'edit');
+    if (recovered?.outcome === 'applied') return recovered.value;
+    if (recovered && recovered.outcome !== 'not-applied') throw sourceError(recovered.outcome, 'The prior Note edit is not safely replayable.');
     const notePath = normalizeNotePath(input.path ?? input.notePath);
     const expectedRevision = nonBlank(input.expectedRevision, 'expectedRevision');
     const bytes = bytesForText(input.text ?? input.content);
     const root = await this.resolveRoot();
     const before = await this.read({ path: notePath, ...(input.referenceId === undefined ? {} : { referenceId: input.referenceId }) });
     const desiredRevision = revisionForBytes(bytes);
-    if (before.revision === desiredRevision && before.revision !== expectedRevision) {
-      await this.observe(before.sourceReference);
-      return mutationResult('reconciled', before, { logicalOperationId: input.logicalOperationId ?? null });
-    }
     if (before.revision !== expectedRevision) throw sourceError('conflict', 'The Note revision is stale.', { currentRevision: before.revision, currentPath: notePath, expectedRevision });
     await this.beforeCommit?.({ operation: 'edit', path: notePath, expectedRevision });
     const latest = await this.read({ path: notePath, ...(input.referenceId === undefined ? {} : { referenceId: input.referenceId }) });
     if (latest.revision !== expectedRevision) throw sourceError('conflict', 'The Note changed before commit.', { currentRevision: latest.revision, currentPath: notePath, expectedRevision });
-    await this.atomicReplace(root, notePath, bytes, expectedRevision);
+    const recoveryRecord = await this.atomicReplace(root, notePath, bytes, expectedRevision, input, latest.sourceReference);
     const note = { schemaVersion: 1, path: notePath, text: bytes.toString('utf8'), revision: desiredRevision, sourceReference: { ...latest.sourceReference, observedRevision: desiredRevision } };
     note.sourceReference = await this.observe(note.sourceReference);
+    if (recoveryRecord) this.recovery.record(recoveryRecord, 'applied', 'metadata-applied');
     return mutationResult('applied', note, { logicalOperationId: input.logicalOperationId ?? null });
   }
 
@@ -404,6 +507,10 @@ export class NoteAdapter {
   }
 
   async move(input = {}, operation = 'move') {
+    if (!this.recovery.owned) return this.recovery.run(() => this.move(input, operation));
+    const recovered = await this.recovery.reconcile(input, operation);
+    if (recovered?.outcome === 'applied') return recovered.value;
+    if (recovered && recovered.outcome !== 'not-applied') throw sourceError(recovered.outcome, 'The prior Note move is not safely replayable.');
     const sourcePath = normalizeNotePath(input.path ?? input.sourcePath);
     const destinationPath = normalizeNotePath(input.destinationPath ?? input.newPath);
     const expectedRevision = nonBlank(input.expectedRevision, 'expectedRevision');
@@ -430,14 +537,22 @@ export class NoteAdapter {
     let claimed = false;
     let destinationLinked = false;
     let claimStat;
+    let sourceHandle;
+    let recoveryRecord;
     try {
       await this.beforePathIo?.({ operation, path: sourcePath, destinationPath });
       await this.assertChainStable(sourceParent.chain);
       await this.assertChainStable(destinationParent.chain);
+      sourceHandle = await open(sourceParent.target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const sourceStat = await sourceHandle.stat();
+      if (revisionForBytes(await sourceHandle.readFile()) !== expectedRevision) throw sourceError('conflict', 'The Note changed before its recovery claim was prepared.');
       await this.beforeAtomicCommit?.({ operation: 'move', path: sourcePath, destinationPath, expectedRevision });
+      if (!sameIdentity(sourceStat, await lstat(sourceParent.target))) throw sourceError('conflict', 'The Note identity changed before its recovery claim was prepared.');
+      recoveryRecord = await this.recovery.prepare({ input, operation, root, sourceParent, destinationParent, sourceStat, claim, sourceReference: latest.sourceReference });
       await rename(sourceParent.target, claim);
       claimed = true;
       claimStat = await lstat(claim);
+      if (!sameIdentity(sourceStat, claimStat)) throw sourceError('conflict', 'The claimed Note does not match its original inode.');
       if (claimStat.nlink !== 1 && !(await this.hasOnlyInternalAliases(sourceParent, claimStat))) throw sourceError('unsafe-path', 'Hard-linked Note aliases are not supported.');
       const claimBytes = await this.readAnchoredFile(claim);
       if (revisionForBytes(claimBytes) !== expectedRevision) {
@@ -464,22 +579,25 @@ export class NoteAdapter {
       if (!sameIdentity(claimStat, finalClaimStat) || claimStat.size !== finalClaimStat.size || revisionForBytes(finalClaimBytes) !== expectedRevision) {
         throw sourceError('conflict', 'The Note changed after destination publication.', { currentRevision: revisionForBytes(finalClaimBytes), currentPath: sourcePath, expectedRevision });
       }
-      await this.relocateInternalAliases(sourceParent, destinationParent, claimStat);
+      if (recoveryRecord) recoveryRecord = this.recovery.record(recoveryRecord, 'pending', 'filesystem-applied');
+      if (!recoveryRecord) await this.relocateInternalAliases(sourceParent, destinationParent, claimStat);
       claimed = false;
     } catch (error) {
-      if (destinationLinked) await this.unlinkIfIdentity(destinationParent.target, claimStat);
+      if (destinationLinked) await this.unlinkIfIdentity(destinationParent.target, claimStat, recoveryRecord);
       if (claimed) await this.restoreClaim(claim, sourceParent.target);
       throw error;
     } finally {
+      await sourceHandle?.close();
       await sourceParent.handle.close();
       await destinationParent.handle.close();
     }
     const note = { schemaVersion: 1, path: destinationPath, text: current.text, revision: current.revision, sourceReference: this.noteReference(root, destinationPath, current.revision) };
     note.sourceReference = await this.observe(note.sourceReference);
+    if (recoveryRecord) this.recovery.record(recoveryRecord, 'applied', 'metadata-applied');
     return mutationResult('applied', note, { previousPath: sourcePath, logicalOperationId: input.logicalOperationId ?? null });
   }
 
-  async atomicReplace(root, relativePath, bytes, expectedRevision) {
+  async atomicReplace(root, relativePath, bytes, expectedRevision, input, sourceReference) {
     const parent = await this.openParent(root, relativePath, { operation: 'edit' });
     const temporary = this.descriptorPath(parent.handle, `.${parent.leaf}.command-center-${randomUUID()}.tmp`);
     const claim = this.descriptorPath(parent.handle, `.${parent.leaf}.command-center-claim-${randomUUID()}.tmp`);
@@ -487,16 +605,24 @@ export class NoteAdapter {
     let published = false;
     let claimStat;
     let temporaryStat;
+    let sourceHandle;
+    let recoveryRecord;
     try {
       await this.beforePathIo?.({ operation: 'edit', path: relativePath });
       await this.assertChainStable(parent.chain);
       await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
       temporaryStat = await lstat(temporary);
+      sourceHandle = await open(parent.target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const sourceStat = await sourceHandle.stat();
+      if (revisionForBytes(await sourceHandle.readFile()) !== expectedRevision) throw sourceError('conflict', 'The Note changed before its recovery claim was prepared.');
       await this.beforeAtomicCommit?.({ operation: 'edit', path: relativePath, expectedRevision });
       await this.assertChainStable(parent.chain);
+      if (!sameIdentity(sourceStat, await lstat(parent.target))) throw sourceError('conflict', 'The Note identity changed before its recovery claim was prepared.');
+      recoveryRecord = await this.recovery.prepare({ input, operation: 'edit', root, sourceParent: parent, sourceStat, claim, temporary, temporaryStat, sourceReference });
       await rename(parent.target, claim);
       claimed = true;
       claimStat = await lstat(claim);
+      if (!sameIdentity(sourceStat, claimStat)) throw sourceError('conflict', 'The claimed Note does not match its original inode.');
       if (claimStat.nlink !== 1 && !(await this.hasOnlyInternalAliases(parent, claimStat))) throw sourceError('unsafe-path', 'Hard-linked Note aliases are not supported.');
       const claimBytes = await this.readAnchoredFile(claim);
       const currentRevision = revisionForBytes(claimBytes);
@@ -522,14 +648,17 @@ export class NoteAdapter {
       if (!sameStat(claimStat, finalClaimStat) || revisionForBytes(finalClaimBytes) !== expectedRevision) {
         throw sourceError('conflict', 'The claimed Note changed after replacement publication.', { currentRevision: revisionForBytes(finalClaimBytes), currentPath: relativePath, expectedRevision });
       }
+      if (recoveryRecord) recoveryRecord = this.recovery.record(recoveryRecord, 'pending', 'filesystem-applied');
       claimed = false;
+      return recoveryRecord;
     } catch (error) {
-      if (published) await this.unlinkIfIdentity(parent.target, temporaryStat);
+      if (published) await this.unlinkIfIdentity(parent.target, temporaryStat, recoveryRecord);
       if (claimed) await this.restoreClaim(claim, parent.target);
       // Preserve staging candidates whenever rollback ownership is uncertain.
       if (error instanceof SourceServiceError) throw error;
       throw error;
     } finally {
+      await sourceHandle?.close();
       await parent.handle.close();
     }
   }
@@ -549,19 +678,27 @@ export class NoteAdapter {
     return true;
   }
 
-  async unlinkIfIdentity(candidate, expected) {
+  async unlinkIfIdentity(candidate, expected, recoveryRecord = null) {
     if (!expected) return false;
     const quarantine = `${candidate}.command-center-preserved-${randomUUID()}`;
-    try { await rename(candidate, quarantine); } catch (error) {
+    let held;
+    try {
+      if (recoveryRecord) {
+        held = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const captured = await held.stat();
+        this.recovery.record(recoveryRecord, 'pending', 'rollback-prepared', { ...recoveryRecord.result,
+          rollback: { name: path.basename(quarantine), identity: { dev: captured.dev, ino: captured.ino, birthtimeMs: captured.birthtimeMs } } });
+      }
+      await rename(candidate, quarantine);
+    } catch (error) {
       if (error?.code === 'ENOENT') return false;
       throw error;
-    }
+    } finally { await held?.close(); }
     const quarantined = await lstat(quarantine).catch(() => null);
     if (sameIdentity(quarantined, expected)) return true;
-    try { await rename(quarantine, candidate); } catch (error) {
-      if (error?.code !== 'EEXIST' && error?.code !== 'ENOTEMPTY') throw error;
-      // Both names are authoritative candidates; preserve both for recovery.
-    }
+    // Restoration is no-replace too: a second external writer may have
+    // published while quarantine identity was being checked.
+    await this.restoreClaim(quarantine, candidate);
     return false;
   }
 

@@ -38,7 +38,7 @@ function cloneAndFreeze(value) {
 
 async function reserveGatewayEndpoint() {
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    const server = createServer();
+    let server = createServer(socket => socket.destroy());
     await new Promise((resolve, reject) => {
       const onError = (error) => {
         server.off('listening', onListening);
@@ -58,15 +58,46 @@ async function reserveGatewayEndpoint() {
       continue;
     }
     let reserved = true;
+    let changing = false;
     const release = async () => {
+      if (changing) throw new Error('Gateway endpoint reservation is changing');
       if (!reserved) return;
-      await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-      reserved = false;
+      changing = true;
+      try {
+        await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        reserved = false;
+      } finally { changing = false; }
+    };
+    const reacquire = async ({ signal } = {}) => {
+      signal?.throwIfAborted();
+      if (changing || reserved) throw new Error('Gateway endpoint is already reserved or changing');
+      changing = true;
+      const next = createServer(socket => socket.destroy());
+      try {
+        await new Promise((resolve, reject) => {
+          const cleanup = () => { next.off('error', failed); next.off('listening', listening); signal?.removeEventListener('abort', aborted); };
+          const failed = error => { cleanup(); reject(error); };
+          const listening = () => { cleanup(); resolve(); };
+          const aborted = () => { cleanup(); next.close(() => {}); reject(signal.reason ?? new Error('Gateway reservation cancelled')); };
+          next.once('error', failed); next.once('listening', listening);
+          signal?.addEventListener('abort', aborted, { once: true });
+          // The cancellation listener belongs only to acquisition. A later
+          // abort must not silently revoke a successfully owned reservation.
+          next.listen({ host: '127.0.0.1', port: address.port });
+        });
+        signal?.throwIfAborted();
+        server = next;
+        reserved = true;
+      } catch (error) {
+        next.close(() => {});
+        throw error;
+      } finally { changing = false; }
     };
     return Object.freeze({
       endpoint: Object.freeze({ host: '127.0.0.1', port: address.port, url: `http://127.0.0.1:${address.port}` }),
       release,
-      isReserved: () => reserved
+      reacquire,
+      isReserved: () => reserved && server.listening
     });
   }
   throw new Error('Could not reserve an isolated Gateway endpoint');
@@ -102,7 +133,7 @@ export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot
       const credentialField = ['to', 'ken'].join('');
       const gatewayAuth = { mode: 'token', [credentialField]: gatewayCredential };
       await writeFile(configPath, `${JSON.stringify({
-        gateway: { bind: 'loopback', port: gateway.port, auth: gatewayAuth },
+        gateway: { bind: 'loopback', port: gateway.port, auth: gatewayAuth, controlUi: { experimental: { customPlugins: true } } },
         models: { catalogRefresh: { enabled: false } },
         // The pinned host only suppresses startup update checks for this channel
         // plus checkOnStart=false. Together with the catalog setting above, the

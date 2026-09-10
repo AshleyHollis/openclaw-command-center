@@ -1,8 +1,29 @@
 const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs']);
+const browserHeavyTests = new Set([
+  'test/native-operating-mode.test.mjs',
+  'test/first-live-native-ui.test.mjs',
+  'test/native-ui-attention.test.mjs',
+  'test/native-ui-editing.test.mjs',
+  'test/native-ui-page.test.mjs',
+  'test/keyboard-batch.test.mjs',
+  'test/note-drafts.test.mjs',
+  'test/conversation-keyboard-focus.test.mjs',
+  'test/keyboard-paint.test.mjs',
+  'test/keyboard-time-focus.test.mjs',
+  'test/dashboard-operation-ui.test.mjs',
+  'test/dashboard-ui.test.mjs',
+  'test/dashboard-refresh-focus.test.mjs',
+  'test/topic-page.acceptance.test.mjs',
+  'test/topic-review-ui.test.mjs',
+  'test/topic-review-focus.test.mjs',
+  'test/workspace-recovery-ui.test.mjs',
+  'test/topics-ui.test.mjs'
+]);
 const topicPageTicketTests = new Set([
   'bridge-contract.test.mjs',
   'browser-setup.test.mjs',
   'markdown-preview.test.mjs',
+  'native-chat-navigation.test.mjs',
   'note-adapter.test.mjs',
   'note-conflicts.test.mjs',
   'plugin-contract.test.mjs',
@@ -14,6 +35,97 @@ const topicPageTicketTests = new Set([
   'topic-page.acceptance.test.mjs',
   'topic-search.acceptance.test.mjs'
 ]);
+const issue32TicketTests = new Set([
+  'migration-preservation-bundle.test.mjs',
+  'imported-history-owner.test.mjs',
+  'preserved-history-transcript.test.mjs',
+  'native-history-source.test.mjs',
+  'native-release-capture.test.mjs',
+  'test-runtime.test.mjs',
+  'native-compatibility-fixture.test.mjs',
+  'first-live-migration-bindings.test.mjs',
+  'native-operating-mode.test.mjs',
+  'conversation-creation.test.mjs',
+  'conversation-recovery-http.test.mjs',
+  'first-live-registration.test.mjs',
+  'first-live-startup.test.mjs',
+  'first-live-package.test.mjs',
+  'first-live-note-read-only.test.mjs',
+  'first-live-native-ui.test.mjs',
+  'native-ui-attention.test.mjs',
+  'native-startup-capabilities.test.mjs',
+  'note-process-death.test.mjs',
+  'native-ui-editing.test.mjs',
+  'native-note-read.test.mjs',
+  'native-ui-navigation.test.mjs',
+  'native-ui-page.test.mjs',
+  'acceptance-finalization.test.mjs',
+  'acceptance-report.test.mjs',
+  'bridge-contract.test.mjs',
+  'check-phases.test.mjs',
+  'plugin-integration.test.mjs',
+  'real-host.acceptance.test.mjs',
+  'test-selection.test.mjs'
+]);
+
+const focusedRealHostScenarios = Object.freeze({
+  'diagnostic-native-ui-session-authority': Object.freeze(['native-control-ui-activation']),
+  'diagnostic-scale-startup': Object.freeze(['diagnostic-scale-startup']),
+  'native-control-ui-activation': Object.freeze(['native-control-ui-activation']),
+  'startup-authenticated-topic-analysis': Object.freeze(['pinned-host-startup', 'focused-verified-note-locator', 'startup-authenticated-topic-analysis']),
+  'session-recovery-contract': Object.freeze(['pinned-host-startup', 'focused-session-recovery']),
+  'combined-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'desktop-keyboard-journey', 'desktop-primary-journey-review']),
+  'authenticated-control-ui-mount': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount']),
+  'native-chat-handoff': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-handoff']),
+  'native-chat-pointer-handoff': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']),
+  'authenticated-reminder-create': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-reminder-create']),
+  'closed-tab-notification': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-closed-tab-notification']),
+  'topic-review-projection': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-topic-review-projection']),
+  'session-create-idempotent-replay': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-session-create-idempotent-replay']),
+  'migrated-scale-conversation-seeding': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding']),
+  'desktop-primary-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey']),
+  'desktop-review-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'desktop-primary-journey-review']),
+  'desktop-keyboard-journey': Object.freeze(['desktop-keyboard-journey']),
+  'mobile-primary-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'mobile-accessibility-journey']),
+  'desktop-to-scale-transition': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']),
+  'heavy-desktop-to-scale-transition': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-heavy-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']),
+  'full-corpus-desktop-to-scale-transition': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']),
+  'full-prefix-to-second-topic': Object.freeze(['pinned-host-startup', 'startup-projection-recovery', 'invalidated-projection-recovery', 'missing-projection-recovery', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'stale-projection-recovery', 'session-create-catalog-readback', 'session-create-idempotent-replay', 'migrated-scale-conversation-seeding', 'desktop-primary-journey', 'focused-second-topic-journey']),
+  'heavy-corpus-mutation-journey': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-heavy-corpus-mutation-journey']),
+  'repeated-recovery-session-create': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-invalidated-projection-recovery', 'focused-missing-projection-recovery', 'focused-stale-projection-recovery', 'focused-session-create-after-recovery']),
+  'scale-workspace-readiness': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'focused-scale-workspace-readiness']),
+  'scale-performance': Object.freeze(['scale-performance']),
+  'ui-state-regression': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-ui-state-regression'])
+});
+
+const diagnosticSliceLanes = Object.freeze({
+  // The release's source/import/recovery lane is the only non-performance
+  // slice lane. Native UI/Session authority uses the exact native activation
+  // producer above; scale and mobile remain opt-in diagnostics.
+  'diagnostic-source-identity-import-recovery': Object.freeze(['host-tuple-refusal', 'build-variant', 'plugin-api-variant', 'bridge-protocol-variant', 'binding-mismatch', 'foreign-database-restoration', 'secure-origin', 'degraded-bridge-grants', 'degraded-source-availability', 'combined-degraded', 'recovery-only-compatibility', 'destructive-migration-restoration']),
+  'diagnostic-dashboard-payload': Object.freeze(['dashboard-mixed-payload']),
+  'diagnostic-topic-review': Object.freeze(['fresh-review']),
+  'diagnostic-reminder-lifecycle': Object.freeze(['reminder-runtime-lifecycle']),
+  'diagnostic-scale': Object.freeze(['fresh-scale']),
+  'diagnostic-mobile': Object.freeze(['fresh-mobile']),
+  'diagnostic-ui-desktop': Object.freeze(['fresh-desktop', 'fresh-scale', 'fresh-scale-analysis']),
+  'diagnostic-compatibility-startup': Object.freeze(['host-tuple-refusal', 'build-variant']),
+  'diagnostic-secure-origin': Object.freeze(['secure-origin']),
+  'diagnostic-ui-remaining': Object.freeze(['fresh-scale']),
+  // Historical diagnostics remain opt-in evidence and are not release rows.
+  'diagnostic-ui-data': Object.freeze(['fresh-desktop', 'fresh-scale', 'fresh-scale-analysis', 'fresh-review']),
+  'diagnostic-security-recovery': Object.freeze(['host-tuple-refusal', 'build-variant', 'plugin-api-variant', 'bridge-protocol-variant', 'binding-mismatch', 'foreign-database-restoration', 'secure-origin', 'degraded-bridge-grants', 'degraded-source-availability', 'combined-degraded', 'recovery-only-compatibility', 'destructive-migration-restoration'])
+});
+
+export function resolveRealHostAcceptancePlan(value) {
+  const selected = typeof value === 'string' ? value.trim() : '';
+  if (selected === '') return Object.freeze({ kind: 'release', scenarioIds: null });
+  if (selected === 'native-release-prerequisites') return Object.freeze({ kind: 'prerequisites', scenarioIds: Object.freeze([]) });
+  if (diagnosticSliceLanes[selected]) return Object.freeze({ kind: 'focused', scenarioIds: Object.freeze([]), isolatedSliceIds: diagnosticSliceLanes[selected] });
+  const scenarioIds = focusedRealHostScenarios[selected];
+  if (!scenarioIds) throw new Error(`Unsupported real-host acceptance scenario: ${selected}`);
+  return Object.freeze({ kind: 'focused', scenarioIds });
+}
 
 /**
  * Select the ordinary repository suite. Controller-owned receipt tests retain
@@ -28,6 +140,14 @@ export function selectOrdinaryTestFiles(entries) {
     .map((entry) => `test/${entry}`);
 }
 
+/** Only the measured artifact cannot exist before first capture. */
+export function selectCapturePreflightTestFiles(entries) {
+  const files = selectOrdinaryTestFiles(entries);
+  const artifact = 'test/performance-baseline-artifact.test.mjs';
+  if (!files.includes(artifact)) throw new Error('Capture preflight requires the artifact test inventory.');
+  return files.filter(file => file !== artifact);
+}
+
 /**
  * Keep ordinary qualification within the medium evaluator's resource budget.
  * Process isolation lets independent files overlap, while the explicit bound
@@ -38,10 +158,30 @@ export function ordinaryTestArgv(files) {
   return ['--test', '--test-concurrency=4', ...files];
 }
 
+/** Keep Chromium-heavy files selected but serialize them in a separate lane. */
+export function ordinaryTestLanes(files) {
+  if (!Array.isArray(files) || files.some((file) => typeof file !== 'string')) throw new TypeError('test files must be an array of strings');
+  const browser = files.filter((file) => browserHeavyTests.has(file));
+  const parallel = files.filter((file) => !browserHeavyTests.has(file));
+  return [
+    ...(parallel.length ? [{ id: 'parallel', argv: ordinaryTestArgv(parallel) }] : []),
+    ...(browser.length ? [{ id: 'browser', argv: ['--test', '--test-concurrency=1', ...browser] }] : [])
+  ];
+}
+
 export function selectTopicPageTicketTestFiles(entries) {
   if (!Array.isArray(entries)) throw new TypeError('test entries must be an array');
   return entries
     .filter((entry) => typeof entry === 'string' && topicPageTicketTests.has(entry))
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+    .map((entry) => `test/${entry}`);
+}
+
+/** Select only issue #32's receipt and indispensable integration boundaries. */
+export function selectIssue32TicketTestFiles(entries) {
+  if (!Array.isArray(entries)) throw new TypeError('test entries must be an array');
+  return entries
+    .filter((entry) => typeof entry === 'string' && issue32TicketTests.has(entry))
     .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
     .map((entry) => `test/${entry}`);
 }

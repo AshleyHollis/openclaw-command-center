@@ -6,9 +6,57 @@
   "activation": {
     "onStartup": true
   },
+  "cliCommands": [
+    { "name": "command-center", "description": "Command Center existing-data reconciliation", "hasSubcommands": true }
+  ],
   "configSchema": {
     "type": "object",
     "properties": {
+      "nativeHistorySource": {
+        "type": "object",
+        "description": "Independently pinned preserved native JSONL inventory for read-only history. Never restores or imports Sessions during startup.",
+        "additionalProperties": false,
+        "required": ["root", "expectedInventorySha256", "originalAgentId"],
+        "properties": {
+          "root": { "type": "string", "minLength": 1 },
+          "expectedInventorySha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "originalAgentId": { "type": "string", "pattern": "^[a-z0-9_-]{1,64}$" }
+        }
+      },
+      "preservedHistorySource": {
+        "type": "object",
+          "description": "Pinned preserved export retained for read-only history and preserved attachment reads. Does not initiate an import.",
+        "additionalProperties": false,
+        "required": ["root", "expectedManifestSha256", "trustedPublicKeySha256"],
+        "properties": {
+          "root": { "type": "string", "minLength": 1 },
+          "expectedManifestSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "trustedPublicKeySha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "attachmentDispositions": {
+              "type": "array",
+              "description": "Exact reviewed discrepancies only. Preserves verified export bytes without claiming equivalence to the declared original representation.",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["schemaVersion", "disposition", "status", "sourceManifestSha256", "trustedPublicKeySha256", "channelId", "messageId", "attachmentId", "path", "storedBytes", "storedSha256", "declaredBytes", "declaredAttachmentSha256"],
+                "properties": {
+                  "schemaVersion": { "const": 1 },
+                  "disposition": { "const": "preserved-export-bytes" },
+                  "status": { "const": "declared-representation-unverified" },
+                  "sourceManifestSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "trustedPublicKeySha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "channelId": { "type": "string", "minLength": 1 },
+                  "messageId": { "type": "string", "minLength": 1 },
+                  "attachmentId": { "type": "string", "minLength": 1 },
+                  "path": { "type": "string", "minLength": 1 },
+                  "storedBytes": { "type": "integer", "minimum": 0 },
+                  "storedSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "declaredBytes": { "type": "integer", "minimum": 0 },
+                  "declaredAttachmentSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+                }
+              }
+            }
+        }
+      },
       "legacyDiscordMigration": {
         "type": "object",
         "additionalProperties": false,
@@ -19,6 +67,7 @@
           "channels": {
             "type": "array",
             "minItems": 1,
+            "maxItems": 100,
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -38,16 +87,41 @@
         "properties": { "noteRoot": { "type": "string", "minLength": 1, "pattern": "\\S" } },
         "required": ["noteRoot"],
         "additionalProperties": false
+      },
+      "sourceCapabilities": {
+        "type": "object",
+        "description": "Fail-closed source availability supplied by an isolated host or operator configuration.",
+        "properties": {
+          "notes": { "const": false },
+          "sessions": { "const": false },
+          "scheduler": { "const": false },
+          "activity": { "const": false },
+          "search": { "const": false },
+          "analysis": { "const": false },
+          "attention": { "const": false }
+        },
+        "additionalProperties": false
+      },
+      "controlUiGrant": {
+        "const": false,
+        "description": "Fail closed by withholding the external-tab grant in an isolated compatibility variant."
       }
     },
     "additionalProperties": false
   },
   "contracts": {
-    "tools": ["command_center_topic_context", "command_center_topic_analysis"],
+    "tools": [],
     "gatewayMethodDispatch": ["authenticated-request"]
   },
   "controlUi": {
-    "routeId": "command-center",
-    "sandbox": "allow-scripts"
+    "entry": "dist/native-ui/entry.mjs",
+    "httpRoutes": [
+      { "path": "/plugins/command-center/api/topic-analysis", "method": "GET", "maxRequestBytes": 0, "maxResponseBytes": 262144 },
+      { "path": "/plugins/command-center/api/dashboard/actions", "method": "POST", "maxRequestBytes": 32768, "maxResponseBytes": 32768 },
+      { "path": "/plugins/command-center/api/topics/actions", "method": "POST", "maxRequestBytes": 32768, "maxResponseBytes": 32768 },
+      { "path": "/plugins/command-center/api/topic/actions", "method": "POST", "maxRequestBytes": 12582912, "maxResponseBytes": 32768 },
+      { "path": "/plugins/command-center/api/search/rebuild", "method": "POST", "maxRequestBytes": 2048, "maxResponseBytes": 4096 },
+      { "path": "/plugins/command-center/api/topic-analysis/actions", "method": "POST", "maxRequestBytes": 65536, "maxResponseBytes": 262144 }
+    ]
   }
 }

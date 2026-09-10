@@ -12,13 +12,37 @@ function metadataFixture() {
   return { refs, listSourceReferences: () => refs, createSourceReference: (reference) => { refs.push(reference); return reference; }, observeSourceReference: ({ referenceId, observedRevision }) => { const found = refs.find((reference) => reference.referenceId === referenceId); const updated = { ...found, observedRevision }; refs.splice(refs.indexOf(found), 1, updated); return updated; } };
 }
 
+test('Snooze re-enables a delivered one-shot through the exact revision-fenced idempotent update', async () => {
+  const metadata = metadataFixture();
+  metadata.refs.push({ version: 1, referenceId: 'reminder-delivered-ref', topicId: 'topic-scheduler', sourceSystem: 'scheduler', sourceKind: 'reminder_schedule', externalSourceId: 'job-delivered', observedRevision: 'revision-1' });
+  let job = { id: 'job-delivered', enabled: false, configRevision: 'revision-1', schedule: { kind: 'at', at: '2026-09-05T10:00:00.000Z' }, state: { lastRunStatus: 'ok' } };
+  const updates = [];
+  const gateway = { request: async (method, params) => {
+    if (method === 'cron.get') return structuredClone(job);
+    assert.equal(method, 'cron.update');
+    updates.push(params);
+    job = { ...job, ...params.patch, configRevision: 'revision-2' };
+    return structuredClone(job);
+  } };
+  const adapter = createSchedulerAdapter({ topicId: 'topic-scheduler', metadata, gateway });
+  const schedule = { kind: 'at', at: '2026-09-06T10:00:00.000Z' };
+  const input = { referenceId: 'reminder-delivered-ref', logicalOperationId: randomUUID(), expectedConfigRevision: 'revision-1', patch: { schedule } };
+  const result = await adapter.snooze(input);
+  assert.equal(result.value.job.enabled, true, 'a new date on a disabled schedule does not schedule another delivery');
+  assert.deepEqual(updates[0], { id: 'job-delivered', expectedConfigRevision: 'revision-1', patch: { schedule, enabled: true } });
+  assert.equal((await adapter.snooze(input)).status, 'applied');
+  assert.equal(updates.length, 1);
+  await assert.rejects(() => adapter.snooze({ ...input, logicalOperationId: randomUUID(), patch: { schedule, enabled: true } }), /unsupported|schedule/i);
+});
+
 test('Reminder creation is declarative and scheduler reads resolve exact job IDs', async () => {
   const metadata = metadataFixture();
   const calls = [];
-  const gateway = { request: async (method, params) => { calls.push({ method, params }); if (method === 'cron.add') return { id: 'job-fictional', configRevision: 'sha256:revision-1', declarationKey: params.declarationKey }; if (method === 'cron.get') return { id: params.id, configRevision: 'sha256:revision-1', enabled: true }; return { jobs: [] }; } };
+  const gateway = { request: async (method, params, options) => { calls.push({ method, params, options }); if (method === 'cron.add') return { id: 'job-fictional', configRevision: 'sha256:revision-1', declarationKey: params.declarationKey }; if (method === 'cron.get') return { id: params.id, configRevision: 'sha256:revision-1', enabled: true }; return { jobs: [] }; } };
   const adapter = createSchedulerAdapter({ topicId: 'topic-scheduler', metadata, gateway });
   const created = await adapter.createReminder({ logicalOperationId: randomUUID(), declaration: { schedule: { kind: 'every', everyMs: 60_000 }, payload: { kind: 'systemEvent', text: 'fictional' } } });
   assert.equal(calls[0].method, 'cron.add');
+  assert.equal(calls[0].options?.scopes, undefined);
   assert.match(calls[0].params.declarationKey, /^command-center:reminder:/);
   assert.equal(created.value.sourceReference.externalSourceId, 'job-fictional');
   const read = await adapter.read({ referenceId: created.value.sourceReference.referenceId });
@@ -46,7 +70,7 @@ test('scheduler exposes exact-reference list, create, update, enable, and run wi
   assert.equal(adapter.delete, undefined);
 });
 
-test('scheduler update replay reconciles an unknown applied outcome before stale-revision fencing', async () => {
+test('scheduler update replay preserves unknown without causal native outcome evidence', async () => {
   const metadata = metadataFixture();
   metadata.refs.push({ version: 1, referenceId: 'schedule-unknown-ref', topicId: 'topic-scheduler', sourceSystem: 'scheduler', sourceKind: 'schedule', externalSourceId: 'job-unknown', observedRevision: 'revision-1' });
   let job = { id: 'job-unknown', configRevision: 'revision-1', enabled: true };
@@ -72,9 +96,8 @@ test('scheduler update replay reconciles an unknown applied outcome before stale
   const logicalOperationId = randomUUID();
   const input = { referenceId: 'schedule-unknown-ref', enabled: false, expectedConfigRevision: 'revision-1', logicalOperationId };
   await assert.rejects(adapter.setEnabled(input), /fictional reconciliation interruption/);
-  const replay = await adapter.setEnabled(input);
-  assert.equal(replay.status, 'applied');
-  assert.equal(replay.value.job.configRevision, 'revision-2');
+  await assert.rejects(adapter.setEnabled(input), (error) => error.code === 'unknown');
+  assert.equal(job.configRevision, 'revision-2');
   assert.equal(updateCalls, 1);
 });
 
@@ -140,7 +163,7 @@ test('scheduler actions construct closed conservative patches and reject unrelat
   assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
   const schedule = { kind: 'at', at: '2026-08-24T00:00:00Z' };
   await adapter.snooze({ ...common, logicalOperationId: randomUUID(), referenceId: 'reminder-ref', patch: { schedule } });
-  assert.deepEqual(calls.at(-1).params.patch, { schedule });
+  assert.deepEqual(calls.at(-1).params.patch, { schedule, enabled: true });
   await adapter.reschedule({ ...common, logicalOperationId: randomUUID(), referenceId: 'schedule-ref', patch: { schedule } });
   assert.deepEqual(calls.at(-1).params.patch, { schedule });
 });
@@ -169,12 +192,12 @@ test('revision-less scheduler creation and reconciliation never persist a Source
       throw new Error(`Unexpected method ${method}`);
     } };
     const adapter = createSchedulerAdapter({ topicId: 'topic-scheduler', metadata, gateway });
-    await assert.rejects(() => adapter.create({ referenceId: `schedule:no-revision:${ambiguous}`, logicalOperationId: randomUUID(), declaration: { name: 'fictional', schedule: { kind: 'every', everyMs: 1000 }, payload: { kind: 'systemEvent', text: 'fictional' } } }), /configRevision|unknown|identity.*bound/i);
+    await assert.rejects(() => adapter.create({ referenceId: `schedule:no-revision:${ambiguous}`, logicalOperationId: randomUUID(), declaration: { name: 'fictional', schedule: { kind: 'every', everyMs: 1000 }, payload: { kind: 'systemEvent', text: 'fictional' } } }), (error) => ambiguous ? error.code === 'unknown' : error.code === 'invalid-request' && /configRevision/.test(error.message));
     assert.equal(metadata.refs.length, 0);
   }
 });
 
-test('scheduled-operation create removes its disabled job when durable binding fails', async () => {
+test('scheduled-operation create retains its disabled job when conditional rollback is unavailable', async () => {
   const refs = [];
   const metadata = {
     listSourceReferences: () => refs,
@@ -201,11 +224,12 @@ test('scheduled-operation create removes its disabled job when durable binding f
   } };
   const coordinator = { mutate: async ({ execute }) => ({ status: 'applied', value: await execute({ requestId: 'create-request' }) }) };
   const adapter = createSchedulerAdapter({ topicId: 'topic-scheduler', metadata, gateway, coordinator });
-  await assert.rejects(() => adapter.create({ referenceId: 'schedule:metadata-failure', logicalOperationId: randomUUID(), declaration: { name: 'fictional', schedule: { kind: 'every', everyMs: 1000 }, payload: { kind: 'systemEvent', text: 'fictional' } } }), /metadata failure/i);
+  await assert.rejects(() => adapter.create({ referenceId: 'schedule:metadata-failure', logicalOperationId: randomUUID(), declaration: { name: 'fictional', schedule: { kind: 'every', everyMs: 1000 }, payload: { kind: 'systemEvent', text: 'fictional' } } }), (error) => error.code === 'unknown' && /conditional rollback/.test(error.message));
   assert.equal(calls.find((call) => call.method === 'cron.add').params.enabled, false);
   assert.equal(calls.filter((call) => call.method === 'cron.update').length, 0);
-  assert.deepEqual(jobs, []);
-  assert.deepEqual(calls.find((call) => call.method === 'cron.remove').params, { id: 'disabled-candidate' });
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].enabled, false);
+  assert.equal(calls.some((call) => call.method === 'cron.remove'), false);
 });
 
 test('scheduled-operation create never removes a converged created:false declaration', async () => {
@@ -438,7 +462,7 @@ test('scheduled create fingerprint binds the requested reference before redispat
   assert.equal(calls.length, before);
 });
 
-test('applied scheduled create replay observes a later disabled state without re-enabling', async () => {
+test('applied scheduled create replay does not attribute a later disabled state to the original command', async () => {
   const metadata = metadataFixture();
   const jobs = [];
   const calls = [];
@@ -462,8 +486,7 @@ test('applied scheduled create replay observes a later disabled state without re
   await adapter.create(input);
   jobs[0] = { ...jobs[0], enabled: false, configRevision: 'revision-later-disabled' };
   const updatesBeforeReplay = calls.filter((call) => call.method === 'cron.update').length;
-  const replay = await adapter.create({ ...input, requestId: 'replay-request' });
-  assert.equal(replay.value.job.enabled, false);
+  await assert.rejects(adapter.create({ ...input, requestId: 'replay-request' }), (error) => error.code === 'unknown');
   assert.equal(calls.filter((call) => call.method === 'cron.update').length, updatesBeforeReplay);
   assert.equal(jobs[0].enabled, false);
 });
@@ -525,8 +548,7 @@ test('scheduler list observations persist current revisions across metadata reop
       if (method === 'cron.list') return { jobs: [{ id: 'job-list', enabled: true }] };
       throw new Error(`Unexpected method ${method}`);
     };
-    const [withoutRevision] = await adapter.list();
-    assert.equal(withoutRevision.sourceReference.observedRevision, 'revision-current');
+    await assert.rejects(adapter.list(), (error) => error.code === 'source-recovery');
     metadata.close();
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
     assert.equal(metadata.getSourceReference('schedule-list-ref').observedRevision, 'revision-current');
@@ -536,7 +558,7 @@ test('scheduler list observations persist current revisions across metadata reop
   }
 });
 
-test('scheduler read retains a known revision and update rejects a revision-less response', async () => {
+test('scheduler read and update reject missing authoritative revisions without replacing saved observations', async () => {
   const metadata = metadataFixture();
   metadata.refs.push({ version: 1, referenceId: 'schedule-revision-ref', topicId: 'topic-scheduler', sourceSystem: 'scheduler', sourceKind: 'schedule', externalSourceId: 'job-revision', observedRevision: 'revision-known' });
   let update = false;
@@ -546,8 +568,14 @@ test('scheduler read retains a known revision and update rejects a revision-less
     throw new Error(`Unexpected method ${method}`);
   } };
   const adapter = createSchedulerAdapter({ topicId: 'topic-scheduler', metadata, gateway });
-  const read = await adapter.read({ referenceId: 'schedule-revision-ref' });
-  assert.equal(read.sourceReference.observedRevision, 'revision-known');
+  await assert.rejects(adapter.read({ referenceId: 'schedule-revision-ref' }), /omitted.*revision/i);
+  await assert.rejects(() => adapter.setEnabled({ referenceId: 'schedule-revision-ref', expectedConfigRevision: 'revision-known', enabled: false, logicalOperationId: randomUUID() }), /omitted.*revision/i);
+  assert.equal(update, false);
+  gateway.request = async (method, params) => {
+    if (method === 'cron.get') return { id: params.id, configRevision: 'revision-known', enabled: true };
+    if (method === 'cron.update') { update = true; return { id: params.id, enabled: params.patch.enabled }; }
+    throw new Error(`Unexpected method ${method}`);
+  };
   await assert.rejects(() => adapter.setEnabled({ referenceId: 'schedule-revision-ref', expectedConfigRevision: 'revision-known', enabled: false, logicalOperationId: randomUUID() }), /omitted.*revision/i);
   assert.equal(update, true);
   assert.equal(metadata.refs.find((reference) => reference.referenceId === 'schedule-revision-ref').observedRevision, 'revision-known');

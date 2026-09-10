@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto';
 import { cp, lstat, mkdir, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const distRoot = path.join(sourceRoot, 'dist');
 export const digestFileName = '.command-center-digest.json';
 let latestBuildReceipt;
+let buildQueue = Promise.resolve();
 
 function inside(root, candidate) {
   const relative = path.relative(root, candidate);
@@ -64,25 +66,47 @@ function sameReceipt(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-export async function build() {
+async function buildUnlocked() {
   await rejectSymlinks(path.join(sourceRoot, 'src'));
   const existing = await lstat(distRoot).catch(() => undefined);
   if (existing?.isSymbolicLink()) throw new Error('The dist root must not be a symlink');
   await rm(distRoot, { recursive: true, force: true });
   await mkdir(distRoot, { recursive: true });
   await cp(path.join(sourceRoot, 'src', 'plugin.mjs'), path.join(distRoot, 'plugin.mjs'));
+  // Resolve the single authored schema at build time. Built modules never read
+  // mutable package-root configuration outside their verified dist receipt.
+  const pluginManifest = JSON.parse(await readFile(path.join(sourceRoot, 'openclaw.plugin.json'), 'utf8'));
+  // Host-consumed declarations (native UI, CLI and route contracts) are part
+  // of the same sealed build, not mutable package-root packaging inputs.
+  await cp(path.join(sourceRoot, 'openclaw.plugin.json'), path.join(distRoot, 'plugin-manifest.json'));
+  await writeFile(path.join(distRoot, 'plugin-config.mjs'), `export const pluginConfigSchema = ${JSON.stringify(pluginManifest.configSchema)};\n`);
   await cp(path.join(sourceRoot, 'src', 'plugin-service.mjs'), path.join(distRoot, 'plugin-service.mjs'));
+  await cp(path.join(sourceRoot, 'src', 'release-scope.mjs'), path.join(distRoot, 'release-scope.mjs'));
+  await cp(path.join(sourceRoot, 'src', 'compatibility.mjs'), path.join(distRoot, 'compatibility.mjs'));
   await cp(path.join(sourceRoot, 'src', 'asset-handler.mjs'), path.join(distRoot, 'asset-handler.mjs'));
   await cp(path.join(sourceRoot, 'src', 'metadata'), path.join(distRoot, 'metadata'), { recursive: true, verbatimSymlinks: true });
-  for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'search', 'topics', 'dashboard', 'notifications']) {
+  for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'search', 'topics', 'dashboard', 'notifications', 'http', 'native-ui']) {
     await cp(path.join(sourceRoot, 'src', directory), path.join(distRoot, directory), { recursive: true, verbatimSymlinks: true });
   }
+  // Native Control UI assets are served from one declared directory. Project
+  // the root build-owned policy into that directory instead of making the
+  // browser resolve a parent asset outside the host's immutable asset set.
+  await writeFile(path.join(distRoot, 'native-ui', 'release-scope.mjs'), `export const FIRST_LIVE_FEATURES = Object.freeze(${JSON.stringify(FIRST_LIVE_FEATURES)});\n`);
   await cp(path.join(sourceRoot, 'src', 'compatibility-tuple.json'), path.join(distRoot, 'compatibility-tuple.json'));
   await cp(path.join(sourceRoot, 'src', 'ui'), path.join(distRoot, 'ui'), { recursive: true, verbatimSymlinks: true });
   const receipt = freezeReceipt(await digestTree(distRoot));
   await writeFile(path.join(distRoot, digestFileName), `${JSON.stringify(receipt, null, 2)}\n`);
   latestBuildReceipt = receipt;
   return receipt;
+}
+
+// Focused contract and harness tests may request the build concurrently. Keep
+// the generated tree whole between callers so one build cannot remove files
+// while another imports its receipt.
+export function build() {
+  const next = buildQueue.then(() => buildUnlocked());
+  buildQueue = next.catch(() => {});
+  return next;
 }
 
 export async function assertBuiltDigest(receipt = latestBuildReceipt) {
@@ -95,4 +119,11 @@ export async function assertBuiltDigest(receipt = latestBuildReceipt) {
   const actual = await digestTree(distRoot);
   if (!sameReceipt(receipt, declared) || !sameReceipt(receipt, actual)) throw new Error('Built output digest drift detected');
   return actual;
+}
+
+/** Consume a previously sealed artifact without rebuilding or writing its tree. */
+export async function readBuiltReceipt() {
+  const receipt = JSON.parse(await readFile(path.join(distRoot, digestFileName), 'utf8'));
+  await assertBuiltDigest(receipt);
+  return freezeReceipt(receipt);
 }
