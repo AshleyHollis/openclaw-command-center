@@ -37,11 +37,21 @@ export async function verifyNativeTopicNotesPane({ page, fixture }) {
     await sidebar.locator('wa-dropdown-item').filter({ hasText: 'Topic Notes' }).click();
   }
   await sidebar.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).click();
-  const promoted = page.locator('.sidebar-region__primary').getByRole('region', { name: 'Note content', exact: true });
-  await promoted.filter({ hasText: fixture.noteText.trim() }).waitFor();
+  // Native Chat retains its historical "primary" class when moved aside.
+  // Region assignment, visible geometry and content prove actual promotion.
+  const mainPanel = page.locator('.side-panel__panel[data-region="main"]');
+  const promoted = mainPanel.getByRole('region', { name: 'Note content', exact: true });
+  await promoted.filter({ hasText: fixture.noteText.trim() }).waitFor({ timeout: 10_000 });
   assert.equal(await promoted.textContent(), fixture.noteText);
+  const sideChat = page.locator('.sidebar-region__primary[data-region="side"]');
+  await sideChat.waitFor({ state: 'visible', timeout: 10_000 });
+  const [notesBox, chatBox] = await Promise.all([mainPanel.boundingBox(), sideChat.boundingBox()]);
+  assert.ok(notesBox && chatBox && notesBox.width > 0 && chatBox.width > 0);
+  assert.ok(notesBox.x + notesBox.width <= chatBox.x + 2, 'Selected Note must occupy the center pane before Chat on the right');
   const swap = page.getByRole('button', { name: 'Swap Topic Notes and Chat', exact: true });
   await swap.waitFor();
   assert.equal(await page.locator('.sidebar-region__right-runtime').getByRole('tab', { name: 'Chat', exact: true }).count(), 1);
   await swap.click();
+  await page.locator('.sidebar-region__primary[data-region="main"]').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.locator('.side-panel__panel[data-region="side"]').getByRole('region', { name: 'Note content', exact: true }).filter({ hasText: fixture.noteText.trim() }).waitFor({ timeout: 10_000 });
 }
