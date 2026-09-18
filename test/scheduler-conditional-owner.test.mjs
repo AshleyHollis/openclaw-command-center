@@ -83,7 +83,7 @@ test('a saved normalized native schedule response replays after reopening withou
   assert.equal(writes, 1);
 });
 
-test('ambiguous Reminder add never retries a declarative upsert or claims an unwitnessed job', async (t) => {
+test('ambiguous Reminder add conflicts rather than retrying or claiming an edited job', async (t) => {
   let job = null; let writes = 0;
   const f = await fixture(t, async (method, params) => {
     if (method === 'cron.list') return { jobs: job ? [structuredClone(job)] : [] };
@@ -94,9 +94,9 @@ test('ambiguous Reminder add never retries a declarative upsert or claims an unw
     throw Object.assign(new Error('Reply lost'), { code: 'timeout', ambiguous: true });
   });
   const input = { logicalOperationId: randomUUID(), declaration: { name: 'Original reminder', schedule: { kind: 'every', everyMs: 60000 }, payload: { kind: 'systemEvent', text: 'Fictional reminder' } } };
-  await assert.rejects(f.adapter().createReminder(input), (error) => error.code === 'unknown');
+  await assert.rejects(f.adapter().createReminder(input), (error) => error.code === 'conflict');
   f.reopen();
-  await assert.rejects(f.adapter().createReminder(input), (error) => error.code === 'unknown');
+  assert.equal((await f.adapter().createReminder(input)).status, 'conflict');
   assert.equal(job.name, 'Later operator edit');
   assert.equal(writes, 1);
   assert.equal(f.metadata.listSourceReferences('topic-scheduler').some((ref) => ref.externalSourceId === 'reminder-fictional'), false);

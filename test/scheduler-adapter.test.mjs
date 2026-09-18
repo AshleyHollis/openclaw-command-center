@@ -50,6 +50,111 @@ test('Reminder creation is declarative and scheduler reads resolve exact job IDs
   await assert.rejects(() => adapter.read({ referenceId: 'missing' }), /exact linked scheduler/i);
 });
 
+test('Reminder creation recovers an exact lost response after metadata reopen without a second add', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-reminder-create-reopen-'));
+  let metadata;
+  let job = null;
+  let addCalls = 0;
+  let interruptFirstReconciliation = true;
+  const logicalOperationId = randomUUID();
+  const declaration = {
+    name: 'Fictional recovery reminder',
+    schedule: { kind: 'at', at: '2099-01-02T03:04:05.000Z' },
+    payload: { kind: 'systemEvent', text: 'fictional recovery reminder' }
+  };
+  const gateway = { request: async (method, params) => {
+    if (method === 'cron.add') {
+      addCalls += 1;
+      job = { ...structuredClone(params), id: 'reminder-recovered', enabled: params.enabled ?? true, configRevision: 'revision-current' };
+      const error = new Error('fictional response lost after native commit');
+      error.code = 'timeout';
+      error.ambiguous = true;
+      throw error;
+    }
+    if (method === 'cron.list') {
+      if (interruptFirstReconciliation) {
+        interruptFirstReconciliation = false;
+        throw new Error('fictional process interruption during reconciliation');
+      }
+      return { jobs: job ? [job] : [] };
+    }
+    if (method === 'cron.get') return job;
+    throw new Error(`Unexpected method ${method}`);
+  } };
+  const input = { logicalOperationId, declaration };
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    metadata.createTopic({ topicId: 'topic-reminder-reopen', paraCategory: 'project', lifecycle: 'active' });
+    let adapter = createSchedulerAdapter({ topicId: 'topic-reminder-reopen', metadata, gateway });
+    await assert.rejects(() => adapter.createReminder(input), /fictional process interruption/i);
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    adapter = createSchedulerAdapter({ topicId: 'topic-reminder-reopen', metadata, gateway });
+    const recovered = await adapter.createReminder({ ...input, requestId: 'recovery-after-reopen' });
+    assert.equal(recovered.status, 'applied');
+    assert.equal(recovered.value.job.id, 'reminder-recovered');
+    assert.equal(recovered.value.job.configRevision, 'revision-current');
+    assert.equal(recovered.value.sourceReference.observedRevision, 'revision-current');
+    assert.equal(addCalls, 1);
+    const read = await adapter.read({ referenceId: recovered.value.sourceReference.referenceId });
+    assert.equal(read.job.configRevision, 'revision-current');
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('Reminder lost-response recovery rejects a mismatched declaration without taking ownership', async () => {
+  const metadata = metadataFixture();
+  const logicalOperationId = randomUUID();
+  let declarationKey;
+  const gateway = { request: async (method, params) => {
+    if (method === 'cron.add') {
+      declarationKey = params.declarationKey;
+      const error = new Error('fictional ambiguous add');
+      error.code = 'timeout';
+      error.ambiguous = true;
+      throw error;
+    }
+    if (method === 'cron.list') return { jobs: [{ id: 'reminder-mismatch', declarationKey, name: 'Different reminder', enabled: true, schedule: { kind: 'at', at: '2099-01-02T03:04:05.000Z' }, payload: { kind: 'systemEvent', text: 'different' }, configRevision: 'revision-mismatch' }] };
+    throw new Error(`Unexpected method ${method}`);
+  } };
+  const adapter = createSchedulerAdapter({ topicId: 'topic-scheduler', metadata, gateway });
+  await assert.rejects(
+    () => adapter.createReminder({ logicalOperationId, declaration: { name: 'Expected reminder', schedule: { kind: 'at', at: '2099-01-02T03:04:05.000Z' }, payload: { kind: 'systemEvent', text: 'expected' } } }),
+    (error) => error.code === 'conflict'
+  );
+  assert.equal(metadata.refs.length, 0);
+});
+
+test('Reminder lost-response recovery never adopts a native job owned by another Topic', async () => {
+  const logicalOperationId = randomUUID();
+  const foreignReference = { version: 1, referenceId: 'reminder:foreign', topicId: 'topic-foreign', sourceSystem: 'scheduler', sourceKind: 'reminder_schedule', externalSourceId: 'reminder-foreign', observedRevision: 'revision-foreign' };
+  const references = [foreignReference];
+  const metadata = {
+    listSourceReferences: (topicId) => topicId ? references.filter((reference) => reference.topicId === topicId) : references,
+    createSourceReference: (reference) => { references.push(reference); return reference; }
+  };
+  let exactJob;
+  const gateway = { request: async (method, params) => {
+    if (method === 'cron.add') {
+      exactJob = { ...structuredClone(params), id: foreignReference.externalSourceId, enabled: params.enabled ?? true, configRevision: foreignReference.observedRevision };
+      const error = new Error('fictional ambiguous add');
+      error.code = 'timeout';
+      error.ambiguous = true;
+      throw error;
+    }
+    if (method === 'cron.list') return { jobs: [exactJob] };
+    throw new Error(`Unexpected method ${method}`);
+  } };
+  const adapter = createSchedulerAdapter({ topicId: 'topic-scheduler', metadata, gateway });
+  await assert.rejects(
+    () => adapter.createReminder({ logicalOperationId, declaration: { name: 'Expected reminder', schedule: { kind: 'at', at: '2099-01-02T03:04:05.000Z' }, payload: { kind: 'systemEvent', text: 'expected' } } }),
+    (error) => error.code === 'conflict'
+  );
+  assert.deepEqual(references, [foreignReference]);
+});
+
 test('scheduler exposes exact-reference list, create, update, enable, and run without deletion', async () => {
   const metadata = metadataFixture();
   const revision = 'sha256:revision-1';

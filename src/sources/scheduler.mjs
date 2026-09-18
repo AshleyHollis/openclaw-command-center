@@ -16,6 +16,21 @@ function runsFrom(value) {
   return Array.isArray(value) ? value : value?.entries ?? value?.runs ?? value?.items ?? [];
 }
 
+function containsDeclaredValue(actual, expected) {
+  if (Array.isArray(expected)) return Array.isArray(actual) && intentDigest(actual) === intentDigest(expected);
+  if (expected && typeof expected === 'object') {
+    return Boolean(actual && typeof actual === 'object' && !Array.isArray(actual))
+      && Object.entries(expected).every(([key, value]) => containsDeclaredValue(actual[key], value));
+  }
+  return intentDigest(actual) === intentDigest(expected);
+}
+
+function reminderDeclarationMatchesJob(job, declaration) {
+  if (!job || typeof job !== 'object') return false;
+  const expected = { ...declaration, enabled: declaration.enabled ?? true };
+  return containsDeclaredValue(job, expected);
+}
+
 function closedSchedulePatch(value, operationKind) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw sourceError('invalid-request', `${operationKind} patch must be an object`);
   const keys = Object.keys(value);
@@ -52,7 +67,7 @@ export class SchedulerAdapter {
     if (!this.gateway?.request) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' });
     this.metadata = metadata;
     this.topicId = nonBlank(topicId, 'topicId');
-    this.coordinator = coordinator ?? createMutationCoordinator();
+    this.coordinator = coordinator ?? createMutationCoordinator({ metadata });
     this.now = now ?? (() => new Date().toISOString());
     this.logger = api?.logger;
   }
@@ -126,9 +141,19 @@ export class SchedulerAdapter {
     const reconcile = async ({ applied = false, resultIdentity = null, observedRevision = null } = {}) => {
       const rows = jobsFrom(await this.request('cron.list', { includeDisabled: true }));
       const matches = rows.filter((job) => job.declarationKey === declarationKey);
-      if (matches.length !== 1 || !applied || matches[0].id !== resultIdentity || !observedRevision || matches[0].configRevision !== observedRevision) return { outcome: 'unknown' };
-      const reference = await this.persistReference(matches[0].id, matches[0].configRevision ?? null, 'reminder_schedule');
-      return { matched: true, value: { job: matches[0], sourceReference: reference } };
+      if (matches.length === 0) return { outcome: applied ? 'unknown' : 'not-applied' };
+      if (matches.length !== 1) return { outcome: 'conflict' };
+      const job = matches[0];
+      if (applied) {
+        if (job.id !== resultIdentity || !observedRevision || job.configRevision !== observedRevision) return { outcome: 'unknown' };
+      } else if (!reminderDeclarationMatchesJob(job, declaration)) {
+        return { outcome: 'conflict' };
+      }
+      if (typeof job.id !== 'string' || !job.id.trim() || typeof job.configRevision !== 'string' || !job.configRevision.trim()) return { outcome: 'unknown' };
+      const owners = this.allReferences().filter((reference) => reference.externalSourceId === job.id);
+      if (owners.length > 1 || owners.some((reference) => reference.topicId !== this.topicId || reference.sourceKind !== 'reminder_schedule')) return { outcome: 'conflict' };
+      const reference = await this.persistReference(job.id, job.configRevision, 'reminder_schedule');
+      return { outcome: 'applied', value: { job, sourceReference: reference } };
     };
     if (this.coordinator) return this.coordinator.mutate({ operationKind: 'reminders.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, intent: { declarationKey, declaration }, execute, reconcile });
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
