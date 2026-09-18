@@ -65,12 +65,14 @@ export async function withPreservedHistoryDestination(options, run) {
       });
       assertOwner();
       if (page.kind === 'missing' && reservation.intent.expectedCount === 0) {
-        return Object.freeze({ entries: [], generation: null, totalMessages: 0 });
+        return Object.freeze({ entries: [], generation: null, totalMessages: 0, activeLeafEntryId: null });
       }
       if (page.kind !== 'page' || !Array.isArray(page.entries) || typeof page.generation !== 'string'
           || !page.generation || !Number.isSafeInteger(page.totalMessages) || page.totalMessages < 0
+          || !(page.activeLeafEntryId === null || typeof page.activeLeafEntryId === 'string')
           || page.requiredBytes) fail(page.requiredBytes ? 'history-message-too-large' : 'history-projection-unavailable');
-      return Object.freeze({ entries: page.entries, generation: page.generation, totalMessages: page.totalMessages });
+      return Object.freeze({ entries: page.entries, generation: page.generation, totalMessages: page.totalMessages,
+        activeLeafEntryId: page.activeLeafEntryId });
     }
     async function append(entry, replayOnly) {
       assertOwner();

@@ -84,7 +84,8 @@ async function run(options, readOnly) {
       // snapshot proves that durable anchor receipt still names this exact
       // projection; no process cache or presentation identity participates.
       if (page.generation !== row.transcriptGeneration || page.totalMessages !== row.verifiedCount
-          || row.verifiedCount !== prepared.expectedCount) fail('history-proof-conflict');
+          || row.verifiedCount !== prepared.expectedCount
+          || page.activeLeafEntryId !== (prepared.entries.at(-1)?.eventId ?? null)) fail('history-proof-conflict');
       for (const [relativeIndex, actual] of page.entries.entries()) {
         const expected = prepared.entries[request.offset + relativeIndex];
         if (!expected || actual.seq !== request.offset + relativeIndex + 1 || actual.entryId !== expected.eventId
