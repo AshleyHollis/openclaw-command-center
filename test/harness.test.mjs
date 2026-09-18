@@ -255,7 +255,9 @@ test('categorizes host bootstrap and plugin failures without retaining authentic
   assert.doesNotMatch(redact(['Bear', 'er fictional-token-123456'].join('')), /fictional-token/);
   const fictionalHome = ['file:/', '/', 'home/fictional-user/private-output'].join('');
   const fictionalRoot = ['/', 'root/.openclaw/state'].join('');
-  assert.doesNotMatch(redact(`${fictionalHome} ${fictionalRoot}`), /(?:\/home|\/root)/u);
+  const fictionalWindowsHome = ['C:', '\\', 'Users', '\\', 'fictional-user', '\\', 'private-output'].join('');
+  const fictionalWindowsUrl = ['file:///', 'C:', '/', 'Users', '/', 'fictional-user', '/', 'private-output'].join('');
+  assert.doesNotMatch(redact(`${fictionalHome} ${fictionalRoot} ${fictionalWindowsHome} ${fictionalWindowsUrl}`), /(?:\/home|\/root|[A-Za-z]:[\\/]+Users[\\/]+)/u);
 });
 
 test('classifies a late plugin failure across bounded host-output chunks', () => {

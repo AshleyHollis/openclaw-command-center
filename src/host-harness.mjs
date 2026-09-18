@@ -171,6 +171,7 @@ export function redact(text, maximum = 4096) {
   return String(text).slice(0, maximum)
     .replace(/(bearer|basic)\s+[^\s]+/gi, '$1 [redacted]')
     .replace(/(token|cookie|password|secret|key)\s*[=:]\s*[^\s,;]+/gi, '$1=[redacted]')
+    .replace(/(?:file:\/\/\/)?[A-Za-z]:[\\/]+Users[\\/]+[^\s'";,]+/gi, '[path redacted]')
     .replace(/(?:file:\/\/)?\/(?:Users|home)\/[^\s'";,]+/gi, '[path redacted]')
     .replace(/\/root\/[^\s'";,]*/gi, '[path redacted]');
 }
