@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
+import { FIRST_LIVE_FEATURES } from '../src/release-scope.mjs';
 import { READ_METHODS, WRITE_METHODS } from '../src/bridge/contracts.mjs';
 import { registerBridgeMethods } from '../src/bridge/register.mjs';
 import { Readable } from 'node:stream';
@@ -20,7 +21,7 @@ async function http(h, routePath, body) {
   return { status: res.statusCode, ...payload };
 }
 
-function host({ flatAgentEvents = false } = {}) {
+function host({ flatAgentEvents = false, nativeWorkflow = false } = {}) {
   const routes = []; const methods = new Map(); const services = []; const tools = []; const agentEventSubscriptions = [];
   const api = {
     pluginConfig: {},
@@ -29,6 +30,14 @@ function host({ flatAgentEvents = false } = {}) {
     registerGatewayMethod: (name, handler) => methods.set(name, handler),
     registerService: value => services.push(value),
     registerTool: (_factory, declaration) => tools.push(declaration.name),
+    ...(nativeWorkflow ? {
+      session: {
+        workflow: {
+          scheduleSessionTurn: async () => ({ id: 'fictional-native-job' }),
+          unscheduleSessionTurnsByTag: async () => ({ removed: 0, failed: 0 })
+        }
+      }
+    } : {}),
     ...(flatAgentEvents
       ? { registerAgentEventSubscription: value => agentEventSubscriptions.push(value) }
       : { agent: { events: { registerAgentEventSubscription: value => agentEventSubscriptions.push(value) } } })
@@ -181,6 +190,15 @@ test('the reader MVP manifest keeps filing and maintenance tools/triggers unavai
 test('the reader MVP leaves the flat host maintenance subscription unavailable', () => {
   const h = host({ flatAgentEvents: true });
   plugin.register(h.api);
+  assert.equal(h.agentEventSubscriptions.length, 0);
+});
+
+test('Batch 8 host workflow primitives do not activate deferred maintenance or analysis products', () => {
+  const h = host({ nativeWorkflow: true });
+  plugin.register(h.api);
+  assert.equal(FIRST_LIVE_FEATURES.noteMaintenance, false);
+  assert.equal(FIRST_LIVE_FEATURES.analysis, false);
+  assert.deepEqual(h.tools, []);
   assert.equal(h.agentEventSubscriptions.length, 0);
 });
 
