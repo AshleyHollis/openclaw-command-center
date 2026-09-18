@@ -477,7 +477,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       if (!current(pending) || !sameDocumentSelection(selected, descriptor) || digest !== descriptor.observedRevision.replace(/^sha256:/u, '')) throw new Error('The original attachment verification failed; no download was offered.');
       const url = URL.createObjectURL(result.bytes); documentUrls.add(url);
       const link = element('a'); link.href = url; link.download = fileName(selected.path).replace(/[\\/\x00-\x1f]/g, '_') || 'attachment'; link.hidden = true;
-      container.append(link); link.click(); link.remove(); status.textContent = 'Original attachment downloaded.';
+      container.append(link); link.click(); link.remove(); status.textContent = 'Verified original attachment downloaded.';
     } catch (error) { if (!documentSignal.aborted && current(pending)) report(error); }
     finally { if (!documentSignal.aborted && current(pending)) documentAction.disabled = false; }
   })(), { signal });

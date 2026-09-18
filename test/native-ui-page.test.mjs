@@ -6,7 +6,7 @@ import { chromium } from 'playwright';
 
 for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Notes panel', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
   const server = createServer(async (req, res) => {
-    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional native host</title><main id="mount"></main></html>'); return; }
+    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional native host</title><style>#mount{height:700px;width:900px}</style><main id="mount"></main></html>'); return; }
     // Serve the actual native module directory, including newly added siblings.
     // Keep the fixture boundary to one plain module filename; no traversal.
     const vendor = { '/vendor/markdown-it.mjs': '../node_modules/markdown-it/dist/browser/markdown-it.esm.min.mjs', '/vendor/purify.es.mjs': '../node_modules/dompurify/dist/purify.es.mjs' }[req.url];
@@ -163,6 +163,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     }
     if (scenario.includes('panel')) {
       if (scenario === 'Replaced panel document') {
+        await page.locator('summary').filter({ hasText: 'Documents' }).click();
         await page.locator('summary').filter({ hasText: 'ATO' }).click();
         const attachment = page.getByRole('button', { name: 'View attachment information for Documents/ATO/return.pdf' });
         try { await attachment.waitFor({ timeout: 5_000 }); }
@@ -198,7 +199,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
         await page.waitForFunction(() => document.body.textContent.includes('No Topic assigned'));
         await page.evaluate(async () => { window.resolveContext(); await new Promise(resolve => setTimeout(resolve, 0)); });
       } else if (scenario !== 'Unbound panel') {
-        await page.getByRole('button', { name: 'Read brief.md' }).click();
+        await page.getByRole('button', { name: 'Read brief.md' }).click({ timeout: 5_000 });
         if (scenario === 'Missing panel promotion') {
           await page.getByText('This OpenClaw host cannot show Topic Notes in the centre pane.', { exact: true }).waitFor();
           assert.equal(await page.evaluate(() => window.promoted), 0);
@@ -209,7 +210,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
           await page.waitForFunction(() => document.body.textContent.includes('No Topic assigned'));
           await page.evaluate(async () => { window.resolveNote(); await new Promise(resolve => setTimeout(resolve, 0)); });
         } else {
-          await page.waitForFunction(() => window.promoted === 1);
+          await page.waitForFunction(() => window.promoted === 1, undefined, { timeout: 5_000 });
           assert.match(await page.getByRole('region', { name: 'Note content' }).innerText(), /Fictional Note/);
           assert.equal(await page.locator('img').count(), 0);
           await page.getByRole('button', { name: 'Source', exact: true }).click();
@@ -284,6 +285,10 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     }
     if (scenario === 'Note selection superseded') {
       await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
+      // Nested folders intentionally start collapsed. Expand the real tree
+      // disclosure before attempting the second selection so this scenario
+      // exercises stale-read fencing rather than waiting on a hidden button.
+      await page.locator('summary').filter({ hasText: 'nested' }).click();
       await page.getByRole('button', { name: 'Read first.md' }).click();
       await page.waitForFunction(() => Boolean(window.resolveFirstNote));
       await page.getByRole('button', { name: 'Read nested/second.md' }).click();
@@ -305,15 +310,16 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       return;
     }
     if (scenario === 'Original attachments') {
-      await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
+      await page.getByRole('button', { name: 'View Notes for Fictional project' }).click({ timeout: 5_000 });
       // Nested folders intentionally start collapsed. Exercise the real tree
       // disclosure instead of relying on a forced click through hidden UI.
-      await page.locator('summary').filter({ hasText: 'ATO' }).click();
-      await page.getByRole('button', { name: 'View attachment information for Documents/ATO/return.pdf' }).click();
+      await page.locator('summary').filter({ hasText: 'Documents' }).click({ timeout: 5_000 });
+      await page.locator('summary').filter({ hasText: 'ATO' }).click({ timeout: 5_000 });
+      await page.getByRole('button', { name: 'View attachment information for Documents/ATO/return.pdf' }).click({ timeout: 5_000 });
       // These original bytes intentionally are not a PDF. Preview must fail
       // safely while the exact original download remains available.
-      await page.getByRole('region', { name: 'Note content' }).filter({ hasText: 'invalid file signature' }).waitFor();
-      const download = page.waitForEvent('download');
+      await page.getByRole('region', { name: 'Note content' }).filter({ hasText: 'invalid file signature' }).waitFor({ timeout: 5_000 });
+      const download = page.waitForEvent('download', { timeout: 5_000 });
       await page.getByRole('button', { name: 'Download original attachment' }).click();
       assert.equal(await (await download).suggestedFilename(), 'return.pdf');
       await page.getByText('Verified original attachment downloaded', { exact: false }).waitFor();
