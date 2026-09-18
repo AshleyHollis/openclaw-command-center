@@ -44,11 +44,11 @@ jobs:
             --cpus 2 --memory 8g --pids-limit 256 \
             --tmpfs /tmp:rw,exec,nosuid,nodev,size=1073741824,mode=1777 \
             --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/candidate,readonly" \
-            --mount "type=bind,src=$RUNNER_TEMP/candidate-dependencies/node_modules,dst=/dependencies,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/candidate-dependencies/node_modules,dst=/runtime/node_modules,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/candidate-package,dst=/output" \
             --entrypoint /bin/sh "$TOOLCHAIN" -eu -c '
               cp -R /candidate /tmp/source
-              ln -s /dependencies /tmp/source/node_modules
+              ln -s /runtime/node_modules /tmp/source/node_modules
               cd /tmp/source
               node --test test/plugin-artifact.test.mjs
               node scripts/package-candidate.mjs --output /output/artifact
