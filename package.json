@@ -8,14 +8,19 @@
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
     "test": "node scripts/test.mjs",
-    "test:topic-page": "node scripts/test-topic-page.mjs"
-  },
-  "dependencies": {
-    "openclaw": "2026.8.1-beta.3"
+    "test:topic-page": "node scripts/test-topic-page.mjs",
+    "test:reader-mvp": "node scripts/test-reader-mvp.mjs"
   },
   "devDependencies": {
+    "dompurify": "3.4.15",
+    "markdown-it": "15.0.2",
+    "openclaw": "2026.9.4",
+    "pdfjs-dist": "6.3.289",
     "playwright": "1.62.1",
     "playwright-core": "1.62.1"
+  },
+  "peerDependencies": {
+    "openclaw": "2026.9.4"
   },
   "commandCenter": {
     "runtimeCapability": {
@@ -35,21 +40,67 @@
           "version": "0.3.0",
           "build": "0.3.0"
         },
-        "host": { "range": "=2026.8.1-beta.3", "commit": "30f2924e437857935f034ac349bae8cc22ef9fb0" },
-        "pluginApi": { "package": "openclaw", "range": "=2026.8.1-beta.3" },
-        "commandCenterSchema": { "readable": { "min": 1, "max": 5 }, "migratable": { "min": 1, "max": 4 }, "writable": { "min": 5, "max": 5 } },
-        "capabilityBridgeProtocol": { "min": 1, "max": 1 }
+        "host": {
+          "range": "=2026.8.1-beta.3",
+          "commit": "30f2924e437857935f034ac349bae8cc22ef9fb0"
+        },
+        "pluginApi": {
+          "package": "openclaw",
+          "range": "=2026.8.1-beta.3"
+        },
+        "commandCenterSchema": {
+          "readable": {
+            "min": 1,
+            "max": 5
+          },
+          "migratable": {
+            "min": 1,
+            "max": 4
+          },
+          "writable": {
+            "min": 5,
+            "max": 5
+          }
+        },
+        "capabilityBridgeProtocol": {
+          "min": 1,
+          "max": 1
+        }
       },
-      "host": { "range": "=2026.8.1-beta.3", "commit": "30f2924e437857935f034ac349bae8cc22ef9fb0" },
-      "pluginApi": { "package": "openclaw", "range": "=2026.8.1-beta.3" },
-      "commandCenterSchema": { "readable": { "min": 1, "max": 8 }, "migratable": { "min": 1, "max": 7 }, "writable": { "min": 8, "max": 8 } },
-      "capabilityBridgeProtocol": { "min": 1, "max": 1 }
+      "host": {
+        "range": "=2026.9.4",
+        "commit": "9eb16e01c14dd7eaf654aa2d2a9121b9e9f74b84"
+      },
+      "pluginApi": {
+        "package": "openclaw",
+        "range": "=2026.9.4"
+      },
+      "commandCenterSchema": {
+        "readable": {
+          "min": 1,
+          "max": 8
+        },
+        "migratable": {
+          "min": 1,
+          "max": 7
+        },
+        "writable": {
+          "min": 8,
+          "max": 8
+        }
+      },
+      "capabilityBridgeProtocol": {
+        "min": 1,
+        "max": 1
+      }
     }
   },
   "openclaw": {
-    "extensions": ["./dist/plugin.mjs"],
+    "extensions": [
+      "./dist/plugin.mjs"
+    ],
     "compat": {
-      "pluginApi": "=2026.8.1-beta.3"
+      "pluginApi": "=2026.9.4"
     }
   }
 }

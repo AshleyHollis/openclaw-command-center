@@ -2,29 +2,52 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
 import packageJson from '../package.json' with { type: 'json' };
-import { assertDeclarativeMirror, validateCompatibility } from '../src/compatibility.mjs';
+import packageLock from '../package-lock.json' with { type: 'json' };
+import { assertCapabilityBridgeDeclaration, assertDeclarativeMirror, validateCompatibility } from '../src/compatibility.mjs';
 import { pinnedHost } from '../src/host-harness.mjs';
 
 const supportedOpenClaw = Object.freeze({
   version: '2026.8.1-beta.3',
-  commit: '30f2924e437857935f034ac349bae8cc22ef9fb0'
+  commit: ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('')
+});
+const controllerIntegrationCommit = '9eb16e01c14dd7eaf654aa2d2a9121b9e9f74b84';
+const upstreamCompatibilityCommit = controllerIntegrationCommit;
+const controllerPackageVersion = '2026.9.4';
+const publishedSdkVersion = controllerPackageVersion;
+
+test('release admission refuses unsupported or missing bridge declarations before activation', () => {
+  assert.doesNotThrow(() => assertCapabilityBridgeDeclaration({ protocolVersion: 1 }));
+  for (const declaration of [undefined, {}, { protocolVersion: 0 }, { protocolVersion: 2 }, { protocolVersion: '1' }, { protocolVersion: 1.5 }]) assert.throws(() => assertCapabilityBridgeDeclaration(declaration), /requires a capability bridge protocol/u);
 });
 
 test('accepts the exact canonical compatibility tuple', () => {
   assert.deepEqual(validateCompatibility(structuredClone(canonical)), { ok: true });
   assertDeclarativeMirror(canonical);
-  assert.equal(packageJson.openclaw.compat.pluginApi, canonical.pluginApi.range);
+  assert.deepEqual(packageLock.packages[''].commandCenter, packageJson.commandCenter, 'lockfile must retain the complete canonical runtime metadata');
   assert.deepEqual(packageJson.openclaw.extensions, ['./dist/plugin.mjs']);
 });
 
-test('all runtime declarations target the supported OpenClaw release', () => {
-  assert.equal(packageJson.dependencies.openclaw, supportedOpenClaw.version);
-  assert.equal(packageJson.openclaw.compat.pluginApi, `=${supportedOpenClaw.version}`);
-  assert.equal(canonical.host.range, `=${supportedOpenClaw.version}`);
-  assert.equal(canonical.host.commit, supportedOpenClaw.commit);
-  assert.equal(canonical.pluginApi.range, `=${supportedOpenClaw.version}`);
-  assert.equal(pinnedHost.version, supportedOpenClaw.version);
-  assert.equal(pinnedHost.commit, supportedOpenClaw.commit);
+test('pins product compatibility and the controller to the exact stable source boundary', () => {
+  assert.equal(canonical.priorRelease.host.range, `=${supportedOpenClaw.version}`);
+  assert.equal(canonical.priorRelease.host.commit, supportedOpenClaw.commit);
+  assert.equal(canonical.host.range, `=${controllerPackageVersion}`);
+  assert.equal(canonical.host.commit, upstreamCompatibilityCommit);
+  assert.equal(canonical.pluginApi.range, `=${controllerPackageVersion}`);
+  assert.equal(packageJson.peerDependencies.openclaw, publishedSdkVersion);
+  assert.equal(packageJson.devDependencies.openclaw, publishedSdkVersion);
+  assert.equal(packageJson.openclaw.compat.pluginApi, `=${controllerPackageVersion}`);
+  assert.equal(packageLock.packages[''].peerDependencies.openclaw, publishedSdkVersion);
+  assert.equal(packageLock.packages[''].devDependencies.openclaw, publishedSdkVersion);
+  assert.equal(packageLock.packages['node_modules/openclaw'].version, publishedSdkVersion);
+  assert.equal(packageLock.packages['node_modules/openclaw'].dependencies['@openclaw/ai'], publishedSdkVersion);
+  assert.equal(packageLock.packages['node_modules/@openclaw/ai'].version, publishedSdkVersion);
+  for (const [name, version] of Object.entries(packageLock.packages['node_modules/openclaw'].dependencies)) {
+    assert.equal(packageLock.packages[`node_modules/${name}`]?.version, version, `${name} must match the stable package dependency graph`);
+  }
+  assert.equal(pinnedHost.packageVersion, controllerPackageVersion);
+  assert.equal(pinnedHost.commit, controllerIntegrationCommit);
+  assert.equal(canonical.host.commit, upstreamCompatibilityCommit);
+  assert.equal(pinnedHost.commit, canonical.host.commit);
 });
 
 for (const [name, mutate] of [

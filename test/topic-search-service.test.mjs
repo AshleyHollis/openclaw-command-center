@@ -18,6 +18,56 @@ const metadata = {
 const noteStore = { query: () => [{ schemaVersion: 1, kind: 'note', topicId: 'topic-one', referenceId: 'note:one', folderReferenceId: 'folder:one', sourceReference: noteReference, score: -1, sourceRevision: null, path: 'one.md', heading: null, revision: null, text: 'fresh note', snippet: 'note', context: { before: '', after: '' }, contextBefore: '', contextAfter: '', provenance: 'native', navigation: { kind: 'note', topicId: 'topic-one', path: 'one.md', sourceReference: noteReference } }], resolveNoteTarget: (descriptor) => descriptor.path === 'one.md' && descriptor.heading === null && descriptor.observedRevision === null ? { heading: null, revision: null, text: 'fresh note' } : null };
 const conversationStore = { query: () => [{ schemaVersion: 1, kind: 'conversation', topicId: 'topic-one', referenceId: 'session:one', sourceReference: sessionReference, score: -2, sourceRevision: null, sessionKey: sessionReference.externalSourceId, sessionId: 'session-one', messageId: 'message-one', name: 'agent:main:one', date: '2026-08-23T00:00:00.000Z', role: 'user', historyProvenance: 'linked-session', status: 'closed', closed: true, primaryState: 'ordinary', importedFrom: null, snippet: 'conversation', context: { before: '', after: '' }, contextBefore: '', contextAfter: '', provenance: 'native', navigation: { kind: 'conversation', topicId: 'topic-one', sessionKey: sessionReference.externalSourceId, sessionId: 'session-one', sourceReference: sessionReference, messageId: 'message-one' } }] };
 
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise; });
+  return { promise, resolve, reject };
+}
+
+function controlledProjectionRace() {
+  const starts = [deferred(), deferred()];
+  const completions = [deferred(), deferred()];
+  const manifests = new Map();
+  const checkpoints = new Map();
+  let rebuildIndex = 0;
+  const store = (projectionId, query) => ({
+    query,
+    delete() { manifests.delete(projectionId); return true; },
+    manifest() { return manifests.get(projectionId) ?? null; },
+    hasTopic() { return manifests.has(projectionId); }
+  });
+  const raceMetadata = {
+    ...metadata,
+    setProjectionBookkeepingBatch(rows) {
+      for (const row of rows) checkpoints.set(row.projectionId, row);
+    },
+    getProjectionBookkeeping(projectionId) { return checkpoints.get(projectionId) ?? null; }
+  };
+  const publish = (generation) => {
+    for (const projectionId of ['topic-search-notes', 'topic-search-conversations']) {
+      const manifest = { schemaVersion: 1, projectionId, generation, sourceRevision: generation, inputDigest: `sha256:${generation}`, topicIds: ['topic-one'] };
+      manifests.set(projectionId, manifest);
+      checkpoints.set(projectionId, { projectionId, sourceRevision: manifest.sourceRevision, inputDigest: manifest.inputDigest });
+    }
+  };
+  const runRebuild = async () => {
+    const index = rebuildIndex++;
+    starts[index].resolve();
+    const generation = await completions[index].promise;
+    publish(generation);
+    return { generation };
+  };
+  const service = createTopicSearchService({
+    metadata: raceMetadata,
+    noteStore: store('topic-search-notes', noteStore.query),
+    conversationStore: store('topic-search-conversations', conversationStore.query),
+    rebuild: runRebuild,
+    preparedRebuild: runRebuild
+  });
+  publish('initial');
+  return { service, starts, completions };
+}
+
 test('search service returns separate independently ranked groups and exact navigation', async () => {
   const calls = [];
   const service = createTopicSearchService({ metadata, noteStore, conversationStore, sourceService: {
@@ -39,6 +89,25 @@ test('search service returns separate independently ranked groups and exact navi
   await assert.rejects(() => service.navigate({ ...result.notes.results[0].navigation, path: 'replacement.md' }), /committed projection/i);
   await assert.rejects(() => service.navigate({ ...result.notes.results[0].navigation, heading: 'Replacement' }), /committed projection/i);
   await assert.rejects(() => service.navigate({ ...result.notes.results[0].navigation, extra: true }), /unsupported/i);
+});
+
+test('search service preserves navigation for an empty Conversation metadata result', async () => {
+  const projected = conversationStore.query()[0];
+  const metadataOnlyStore = {
+    query: () => [{
+      ...projected,
+      messageId: null,
+      name: 'Empty Conversation',
+      snippet: 'Empty Conversation',
+      role: 'metadata',
+      navigation: { ...projected.navigation, messageId: null }
+    }]
+  };
+  const service = createTopicSearchService({ metadata, noteStore: { query: () => [] }, conversationStore: metadataOnlyStore });
+  const result = await service.query({ schemaVersion: 1, topicId: 'topic-one', query: 'Empty Conversation', limit: 1 });
+  assert.equal(result.conversations.results.length, 1);
+  assert.equal(result.conversations.results[0].messageId, null);
+  assert.equal(result.conversations.results[0].navigation.messageId, null);
 });
 
 test('search withholds stale and foreign projected identities', async () => {
@@ -193,6 +262,27 @@ test('disposable projection maintenance failures cannot fail an authoritative mu
   assert.deepEqual(calls, [['invalidate', {}], ['rebuild', {}]]);
 });
 
+test('authoritative Session send invalidates Search without starting derived work', async () => {
+  const events = [];
+  const sourceService = new AuthoritativeSourceService({
+    metadata: {
+      getTopic: (topicId) => ({ topicId, paraCategory: 'project', lifecycle: 'active' }),
+      listSourceRecovery: () => []
+    },
+    capabilities: { sessions: true },
+    gateway: { request: async () => { throw new Error('fixture Gateway must not be used'); } },
+    searchProvider: {
+      async invalidate(input) { events.push(['invalidate', input]); },
+      async rebuild(input) { events.push(['rebuild', input]); }
+    }
+  });
+  sourceService.forTopic = () => ({ sessions: { async send() { events.push(['send']); return { schemaVersion: 1, status: 'applied' }; } } });
+
+  await sourceService.sessionsSend({ topicId: 'topic-one', referenceId: 'session:one', message: 'fictional', logicalOperationId: '11111111-1111-4111-8111-111111111111' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, [['send'], ['invalidate', { preserveCommittedProjection: true }]]);
+});
+
 test('authoritative mutation refresh republishes complete Topic coverage after global invalidation', async () => {
   let publishedTopics = new Set(['topic-one', 'topic-two']);
   const sourceService = new AuthoritativeSourceService({
@@ -237,4 +327,90 @@ test('overlapping authoritative refreshes cannot publish an older snapshot last'
   releaseFirst();
   await Promise.all([older, newer]);
   assert.deepEqual(calls, ['invalidate-1', 'rebuild-1', 'invalidate-2', 'rebuild-2']);
+});
+
+test('mutation invalidation preserves committed artifacts for a scoped rebuild', async () => {
+  let deletes = 0;
+  const checkpoints = new Map();
+  const service = createTopicSearchService({
+    metadata: {
+      ...metadata,
+      setProjectionBookkeepingBatch(rows) { for (const row of rows) checkpoints.set(row.projectionId, row); },
+      getProjectionBookkeeping(projectionId) { return checkpoints.get(projectionId) ?? null; }
+    },
+    noteStore: { ...noteStore, delete() { deletes += 1; return true; } },
+    conversationStore: { ...conversationStore, delete() { deletes += 1; return true; } }
+  });
+
+  await service.invalidate({ preserveCommittedProjection: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(deletes, 0);
+  assert.equal([...checkpoints.values()].every(({ sourceRevision, inputDigest }) => sourceRevision === 'invalidated' && inputDigest === 'invalidated'), true);
+});
+
+test('durable invalidation does not wait behind an active projection rebuild', async () => {
+  const { service, starts, completions } = controlledProjectionRace();
+  const rebuilding = service.rebuild({ topicId: 'topic-one' });
+  await starts[0].promise;
+
+  let invalidated = false;
+  const invalidation = service.invalidate().then((value) => { invalidated = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    assert.equal(invalidated, true, 'durable denial must not inherit the active rebuild latency');
+    await assert.rejects(
+      service.query({ schemaVersion: 1, topicId: 'topic-one', query: 'alpha' }),
+      (error) => error.code === 'capability-unavailable'
+    );
+  } finally {
+    completions[0].resolve('older');
+    await Promise.all([rebuilding, invalidation]);
+  }
+});
+
+test('an older rebuild completion cannot clear a newer invalidation epoch', async () => {
+  const { service, starts, completions } = controlledProjectionRace();
+  const older = service.rebuild({ topicId: 'topic-one' });
+  await starts[0].promise;
+
+  const invalidation = service.invalidate();
+  completions[0].resolve('older');
+  await older;
+  await invalidation;
+  const newer = service.rebuildPrepared({ topicId: 'topic-one' });
+  await starts[1].promise;
+
+  await assert.rejects(
+    service.query({ schemaVersion: 1, topicId: 'topic-one', query: 'alpha' }),
+    (error) => error.code === 'capability-unavailable'
+  );
+
+  completions[1].resolve('newer');
+  await newer;
+  const result = await service.query({ schemaVersion: 1, topicId: 'topic-one', query: 'alpha' });
+  assert.equal(result.notes.results[0].snippet, 'note');
+  assert.equal(result.conversations.results[0].messageId, 'message-one');
+});
+
+test('an older rebuild failure preserves denial until the latest epoch commits', async () => {
+  const { service, starts, completions } = controlledProjectionRace();
+  const older = service.rebuild({ topicId: 'topic-one' });
+  await starts[0].promise;
+
+  const invalidation = service.invalidate();
+  completions[0].reject(new Error('older snapshot failed'));
+  await assert.rejects(older, /older snapshot failed/u);
+  await invalidation;
+  const newer = service.rebuild({ topicId: 'topic-one' });
+  await starts[1].promise;
+  await assert.rejects(
+    service.query({ schemaVersion: 1, topicId: 'topic-one', query: 'alpha' }),
+    (error) => error.code === 'capability-unavailable'
+  );
+
+  completions[1].resolve('newer-after-failure');
+  await newer;
+  const result = await service.query({ schemaVersion: 1, topicId: 'topic-one', query: 'alpha' });
+  assert.equal(result.notes.results.length, 1);
+  assert.equal(result.conversations.results.length, 1);
 });

@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { createTopicSearchService } from '../src/search/service.mjs';
+import { prepareTopicSearchSnapshot, publishTopicSearchSnapshot } from '../src/search/rebuild.mjs';
 import { createTopicContextPolicy } from '../src/search/context.mjs';
 import { topicContextToolFactory } from '../src/search/tool.mjs';
 
@@ -16,6 +22,91 @@ const searchService = { query: async ({ topicId }) => ({
   notes: { results: [{ topicId, provenance: 'native', sourceReference: { referenceId: `note:${topicId}`, topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/private/topic-folder/one.md' }, heading: 'Heading', path: 'one.md', snippet: 'note excerpt', navigation: { kind: 'note', topicId, referenceId: `note:${topicId}`, path: 'one.md', heading: 'Heading', observedRevision: 'sha256:one' } }] },
   conversations: { results: [{ topicId, provenance: 'imported', sourceReference: { referenceId: `session:${topicId}` }, conversationName: 'Chat', sessionKey: 'agent:main:one', snippet: 'conversation excerpt' }] }
 }) };
+
+async function withStoredContext(run) {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-context-identity-'));
+  const store = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true, search: true } });
+  try {
+    store.createTopic({ ...currentTopic, lifecycle: 'active' });
+    store.createSourceReference({ version: 1, ...currentSession, observedRevision: null });
+    store.setSessionState({ referenceId: currentSession.referenceId, sessionId: 'fictional-current-session', status: 'open', isPrimary: true });
+    const prepared = await prepareTopicSearchSnapshot({
+      stateDir,
+      metadata: store,
+      topicId: currentTopic.topicId,
+      authoritativeSources: { readTopicSnapshot: async () => ({ note: { notes: [], sourceRevision: 'fictional-empty-notes' }, conversation: { conversations: [], sourceRevision: 'fictional-empty-conversations' }, notes: [], conversations: [] }) }
+    });
+    await publishTopicSearchSnapshot({ stateDir, metadata: store, prepared });
+    const policy = createTopicContextPolicy({ metadata: store, searchService: createTopicSearchService({ stateDir, metadata: store }) });
+    await run({ store, factory: topicContextToolFactory(policy) });
+  } finally { store.close(); await rm(stateDir, { recursive: true, force: true }); }
+}
+
+test('Topic context tool refuses a reset Session identity on the same trusted key', async () => {
+  await withStoredContext(async ({ factory }) => {
+    const trusted = { sessionKey: currentSession.externalSourceId, sessionId: 'fictional-current-session' };
+    assert.equal((await factory(trusted).execute('current-session', { query: 'fictional' })).details.currentTopic.topicId, currentTopic.topicId);
+    await assert.rejects(
+      factory({ ...trusted, sessionId: 'fictional-reset-session' }).execute('reset-session', { query: 'fictional' }),
+      (error) => error.code === 'source-recovery'
+    );
+  });
+});
+
+test('Topic context refuses a Session replaced while its real Search read is pending', async () => {
+  await withStoredContext(async ({ store, factory }) => {
+    const tool = factory({ sessionKey: currentSession.externalSourceId, sessionId: 'fictional-current-session' });
+    const pending = tool.execute('pending-context', { query: 'fictional' });
+    const refused = assert.rejects(pending, (error) => error.code === 'source-recovery');
+    store.setSessionState({ referenceId: currentSession.referenceId, sessionId: 'fictional-replacement-session', status: 'open', isPrimary: true });
+    await refused;
+  });
+});
+
+test('Topic context never downgrades a present invalid trusted Session ID or accepts one from tool arguments', async () => {
+  await withStoredContext(async ({ factory }) => {
+    const context = { sessionKey: currentSession.externalSourceId };
+    assert.equal((await factory(context).execute('optional-id', { query: 'fictional' })).details.currentTopic.topicId, currentTopic.topicId);
+    for (const sessionId of [null, '', '   ', 7, {}, ' fictional-current-session ']) {
+      await assert.rejects(factory({ ...context, sessionId }).execute('invalid-id', { query: 'fictional' }), (error) => error.code === 'source-recovery');
+    }
+    for (const supplied of [{ sessionId: 'fictional-current-session' }, { sessionKey: currentSession.externalSourceId }]) {
+      await assert.rejects(factory(context).execute('forged-context', { query: 'fictional', ...supplied }), (error) => error.code === 'invalid-request');
+    }
+  });
+});
+
+test('Topic context keeps exact Session identity and effective locator together during retrieval', async () => {
+  await withStoredContext(async ({ store, factory }) => {
+    const sessionId = 'fictional-current-session';
+    const pending = factory({ sessionKey: currentSession.externalSourceId, sessionId }).execute('pending-relink', { query: 'fictional' });
+    const refused = assert.rejects(pending, (error) => error.code === 'source-recovery');
+    const relocated = 'agent:main:fictional-relocated';
+    store.setSourceLocator({ referenceId: currentSession.referenceId, locator: relocated, ownership: 'external' });
+    await refused;
+    const result = await factory({ sessionKey: relocated, sessionId }).execute('relocated-context', { query: 'fictional' });
+    assert.equal(result.details.currentTopic.topicId, currentTopic.topicId);
+    await assert.rejects(factory({ sessionKey: currentSession.externalSourceId, sessionId }).execute('displaced-context', { query: 'fictional' }), (error) => error.code === 'source-recovery');
+  });
+});
+
+test('Topic context refuses ambiguous current Session bindings even when one durable identity matches', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-context-owner-'));
+  const store = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true, search: true } });
+  try {
+    for (const reference of [currentSession, otherSession]) {
+      store.createTopic({ topicId: reference.topicId, paraCategory: 'project', lifecycle: 'active' });
+      store.createSourceReference({ version: 1, ...reference, observedRevision: null });
+      store.setSourceLocator({ referenceId: reference.referenceId, locator: currentSession.externalSourceId, ownership: 'external' });
+    }
+    store.setSessionState({ referenceId: currentSession.referenceId, sessionId: 'fictional-current-session', status: 'open', isPrimary: true });
+    const policy = createTopicContextPolicy({ metadata: store, searchService: createTopicSearchService({ stateDir, metadata: store }) });
+    await assert.rejects(
+      topicContextToolFactory(policy)({ sessionKey: currentSession.externalSourceId, sessionId: 'fictional-current-session' }).execute('ambiguous-session', { query: 'fictional' }),
+      (error) => error.code === 'source-recovery'
+    );
+  } finally { store.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
 
 test('on-demand context binds only the trusted current Session Topic and stays bounded', async () => {
   const policy = createTopicContextPolicy({ metadata, searchService });

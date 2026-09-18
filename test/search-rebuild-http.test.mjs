@@ -1,0 +1,59 @@
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
+import test from 'node:test';
+import { createSearchRebuildHttpHandler, searchRebuildRoute } from '../src/search/http-route.mjs';
+
+const topicId = '11111111-1111-4111-8111-111111111111';
+
+async function invoke(service, { method = 'POST', body = {}, headers = { 'content-type': 'application/json', origin: 'null' } } = {}) {
+  const req = { method, headers, body };
+  const res = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(value) { this.body = value; } };
+  await createSearchRebuildHttpHandler(service)(req, res);
+  return { statusCode: res.statusCode, headers: res.headers, body: res.body ? JSON.parse(res.body) : null };
+}
+
+test('public search rebuild is an exact closed POST with bounded idempotent evidence', async () => {
+  const calls = [];
+  const service = { async searchRebuild(input) { calls.push(input); return { topicIds: [input.topicId], notes: { projectionId: 'topic-search-notes-v1' }, conversations: { projectionId: 'topic-search-conversations-v1' } }; } };
+  const logicalOperationId = randomUUID();
+  assert.equal(searchRebuildRoute, '/plugins/command-center/api/search/rebuild');
+  assert.equal((await invoke(service, { method: 'GET' })).statusCode, 405);
+  assert.equal((await invoke(service, { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type, authorization' } })).statusCode, 405);
+  assert.equal((await invoke(service, { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } })).statusCode, 405);
+  assert.equal((await invoke(service, { body: { schemaVersion: 1, topicId, logicalOperationId, extra: true } })).statusCode, 400);
+  const applied = await invoke(service, { body: { schemaVersion: 1, topicId, logicalOperationId } });
+  assert.equal(applied.statusCode, 200);
+  assert.deepEqual(calls, [{ schemaVersion: 1, topicId, logicalOperationId }]);
+  assert.deepEqual(applied.body, { schemaVersion: 1, status: 'applied', logicalOperationId, result: { topicId, topicIds: [topicId], projections: ['topic-search-conversations-v1', 'topic-search-notes-v1'] } });
+  assert.equal(Buffer.byteLength(JSON.stringify(applied.body)) < 4096, true);
+});
+
+test('public search rebuild rejects non-canonical identities before dispatch', async () => {
+  let calls = 0;
+  const service = { async searchRebuild() { calls++; return {}; } };
+  assert.equal((await invoke(service, { body: { schemaVersion: 1, topicId: 'topic', logicalOperationId: randomUUID() } })).statusCode, 400);
+  assert.equal(calls, 0);
+});
+
+test('public search rebuild reads the pinned host IncomingMessage body stream', async () => {
+  const logicalOperationId = randomUUID();
+  const calls = [];
+  const request = Readable.from([JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId })]);
+  request.method = 'POST';
+  request.headers = { 'content-type': 'application/json' };
+  const response = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(value) { this.body = value; } };
+  await createSearchRebuildHttpHandler({ async searchRebuild(input) { calls.push(input); return { topicIds: [topicId] }; } })(request, response);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(calls, [{ schemaVersion: 1, topicId, logicalOperationId }]);
+});
+
+test('public search rebuild accepts a bounded body buffer supplied by host middleware', async () => {
+  const logicalOperationId = randomUUID();
+  const calls = [];
+  const applied = await invoke({ async searchRebuild(input) { calls.push(input); return { topicIds: [topicId] }; } }, {
+    body: Buffer.from(JSON.stringify({ schemaVersion: 1, topicId, logicalOperationId }))
+  });
+  assert.equal(applied.statusCode, 200);
+  assert.deepEqual(calls, [{ schemaVersion: 1, topicId, logicalOperationId }]);
+});

@@ -1,4 +1,5 @@
 import { sourceError } from '../sources/errors.mjs';
+import { effectiveSourceLocator } from '../sources/reference.mjs';
 import { SEARCH_PROJECTION_VERSIONS } from './projection-store.mjs';
 
 const MAX_EXCERPTS = 8;
@@ -23,11 +24,17 @@ function redactCredentialText(value) {
     .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu, REDACTED_CREDENTIAL);
 }
 
-function currentTopic(metadata, sessionKey) {
+function currentBinding(metadata, sessionKey, sessionId) {
   if (typeof sessionKey !== 'string' || sessionKey.trim() === '') return null;
-  const matches = (metadata?.listSourceReferences?.() ?? []).filter((reference) => reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session' && reference.externalSourceId === sessionKey);
+  const matches = (metadata?.listSourceReferences?.() ?? []).filter((reference) => reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session' && effectiveSourceLocator(metadata, reference) === sessionKey);
   if (matches.length !== 1) return null;
-  return metadata.getTopic?.(matches[0].topicId) ?? null;
+  // The host may omit its optional instance ID, but a supplied ID must never
+  // fall back to key-only ownership after /new or /reset.
+  const reference = matches[0];
+  const currentSessionId = metadata.getSessionState?.(reference.referenceId)?.sessionId;
+  if (sessionId !== undefined && (typeof sessionId !== 'string' || sessionId.trim() === '' || currentSessionId !== sessionId)) return null;
+  const topic = metadata.getTopic?.(reference.topicId);
+  return topic ? { topic, referenceId: reference.referenceId, sessionId: currentSessionId } : null;
 }
 
 function identity(metadata, topic) {
@@ -110,9 +117,10 @@ function selectExcerpts(notes, conversations, limit) {
 }
 
 export function createTopicContextPolicy({ metadata, searchService } = {}) {
-  async function retrieve({ query, sessionKey, targetTopicId, crossTopicBasis, limit = MAX_EXCERPTS } = {}) {
-    const current = currentTopic(metadata, sessionKey);
-    if (!current) throw sourceError('source-recovery', 'Trusted session context does not resolve exactly one current Topic.');
+  async function retrieve({ query, sessionKey, sessionId, targetTopicId, crossTopicBasis, limit = MAX_EXCERPTS } = {}) {
+    const binding = currentBinding(metadata, sessionKey, sessionId);
+    if (!binding) throw sourceError('source-recovery', 'Trusted session context does not resolve exactly one current Topic.');
+    const current = binding.topic;
     if (typeof query !== 'string' || query.trim() === '' || query.trim().length > 256) throw sourceError('invalid-request', 'query must be 1–256 UTF-16 code units.');
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_EXCERPTS) throw sourceError('invalid-request', `limit must be an integer between 1 and ${MAX_EXCERPTS}.`);
     const targetId = targetTopicId ?? current.topicId;
@@ -125,6 +133,8 @@ export function createTopicContextPolicy({ metadata, searchService } = {}) {
     const currentTopicIdentity = identity(metadata, current);
     const retrievedTopic = identity(metadata, topic);
     const result = await searchService.query({ schemaVersion: 1, topicId: targetId, query: query.trim(), limit });
+    const verified = currentBinding(metadata, sessionKey, sessionId);
+    if (!verified || verified.referenceId !== binding.referenceId || verified.topic.topicId !== current.topicId || verified.sessionId !== binding.sessionId) throw sourceError('source-recovery', 'Trusted Session ownership changed during Topic context retrieval.');
     const selected = selectExcerpts(result.notes.results, result.conversations.results, limit);
     return fitOutput({ schemaVersion: 1, currentTopic: currentTopicIdentity, originatingTopic: currentTopicIdentity, retrievedTopic, crossTopic, selectionBasis: crossTopic ? crossTopicBasis : 'current-topic', projectionVersions: SEARCH_PROJECTION_VERSIONS, groups: {
       notes: selected.notes.map((item) => excerpt(item, 'notes', retrievedTopic, metadata)),

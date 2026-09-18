@@ -1,7 +1,8 @@
 import { openProjectionStore, SEARCH_PROJECTION_VERSIONS } from './projection-store.mjs';
 import { validateSearchRequest } from './query.mjs';
 import { sourceError } from '../sources/errors.mjs';
-import { clearTopicSearchInvalidationMarker, hasTopicSearchInvalidationMarker, markTopicSearchInvalidated } from './freshness.mjs';
+import { effectiveSourceLocator } from '../sources/reference.mjs';
+import { clearTopicSearchInvalidationMarker, hasTopicSearchInvalidationMarker, markTopicSearchInvalidated, readTopicSearchFreshness } from './freshness.mjs';
 
 function exactReference(metadata, topicId, referenceId) {
   const reference = metadata?.getSourceReference?.(referenceId);
@@ -103,7 +104,7 @@ function noteResult(result) {
 }
 
 function conversationResult(result) {
-  if (typeof result.messageId !== 'string' || result.messageId.length === 0) return null;
+  if (result.messageId !== null && (typeof result.messageId !== 'string' || result.messageId.length === 0)) return null;
   const sourceReference = exactSourceReference(result.sourceReference);
   const snippet = boundedUnit(result.snippet, 240);
   const remaining = 600 - Array.from(snippet).length;
@@ -150,13 +151,13 @@ function isCurrentResult(metadata, topicId, scope, result) {
       const folderRoot = metadata?.getSourceLocator?.(folder.referenceId)?.locator ?? folder.externalSourceId;
       const expectedExternalSourceId = `${folderRoot.replace(/\/+$/u, '')}/${result.path}`;
       return reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note'
-        && reference.externalSourceId === expectedExternalSourceId
+        && effectiveSourceLocator(metadata, reference) === expectedExternalSourceId
         && folder.referenceId === scope.folder.referenceId
         && folder.externalSourceId === scope.folder.externalSourceId;
     }
     const reference = exactReference(metadata, topicId, result.sourceReference?.referenceId ?? result.referenceId);
     assertDescriptorReference(result.sourceReference, reference);
-    if (result.kind !== 'conversation' || reference.sourceSystem !== 'openclaw' || reference.sourceKind !== 'session' || reference.externalSourceId !== result.sessionKey) return false;
+    if (result.kind !== 'conversation' || reference.sourceSystem !== 'openclaw' || reference.sourceKind !== 'session' || effectiveSourceLocator(metadata, reference) !== result.sessionKey) return false;
     const state = metadata?.getSessionState?.(reference.referenceId) ?? null;
     if (typeof state?.sessionId !== 'string' || state.sessionId.length === 0 || result.sessionId !== state.sessionId) return false;
     const status = state?.status ?? 'open';
@@ -167,31 +168,86 @@ function isCurrentResult(metadata, topicId, scope, result) {
   }
 }
 
-export function createTopicSearchService({ stateDir, metadata, sourceService, noteStore, conversationStore, rebuild } = {}) {
+export function createTopicSearchService({ stateDir, metadata, sourceService, noteStore, conversationStore, rebuild, preparedRebuild } = {}) {
   let notes = noteStore;
   let conversations = conversationStore;
   let rebuildQueue = Promise.resolve();
+  let reconciliationTask;
   let invalidated = hasTopicSearchInvalidationMarker(stateDir);
+  let freshnessEpoch = invalidated ? 1 : 0;
   const stores = async () => {
     notes ??= await openProjectionStore({ stateDir, kind: 'note' });
     conversations ??= await openProjectionStore({ stateDir, kind: 'conversation' });
     return { notes, conversations };
   };
-  const queueRebuild = (input = {}) => {
-    if (typeof rebuild !== 'function') return Promise.reject(sourceError('capability-unavailable', 'Topic Search rebuild is unavailable.', { capability: 'search' }));
-    const run = async () => {
-      const result = await rebuild(input);
-      clearTopicSearchInvalidationMarker(stateDir);
-      invalidated = false;
-      return result;
-    };
+  const enqueueMaintenance = (run) => {
     const queued = rebuildQueue.then(run, run);
     rebuildQueue = queued.catch(() => {});
     return queued;
   };
+  const hasCommittedProjectionSet = async () => {
+    const opened = await stores();
+    if (typeof metadata?.getProjectionBookkeeping !== 'function') return false;
+    const projectionIds = new Set();
+    for (const store of [opened.notes, opened.conversations]) {
+      const manifest = store.manifest?.();
+      if (!manifest || manifest.schemaVersion !== 1 || typeof manifest.projectionId !== 'string' || typeof manifest.generation !== 'string' || !Array.isArray(manifest.topicIds)) return false;
+      projectionIds.add(manifest.projectionId);
+      const checkpoint = metadata.getProjectionBookkeeping(manifest.projectionId);
+      if (!checkpoint || checkpoint.sourceRevision !== manifest.sourceRevision || checkpoint.inputDigest !== manifest.inputDigest) return false;
+    }
+    return projectionIds.size === 2 && Object.values(SEARCH_PROJECTION_VERSIONS).every(({ projectionId }) => projectionIds.has(projectionId));
+  };
+  const queueRebuildOperation = (runRebuild, input = {}) => {
+    if (typeof runRebuild !== 'function') return Promise.reject(sourceError('capability-unavailable', 'Topic Search rebuild is unavailable.', { capability: 'search' }));
+    const rebuildEpoch = freshnessEpoch;
+    const run = async () => {
+      const result = await runRebuild(input);
+      if (rebuildEpoch !== freshnessEpoch) return result;
+      const committed = await hasCommittedProjectionSet();
+      if (rebuildEpoch !== freshnessEpoch) return result;
+      const currentFreshness = readTopicSearchFreshness(stateDir);
+      if (currentFreshness && (!result?.freshness
+        || JSON.stringify(result.freshness.projections) !== JSON.stringify(currentFreshness.projections)
+        || (currentFreshness.attempt !== null && result.freshness.attempt !== currentFreshness.attempt)
+        || (currentFreshness.invalidation !== null && result.freshness.invalidation !== currentFreshness.invalidation))) {
+        throw sourceError('conflict', 'The Search receipt does not own the current source generation. Rebuild with a new operation.');
+      }
+      if (!committed) {
+        invalidated = true;
+        try { markTopicSearchInvalidated(stateDir); } catch { /* Existing metadata denial remains authoritative. */ }
+        throw sourceError('projection-unavailable', 'Topic Search rebuild did not commit both projections and bookkeeping.');
+      }
+      clearTopicSearchInvalidationMarker(stateDir);
+      invalidated = false;
+      return result;
+    };
+    return enqueueMaintenance(run);
+  };
+  const queueRebuild = (input = {}) => queueRebuildOperation(rebuild, input);
   const service = {
     rebuild: rebuild ? queueRebuild : undefined,
-    async invalidate() {
+    rebuildPrepared: preparedRebuild ? (input = {}) => queueRebuildOperation(preparedRebuild, input) : undefined,
+    async reconcile(input = {}) {
+      // Deny stale reads before waiting behind any older publication. Runtime
+      // events are hints: rebuild from authoritative sources, never their body.
+      await service.invalidate({ preserveCommittedProjection: true });
+      reconciliationTask ??= (async () => {
+        for (;;) {
+          input.signal?.throwIfAborted();
+          const epoch = freshnessEpoch;
+          try {
+            const result = await queueRebuild(input);
+            if (epoch === freshnessEpoch) return result;
+          } catch (error) {
+            if (epoch === freshnessEpoch || input.signal?.aborted) throw error;
+          }
+        }
+      })().finally(() => { reconciliationTask = undefined; });
+      return reconciliationTask;
+    },
+    async invalidate(input = {}) {
+      freshnessEpoch += 1;
       invalidated = true;
       let markerWritten = false;
       let checkpointWritten = false;
@@ -204,19 +260,32 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
         })));
         checkpointWritten = typeof metadata?.setProjectionBookkeepingBatch === 'function';
       } catch { /* The independent marker and artifact deletion are still attempted. */ }
-      let opened;
-      try { opened = await stores(); }
-      catch {
-        if (!markerWritten && !checkpointWritten) throw sourceError('projection-unavailable', 'Topic Search invalidation could not be persisted.');
+      if (input?.preserveCommittedProjection === true && (markerWritten || checkpointWritten)) {
         return Object.freeze({ notes: false, conversations: false });
       }
-      const discard = (store) => {
-        try { return store.delete(); }
-        catch { return false; }
-      };
-      const result = Object.freeze({ notes: discard(opened.notes), conversations: discard(opened.conversations) });
-      if (!markerWritten && !checkpointWritten && (!result.notes || !result.conversations)) throw sourceError('projection-unavailable', 'Topic Search invalidation could not be persisted.');
-      return result;
+      const disposal = enqueueMaintenance(async () => {
+        let opened;
+        try { opened = await stores(); }
+        catch {
+          if (!markerWritten && !checkpointWritten) throw sourceError('projection-unavailable', 'Topic Search invalidation could not be persisted.');
+          return Object.freeze({ notes: false, conversations: false });
+        }
+        const discard = (store) => {
+          try { return store.delete(); }
+          catch { return false; }
+        };
+        const result = Object.freeze({ notes: discard(opened.notes), conversations: discard(opened.conversations) });
+        if (!markerWritten && !checkpointWritten && (!result.notes || !result.conversations)) throw sourceError('projection-unavailable', 'Topic Search invalidation could not be persisted.');
+        return result;
+      });
+      if (markerWritten || checkpointWritten) {
+        // The marker/checkpoints already deny every stale read. Artifact
+        // disposal retains queue order, but authoritative mutations must not
+        // inherit the latency of an older global rebuild.
+        void disposal.catch(() => {});
+        return Object.freeze({ notes: false, conversations: false });
+      }
+      return disposal;
     },
     async query(input = {}) {
       const request = validateSearchRequest(input);
@@ -289,12 +358,12 @@ export function createTopicSearchService({ stateDir, metadata, sourceService, no
         for (const key of Object.keys(descriptor)) if (!['kind', 'topicId', 'referenceId', 'sessionKey', 'sessionId', 'messageId'].includes(key)) throw sourceError('invalid-request', 'Conversation navigation contains unsupported fields.');
         const reference = exactReference(metadata, topicId, descriptor.referenceId);
         if (reference.sourceSystem !== 'openclaw' || reference.sourceKind !== 'session') throw sourceError('cross-topic', 'The Conversation navigation Source Reference is invalid.');
-        if (descriptor.sessionKey !== reference.externalSourceId) throw sourceError('source-recovery', 'The Conversation navigation Session key is stale or foreign.');
+        if (descriptor.sessionKey !== effectiveSourceLocator(metadata, reference)) throw sourceError('source-recovery', 'The Conversation navigation Session key is stale or foreign.');
         const state = metadata?.getSessionState?.(reference.referenceId);
         if (typeof descriptor.sessionId !== 'string' || !descriptor.sessionId || descriptor.sessionId !== state?.sessionId) throw sourceError('source-recovery', 'The Conversation navigation Session ID is stale or foreign.');
         if (!navigationSourceService?.sessionsNavigate) throw sourceError('capability-unavailable', 'Authoritative Conversation navigation is unavailable.', { capability: 'sessions' });
         const navigation = await navigationSourceService.sessionsNavigate({ schemaVersion: 1, topicId, referenceId: reference.referenceId });
-        if (navigation?.sourceReference?.referenceId !== reference.referenceId || navigation?.sessionKey !== reference.externalSourceId || navigation?.sessionId !== descriptor.sessionId) throw sourceError('source-recovery', 'Authoritative Conversation navigation did not preserve the exact linked Session.');
+        if (navigation?.sourceReference?.referenceId !== reference.referenceId || navigation?.sessionKey !== effectiveSourceLocator(metadata, reference) || navigation?.sessionId !== descriptor.sessionId) throw sourceError('source-recovery', 'Authoritative Conversation navigation did not preserve the exact linked Session.');
         return Object.freeze({ navigation });
       }
       throw sourceError('invalid-request', 'Unsupported navigation descriptor.');

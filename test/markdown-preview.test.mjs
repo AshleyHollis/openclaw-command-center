@@ -15,6 +15,7 @@ test('Markdown preview renders the supported basic syntax deterministically', ()
   assert.match(rendered, /<pre><code>const value = 1;<\/code><\/pre>/u);
   assert.match(rendered, /href="https:\/\/fictional\.invalid\/docs"/u);
   assert.equal(rendered, renderMarkdown(source));
+  assert.match(renderMarkdown(source, { headingOffset: 4 }), /<h5>Heading<\/h5>/u);
 });
 
 test('Markdown preview keeps HTML, images, and unsafe links inert', () => {

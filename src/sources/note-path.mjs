@@ -2,14 +2,23 @@ import path from 'node:path';
 import { lstat, realpath } from 'node:fs/promises';
 import { sourceError } from './errors.mjs';
 
-export function normalizeNotePath(value) {
+export function normalizeTopicFilePath(value, { sourceKind = 'note' } = {}) {
   if (typeof value !== 'string' || value.length === 0 || value.includes('\0') || value.includes('\\') || path.isAbsolute(value)) {
-    throw sourceError('invalid-path', 'Note paths must be non-empty, relative, NUL-free POSIX paths.');
+    throw sourceError('invalid-path', 'Topic file paths must be non-empty, relative, NUL-free POSIX paths.');
   }
   const segments = value.split('/');
-  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) throw sourceError('invalid-path', 'Note paths cannot contain empty, dot, or dot-dot segments.');
-  if (!/\.md$/iu.test(value)) throw sourceError('invalid-path', 'Only Markdown Note paths are supported.');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) throw sourceError('invalid-path', 'Topic file paths cannot contain empty, dot, or dot-dot segments.');
+  if (sourceKind === 'note' && !/\.md$/iu.test(value)) throw sourceError('invalid-path', 'Only Markdown Note paths are supported.');
+  if (sourceKind !== 'note' && sourceKind !== 'document') throw sourceError('invalid-request', 'Topic file source kind is unsupported.');
   return segments.join('/');
+}
+
+export function sourceKindForTopicFilePath(value) {
+  return /\.md$/iu.test(String(value ?? '')) ? 'note' : 'document';
+}
+
+export function normalizeNotePath(value) {
+  return normalizeTopicFilePath(value, { sourceKind: 'note' });
 }
 
 export function isWithin(root, candidate) {
@@ -30,8 +39,8 @@ async function assertRegularOrMissing(candidate, { allowMissing = false } = {}) 
   }
 }
 
-export async function assertSafeNotePath(root, notePath, { allowMissing = false, directory = false } = {}) {
-  const normalized = normalizeNotePath(notePath);
+export async function assertSafeTopicFilePath(root, notePath, { allowMissing = false, directory = false, sourceKind = sourceKindForTopicFilePath(notePath) } = {}) {
+  const normalized = normalizeTopicFilePath(notePath, { sourceKind });
   const canonicalRoot = await assertSafeDirectory(root);
   const candidate = path.resolve(canonicalRoot, ...normalized.split('/'));
   if (!isWithin(canonicalRoot, candidate)) throw sourceError('unsafe-path', 'The Note path escapes the Topic root.');
@@ -46,6 +55,10 @@ export async function assertSafeNotePath(root, notePath, { allowMissing = false,
   const finalStat = await assertRegularOrMissing(candidate, { allowMissing });
   if (finalStat && directory !== finalStat.isDirectory()) throw sourceError('unsafe-path', directory ? 'The Note Folder path must be a directory.' : 'The Note path must be a regular file.');
   return Object.freeze({ root: canonicalRoot, path: candidate, relativePath: normalized, stat: finalStat });
+}
+
+export async function assertSafeNotePath(root, notePath, options = {}) {
+  return assertSafeTopicFilePath(root, notePath, { ...options, sourceKind: 'note' });
 }
 
 export async function assertSafeDirectory(root) {

@@ -5,12 +5,73 @@ import { createMutationCoordinator } from '../src/sources/mutation-coordinator.m
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
 import { validateMutationEnvelope } from '../src/sources/operation-journal.mjs';
 
+test('reconcile-only joins an active effect then verifies it without executing another write', async () => {
+  const coordinator = createMutationCoordinator();
+  let release; const held = new Promise((resolve) => { release = resolve; });
+  let effects = 0; let verifications = 0;
+  const input = { operationKind: 'notes.edit', requestId: 'save', logicalOperationId: randomUUID(), intent: { text: 'submitted' },
+    execute: async () => { effects++; await held; return { path: 'brief.md', revision: 'r2' }; },
+    reconcile: async () => { verifications++; return { outcome: 'applied', value: { path: 'brief.md', revision: 'r2' } }; } };
+  const save = coordinator.mutate(input);
+  const check = coordinator.reconcile({ ...input, requestId: 'check', execute: () => { throw new Error('Read-only reconciliation executed a write'); } });
+  try { await new Promise((resolve) => setImmediate(resolve)); assert.equal(effects, 1); assert.equal(verifications, 0); }
+  finally { release(); await save; }
+  assert.equal((await check).status, 'applied');
+  assert.equal((await check).requestId, 'check');
+  assert.equal(effects, 1); assert.equal(verifications, 1);
+});
+
+test('an explicit write waiting for a not-applied reconciliation is not mistaken for a completed write', async () => {
+  const coordinator = createMutationCoordinator();
+  let release; const held = new Promise((resolve) => { release = resolve; });
+  let effects = 0;
+  const input = { operationKind: 'notes.edit', requestId: 'check', logicalOperationId: randomUUID(), intent: { text: 'submitted' },
+    execute: async () => { effects++; return { revision: 'r2' }; }, reconcile: async () => { await held; return { outcome: 'not-applied' }; } };
+  const check = coordinator.reconcile(input);
+  const save = coordinator.mutate({ ...input, requestId: 'explicit-save' });
+  release();
+  assert.equal((await check).status, 'not-applied');
+  assert.equal((await save).status, 'applied'); assert.equal(effects, 1);
+});
+
+test('concurrent retries wait for their logical operation without reconciling an active write', async () => {
+  const coordinator = createMutationCoordinator();
+  const logicalOperationId = randomUUID();
+  let release;
+  const wait = new Promise((resolve) => { release = resolve; });
+  let calls = 0; let reconciles = 0;
+  const input = { operationKind: 'notes.edit', requestId: 'first', logicalOperationId, intent: { text: 'new' }, execute: async () => { calls++; await wait; return { id: 'saved' }; }, reconcile: async () => { reconciles++; return { outcome: 'not-applied' }; } };
+  const first = coordinator.mutate(input);
+  const retry = coordinator.mutate({ ...input, requestId: 'retry' });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 1);
+    assert.equal(reconciles, 0);
+    await assert.rejects(coordinator.mutate({ ...input, intent: { text: 'different' } }), (error) => error.code === 'intent-mismatch');
+  } finally { release(); await Promise.allSettled([first, retry]); }
+  assert.equal((await first).requestId, 'first');
+  assert.equal((await retry).requestId, 'retry');
+  assert.equal((await retry).value.id, 'saved');
+});
+
 test('MutationEnvelopeV1 is closed and retains caller transport and logical IDs', () => {
   const logicalOperationId = randomUUID();
   const envelope = validateMutationEnvelope({ version: 1, transportRequestId: 'frame-1', logicalOperationId, action: 'notes.edit', topicId: 'topic-1', referenceId: 'note-1', input: { expectedRevision: 'opaque' } });
   assert.equal(envelope.transportRequestId, 'frame-1');
   assert.equal(envelope.logicalOperationId, logicalOperationId);
   assert.throws(() => validateMutationEnvelope({ ...envelope, extra: true }), /unsupported field/i);
+});
+
+test('joining an active mutation still validates the retry transport identity', async () => {
+  const coordinator = createMutationCoordinator();
+  let release;
+  const wait = new Promise((resolve) => { release = resolve; });
+  const input = { operationKind: 'notes.edit', requestId: 'first', logicalOperationId: randomUUID(), intent: { text: 'new' }, execute: async () => { await wait; return { id: 'saved' }; } };
+  const first = coordinator.mutate(input);
+  const rejectedRetry = assert.rejects(coordinator.mutate({ ...input, requestId: ' ' }), (error) => error.code === 'invalid-request');
+  release();
+  await first;
+  await rejectedRetry;
 });
 
 test('coordinator retains logical IDs, retries one idempotent ambiguous mutation, and records intent', async () => {

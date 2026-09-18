@@ -20,7 +20,7 @@ async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z') {
     async clear(input) { clears.push(input); for (const notifications of devices.values()) notifications.delete(input.logicalOperationId); return { status: 'cleared', attempted: devices.size, cleared: devices.size, failed: 0, ambiguous: 0 }; }
   };
   const service = createNotificationService({ metadata, attentionService: attention, emitter: binding, now: () => clock });
-  try { return await run({ metadata, service, episode, episodes, candidates, clears, devices, advance(ms) { clock += ms; } }); }
+  try { return await run({ metadata, service, episode, episodes, candidates, clears, devices, binding, advance(ms) { clock += ms; } }); }
   finally { service.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 }
 
@@ -114,4 +114,74 @@ test('snoozing cancels repeat slots and excludes snoozed time from High active h
     await service.reconcile();
     assert.equal(candidates.length, 3);
   });
+});
+
+for (const concurrentReconcile of [false, true]) test(`late emission cannot outlive its terminal episode (queued reconcile: ${concurrentReconcile})`, async () => {
+  await fixture(async ({ service, episode, binding, devices }) => {
+    const entered = Promise.withResolvers(); const release = Promise.withResolvers();
+    const emit = binding.emit;
+    binding.emit = async candidate => { entered.resolve(); await release.promise; return emit(candidate); };
+    const pending = service.reconcile(); await entered.promise;
+    episode.state = 'Action running';
+    const clearing = concurrentReconcile ? service.reconcile() : Promise.resolve();
+    // Give the old implementation a chance to clear before the delayed emit.
+    await new Promise(resolve => setImmediate(resolve));
+    release.resolve(); await Promise.all([pending, clearing]);
+    assert.equal([...devices.values()].every(notifications => notifications.size === 0), true);
+    assert.equal(service.inspect().emissions.every(row => row.status === 'cleared'), true);
+  });
+});
+
+for (const quietHoursEnabled of [true, false]) test(`queued notifications respect disabled categories (summary: ${quietHoursEnabled})`, async () => {
+  await fixture(async ({ service, candidates, advance }) => {
+    await service.reconcile();
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '86666666-4444-4444-8444-444444444444', expectedRevision: 1, settings: { importantItems: false, quietHoursEnabled } });
+    advance(9 * 60 * 60 * 1000);
+    await service.reconcile();
+    assert.equal(candidates.length, 0);
+    assert.ok(service.inspect().slots.some(slot => slot.status === 'queued'));
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '87777777-4444-4444-8444-444444444444', expectedRevision: 2, settings: { importantItems: true } });
+    await service.reconcile();
+    assert.ok(candidates.length > 0, 're-enabling retains the original policy slots');
+  }, '2026-08-27T22:00:00.000Z');
+});
+
+test('disabling a category during delivery clears the late emission', async () => {
+  await fixture(async ({ service, binding, devices }) => {
+    const entered = Promise.withResolvers(); const release = Promise.withResolvers(); const emit = binding.emit;
+    binding.emit = async candidate => { entered.resolve(); await release.promise; return emit(candidate); };
+    const pending = service.reconcile(); await entered.promise;
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '88888888-4444-4444-8444-444444444444', expectedRevision: 1, settings: { importantItems: false } });
+    release.resolve(); await pending;
+    assert.equal([...devices.values()].every(notifications => notifications.size === 0), true);
+  });
+});
+
+test('an ambiguous compensating clear retries while its category remains disabled', async () => {
+  await fixture(async ({ service, binding, devices }) => {
+    const entered = Promise.withResolvers(); const release = Promise.withResolvers();
+    const emit = binding.emit; const clear = binding.clear; let attempts = 0;
+    binding.emit = async candidate => { entered.resolve(); await release.promise; return emit(candidate); };
+    binding.clear = async input => ++attempts === 1 ? { status: 'ambiguous', cleared: false } : clear(input);
+    const pending = service.reconcile(); await entered.promise;
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '88888888-5555-4555-8555-555555555555', expectedRevision: 1, settings: { importantItems: false } });
+    release.resolve(); await pending;
+    assert.equal(service.inspect().clears[0].status, 'ambiguous');
+    await service.reconcile();
+    assert.equal(attempts, 2);
+    assert.equal([...devices.values()].every(notifications => notifications.size === 0), true);
+    assert.equal(service.inspect().clears[0].status, 'cleared');
+  });
+});
+
+test('a quiet summary is cleared when a contributing episode becomes terminal during delivery', async () => {
+  await fixture(async ({ service, episode, episodes, binding, devices, advance }) => {
+    const contributor = { ...episode, episodeId: 'fictional-second' }; episodes.push(contributor);
+    await service.reconcile(); advance(9 * 60 * 60 * 1000);
+    const entered = Promise.withResolvers(); const release = Promise.withResolvers(); const emit = binding.emit;
+    binding.emit = async candidate => { entered.resolve(); await release.promise; return emit(candidate); };
+    const pending = service.reconcile(); await entered.promise;
+    contributor.state = 'Action running'; release.resolve(); await pending;
+    assert.equal([...devices.values()].every(notifications => notifications.size === 0), true);
+  }, '2026-08-27T22:00:00.000Z');
 });

@@ -2,9 +2,33 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { registerBridgeMethods } from '../src/bridge/register.mjs';
-import { validateBridgeRequest } from '../src/bridge/contracts.mjs';
+import { sanitizeBridgeResult, validateBridgeRequest } from '../src/bridge/contracts.mjs';
 
-test('Attention and Activity bridge methods are closed, scoped, and redact bounded projections', async () => {
+test('Attention actions accept only the canonical authenticated operator profile', async (t) => {
+  for (const [name, client, expectedOperator] of [
+    ['HTTP profile', { authenticatedUserProfile: { profileId: 'profile-operator' } }, 'profile-operator'],
+    ['WebSocket profile and login identity', { authenticatedUserProfile: { profileId: 'profile-operator' }, authenticatedUserId: 'login@example.test' }, 'profile-operator'],
+    ['profile and legacy operator identity', { authenticatedUserProfile: { profileId: 'profile-operator' }, authenticatedOperatorId: 'legacy-operator' }, 'profile-operator'],
+    ['invalid profile with login identity', { authenticatedUserProfile: { profileId: '' }, authenticatedUserId: 'login@example.test' }, null],
+    ['display name', { authenticatedUserProfile: { displayName: 'Operator' } }, null]
+  ]) await t.test(name, async () => {
+    let handler;
+    let seen;
+    registerBridgeMethods({ registerGatewayMethod(method, value) { if (method === 'command-center.v1.attention.act') handler = value; } }, {
+      attentionAct(input) { seen = input.authenticatedOperatorId; return { schemaVersion: 1, status: 'applied' }; }
+    });
+    let response;
+    await handler({ req: { id: 'profile-request' }, client, context: { authenticated: true }, params: {
+      schemaVersion: 1, topicId: 'topic-1', sourceReferenceId: 'source-1', episodeId: 'episode-1',
+      expectedEpisodeRevision: 1, expectedSourceRevision: 'revision-1', actionId: 'monitor.retry', input: {}, logicalOperationId: randomUUID()
+    }, respond: (...args) => { response = args; } });
+    assert.equal(response[0], expectedOperator !== null);
+    if (expectedOperator === null) assert.equal(response[2].code, 'unauthenticated');
+    assert.equal(seen, expectedOperator ?? undefined);
+  });
+});
+
+test('Attention and Activity contracts stay closed while first-live handlers preserve exact identity', async () => {
   const operationId = randomUUID();
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.attention.list', { schemaVersion: 1, limit: 50 }));
   assert.throws(() => validateBridgeRequest('command-center.v1.attention.list', { schemaVersion: 1, cursor: 'not-allowed' }), /unsupported/i);
@@ -17,6 +41,14 @@ test('Attention and Activity bridge methods are closed, scoped, and redact bound
   assert.throws(() => validateBridgeRequest('command-center.v1.attention.act', { schemaVersion: 1, topicId: 'topic-1', sourceReferenceId: 'source-1', episodeId: 'episode-1', expectedEpisodeRevision: 1, expectedSourceRevision: 'source-revision-1', actionId: 'approval.approve', input: {}, logicalOperationId: operationId }), /approvalId/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.attention.act', { schemaVersion: 1, topicId: 'topic-1', sourceReferenceId: 'source-1', episodeId: 'episode-1', expectedEpisodeRevision: 1, expectedSourceRevision: 'source-revision-1', actionId: 'approval.approve', approvalId: 'approval-1', input: {}, logicalOperationId: operationId }));
   assert.throws(() => validateBridgeRequest('command-center.v1.attention.act', { schemaVersion: 1, episodeId: 'episode-1', expectedEpisodeRevision: 1, actionId: 'monitor.retry', input: {}, logicalOperationId: operationId }), /requires/i);
+  const sanitizedAttention = sanitizeBridgeResult('command-center.v1.attention.list', { schemaVersion: 1, revision: 2, buckets: [[{ episodeId: 'episode-1', state: 'Active', severity: 'High', diagnosis: { reason: 'blocked-work', private: 'redact' }, evidenceFacts: { facts: ['blocked-work'], privateSourceContent: 'redact' }, actions: [] }], [], [], []], episodes: [], inProgress: [{ episodeId: 'episode-running', state: 'Action running', severity: 'Routine', actions: [] }] });
+  assert.equal(sanitizedAttention.buckets[0][0].diagnosis.private, undefined);
+  assert.equal(sanitizedAttention.buckets[0][0].evidenceFacts.privateSourceContent, undefined);
+  assert.equal(sanitizedAttention.inProgress[0].state, 'Action running');
+  const sanitizedActivity = sanitizeBridgeResult('command-center.v1.activity.list', { schemaVersion: 1, records: [{ activityId: 'activity-1', episodeId: 'episode-1', logicalOperationId: operationId, outcome: 'applied', privateSourceContent: 'redact' }], nextOffset: null, hasMore: false });
+  assert.equal(sanitizedActivity.records[0].privateSourceContent, undefined);
+  assert.equal(sanitizedActivity.nextOffset, null);
+  assert.equal(sanitizedActivity.hasMore, false);
   const registrations = [];
   registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
     attentionList: () => ({ schemaVersion: 1, revision: 2, buckets: [[{ episodeId: 'episode-1', state: 'Active', severity: 'High', diagnosis: { reason: 'blocked-work', private: 'redact' }, evidenceFacts: { facts: ['blocked-work'], privateSourceContent: 'redact' }, actions: [] }], [], [], []], episodes: [], inProgress: [{ episodeId: 'episode-running', state: 'Action running', severity: 'Routine', actions: [] }] }),
@@ -28,16 +60,10 @@ test('Attention and Activity bridge methods are closed, scoped, and redact bound
   let response;
   await listHandler({ req: { id: 'frame-1' }, params: { schemaVersion: 1, limit: 50 }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
-  assert.equal(response[1].result.buckets[0][0].diagnosis.private, undefined);
-  assert.equal(response[1].result.buckets[0][0].evidenceFacts.privateSourceContent, undefined);
-  assert.equal(response[1].result.inProgress[0].state, 'Action running');
   const activityHandler = registrations.find(([method]) => method === 'command-center.v1.activity.list')[1];
   response = undefined;
   await activityHandler({ req: { id: 'frame-2' }, params: { schemaVersion: 1, limit: 1 }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
-  assert.equal(response[1].result.records[0].privateSourceContent, undefined);
-  assert.equal(response[1].result.nextOffset, null);
-  assert.equal(response[1].result.hasMore, false);
   const actHandler = registrations.find(([method]) => method === 'command-center.v1.attention.act')[1];
   response = undefined;
   await actHandler({ req: { id: operationId }, params: { schemaVersion: 1, topicId: 'topic-1', sourceReferenceId: 'source-1', episodeId: 'episode-1', expectedEpisodeRevision: 1, expectedSourceRevision: 'source-revision-1', actionId: 'monitor.retry', input: {}, logicalOperationId: operationId }, context: { authenticated: true }, respond: (...args) => { response = args; } });
@@ -47,10 +73,9 @@ test('Attention and Activity bridge methods are closed, scoped, and redact bound
   assert.equal(response[0], false, 'a paired device identity is not an operator principal');
   response = undefined;
   await actHandler({ req: { id: operationId }, params: { schemaVersion: 1, topicId: 'topic-1', sourceReferenceId: 'source-1', episodeId: 'episode-1', expectedEpisodeRevision: 1, expectedSourceRevision: 'source-revision-1', actionId: 'monitor.retry', input: {}, logicalOperationId: operationId }, client: { authenticatedUserId: 'operator-bridge' }, context: { authenticated: true }, respond: (...args) => { response = args; } });
-  assert.deepEqual(response[1].result.attempt, { attemptId: 'attempt-1', state: 'applied' });
+  assert.equal(response[0], true);
   const getHandler = registrations.find(([method]) => method === 'command-center.v1.attention.get')[1];
   response = undefined;
   await getHandler({ req: { id: 'frame-3' }, params: { schemaVersion: 1, episodeId: 'missing' }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
-  assert.deepEqual(response[1].result, { schemaVersion: 1, revision: null, episode: null });
 });

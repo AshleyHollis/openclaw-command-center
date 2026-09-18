@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { conventionalFolderPath, ensureConventionalFolder, findConventionalFolder, validateTopicName } from '../src/topics/conventions.mjs';
+import { readNoteFolderIdentity } from '../src/sources/note-folder-identity.mjs';
 
 test('the PARA convention is exact, plural for active categories, trimmed, and rejects unsafe or guessed names', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-convention-'));
@@ -19,7 +20,12 @@ test('the PARA convention is exact, plural for active categories, trimmed, and r
     await mkdir(path.join(root, 'Projects', 'Exact Name'), { recursive: true });
     const adopted = await findConventionalFolder({ noteVaultRoot: root, paraCategory: 'project', name: 'Exact Name' });
     assert.equal(adopted.ownership, 'adopted');
-    assert.match(adopted.revision, /^fs:\d+:\d+:/u);
+    assert.equal(adopted.revision, null);
+    assert.deepEqual(await readdir(adopted.path), [], 'discovery must not enroll an unbound folder');
+    const enrolled = await ensureConventionalFolder({ noteVaultRoot: root, paraCategory: 'project', name: 'Exact Name' });
+    assert.equal(enrolled.ownership, 'adopted');
+    assert.equal(enrolled.revision, await readNoteFolderIdentity(adopted.path));
+    assert.equal((await findConventionalFolder({ noteVaultRoot: root, paraCategory: 'project', name: 'Exact Name' })).revision, enrolled.revision);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 test('case/Unicode aliases, symlinked candidates, and foreign ownership are visible conflicts', async () => {

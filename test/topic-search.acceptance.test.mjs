@@ -7,6 +7,7 @@ import test from 'node:test';
 import { sanitizeBridgeResult } from '../src/bridge/contracts.mjs';
 import { createTopicSearchService } from '../src/search/service.mjs';
 import { createSearchRebuildService } from '../src/search/rebuild.mjs';
+import { openProjectionStore } from '../src/search/projection-store.mjs';
 import { createSearchAdapter } from '../src/sources/search.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSourceReference } from '../src/sources/reference.mjs';
@@ -34,6 +35,93 @@ test('an empty authoritative workspace publishes both empty projection generatio
       'topic-search-conversations.commit.json', 'topic-search-conversations.json', 'topic-search-conversations.sqlite',
       'topic-search-notes.commit.json', 'topic-search-notes.json', 'topic-search-notes.sqlite'
     ]);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('global rebuild includes every search-bound Topic and excludes active Topics without a Note Folder', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-bound-'));
+  const calls = [];
+  const bound = { ...topic, topicId: 'topic-bound' };
+  const activityOnly = { ...topic, topicId: 'topic-activity-only' };
+  try {
+    const rebuild = createSearchRebuildService({
+      stateDir,
+      metadata: {
+        listTopics: () => [activityOnly, bound],
+        listSourceReferences: (topicId) => topicId === bound.topicId ? [{ ...folder, topicId: bound.topicId }] : []
+      },
+      sourceSnapshotFactory: async ({ topicId }) => {
+        calls.push(topicId);
+        return { notes: [], conversations: [], note: { sourceRevision: `notes-${topicId}` }, conversation: { sourceRevision: `sessions-${topicId}` } };
+      }
+    });
+    const result = await rebuild.rebuild();
+    assert.deepEqual(calls, [bound.topicId]);
+    assert.deepEqual(result.topicIds, [bound.topicId]);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('concurrent authenticated rebuild replay converges while changed intent fails closed', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-concurrent-'));
+  let release;
+  const deferred = new Promise((resolve) => { release = resolve; });
+  const operationId = randomUUID();
+  const snapshotCalls = [];
+  const metadata = { listTopics: () => [{ ...topic, topicId: 'topic-a' }, { ...topic, topicId: 'topic-b' }] };
+  const rebuild = createSearchRebuildService({
+    stateDir,
+    metadata,
+    sourceSnapshotFactory: async ({ topicId }) => { snapshotCalls.push(topicId); await deferred; return { notes: [], conversations: [], note: { sourceRevision: `notes-${topicId}` }, conversation: { sourceRevision: `sessions-${topicId}` } }; },
+    requireAuthorizedPreparation: true
+  });
+  try {
+    const first = rebuild.prepareAuthorized({ topicId: 'topic-a', logicalOperationId: operationId });
+    const replay = rebuild.prepareAuthorized({ topicId: 'topic-a', logicalOperationId: operationId });
+    await assert.rejects(rebuild.prepareAuthorized({ topicId: 'topic-b', logicalOperationId: operationId }), (error) => error?.code === 'intent-mismatch');
+    release();
+    assert.deepEqual(await first, await replay);
+    const committed = await rebuild.rebuildPrepared({ topicId: 'topic-a', logicalOperationId: operationId });
+    assert.deepEqual(committed.topicIds, ['topic-a', 'topic-b']);
+    const secondOperationId = randomUUID();
+    await rebuild.prepareAuthorized({ topicId: 'topic-b', logicalOperationId: secondOperationId });
+    const secondCommitted = await rebuild.rebuildPrepared({ topicId: 'topic-b', logicalOperationId: secondOperationId });
+    assert.deepEqual(secondCommitted.topicIds, ['topic-a', 'topic-b']);
+    assert.deepEqual(snapshotCalls, ['topic-a', 'topic-b', 'topic-b'], 'an intact committed set permits one scoped authoritative refresh');
+    const noteProjection = await openProjectionStore({ stateDir, kind: 'note' });
+    const conversationProjection = await openProjectionStore({ stateDir, kind: 'conversation' });
+    assert.deepEqual(noteProjection.manifest().topicIds, ['topic-a', 'topic-b']);
+    assert.deepEqual(conversationProjection.manifest().topicIds, ['topic-a', 'topic-b']);
+  } finally {
+    release?.();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('completed authenticated rebuilds do not consume active preparation capacity', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-capacity-'));
+  let snapshotCalls = 0;
+  const rebuild = createSearchRebuildService({
+    stateDir,
+    metadata: { listTopics: () => [topic] },
+    sourceSnapshotFactory: async ({ topicId }) => {
+      snapshotCalls += 1;
+      return { notes: [], conversations: [], note: { sourceRevision: `notes-${topicId}-${snapshotCalls}` }, conversation: { sourceRevision: `sessions-${topicId}-${snapshotCalls}` } };
+    },
+    requireAuthorizedPreparation: true,
+    now: () => 1_800_000_000_000
+  });
+  try {
+    for (let index = 0; index < 9; index += 1) {
+      const logicalOperationId = randomUUID();
+      await rebuild.prepareAuthorized({ topicId: topic.topicId, logicalOperationId });
+      const result = await rebuild.rebuildPrepared({ topicId: topic.topicId, logicalOperationId });
+      assert.deepEqual(result.topicIds, [topic.topicId]);
+    }
+    assert.equal(snapshotCalls, 9);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }
@@ -140,7 +228,7 @@ test('an archived lifecycle Topic remains searchable and restore preserves proje
     await writeFile(path.join(metadata.getSourceLocator(folderReference.referenceId).locator, 'readme.md'), '# Archived Search\n\narchived lifecycle phrase');
     const currentNoteReference = () => {
       const externalSourceId = `${metadata.getSourceLocator(folderReference.referenceId).locator}/readme.md`;
-      return metadata.listSourceReferences(topicId).find((reference) => reference.sourceKind === 'note' && reference.externalSourceId === externalSourceId);
+      return metadata.listSourceReferences(topicId).find((reference) => reference.sourceKind === 'note' && (metadata.getSourceLocator(reference.referenceId)?.locator ?? reference.externalSourceId) === externalSourceId);
     };
     const authoritativeSources = { readTopicSnapshot: async ({ topicId: requestedTopicId }) => {
       assert.equal(requestedTopicId, topicId);
@@ -156,7 +244,8 @@ test('an archived lifecycle Topic remains searchable and restore preserves proje
     const archive = await topics.archivePreview({ topicId });
     await topics.archiveConfirm({ topicId, structuralChangeId: archive.structuralChangeId, previewDigest: archive.digest, expectedRevisions: archive.expectedRevisions, logicalOperationId: randomUUID() });
     assert.equal(metadata.getTopic(topicId).paraCategory, 'archive');
-    const archivedNoteReference = metadata.createSourceReference({ version: 1, referenceId: `note:${topicId}:archived-readme`, topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${metadata.getSourceLocator(folderReference.referenceId).locator}/readme.md`, observedRevision: 'sha256:archived-note' });
+    const archivedNoteReference = currentNoteReference();
+    assert.equal(archivedNoteReference.referenceId, noteReference.referenceId);
     const rebuild = createSearchRebuildService({ stateDir, metadata, authoritativeSources });
     const search = createTopicSearchService({ stateDir, metadata });
     await rebuild.rebuild();
@@ -168,12 +257,13 @@ test('an archived lifecycle Topic remains searchable and restore preserves proje
     assert.equal(archived.conversations.results[0].provenance.role, 'primary');
     const restore = topics.restorePreview({ topicId, paraCategory: 'resource' });
     await topics.restoreConfirm({ topicId, paraCategory: 'resource', structuralChangeId: restore.structuralChangeId, previewDigest: restore.digest, expectedRevisions: restore.expectedRevisions, logicalOperationId: randomUUID() });
-    const restoredNoteReference = metadata.createSourceReference({ version: 1, referenceId: `note:${topicId}:restored-readme`, topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${metadata.getSourceLocator(folderReference.referenceId).locator}/readme.md`, observedRevision: 'sha256:archived-note' });
+    const restoredNoteReference = currentNoteReference();
+    assert.equal(restoredNoteReference.referenceId, noteReference.referenceId);
     await rebuild.rebuild();
     const restored = await search.query({ schemaVersion: 1, topicId, query: 'archived lifecycle phrase', limit: 20 });
     assert.equal(restored.notes.results[0].sourceReference.referenceId, restoredNoteReference.referenceId);
     assert.equal(restored.notes.results[0].snippet, archived.notes.results[0].snippet);
-    assert.ok(originalReferenceIds.every((referenceId) => metadata.getSourceReference(referenceId)));
+    assert.deepEqual(metadata.listSourceReferences(topicId).map((reference) => reference.referenceId).sort(), originalReferenceIds);
     assert.equal(metadata.getTopic(topicId).paraCategory, 'resource');
   } finally {
     metadata.close();
@@ -259,17 +349,19 @@ test('groups and opens authoritative Topic Search results', async () => {
     addEventListener(type, listener) { if (type === 'message') receive = listener; },
     postMessage(message) { sent.push(message.payload); }
   };
-  const prior = { window: globalThis.window, document: globalThis.document };
+  const prior = { window: globalThis.window, document: globalThis.document, HTMLElement: globalThis.HTMLElement };
   globalThis.window = fakeWindow;
+  globalThis.HTMLElement = Element;
   globalThis.document = {
     body: { dataset: {} },
+    addEventListener() {},
     querySelector(selector) { return elements[selector.slice(1)] ?? null; },
     createElement() { return new Element(); },
     createTextNode(text) { return { textContent: text }; }
   };
   try {
     await import(`../src/ui/app.js?acceptance=${Date.now()}`);
-    receive({ source: fakeWindow, data: { type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigate'] } } });
+    receive({ source: fakeWindow, data: { type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-ready', methods: ['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.sessions.browse', 'command-center.v1.sessions.history', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.send', 'command-center.v1.notes.browse', 'command-center.v1.notes.read', 'command-center.v1.search.query', 'ui.session.navigateResolved', 'ui.http.get', 'ui.http.post'] } } });
     elements['topic-search-topic-id'].value = topic.topicId;
     const noteResult = { kind: 'note', heading: 'Readme', path: 'readme.md', snippet: 'alpha', highlights: [], contextBefore: '', contextAfter: '', navigation: { kind: 'note', topicId: topic.topicId, referenceId: note.referenceId, path: 'readme.md', heading: 'Readme', observedRevision: note.observedRevision } };
     const conversationResult = { kind: 'conversation', conversationName: 'Closed fixture', date: '2026-08-23T00:00:00.000Z', snippet: 'alpha', highlights: [], contextBefore: '', contextAfter: '', provenance: { role: 'topic-conversation', status: 'closed', importedPrimaryHistory: false }, navigation: { kind: 'conversation', topicId: topic.topicId, referenceId: session.referenceId, sessionKey: session.externalSourceId, sessionId: 'session-fictional', messageId: 'message-fictional' } };
@@ -292,15 +384,16 @@ test('groups and opens authoritative Topic Search results', async () => {
     const conversationOpen = fakeWindow.CommandCenterSearch.openResult(conversationResult);
     await new Promise((resolve) => setImmediate(resolve));
     const resolveRequest = sent.find((item) => item.method === 'command-center.v1.sessions.navigate');
-    assert.deepEqual(resolveRequest.params, { schemaVersion: 1, topicId: topic.topicId, referenceId: session.referenceId });
+    assert.deepEqual(resolveRequest.params, { schemaVersion: 1, topicId: topic.topicId, referenceId: session.referenceId, nativeChat: true });
     receive({ source: fakeWindow, data: { type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: resolveRequest.requestId, result: { result: { sessionKey: session.externalSourceId, sessionId: 'session-fictional', sourceReference: session } } } } });
     await new Promise((resolve) => setImmediate(resolve));
-    const navigateRequest = sent.find((item) => item.method === 'ui.session.navigate');
-    assert.deepEqual(navigateRequest.params, { sessionKey: session.externalSourceId });
+    const navigateRequest = sent.find((item) => item.method === 'ui.session.navigateResolved');
+    assert.deepEqual(navigateRequest.params, { expectedSessionKey: session.externalSourceId, input: { schemaVersion: 1, topicId: topic.topicId, referenceId: session.referenceId, expectedSessionId: 'session-fictional' } });
     receive({ source: fakeWindow, data: { type: 'openclaw:capability-bridge-receive', protocolVersion: 1, payload: { type: 'openclaw:capability-bridge-response', requestId: navigateRequest.requestId, result: {} } } });
     await conversationOpen;
   } finally {
     globalThis.window = prior.window;
     globalThis.document = prior.document;
+    globalThis.HTMLElement = prior.HTMLElement;
   }
 });

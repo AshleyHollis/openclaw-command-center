@@ -16,8 +16,11 @@ test('external Note edits are reported as conflicts and preserve authoritative b
     await writeFile(path.join(root, 'note.md'), 'external');
     await assert.rejects(() => adapter.edit({ path: 'note.md', expectedRevision: current.revision, text: 'unsafe overwrite' }), (error) => error.code === 'conflict' && error.currentRevision !== current.revision);
     assert.equal(await readFile(path.join(root, 'note.md'), 'utf8'), 'external');
-    const reconciled = await adapter.edit({ path: 'note.md', expectedRevision: 'sha256:stale', text: 'external' });
-    assert.equal(reconciled.status, 'reconciled');
+    await assert.rejects(
+      () => adapter.edit({ path: 'note.md', expectedRevision: 'sha256:stale', text: 'external' }),
+      (error) => error.code === 'conflict' && error.currentRevision !== 'sha256:stale'
+    );
+    assert.equal(await readFile(path.join(root, 'note.md'), 'utf8'), 'external');
     assert.equal(original.note.path, 'note.md');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -175,7 +178,7 @@ test('move rollback retains the verified claim when source and destination reapp
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('metadata failure rolls back a newly published Note without deleting external replacement', async () => {
+test('adapter-only metadata failure retains published evidence instead of blindly unlinking', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-note-metadata-failure-'));
   try {
     const metadata = {
@@ -185,7 +188,7 @@ test('metadata failure rolls back a newly published Note without deleting extern
     };
     const adapter = new NoteAdapter({ fsSafeRootFactory, topicId: 'topic-metadata-failure', root, metadata });
     await assert.rejects(() => adapter.create({ path: 'note.md', text: 'command center' }), /fictional metadata failure/);
-    assert.equal(await readFile(path.join(root, 'note.md'), 'utf8').catch(() => null), null);
+    assert.equal(await readFile(path.join(root, 'note.md'), 'utf8'), 'command center');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

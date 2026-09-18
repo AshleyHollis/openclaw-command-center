@@ -5,7 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { createAttentionActionHandler } from '../src/attention/http-route.mjs';
 import { createAttentionService } from '../src/attention/service.mjs';
-import { registerBridgeMethods } from '../src/bridge/register.mjs';
+import { createDashboardService } from '../src/dashboard/service.mjs';
+import { invokeBridgeMethod } from '../src/bridge/register.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSourceCapabilityRegistry } from '../src/sources/capabilities.mjs';
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
@@ -28,13 +29,25 @@ function responseRecorder() {
   return { statusCode: 0, headers: {}, body: '', setHeader(name, value) { this.headers[name] = value; }, end(value = '') { this.body = value; } };
 }
 
-test('registered source ingestion and the exact POST route complete a Reminder with authoritative verification', async () => {
-  await fixture(async ({ metadata }) => {
+function ownerAction(attention) {
+  return async (params, authenticated = true, authenticatedOperatorId = 'gateway-operator') => {
+    if (!authenticated) return [false, null, { code: 'unauthenticated', message: 'Authenticated operator identity is required.' }];
+    try {
+      const result = await invokeBridgeMethod({ attentionAct: (input) => attention.act(input) }, 'command-center.v1.attention.act', params, params.logicalOperationId, authenticatedOperatorId);
+      return [true, { schemaVersion: 1, status: result.status ?? 'applied', requestId: params.logicalOperationId, logicalOperationId: params.logicalOperationId, result }];
+    } catch (error) {
+      return [false, null, { code: error?.code ?? 'unavailable', message: error?.message }];
+    }
+  };
+}
+
+async function reminderOwnerFixture(run, sourceActions) {
+  return fixture(async ({ metadata }) => {
     const calls = [];
     const attention = createAttentionService({
       metadata,
       now: () => '2026-08-23T00:01:00.000Z',
-      sourceActions: {
+      sourceActions: sourceActions?.(calls) ?? {
         complete: async (input) => { calls.push(input); return { observedRevision: 'config-2' }; },
         verify: async () => ({ outcome: 'applied', revision: 'config-2' })
       }
@@ -42,35 +55,104 @@ test('registered source ingestion and the exact POST route complete a Reminder w
     const sources = createSourceCapabilityRegistry({ attention });
     sources.register({ sourceCapabilityId: 'reminders', sourceKind: 'reminder', deriveEvidence: (value) => value.evidenceFacts, actions: [] });
     const created = await sources.ingest(occurrence('reminders', 'reminder-public-1', { occurrenceVersion: 'config-1' }));
-    const handler = createAttentionActionHandler({ attentionAct: (input) => attention.act(input), attentionGet: (input) => attention.get(input.episodeId) });
     const body = { schemaVersion: 1, logicalOperationId: '71111111-1111-4111-8111-111111111111', sourceCapabilityId: 'reminders', stableSubjectId: 'subject-public', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'config-1', topicId: 'topic-public', sourceReferenceId: 'source-public', actionId: 'reminder.complete', input: { expectedConfigRevision: 'config-1' } };
+    try { return await run({ attention, body, calls, invoke: ownerAction(attention) }); }
+    finally { attention.close(); }
+  });
+}
+
+test('Attention action route admits only exact opaque-frame JSON preflights', async () => {
+  let calls = 0;
+  const handler = createAttentionActionHandler({ attentionGet() { calls += 1; }, attentionAct() { calls += 1; } });
+  const accepted = responseRecorder();
+  await handler({ method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type', 'access-control-request-private-network': 'true' } }, accepted);
+  assert.equal(accepted.statusCode, 204);
+  assert.equal(accepted.body, '');
+  assert.equal(accepted.headers['Access-Control-Allow-Origin'], 'null');
+  assert.equal(accepted.headers['Access-Control-Allow-Methods'], 'POST, OPTIONS');
+  assert.equal(accepted.headers['Access-Control-Allow-Headers'], 'Content-Type');
+  assert.equal(accepted.headers['Access-Control-Allow-Private-Network'], 'true');
+  assert.equal(accepted.headers['Access-Control-Allow-Credentials'], undefined);
+  for (const headers of [
+    { origin: 'https://example.invalid', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' },
+    { origin: 'null', 'access-control-request-method': 'GET', 'access-control-request-headers': 'content-type' },
+    { origin: 'null', 'access-control-request-method': 'POST' },
+    { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization, content-type' }
+  ]) {
+    const rejected = responseRecorder();
+    await handler({ method: 'OPTIONS', headers }, rejected);
+    assert.equal(rejected.statusCode, 403);
+  }
+  const nonJson = responseRecorder();
+  await handler({ method: 'POST', headers: { origin: 'null', 'content-type': 'text/plain' }, body: {} }, nonJson);
+  assert.equal(nonJson.statusCode, 400);
+  const nonNullOrigin = responseRecorder();
+  await handler({ method: 'POST', headers: { origin: 'https://example.invalid', 'content-type': 'application/json' }, body: {} }, nonNullOrigin);
+  assert.equal(nonNullOrigin.statusCode, 403);
+  assert.equal(calls, 0);
+});
+
+test('Reminder completion owner rejects changed source identity before dispatch', async () => {
+  await reminderOwnerFixture(async ({ body, calls, invoke }) => {
     for (const wrongIdentity of [{ sourceCapabilityId: 'other-capability' }, { stableSubjectId: 'other-subject' }]) {
-      const rejected = responseRecorder();
-      await handler({ method: 'POST', body: { ...body, ...wrongIdentity } }, rejected);
-      assert.equal(rejected.statusCode, 400);
+      const rejected = await invoke({ ...body, ...wrongIdentity });
+      assert.equal(rejected[0], false);
       assert.equal(calls.length, 0);
     }
-    const response = responseRecorder();
-    await handler({ method: 'POST', body }, response);
-    assert.equal(response.statusCode, 200, response.body);
-    assert.equal(JSON.parse(response.body).result.episode.state, 'Resolved');
-    assert.equal(calls[0].parameters.expectedConfigRevision, 'config-1');
-    const replay = responseRecorder();
-    await handler({ method: 'POST', body }, replay);
-    assert.equal(replay.statusCode, 200);
-    assert.equal(JSON.parse(replay.body).result.activity.activityId, JSON.parse(response.body).result.activity.activityId);
-    assert.equal(calls.length, 1);
-    const getResponse = responseRecorder();
-    await handler({ method: 'GET', body }, getResponse);
-    assert.equal(getResponse.statusCode, 405);
-    const missingMethod = responseRecorder();
-    await handler({ body }, missingMethod);
-    assert.equal(missingMethod.statusCode, 405);
-    const openBody = responseRecorder();
-    await handler({ method: 'POST', body: { ...body, logicalOperationId: '72222222-2222-4222-8222-222222222222', credential: 'forbidden' } }, openBody);
-    assert.equal(openBody.statusCode, 400);
-    attention.close();
   });
+});
+
+test('Reminder completion owner requires authoritative verification', async () => {
+  await reminderOwnerFixture(async ({ body, calls, invoke }) => {
+    const response = await invoke(body);
+    assert.equal(response[0], true, JSON.stringify(response));
+    assert.equal(response[1].result.episode.state, 'Resolved');
+    assert.equal(calls[0].parameters.expectedConfigRevision, 'config-1');
+  });
+});
+
+test('Reminder completion owner replays one durable activity without redispatch', async () => {
+  await reminderOwnerFixture(async ({ body, calls, invoke }) => {
+    const response = await invoke(body);
+    assert.equal(response[0], true, JSON.stringify(response));
+    const replay = await invoke(body);
+    assert.equal(replay[0], true);
+    assert.equal(replay[1].result.activity.activityId, response[1].result.activity.activityId);
+    assert.equal(calls.length, 1);
+  });
+});
+
+test('Reminder completion owner keeps its public body closed', async () => {
+  await reminderOwnerFixture(async ({ body, calls, invoke }) => {
+    const openBody = await invoke({ ...body, logicalOperationId: '72222222-2222-4222-8222-222222222222', credential: 'forbidden' });
+    assert.equal(openBody[0], false);
+    assert.equal(calls.length, 0);
+  });
+});
+
+test('Reminder completion reserves one operation across deterministic interleaving', async () => {
+  let release;
+  const dispatched = new Promise((resolve) => { release = resolve; });
+  let entered;
+  const dispatchEntered = new Promise((resolve) => { entered = resolve; });
+  await reminderOwnerFixture(async ({ body, calls, invoke }) => {
+    const first = invoke(body);
+    await dispatchEntered;
+    const concurrent = invoke(body);
+    assert.equal(calls.length, 1);
+    release();
+    const [applied, joined] = await Promise.all([first, concurrent]);
+    assert.equal(applied[0], true, JSON.stringify(applied));
+    assert.equal(joined[0], true, JSON.stringify(joined));
+    assert.equal(joined[1].result.activity.activityId, applied[1].result.activity.activityId);
+    const replay = await invoke(body);
+    assert.equal(replay[0], true);
+    assert.equal(replay[1].result.activity.activityId, applied[1].result.activity.activityId);
+    assert.equal(calls.length, 1);
+  }, (calls) => ({
+    complete: async (input) => { calls.push(input); entered(); await dispatched; return { observedRevision: 'config-2' }; },
+    verify: async () => ({ outcome: 'applied', revision: 'config-2' })
+  }));
 });
 
 test('the plugin POST route cannot fabricate an operator for approval-required mutations', async () => {
@@ -89,8 +171,9 @@ test('the plugin POST route cannot fabricate an operator for approval-required m
     const created = await attention.ingest(occurrence('approval-route', 'approval-route-1'));
     const handler = createAttentionActionHandler({ attentionAct: (input) => attention.act(input), attentionGet: (input) => attention.get(input.episodeId) });
     const response = responseRecorder();
-    await handler({ method: 'POST', body: { schemaVersion: 1, logicalOperationId: '70111111-1111-4111-8111-111111111111', sourceCapabilityId: 'approval-route', stableSubjectId: 'subject-public', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'unversioned', topicId: 'topic-public', sourceReferenceId: 'source-public', actionId: 'monitor.change', input: {} } }, response);
-    assert.equal(response.statusCode, 400);
+    await handler({ method: 'POST', headers: { 'content-type': 'application/json' }, body: { schemaVersion: 1, logicalOperationId: '70111111-1111-4111-8111-111111111111', sourceCapabilityId: 'approval-route', stableSubjectId: 'subject-public', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'unversioned', topicId: 'topic-public', sourceReferenceId: 'source-public', actionId: 'monitor.change', input: {} } }, response);
+    assert.equal(response.statusCode, 403);
+    assert.equal(JSON.parse(response.body).code, 'authenticated-bridge-required');
     assert.equal(dispatches, 0);
     assert.equal(attention.get(created.episode.episodeId).episode.state, 'Active');
     attention.close();
@@ -139,15 +222,17 @@ test('production Reminder listing ingests due scheduler evidence into Attention'
   });
 });
 
-test('authenticated Gateway actions expose and consume approval decisions through the same service', async () => {
+for (const sourceKind of ['approval', 'operational']) {
+test(`Dashboard exposes Routine decisions from ${sourceKind} sources through authenticated Gateway actions`, async () => {
   await fixture(async ({ metadata }) => {
     let dispatches = 0;
     let preconditionRevision = 'precondition-1';
     const attention = createAttentionService({ metadata, now: () => '2026-08-23T00:01:00.000Z', operatorId: 'operator-public', host: 'host-public' });
+    try {
     const sources = createSourceCapabilityRegistry({ attention });
     sources.register({
       sourceCapabilityId: 'approval-public',
-      sourceKind: 'approval',
+      sourceKind,
       deriveEvidence: () => ({}),
       preconditionReader: async () => ({ available: true, revision: preconditionRevision }),
       actions: [{
@@ -158,25 +243,38 @@ test('authenticated Gateway actions expose and consume approval decisions throug
       }]
     });
     const created = await sources.ingest(occurrence('approval-public', 'approval-public-1'));
-    const registrations = [];
-    registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
-      attentionAct: (input) => attention.act(input), attentionList: (input) => attention.list(input), attentionGet: (input) => attention.get(input.episodeId),
-      activityList: (input) => attention.listActivity(input), activityGet: (input) => ({ schemaVersion: 1, record: attention.getActivity(input.activityId) })
-    });
-    const handler = registrations.find(([method]) => method === 'command-center.v1.attention.act')[1];
-    const invoke = (params, authenticated = true, authenticatedOperatorId = 'gateway-operator') => new Promise((resolve) => handler({ req: { id: params.logicalOperationId }, params, client: { authenticatedUserId: authenticatedOperatorId }, context: { authenticated }, respond: (...args) => resolve(args) }));
+    sources.register({ sourceCapabilityId: 'routine-monitor', sourceKind: 'operational', actions: [], deriveEvidence: () => ({}) });
+    const routine = await sources.ingest(occurrence('routine-monitor', 'routine-monitor-1', { stableSubjectId: 'routine-monitor' }));
+    assert.equal(attention.list().episodes.some((episode) => episode.episodeId === routine.episode.episodeId), true);
+    const dashboard = createDashboardService({ metadata, attentionService: attention, now: () => '2026-08-23T00:01:00.000Z' });
+    const beforeApproval = await dashboard.get();
+    assert.equal(beforeApproval.attentionBadgeCount, sourceKind === 'approval' ? 1 : 0);
+    const invoke = ownerAction(attention);
     const common = { schemaVersion: 1, episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'unversioned', topicId: 'topic-public', sourceReferenceId: 'source-public', input: {} };
-    const pending = await invoke({ ...common, logicalOperationId: '73333333-3333-4333-8333-333333333333', actionId: 'monitor.change' });
+    const pending = await invoke({ ...common, sourceCapabilityId: created.episode.sourceCapabilityId, stableSubjectId: created.episode.stableSubjectId, logicalOperationId: '73333333-3333-4333-8333-333333333333', actionId: 'monitor.change' });
     assert.equal(pending[0], true, JSON.stringify(pending));
     assert.equal(pending[1].result.approval.operatorId, 'gateway-operator');
     assert.equal(pending[1].result.approval.actionId, 'monitor.change');
+    const projectedApproval = attention.get(created.episode.episodeId).episode.actions.find((action) => action.actionId === 'approval.approve');
+    assert.equal(projectedApproval.target.approvalId, pending[1].result.approval.approvalId);
+    assert.deepEqual(projectedApproval.target.disclosure.sideEffects, ['Changes the fictional monitor.']);
     assert.deepEqual(attention.get(created.episode.episodeId).episode.actions.map((action) => action.actionId), ['approval.approve', 'approval.reject', 'topic.open']);
+    const pendingDashboard = await dashboard.get();
+    assert.equal(pendingDashboard.attentionBadgeCount, 1);
+    assert.deepEqual(pendingDashboard.attention.map((episode) => episode.episodeId), [created.episode.episodeId]);
+    assert.equal(pendingDashboard.attention[0].severity, 'Routine');
+    assert.equal(pendingDashboard.attention[0].actions[0].target.approvalId, pending[1].result.approval.approvalId);
+    assert.equal(dispatches, 0);
     const unauthenticated = await invoke({ ...common, logicalOperationId: '74444444-4444-4444-8444-444444444444', actionId: 'approval.approve', approvalId: pending[1].result.approval.approvalId }, false);
     assert.equal(unauthenticated[0], false);
+    assert.equal(dispatches, 0);
     const approved = await invoke({ ...common, logicalOperationId: '75555555-5555-4555-8555-555555555555', actionId: 'approval.approve', approvalId: pending[1].result.approval.approvalId });
     assert.equal(approved[0], true, JSON.stringify(approved));
     assert.equal(approved[1].result.episode.state, 'Resolved');
     assert.equal(dispatches, 1);
+    const resolvedDashboard = await dashboard.get();
+    assert.equal(resolvedDashboard.attentionBadgeCount, 0);
+    assert.deepEqual(resolvedDashboard.attention, []);
     const approvedReplay = await invoke({ ...common, logicalOperationId: '75555555-5555-4555-8555-555555555555', actionId: 'approval.approve', approvalId: pending[1].result.approval.approvalId });
     assert.equal(approvedReplay[0], true);
     assert.equal(approvedReplay[1].result.activity.activityId, approved[1].result.activity.activityId);
@@ -207,7 +305,8 @@ test('authenticated Gateway actions expose and consume approval decisions throug
 
     const revised = await sources.ingest(occurrence('approval-public', 'approval-public-4', { stableSubjectId: 'subject-public-replacement', occurredAt: '2026-08-23T00:02:00.000Z' }));
     assert.equal(revised.episode.revision, 2);
-    assert.deepEqual(attention.get(replaceable.episode.episodeId).episode.actions.map((action) => action.actionId), ['monitor.change']);
+    assert.deepEqual(attention.get(replaceable.episode.episodeId).episode.actions.map((action) => action.actionId), sourceKind === 'approval' ? ['monitor.change'] : ['monitor.change', 'attention.snooze']);
+    assert.equal((await dashboard.get()).attentionBadgeCount, sourceKind === 'approval' ? 1 : 0);
     const evidenceReplacement = await invoke({ ...replacementCommon, expectedEpisodeRevision: 2, logicalOperationId: '7bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', actionId: 'monitor.change' });
     assert.equal(evidenceReplacement[0], true, JSON.stringify(evidenceReplacement));
     assert.equal(evidenceReplacement[1].result.status, 'approval-required');
@@ -222,9 +321,10 @@ test('authenticated Gateway actions expose and consume approval decisions throug
     assert.equal(secondOperator[0], true, JSON.stringify(secondOperator));
     assert.notEqual(secondOperator[1].result.approval.approvalId, firstOperator[1].result.approval.approvalId);
     assert.equal(secondOperator[1].result.approval.operatorId, 'gateway-operator-2');
-    attention.close();
+    } finally { attention.close(); }
   });
 });
+}
 
 test('an enabled future Reminder remains Snoozed during authoritative monitoring', async () => {
   await fixture(async ({ metadata }) => {
@@ -266,24 +366,22 @@ test('a snoozed Reminder refreshes its authoritative revision before the next pu
     });
     attention.registerSourceCapability({ sourceCapabilityId: 'reminders', sourceKind: 'reminder', deriveEvidence: (value) => value.evidenceFacts, verifyTransition: (value) => value.transitionEvidence?.verifiedSource === 'scheduler-readback' && value.transitionEvidence?.version === value.occurrenceVersion, actions: [] });
     const sourceService = createAuthoritativeSourceService({ metadata, capabilities, attentionService: attention, now: () => clock, gateway: { request: async () => ({ jobs: [job] }) } });
-    const handler = createAttentionActionHandler({ attentionAct: (input) => attention.act(input), attentionGet: (input) => attention.get(input.episodeId) });
+    const invoke = ownerAction(attention);
 
     await sourceService.remindersList({ schemaVersion: 1, topicId: 'topic-public' });
     const created = attention.list({ schemaVersion: 1 }).episodes[0];
     const common = { schemaVersion: 1, sourceCapabilityId: 'reminders', stableSubjectId: 'job-recurrence', episodeId: created.episodeId, topicId: 'topic-public', sourceReferenceId: 'reminder-recurrence' };
-    const snoozeResponse = responseRecorder();
-    await handler({ method: 'POST', body: { ...common, logicalOperationId: '78911111-1111-4111-8111-111111111111', expectedEpisodeRevision: created.revision, expectedSourceRevision: 'config-1', actionId: 'reminder.snooze', input: { until: '2026-08-23T00:02:00.000Z', expectedConfigRevision: 'config-1' } } }, snoozeResponse);
-    assert.equal(snoozeResponse.statusCode, 200, snoozeResponse.body);
+    const snoozeResponse = await invoke({ ...common, logicalOperationId: '78911111-1111-4111-8111-111111111111', expectedEpisodeRevision: created.revision, expectedSourceRevision: 'config-1', actionId: 'reminder.snooze', input: { until: '2026-08-23T00:02:00.000Z', expectedConfigRevision: 'config-1' } });
+    assert.equal(snoozeResponse[0], true, JSON.stringify(snoozeResponse));
 
     clock = '2026-08-23T00:03:00.000Z';
     await sourceService.remindersList({ schemaVersion: 1, topicId: 'topic-public' });
     const ready = attention.list({ schemaVersion: 1 }).episodes[0];
     assert.equal(ready.episodeId, created.episodeId);
     assert.equal(ready.sourceRevision, 'config-2');
-    const completeResponse = responseRecorder();
-    await handler({ method: 'POST', body: { ...common, logicalOperationId: '78922222-2222-4222-8222-222222222222', expectedEpisodeRevision: ready.revision, expectedSourceRevision: 'config-2', actionId: 'reminder.complete', input: { expectedConfigRevision: 'config-2' } } }, completeResponse);
-    assert.equal(completeResponse.statusCode, 200, completeResponse.body);
-    assert.equal(JSON.parse(completeResponse.body).result.episode.state, 'Resolved');
+    const completeResponse = await invoke({ ...common, logicalOperationId: '78922222-2222-4222-8222-222222222222', expectedEpisodeRevision: ready.revision, expectedSourceRevision: 'config-2', actionId: 'reminder.complete', input: { expectedConfigRevision: 'config-2' } });
+    assert.equal(completeResponse[0], true, JSON.stringify(completeResponse));
+    assert.equal(completeResponse[1].result.episode.state, 'Resolved');
     assert.equal(job.configRevision, 'config-3');
     sourceService.close();
     attention.close();

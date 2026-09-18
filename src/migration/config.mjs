@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { pluginConfigSchema } from '../plugin-config.mjs';
 
 const channelKeys = ['channelId', 'topicId', 'paraCategory', 'noteFolderPath'];
 const rootKeys = ['schemaVersion', 'exportPath', 'channels'];
@@ -7,7 +8,7 @@ function fail(message) { throw new TypeError(`legacyDiscordMigration: ${message}
 function nonBlank(value, field) { if (typeof value !== 'string' || value.trim() === '') fail(`${field} must be a non-blank string`); return value; }
 function closed(value, keys, field) { if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${field} must be an object`); for (const key of Object.keys(value)) if (!keys.includes(key)) fail(`${field} contains unsupported field ${key}`); }
 
-export const legacyDiscordMigrationConfigSchema = Object.freeze({ type: 'object', additionalProperties: false, required: ['schemaVersion', 'exportPath', 'channels'], properties: Object.freeze({ schemaVersion: Object.freeze({ const: 1 }), exportPath: Object.freeze({ type: 'string', minLength: 1 }), channels: Object.freeze({ type: 'array', minItems: 1, maxItems: 100, items: Object.freeze({ type: 'object', additionalProperties: false, required: channelKeys, properties: Object.freeze({ channelId: { type: 'string', minLength: 1 }, topicId: { type: 'string', minLength: 1 }, paraCategory: { enum: [...categories] }, noteFolderPath: { type: 'string', minLength: 1 } }) }) }) }) });
+export const legacyDiscordMigrationConfigSchema = pluginConfigSchema.properties.legacyDiscordMigration;
 
 export function normalizeLegacyDiscordMigration(value) {
   closed(value, rootKeys, 'configuration');

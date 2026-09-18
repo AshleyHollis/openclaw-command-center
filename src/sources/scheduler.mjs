@@ -16,10 +16,19 @@ function runsFrom(value) {
   return Array.isArray(value) ? value : value?.entries ?? value?.runs ?? value?.items ?? [];
 }
 
-function stable(value) {
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (!value || typeof value !== 'object') return JSON.stringify(value);
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(',')}}`;
+function containsDeclaredValue(actual, expected) {
+  if (Array.isArray(expected)) return Array.isArray(actual) && intentDigest(actual) === intentDigest(expected);
+  if (expected && typeof expected === 'object') {
+    return Boolean(actual && typeof actual === 'object' && !Array.isArray(actual))
+      && Object.entries(expected).every(([key, value]) => containsDeclaredValue(actual[key], value));
+  }
+  return intentDigest(actual) === intentDigest(expected);
+}
+
+function reminderDeclarationMatchesJob(job, declaration) {
+  if (!job || typeof job !== 'object') return false;
+  const expected = { ...declaration, enabled: declaration.enabled ?? true };
+  return containsDeclaredValue(job, expected);
 }
 
 function closedSchedulePatch(value, operationKind) {
@@ -58,8 +67,9 @@ export class SchedulerAdapter {
     if (!this.gateway?.request) throw sourceError('capability-unavailable', 'The scheduler gateway capability is unavailable.', { capability: 'scheduler' });
     this.metadata = metadata;
     this.topicId = nonBlank(topicId, 'topicId');
-    this.coordinator = coordinator ?? createMutationCoordinator();
+    this.coordinator = coordinator ?? createMutationCoordinator({ metadata });
     this.now = now ?? (() => new Date().toISOString());
+    this.logger = api?.logger;
   }
 
   references() {
@@ -87,8 +97,8 @@ export class SchedulerAdapter {
     const reference = this.resolveReference(input);
     const result = jobFrom(await this.request('cron.get', { id: reference.externalSourceId }));
     if (!result || result.id !== reference.externalSourceId) throw sourceError('source-recovery', 'The exact scheduler job was not found.');
-    const observed = result.configRevision ?? reference.observedRevision;
-    if (observed === null) throw sourceError('source-recovery', 'The scheduler omitted its authoritative configuration revision.');
+    const observed = result.configRevision;
+    if (typeof observed !== 'string' || !observed.trim()) throw sourceError('source-recovery', 'The scheduler omitted its authoritative configuration revision.');
     if (this.metadata?.observeSourceReference) this.metadata.observeSourceReference({ referenceId: reference.referenceId, observedRevision: observed, updatedAt: this.now() });
     return Object.freeze({ schemaVersion: 1, sourceReference: { ...reference, observedRevision: observed }, job: { ...result, configRevision: observed } });
   }
@@ -101,8 +111,8 @@ export class SchedulerAdapter {
     for (const job of rows) {
       const reference = references.get(job?.id);
       if (!reference) continue;
-      const observedRevision = job.configRevision ?? reference.observedRevision;
-      if (observedRevision === null) throw sourceError('source-recovery', 'The scheduler omitted its authoritative configuration revision.');
+      const observedRevision = job.configRevision;
+      if (typeof observedRevision !== 'string' || !observedRevision.trim()) throw sourceError('source-recovery', 'The scheduler omitted its authoritative configuration revision.');
       const sourceReference = this.metadata?.observeSourceReference
         ? this.metadata.observeSourceReference({ referenceId: reference.referenceId, observedRevision, updatedAt: this.now() })
         : { ...reference, observedRevision };
@@ -121,21 +131,31 @@ export class SchedulerAdapter {
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     validateScheduleDeclaration(input.declaration);
     const declarationKey = `command-center:reminder:${logicalOperationId}`;
-    const declaration = { ...input.declaration, declarationKey };
+    const declaration = { ...structuredClone(input.declaration), declarationKey };
     const execute = async ({ requestId }) => {
       const result = jobFrom(await this.request('cron.add', declaration, { requestId }));
       if (!result?.id) throw sourceError('unavailable', 'cron.add returned no scheduler job id.');
       const reference = await this.persistReference(result.id, result.configRevision ?? null, 'reminder_schedule');
       return { job: result, sourceReference: reference };
     };
-    const reconcile = async () => {
+    const reconcile = async ({ applied = false, resultIdentity = null, observedRevision = null } = {}) => {
       const rows = jobsFrom(await this.request('cron.list', { includeDisabled: true }));
       const matches = rows.filter((job) => job.declarationKey === declarationKey);
-      if (matches.length !== 1) return { matched: false };
-      const reference = await this.persistReference(matches[0].id, matches[0].configRevision ?? null, 'reminder_schedule');
-      return { matched: true, value: { job: matches[0], sourceReference: reference } };
+      if (matches.length === 0) return { outcome: applied ? 'unknown' : 'not-applied' };
+      if (matches.length !== 1) return { outcome: 'conflict' };
+      const job = matches[0];
+      if (applied) {
+        if (job.id !== resultIdentity || !observedRevision || job.configRevision !== observedRevision) return { outcome: 'unknown' };
+      } else if (!reminderDeclarationMatchesJob(job, declaration)) {
+        return { outcome: 'conflict' };
+      }
+      if (typeof job.id !== 'string' || !job.id.trim() || typeof job.configRevision !== 'string' || !job.configRevision.trim()) return { outcome: 'unknown' };
+      const owners = this.allReferences().filter((reference) => reference.externalSourceId === job.id);
+      if (owners.length > 1 || owners.some((reference) => reference.topicId !== this.topicId || reference.sourceKind !== 'reminder_schedule')) return { outcome: 'conflict' };
+      const reference = await this.persistReference(job.id, job.configRevision, 'reminder_schedule');
+      return { outcome: 'applied', value: { job, sourceReference: reference } };
     };
-    if (this.coordinator) return this.coordinator.mutate({ operationKind: 'reminders.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, intent: { declarationKey, declaration }, idempotent: true, execute, reconcile });
+    if (this.coordinator) return this.coordinator.mutate({ operationKind: 'reminders.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, intent: { declarationKey, declaration }, execute, reconcile });
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
   }
 
@@ -145,7 +165,7 @@ export class SchedulerAdapter {
     validateScheduleDeclaration(input.declaration);
     const declarationKey = `command-center:${sourceKind}:${logicalOperationId}`;
     const requestedEnabled = input.declaration.enabled ?? true;
-    const declaration = { ...input.declaration, enabled: false, declarationKey };
+    const declaration = { ...structuredClone(input.declaration), enabled: false, declarationKey };
     const execute = async ({ requestId }) => {
       if (this.metadata?.getSourceReference?.(referenceId) || this.references().some((reference) => reference.referenceId === referenceId)) throw sourceError('conflict', 'The requested scheduler Source Reference identity is already bound.');
       const existingDeclarations = jobsFrom(await this.request('cron.list', { includeDisabled: true })).filter((job) => job.declarationKey === declarationKey);
@@ -170,19 +190,16 @@ export class SchedulerAdapter {
           throw sourceError('unknown', 'Scheduler ownership could not be revalidated before rollback.', { cause: ownershipError });
         }
         if (currentOwners.some((reference) => reference.externalSourceId === result.id)) throw bindingError;
-        try {
-          const removal = await this.request('cron.remove', { id: result.id }, { requestId });
-          if (removal?.removed === false) throw new Error('scheduler declined rollback');
-        } catch (cleanupError) {
-          throw sourceError('unknown', 'The disabled scheduled operation could not be rolled back after metadata binding failed.', { cause: cleanupError });
-        }
-        throw bindingError;
+        // The native remove contract has no caller revision condition. A fresh
+        // read cannot close its race, so retain the disabled candidate for
+        // recovery rather than deleting a possibly newer operator-owned job.
+        throw sourceError('unknown', 'The disabled scheduled operation requires recovery: conditional rollback is unavailable.', { cause: bindingError });
       }
       return this.enableBoundSchedule({ job: result, sourceReference, requestedEnabled, requestId });
     };
-    const reconcile = async ({ requestId, applied = false } = {}) => {
+    const reconcile = async ({ applied = false, resultIdentity = null, observedRevision = null } = {}) => {
       const matches = jobsFrom(await this.request('cron.list', { includeDisabled: true })).filter((job) => job.declarationKey === declarationKey);
-      if (matches.length !== 1) return { outcome: matches.length === 0 ? 'not-applied' : 'conflict' };
+      if (matches.length !== 1) return { outcome: matches.length === 0 ? 'unknown' : 'conflict' };
       const job = matches[0];
       const existingBinding = this.metadata?.getSourceReference?.(referenceId)
         ?? this.references().find((reference) => reference.referenceId === referenceId)
@@ -196,9 +213,9 @@ export class SchedulerAdapter {
       if (applied && !exactBinding) return { outcome: 'conflict' };
       if (job.enabled === true && (!requestedEnabled || !existingBinding || existingBinding.externalSourceId !== job.id || existingBinding.sourceKind !== sourceKind)) return { outcome: 'conflict' };
       if (job.enabled !== false && job.enabled !== true) return { outcome: 'conflict' };
+      if (!applied || job.id !== resultIdentity || !observedRevision || job.configRevision !== observedRevision) return { outcome: 'unknown' };
       const sourceReference = await this.persistReference(job.id, job.configRevision ?? null, sourceKind, referenceId);
-      if (applied) return { outcome: 'applied', value: { job, sourceReference } };
-      return { outcome: 'applied', value: await this.enableBoundSchedule({ job, sourceReference, requestedEnabled, requestId }) };
+      return { outcome: 'applied', value: { job, sourceReference } };
     };
     const owner = this.metadata && (typeof this.metadata === 'object' || typeof this.metadata === 'function') ? this.metadata : this;
     return withCreationLock(owner, referenceId, () => this.coordinator.mutate({ operationKind, requestId: input.requestId ?? logicalOperationId, logicalOperationId, topicId: this.topicId, referenceId, intent: { declarationKey, declaration, requestedEnabled }, execute, reconcile }));
@@ -222,7 +239,8 @@ export class SchedulerAdapter {
 
   async snooze(input = {}) {
     assertNoUnexpectedKeys(input, ['schemaVersion', 'referenceId', 'scheduleReferenceId', 'requestId', 'logicalOperationId', 'expectedConfigRevision', 'patch'], 'reminders.snooze request');
-    return this.update({ ...input, patch: closedSchedulePatch(input.patch, 'reminders.snooze') }, 'reminders.snooze', 'reminder_schedule');
+    const patch = closedSchedulePatch(input.patch, 'reminders.snooze');
+    return this.update({ ...input, patch: { ...patch, enabled: true } }, 'reminders.snooze', 'reminder_schedule');
   }
 
   async complete(input = {}) {
@@ -289,16 +307,15 @@ export class SchedulerAdapter {
     if (reference.sourceKind !== expectedSourceKind) throw sourceError('invalid-request', `${operationKind} requires an exact ${expectedSourceKind} Source Reference`);
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     validateScheduleUpdatePatch(input.patch);
-    let initial = null;
-    if (input.expectedConfigRevision === undefined) initial = await this.read({ referenceId: reference.referenceId });
-    const expectedConfigRevision = nonBlank(input.expectedConfigRevision ?? initial?.job.configRevision, 'expectedConfigRevision');
-    const requestParams = { id: reference.externalSourceId, expectedConfigRevision, patch: input.patch };
+    const expectedConfigRevision = nonBlank(input.expectedConfigRevision, 'expectedConfigRevision');
+    const patch = structuredClone(input.patch);
+    const requestParams = { id: reference.externalSourceId, expectedConfigRevision, patch };
     const execute = async ({ requestId }) => {
       const current = await this.read({ referenceId: reference.referenceId });
       if (current.job.configRevision !== expectedConfigRevision) throw sourceError('conflict', 'The scheduler configuration revision is stale.', { currentRevision: current.job.configRevision, expectedRevision: expectedConfigRevision });
       let response;
       try { response = await this.request('cron.update', requestParams, { requestId }); } catch (error) {
-        if (error?.code === 'CRON_JOB_CHANGED' || error?.details?.code === 'CRON_JOB_CHANGED') throw sourceError('conflict', 'The scheduler configuration revision is stale.', { currentRevision: error?.actualConfigRevision ?? error?.details?.actualConfigRevision ?? null, expectedRevision });
+        if (error?.code === 'CRON_JOB_CHANGED' || error?.details?.code === 'CRON_JOB_CHANGED') throw sourceError('conflict', 'The scheduler configuration revision is stale.', { currentRevision: error?.actualConfigRevision ?? error?.details?.actualConfigRevision ?? null, expectedRevision: expectedConfigRevision });
         throw error;
       }
       const result = jobFrom(response);
@@ -310,12 +327,17 @@ export class SchedulerAdapter {
         : { ...reference, observedRevision: observedRevision };
       return { job: result, sourceReference };
     };
-    const reconcile = async () => {
+    const reconcile = async ({ applied = false, resultIdentity = null, observedRevision = null } = {}) => {
       const after = await this.read({ referenceId: reference.referenceId });
-      const matched = Object.entries(input.patch).every(([key, value]) => stable(after.job[key]) === stable(value));
-      return matched ? { matched: true, value: after } : { matched: false, expected: input.patch, actual: after.job };
+      // Matching desired fields is not proof that this operation made them.
+      // Only the exact response previously recorded by the owner can qualify.
+      const witnessed = applied && resultIdentity === reference.externalSourceId
+        && typeof observedRevision === 'string' && after.job.configRevision === observedRevision;
+      // Native Cron owns normalization (for example every.anchorMs). Its exact
+      // saved response revision is the witness, not equality with a partial patch.
+      return witnessed ? { outcome: 'applied', value: after } : { outcome: 'unknown' };
     };
-    if (this.coordinator) return this.coordinator.mutate({ operationKind, requestId: input.requestId ?? logicalOperationId, logicalOperationId, intent: { jobId: reference.externalSourceId, expectedConfigRevision, patch: input.patch }, reconcile, execute });
+    if (this.coordinator) return this.coordinator.mutate({ operationKind, requestId: input.requestId ?? logicalOperationId, logicalOperationId, intent: { jobId: reference.externalSourceId, expectedConfigRevision, patch }, reconcile, execute });
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
   }
 

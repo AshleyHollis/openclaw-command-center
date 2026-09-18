@@ -1,4 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { lstat } from 'node:fs/promises';
+import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { assertSafeDirectory } from '../sources/note-path.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { canonicalJson } from './analysis-evidence.mjs';
 
@@ -45,64 +49,118 @@ function stableUuid(value) { const hex = createHash('sha256').update(value).dige
 
 export function topicAnalysisCronDeclaration(settings, { message = 'Run the command_center_topic_analysis tool exactly once.', enabled = settings.enabled } = {}) {
   validateAnalysisSettings(settings);
-  return Object.freeze({ declarationKey: TOPIC_ANALYSIS_SCHEDULE_KEY, name: 'Command Center weekly Topic Analysis', enabled, schedule: { kind: 'cron', expr: cronExpression(settings), tz: settings.timeZone, staggerMs: 0 }, sessionTarget: 'isolated', wakeMode: 'now', payload: { kind: 'systemEvent', text: message }, delivery: { mode: 'none' } });
+  return Object.freeze({ declarationKey: TOPIC_ANALYSIS_SCHEDULE_KEY, name: 'Command Center weekly Topic Analysis', enabled, schedule: { kind: 'cron', expr: cronExpression(settings), tz: settings.timeZone, staggerMs: 0 }, sessionTarget: 'isolated', wakeMode: 'now', payload: { kind: 'agentTurn', message, toolsAllow: ['command_center_topic_analysis'] }, delivery: { mode: 'none' } });
 }
 
-export function createTopicAnalysisScheduleService({ metadata, notificationService, gateway, api, now = () => Date.now(), runAnalysis } = {}) {
-  const cron = gateway ?? api?.runtime?.gateway;
+export function createTopicAnalysisScheduleService({ metadata, notificationService, getCron, now = () => Date.now(), runAnalysis } = {}) {
+  async function withSettingsOwner(action) {
+    if (typeof metadata.databasePath !== 'string') throw sourceError('capability-unavailable', 'Durable Topic Analysis Settings ownership is unavailable.');
+    const key = path.resolve(metadata.databasePath);
+    const directory = await assertSafeDirectory(path.dirname(key));
+    const lockPath = path.join(directory, 'analysis-settings-coordinator.sqlite');
+    const { tryAcquireExclusiveSqliteCoordinator: acquire } = await import('openclaw/plugin-sdk/sqlite-runtime');
+    if (typeof acquire !== 'function') throw sourceError('capability-unavailable', 'The host Settings coordinator is unavailable.');
+    let lock;
+    const started = Date.now();
+    while (!lock) {
+      const stat = await lstat(lockPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+      if (stat && (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)) throw sourceError('source-recovery', 'The Settings coordinator path is unsafe.');
+      lock = acquire(lockPath, { busyTimeoutMs: 0 });
+      if (!lock) {
+        if (Date.now() - started >= 30_000) throw sourceError('unavailable', 'Another Settings reconciliation still owns the coordinator.');
+        await delay(20);
+      }
+    }
+    // Every public reconciliation acquires independently. Unlike nested Note
+    // filesystem calls, no Settings operation needs ambient reentrant authority.
+    try { return await action(); }
+    finally { lock.release(); }
+  }
+  const requireCron = () => {
+    const cron = getCron?.();
+    if (!cron) throw sourceError('unavailable', 'Topic Analysis requires the host service scheduler.');
+    return cron;
+  };
   const clock = () => typeof now === 'function' ? now() : now;
   const getSettings = () => {
     let current = metadata.getTopicAnalysisSettings?.();
     if (!current) {
       const notification = notificationService?.getSettings?.() ?? { quietHoursEnd: '07:00', timeZone: 'UTC' };
-      current = metadata.setTopicAnalysisSettings({ schemaVersion: 1, enabled: true, weekday: 1, localTime: notification.quietHoursEnd, timeZone: notification.timeZone, initialized: true, nextDueAt: nextAnalysisSlot({ now: clock(), weekday: 1, localTime: notification.quietHoursEnd, timeZone: notification.timeZone }), updatedAt: new Date(clock()).toISOString() });
+      try {
+        current = metadata.setTopicAnalysisSettings({ schemaVersion: 1, expectedRevision: 0, enabled: true, weekday: 1, localTime: notification.quietHoursEnd, timeZone: notification.timeZone, initialized: true, nextDueAt: nextAnalysisSlot({ now: clock(), weekday: 1, localTime: notification.quietHoursEnd, timeZone: notification.timeZone }), updatedAt: new Date(clock()).toISOString() });
+      } catch (error) {
+        current = metadata.getTopicAnalysisSettings?.();
+        if (error?.code !== 'conflict' || !current) throw error;
+      }
     }
     return current;
   };
   const peekSettings = () => metadata.getTopicAnalysisSettings?.() ?? null;
-  async function listOwned() { if (!cron?.request) return []; const response = await cron.request('cron.list', { includeDisabled: true }); const jobs = Array.isArray(response) ? response : response?.jobs ?? response?.items ?? []; return jobs.filter((job) => job?.declarationKey === TOPIC_ANALYSIS_SCHEDULE_KEY); }
-  async function reconcile() {
-    const settings = getSettings(); const owned = await listOwned();
+  async function listOwned(cron = requireCron()) { const jobs = await cron.list({ includeDisabled: true }); return jobs.filter((job) => job?.declarationKey === TOPIC_ANALYSIS_SCHEDULE_KEY); }
+  function assertSettingsOwner(settings, logicalOperationId) {
+    const pending = metadata.getPendingAnalysisSettingsUpdate?.();
+    if ((pending && pending.logicalOperationId !== logicalOperationId) || canonicalJson(peekSettings()) !== canonicalJson(settings)) throw sourceError('conflict', 'Topic Analysis Settings changed during Cron reconciliation.');
+  }
+  async function reconcileDeclaration(settings, declaration, logicalOperationId) {
+    const cron = requireCron();
+    assertSettingsOwner(settings, logicalOperationId);
+    const owned = await listOwned(cron);
+    assertSettingsOwner(settings, logicalOperationId);
     if (owned.length > 1) throw sourceError('conflict', 'Duplicate Topic Analysis Cron declarations were found.');
-    const declaration = topicAnalysisCronDeclaration(settings);
     let job = owned[0];
-    if (!cron?.request) return Object.freeze({ settings, declaration, job: null });
-    if (!job) { const added = await cron.request('cron.add', declaration); job = added?.job ?? added; }
+    if (!job) job = await cron.add(declaration);
+    assertSettingsOwner(settings, logicalOperationId);
     if (!job?.id || job.declarationKey !== TOPIC_ANALYSIS_SCHEDULE_KEY) throw sourceError('source-recovery', 'Topic Analysis Cron declaration identity was not verified.');
     if (typeof job.configRevision !== 'string' || !job.configRevision.trim()) throw sourceError('conflict', 'Topic Analysis Cron configuration revision was not provided.');
-    const expected = JSON.stringify({ schedule: declaration.schedule, sessionTarget: declaration.sessionTarget, wakeMode: declaration.wakeMode, payload: declaration.payload, delivery: declaration.delivery });
-    const actual = JSON.stringify({ schedule: job.schedule, sessionTarget: job.sessionTarget, wakeMode: job.wakeMode, payload: job.payload, delivery: job.delivery });
+    const expected = canonicalJson({ name: declaration.name, schedule: declaration.schedule, sessionTarget: declaration.sessionTarget, wakeMode: declaration.wakeMode, payload: declaration.payload, delivery: declaration.delivery });
+    const actual = canonicalJson({ name: job.name, schedule: job.schedule, sessionTarget: job.sessionTarget, wakeMode: job.wakeMode, payload: job.payload, delivery: job.delivery });
     const patch = {};
-    if (expected !== actual) Object.assign(patch, { schedule: declaration.schedule, sessionTarget: declaration.sessionTarget, wakeMode: declaration.wakeMode, payload: declaration.payload, delivery: declaration.delivery });
+    if (expected !== actual) Object.assign(patch, { name: declaration.name, schedule: declaration.schedule, sessionTarget: declaration.sessionTarget, wakeMode: declaration.wakeMode, payload: declaration.payload, delivery: declaration.delivery });
     if (job.enabled !== settings.enabled) patch.enabled = settings.enabled;
     if (Object.keys(patch).length) {
-      const updated = await cron.request('cron.update', { id: job.id, expectedConfigRevision: job.configRevision, patch });
-      job = updated?.job ?? updated;
-      if (!job || job.id !== owned[0].id || job.declarationKey !== TOPIC_ANALYSIS_SCHEDULE_KEY) throw sourceError('source-recovery', 'Topic Analysis Cron update identity was not verified.');
+      const expectedJobId = job.id;
+      job = await cron.update(expectedJobId, patch, { expectedConfigRevision: job.configRevision });
+      assertSettingsOwner(settings, logicalOperationId);
+      if (!job || job.id !== expectedJobId || job.declarationKey !== TOPIC_ANALYSIS_SCHEDULE_KEY) throw sourceError('source-recovery', 'Topic Analysis Cron update identity was not verified.');
     }
-    const verified = JSON.stringify({ schedule: declaration.schedule, sessionTarget: declaration.sessionTarget, wakeMode: declaration.wakeMode, payload: declaration.payload, delivery: declaration.delivery });
-    const observed = JSON.stringify({ schedule: job.schedule, sessionTarget: job.sessionTarget, wakeMode: job.wakeMode, payload: job.payload, delivery: job.delivery });
+    const verified = expected;
+    const observed = canonicalJson({ name: job.name, schedule: job.schedule, sessionTarget: job.sessionTarget, wakeMode: job.wakeMode, payload: job.payload, delivery: job.delivery });
     if (verified !== observed || job.enabled !== settings.enabled) throw sourceError('source-recovery', 'Topic Analysis Cron declaration was not fully verified after reconciliation.');
-    return Object.freeze({ settings: getSettings(), declaration, job });
+    return Object.freeze({ settings, declaration, job });
+  }
+  async function resumeSettingsUpdate(journal) {
+    if (journal.operationKind !== 'schedule.update') throw sourceError('intent-mismatch', 'The operation does not own a Settings update.');
+    if (journal.state === 'applied') return JSON.parse(journal.resultIdentity);
+    if (journal.state !== 'pending') throw sourceError('source-recovery', 'The Settings update has no resumable pending intent.');
+    const pending = JSON.parse(journal.resultIdentity);
+    if (pending?.schemaVersion !== 1 || journal.observedRevision !== String(pending.settings?.revision) || canonicalJson(pending.declaration) !== canonicalJson(topicAnalysisCronDeclaration(pending.settings))) throw sourceError('source-recovery', 'The pending Settings declaration is not compatible with its saved intent.');
+    const output = await reconcileDeclaration(pending.settings, pending.declaration, journal.logicalOperationId);
+    const completed = metadata.completeAnalysisSettingsUpdate({ logicalOperationId: journal.logicalOperationId, intentDigest: journal.intentDigest, result: output });
+    return JSON.parse(completed.resultIdentity);
+  }
+  async function reconcile() {
+    const pending = metadata.getPendingAnalysisSettingsUpdate?.();
+    if (pending) return resumeSettingsUpdate(pending);
+    const settings = getSettings();
+    return reconcileDeclaration(settings, topicAnalysisCronDeclaration(settings));
   }
   async function update(input = {}) {
     if (input.schemaVersion !== 1 || typeof input.logicalOperationId !== 'string' || !input.logicalOperationId.trim()) throw sourceError('invalid-request', 'Schedule updates require schemaVersion and logicalOperationId.');
-    const current = getSettings();
+    requireCron();
     const patch = input.settings ?? input.schedule ?? {}; const allowed = ['enabled', 'weekday', 'localTime', 'timeZone'];
-    if (!patch || typeof patch !== 'object' || Object.keys(patch).some((key) => !allowed.includes(key))) throw sourceError('invalid-request', 'Schedule update contains unsupported fields.');
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch) || Object.keys(patch).some((key) => !allowed.includes(key))) throw sourceError('invalid-request', 'Schedule update contains unsupported fields.');
     const intent = { action: 'schedule.update', expectedRevision: input.expectedRevision, settings: patch };
     const journal = metadata.getOperation?.(input.logicalOperationId);
     if (journal) {
       if (journal.intentDigest !== canonicalJson(intent)) throw sourceError('intent-mismatch', 'Logical operation ID was reused with different schedule intent.');
-      if (journal.resultIdentity) return JSON.parse(journal.resultIdentity);
+      return resumeSettingsUpdate(journal);
     }
+    const current = getSettings();
     if (input.expectedRevision !== current.revision) throw sourceError('conflict', 'Topic Analysis schedule revision is stale.');
     const nextEnabled = patch.enabled ?? current.enabled;
     const next = { ...current, ...patch, revision: current.revision + 1, nextDueAt: nextEnabled ? nextAnalysisSlot({ now: clock(), weekday: patch.weekday ?? current.weekday, localTime: patch.localTime ?? current.localTime, timeZone: patch.timeZone ?? current.timeZone }) : null, initialized: true, updatedAt: new Date(clock()).toISOString() };
-    const saved = metadata.setTopicAnalysisSettings({ ...next, schemaVersion: 1, expectedRevision: current.revision });
-    const result = await reconcile(); const output = { ...result, settings: saved };
-    metadata.recordOperation?.({ logicalOperationId: input.logicalOperationId, transportRequestId: input.logicalOperationId, intentDigest: canonicalJson(intent), operationKind: 'schedule.update', state: 'applied', resultStatus: 'applied', resultIdentity: JSON.stringify(output), observedRevision: String(saved.revision), createdAt: saved.updatedAt, updatedAt: saved.updatedAt });
-    return output;
+    const pending = metadata.beginAnalysisSettingsUpdate({ logicalOperationId: input.logicalOperationId, intentDigest: canonicalJson(intent), settings: { ...next, schemaVersion: 1, expectedRevision: current.revision }, declaration: topicAnalysisCronDeclaration(next) });
+    return resumeSettingsUpdate(pending);
   }
   function advancePast(dueAt) {
     const current = getSettings();
@@ -112,19 +170,25 @@ export function createTopicAnalysisScheduleService({ metadata, notificationServi
   async function manual(input = {}) {
     const dueAt = getSettings().nextDueAt;
     const result = runAnalysis ? await runAnalysis({ ...input, trigger: 'manual' }) : null;
-    if (result?.outcome === 'success' && dueAt && Date.parse(dueAt) <= clock()) advancePast(dueAt);
+    if (result?.outcome === 'success' && dueAt && Date.parse(dueAt) <= clock()) await withSettingsOwner(() => advancePast(dueAt));
     return result;
   }
   async function weekly(input = {}) {
     if (!getSettings().enabled) return Object.freeze({ schemaVersion: 1, trigger: input.trigger === 'catch-up' ? 'catch-up' : 'weekly', outcome: 'disabled' });
     const result = runAnalysis ? await runAnalysis({ ...input, trigger: input.trigger === 'catch-up' ? 'catch-up' : 'weekly' }) : null;
     if (result?.outcome === 'success') {
-      const current = getSettings();
-      metadata.setTopicAnalysisSettings({ ...current, schemaVersion: 1, revision: current.revision, expectedRevision: current.revision, nextDueAt: current.enabled ? nextAnalysisSlot({ now: clock(), weekday: current.weekday, localTime: current.localTime, timeZone: current.timeZone }) : null, updatedAt: new Date(clock()).toISOString() });
+      await withSettingsOwner(() => {
+        const current = getSettings();
+        metadata.setTopicAnalysisSettings({ ...current, schemaVersion: 1, revision: current.revision, expectedRevision: current.revision, nextDueAt: current.enabled ? nextAnalysisSlot({ now: clock(), weekday: current.weekday, localTime: current.localTime, timeZone: current.timeZone }) : null, updatedAt: new Date(clock()).toISOString() });
+      });
     }
     return result;
   }
   async function startupCatchUp() {
+    // Startup can reach catch-up after reconciliation failed. Resolve the same
+    // durable Settings owner before consuming a slot or recording its claim.
+    const pending = metadata.getPendingAnalysisSettingsUpdate?.();
+    if (pending) await resumeSettingsUpdate(pending);
     const settings = getSettings(); const dueAt = settings.nextDueAt;
     if (!settings.enabled || !dueAt || Date.parse(dueAt) > clock()) return Object.freeze({ outcome: 'not-due' });
     const satisfied = (metadata.listTopicAnalysisRuns?.() ?? []).some((run) => run.outcome === 'success' && run.finishedAt && Date.parse(run.finishedAt) >= Date.parse(dueAt));
@@ -140,5 +204,13 @@ export function createTopicAnalysisScheduleService({ metadata, notificationServi
     metadata.recordOperation?.({ logicalOperationId: claimId, transportRequestId: claimId, intentDigest: canonicalJson(intent), operationKind: 'topic-analysis.catch-up.claim', state: result?.outcome === 'success' ? 'applied' : 'not-applied', resultStatus: result?.outcome ?? 'unavailable', resultIdentity: JSON.stringify(result ?? { outcome: 'unavailable' }), observedRevision: dueAt, createdAt: claimedAt, updatedAt: new Date(clock()).toISOString() });
     return result;
   }
-  return Object.freeze({ getSettings, peekSettings, listOwned, reconcile, update, manual, weekly, startupCatchUp, nextDueAt: () => getSettings().nextDueAt, operationId: () => randomUUID() });
+  async function updateWithOwner(input = {}) {
+    const pending = metadata.getPendingAnalysisSettingsUpdate?.();
+    if (pending) {
+      if (pending.logicalOperationId !== input.logicalOperationId) throw sourceError('conflict', 'Another unresolved Settings update owns the settings.');
+      if (pending.intentDigest !== canonicalJson({ action: 'schedule.update', expectedRevision: input.expectedRevision, settings: input.settings ?? input.schedule ?? {} })) throw sourceError('intent-mismatch', 'Logical operation ID was reused with different Settings intent.');
+    }
+    return withSettingsOwner(() => update(input));
+  }
+  return Object.freeze({ getSettings, peekSettings, listOwned, reconcile: () => withSettingsOwner(reconcile), update: updateWithOwner, manual, weekly, startupCatchUp: () => withSettingsOwner(startupCatchUp), nextDueAt: () => getSettings().nextDueAt, operationId: () => randomUUID() });
 }

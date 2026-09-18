@@ -39,7 +39,8 @@ function validateResult(row, kind, topicId) {
     nonBlank(row.path, 'Note path');
     if (row.heading !== null && typeof row.heading !== 'string') fail('Note heading is invalid.');
   } else {
-    for (const [value, label] of [[row.sessionKey, 'Session key'], [row.messageId, 'Message ID'], [row.conversationName, 'Conversation name'], [row.date, 'Conversation date']]) nonBlank(value, label);
+    for (const [value, label] of [[row.sessionKey, 'Session key'], [row.conversationName, 'Conversation name'], [row.date, 'Conversation date']]) nonBlank(value, label);
+    if (row.messageId !== null) nonBlank(row.messageId, 'Message ID');
     if (Number.isNaN(Date.parse(row.date)) || new Date(row.date).toISOString() !== row.date) fail('Conversation date is invalid.');
     exactKeys(row.provenance, ['role', 'status', 'importedPrimaryHistory'], 'Conversation provenance');
     if (!['primary', 'former-primary', 'topic-conversation'].includes(row.provenance.role) || !['open', 'closed'].includes(row.provenance.status) || typeof row.provenance.importedPrimaryHistory !== 'boolean') fail('Conversation provenance is invalid.');

@@ -497,7 +497,9 @@ export async function openProjectionStore({ stateDir, root: suppliedRoot, projec
     }
     return db;
   };
-  const querySql = `SELECT d.*, bm25(${config.fts}) AS rank, snippet(${config.fts}, 1, '${MATCH_START}', '${MATCH_END}', ' … ', 32) AS matched_snippet FROM ${config.fts} JOIN ${config.table} d INDEXED BY ${config.table}_topic_idx ON d.row_id = ${config.fts}.rowid WHERE ${config.fts} MATCH ? AND d.topic_id = ? ORDER BY rank, d.row_id LIMIT ?`;
+  // SQLite 3.51 can otherwise drive this join from every Topic document and
+  // rerun MATCH per row. Keep FTS first, then seek the exact Topic/rowid pair.
+  const querySql = `SELECT d.*, bm25(${config.fts}) AS rank, snippet(${config.fts}, 1, '${MATCH_START}', '${MATCH_END}', ' … ', 32) AS matched_snippet FROM ${config.fts} CROSS JOIN ${config.table} d INDEXED BY ${config.table}_topic_idx ON d.row_id = ${config.fts}.rowid WHERE ${config.fts} MATCH ? AND d.topic_id = ? ORDER BY rank, d.row_id LIMIT ?`;
   const scopedMatch = (request) => `topic_id : "${request.topicId.replaceAll('"', '""')}" AND content : (${buildFtsQuery(request.tokens)})`;
 
   const store = {
@@ -517,7 +519,8 @@ export async function openProjectionStore({ stateDir, root: suppliedRoot, projec
       const db = assertOpenIntegrity();
       return manifestFor(generationRow(db)).topicIds.includes(topicId);
     },
-    async rebuild({ topicId = null, topicIds = [], rows = [], documents = undefined, sourceRevision = null, _groupLease } = {}) {
+    async rebuild({ topicId = null, topicIds = [], rows = [], documents = undefined, sourceRevision = null, _groupLease, signal } = {}) {
+      signal?.throwIfAborted();
       const activeGroup = activeGroupedPublications.get(root);
       if (activeGroup && activeGroup !== _groupLease) throw sourceError('projection-unavailable', 'A grouped projection publication is already active.');
       if (documents !== undefined && rows.length === 0) rows = documents;
@@ -552,11 +555,13 @@ export async function openProjectionStore({ stateDir, root: suppliedRoot, projec
           : db.prepare(`SELECT row_id FROM ${config.table} WHERE topic_id = ?`).all(topicId);
         const deleteFts = db.prepare(`DELETE FROM ${config.fts} WHERE rowid = ?`);
         for (const row of oldIds) deleteFts.run(row.row_id);
+        signal?.throwIfAborted();
         if (topicId === null) db.prepare(`DELETE FROM ${config.table}`).run();
         else db.prepare(`DELETE FROM ${config.table} WHERE topic_id = ?`).run(topicId);
         const insert = db.prepare(`INSERT INTO ${config.table} (row_id, topic_id, source_reference_json, folder_reference_id, path, heading, revision, session_key, session_id, message_id, name, date, closed, primary_state, role, history_provenance, provenance, imported_from, originating_topic_id, text, content, context_before, context_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
         const insertFts = db.prepare(`INSERT INTO ${config.fts} (rowid, topic_id, content) VALUES (?, ?, ?)`);
         for (const row of normalizedRows) {
+          signal?.throwIfAborted();
           const content = textForRow(row, kind).normalize('NFC');
           const rowId = deterministicRowId(kind, row);
           insert.run(rowId, row.topicId, JSON.stringify(row.sourceReference), row.folderReferenceId ?? null, row.path ?? null, row.heading ?? null, row.revision ?? null, row.sessionKey ?? null, row.sessionId ?? null, row.messageId ?? null, row.name ?? null, row.date ?? null, row.closed ? 1 : 0, row.primaryState ?? null, row.role ?? null, row.historyProvenance ?? null, row.provenance, row.importedFrom ?? null, row.originatingTopicId ?? null, row.text, content, row.contextBefore, row.contextAfter);

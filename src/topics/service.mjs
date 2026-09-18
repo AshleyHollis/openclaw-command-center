@@ -2,6 +2,7 @@ import { sourceError } from '../sources/errors.mjs';
 import { createTopicProvisioningService } from './provisioning.mjs';
 import { createTopicLifecycleService } from './lifecycle.mjs';
 import { createTopicRecoveryService } from './recovery.mjs';
+import { createTopicFolderRecoveryBatch } from './folder-recovery-batch.mjs';
 
 const ACTIVE_GROUPS = Object.freeze(['project', 'area', 'resource']);
 const DESTINATION_TOPIC_LIMIT = 100;
@@ -44,6 +45,7 @@ function topicView(metadata, topic, detectedRecovery = []) {
 }
 
 function destinationTopic(topic) {
+  const noteFolderReferenceId = topic.sourceReferences?.find((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder')?.referenceId;
   return Object.freeze({
     topicId: topic.topicId,
     name: topic.name,
@@ -52,6 +54,7 @@ function destinationTopic(topic) {
     lifecycle: topic.lifecycle,
     health: topic.health,
     usable: topic.usable,
+    ...(noteFolderReferenceId ? { noteFolderReferenceId } : {}),
     provisioningOperationId: topic.provisioningOperationId,
     recovery: topic.recovery.map(({ recoveryId, topicId, referenceId, sourceKind, state, diagnostics, expectedRevision, createdAt, updatedAt }) => ({ recoveryId, topicId, referenceId, sourceKind, state, diagnostics: (diagnostics?.length ? diagnostics : [{}]).map((diagnostic) => publicRecoveryDiagnostic({ topicId, referenceId, sourceKind, state }, diagnostic)), expectedRevision, createdAt, updatedAt }))
   });
@@ -67,6 +70,10 @@ export class TopicService {
     this.provisioning = options.provisioning ?? createTopicProvisioningService(shared);
     this.lifecycle = options.lifecycle ?? createTopicLifecycleService(shared);
     this.recovery = options.recovery ?? createTopicRecoveryService(shared);
+    this.folderRecoveryBatch = options.folderRecoveryBatch ?? createTopicFolderRecoveryBatch({ metadata: this.metadata, topics: {
+      recoveryInspect: input => this.recoveryInspect(input),
+      recoveryVerify: input => this.recoveryVerify(input)
+    } });
   }
 
   listTopics({ includeProvisioning = true, includeArchived = true, includeRetired = true } = {}) {
@@ -162,17 +169,17 @@ export class TopicService {
   get(topicId) { return topicView(this.metadata, this.lifecycle.topic(topicId)); }
   getTopic(topicId) { return this.get(topicId); }
 
-  create(input) { return this.provisioning.create(input); }
-  createTopic(input) { return this.create(input); }
-  provisioningRetry(input) { return this.provisioning.retry(input); }
-  retryProvisioning(input) { return this.provisioningRetry(input); }
-  retry(input) { return this.provisioning.retry(input); }
+  create(input, runtime) { return this.provisioning.create(input, runtime); }
+  createTopic(input, runtime) { return this.create(input, runtime); }
+  provisioningRetry(input, runtime) { return this.provisioning.retry(input, runtime); }
+  retryProvisioning(input, runtime) { return this.provisioningRetry(input, runtime); }
+  retry(input, runtime) { return this.provisioning.retry(input, runtime); }
   provisioningRollback(input) { return this.provisioning.rollback(input); }
   rollbackProvisioning(input) { return this.provisioningRollback(input); }
   rollback(input) { return this.provisioning.rollback(input); }
   rename(input) { return this.lifecycle.rename(input); }
   renameTopic(input) { return this.rename(input); }
-  replacePrimarySession(input) { return this.lifecycle.replacePrimarySession(input); }
+  replacePrimarySession(input, runtime) { return this.lifecycle.replacePrimarySession(input, runtime); }
   recategorizationPreview(input) { return this.lifecycle.recategorizePreview(input); }
   previewStructuralChange(input) { return this.recategorizationPreview(input); }
   recategorizePreview(input) { return this.lifecycle.recategorizePreview(input); }
@@ -189,6 +196,7 @@ export class TopicService {
   recoveryVerify(input) { return this.recovery.verify(input); }
   recoveryRelink(input) { return this.recovery.relink(input); }
   recoveryReplace(input) { return this.recovery.replace(input); }
+  recoverNoteFoldersBatch(input) { return this.folderRecoveryBatch.recover(input); }
   recoveryInspect(input) { return this.recovery.inspect(input.topicId, input.referenceId); }
   async inspectSourceRecovery(input) {
     const inspection = await this.recoveryInspect(input);

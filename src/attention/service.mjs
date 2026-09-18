@@ -74,18 +74,27 @@ function mapActivity(row) {
 
 function mapLegacyActivity(row) {
   if (!row) return null;
+  const operationKind = row.operationKind ?? row.operation_kind;
+  const observedRevision = row.observedRevision ?? row.observed_revision ?? null;
+  let analysisEvidence = null;
+  if (operationKind === 'topic-analysis.run' && observedRevision) {
+    try {
+      const parsed = JSON.parse(observedRevision);
+      if (typeof parsed?.sourceReferenceId === 'string' && (parsed.sourceRevision === null || typeof parsed.sourceRevision === 'string')) analysisEvidence = parsed;
+    } catch { /* pre-evidence analysis rows remain readable without inventing a source identity */ }
+  }
   return Object.freeze({
     activityId: row.activityId ?? row.activity_id,
     episodeId: null,
     logicalOperationId: row.logicalOperationId ?? row.logical_operation_id,
     attemptId: null,
     topicId: row.topicId ?? row.topic_id ?? null,
-    sourceReferenceId: null,
+    sourceReferenceId: analysisEvidence?.sourceReferenceId ?? null,
     actorMode: 'system',
     actionId: null,
-    operationKind: row.operationKind ?? row.operation_kind,
+    operationKind,
     outcome: row.outcome,
-    verificationRevision: row.observedRevision ?? row.observed_revision ?? null,
+    verificationRevision: analysisEvidence ? analysisEvidence.sourceRevision : observedRevision,
     occurredAt: row.createdAt ?? row.created_at,
     createdAt: row.createdAt ?? row.created_at,
     updatedAt: row.updatedAt ?? row.updated_at
@@ -175,7 +184,7 @@ function presentationSnoozeDescriptor() {
 }
 
 function approvalDecisionDescriptors(approval) {
-  const target = () => ({ approvalId: approval.approvalId, attemptId: approval.attemptId });
+  const target = () => ({ approvalId: approval.approvalId, attemptId: approval.attemptId, disclosure: { actionId: approval.actionId, target: approval.target, parameters: approval.parameters, sideEffects: approval.sideEffects, expiresAt: approval.expiresAt } });
   const decision = (actionId, label, sideEffects) => ({ actionId, label, kind: 'mutation', targetResolver: target, parameterSchema: { type: 'object', properties: {}, additionalProperties: false }, sideEffects, approvalMode: 'never', idempotency: { idempotent: true, transientRetryable: false }, executor: async () => ({}), authoritativeVerifier: async () => ({ outcome: 'applied' }), successTransition: async () => 'Active' });
   return [
     decision('approval.approve', 'Approve', ['Consumes the exact disclosed approval attempt and executes it.']),
@@ -444,14 +453,18 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     const effectiveOccurrence = Object.freeze({ ...occurrence, evidenceFacts: object(derivedFacts ?? EMPTY_OBJECT, 'derived evidenceFacts') });
     const severity = deriveSeverity(effectiveOccurrence.evidenceFacts, { verified: true });
     const identity = episodeIdentity(effectiveOccurrence);
-      const occurrenceIdentity = occurrenceKey(effectiveOccurrence);
+    const occurrenceIdentity = occurrenceKey(effectiveOccurrence);
     const clock = nowIso(now);
     return transaction((database) => {
       const exact = findOccurrence(identity.identityDigest, occurrenceIdentity);
-      if (exact) return Object.freeze({ episode: mapEpisode(exact) ?? exact, duplicate: true, ignored: false });
+      const confirmedState = verifiedTransition && ['withdrawn', 'resolved'].includes(effectiveOccurrence.transitionEvidence?.state) ? (effectiveOccurrence.transitionEvidence.state === 'withdrawn' ? 'Withdrawn' : 'Resolved') : null;
+      if (exact) {
+        const episode = mapEpisode(exact) ?? exact;
+        const activityId = confirmedState ? `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}` : null;
+        return Object.freeze({ episode, activity: activityId ? service.getActivity(activityId) : null, duplicate: true, ignored: false });
+      }
       const generations = findGenerations(identity);
       const current = generations[0];
-      const confirmedState = verifiedTransition && ['withdrawn', 'resolved'].includes(effectiveOccurrence.transitionEvidence?.state) ? (effectiveOccurrence.transitionEvidence.state === 'withdrawn' ? 'Withdrawn' : 'Resolved') : null;
       if (confirmedState === 'Withdrawn' && (!current || ['Resolved', 'Withdrawn'].includes(current.state))) return Object.freeze({ episode: current ?? null, duplicate: false, ignored: true });
       if (current && ['Resolved', 'Withdrawn'].includes(current.state)) {
         const terminal = Date.parse(current.terminalAt ?? current.updatedAt);
@@ -477,8 +490,10 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       if (confirmedState && !['Resolved', 'Withdrawn'].includes(episode.state)) episode = { ...episode, state: assertTransition(episode.state, confirmedState), terminalAt: clock, snoozedUntil: null };
       saveEpisode(episode, { insert: !current || ['Resolved', 'Withdrawn'].includes(current.state) });
       saveOccurrence(episode, effectiveOccurrence, severity, verifiedTransition);
-      if (confirmedState) saveActivity({ activityId: `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, episodeId: episode.episodeId, logicalOperationId: `transition:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, attemptId: null, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actorMode: 'system', actionId: `source.${confirmedState.toLowerCase()}`, operationKind: `attention.${confirmedState.toLowerCase()}`, outcome: confirmedState.toLowerCase(), verificationRevision: effectiveOccurrence.occurrenceVersion ?? null, createdAt: clock, updatedAt: clock });
-      return Object.freeze({ episode: findById(episode.episodeId), duplicate: false, ignored: false });
+      const activity = confirmedState
+        ? saveActivity({ activityId: `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, episodeId: episode.episodeId, logicalOperationId: `transition:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, attemptId: null, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actorMode: 'system', actionId: `source.${confirmedState.toLowerCase()}`, operationKind: `attention.${confirmedState.toLowerCase()}`, outcome: confirmedState.toLowerCase(), verificationRevision: effectiveOccurrence.occurrenceVersion ?? null, createdAt: clock, updatedAt: clock })
+        : null;
+      return Object.freeze({ episode: findById(episode.episodeId), activity, duplicate: false, ignored: false });
     });
   }
 
@@ -778,9 +793,14 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
   async function act(input = {}) {
     assertWritable();
     const value = object(input, 'Attention action request');
-    const allowed = ['schemaVersion', 'logicalOperationId', 'episodeId', 'expectedEpisodeRevision', 'expectedSourceRevision', 'topicId', 'sourceReferenceId', 'actionId', 'input', 'approvalId', 'requestId', 'authenticatedOperatorId'];
+    const allowed = ['schemaVersion', 'logicalOperationId', 'episodeId', 'expectedEpisodeRevision', 'expectedSourceRevision', 'topicId', 'sourceReferenceId', 'sourceCapabilityId', 'stableSubjectId', 'actionId', 'input', 'approvalId', 'requestId', 'authenticatedOperatorId'];
     if (Object.keys(value).some((key) => !allowed.includes(key))) fail('invalid-request', 'Attention action request contains unsupported field');
     if (value.schemaVersion !== ATTENTION_SCHEMA_VERSION) fail('unsupported-version', 'schemaVersion must be 1');
+    const episode = findById(nonBlank(value.episodeId, 'episodeId'));
+    if (!episode) fail('not-found', 'Attention episode was not found.');
+    for (const field of ['sourceCapabilityId', 'stableSubjectId']) {
+      if (value[field] !== undefined && value[field] !== episode[field]) fail('invalid-request', 'Attention source identity does not match the episode.');
+    }
     const logicalOperationId = nonBlank(value.logicalOperationId, 'logicalOperationId');
     const authenticatedOperatorId = value.authenticatedOperatorId === undefined ? operatorId : nonBlank(value.authenticatedOperatorId, 'authenticatedOperatorId');
     if (!isCanonicalUuid(logicalOperationId)) fail('invalid-request', 'logicalOperationId must be a canonical UUID.');
@@ -852,8 +872,6 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       }
       return Object.freeze({ status: existingAttempt.state === 'applied' ? 'applied' : existingAttempt.state, episode: findById(existingAttempt.episodeId), attempt: existingAttempt, activity: activityForAttempt(existingAttempt) });
     }
-    const episode = findById(nonBlank(value.episodeId, 'episodeId'));
-    if (!episode) fail('not-found', 'Attention episode was not found.');
     if (value.expectedEpisodeRevision !== episode.revision) fail('conflict', 'Attention episode revision is stale.', { currentRevision: episode.revision, expectedRevision: value.expectedEpisodeRevision });
     if (episode.topicId && value.topicId === undefined) fail('invalid-request', 'Attention action requires the exact Topic identity.');
     if (value.topicId !== undefined && value.topicId !== episode.topicId) fail('conflict', 'Attention Topic identity is stale.');

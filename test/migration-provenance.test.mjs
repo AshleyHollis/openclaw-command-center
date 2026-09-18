@@ -4,9 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
-import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
-import { registerBridgeMethods } from '../src/bridge/register.mjs';
+import { createMigrationFixtureService } from './fixtures/migration-folders.mjs';
 import { sourceOccurrenceId } from '../src/migration/occurrence.mjs';
 
 const fixturePath = new URL('./fixtures/legacy-discord-export.v1.json', import.meta.url).pathname;
@@ -34,7 +32,7 @@ test('imported prefix preserves Discord provenance and ordinary messages remain 
       }
       return { ['k' + 'ey']: params.key, sessionId: 'fictional-session-provenance' };
     } };
-    const service = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime: transcripts, folderVerifier: async () => undefined });
+    const service = createMigrationFixtureService({ metadata, config, gateway, transcriptRuntime: transcripts });
     assert.equal((await service.start()).complete, true);
     const reference = metadata.listSourceReferences('fictional-topic-provenance').find((item) => item.sourceKind === 'session');
     const events = transcripts.sessions.get(reference.externalSourceId);
@@ -55,14 +53,11 @@ test('imported prefix preserves Discord provenance and ordinary messages remain 
     assert.equal(events[1].message.__openclaw.legacyDiscordV1.replyToMessageId, 'fictional-message-001');
     assert.notEqual(first.__openclaw.legacyDiscordV1.occurrenceId, events[1].message.__openclaw.legacyDiscordV1.occurrenceId);
     const importedSnapshot = structuredClone(events);
-    const sources = createAuthoritativeSourceService({ metadata, migration: service, gateway, capabilities: { sessions: true } });
     const logicalOperationId = crypto.randomUUID();
-    const registrations = new Map();
-    registerBridgeMethods({ registerGatewayMethod: (method, handler) => registrations.set(method, handler) }, sources);
-    let bridgeResponse;
-    await registrations.get('command-center.v1.sessions.send')({ req: { id: 'fictional-authenticated-suffix-request' }, params: { schemaVersion: 1, topicId: 'fictional-topic-provenance', referenceId: reference.referenceId, logicalOperationId, message: 'Fictional ordinary suffix.' }, context: { authenticated: true }, respond: (...args) => { bridgeResponse = args; } });
-    assert.equal(bridgeResponse[0], true);
-    assert.equal(bridgeResponse[1].logicalOperationId, logicalOperationId);
+    // Migration owns the immutable imported prefix. Ordinary native messages
+    // are an external transcript fixture here, not a custom bridge/auth proof.
+    const sent = await gateway.request('chat.send', { sessionKey: reference.externalSourceId, idempotencyKey: logicalOperationId, message: 'Fictional ordinary suffix.' });
+    assert.equal(sent.runId, logicalOperationId);
     assert.deepEqual(events.slice(0, 2), importedSnapshot);
     assert.equal(events.length, 3);
     assert.equal(events[2].parentId, events[1].id);

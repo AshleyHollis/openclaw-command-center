@@ -60,6 +60,47 @@ export class NoteMaintenanceService {
     return Object.freeze({ ...result, activity });
   }
 
+  /**
+   * Creation is a separate conditional-write contract: absence is the
+   * precondition, so it must not be assembled by the calling native tool.
+   */
+  async create(input = {}) {
+    const logicalOperationId = input.logicalOperationId ?? randomUUID();
+    const requestId = input.requestId ?? logicalOperationId;
+    let result;
+    let outcome = 'applied';
+    let observedRevision = null;
+    try {
+      const topicId = nonBlank(input.topicId, 'topicId');
+      const notePath = normalizeNotePath(input.path ?? input.notePath);
+      const text = typeof input.text === 'string' ? input.text : input.content;
+      if (typeof text !== 'string') throw sourceError('invalid-request', 'Working Note content must be Markdown text.');
+      // `notesCreate` owns verified-folder admission, absence checking,
+      // durable recovery, and replay. This owner owns the decision to use it.
+      result = this.sourceService
+        ? await this.sourceService.notesCreate({ topicId, path: notePath, text, sourceKind: 'note', logicalOperationId, requestId })
+        : await this.notes.create({ path: notePath, text, sourceKind: 'note', logicalOperationId, requestId });
+      outcome = result.status === 'reconciled' ? 'applied' : result.status ?? 'applied';
+      observedRevision = result.value?.note?.revision ?? result.note?.revision ?? null;
+    } catch (error) {
+      outcome = error?.code === 'conflict' ? 'conflict' : 'unknown';
+      observedRevision = error?.currentRevision ?? null;
+      result = { schemaVersion: 1, status: outcome, error: { code: error?.code ?? 'unknown', message: error?.message ?? String(error) } };
+    }
+    const activity = this.metadata?.recordActivity?.({
+      activityId: `maintenance:${logicalOperationId}`,
+      topicId: input.topicId,
+      logicalOperationId,
+      transportRequestId: requestId,
+      operationKind: 'notes.maintenance',
+      outcome,
+      observedRevision,
+      createdAt: this.now(),
+      updatedAt: this.now()
+    });
+    return Object.freeze({ ...result, activity });
+  }
+
   async assertExactNoteOwnership(input, logicalOperationId) {
     const topicId = nonBlank(input.topicId, 'topicId');
     const referenceId = nonBlank(input.referenceId ?? input.noteReferenceId, 'noteReferenceId');

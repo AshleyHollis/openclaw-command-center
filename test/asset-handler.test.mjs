@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -39,8 +39,27 @@ test('serves a validated built shell asset', async () => {
     assert.equal(await serveShellAsset({ method: 'GET', url: '/plugins/command-center' }, res, { assetRoot, assets }), true);
     assert.equal(res.statusCode, 200);
     assert.equal(res.headers.get('content-type'), 'text/html; charset=utf-8');
+    assert.equal(res.headers.get('access-control-allow-origin'), 'null');
     assert.equal(String(res.body), '<safe shell>');
   });
+});
+
+test('opaque srcdoc shell resolves markdown against the inherited authenticated parent URL', async () => {
+  const app = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
+  const declaration = app.split('\n').find((line) => line.startsWith('const markdownModuleUrl = '));
+  for (const baseURI of ['https://host.invalid/control', 'http://127.0.0.1/control', 'about:blank']) {
+    const resolved = new Function('document', `${declaration}; return markdownModuleUrl;`)({ baseURI });
+    assert.equal(resolved, /^https?:/u.test(baseURI) ? new URL('/plugins/command-center/markdown.js', baseURI).href : '/plugins/command-center/markdown.js');
+  }
+  assert.match(app, /function loadMarkdownModule\(\) \{ return markdownModule \?\?= import\(markdownModuleUrl\); \}/u);
+  assert.doesNotMatch(app, /import\('\/plugins\/command-center\/markdown\.js'\)/u);
+  assert.doesNotMatch(app, /import\('\.\/markdown\.js'\)/u);
+});
+
+test('scripts-only shell converts scripted submit-button clicks into cancellable submit events', async () => {
+  const app = await readFile(new URL('../src/ui/app.js', import.meta.url), 'utf8');
+  assert.match(app, /SCRIPTED_FORM_IDS\.has\(form\.id\)/u);
+  assert.match(app, /event\.preventDefault\(\);\s*form\.dispatchEvent\(new SubmitEvent\('submit', \{ bubbles: true, cancelable: true, submitter \}\)\)/u);
 });
 
 test('handler rejects final and intermediate asset symlinks before serving content', async () => {

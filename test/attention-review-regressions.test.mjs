@@ -244,6 +244,47 @@ test('verified terminal source evidence settles an in-flight attempt without reo
   });
 });
 
+test('verified terminal source evidence returns the exact durable Activity for authoritative readback', async () => {
+  await fixture(async ({ metadata }) => {
+    const service = createAttentionService({ metadata, now: () => '2026-08-23T00:01:00.000Z' });
+    service.registerSourceCapability({
+      sourceCapabilityId: 'terminal-activity-monitor',
+      deriveEvidence: () => ({}),
+      verifyTransition: async (value) => value.transitionEvidence?.state === 'resolved' && value.transitionEvidence?.version === value.occurrenceVersion,
+      actions: []
+    });
+    await service.ingest(occurrence('terminal-activity-monitor', { occurrenceId: 'terminal-activity-active', occurrenceVersion: 'revision-1' }));
+    const transition = await service.ingest(occurrence('terminal-activity-monitor', {
+      occurrenceId: 'terminal-activity-resolved',
+      occurrenceVersion: 'revision-2',
+      occurredAt: '2026-08-23T00:00:01.000Z',
+      transitionEvidence: { state: 'resolved', version: 'revision-2' }
+    }));
+    assert.ok(transition.activity?.activityId);
+    assert.deepEqual(service.getActivity(transition.activity.activityId), transition.activity);
+    assert.deepEqual({
+      topicId: transition.activity.topicId,
+      sourceReferenceId: transition.activity.sourceReferenceId,
+      outcome: transition.activity.outcome,
+      verificationRevision: transition.activity.verificationRevision
+    }, {
+      topicId: 'topic-review',
+      sourceReferenceId: 'source-review',
+      outcome: 'resolved',
+      verificationRevision: 'revision-2'
+    });
+    const replay = await service.ingest(occurrence('terminal-activity-monitor', {
+      occurrenceId: 'terminal-activity-resolved',
+      occurrenceVersion: 'revision-2',
+      occurredAt: '2026-08-23T00:00:01.000Z',
+      transitionEvidence: { state: 'resolved', version: 'revision-2' }
+    }));
+    assert.equal(replay.duplicate, true);
+    assert.deepEqual(replay.activity, transition.activity);
+    service.close();
+  });
+});
+
 test('severity requires explicit capability mapping and due Reminders appear once', async () => {
   await fixture(async ({ metadata }) => {
     const service = createAttentionService({ metadata, now: () => '2026-08-23T00:01:00.000Z' });

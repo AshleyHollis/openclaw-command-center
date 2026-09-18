@@ -3,13 +3,14 @@ import test from 'node:test';
 import { encodeInitialTopicSnapshot, inlineShellAssets, injectInitialTopicSnapshot, loadInitialTopicDestination, publicTopicDestination } from '../src/topics/snapshot.mjs';
 
 test('initial Topic snapshot is bounded, public, and safe inside an HTML script element', () => {
-  const topic = { topicId: '11111111-1111-4111-8111-111111111111', name: '</script><script>unsafe()</script>', revision: 2, paraCategory: 'project', lifecycle: 'active', health: 'ready', usable: true, recovery: [], privateLocator: '/private' };
+  const topic = { topicId: '11111111-1111-4111-8111-111111111111', name: '</script><script>unsafe()</script>', revision: 2, paraCategory: 'project', lifecycle: 'active', health: 'ready', usable: true, noteFolderReferenceId: 'note-folder:fictional', recovery: [], privateLocator: '/private' };
   const encoded = encodeInitialTopicSnapshot({ activeGroups: { project: [topic], area: [], resource: [] }, provisioning: [], recovery: [], archived: [] });
   assert.doesNotMatch(encoded, /<\/script|privateLocator|\/private/u);
   const parsed = JSON.parse(encoded);
   assert.equal(parsed.schemaVersion, 1);
   assert.equal(parsed.result.activeGroups.project[0].name, topic.name);
-  assert.deepEqual(Object.keys(parsed.result.activeGroups.project[0]), ['topicId', 'name', 'revision', 'paraCategory', 'lifecycle', 'health', 'usable', 'recovery']);
+  assert.deepEqual(Object.keys(parsed.result.activeGroups.project[0]), ['topicId', 'name', 'revision', 'paraCategory', 'lifecycle', 'health', 'usable', 'noteFolderReferenceId', 'recovery']);
+  assert.equal(parsed.result.activeGroups.project[0].noteFolderReferenceId, 'note-folder:fictional');
 });
 
 test('authenticated shell inlines verified assets without executable closing-tag injection', () => {

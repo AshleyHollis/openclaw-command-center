@@ -75,6 +75,21 @@ test('failed later analysis does not advance success watermarks and retains olde
   });
 });
 
+test('analysis uses the authoritative locator revision when the source-reference observation is stale', async () => {
+  await withMetadata(async ({ metadata }) => {
+    addTopic(metadata, 'topic-locator-revision'); addSource(metadata, 'topic-locator-revision');
+    const runner = createTopicAnalysisRunner({ metadata, analyzer: async ({ topic, sources }) => [proposal(topic, sources[0].observedRevision)] });
+    await runner.run({ trigger: 'manual' });
+    metadata.setSourceLocator({ referenceId: sourceId, locator: 'fictional-record', ownership: 'external', observedRevision: sourceRevision(2), updatedAt: '2026-08-25T07:00:00.000Z' });
+    const result = await runner.run({ trigger: 'manual' });
+    const stored = metadata.listTopicProposals()[0];
+    assert.equal(result.outcome, 'success');
+    assert.equal(result.proposalCount, 1);
+    assert.equal(metadata.listTopicAnalysisEvidence(stored.proposalId, { currentOnly: true })[0].sourceRevision, sourceRevision(2));
+    assert.equal(metadata.getTopicAnalysisWatermark(`source:${sourceId}`).observedRevision, sourceRevision(2));
+  });
+});
+
 test('meaningful proposal state changes increment the stable proposal revision and reset approval', async () => {
   await withMetadata(async ({ metadata }) => {
     addTopic(metadata, 'topic-proposal-revision'); addSource(metadata, 'topic-proposal-revision');

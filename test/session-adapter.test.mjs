@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSessionAdapter } from '../src/sources/sessions.mjs';
+import { createMutationCoordinator } from '../src/sources/mutation-coordinator.mjs';
 
 function metadataFixture() {
   const refs = [];
@@ -20,14 +21,99 @@ function metadataFixture() {
   };
 }
 
+function pluginSessionBoundary({ completions, onDeferred, keyPrefix = 'agent:main:dashboard:command-center-' } = {}) {
+  const entries = new Map();
+  const keysByIdempotency = new Map();
+  let ordinal = 0;
+  const gateway = { request: async (method, params) => {
+    if (method === 'sessions.create') {
+      const create = () => {
+        const existingKey = keysByIdempotency.get(params.idempotencyKey);
+        if (existingKey) return { key: existingKey, entry: entries.get(existingKey) };
+        const key = keyPrefix.includes('dashboard:bridge-') ? `${keyPrefix}${params.idempotencyKey}` : `${keyPrefix}${++ordinal}`;
+        const entry = { sessionId: randomUUID(), updatedAt: Date.now(), label: params.label, category: null, pluginOwnerId: 'command-center' };
+        entries.set(key, entry);
+        keysByIdempotency.set(params.idempotencyKey, key);
+        return { key, entry };
+      };
+      if (completions) return new Promise((resolve) => { completions.push(() => resolve(create())); onDeferred?.(completions.length); });
+      return create();
+    }
+    if (method === 'sessions.list') return { sessions: [...entries].map(([sessionKey, entry]) => {
+      const { pluginOwnerId: _privateOwner, ...projected } = entry;
+      return { sessionKey, ...projected };
+    }) };
+    if (method === 'chat.history') return { messages: ['authoritative'] };
+    return { runId: params.idempotencyKey };
+  } };
+  const sessionStore = {
+    listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })),
+    getSessionEntry: ({ sessionKey }) => entries.get(sessionKey)
+  };
+  return { entries, gateway, sessionStore };
+}
+
+function deferredGate(expected, timeoutMs = 1_000) {
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  const timer = setTimeout(() => resolveReady(false), timeoutMs);
+  return {
+    ready: ready.finally(() => clearTimeout(timer)),
+    observe(count) { if (count === expected) resolveReady(true); }
+  };
+}
+
+function pinnedSanitizedSessionBoundary() {
+  const key = 'agent:main:dashboard:command-center-sanitized';
+  const entry = { sessionId: 'fictional-pinned-session', updatedAt: 47, category: null };
+  let idempotencyKey;
+  return {
+    gateway: { async request(method, params) {
+      if (method === 'sessions.create') {
+        idempotencyKey = params.idempotencyKey;
+        return { key };
+      }
+      if (method === 'sessions.list') return { sessions: [{ key, sessionId: entry.sessionId, updatedAt: entry.updatedAt, category: entry.category }] };
+      throw new Error(`Unexpected ${method}`);
+    } },
+    entry,
+    get idempotencyKey() { return idempotencyKey; },
+    key
+  };
+}
+
+test('Session navigation accepts the host transport request identity without exposing it', async () => {
+  const metadata = metadataFixture();
+  const reference = { version: 1, referenceId: 'session:navigate', topicId: 'topic-session', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:command-center:navigate', observedRevision: null };
+  metadata.refs.push(reference);
+  metadata.setSessionState({ referenceId: reference.referenceId, sessionId: 'fictional-navigation-session', status: 'open', isPrimary: false });
+  const adapter = createSessionAdapter({
+    topicId: 'topic-session',
+    metadata,
+    gateway: { request: async () => ({}) },
+    sessionStore: { listSessionEntries: () => [{ sessionKey: reference.externalSourceId, entry: { sessionId: 'fictional-navigation-session' } }] }
+  });
+  assert.deepEqual(await adapter.navigate({ schemaVersion: 1, referenceId: reference.referenceId, requestId: 'transport-request' }), {
+    schemaVersion: 1,
+    status: 'applied',
+    sessionKey: reference.externalSourceId,
+    sessionId: 'fictional-navigation-session',
+    sourceReference: reference
+  });
+});
+
 test('Session create/history/send use exact linked keys without transcript inheritance', async () => {
   const metadata = metadataFixture();
   const calls = [];
-  const gateway = { request: async (method, params) => { calls.push({ method, params }); if (method === 'sessions.create') return { ['k' + 'ey']: params['k' + 'ey'], sessionId: 'fictional-session-id' }; if (method === 'sessions.list') return { sessions: metadata.refs.map((reference) => ({ ['k' + 'ey']: reference.externalSourceId, sessionId: metadata.getSessionState(reference.referenceId).sessionId })) }; if (method === 'chat.history') return { messages: ['authoritative'] }; return { runId: params.idempotencyKey }; } };
+  const boundary = pluginSessionBoundary();
+  const gateway = { request: async (...args) => { calls.push({ method: args[0], params: args[1] }); return boundary.gateway.request(...args); } };
   const adapter = createSessionAdapter({ topicId: 'topic-session', metadata, gateway });
   const logicalOperationId = randomUUID();
   const created = await adapter.create({ logicalOperationId, isPrimary: true });
-  assert.equal(created.value.sourceReference.externalSourceId, `agent:main:command-center:${logicalOperationId}`);
+  assert.match(created.value.sourceReference.externalSourceId, /^agent:main:dashboard:command-center-/u);
+  assert.equal(calls[0].params.idempotencyKey, logicalOperationId);
+  assert.equal(calls[0].params.category, undefined);
+  assert.equal(calls[0].params.key, undefined);
   assert.equal(calls[0].params.parentSessionKey, undefined);
   assert.equal(calls[0].params.fork, undefined);
   const history = await adapter.history({ referenceId: created.value.sourceReference.referenceId });
@@ -47,42 +133,98 @@ test('Session create/history/send use exact linked keys without transcript inher
   await assert.rejects(() => adapter.history({ referenceId: 'missing' }), /exact linked Session/i);
 });
 
-test('Session create reads the pinned host entry identity and revision shape', async () => {
+test('Session create reads the exact latest entry even when it is outside the first catalog page', async () => {
   const metadata = metadataFixture();
-  const gateway = {
-    async request(method, params) {
-      if (method !== 'sessions.create') throw new Error(`Unexpected ${method}`);
-      return { ok: true, ['k' + 'ey']: params['k' + 'ey'], entry: { sessionId: 'entry-session-id', updatedAt: 42 } };
-    }
-  };
-  const adapter = createSessionAdapter({ metadata, gateway, topicId: 'topic-entry-shape' });
+  const boundary = pluginSessionBoundary();
+  const firstPage = Array.from({ length: 200 }, (_, index) => ({ sessionKey: `agent:main:dashboard:other-${index}`, sessionId: `other-${index}`, updatedAt: 1 }));
+  const gateway = { request: (method, params) => method === 'sessions.list' ? { sessions: firstPage } : boundary.gateway.request(method, params) };
+  const sessionStore = { ...boundary.sessionStore, getSessionEntry(params) { assert.equal(params.readConsistency, 'latest'); return boundary.sessionStore.getSessionEntry(params); } };
+  const adapter = createSessionAdapter({ metadata, gateway, sessionStore, topicId: 'topic-entry-shape' });
   const created = await adapter.create({ logicalOperationId: randomUUID(), label: 'Entry Shape', isPrimary: true });
-  assert.equal(created.value.sessionId, 'entry-session-id');
-  assert.equal(created.value.creationRevision, '42');
-  assert.equal(metadata.getSessionState(created.value.sourceReference.referenceId).sessionId, 'entry-session-id');
+  const entry = boundary.entries.get(created.value.key);
+  assert.equal(created.value.sessionId, entry.sessionId);
+  assert.equal(created.value.creationRevision, String(entry.updatedAt));
+  assert.equal(metadata.getSessionState(created.value.sourceReference.referenceId).sessionId, entry.sessionId);
 });
 
-test('Session create and exact verification use the pinned host session-store runtime without trusted Gateway authority', async () => {
+test('Session create accepts the pinned sanitized response and proves identity through plugin-scoped catalog readback', async () => {
   const metadata = metadataFixture();
-  const entries = new Map();
-  const sessionStore = {
-    listSessionEntries() {
-      return [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry }));
-    },
-    async createSessionEntry({ cfg, key, label, initialEntry }) {
-      assert.deepEqual(cfg, { fictional: true });
-      assert.equal(initialEntry.agentHarnessId, 'command-center');
-      assert.equal(initialEntry.modelSelectionLocked, true);
-      const entry = {
-        sessionId: randomUUID(),
-        updatedAt: Date.now(),
-        label,
-        ...initialEntry
-      };
-      entries.set(key, entry);
-      return { key, agentId: 'main', sessionId: entry.sessionId, entry };
-    }
-  };
+  const boundary = pinnedSanitizedSessionBoundary();
+  const logicalOperationId = randomUUID();
+  const adapter = createSessionAdapter({ metadata, gateway: boundary.gateway, topicId: 'topic-sanitized-shape' });
+  const created = await adapter.create({ logicalOperationId, label: 'Sanitized Host Shape' });
+  assert.equal(created.value.key, boundary.key);
+  assert.equal(created.value.sessionId, boundary.entry.sessionId);
+  assert.equal(created.value.creationRevision, String(boundary.entry.updatedAt));
+  assert.equal(boundary.idempotencyKey, logicalOperationId);
+  assert.equal(boundary.entry.category, null);
+});
+
+test('Session creation uses authenticated request-scoped dispatch when the detached plugin Gateway is unavailable', async () => {
+  const metadata = metadataFixture();
+  const boundary = pinnedSanitizedSessionBoundary();
+  const calls = [];
+  const adapter = createSessionAdapter({
+    api: { runtime: { gateway: { async request() { throw Object.assign(new Error('detached unavailable'), { code: 'unavailable' }); } } } },
+    metadata,
+    topicId: 'topic-plugin-scoped'
+  });
+  const created = await adapter.create(
+    { logicalOperationId: randomUUID(), label: 'Plugin Scoped' },
+    { gatewayRequest: async (method, params) => { calls.push(method); return boundary.gateway.request(method, params); } }
+  );
+  assert.equal(created.value.key, boundary.key);
+  assert.deepEqual(calls, ['sessions.create', 'sessions.list']);
+});
+
+test('Session creation preserves the pinned ownership refusal without inventing catalog state', async () => {
+  const metadata = metadataFixture();
+  const adapter = createSessionAdapter({
+    metadata,
+    topicId: 'topic-pinned-refusal',
+    gateway: { async request(method) {
+      if (method === 'sessions.create') throw Object.assign(new Error('Plugin cannot request this Session mutation.'), { code: 'unavailable' });
+      if (method === 'sessions.list') return { sessions: [] };
+      throw new Error(`Unexpected ${method}`);
+    } }
+  });
+  await assert.rejects(() => adapter.create({ logicalOperationId: randomUUID(), label: 'Refused Session' }), (error) => error.code === 'unavailable');
+  assert.deepEqual(metadata.refs, []);
+});
+
+test('Session adoption accepts the pinned create envelope only after exact catalog readback', async () => {
+  const metadata = metadataFixture();
+  const boundary = pluginSessionBoundary({ keyPrefix: 'agent:main:dashboard:bridge-fictional-' });
+  const logicalOperationId = randomUUID();
+  const created = await boundary.gateway.request('sessions.create', { agentId: 'main', label: 'Adopted Session', idempotencyKey: logicalOperationId });
+  const adapter = createSessionAdapter({ metadata, gateway: { async request(method, params) {
+    assert.equal(method, 'sessions.list');
+    return boundary.gateway.request(method, params);
+  } }, topicId: 'topic-adopted-session' });
+  const result = await adapter.create({ logicalOperationId, label: 'Adopted Session' }, { authoritativeSession: { key: created.key, sessionId: created.entry.sessionId, revision: String(created.entry.updatedAt), idempotencyKey: logicalOperationId, label: 'Adopted Session' } });
+  assert.equal(result.value.key, created.key);
+  assert.equal(result.value.sessionId, created.entry.sessionId);
+  assert.equal(metadata.refs.length, 1);
+});
+
+test('Session adoption refuses mismatched operation, label, and catalog identity without persistence', async () => {
+  const metadata = metadataFixture();
+  const boundary = pluginSessionBoundary({ keyPrefix: 'agent:main:dashboard:bridge-fictional-' });
+  const logicalOperationId = randomUUID();
+  const created = await boundary.gateway.request('sessions.create', { agentId: 'main', label: 'Exact Label', idempotencyKey: logicalOperationId });
+  const adapter = createSessionAdapter({ metadata, gateway: boundary.gateway, topicId: 'topic-refused-adoption' });
+  const envelope = { key: created.key, sessionId: created.entry.sessionId, revision: String(created.entry.updatedAt), idempotencyKey: logicalOperationId, label: 'Exact Label' };
+  await assert.rejects(() => adapter.create({ logicalOperationId: randomUUID(), label: 'Exact Label' }, { authoritativeSession: envelope }), (error) => error.code === 'intent-mismatch');
+  await assert.rejects(() => adapter.create({ logicalOperationId, label: 'Changed Label' }, { authoritativeSession: envelope }), (error) => error.code === 'intent-mismatch');
+  await assert.rejects(() => adapter.create({ logicalOperationId, label: 'Exact Label' }, { authoritativeSession: { ...envelope, sessionId: 'different-session' } }), (error) => error.code === 'conflict');
+  await assert.rejects(() => adapter.create({ logicalOperationId, label: 'Exact Label' }, { authoritativeSession: { ...envelope, key: 'agent:main:operator-owned' } }), (error) => error.code === 'source-recovery');
+  await assert.rejects(() => adapter.create({ logicalOperationId, label: 'Exact Label' }, { authoritativeSession: { ...envelope, key: 'agent:main:dashboard:bridge-fictional-different-operation' } }), (error) => error.code === 'intent-mismatch');
+  assert.deepEqual(metadata.refs, []);
+});
+
+test('Session creation uses the plugin-scoped Gateway and authoritative catalog without agent harness ownership', async () => {
+  const metadata = metadataFixture();
+  const boundary = pluginSessionBoundary();
   const transcriptReader = async ({ sessionKey, sessionId, maxMessages }) => ({
     kind: 'page',
     cursor: 'fictional-cursor',
@@ -94,23 +236,62 @@ test('Session create and exact verification use the pinned host session-store ru
     maxMessages
   });
   const logicalOperationId = randomUUID();
-  const adapter = createSessionAdapter({ api: { config: { fictional: true } }, metadata, sessionStore, transcriptReader, topicId: 'topic-runtime-store' });
+  const adapter = createSessionAdapter({ metadata, gateway: boundary.gateway, sessionStore: boundary.sessionStore, transcriptReader, topicId: 'topic-runtime-store' });
   const beforeCreate = Date.now();
   const created = await adapter.create({ logicalOperationId, label: 'Runtime Store', isPrimary: true });
   const afterCreate = Date.now();
-  const sessionKey = `agent:main:command-center:${logicalOperationId}`;
+  const sessionKey = created.value.key;
 
   assert.equal(created.value.sourceReference.externalSourceId, sessionKey);
-  assert.equal(entries.get(sessionKey).label, 'Runtime Store');
-  assert.equal(entries.get(sessionKey).pluginExtensions.commandCenter.logicalOperationId, logicalOperationId);
-  assert.equal(entries.get(sessionKey).updatedAt >= beforeCreate && entries.get(sessionKey).updatedAt <= afterCreate, true);
+  assert.equal(boundary.entries.get(sessionKey).label, 'Runtime Store');
+  assert.equal(boundary.entries.get(sessionKey).category, null);
+  assert.equal(boundary.entries.get(sessionKey).pluginOwnerId, 'command-center');
+  assert.equal(boundary.entries.get(sessionKey).updatedAt >= beforeCreate && boundary.entries.get(sessionKey).updatedAt <= afterCreate, true);
   assert.match(created.value.sessionId, /^[0-9a-f-]{36}$/u);
-  assert.equal(created.value.creationRevision, String(entries.get(sessionKey).updatedAt));
+  assert.equal(created.value.creationRevision, String(boundary.entries.get(sessionKey).updatedAt));
   const replay = await adapter.create({ logicalOperationId, label: 'Runtime Store', isPrimary: true });
   assert.equal(replay.value.creationRevision, created.value.creationRevision);
   await adapter.resolveExact({ referenceId: created.value.sourceReference.referenceId });
   const history = await adapter.history({ referenceId: created.value.sourceReference.referenceId, limit: 10 });
   assert.deepEqual(history.messages, [{ role: 'user', content: 'Fictional history' }]);
+});
+
+test('overlapping Session creates preserve every distinct plugin-owned key regardless of completion order', async () => {
+  const metadata = metadataFixture();
+  const completions = [];
+  const operations = [randomUUID(), randomUUID(), randomUUID()];
+  const gate = deferredGate(operations.length);
+  const boundary = pluginSessionBoundary({ completions, onDeferred: (count) => gate.observe(count) });
+  const adapter = createSessionAdapter({ metadata, gateway: boundary.gateway, sessionStore: boundary.sessionStore, topicId: 'topic-overlap' });
+  const pending = operations.map((logicalOperationId, index) => adapter.create({ logicalOperationId, label: `Overlap ${index}`, isPrimary: false }));
+  assert.equal(await gate.ready, true, 'distinct Session creates did not reach the controlled completion barrier');
+  for (const complete of completions.reverse()) complete();
+  const created = await Promise.all(pending);
+  assert.equal(new Set(created.map((item) => item.value.sourceReference.externalSourceId)).size, operations.length);
+  for (const item of created) {
+    const key = item.value.sourceReference.externalSourceId;
+    assert.equal(metadata.getSessionState(item.value.sourceReference.referenceId).sessionId, boundary.entries.get(key).sessionId);
+    assert.equal(item.value.creationRevision, String(boundary.entries.get(key).updatedAt));
+  }
+});
+
+test('overlapping equivalent Session create replays serialize to one authoritative Session', async () => {
+  const metadata = metadataFixture();
+  const completions = [];
+  const gate = deferredGate(1);
+  const boundary = pluginSessionBoundary({ completions, onDeferred: (count) => gate.observe(count) });
+  const logicalOperationId = randomUUID();
+  const coordinator = createMutationCoordinator({ metadata });
+  const first = createSessionAdapter({ metadata, coordinator, gateway: boundary.gateway, sessionStore: boundary.sessionStore, topicId: 'topic-equivalent-overlap' });
+  const second = createSessionAdapter({ metadata, coordinator, gateway: boundary.gateway, sessionStore: boundary.sessionStore, topicId: 'topic-equivalent-overlap' });
+  const pending = [first, second].map((adapter) => adapter.create({ logicalOperationId, label: 'Equivalent overlap' }));
+  assert.equal(await gate.ready, true, 'equivalent Session create did not reach the controlled completion barrier');
+  assert.equal(completions.length, 1);
+  completions[0]();
+  const created = await Promise.all(pending);
+  assert.equal(boundary.entries.size, 1);
+  assert.equal(created[0].value.key, created[1].value.key);
+  assert.equal(created[0].value.sessionId, created[1].value.sessionId);
 });
 
 test('Session-store reads and lifecycle writes refuse a missing exact authoritative row', async () => {
@@ -199,84 +380,23 @@ test('Session-store history refuses transcript and post-read catalog identity mi
   assert.equal(String(caught?.message).includes('private'), false);
 });
 
-test('Session-store creation refuses an occupied deterministic key without overwriting its identity', async () => {
+test('Session creation refuses the rejected runtime store and agent-harness ownership path', async () => {
   const metadata = metadataFixture();
-  const logicalOperationId = randomUUID();
-  const sessionKey = `agent:main:command-center:${logicalOperationId}`;
-  const foreign = { sessionId: randomUUID(), updatedAt: 10, label: 'Foreign Session' };
-  const entries = new Map([[sessionKey, foreign]]);
+  let storeMutationAttempted = false;
   const sessionStore = {
-    listSessionEntries: () => [...entries].map(([key, entry]) => ({ sessionKey: key, entry })),
-    async upsertSessionEntry({ sessionKey: key, entry }) { entries.set(key, entry); }
+    listSessionEntries: () => [],
+    createSessionEntry: async () => { storeMutationAttempted = true; },
+    patchSessionEntry: async () => { storeMutationAttempted = true; },
+    upsertSessionEntry: async () => { storeMutationAttempted = true; }
   };
-  const adapter = createSessionAdapter({ metadata, sessionStore, topicId: 'topic-collision' });
-
-  await assert.rejects(
-    adapter.create({ logicalOperationId, label: 'Must Not Overwrite', isPrimary: true }),
-    (error) => error.code === 'conflict' && /already exists/i.test(error.message)
-  );
-  assert.deepEqual(entries.get(sessionKey), foreign);
+  const adapter = createSessionAdapter({ metadata, sessionStore, topicId: 'topic-no-harness' });
+  await assert.rejects(adapter.create({ logicalOperationId: randomUUID(), label: 'Forbidden Harness' }), (error) => error.code === 'capability-unavailable');
+  assert.equal(storeMutationAttempted, false);
   assert.deepEqual(metadata.refs, []);
-});
-
-test('pinned Session store creation uses atomic patch fallback', async () => {
-  const metadata = metadataFixture();
-  const entries = new Map();
-  let patchInput;
-  const sessionStore = {
-    listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })),
-    async patchSessionEntry(input) {
-      patchInput = input;
-      const existingEntry = entries.get(input.sessionKey);
-      const current = existingEntry ?? input.fallbackEntry;
-      const patch = await input.update(current, { existingEntry });
-      if (!patch) return null;
-      const next = input.replaceEntry ? patch : { ...current, ...patch };
-      entries.set(input.sessionKey, next);
-      return next;
-    }
-  };
-  const logicalOperationId = randomUUID();
-  const adapter = createSessionAdapter({ metadata, sessionStore, topicId: 'topic-atomic-runtime' });
-  const created = await adapter.create({ logicalOperationId, label: 'Atomic Runtime', isPrimary: true });
-
-  assert.equal(created.value.sessionId, logicalOperationId);
-  assert.equal(patchInput.replaceEntry, true);
-  assert.equal(patchInput.fallbackEntry.sessionId, logicalOperationId);
-});
-
-test('pending Session-store replay conflicts with a foreign row at the deterministic key', async () => {
-  const metadata = metadataFixture();
-  const operations = new Map();
-  metadata.getOperation = (id) => operations.get(id) ?? null;
-  metadata.recordOperation = (value) => {
-    const row = { ...operations.get(value.logicalOperationId), ...value };
-    operations.set(value.logicalOperationId, row);
-    return row;
-  };
-  const entries = new Map();
-  let interrupt = true;
-  const sessionStore = {
-    listSessionEntries: () => [...entries].map(([sessionKey, entry]) => ({ sessionKey, entry })),
-    async upsertSessionEntry({ sessionKey, entry }) {
-      if (interrupt) {
-        interrupt = false;
-        const error = new Error('fictional delivery interruption');
-        error.code = 'timeout';
-        error.ambiguous = true;
-        throw error;
-      }
-      entries.set(sessionKey, entry);
-    }
-  };
-  const logicalOperationId = randomUUID();
-  const sessionKey = `agent:main:command-center:${logicalOperationId}`;
-  const adapter = createSessionAdapter({ metadata, sessionStore, topicId: 'topic-pending-collision' });
-
-  await assert.rejects(adapter.create({ logicalOperationId, label: 'Planned Session', isPrimary: true }), (error) => error.code === 'unknown');
-  entries.set(sessionKey, { sessionId: randomUUID(), updatedAt: 99, label: 'Foreign Session' });
-  await assert.rejects(adapter.create({ logicalOperationId, label: 'Planned Session', isPrimary: true }), (error) => error.code === 'conflict');
-  assert.deepEqual(metadata.refs, []);
+  const production = await readFile(new URL('../src/sources/sessions.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(production, /createSessionEntry|agentHarnessId/u);
+  assert.match(production, /this\.creationGateway/u);
+  assert.doesNotMatch(production, /runtime\?\.gatewayRequest/u);
 });
 
 test('Session history withholds an explicitly mismatched authoritative identity', async () => {
@@ -308,6 +428,25 @@ test('Session history withholds an explicitly mismatched authoritative identity'
   }
 });
 
+test('Session send uses the authenticated host turn dispatcher for an exact Conversation', async () => {
+  const metadata = metadataFixture();
+  const reference = { version: 1, referenceId: 'session:embedded', topicId: 'topic-embedded', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:dashboard:bridge-fictional-embedded', observedRevision: null };
+  metadata.refs.push(reference);
+  metadata.setSessionState({ referenceId: reference.referenceId, sessionId: 'embedded-session-id', status: 'open', isPrimary: true, displayName: 'Primary', updatedAt: '2026-09-04T00:00:00.000Z' });
+  const calls = [];
+  const sessionStore = {
+    listSessionEntries: () => [{ sessionKey: reference.externalSourceId, entry: { sessionId: 'embedded-session-id', updatedAt: 1 } }]
+  };
+  const adapter = createSessionAdapter({ gateway: { request: async () => { throw new Error('detached gateway must not be used'); } }, sessionStore, metadata, topicId: 'topic-embedded', coordinator: null });
+  const logicalOperationId = randomUUID();
+  const result = await adapter.send({ referenceId: reference.referenceId, message: 'Hello from the authenticated frame', logicalOperationId }, {
+    agentTurnDispatch: async (params) => { calls.push(params); return { runId: params.runId, status: 'accepted' }; }
+  });
+  assert.equal(result.value.runId, logicalOperationId);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { sessionKey: reference.externalSourceId, sessionId: 'embedded-session-id', message: 'Hello from the authenticated frame', runId: logicalOperationId });
+});
+
 test('Session list returns exact Topic-linked records with open default and explicit Closed filters', async () => {
   const metadata = metadataFixture();
   const primary = { version: 1, referenceId: 'session:list-primary', topicId: 'topic-list', sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: 'agent:main:primary', observedRevision: null };
@@ -325,12 +464,16 @@ test('Session list returns exact Topic-linked records with open default and expl
     { sessionKey: closed.externalSourceId, entry: { sessionId: 'closed-id' } },
     { sessionKey: foreign.externalSourceId, entry: { sessionId: 'foreign-id' } }
   ];
-  const adapter = createSessionAdapter({ topicId: 'topic-list', metadata, sessionStore: { listSessionEntries: () => entries } });
+  let catalogReads = 0;
+  const adapter = createSessionAdapter({ topicId: 'topic-list', metadata, sessionStore: { listSessionEntries: () => { catalogReads += 1; return entries; } } });
   const open = await adapter.list({ schemaVersion: 1 });
+  assert.equal(catalogReads, 1);
   assert.deepEqual(open.conversations.map((item) => item.referenceId), [primary.referenceId, secondary.referenceId]);
   const closedView = await adapter.list({ schemaVersion: 1, status: 'closed' });
+  assert.equal(catalogReads, 2);
   assert.deepEqual(closedView.conversations.map((item) => item.referenceId), [closed.referenceId]);
   const all = await adapter.list({ schemaVersion: 1, status: 'all' });
+  assert.equal(catalogReads, 3);
   assert.deepEqual(all.conversations.map((item) => item.referenceId), [primary.referenceId, closed.referenceId, secondary.referenceId]);
   assert.deepEqual(all.conversations.map((item) => item.displayName), ['Primary', 'Closed', 'Secondary']);
   assert.equal(all.conversations.every((item) => !('name' in item)), true);
@@ -383,20 +526,46 @@ test('Gateway close and reopen refuse a missing persisted Session state before m
   assert.equal(gatewayCalls, 0);
 });
 
-test('Primary close is rejected and ambiguous create reconciles by exact key lookup', async () => {
+test('Primary close is rejected and ambiguous create reconciles through the pinned idempotency key', async () => {
   const metadata = metadataFixture();
   let createCalls = 0;
+  const entries = new Map();
   const gateway = { request: async (method, params) => {
-    if (method === 'sessions.create') { createCalls += 1; const error = new Error('delivery unknown'); error.code = 'timeout'; error.ambiguous = true; throw error; }
-    if (method === 'sessions.list') return { sessions: [{ ['k' + 'ey']: params['k' + 'ey'] ?? `agent:main:command-center:${operationId}`, sessionId: 'reconciled-id' }] };
+    if (method === 'sessions.create') {
+      createCalls += 1;
+      assert.equal(params.idempotencyKey, operationId);
+      entries.set('agent:main:dashboard:reconciled', { sessionId: 'reconciled-id', updatedAt: 10, category: null, pluginOwnerId: 'command-center' });
+      if (createCalls === 1) { const error = new Error('delivery unknown'); error.code = 'timeout'; error.ambiguous = true; throw error; }
+      return { key: 'agent:main:dashboard:reconciled' };
+    }
+    if (method === 'sessions.list') return { sessions: [...entries].map(([sessionKey, entry]) => ({ sessionKey, ...entry })) };
     return {};
   } };
   const operationId = randomUUID();
   const adapter = createSessionAdapter({ topicId: 'topic-session', metadata, gateway });
   const created = await adapter.create({ logicalOperationId: operationId, isPrimary: true });
   assert.equal(created.status, 'applied');
-  assert.equal(createCalls, 1);
+  assert.equal(createCalls, 2);
+  assert.equal(entries.size, 1);
   await assert.rejects(() => adapter.close({ referenceId: created.value.sourceReference.referenceId, logicalOperationId: randomUUID() }), /Primary Session|Primary/i);
+});
+
+test('expired Session creation recovery remains unknown without replaying beyond the pinned retry window', async () => {
+  const metadata = metadataFixture();
+  let gatewayCalls = 0;
+  const now = '2026-08-31T12:10:00.000Z';
+  const coordinator = {
+    async mutate({ reconcile }) {
+      return reconcile({ operationCreatedAt: '2026-08-31T12:00:00.000Z' });
+    }
+  };
+  const adapter = createSessionAdapter({
+    topicId: 'topic-expired-create', metadata, coordinator, now: () => now,
+    gateway: { async request() { gatewayCalls += 1; throw new Error('expired idempotency replay must not be sent'); } }
+  });
+  assert.deepEqual(await adapter.create({ logicalOperationId: randomUUID(), label: 'Expired Create' }), { outcome: 'unknown' });
+  assert.equal(gatewayCalls, 0);
+  assert.deepEqual(metadata.refs, []);
 });
 
 test('creating a replacement Primary atomically demotes and permits closing the former Primary', async () => {
@@ -405,8 +574,9 @@ test('creating a replacement Primary atomically demotes and permits closing the 
   try {
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
     metadata.createTopic({ topicId: 'topic-primary-transfer', paraCategory: 'project', lifecycle: 'active' });
-    const gateway = { request: async (method, params) => method === 'sessions.list' ? { sessions: metadata.listSourceReferences('topic-primary-transfer').map((reference) => ({ ['k' + 'ey']: reference.externalSourceId, sessionId: metadata.getSessionState(reference.referenceId).sessionId })) } : ({ ['k' + 'ey']: params['k' + 'ey'], sessionId: `id:${params['k' + 'ey']}` }) };
-    const adapter = createSessionAdapter({ topicId: 'topic-primary-transfer', metadata, gateway });
+    const boundary = pluginSessionBoundary();
+    const gateway = boundary.gateway;
+    const adapter = createSessionAdapter({ topicId: 'topic-primary-transfer', metadata, gateway, sessionStore: boundary.sessionStore });
     const first = await adapter.create({ logicalOperationId: randomUUID(), isPrimary: true });
     const second = await adapter.create({ logicalOperationId: randomUUID(), isPrimary: true });
     assert.equal(metadata.getSessionState(first.value.sourceReference.referenceId).isPrimary, false);
@@ -497,16 +667,11 @@ test('applied Session create replay preserves a later Closed state', async () =>
   const metadata = metadataFixture();
   const calls = [];
   const operationId = randomUUID();
-  const expectedKey = `agent:main:command-center:${operationId}`;
-  const gateway = { request: async (method, params) => {
-    calls.push({ method, params });
-    if (method === 'sessions.create') return { ['k' + 'ey']: expectedKey, sessionId: 'create-replay-id' };
-    if (method === 'sessions.list') return { sessions: [{ ['k' + 'ey']: expectedKey, sessionId: 'create-replay-id' }] };
-    throw new Error(`Unexpected method ${method}`);
-  } };
-  const adapter = createSessionAdapter({ topicId: 'topic-session', metadata, gateway });
+  const boundary = pluginSessionBoundary();
+  const gateway = { request: async (...args) => { calls.push({ method: args[0], params: args[1] }); return boundary.gateway.request(...args); } };
+  const adapter = createSessionAdapter({ topicId: 'topic-session', metadata, gateway, sessionStore: boundary.sessionStore });
   const created = await adapter.create({ logicalOperationId: operationId, requestId: 'create-first' });
-  metadata.setSessionState({ referenceId: created.value.sourceReference.referenceId, sessionId: 'create-replay-id', status: 'closed', isPrimary: false });
+  metadata.setSessionState({ referenceId: created.value.sourceReference.referenceId, sessionId: created.value.sessionId, status: 'closed', isPrimary: false });
   await adapter.create({ logicalOperationId: operationId, requestId: 'create-replay' });
   assert.equal(metadata.getSessionState(created.value.sourceReference.referenceId).status, 'closed');
   assert.equal(calls.filter((call) => call.method === 'sessions.create').length, 1);
@@ -519,15 +684,16 @@ test('Session create rejects logical operation reuse with changed primary or Top
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
     metadata.createTopic({ topicId: 'topic-one', paraCategory: 'project', lifecycle: 'active' });
     metadata.createTopic({ topicId: 'topic-two', paraCategory: 'project', lifecycle: 'active' });
-    const gateway = { request: async (_method, params) => ({ ['k' + 'ey']: params['k' + 'ey'], sessionId: `id:${params['k' + 'ey']}` }) };
+    const boundary = pluginSessionBoundary();
+    const gateway = boundary.gateway;
     const operationId = randomUUID();
-    await createSessionAdapter({ topicId: 'topic-one', metadata, gateway }).create({ logicalOperationId: operationId, isPrimary: false });
+    await createSessionAdapter({ topicId: 'topic-one', metadata, gateway, sessionStore: boundary.sessionStore }).create({ logicalOperationId: operationId, isPrimary: false });
     await assert.rejects(
-      () => createSessionAdapter({ topicId: 'topic-one', metadata, gateway }).create({ logicalOperationId: operationId, isPrimary: true }),
+      () => createSessionAdapter({ topicId: 'topic-one', metadata, gateway, sessionStore: boundary.sessionStore }).create({ logicalOperationId: operationId, isPrimary: true }),
       (error) => error.code === 'intent-mismatch'
     );
     await assert.rejects(
-      () => createSessionAdapter({ topicId: 'topic-two', metadata, gateway }).create({ logicalOperationId: operationId, isPrimary: false }),
+      () => createSessionAdapter({ topicId: 'topic-two', metadata, gateway, sessionStore: boundary.sessionStore }).create({ logicalOperationId: operationId, isPrimary: false }),
       (error) => error.code === 'intent-mismatch'
     );
   } finally {
