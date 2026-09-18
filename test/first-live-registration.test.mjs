@@ -100,6 +100,27 @@ test('first-live opens only native-backed Reminder and Schedule commands while A
   assert.equal(JSON.stringify(nativeCron), before);
 });
 
+test('Reminder mutations return their native result without acquiring deferred notification authority', async () => {
+  const methods = new Map();
+  let notificationAcquisitions = 0;
+  const owner = {
+    remindersSnooze: async input => ({ schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, value: { job: { id: 'fictional-job', enabled: true, configRevision: 'revision-2' } } }),
+    remindersComplete: async input => ({ schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, value: { job: { id: 'fictional-job', enabled: false, configRevision: 'revision-3' } } }),
+    notificationReconcile() { notificationAcquisitions += 1; throw new Error('Deferred notification owner was acquired.'); }
+  };
+  registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, owner);
+  const common = { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-reference', scheduleReferenceId: 'fictional-job', expectedConfigRevision: 'revision-1' };
+  for (const [method, params] of [
+    ['command-center.v1.reminders.snooze', { ...common, patch: { schedule: { kind: 'at', at: '2035-09-20T04:30:00.000Z' } }, logicalOperationId: randomUUID() }],
+    ['command-center.v1.reminders.complete', { ...common, logicalOperationId: randomUUID() }]
+  ]) {
+    let response;
+    await methods.get(method)({ req: { id: randomUUID() }, params, context: { authenticated: true }, respond: (ok, result, error) => { response = { ok, result, error }; } });
+    assert.equal(response.ok, true, method);
+  }
+  assert.equal(notificationAcquisitions, 0);
+});
+
 test('deferred HTTP actions are non-retryable and cannot reach services before startup', async () => {
   const h = host(); plugin.register(h.api);
   for (const route of ['attention/actions', 'dashboard', 'dashboard/actions', 'topics/actions', 'search/rebuild', 'topic-analysis', 'topic-analysis/actions']) {
