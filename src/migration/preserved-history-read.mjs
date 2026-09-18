@@ -104,6 +104,7 @@ export async function createPreservedHistoryReader(options) {
       request(input, ['historyId', 'offset', 'limit']);
       const offset = offsetOf(input.offset); const limit = input.limit ?? 50;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail('history-request-invalid');
+      authority(check);
       const selectedHistory = selected(input.historyId);
       if (offset > selectedHistory.receipt.verifiedCount) fail('history-request-invalid');
       const { receipt, entries } = await verified(input.historyId, check, { offset, limit });
@@ -134,6 +135,7 @@ export async function createPreservedHistoryReader(options) {
       request(input, ['historyId', 'messageId', 'attachmentId', 'offset', 'observedRevision']);
       const offset = offsetOf(input.offset);
       if (typeof input.messageId !== 'string' || !id(input.attachmentId)) fail('history-request-invalid');
+      authority(check);
       const selectedHistory = selected(input.historyId);
       const messageIndex = selectedHistory.source.entries.findIndex(item => item.eventId === input.messageId);
       if (messageIndex < 0) fail('history-attachment-unavailable');

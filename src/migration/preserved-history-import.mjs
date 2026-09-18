@@ -28,6 +28,22 @@ function assertPrepared(intent, prepared) {
       || intent.sourceChannelId !== prepared.sourceChannelId || intent.sourceDigest !== digest({ channel: prepared.sourceChannel, entries: prepared.entries })) fail('history-source-conflict');
 }
 
+// Pure proof boundary shared with the ordinary regression lane. Completion has
+// already compared every durable anchor; this validates one bounded snapshot
+// and every row it disclosed without allowing a partial or off-branch proof.
+export function assertVerifiedPreservedHistoryPage({ row, prepared, page, request, matchesMessage }) {
+  if (page.generation !== row.transcriptGeneration || page.totalMessages !== row.verifiedCount
+      || row.verifiedCount !== prepared.expectedCount
+      || page.activeLeafEntryId !== (prepared.entries.at(-1)?.eventId ?? null)) fail('history-proof-conflict');
+  for (const [relativeIndex, actual] of page.entries.entries()) {
+    const expected = prepared.entries[request.offset + relativeIndex];
+    if (!expected || actual.seq !== request.offset + relativeIndex + 1 || actual.entryId !== expected.eventId
+        || actual.parentId !== expected.parentId || !matchesMessage(actual.message, expected)) fail('history-prefix-conflict');
+  }
+  const available = Math.max(0, row.verifiedCount - request.offset);
+  if (page.entries.length > Math.min(request.limit, available) || (available > 0 && page.entries.length === 0)) fail('history-prefix-conflict');
+}
+
 // Internal execution owner: caller supplies a source-owner-admitted, frozen
 // conversion and a previously reserved intent. No transport may manufacture it.
 // Creation requires a durable not-yet-dispatched reservation and a winning CAS.
@@ -83,15 +99,7 @@ async function run(options, readOnly) {
       // visible count. Reading both facts with this bounded page in one SQLite
       // snapshot proves that durable anchor receipt still names this exact
       // projection; no process cache or presentation identity participates.
-      if (page.generation !== row.transcriptGeneration || page.totalMessages !== row.verifiedCount
-          || row.verifiedCount !== prepared.expectedCount
-          || page.activeLeafEntryId !== (prepared.entries.at(-1)?.eventId ?? null)) fail('history-proof-conflict');
-      for (const [relativeIndex, actual] of page.entries.entries()) {
-        const expected = prepared.entries[request.offset + relativeIndex];
-        if (!expected || actual.seq !== request.offset + relativeIndex + 1 || actual.entryId !== expected.eventId
-            || actual.parentId !== expected.parentId || !destination.matchesMessage(actual.message, expected)) fail('history-prefix-conflict');
-      }
-      if (page.entries.length !== Math.min(request.limit, Math.max(0, row.verifiedCount - request.offset))) fail('history-prefix-conflict');
+      assertVerifiedPreservedHistoryPage({ row, prepared, page, request, matchesMessage: destination.matchesMessage });
       destination.assertOwner();
       return freeze({ receipt: row, entries: page.entries });
     }

@@ -259,6 +259,11 @@ test('a signed export imports two Topic histories and an empty reporting history
   assert.equal(downloaded.complete, true);
   assert.equal(downloaded.revision, file.revision);
   assert.equal(downloaded.preservationStatus, 'declared-representation-unverified');
+  const revokedCheck = () => { throw Object.assign(new Error('fictional revoked authority'), { code: 'revoked' }); };
+  await assert.rejects(reader.read({ schemaVersion: 1, historyId: '0'.repeat(64) }, revokedCheck), { code: 'revoked' });
+  await assert.rejects(reader.read({ schemaVersion: 1, historyId: page.historyId, offset: 999 }, revokedCheck), { code: 'revoked' });
+  await assert.rejects(reader.attachmentRead({ schemaVersion: 1, historyId: page.historyId,
+    messageId: 'fictional-unknown-message', attachmentId: 'f'.repeat(64), offset: 0 }, revokedCheck), { code: 'revoked' });
   const report = await reader.read({ schemaVersion: 1, historyId: result.histories[2].historyId }, () => {});
   assert.deepEqual(report.messages, []);
   assert.equal(report.totalMessages, 0);

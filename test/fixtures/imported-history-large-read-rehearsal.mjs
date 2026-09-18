@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -24,8 +24,21 @@ test('a 1,415-message Imported History page is bounded and leaves health work re
   process.env.OPENCLAW_STATE_DIR = stateDir;
   process.env.OPENCLAW_CONFIG_PATH = path.join(stateDir, 'openclaw.json');
   const require = createRequire(process.env.COMMAND_CENTER_REHEARSAL_HOST_PACKAGE);
+  const transcriptRuntimePath = require.resolve('openclaw/plugin-sdk/session-transcript-runtime');
   const sessionStore = await import(pathToFileURL(require.resolve('openclaw/plugin-sdk/session-store-runtime')).href);
-  const nativeTranscripts = await import(pathToFileURL(require.resolve('openclaw/plugin-sdk/session-transcript-runtime')).href);
+  const nativeTranscripts = await import(pathToFileURL(transcriptRuntimePath).href);
+  const hostDist = path.resolve(path.dirname(transcriptRuntimePath), '..');
+  let hostTranscriptInternals;
+  for (const name of await readdir(hostDist)) {
+    if (!/^session-accessor-[^.]+\.mjs$/u.test(name)) continue;
+    const candidate = await import(pathToFileURL(path.join(hostDist, name)).href);
+    if (typeof candidate.appendTranscriptEvent === 'function'
+        && typeof candidate.waitForSessionTranscriptProjection === 'function') {
+      hostTranscriptInternals = candidate;
+      break;
+    }
+  }
+  assert.ok(hostTranscriptInternals, 'host transcript mutation facade is required for destructive-proof rehearsal');
   const sourceRoot = path.join(stateDir, 'source');
   await mkdir(sourceRoot);
   const count = 1_415;
@@ -35,7 +48,8 @@ test('a 1,415-message Imported History page is bounded and leaves health work re
       type: 'message', id: `fictional-entry-${String(index).padStart(4, '0')}`,
       parentId: index === 0 ? null : `fictional-entry-${String(index - 1).padStart(4, '0')}`,
       timestamp: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
-      message: { role: index % 2 === 0 ? 'user' : 'assistant', content: `Fictional preserved message ${index}` }
+      message: { role: index % 2 === 0 ? 'user' : 'assistant',
+        content: `Fictional preserved message ${index}${index < 100 ? ` ${'x'.repeat(12_000)}` : ''}` }
     });
   }
   const bytes = Buffer.from(records.map(record => JSON.stringify(record)).join('\n') + '\n');
@@ -81,9 +95,10 @@ test('a 1,415-message Imported History page is bounded and leaves health work re
     health
   ]);
   const firstMs = performance.now() - started;
-  assert.equal(first.messages.length, 50);
+  assert.ok(first.messages.length > 0 && first.messages.length < 50);
   assert.equal(first.totalMessages, count);
-  assert.equal(first.nextOffset, 50);
+  assert.equal(first.nextOffset, first.messages.length);
+  assert.equal(first.hasMore, true);
   if (expectLegacyScan) {
     assert.equal(counters.replayAppends, count);
     assert.ok(counters.pages >= Math.ceil(count / 200));
@@ -105,17 +120,36 @@ test('a 1,415-message Imported History page is bounded and leaves health work re
   assert.equal(counters.replayAppends, 0);
   assert.ok(deepMs < 2_000, `deep page took ${deepMs.toFixed(1)}ms`);
 
+  const branchSelector = 'fictional-native-rewrite-selector';
+  const replacementLeaf = 'fictional-native-rewrite-leaf';
+  const scope = { ...reservation.target, storePath };
+  await hostTranscriptInternals.appendTranscriptEvent(scope, {
+    type: 'leaf', id: branchSelector, parentId: prepared.entries.at(-1).eventId,
+    targetId: prepared.entries.at(-2).eventId
+  });
+  await hostTranscriptInternals.waitForSessionTranscriptProjection(scope);
+  await nativeTranscripts.appendSessionTranscriptMessageByIdentity({
+    ...scope, eventId: replacementLeaf, parentId: branchSelector,
+    message: { role: 'assistant', content: 'Fictional destructive replacement at the same visible count' }
+  });
+  await hostTranscriptInternals.waitForSessionTranscriptProjection(scope);
+  await assert.rejects(
+    reader.read({ schemaVersion: 1, historyId: reservation.historyId, limit: 1 }, () => {}),
+    { code: 'history-proof-conflict' }
+  );
+
   await nativeTranscripts.appendSessionTranscriptMessageByIdentity({
     ...reservation.target, storePath, eventId: 'fictional-foreign-entry',
-    parentId: prepared.entries.at(-1).eventId,
+    parentId: replacementLeaf,
     message: { role: 'user', content: 'Foreign append must invalidate the durable count proof' }
   });
   await assert.rejects(
     reader.read({ schemaVersion: 1, historyId: reservation.historyId, limit: 1 }, () => {}),
     { code: 'history-proof-conflict' }
   );
-  await sessionStore.patchSessionEntry({ ...reservation.target, storePath, preserveActivity: true,
-    update: () => ({ lifecycleRevision: 'fictional-rebound-owner' }) });
+  assert.equal(await sessionStore.deleteSessionEntry({
+    ...reservation.target, storePath, expectedSessionId: reservation.target.sessionId, archiveTranscript: false
+  }), true);
   await assert.rejects(
     reader.read({ schemaVersion: 1, historyId: reservation.historyId, limit: 1 }, () => {}),
     { code: 'history-destination-rebound' }
