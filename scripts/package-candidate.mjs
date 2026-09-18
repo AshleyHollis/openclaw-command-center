@@ -17,5 +17,16 @@ try {
     buildDigest: receipt.buildDigest, archiveSha256: receipt.archive.sha256, files: receipt.files.length }));
 } catch (error) {
   const code = typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(error.code) ? error.code : 'candidate-packaging-failed';
-  console.error(code); process.exitCode = 1;
+  const diagnostics = [];
+  const visit = (value) => {
+    if (!value || typeof value !== 'object' || diagnostics.length >= 8) return;
+    const diagnostic = { name: value.name };
+    if (typeof value.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value.code)) diagnostic.code = value.code;
+    if (typeof value.message === 'string' && /^[\x20-\x7e]{1,200}$/.test(value.message)) diagnostic.message = value.message;
+    diagnostics.push(diagnostic);
+    visit(value.cause);
+    if (Array.isArray(value.errors)) for (const nested of value.errors) visit(nested);
+  };
+  visit(error);
+  console.error(JSON.stringify({ code, diagnostics })); process.exitCode = 1;
 }
