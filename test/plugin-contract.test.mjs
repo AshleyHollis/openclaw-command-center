@@ -35,7 +35,8 @@ test('plugin service retains runtime state and source capability wiring', async 
   assert.match(source, /api\.runtime\.state\.resolveStateDir\(process\.env\)/);
   assert.match(source, /gatewayAvailable = typeof api\.runtime\?\.gateway\?\.request === 'function'/);
   assert.match(source, /sessions: FIRST_LIVE_FEATURES\.conversations && \(gatewayAvailable \|\| sessionCatalogAvailable\)/);
-  assert.match(source, /scheduler: false, search: false, analysis: false, attention: false/);
+  assert.match(source, /scheduler: FIRST_LIVE_FEATURES\.scheduler && gatewayAvailable && configured\.scheduler !== false/);
+  assert.match(source, /search: false, analysis: false, attention: false/);
 });
 
 test('plugin registers the bridge with grant-aware mutation denial', async () => {

@@ -4,7 +4,7 @@ import { SourceServiceError } from './sources/errors.mjs';
 export const FIRST_LIVE_FEATURES = Object.freeze({
   topics: true, noteRead: true, conversations: true, topicDocuments: false,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
-  search: false, dashboard: false, scheduler: false, analysis: false,
+  search: false, dashboard: false, scheduler: true, analysis: false,
   notifications: false, noteMaintenance: false
 });
 
@@ -28,7 +28,12 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.sessions.browse', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.create',
     'command-center.v1.sessions.resolve-native', 'command-center.v1.sessions.topic-context',
     'command-center.v1.sessions.group-preview', 'command-center.v1.sessions.group',
-    'command-center.v1.sessions.assign-topic'
+    'command-center.v1.sessions.assign-topic',
+    'command-center.v1.reminders.list', 'command-center.v1.reminders.create',
+    'command-center.v1.reminders.snooze', 'command-center.v1.reminders.complete',
+    'command-center.v1.schedules.list', 'command-center.v1.schedules.get',
+    'command-center.v1.schedules.create', 'command-center.v1.schedules.update',
+    'command-center.v1.schedules.set-enabled', 'command-center.v1.schedules.run'
   ]),
   topicAction: Object.freeze(['conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
 });

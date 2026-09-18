@@ -18,7 +18,7 @@ const sessionReferenceId = 'fictional-existing-primary';
 const sessionKey = 'agent:main:fictional-existing-topic';
 const sessionId = 'fictional-existing-session';
 
-test('first-live startup serves existing Topics, Notes and exact Conversations without starting deferred capabilities', async (t) => {
+test('first-live startup serves core data and enables request-scoped native scheduling without touching Cron', async (t) => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'first-live-startup-'));
   const vault = path.join(stateDir, 'vault'); const folder = path.join(vault, 'Projects', 'Fictional');
   let fileAccess = createHostFileAccessFixture();
@@ -78,7 +78,8 @@ test('first-live startup serves existing Topics, Notes and exact Conversations w
     assert.equal(conversation.sessionKey, sessionKey); assert.equal(conversation.sessionId, sessionId);
     await assert.rejects(service.sourceService.sessionsHistory({ schemaVersion: 1, topicId, referenceId: sessionReferenceId, limit: 10 }), /native transcript SDK is deliberately unavailable/);
     assert.equal(sdkRequests, 1, 'a requested history read must load its real runtime or report failure, never fake empty history');
-    for (const name of ['scheduler', 'search', 'analysis', 'attention']) assert.equal(service.sourceService.capabilities[name].available, false);
+    assert.equal(service.sourceService.capabilities.scheduler.available, true);
+    for (const name of ['search', 'analysis', 'attention']) assert.equal(service.sourceService.capabilities[name].available, false);
     assert.deepEqual(nativeJobs, originalJobs);
     for (const invoke of [() => service.topicAnalysisRun({}), () => service.topicContextRetrieve({}), () => service.notificationReconcile({}), () => runNoteMaintenance({})]) assert.throws(invoke, error => error.code === 'capability-unavailable');
     await assert.rejects(service.dashboardGet({}), error => error.code === 'capability-unavailable');

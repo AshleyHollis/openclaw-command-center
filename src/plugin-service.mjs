@@ -58,7 +58,8 @@ export function createMetadataService(api) {
         // Lightweight operation receipts remain core metadata. This does not
         // instantiate the rich Activity/Dashboard presentation or event owners.
         activity: configured.activity !== false,
-        scheduler: false, search: false, analysis: false, attention: false
+        scheduler: FIRST_LIVE_FEATURES.scheduler && gatewayAvailable && configured.scheduler !== false,
+        search: false, analysis: false, attention: false
       };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
       recoveryOnly = metadataService.getOperatingStatus().mode === 'recovery-only';
@@ -99,8 +100,9 @@ export function createMetadataService(api) {
       };
       sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, migration: migrationService, transcriptReader: readVisibleTranscript, historyReader, noteRecoveryEffects: false });
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot });
-      // Existing-data bootstrap and its durable recovery remain required. No
-      // optional Settings, Cron, notification or disposable index is touched.
+      // Existing-data bootstrap and its durable recovery remain required.
+      // Native Cron is acquired only by an authenticated Reminder/Schedule
+      // request; startup itself touches no job or optional background owner.
       return migrationService.start();
     },
     stop() {

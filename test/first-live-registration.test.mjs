@@ -40,7 +40,7 @@ test('first-live registration needs no notification authority and preserves core
   const h = host();
   plugin.register(h.api);
   assert.equal(h.services.length, 1);
-  for (const method of ['topics.list', 'topics.get', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.create', 'sessions.resolve-native', 'histories.list', 'histories.read', 'histories.attachment-read']) {
+  for (const method of ['topics.list', 'topics.get', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.create', 'sessions.resolve-native', 'histories.list', 'histories.read', 'histories.attachment-read', 'reminders.list', 'reminders.create', 'reminders.snooze', 'reminders.complete', 'schedules.list', 'schedules.get', 'schedules.create', 'schedules.update', 'schedules.set-enabled', 'schedules.run']) {
     assert.ok(h.methods.has(`command-center.v1.${method}`), method);
   }
   assert.ok(h.routes.some(route => route.path === '/plugins/command-center/api/topic/actions' && route.auth === 'gateway'));
@@ -49,7 +49,7 @@ test('first-live registration needs no notification authority and preserves core
 
 test('registered deferred bridge commands are refused before a service or optional binding is acquired', async () => {
   const h = host(); plugin.register(h.api);
-  const retained = new Set(['sources.status', 'migration.status', 'migration.review-failures', 'topics.list', 'topics.get', 'topics.recovery.status', 'topics.recovery.verify', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.topic-context', 'sessions.group-preview', 'sessions.group', 'sessions.assign-topic', 'sessions.create', 'histories.list', 'histories.read', 'histories.attachment-read'].map(name => `command-center.v1.${name}`));
+  const retained = new Set(['sources.status', 'migration.status', 'migration.review-failures', 'topics.list', 'topics.get', 'topics.recovery.status', 'topics.recovery.verify', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.topic-context', 'sessions.group-preview', 'sessions.group', 'sessions.assign-topic', 'sessions.create', 'histories.list', 'histories.read', 'histories.attachment-read', 'reminders.list', 'reminders.create', 'reminders.snooze', 'reminders.complete', 'schedules.list', 'schedules.get', 'schedules.create', 'schedules.update', 'schedules.set-enabled', 'schedules.run'].map(name => `command-center.v1.${name}`));
   for (const method of [...READ_METHODS, ...WRITE_METHODS].filter(name => !retained.has(name))) {
     let response;
     await h.methods.get(method)({ req: { id: 'fixture-request' }, params: {}, context: { authenticated: true },
@@ -77,21 +77,26 @@ test('first live retains only the authenticated, conditional Note Folder recover
   assert.equal(blocked.error.code, 'feature-unavailable');
 });
 
-test('first-live Reminder commands reject before owner acquisition and preserve native Cron data', async () => {
+test('first-live opens only native-backed Reminder and Schedule commands while Attention remains deferred', async () => {
   const methods = new Map();
-  let ownerAcquisitions = 0;
+  const calls = [];
   const nativeCron = Object.freeze([{ id: 'fictional-native-cron', enabled: true, schedule: Object.freeze({ kind: 'every', everyMs: 60_000 }) }]);
   const before = JSON.stringify(nativeCron);
-  const unavailableOwner = new Proxy({}, { get() { ownerAcquisitions += 1; throw new Error('Deferred Reminder owner must not be acquired.'); } });
-  registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, unavailableOwner);
-  for (const method of ['command-center.v1.reminders.list', 'command-center.v1.reminders.create', 'command-center.v1.reminders.snooze', 'command-center.v1.reminders.complete', 'command-center.v1.attention.act']) {
+  const owner = {
+    remindersList: async input => { calls.push(['reminders.list', input]); return []; },
+    schedulesList: async input => { calls.push(['schedules.list', input]); return []; }
+  };
+  registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, owner);
+  for (const method of ['command-center.v1.reminders.list', 'command-center.v1.schedules.list']) {
     let response;
-    await methods.get(method)({ req: { id: 'fictional-reminder-rejection' }, params: {}, context: { authenticated: true }, respond: (ok, result, error) => { response = { ok, result, error }; } });
-    assert.equal(response.ok, false, method);
-    assert.equal(response.error.code, 'feature-unavailable', method);
-    assert.equal(response.error.details.retryable, false, method);
+    await methods.get(method)({ req: { id: 'fictional-native-scheduler-read' }, params: { schemaVersion: 1, topicId: 'fictional-topic' }, context: { authenticated: true }, respond: (ok, result, error) => { response = { ok, result, error }; } });
+    assert.equal(response.ok, true, method);
   }
-  assert.equal(ownerAcquisitions, 0);
+  assert.deepEqual(calls.map(([method]) => method), ['reminders.list', 'schedules.list']);
+  let blocked;
+  await methods.get('command-center.v1.attention.act')({ req: { id: 'fictional-attention-rejection' }, params: {}, context: { authenticated: true }, respond: (ok, result, error) => { blocked = { ok, result, error }; } });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.code, 'feature-unavailable');
   assert.equal(JSON.stringify(nativeCron), before);
 });
 
