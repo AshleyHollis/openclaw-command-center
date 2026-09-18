@@ -107,6 +107,23 @@ test('first-live opens native-backed Reminder, Schedule, and exact Attention com
   assert.equal(JSON.stringify(nativeCron), before);
 });
 
+test('Dashboard transport identity stays outside the closed read projection', async () => {
+  const methods = new Map();
+  let dashboardInput;
+  registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, {
+    dashboardGet: async (input) => {
+      dashboardInput = { ...input };
+      delete dashboardInput.requestId;
+      return { schemaVersion: 1, serverTime: '2026-09-18T19:00:00.000Z', attention: [], attentionBadgeCount: 0, inProgress: [], comingUp: [], topics: [], activity: { schemaVersion: 1, records: [], nextOffset: null, hasMore: false }, activityOffset: 0, activityLimit: 50 };
+    }
+  });
+  let response;
+  await methods.get('command-center.v1.dashboard.get')({ req: { id: 'fictional-dashboard-transport' }, params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, context: { authenticated: true }, respond: (ok, result, error) => { response = { ok, result, error }; } });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.deepEqual(dashboardInput, { schemaVersion: 1, activityOffset: 0, activityLimit: 50 });
+  assert.equal(response.result.requestId, 'fictional-dashboard-transport');
+});
+
 test('Reminder mutations return their native result without acquiring deferred notification authority', async () => {
   const methods = new Map();
   let notificationAcquisitions = 0;

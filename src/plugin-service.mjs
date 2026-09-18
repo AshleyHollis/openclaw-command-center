@@ -208,7 +208,9 @@ export function createMetadataService(api) {
       requireOperational();
       if (!dashboardService) return unavailable('dashboard');
       try { await sourceService?.refreshReminderAttention?.(); } catch { /* unavailable scheduler rows are omitted */ }
-      return dashboardService.get(input);
+      const request = { ...input };
+      delete request.requestId;
+      return dashboardService.get(request);
     },
     dashboardUpdateSettings() { return refuseDeferred('dashboard'); },
     notificationReconcile() { return refuseDeferred('notifications'); },
