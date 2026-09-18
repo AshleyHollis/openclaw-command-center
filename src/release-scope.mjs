@@ -2,10 +2,19 @@ import { SourceServiceError } from './sources/errors.mjs';
 
 // ADR 0004: a build-owned policy, never a caller/configuration opt-in.
 export const FIRST_LIVE_FEATURES = Object.freeze({
-  topics: true, noteRead: true, conversations: true,
+  topics: true, noteRead: true, conversations: true, topicDocuments: false,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
   search: false, dashboard: false, scheduler: false, analysis: false,
   notifications: false, noteMaintenance: false
+});
+
+// The ownership catalogue deliberately retains deferred tools so their domain
+// rules and regression inventory cannot disappear. The sealed first-release
+// manifest exposes neither tool; this mapping is the explicit audit bridge
+// between those two facts.
+export const FIRST_LIVE_DEFERRED_NATIVE_TOOLS = Object.freeze({
+  command_center_file_topic_attachment: 'topicDocuments',
+  command_center_update_working_note: 'noteMaintenance'
 });
 
 export const FIRST_LIVE_COMMANDS = Object.freeze({
@@ -14,10 +23,12 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.sources.status', 'command-center.v1.migration.status',
     'command-center.v1.migration.review-failures', 'command-center.v1.topics.list',
     'command-center.v1.topics.get', 'command-center.v1.topics.recovery.status',
+    'command-center.v1.topics.recovery.verify',
     'command-center.v1.notes.browse', 'command-center.v1.notes.read',
     'command-center.v1.sessions.browse', 'command-center.v1.sessions.navigate', 'command-center.v1.sessions.create',
     'command-center.v1.sessions.resolve-native', 'command-center.v1.sessions.topic-context',
-    'command-center.v1.sessions.group-preview', 'command-center.v1.sessions.group'
+    'command-center.v1.sessions.group-preview', 'command-center.v1.sessions.group',
+    'command-center.v1.sessions.assign-topic'
   ]),
   topicAction: Object.freeze(['conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
 });

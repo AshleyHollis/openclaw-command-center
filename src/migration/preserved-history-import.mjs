@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { withPreservedHistoryDestination } from './preserved-history-destination.mjs';
 
@@ -93,6 +94,11 @@ async function run(options, readOnly) {
       const expected = prepared.entries[index];
       if (actual.entryId !== expected.eventId || actual.parentId !== expected.parentId || !destination.matchesMessage(actual.message, expected)) fail('history-prefix-conflict');
       addAnchor(await destination.verifyExisting(expected), index);
+      // `verifyExisting` can resolve through the native idempotency fast path.
+      // Yield a real macrotask between bounded batches so a large read-only
+      // history never starves the Gateway WebSocket heartbeat while preserving
+      // the same complete durable-anchor verification.
+      if ((index + 1) % 8 === 0) await yieldToEventLoop();
     }
     if (row.phase !== 'creating') {
       const previousProof = proof(row.verifiedCount);

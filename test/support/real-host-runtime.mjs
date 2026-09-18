@@ -59,8 +59,23 @@ export function stopHostOnAbort(signal, host) {
   return () => signal?.removeEventListener('abort', stop);
 }
 
+function managedChromiumOptions(options) {
+  const stabilityArgs = process.env.COMMAND_CENTER_BROWSER_DISABLE_GPU_COMPOSITING === '1'
+    ? ['--disable-gpu', '--disable-gpu-compositing']
+    : [];
+  return { ...options, args: ['--no-proxy-server', ...stabilityArgs, ...(options?.args ?? [])] };
+}
+
 export async function launchManagedBrowser(options) {
-  const server = await chromium.launchServer({ ...options, args: ['--no-proxy-server', ...(options?.args ?? [])] });
+  // A direct connection avoids the additional CDP WebSocket client used by
+  // launchServer/connect. Keep the same Chromium options and lifecycle shape
+  // so focused diagnosis can distinguish host/UI behavior from that transport.
+  if (process.env.COMMAND_CENTER_BROWSER_TRANSPORT === 'direct') {
+    const browser = await chromium.launch(managedChromiumOptions(options));
+    const close = async () => { await browser.close(); };
+    return { browser, server: { kill: close }, close };
+  }
+  const server = await chromium.launchServer(managedChromiumOptions(options));
   try {
     const browser = await chromium.connect(server.wsEndpoint());
     return { browser, server, close: async () => { await browser.close(); await server.close().catch(() => {}); } };
@@ -72,7 +87,7 @@ export async function launchManagedBrowser(options) {
 
 export async function closeManagedBrowser(managed, signal) {
   if (!managed) return;
-  const forceClose = () => { void managed.server.kill(); };
+  const forceClose = () => { void managed.server.kill().catch(() => {}); };
   if (signal?.aborted) forceClose();
   else signal?.addEventListener('abort', forceClose, { once: true });
   try { await managed.close(); }
@@ -94,13 +109,39 @@ export function boundedHostEvidence(diagnostics) {
 
 export async function configureEvidencePage(page, browserGuard, evidence, { destinationForRequest } = {}) {
   page.setDefaultTimeout(BRIDGE_UI_OPERATION_BUDGET_MS);
-  await page.route('**/*', async (route) => {
-    const request = route.request();
-    const hostName = new URL(request.url()).hostname;
-    const destination = destinationForRequest?.(request) ?? hostName;
-    try { browserGuard.assert(destination, 'browser'); recordBounded(evidence.requests, redactBrowserEvidence(`${request.method()} ${request.url()}`)); await route.continue(); }
-    catch (error) { recordBounded(evidence.errors, redactBrowserEvidence(error.message)); await route.abort(); }
-  });
+  const pendingRoutes = new Set();
+  const transportFailures = [];
+  const recordTransportFailure = (error) => {
+    const message = redactBrowserEvidence(error?.message ?? error);
+    recordBounded(evidence.errors, message);
+    if (transportFailures.length < 32) transportFailures.push(message);
+  };
+  const routeHandler = (route) => {
+    const task = Promise.resolve().then(async () => {
+      let allowed = true;
+      try {
+        const request = route.request();
+        const hostName = new URL(request.url()).hostname;
+        const destination = destinationForRequest?.(request) ?? hostName;
+        browserGuard.assert(destination, 'browser');
+        recordBounded(evidence.requests, redactBrowserEvidence(`${request.method()} ${request.url()}`));
+      } catch (error) {
+        allowed = false;
+        recordBounded(evidence.errors, redactBrowserEvidence(error?.message ?? error));
+      }
+      // A route gets exactly one terminal action. In particular, a failed
+      // continue must not be followed by abort: Chromium has already consumed
+      // that interception, and the second action otherwise escapes cleanup.
+      try {
+        if (allowed) await route.continue();
+        else await route.abort();
+      } catch (error) { recordTransportFailure(error); }
+    }).catch(recordTransportFailure);
+    pendingRoutes.add(task);
+    void task.finally(() => pendingRoutes.delete(task));
+    return task;
+  };
+  await page.route('**/*', routeHandler);
   await page.routeWebSocket('**/*', (socket) => {
     try { assertWebSocketDestination(browserGuard, socket.url()); socket.connectToServer(); }
     catch (error) { recordBounded(evidence.errors, redactBrowserEvidence(error.message)); }
@@ -111,6 +152,14 @@ export async function configureEvidencePage(page, browserGuard, evidence, { dest
     let pathName = '[invalid-url]';
     try { pathName = new URL(response.url()).pathname; } catch { /* bounded invalid URL evidence below */ }
     recordBounded(evidence.responses, redactBrowserEvidence(`${response.status()} ${response.request().method()} ${pathName}`));
+  });
+  return Object.freeze({
+    async drain() {
+      await Promise.all([...pendingRoutes]);
+    },
+    assertClean() {
+      if (transportFailures.length) throw new HarnessFailure('browser-route-transport', `Browser route terminal actions failed: ${JSON.stringify(transportFailures)}`);
+    }
   });
 }
 

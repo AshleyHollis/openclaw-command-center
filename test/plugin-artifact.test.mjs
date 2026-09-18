@@ -10,12 +10,16 @@ import { promisify } from 'node:util';
 import test from 'node:test';
 
 // The isolated source copy still uses the actual host's public archive facade.
-// An explicit source facade is focused diagnostic evidence, not a sealed host.
-const archiveUrl = process.env.COMMAND_CENTER_TEST_ARCHIVE_RUNTIME ?? import.meta.resolve('openclaw/plugin-sdk/archive');
-const fileAccessUrl = process.env.COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME ?? import.meta.resolve('openclaw/plugin-sdk/file-access-runtime');
+// An explicit SDK facade is focused packaging evidence, not a sealed host. The
+// candidate admission audit imports its route owners, so the child process must
+// resolve every SDK boundary those modules can load without copying node_modules.
+const sdkRuntimeUrls = Object.fromEntries([
+  'archive', 'file-access-runtime', 'gateway-method-runtime', 'plugin-entry',
+  'plugin-runtime', 'runtime-fetch', 'security-runtime', 'session-store-runtime',
+  'session-transcript-runtime', 'sqlite-runtime', 'state-paths'
+].map((name) => [`openclaw/plugin-sdk/${name}`, process.env[`COMMAND_CENTER_TEST_${name.toUpperCase().replaceAll('-', '_')}_RUNTIME`] ?? import.meta.resolve(`openclaw/plugin-sdk/${name}`)]));
 registerHooks({ resolve(specifier, context, nextResolve) {
-  if (specifier === 'openclaw/plugin-sdk/archive') return { url: archiveUrl, shortCircuit: true };
-  if (specifier === 'openclaw/plugin-sdk/file-access-runtime') return { url: fileAccessUrl, shortCircuit: true };
+  if (sdkRuntimeUrls[specifier]) return { url: sdkRuntimeUrls[specifier], shortCircuit: true };
   return nextResolve(specifier, context);
 } });
 
@@ -175,8 +179,7 @@ test('packaging CLI requires an independently supplied receipt digest and report
   const approval = path.join(root, 'approval.json'); const bytes = Buffer.from(JSON.stringify(receipt));
   await writeFile(approval, bytes);
   const loader = path.join(root, 'sdk-loader.mjs');
-  await writeFile(loader, `import { registerHooks } from 'node:module';\n` +
-    `const urls = ${JSON.stringify({ 'openclaw/plugin-sdk/archive': archiveUrl, 'openclaw/plugin-sdk/file-access-runtime': fileAccessUrl })};\n` +
+  await writeFile(loader, `import { registerHooks } from 'node:module';\n` + `const urls = ${JSON.stringify(sdkRuntimeUrls)};\n` +
     `registerHooks({ resolve(specifier, context, nextResolve) { return urls[specifier] ? { url: urls[specifier], shortCircuit: true } : nextResolve(specifier, context); } });\n`);
   const runtimeArgs = process.execArgv.flatMap((value, index, args) => {
     if (value !== '--import') return [];
@@ -196,7 +199,7 @@ test('packaging CLI requires an independently supplied receipt digest and report
     await cp(path.resolve(name), path.join(root, name), { recursive: true });
   }
   const candidate = [...runtimeArgs, '--import', loader, path.join(root, 'scripts/package-candidate.mjs'), '--output'];
-  const { stdout: candidateOutput } = await promisify(execFile)(process.execPath, [...candidate, path.join(root, 'candidate')], { cwd: root, timeout: 60_000 });
+  const { stdout: candidateOutput } = await promisify(execFile)(process.execPath, [...candidate, path.join(root, 'candidate')], { cwd: path.resolve(), timeout: 60_000 });
   const candidateReport = JSON.parse(candidateOutput);
   const candidateReceipt = JSON.parse(await readFile(path.join(root, 'candidate/receipt.json')));
   assert.deepEqual(candidateReport, { status: 'candidate-packaged', releaseQualified: false,

@@ -8,8 +8,12 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { NoteAdapter } from '../src/sources/notes.mjs';
 import { ensureConventionalFolder } from '../src/topics/conventions.mjs';
 import { TopicRecoveryService } from '../src/topics/recovery.mjs';
+import { readNoteFolderIdentity } from '../src/sources/note-folder-identity.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 const markerName = '.command-center-folder-identity';
+const releaseHostFileAccessFixture = installHostFileAccessFixture();
+test.after(() => releaseHostFileAccessFixture());
 
 async function fixture(run) {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'note-folder-identity-'));
@@ -73,6 +77,25 @@ test('a copied marker alone does not reauthorize a recreated folder after SQLite
     await assert.rejects(() => f.adapter.read({ path: 'note.md' }), (error) => error.code === 'source-recovery');
     assert.equal(await fs.readFile(path.join(f.root, 'note.md'), 'utf8'), 'foreign');
     assert.deepEqual(await fs.readFile(path.join(f.root, markerName)), copied);
+  });
+});
+
+test('an explicit rebind requires the current physical identity in addition to the copied marker UUID', { skip: process.platform !== 'linux' }, async () => {
+  await fixture(async (f) => {
+    const previous = f.metadata.getSourceLocator('fictional-folder');
+    const copied = await fs.readFile(path.join(f.root, markerName));
+    await fs.rename(f.root, `${f.root}-original`); await fs.mkdir(f.root);
+    await fs.writeFile(path.join(f.root, markerName), copied); await fs.writeFile(path.join(f.root, 'note.md'), 'rebound');
+    await f.reopen();
+    const currentIdentity = await readNoteFolderIdentity(f.root);
+    const recovery = new TopicRecoveryService({ metadata: f.metadata, noteVaultRoot: f.vault });
+    await assert.rejects(() => recovery.verify({ topicId: 'fictional-topic', referenceId: 'fictional-folder', replacementLocator: f.root,
+      expectedReplacementIdentity: previous.observedRevision, expectedRevision: f.metadata.getTopic('fictional-topic').revision, expectedSourceRevision: previous.observedRevision, logicalOperationId: randomUUID() }), (error) => error.code === 'conflict');
+    assert.equal(f.metadata.getSourceLocator('fictional-folder').observedRevision, previous.observedRevision);
+    const result = await recovery.verify({ topicId: 'fictional-topic', referenceId: 'fictional-folder', replacementLocator: f.root,
+      expectedReplacementIdentity: currentIdentity, expectedRevision: f.metadata.getTopic('fictional-topic').revision, expectedSourceRevision: previous.observedRevision, logicalOperationId: randomUUID() });
+    assert.equal(result.status, 'replaced');
+    assert.equal(f.metadata.getSourceLocator('fictional-folder').observedRevision, currentIdentity);
   });
 });
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createPublicKey, verify } from 'node:crypto';
 import test from 'node:test';
-import { createGatewayDeviceIdentity, requestAuthenticatedGateway, isGatewayStartupPending } from './support/real-host-runtime.mjs';
+import { configureEvidencePage, createGatewayDeviceIdentity, requestAuthenticatedGateway, isGatewayStartupPending } from './support/real-host-runtime.mjs';
 import { readNativeControlUiReadiness } from './support/first-live-native-journey.mjs';
 import { waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 
@@ -42,6 +42,78 @@ const base = { gatewayUrl: 'http://127.0.0.1:12345', credential: 'fictional-test
   method: 'command-center.v1.sessions.create', params: { schemaVersion: 1, topicId: 'fictional-topic',
     expectedRevision: 17, logicalOperationId: 'fictional-operation', label: 'Fictional Conversation' },
   scopes: ['operator.read', 'operator.write'] };
+
+function evidencePageDouble() {
+  const routes = [];
+  return {
+    routes,
+    setDefaultTimeout() {},
+    async route(_pattern, handler) { routes.push(handler); },
+    async routeWebSocket() {},
+    on() {}
+  };
+}
+
+function routeDouble({ destination = '127.0.0.1', onContinue = async () => {}, onAbort = async () => {} } = {}) {
+  return {
+    request: () => ({ url: () => `http://${destination}:12345/fixture`, method: () => 'GET' }),
+    continue: onContinue,
+    abort: onAbort
+  };
+}
+
+test('browser evidence observer uses one terminal action and reports route transport failures after draining', async () => {
+  const page = evidencePageDouble();
+  const evidence = { requests: [], responses: [], console: [], errors: [] };
+  const observer = await configureEvidencePage(page, { assert() {} }, evidence);
+  let continues = 0;
+  let aborts = 0;
+  await page.routes[0](routeDouble({
+    onContinue: async () => { continues += 1; throw new Error('Invalid InterceptionId'); },
+    onAbort: async () => { aborts += 1; throw new Error('Route is already handled'); }
+  }));
+  await observer.drain();
+  assert.equal(continues, 1);
+  assert.equal(aborts, 0, 'a failed continuation is already terminal and must not be aborted again');
+  assert.equal(evidence.errors.includes('Invalid InterceptionId'), true);
+  assert.throws(() => observer.assertClean(), error => error?.category === 'browser-route-transport');
+});
+
+test('browser evidence observer continues admitted routes and aborts denied routes exactly once', async () => {
+  const allowedPage = evidencePageDouble();
+  const allowedObserver = await configureEvidencePage(allowedPage, { assert() {} }, { requests: [], responses: [], console: [], errors: [] });
+  let allowedContinues = 0;
+  let allowedAborts = 0;
+  await allowedPage.routes[0](routeDouble({ onContinue: async () => { allowedContinues += 1; }, onAbort: async () => { allowedAborts += 1; } }));
+  await allowedObserver.drain();
+  allowedObserver.assertClean();
+  assert.deepEqual({ allowedContinues, allowedAborts }, { allowedContinues: 1, allowedAborts: 0 });
+
+  const deniedPage = evidencePageDouble();
+  const deniedObserver = await configureEvidencePage(deniedPage, { assert() { throw new Error('blocked destination'); } }, { requests: [], responses: [], console: [], errors: [] });
+  let deniedContinues = 0;
+  let deniedAborts = 0;
+  await deniedPage.routes[0](routeDouble({ onContinue: async () => { deniedContinues += 1; }, onAbort: async () => { deniedAborts += 1; } }));
+  await deniedObserver.drain();
+  deniedObserver.assertClean();
+  assert.deepEqual({ deniedContinues, deniedAborts }, { deniedContinues: 0, deniedAborts: 1 });
+});
+
+test('browser evidence observer drains a pending terminal action without changing live route registration', async () => {
+  const page = evidencePageDouble();
+  const observer = await configureEvidencePage(page, { assert() {} }, { requests: [], responses: [], console: [], errors: [] });
+  let release;
+  const pendingRoute = page.routes[0](routeDouble({ onContinue: () => new Promise(resolve => { release = resolve; }) }));
+  await new Promise(resolve => setImmediate(resolve));
+  let drained = false;
+  const draining = observer.drain().then(() => { drained = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(drained, false, 'observer cleanup must wait for an intercepted request already in flight');
+  release();
+  await pendingRoute;
+  await draining;
+  observer.assertClean();
+});
 
 test('existing CLI requests keep their client, parameters, scopes and close contract', async t => {
   const sockets = transport(t);

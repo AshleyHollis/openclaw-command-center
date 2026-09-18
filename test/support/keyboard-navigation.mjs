@@ -114,7 +114,7 @@ export async function tabTo(locator, { reverse = false, limit, deferredIndicator
     await page.keyboard.press(backwards ? 'Shift+Tab' : 'Tab');
     const paint = await locator.evaluate(afterKeyboardPaint);
     const state = await locator.evaluate(readKeyboardFocus);
-    assert.notEqual(state.index, -1, `Sequential keyboard focus left the mounted shell: ${JSON.stringify({ target: order.targetState.name, step, backwards, active: state.name, paint })}`);
+    assert.notEqual(state.index, -1, `Sequential keyboard focus left the mounted shell: ${JSON.stringify({ target: order.targetState.name, step, backwards, active: state.name, paint, order, traversal })}`);
     if (traversal.length < 64) traversal.push({ step, name: state.name, index: state.index, identity: state.identity, target: state.target, paint });
     // An explicitly scoped release deferral may cover an intermediate stop,
     // never the requested target, names, visibility, ordering or modal safety.

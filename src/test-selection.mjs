@@ -1,5 +1,8 @@
 const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs']);
 const browserHeavyTests = new Set([
+  'test/native-reader-workspace.test.mjs',
+  'test/topic-notes-panel.test.mjs',
+  'test/native-document-preview.test.mjs',
   'test/native-operating-mode.test.mjs',
   'test/first-live-native-ui.test.mjs',
   'test/native-ui-attention.test.mjs',
@@ -68,16 +71,52 @@ const issue32TicketTests = new Set([
   'test-selection.test.mjs'
 ]);
 
+// The supervised reader-MVP release intentionally excludes new filing and
+// maintenance work. Keep its verification inventory explicit so an unrelated
+// deferred test cannot silently become an activation blocker.
+const readerMvpTests = new Set([
+  'native-reader-workspace.test.mjs',
+  'topic-notes-panel.test.mjs',
+  'native-document-preview.test.mjs',
+  'bridge-contract.test.mjs',
+  'compatibility.test.mjs',
+  'first-live-migration-bindings.test.mjs',
+  'first-live-note-read-only.test.mjs',
+  'first-live-package.test.mjs',
+  'first-live-registration.test.mjs',
+  'first-live-startup.test.mjs',
+  'harness.test.mjs',
+  'imported-history-owner.test.mjs',
+  'native-chat-navigation.test.mjs',
+  'native-history-source.test.mjs',
+  'native-note-read.test.mjs',
+  'native-ui-navigation.test.mjs',
+  'native-ui-page.test.mjs',
+  'note-adapter.test.mjs',
+  'note-folder-identity.test.mjs',
+  'note-render.test.mjs',
+  'plugin-contract.test.mjs',
+  'source-service.integration.test.mjs',
+  'test-selection.test.mjs'
+]);
+
 const focusedRealHostScenarios = Object.freeze({
   'diagnostic-native-ui-session-authority': Object.freeze(['native-control-ui-activation']),
   'diagnostic-scale-startup': Object.freeze(['diagnostic-scale-startup']),
   'native-control-ui-activation': Object.freeze(['native-control-ui-activation']),
+  'topic-notes-visual': Object.freeze(['native-topic-files-workspace']),
+  'topic-document-tools': Object.freeze(['topic-document-tools']),
   'startup-authenticated-topic-analysis': Object.freeze(['pinned-host-startup', 'focused-verified-note-locator', 'startup-authenticated-topic-analysis']),
   'session-recovery-contract': Object.freeze(['pinned-host-startup', 'focused-session-recovery']),
   'combined-journey': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'scale-performance', 'verified-activity-readback', 'desktop-keyboard-journey', 'desktop-primary-journey-review']),
-  'authenticated-control-ui-mount': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount']),
-  'native-chat-handoff': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-handoff']),
-  'native-chat-pointer-handoff': Object.freeze(['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']),
+  // First-delivery Notes browsing has no indexed-search dependency. Keep the
+  // mount proof on the native authenticated/Topic binding boundary only.
+  'authenticated-control-ui-mount': Object.freeze(['focused-control-ui-migration-readiness', 'authenticated-control-ui-mount']),
+  // Use the real native Topic button and host Chat pane. The older legacy
+  // frame diagnostic remains available for its own regression coverage, but
+  // it is not a substitute for this exact navigation contract.
+  'native-chat-handoff': Object.freeze(['native-topic-chat-handoff']),
+  'native-chat-pointer-handoff': Object.freeze(['focused-control-ui-migration-readiness', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']),
   'authenticated-reminder-create': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-reminder-create']),
   'closed-tab-notification': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-closed-tab-notification']),
   'topic-review-projection': Object.freeze(['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-topic-review-projection']),
@@ -182,6 +221,15 @@ export function selectIssue32TicketTestFiles(entries) {
   if (!Array.isArray(entries)) throw new TypeError('test entries must be an array');
   return entries
     .filter((entry) => typeof entry === 'string' && issue32TicketTests.has(entry))
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+    .map((entry) => `test/${entry}`);
+}
+
+/** Select only reader-MVP ownership, authentication, identity, storage and UI checks. */
+export function selectReaderMvpTestFiles(entries) {
+  if (!Array.isArray(entries)) throw new TypeError('test entries must be an array');
+  return entries
+    .filter((entry) => typeof entry === 'string' && readerMvpTests.has(entry))
     .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
     .map((entry) => `test/${entry}`);
 }

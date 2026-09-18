@@ -1,7 +1,7 @@
 /** Data owned by one plugin activation, independent of each view's scoped host. */
 export function createNativeState(signal) {
-  const state = { drafts: new Map(), creations: new Map(), listeners: new Set(), active: !signal?.aborted,
-    retire() { state.active = false; state.drafts.clear(); state.creations.clear(); state.listeners.clear(); signal?.removeEventListener('abort', state.retire); } };
+  const state = { drafts: new Map(), creations: new Map(), readerViews: new Map(), listeners: new Set(), active: !signal?.aborted,
+    retire() { state.active = false; state.drafts.clear(); state.creations.clear(); state.readerViews.clear(); state.listeners.clear(); signal?.removeEventListener('abort', state.retire); } };
   signal?.addEventListener('abort', state.retire, { once: true });
   return state;
 }

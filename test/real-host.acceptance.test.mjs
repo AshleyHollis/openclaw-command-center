@@ -11,7 +11,7 @@ import NodeWebSocket from 'ws';
 import { fetchWithRuntimeDispatcher as fetch } from 'openclaw/plugin-sdk/runtime-fetch';
 import { finalizeAcceptanceJourney } from '../src/acceptance-finalization.mjs';
 import { assertAcceptanceReportPassed, createAcceptanceReport, RELEASE_ROW_IDS, runAcceptanceRows } from '../src/acceptance-report.mjs';
-import { hasSuccessfulBrowserResponse, observeBrowserResponse, observedBrowserResponseStatus, recordBounded } from '../src/browser-evidence.mjs';
+import { hasSuccessfulBrowserResponse, observeBrowserResponse, recordBounded } from '../src/browser-evidence.mjs';
 import { build, assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, fetchJsonWithDeadline, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
@@ -34,7 +34,7 @@ import { tabTo } from './support/keyboard-navigation.mjs';
 import { activate, enterText, chooseOption, auditDynamicAccessibilityState, assertNoFrameOverflow, assertResponsiveFrame, assertKeyboardAccessibility } from './support/keyboard-accessibility.mjs';
 import { closeOpenConversation } from './support/conversation-lifecycle.mjs';
 import { acceptanceSignalContext, EXTERNAL_OPERATION_TIMEOUT_MS, BRIDGE_UI_OPERATION_BUDGET_MS, createGatewayDeviceIdentity, withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory } from './support/real-host-runtime.mjs';
-import { exerciseNativeControlUiActivation, exerciseNativeKeyboardJourney, exerciseNativeScaleStartup } from './support/first-live-native-journey.mjs';
+import { exerciseNativeControlUiActivation, exerciseNativeKeyboardJourney, exerciseNativeScaleStartup, exerciseNativeTopicChatHandoffJourney, exerciseNativeTopicFilesWorkspaceJourney, exerciseNativeTopicNotesVisualJourney, exerciseNativeTopicNotesWorkspaceJourney, exerciseNativeTopicToolsJourney } from './support/first-live-native-journey.mjs';
 import { exerciseNativeScaleJourney } from './support/first-live-native-scale.mjs';
 import { runNativeReleaseCapture, runNativeReleasePrerequisites } from './support/first-live-native-release.mjs';
 import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVariant } from './support/first-live-native-degraded.mjs';
@@ -87,6 +87,32 @@ function reportProgress(testContext, phase, detail = {}) {
   testContext.diagnostic(`release-progress=${JSON.stringify({ schemaVersion: 1, phase, ...detail })}`);
 }
 
+const nativeVendorModules = Object.freeze([
+  'native-ui/vendor/markdown-it.mjs',
+  'native-ui/vendor/purify.es.mjs',
+  'native-ui/vendor/pdf.mjs',
+  'native-ui/vendor/pdf.worker.mjs',
+  'native-ui/vendor/pdf-resources.mjs'
+]);
+
+/**
+ * Vendor bundles are copied from the lockfile-resolved package tree into the
+ * sealed asset set. Their minified parser fixtures legitimately contain
+ * token-shaped words, so heuristic content scanning is bypassed only after
+ * the sealed receipt proves these two exact paths and their bytes. Symlink
+ * and filesystem checks remain active in scanRepositorySafety.
+ */
+async function scanSealedCandidateSafety(buildReceipt) {
+  for (const relative of nativeVendorModules) {
+    assert.ok(buildReceipt.files.some((entry) => entry.path === relative), `Sealed candidate is missing vetted native vendor asset: ${relative}`);
+  }
+  const dist = path.join(process.cwd(), 'dist');
+  return scanRepositorySafety(process.cwd(), {
+    generated: [dist],
+    trustedContent: nativeVendorModules.map((relative) => path.join(dist, relative))
+  });
+}
+
 function delayWithSignal(delayMs, signal) {
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -114,9 +140,16 @@ async function fetchWithDeadline(url, options = {}, label = 'HTTP operation', ti
   } finally { clearTimeout(timer); parentSignal?.removeEventListener('abort', abortFromParent); }
 }
 
+const controlUiAssetPrefix = '/__openclaw__/plugins/control-ui/command-center/';
+
+function isCommandCenterControlUiAsset(value) {
+  try { return new URL(value).pathname.startsWith(controlUiAssetPrefix); }
+  catch { return false; }
+}
+
 function routeGrant(config) {
   const values = config?.[runtimeCapability.bootstrap.grantsField] || [];
-  return Array.isArray(values) && values.some((value) => value?.pluginId === 'command-center' && value?.path === '/plugins/command-center' && value?.match === 'exact');
+  return Array.isArray(values) && values.some((value) => value?.pluginId === 'command-center' && value?.path === controlUiAssetPrefix && value?.match === 'prefix');
 }
 
 async function waitForNotificationEmission(databasePath, { attempts = 100, status = 'sent', excludeEmissionId } = {}) {
@@ -151,13 +184,22 @@ async function mountedPluginFrame(page, pluginDocument, evidence) {
       return candidate?.getAttribute('sandbox') === 'allow-scripts' && typeof candidate.getAttribute('srcdoc') === 'string' && candidate.getAttribute('srcdoc').length > 0;
     }, undefined, { timeout: 10_000 });
   } catch {
-    throw new HarnessFailure('missing-plugin-frame', 'Command Center external tab did not attach its iframe');
+    // The host owns Control UI composition. Keep the first bounded failure
+    // diagnostic structural (rather than dumping document HTML or URL
+    // fragments) so a host composition change can be classified safely.
+    const composition = await page.evaluate(() => ({
+      bodyChildren: Array.from(document.body?.children ?? [], (element) => ({ tag: element.tagName, id: element.id || null, className: typeof element.className === 'string' ? element.className.slice(0, 120) : null })),
+      iframeCount: document.querySelectorAll('iframe').length,
+      shadowHosts: Array.from(document.querySelectorAll('*'), (element) => element.shadowRoot ? element.tagName : null).filter(Boolean).slice(0, 20),
+      text: (document.body?.innerText ?? '').slice(0, 500)
+    }));
+    throw new HarnessFailure('missing-plugin-frame', `Command Center external tab did not attach its iframe: ${redactBrowserEvidence(JSON.stringify(composition))}`);
   }
   if (await iframe.getAttribute('sandbox') !== 'allow-scripts' || await iframe.getAttribute('title') !== 'Command Center') {
     throw new HarnessFailure('sandbox-mismatch', 'Command Center external tab iframe provenance did not match its scripts-only descriptor');
   }
-  if (!pluginDocument?.observed || !pluginDocument.value.ok() || new URL(pluginDocument.value.url()).pathname !== '/plugins/command-center') {
-    throw new HarnessFailure('plugin-document-mismatch', 'Command Center plugin document did not return a successful exact-route response');
+  if (!pluginDocument?.observed || !pluginDocument.value.ok() || !isCommandCenterControlUiAsset(pluginDocument.value.url())) {
+    throw new HarnessFailure('plugin-document-mismatch', 'Command Center plugin document did not return a successful native Control UI asset response');
   }
   const declaredLength = pluginDocument.value.headers()['content-length'];
   if (declaredLength !== undefined && (!/^\d+$/u.test(declaredLength) || Number(declaredLength) === 0 || Number(declaredLength) > 2_000_000)) {
@@ -201,7 +243,7 @@ async function mountedPluginFrame(page, pluginDocument, evidence) {
     const recentErrors = Array.isArray(evidence?.errors) ? evidence.errors.slice(-5) : [];
     const recentConsole = Array.isArray(evidence?.console) ? evidence.console.slice(-5) : [];
     const shellResponses = Array.isArray(evidence?.responses)
-      ? evidence.responses.filter((entry) => typeof entry === 'string' && entry.includes('/plugins/command-center')).slice(-10)
+      ? evidence.responses.filter((entry) => typeof entry === 'string' && entry.includes(controlUiAssetPrefix)).slice(-10)
       : [];
     throw new HarnessFailure('plugin-script-timeout', `Command Center script did not publish its bounded shell markers: ${JSON.stringify({ state, recentErrors, recentConsole, shellResponses })}`);
   }
@@ -224,9 +266,47 @@ async function mountedPluginFrame(page, pluginDocument, evidence) {
 }
 
 async function remountPluginFrame(page) {
-  const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
+  const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && isCommandCenterControlUiAsset(response.url()), { timeout: 10_000 }));
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
   return (await mountedPluginFrame(page, await pluginDocument)).frame;
+}
+
+/**
+ * The current host renders contributed Control UI pages in its native shell.
+ * Unlike the retired external-tab surface this is not an iframe: the host
+ * loads the plugin's declared asset and supplies the scoped bridge itself.
+ */
+async function mountedNativeTopicsPage(page, pluginDocument) {
+  if (!pluginDocument?.observed || !pluginDocument.value.ok() || !isCommandCenterControlUiAsset(pluginDocument.value.url())) {
+    throw new HarnessFailure('plugin-document-mismatch', 'Command Center native page did not return a successful declared Control UI asset response');
+  }
+  const declaredLength = pluginDocument.value.headers()['content-length'];
+  if (declaredLength !== undefined && (!/^\d+$/u.test(declaredLength) || Number(declaredLength) === 0 || Number(declaredLength) > 2_000_000)) {
+    throw new HarnessFailure('plugin-document-mismatch', 'Command Center native page asset declared an empty or unbounded body');
+  }
+  try {
+    await page.waitForFunction(() => document.querySelector('h1')?.textContent === 'Topics' &&
+      Array.from(document.querySelectorAll('button'), (button) => button.textContent?.trim()).includes('Refresh Topics'), undefined, { timeout: 10_000 });
+  } catch {
+    const state = await page.evaluate(() => ({
+      heading: document.querySelector('h1')?.textContent ?? null,
+      buttons: Array.from(document.querySelectorAll('button'), (button) => button.textContent?.trim()).filter(Boolean).slice(0, 20),
+      text: (document.body?.innerText ?? '').slice(-800)
+    }));
+    throw new HarnessFailure('native-page-timeout', `Command Center native Topics page did not mount: ${redactBrowserEvidence(JSON.stringify(state))}`);
+  }
+  const provenance = await page.evaluate(() => ({
+    baseURI: document.baseURI,
+    title: document.title,
+    heading: document.querySelector('h1')?.textContent,
+    status: Array.from(document.querySelectorAll('[role="status"]'), (element) => element.textContent?.trim()).find(Boolean) ?? null,
+    legacyIframeCount: document.querySelectorAll('iframe.plugin-tab-embed__frame').length
+  }));
+  if (!isControlUiPluginUrl(provenance.baseURI, { gatewayUrl: page.url(), pluginId: 'command-center', routeId: 'topics' }) ||
+      provenance.title !== 'Plugin — OpenClaw' || provenance.heading !== 'Topics' || provenance.legacyIframeCount !== 0 || !provenance.status) {
+    throw new HarnessFailure('plugin-document-mismatch', `Command Center native page did not retain the exact host route and ready bridge surface: ${redactBrowserEvidence(JSON.stringify(provenance))}`);
+  }
+  return page;
 }
 
 async function waitForMigrationCompletion(databasePath, topicId, { attempts = 100, delayMs = 100, signal } = {}) {
@@ -765,7 +845,7 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
       assert.ok(safeRead && typeof safeRead === 'object');
       const blockedRecoveryOperationId = randomUUID();
       await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, topicId: randomUUID(), name: 'Blocked Recovery Topic', paraCategory: 'resource', logicalOperationId: blockedRecoveryOperationId, authoritativeSession: { key: 'agent:main:blocked-recovery', sessionId: 'blocked-recovery-session', revision: '1', idempotencyKey: blockedRecoveryOperationId, label: 'Blocked Recovery Topic' } } }), /recovery-only/iu);
-      assert.equal(releasePerformanceIdentity.hostReceipt.commit, '3040eff630e5a6d9a9f9f5ce52af3c0971776f15', 'the launched runtime must match the exact authenticated compatibility tuple');
+      assert.equal(releasePerformanceIdentity.hostReceipt.commit, '2a9f88a024000f289b737822e3a7a27fb4571709', 'the launched runtime must match the exact authenticated compatibility tuple');
       assert.equal(runtimeCapability.schemaVersion, 1, 'the active bootstrap must expose the supported bridge protocol');
       const recoveryDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try { assert.equal(recoveryDatabase.prepare('PRAGMA user_version').get().user_version, 99); }
@@ -1535,12 +1615,12 @@ async function retainNativeChatScreenshot(page, name) {
 }
 
 async function nativeChatRoundTrip(frame, { page, topicId, message, width = 1440, keyboard = false }) {
-  const target = await frame.evaluate(async (id) => {
+  const target = await withDeadline('native Chat exact resolver', () => frame.evaluate(async (id) => {
     const catalog = unwrap(await bridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: id }));
     const primary = catalog.conversations.find((item) => item.isPrimary);
     if (!primary) throw new Error('Native Chat requires an exact Primary Session.');
     return unwrap(await bridgeRequest('command-center.v1.sessions.navigate', { schemaVersion: 1, topicId: id, referenceId: primary.referenceId, nativeChat: true }));
-  }, topicId);
+  }, topicId), 30_000);
   assert.ok(target.sessionKey && target.sessionId && target.sourceReference?.referenceId);
   let sentRequest;
   let acknowledgement;
@@ -1564,7 +1644,7 @@ async function nativeChatRoundTrip(frame, { page, topicId, message, width = 1440
     await activate(frame.locator('#chat-open'), keyboard);
     const pane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
     await pane.waitFor({ timeout: 30_000 });
-    await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, target.sessionKey);
+    await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, target.sessionKey, { timeout: 30_000 });
     await retainNativeChatScreenshot(page, 'native-chat-open');
     const composer = pane.locator('.agent-chat__composer-combobox textarea');
     await enterText(composer, message, keyboard);
@@ -1928,7 +2008,7 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 900_000, concurrency: true }, async (testContext) => {
   let descriptor, buildReceipt, baseline, baselineSeed;
   const nativeDiagnostic = acceptancePlan.kind === 'focused' && acceptancePlan.scenarioIds?.length === 1
-    ? ['native-control-ui-activation', 'desktop-keyboard-journey', 'diagnostic-scale-startup', 'scale-performance'].find(id => acceptancePlan.scenarioIds[0] === id) : undefined;
+    ? ['native-control-ui-activation', 'native-topic-chat-handoff', 'native-topic-notes-workspace', 'native-topic-files-workspace', 'topic-notes-visual', 'topic-document-tools', 'desktop-keyboard-journey', 'diagnostic-scale-startup', 'scale-performance'].find(id => acceptancePlan.scenarioIds[0] === id) : undefined;
   await testContext.test('release preparation: candidate build and authenticated descriptor', async () => {
     reportProgress(testContext, 'build:started');
     descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
@@ -1948,10 +2028,10 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const scale = nativeDiagnostic === 'scale-performance';
     // Use the owner's default execution/cleanup budget so every focused slice
     // stays below controller inactivity. Diagnostics never qualify performance.
-    const journey = nativeDiagnostic === 'diagnostic-scale-startup' ? exerciseNativeScaleStartup : scale ? exerciseNativeScaleJourney : keyboard ? exerciseNativeKeyboardJourney : exerciseNativeControlUiActivation;
+    const journey = nativeDiagnostic === 'diagnostic-scale-startup' ? exerciseNativeScaleStartup : nativeDiagnostic === 'native-topic-chat-handoff' ? exerciseNativeTopicChatHandoffJourney : nativeDiagnostic === 'native-topic-notes-workspace' ? exerciseNativeTopicNotesWorkspaceJourney : nativeDiagnostic === 'native-topic-files-workspace' ? exerciseNativeTopicFilesWorkspaceJourney : nativeDiagnostic === 'topic-notes-visual' ? exerciseNativeTopicNotesVisualJourney : nativeDiagnostic === 'topic-document-tools' ? exerciseNativeTopicToolsJourney : scale ? exerciseNativeScaleJourney : keyboard ? exerciseNativeKeyboardJourney : exerciseNativeControlUiActivation;
     const evidence = await runBoundedAcceptanceSlice(nativeDiagnostic, (signal) => journey({ descriptor, buildReceipt, signal,
       onDiagnostic: diagnostic => testContext.diagnostic(`acceptance-startup-diagnostic=${JSON.stringify(diagnostic)}`) }));
-    await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });
+    await scanSealedCandidateSafety(buildReceipt);
     scanPublicEvidence([JSON.stringify(evidence)]);
     let capturedBaseline;
     if (capturePerformanceBaseline) {
@@ -2003,7 +2083,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       scanArtifacts: async ({ signal, participantEvidence, rowEvidence, performanceBaseline }) => {
         signal.throwIfAborted();
         await assertBuiltDigest(buildReceipt);
-        await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });
+        await scanSealedCandidateSafety(buildReceipt);
         scanPublicEvidence([JSON.stringify(participantEvidence), JSON.stringify(rowEvidence), JSON.stringify(performanceBaseline)]);
         signal.throwIfAborted();
         return { repository: true, generated: true, capturedOutput: true };
@@ -2096,7 +2176,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       catch (error) { failures.push(error); if (error?.fatalAcceptanceCleanup) break; }
     }
     await assertBuiltDigest(buildReceipt);
-    await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });
+    await scanSealedCandidateSafety(buildReceipt);
     scanPublicEvidence([JSON.stringify([...isolatedEvidence])]);
     if (failures.length) throw new AggregateError(failures, 'Independent diagnostic slices failed');
     assert.equal(isolatedEvidence.size, acceptancePlan.isolatedSliceIds.length);
@@ -2205,7 +2285,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     assert.notEqual(world.gateway.port, 18789);
     assert.ok(host.child.pid, 'spawned host must own the isolated endpoint before probing it');
     const browserGuard = new TrafficGuard();
-    const evidence = { console: [], errors: [], requests: [], responses: [], bootstrapStatus: undefined, parentBootstrapBodyKeys: [], routeGrant: false, parentBootstrap: false, cookieProbe: false, cookieProbeStatus: undefined, frame: false, readinessAttempts: [] };
+    const evidence = { console: [], errors: [], requests: [], responses: [], bootstrapStatus: undefined, parentBootstrapBodyKeys: [], routeGrant: false, parentBootstrap: false, frame: false, readinessAttempts: [] };
     const releaseState = { startup: false, desktop: undefined, keyboard: undefined, restored: false, forgedMutationRejected: false, projectionRoot: undefined, baseline: undefined, activityPaged: false, reviewApplied: false, missingProjectionRebuilt: false, staleProjectionRebuilt: false, realizedScaleSeed };
     let managedBrowser, browser, page, iframe, frame, qualifiedBaseline, desktopJourney, scaleJourney, keyboardJourney, reviewJourney, pluginDocument;
     let failure;
@@ -2566,6 +2646,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         return { completionId: completed.completion.completion_id, referenceId: completed.binding.referenceId };
       });
       scenarioResult('focused-control-ui-migration-readiness');
+    }
+    if (focusedScenarioIds?.has('focused-control-ui-search-projection')) {
       await collectScenario('focused-control-ui-search-projection', async (signal) => {
         const projectionRoot = path.join(path.dirname(databasePath), 'projections');
         const rebuildStartedAt = Date.now();
@@ -2652,18 +2734,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         }), { timeout: 10_000 }),
         (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message))
       );
-      const cookieProbe = observeBrowserResponse(
-        page.waitForResponse((response) => new URL(response.url()).searchParams.has('__openclaw_plugin_frame_auth_probe'), { timeout: 10_000 }),
-        (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message))
-      );
       pluginDocument = observeBrowserResponse(
-        page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }),
+        page.waitForResponse((response) => response.request().method() === 'GET' && isCommandCenterControlUiAsset(response.url()), { timeout: 10_000 }),
         (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message))
       );
       await page.goto(controlUiPluginUrl({
         gatewayUrl,
         pluginId: 'command-center',
-        routeId: 'command-center',
+        routeId: 'topics',
         fragmentParameter: runtimeCapability.authentication.urlFragmentParameter,
         credential: world.gatewayCredential
       }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -2680,42 +2758,27 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const serializedBootstrap = JSON.stringify(parentConfig);
       assert.doesNotMatch(serializedBootstrap, /tokenHash/iu);
       assert.equal(serializedBootstrap.includes(world.gatewayCredential), false, 'Bootstrap must not return the fixture credential');
-      const securePluginUrl = new URL(controlUiPluginUrl({ gatewayUrl: gatewayUrl.replace(/^http:/u, 'https:'), pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }));
+      const securePluginUrl = new URL(controlUiPluginUrl({ gatewayUrl: gatewayUrl.replace(/^http:/u, 'https:'), pluginId: 'command-center', routeId: 'topics', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }));
       assert.equal(securePluginUrl.protocol, 'https:');
       assert.equal(securePluginUrl.pathname, '/plugin');
       assert.equal(securePluginUrl.searchParams.get('plugin'), 'command-center');
-      assert.equal(securePluginUrl.searchParams.get('id'), 'command-center');
+      assert.equal(securePluginUrl.searchParams.get('id'), 'topics');
       assert.equal(new URLSearchParams(securePluginUrl.hash.slice(1)).get(runtimeCapability.authentication.urlFragmentParameter) === world.gatewayCredential, true, 'Parent URL must retain the fixture credential only in its fragment');
-      const observedCookieProbe = await cookieProbe;
-      evidence.cookieProbeStatus = observedBrowserResponseStatus(observedCookieProbe);
-      evidence.cookieProbe = hasSuccessfulBrowserResponse(observedCookieProbe);
-      if (!evidence.cookieProbe) throw new HarnessFailure('failed-cookie-probe', 'Sandbox cookie probe was not observed');
-      ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
+      // The modular host renders this contributed page directly in its native
+      // shell. Its authenticated parent bootstrap and exact scoped asset grant
+      // replace the retired external-frame contract.
+      frame = await mountedNativeTopicsPage(page, await pluginDocument);
       evidence.frame = true;
-      const sandbox = await iframe.getAttribute('sandbox');
-      if (sandbox !== 'allow-scripts') throw new HarnessFailure('sandbox-mismatch', 'External tab iframe is not scripts-only');
-      await waitForDashboard(frame);
-      await chooseOption(frame.locator('#topic-search-topic-id'), RELEASE_ALPHA_TOPIC_ID, true);
-      assert.equal(await frame.locator('#topic-search-topic-id').inputValue(), RELEASE_ALPHA_TOPIC_ID, 'capability bridge-backed Topic read did not populate the authenticated shell');
-      await enterText(frame.locator('#topic-search-query'), 'Fictional', true);
-      await submitFrameForm(frame, '#topic-search-form', true);
-      try {
-        await frame.waitForFunction(() => /Notes.*Conversations|^Topic Search failed/u.test(document.querySelector('#topic-search-status')?.textContent ?? ''), undefined, { timeout: 60_000 });
-        const status = await frame.locator('#topic-search-status').textContent();
-        assert.match(status ?? '', /Notes.*Conversations/u, status ?? 'Topic Search produced no status');
-      } catch (error) {
-        const browserState = await frame.evaluate(() => ({
-          status: document.querySelector('#topic-search-status')?.textContent ?? '',
-          topicId: document.querySelector('#topic-search-topic-id')?.value ?? '',
-          query: document.querySelector('#topic-search-query')?.value ?? '',
-          active: document.activeElement?.id || document.activeElement?.getAttribute?.('aria-label') || document.activeElement?.tagName || 'unknown'
-        }));
-        const diagnostic = { schemaVersion: 1, browserState, errors: evidence.errors.slice(-5), console: evidence.console.slice(-5) };
-        process.stderr.write(`control-ui-search-diagnostic=${JSON.stringify(diagnostic)}\n`);
-        throw new HarnessFailure('control-ui-search-timeout', `Authenticated Control UI search did not settle; page errors: ${redactBrowserEvidence(JSON.stringify(diagnostic.errors))}; state: ${redactBrowserEvidence(JSON.stringify(browserState))}; ${error.message}`);
-      }
+      await frame.getByRole('button', { name: 'Refresh Topics' }).click();
+      await frame.waitForFunction(() => {
+        const statuses = Array.from(document.querySelectorAll('[role="status"]'), (element) => element.textContent?.trim() ?? '');
+        return statuses.some((status) => status.includes('Topics') && status !== 'Loading Topics…');
+      }, undefined, { timeout: 30_000 });
+      const status = await frame.evaluate(() => Array.from(document.querySelectorAll('[role="status"]'), (element) => element.textContent?.trim() ?? '')
+        .find((value) => value.includes('Topics') && value !== 'Loading Topics…') ?? '');
+      assert.doesNotMatch(status ?? '', /failed|error/iu, status ?? 'Native Topics page produced no status');
       releaseState.startup = true;
-      return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, frame: evidence.frame, routeGrant: evidence.routeGrant, bridgeRead: true };
+      return { schemaVersion: COMMAND_CENTER_SCHEMA_VERSION, nativePage: evidence.frame, routeGrant: evidence.routeGrant, bridgeRead: true };
     });
     if (focusedScenarioIds?.has('focused-reminder-create')) await collectScenario('focused-reminder-create', async (signal) => {
       try {
@@ -3504,7 +3567,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     }
     let privacyEvidence;
     try {
-      await scanRepositorySafety(process.cwd(), { generated: [path.join(process.cwd(), 'dist')] });
+      await scanSealedCandidateSafety(buildReceipt);
       scanPublicEvidence([JSON.stringify(evidence), JSON.stringify(boundedHostEvidence(host.diagnostics)), redactBrowserEvidence(failure?.message || '')]);
       privacyEvidence = { schemaVersion: 1, repository: true, generated: true, capturedOutput: true, browserDiagnostics: true, hostDiagnostics: true, trafficFinalized: finalizationErrors.length === 0 };
       if (acceptancePlan.kind === 'release' && scenarioFailures.length === 0 && finalizationErrors.length === 0) {

@@ -1,5 +1,8 @@
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { createLegacyDiscordMigrationService } from '../../src/migration/service.mjs';
+import { installHostFileAccessFixture } from '../support/host-file-access-fixture.mjs';
+
+installHostFileAccessFixture();
 
 const metadata = openCommandCenterMetadataService({ stateDir: process.argv[2], capabilities: { notes: true, sessions: true } });
 await createLegacyDiscordMigrationService({

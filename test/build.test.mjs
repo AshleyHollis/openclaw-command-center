@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { access, cp, lstat, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,6 +11,18 @@ async function withIsolatedBuild(run) {
   try {
     await cp(path.resolve('openclaw.plugin.json'), path.join(root, 'openclaw.plugin.json'));
     await cp(path.resolve('src'), path.join(root, 'src'), { recursive: true, verbatimSymlinks: true });
+    // This build-only fixture verifies that sealed assets remain importable
+    // beneath an external-tab plugin root. It is not a host-contract test;
+    // supply only the public SDK export imported at module load time instead
+    // of making a temporary build accidentally resolve this checkout's SDK.
+    const sdkRoot = path.join(root, 'node_modules', 'openclaw');
+    await mkdir(path.join(sdkRoot, 'dist', 'plugin-sdk'), { recursive: true });
+    await writeFile(path.join(sdkRoot, 'package.json'), JSON.stringify({
+      name: 'openclaw', type: 'module', exports: {
+        './plugin-sdk/session-store-runtime': './dist/plugin-sdk/session-store-runtime.mjs'
+      }
+    }));
+    await writeFile(path.join(sdkRoot, 'dist', 'plugin-sdk', 'session-store-runtime.mjs'), 'export function getSessionEntry() { return null; }\n');
     const buildModule = await import(`${pathToFileURL(path.join(root, 'src', 'build.mjs')).href}?test=${Date.now()}-${Math.random()}`);
     await run(buildModule, root);
   } finally {

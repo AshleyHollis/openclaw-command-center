@@ -7,9 +7,10 @@ const prefix = 'command-center.v1.';
 const transport = (file) => /^src\/(?:native-ui|ui|bridge)\//u.test(file) || /^src\/.*(?:http|http-route)\.mjs$/u.test(file);
 
 /** Architecture guardrail, not a JavaScript security sandbox or proof of atomicity. */
-export function auditMutationArchitecture({ files, writeMethods, owners, httpSurfaces = [], nativeWriteRoutes = [], httpCommands = [] }) {
+export function auditMutationArchitecture({ files, writeMethods, owners, httpSurfaces = [], nativeWriteRoutes = [], httpCommands = [], nativeTools = [], deferredNativeTools = [] }) {
   const errors = [];
   const commands = new Map();
+  const tools = new Map();
   const modules = new Set();
   for (const owner of owners) {
     if (!owner.id || !files.has(owner.module)) errors.push(`missing owner module: ${owner.id}`);
@@ -21,9 +22,19 @@ export function auditMutationArchitecture({ files, writeMethods, owners, httpSur
       if (commands.has(method)) errors.push(`multiple owners: ${method}`);
       commands.set(method, owner.id);
     }
+    for (const tool of owner.nativeTools ?? []) {
+      if (tools.has(tool)) errors.push(`multiple native-tool owners: ${tool}`);
+      tools.set(tool, owner.id);
+    }
   }
   for (const method of writeMethods) if (!commands.has(method)) errors.push(`unowned write: ${method}`);
   for (const method of commands.keys()) if (!writeMethods.includes(method)) errors.push(`unregistered catalogue command: ${method}`);
+  for (const tool of nativeTools) if (!tools.has(tool)) errors.push(`unowned native tool: ${tool}`);
+  for (const tool of tools.keys()) if (!nativeTools.includes(tool) && !deferredNativeTools.includes(tool)) errors.push(`undeclared catalogue native tool: ${tool}`);
+  for (const tool of deferredNativeTools) {
+    if (!tools.has(tool)) errors.push(`deferred native tool has no owner: ${tool}`);
+    if (nativeTools.includes(tool)) errors.push(`deferred native tool is exposed: ${tool}`);
+  }
   const ownerIds = new Set(owners.map((owner) => owner.id));
   const httpKey = (route, action) => `${route}#${action}`;
   const actualHttp = new Set();
@@ -77,22 +88,30 @@ export async function checkMutationArchitecture(root) {
   const catalogue = JSON.parse(await readFile(path.join(directory, 'docs/architecture/mutation-owners.json'), 'utf8'));
   if (catalogue.schemaVersion !== 1 || !Array.isArray(catalogue.owners)) throw new Error('Invalid mutation owner catalogue.');
   const manifest = JSON.parse(await readFile(path.join(directory, 'openclaw.plugin.json'), 'utf8'));
-  const nativeWriteRoutes = manifest.controlUi.httpRoutes.filter((route) => route.method !== 'GET').map((route) => route.path);
+  const nativeWriteRoutes = (manifest.controlUi.httpRoutes ?? []).filter((route) => route.method !== 'GET').map((route) => route.path);
   const moduleAt = (relative) => import(pathToFileURL(path.join(directory, relative)).href);
-  const [topics, page, analysis, dashboard, search] = await Promise.all([
+  const [topics, page, analysis, dashboard, search, releaseScope] = await Promise.all([
     moduleAt('src/topics/http.mjs'), moduleAt('src/topics/page-http.mjs'), moduleAt('src/topics/analysis-http.mjs'),
-    moduleAt('src/dashboard/http-route.mjs'), moduleAt('src/search/http-route.mjs')
+    moduleAt('src/dashboard/http-route.mjs'), moduleAt('src/search/http-route.mjs'), moduleAt('src/release-scope.mjs')
   ]);
   // These are the validators' actual vocabularies, not a second handwritten list
   // of actions. $request names the whole-body Search command only in this audit.
-  const httpSurfaces = [
+  const knownHttpSurfaces = [
     { route: '/plugins/command-center/api/topics/actions', module: 'src/topics/http.mjs', actions: Object.keys(topics.topicActions) },
     { route: '/plugins/command-center/api/topic/actions', module: 'src/topics/page-http.mjs', actions: Object.keys(page.topicPageActionFields) },
     { route: '/plugins/command-center/api/topic-analysis/actions', module: 'src/topics/analysis-http.mjs', actions: analysis.TOPIC_ANALYSIS_ACTIONS },
     { route: '/plugins/command-center/api/dashboard/actions', module: 'src/dashboard/http-route.mjs', actions: dashboard.dashboardActions },
     { route: search.searchRebuildRoute, module: 'src/search/http-route.mjs', actions: ['$request'] }
   ];
-  const errors = auditMutationArchitecture({ files, writeMethods: WRITE_METHODS, owners: catalogue.owners, httpSurfaces, nativeWriteRoutes, httpCommands: catalogue.httpCommands });
+  // A first-delivery manifest intentionally exposes no mutable HTTP routes.
+  // Keep the deferred handler inventory in source, but audit only routes that
+  // the packaged manifest can actually admit.
+  const httpSurfaces = knownHttpSurfaces.filter((surface) => nativeWriteRoutes.includes(surface.route));
+  const httpCommands = catalogue.httpCommands.filter((command) => nativeWriteRoutes.includes(command.route));
+  const deferredNativeTools = Object.entries(releaseScope.FIRST_LIVE_DEFERRED_NATIVE_TOOLS ?? {})
+    .filter(([, feature]) => releaseScope.FIRST_LIVE_FEATURES?.[feature] === false)
+    .map(([tool]) => tool);
+  const errors = auditMutationArchitecture({ files, writeMethods: WRITE_METHODS, owners: catalogue.owners, httpSurfaces, nativeWriteRoutes, httpCommands, nativeTools: manifest.contracts?.tools ?? [], deferredNativeTools });
   if (errors.length) throw new AggregateError(errors.map((error) => new Error(error)), errors.join('\n'));
   return { commands: WRITE_METHODS.length, owners: catalogue.owners.length, httpRoutes: httpSurfaces.length, httpActions: httpSurfaces.reduce((count, surface) => count + surface.actions.length, 0) };
 }

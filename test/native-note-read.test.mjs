@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
-import { readNativeNote } from '../src/native-ui/note-read.mjs';
+import { readNativeDocument, readNativeNote } from '../src/native-ui/note-read.mjs';
 
 const descriptor = { topicId: 'fictional-topic', referenceId: 'fictional-note', path: 'notes.md', observedRevision: 'r1' };
 const chunk = (bytes, extra = {}) => ({
@@ -60,4 +60,20 @@ test('a cancelled Note read cannot return delayed content', async () => {
 test('compressed Note content cannot exceed its declared decompressed size', async () => {
   const response = chunk([65], { contentEncoding: 'gzip', contentBase64: gzipSync(Buffer.from('Larger than one byte')).toString('base64') });
   await assert.rejects(readNativeNote({ signal: new AbortController().signal, request: async () => response }, descriptor), /declared length/);
+});
+
+
+test('native inline document preview stops after its first authoritative size declaration', async () => {
+  const documentDescriptor = { topicId: 'fictional-topic', referenceId: 'fictional-document', path: 'invoice.pdf', observedRevision: 'sha256:fictional' };
+  let calls = 0;
+  const host = { signal: new AbortController().signal, request: async () => {
+    calls += 1;
+    return { result: {
+      path: documentDescriptor.path, revision: documentDescriptor.observedRevision, contentBase64: Buffer.from([65]).toString('base64'), contentEncoding: 'identity',
+      byteOffset: 0, nextOffset: 1, totalBytes: 20 * 1024 * 1024 + 1, complete: false,
+      sourceReference: { topicId: documentDescriptor.topicId, referenceId: documentDescriptor.referenceId }
+    } };
+  } };
+  await assert.rejects(readNativeDocument(host, documentDescriptor, { maxBytes: 20 * 1024 * 1024 }), /too large for an inline preview/i);
+  assert.equal(calls, 1, 'A rejected inline preview must not stream the remaining original attachment.');
 });

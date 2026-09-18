@@ -50,6 +50,7 @@ export async function createPreservedHistoryReader(options) {
     if (!isDeepStrictEqual(metadata.getImportedHistory(receipt.historyId), receipt)) fail('history-source-conflict');
     const current = sessionStore.getSessionEntry({ ...receipt.target, ...(storePath ? { storePath } : {}), ...(env ? { env } : {}), readConsistency: 'latest' });
     if (current?.sessionId !== receipt.target.sessionId || current.lifecycleRevision !== receipt.logicalOperationId || current.sendPolicy !== 'deny') fail('history-destination-rebound');
+    return current;
   }
   async function verified(historyId, check) {
     authority(check);
@@ -59,8 +60,19 @@ export async function createPreservedHistoryReader(options) {
     assertOwner(receipt, check);
     return result;
   }
-  const descriptor = (receipt, source) => ({ historyId: receipt.historyId, topicId: receipt.intent.topicId,
-    title: source.sourceKind === 'native-jsonl-history-v1' ? `Imported Session ${source.originalSessionId}` : source.sourceChannel.name ?? 'Imported History', totalMessages: receipt.verifiedCount, readOnly: true });
+  function descriptor(receipt, source, check) {
+    // A display label is presentation only. Read it from the exact verified,
+    // read-only destination; never use it to infer identity or Topic ownership.
+    const entry = assertOwner(receipt, check);
+    const label = typeof entry.label === 'string' ? entry.label.trim() : '';
+    const named = label && label !== 'Imported History' && label.length <= 1000 && !/[\u0000-\u001f]/u.test(label);
+    const timestamp = source.source?.header?.timestamp;
+    const date = typeof timestamp === 'string' && Number.isFinite(Date.parse(timestamp)) ? new Date(timestamp).toISOString() : null;
+    const nativeTitle = named ? label : `Preserved conversation${date ? ` — ${date}` : ''}`;
+    return { historyId: receipt.historyId, topicId: receipt.intent.topicId,
+      title: source.sourceKind === 'native-jsonl-history-v1' ? nativeTitle : source.sourceChannel.name ?? 'Imported History',
+      totalMessages: receipt.verifiedCount, readOnly: true };
+  }
   const attachmentId = (historyId, messageId, originalId) => hash(['history-attachment-v1', historyId, messageId, originalId]);
   function filesFor(historyId, entry) {
     if (entry.message.__openclaw.importedNativeHistoryV1) return [];
@@ -82,8 +94,7 @@ export async function createPreservedHistoryReader(options) {
           : inventory && row.intent.sourceManifestSha256 === inventory.bundle.manifestSha256;
         if (row.phase !== 'verified' || !matchesSource || (input.topicId !== undefined && row.intent.topicId !== input.topicId)) continue;
         const { receipt, source } = selected(row.historyId);
-        assertOwner(receipt, check);
-        histories.push(descriptor(receipt, source));
+        histories.push(descriptor(receipt, source, check));
       }
       authority(check);
       return { schemaVersion: 1, histories };
@@ -114,7 +125,7 @@ export async function createPreservedHistoryReader(options) {
       }
       assertOwner(receipt, check);
       const nextOffset = offset + messages.length;
-      return { schemaVersion: 1, ...descriptor(receipt, selected(receipt.historyId).source), messages, offset,
+      return { schemaVersion: 1, ...descriptor(receipt, selected(receipt.historyId).source, check), messages, offset,
         nextOffset: nextOffset < entries.length ? nextOffset : null, hasMore: nextOffset < entries.length };
     },
     async attachmentRead(input, check) {

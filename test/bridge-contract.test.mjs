@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ADMIN_METHODS, BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, validateBridgeRequest } from '../src/bridge/contracts.mjs';
-import { invokeBridgeMethod, registerBridgeMethods, registerNativeSessionNavigation, createAuthenticatedCoreGateway } from '../src/bridge/register.mjs';
+import { invokeBridgeMethod, registerBridgeMethods, registerNativeSessionNavigation, createAuthenticatedCoreGateway, createAuthenticatedNativeGroupCatalog } from '../src/bridge/register.mjs';
 import { randomUUID } from 'node:crypto';
 import { AuthoritativeSourceService } from '../src/sources/service.mjs';
 
@@ -15,6 +15,11 @@ test('registers the complete closed versioned bridge inventory with least-privil
     ...READ_METHODS.map((method) => [method, 'operator.read']),
     ...WRITE_METHODS.map((method) => [method, ADMIN_METHODS.includes(method) ? 'operator.admin' : 'operator.write'])
   ]);
+  const topicGroupingRegistration = registrations.find(([method]) => method === 'command-center.v1.sessions.group');
+  assert.deepEqual(topicGroupingRegistration[2].gatewayMethodDispatchMethods, ['sessions.groups.list', 'sessions.groups.put']);
+  for (const [method, , options] of registrations) {
+    if (method !== 'command-center.v1.sessions.group') assert.equal(options.gatewayMethodDispatchMethods, undefined);
+  }
   for (const method of registered) {
     assert.equal(BRIDGE_CONTRACTS[method].closed, true);
     assert.equal(BRIDGE_CONTRACTS[method].paramsSchema.additionalProperties, false);
@@ -54,9 +59,15 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic' }));
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic', includeClosed: true }));
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: 'topic', limit: 100, offset: 0, cursor: 'opaque-snapshot' }));
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: 'topic', limit: 100, offset: 0, includeDocuments: true }));
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.notes.read', { schemaVersion: 1, topicId: 'topic', referenceId: 'document:a', path: 'Documents/a.pdf', offset: 0, sourceKind: 'document' }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.notes.read', { schemaVersion: 1, topicId: 'topic', referenceId: 'document:a', path: 'Documents/a.pdf', offset: 0, sourceKind: 'foreign' }), /sourceKind/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.notes.browse', { schemaVersion: 1, topicId: 'topic', limit: 101, offset: 0 }), /limit/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.create', { schemaVersion: 1, topicId: 'topic', label: 'Authenticated Conversation', isPrimary: false, logicalOperationId: randomUUID() }), /original Topic revision/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.create', { schemaVersion: 1, topicId: 'topic', label: 'Authenticated Conversation', isPrimary: false, expectedRevision: 4, logicalOperationId: randomUUID() }));
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.sessions.assign-topic', { schemaVersion: 1, logicalOperationId: randomUUID(), topicId: 'topic', expectedTopicRevision: 4, sessionKey: 'agent:main:unassigned', expectedSessionId: 'native-id', expectedSessionRevision: '42', expectedMembership: 'unassigned' }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.sessions.assign-topic', { schemaVersion: 1, logicalOperationId: randomUUID(), topicId: 'topic', expectedTopicRevision: 4, sessionKey: 'agent:main:unassigned', expectedSessionId: 'native-id', expectedSessionRevision: '42', expectedMembership: 'bound' }), /expectedMembership/i);
+  assert.throws(() => validateBridgeRequest('command-center.v1.sessions.assign-topic', { schemaVersion: 1, logicalOperationId: randomUUID(), topicId: 'topic', expectedTopicRevision: 4, sessionKey: 'agent:main:unassigned', expectedSessionId: 'native-id', expectedSessionRevision: '42', expectedMembership: 'unassigned', requestId: 'caller-supplied' }), /unsupported.*requestId/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.create', { schemaVersion: 1, topicId: randomUUID(), name: 'Authenticated Topic', paraCategory: 'project', logicalOperationId: randomUUID() }));
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic', includeClosed: 'true' }), /includeClosed.*boolean/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.list', { schemaVersion: 1, topicId: 'topic' }), /unsupported.*bridge method/i);
@@ -120,9 +131,9 @@ test('host navigation resolver always enforces native Chat policy and exact Sess
 test('Note browse bridge exposes only one bounded opaque catalog page', async () => {
   const reference = { version: 1, referenceId: 'note:page', topicId: 'topic-page', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/vault/page.md', observedRevision: 'sha256:page', createdAt: '2026-09-05T00:00:00.000Z', updatedAt: '2026-09-05T00:00:00.000Z' };
   const result = await invokeBridgeMethod({
-    notesBrowse: async () => ({ schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'page.md', revision: 'sha256:page', sourceReference: reference, privateField: 'withheld' }], total: 5_001, offset: 0, nextOffset: 100, hasMore: true, cursor: 'opaque-page-snapshot', privateField: 'withheld' })
+    notesBrowse: async () => ({ schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'page.md', revision: 'sha256:page', sourceKind: 'note', sourceReference: reference, privateField: 'withheld' }], total: 5_001, offset: 0, nextOffset: 100, hasMore: true, cursor: 'opaque-page-snapshot', privateField: 'withheld' })
   }, 'command-center.v1.notes.browse', { schemaVersion: 1, topicId: 'topic-page', limit: 100, offset: 0 });
-  assert.deepEqual(result, { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'page.md', revision: 'sha256:page', sourceReference: reference }], total: 5_001, offset: 0, nextOffset: 100, hasMore: true, cursor: 'opaque-page-snapshot' });
+  assert.deepEqual(result, { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'page.md', revision: 'sha256:page', sourceKind: 'note', sourceReference: reference }], total: 5_001, offset: 0, nextOffset: 100, hasMore: true, cursor: 'opaque-page-snapshot' });
 });
 
 test('registered deferred Session send refuses before reaching a host turn', async () => {
@@ -235,6 +246,31 @@ test('direct Reminder contract forwards authenticated core gateway principal and
   assert.equal(dispatched[0].request.client, client);
   assert.equal(dispatched[0].request.req.id, logicalOperationId);
   assert.equal(response.value.job.id, 'fictional-reminder');
+});
+
+test('native Topic grouping catalogue exposes only an idempotent exact-name operation', async () => {
+  const dispatched = [];
+  let groups = [{ name: 'Existing group' }];
+  let current = true;
+  const authority = { assertCurrent() { if (!current) throw Object.assign(new Error('retired'), { code: 'unauthenticated' }); } };
+  const catalogue = createAuthenticatedNativeGroupCatalog({
+    authority,
+    assertDispatchCurrent: () => authority.assertCurrent(),
+    gatewayRequest: async (method, params) => {
+      dispatched.push({ method, params });
+      if (method === 'sessions.groups.list') return { groups };
+      if (method === 'sessions.groups.put') { groups = params.names.map(name => ({ name })); return { groups }; }
+      throw new Error(`unexpected ${method}`);
+    }
+  });
+  assert.deepEqual(await catalogue.ensureGroup('Finance'), { name: 'Finance', alreadyPresent: false });
+  assert.deepEqual(dispatched.map(item => item.method), ['sessions.groups.list', 'sessions.groups.put', 'sessions.groups.list']);
+  assert.deepEqual(dispatched[1].params, { names: ['Existing group', 'Finance'] });
+  dispatched.length = 0;
+  assert.deepEqual(await catalogue.ensureGroup('Finance'), { name: 'Finance', alreadyPresent: true });
+  assert.deepEqual(dispatched.map(item => item.method), ['sessions.groups.list']);
+  current = false;
+  await assert.rejects(catalogue.ensureGroup('Blocked'), /retired/);
 });
 
 test('Direct Topic mutation contracts await the public service and return sanitized durable results', async () => {
@@ -412,4 +448,17 @@ test('Structural Change bridge previews omit private Note Folder locators', asyn
     assert.doesNotMatch(serialized, /fictional\/private|\/(?:project|area|archive|resource)\/Topic/);
     assert.deepEqual(result.preview.changes[1], { aspect: 'note-folder-location', managed: true, fromConvention: 'current-managed', toConvention: 'target-conventional' });
   }
+});
+
+test('assignment bridge keeps transport request IDs internal and retains the exact receipt', async () => {
+  const logicalOperationId = randomUUID();
+  const params = { schemaVersion: 1, topicId: 'topic-fictional', sessionKey: 'agent:main:unassigned', expectedSessionId: 'session-fictional', expectedSessionRevision: '42', expectedMembership: 'unassigned', expectedTopicRevision: 4, logicalOperationId };
+  let seen;
+  const result = await invokeBridgeMethod({ sessionsAssignTopic: async (input) => {
+    seen = input;
+    return { schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, topicId: input.topicId, referenceId: 'conversation-assignment:fictional', sessionKey: input.sessionKey, sessionId: input.expectedSessionId, topicRevision: 5, privateField: 'withheld' };
+  } }, 'command-center.v1.sessions.assign-topic', params, 'gateway-frame-1');
+  assert.deepEqual(seen, { ...params, requestId: 'gateway-frame-1' });
+  assert.deepEqual(result, { schemaVersion: 1, status: 'applied', logicalOperationId, topicId: params.topicId, referenceId: 'conversation-assignment:fictional', sessionKey: params.sessionKey, sessionId: params.expectedSessionId, topicRevision: 5 });
+  await assert.rejects(() => invokeBridgeMethod({ sessionsAssignTopic: async (input) => ({ schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, sessionKey: input.sessionKey, sessionId: input.expectedSessionId, topicRevision: 5 }) }, 'command-center.v1.sessions.assign-topic', params, 'gateway-frame-2'), /omitted required result field topicId/i);
 });

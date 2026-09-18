@@ -6,6 +6,7 @@ import { assertPrimaryMayClose } from './session-state.mjs';
 import { explicitSessionReplacements, unavailableReplacedSession } from './session-replacement.mjs';
 import { createTopicConversation, inspectTopicConversation, reconcileTopicConversation, acknowledgeTopicConversation } from './topic-conversation-creation.mjs';
 import { previewTopicSessionGroup, groupTopicSession } from './topic-session-groups.mjs';
+import { assignTopicConversation } from './topic-conversation-assignment.mjs';
 
 function responseKey(value) {
   return value?.key ?? value?.sessionKey ?? value?.session?.key ?? null;
@@ -96,6 +97,7 @@ export class SessionAdapter {
   creationAcknowledge(input = {}, runtime = {}) { return acknowledgeTopicConversation(this, input, runtime); }
   groupPreview() { return previewTopicSessionGroup(this); }
   group(input, runtime) { return groupTopicSession(this, input, runtime); }
+  assignTopic(input, runtime) { return assignTopicConversation(this, input, runtime); }
 
   async create(input = {}, runtime = {}) {
     // First-live HTTP supplies both fields. Never fall through to legacy retry

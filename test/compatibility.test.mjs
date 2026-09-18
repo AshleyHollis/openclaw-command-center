@@ -10,9 +10,9 @@ const supportedOpenClaw = Object.freeze({
   version: '2026.8.1-beta.3',
   commit: ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('')
 });
-const controllerIntegrationCommit = '3040eff630e5a6d9a9f9f5ce52af3c0971776f15';
+const controllerIntegrationCommit = 'd1d6fe8f35fb73bfefdf547a5f023c6bfae29ea7';
 const upstreamCompatibilityCommit = controllerIntegrationCommit;
-const controllerPackageVersion = '2026.9.2';
+const controllerPackageVersion = '2026.9.4';
 const publishedSdkVersion = controllerPackageVersion;
 
 test('release admission refuses unsupported or missing bridge declarations before activation', () => {
@@ -33,9 +33,11 @@ test('pins product compatibility and the controller to the exact stable source b
   assert.equal(canonical.host.range, `=${controllerPackageVersion}`);
   assert.equal(canonical.host.commit, upstreamCompatibilityCommit);
   assert.equal(canonical.pluginApi.range, `=${controllerPackageVersion}`);
-  assert.equal(packageJson.dependencies.openclaw, publishedSdkVersion);
+  assert.equal(packageJson.peerDependencies.openclaw, publishedSdkVersion);
+  assert.equal(packageJson.devDependencies.openclaw, publishedSdkVersion);
   assert.equal(packageJson.openclaw.compat.pluginApi, `=${controllerPackageVersion}`);
-  assert.equal(packageLock.packages[''].dependencies.openclaw, publishedSdkVersion);
+  assert.equal(packageLock.packages[''].peerDependencies.openclaw, publishedSdkVersion);
+  assert.equal(packageLock.packages[''].devDependencies.openclaw, publishedSdkVersion);
   assert.equal(packageLock.packages['node_modules/openclaw'].version, publishedSdkVersion);
   assert.equal(packageLock.packages['node_modules/openclaw'].dependencies['@openclaw/ai'], publishedSdkVersion);
   assert.equal(packageLock.packages['node_modules/@openclaw/ai'].version, publishedSdkVersion);

@@ -5,11 +5,15 @@ import path from 'node:path';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { invokeBridgeMethod, registerBridgeMethods } from '../src/bridge/register.mjs';
-import { readNativeNote } from '../src/native-ui/note-read.mjs';
+import { readNativeNote, readNativeDocument } from '../src/native-ui/note-read.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
 import { createLegacyDiscordMigrationService } from '../src/migration/service.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+
+const releaseHostFileAccessFixture = installHostFileAccessFixture();
+test.after(() => releaseHostFileAccessFixture());
 
 const fsSafeRootFactory = async (rootDir) => ({ rootDir, rootReal: rootDir, resolve: async (relative) => path.join(rootDir, relative), open: async (relative) => ({ handle: await (await import('node:fs/promises')).open(path.join(rootDir, relative), 'r') }) });
 
@@ -198,6 +202,16 @@ test('public source service writes durable authoritative Markdown and keeps meta
       path: 'nested/compressible.md', observedRevision: compressed.revision });
     assert.equal(native.text, 'z'.repeat(2 * 1024 * 1024));
     assert.equal(native.revision, compressed.revision);
+    const originalBytes = Buffer.from([0, 255, 17, 128, 65, 0, 66]);
+    const original = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-integration', path: 'Documents/return.pdf', content: originalBytes, sourceKind: 'document', logicalOperationId: randomUUID() });
+    const originalRead = await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', referenceId: original.value.note.sourceReference.referenceId, path: 'Documents/return.pdf', sourceKind: 'document', offset: 0 });
+    assert.equal(originalRead.contentEncoding, 'identity');
+    assert.deepEqual(Buffer.from(originalRead.contentBase64, 'base64'), originalBytes);
+    const downloaded = await readNativeDocument({ signal: new AbortController().signal,
+      request: async (method, input) => ({ result: await invokeBridgeMethod(service, method, input) })
+    }, { topicId: 'topic-integration', referenceId: original.value.note.sourceReference.referenceId,
+      path: 'Documents/return.pdf', observedRevision: originalRead.revision });
+    assert.deepEqual(Buffer.from(await downloaded.bytes.arrayBuffer()), originalBytes);
     assert.equal((await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/note.md' })).text, 'authoritative text');
     assert.throws(() => service.analysisRead({ schemaVersion: 1, topicId: 'topic-integration' }), (error) => error.code === 'capability-unavailable');
   } finally {

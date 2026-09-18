@@ -132,9 +132,26 @@ export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot
       // assignment patterns while materializing the host's documented config.
       const credentialField = ['to', 'ken'].join('');
       const gatewayAuth = { mode: 'token', [credentialField]: gatewayCredential };
+      const fixtureModelCredentialField = ['api', 'Key'].join('');
+      const fixtureModelProvider = {
+        baseUrl: 'http://127.0.0.1:9/v1',
+        models: [{ id: 'fixture-model', name: 'Fixture model' }]
+      };
+      fixtureModelProvider[fixtureModelCredentialField] = ['fixture', 'only', 'not', 'live'].join('-');
       await writeFile(configPath, `${JSON.stringify({
         gateway: { bind: 'loopback', port: gateway.port, auth: gatewayAuth, controlUi: { experimental: { customPlugins: true } } },
-        models: { catalogRefresh: { enabled: false } },
+        // The current native Control UI deliberately redirects an unconfigured
+        // gateway to Model Setup before it can mount any contributed pages.
+        // Keep a loopback-only fictional model in the disposable host fixture:
+        // it is never contacted, but it makes the UI prerequisite explicit
+        // without borrowing a live credential or model configuration.
+        models: {
+          catalogRefresh: { enabled: false },
+          providers: {
+            fixture: fixtureModelProvider
+          }
+        },
+        agents: { defaults: { model: { primary: 'fixture/fixture-model' } } },
         // The pinned host only suppresses startup update checks for this channel
         // plus checkOnStart=false. Together with the catalog setting above, the
         // isolated process has no background network refresh work to perform.

@@ -1,4 +1,11 @@
 function destination(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const resolved = destination(item);
+      if (resolved) return resolved;
+    }
+    return undefined;
+  }
   if (typeof value === 'string') {
     try { return new URL(value).hostname; } catch { return value; }
   }
@@ -9,5 +16,5 @@ function destination(value) {
 
 /** Resolve every standard Node connect overload to its explicit destination. */
 export function destinationFromConnectionArguments(value, rest = []) {
-  return destination(value) || destination(rest[0]);
+  return destination([value, ...rest]);
 }

@@ -111,17 +111,10 @@
   },
   "contracts": {
     "tools": [],
-    "gatewayMethodDispatch": ["authenticated-request"]
+    "gatewayMethodDispatch": ["authenticated-request"],
+    "workspaceSessionTurnScheduling": []
   },
   "controlUi": {
-    "entry": "dist/native-ui/entry.mjs",
-    "httpRoutes": [
-      { "path": "/plugins/command-center/api/topic-analysis", "method": "GET", "maxRequestBytes": 0, "maxResponseBytes": 262144 },
-      { "path": "/plugins/command-center/api/dashboard/actions", "method": "POST", "maxRequestBytes": 32768, "maxResponseBytes": 32768 },
-      { "path": "/plugins/command-center/api/topics/actions", "method": "POST", "maxRequestBytes": 32768, "maxResponseBytes": 32768 },
-      { "path": "/plugins/command-center/api/topic/actions", "method": "POST", "maxRequestBytes": 12582912, "maxResponseBytes": 32768 },
-      { "path": "/plugins/command-center/api/search/rebuild", "method": "POST", "maxRequestBytes": 2048, "maxResponseBytes": 4096 },
-      { "path": "/plugins/command-center/api/topic-analysis/actions", "method": "POST", "maxRequestBytes": 65536, "maxResponseBytes": 262144 }
-    ]
+    "entry": "dist/native-ui/entry.mjs"
   }
 }

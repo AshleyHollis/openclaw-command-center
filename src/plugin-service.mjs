@@ -34,6 +34,8 @@ export function createMetadataService(api) {
   let sourceService;
   let topicService;
   let stopPromise;
+  let releaseDurableFolderStager;
+  let releaseNoteFilesystemCoordinator;
   let recoveryOnly = false;
   const refuseRecovery = () => { throw new SourceServiceError('recovery-only', 'Command Center is recovery-only; authoritative data and mutations remain unavailable.'); };
   const requireOperational = () => { if (recoveryOnly) refuseRecovery(); };
@@ -42,6 +44,10 @@ export function createMetadataService(api) {
     id: 'command-center-metadata',
     async start() {
       stopPromise = undefined;
+      const { setHostDurableFolderStager } = await import('./sources/note-folder-identity.mjs');
+      const { setHostNoteFilesystemCoordinator } = await import('./sources/note-filesystem-owner.mjs');
+      releaseDurableFolderStager = setHostDurableFolderStager(api.runtime?.fileAccess?.stageDurableFileInDirectory);
+      releaseNoteFilesystemCoordinator = setHostNoteFilesystemCoordinator(api.runtime?.fileAccess?.tryAcquireExclusiveSqliteCoordinator);
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
       const sessionCatalogAvailable = typeof api.runtime?.agent?.session?.listSessionEntries === 'function';
@@ -100,6 +106,12 @@ export function createMetadataService(api) {
     stop() {
       if (stopPromise) return stopPromise;
       stopPromise = Promise.resolve().then(() => {
+        // Do not retain an old host activation's capability across a restart.
+        // The release closure cannot clear a capability installed by its successor.
+        releaseDurableFolderStager?.();
+        releaseDurableFolderStager = undefined;
+        releaseNoteFilesystemCoordinator?.();
+        releaseNoteFilesystemCoordinator = undefined;
         sourceService?.close?.();
         metadataService?.close();
         metadataService = undefined;
@@ -110,6 +122,13 @@ export function createMetadataService(api) {
     },
     get sourceService() { return sourceService; },
     get topicService() { return topicService; },
+    // The working-Note tool is part of this activation, not a consumer of an
+    // arbitrary Source-service projection. Keep its two durable owners paired
+    // at the owning activation boundary so a host tool invocation cannot
+    // depend on a secondary public-property lookup.
+    getTopicMaintenanceOwners() {
+      return { sourceService, metadata: metadataService };
+    },
     get attentionService() { return undefined; },
     get maintenanceService() { return undefined; },
     get searchService() { return undefined; },

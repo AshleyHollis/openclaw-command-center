@@ -8,7 +8,7 @@ const DISPATCH_TIMEOUT_MS = 45_000;
 // Capture the host's admitted identity and request lifetime, never request JSON.
 // The synchronous fence can run inside the owning metadata transaction after
 // native readback. It is not an independent credential reauthentication service.
-export async function createRequestScopedConversationRuntime({ getRequestScope, dispatchGatewayMethod, gatewayRequest } = {}) {
+export async function createRequestScopedConversationRuntime({ getRequestScope, dispatchGatewayMethod, gatewayRequest, requiredGatewayMethods = [] } = {}) {
   const readScope = getRequestScope ?? (await import('openclaw/plugin-sdk/plugin-runtime')).getPluginRuntimeGatewayRequestScope;
   const refuse = () => { throw sourceError('unauthenticated', 'The original authenticated Conversation request is no longer available.'); };
   if (typeof readScope !== 'function') return refuse();
@@ -19,7 +19,11 @@ export async function createRequestScopedConversationRuntime({ getRequestScope, 
   const resolver = scope?.resolveGatewayContext;
   const role = client?.connect?.role;
   const granted = client?.connect?.scopes;
-  if (scope?.pluginId !== 'command-center' || scope.gatewayMethodDispatchAllowed !== true || typeof principalId !== 'string' || !principalId.trim()
+  if (!Array.isArray(requiredGatewayMethods) || requiredGatewayMethods.some(method => typeof method !== 'string' || !method.trim())) throw new TypeError('requiredGatewayMethods must be an array of non-empty method names');
+  const dispatchAllowlist = Array.isArray(scope?.gatewayMethodDispatchMethods) ? scope.gatewayMethodDispatchMethods : [];
+  const dispatchPermitted = scope?.gatewayMethodDispatchAllowed === true
+    || (requiredGatewayMethods.length > 0 && requiredGatewayMethods.every(method => dispatchAllowlist.includes(method)));
+  if (scope?.pluginId !== 'command-center' || !dispatchPermitted || typeof principalId !== 'string' || !principalId.trim()
     || typeof resolver !== 'function' || role !== 'operator' || !Array.isArray(granted)
     || !granted.every(value => typeof value === 'string') || !granted.some(value => value === 'operator.write' || value === 'operator.admin')) return refuse();
   const scopes = JSON.stringify([...granted].sort());
@@ -28,7 +32,9 @@ export async function createRequestScopedConversationRuntime({ getRequestScope, 
   const assertCurrent = () => {
     const currentPrincipal = client?.authenticatedUserProfile?.profileId ?? client?.authenticatedUserId ?? client?.authenticatedOperatorId;
     if (readScope() !== scope || scope.client !== client || client.authenticatedUserProfile !== profile || currentPrincipal !== principalId
-      || scope.pluginId !== 'command-center' || scope.gatewayMethodDispatchAllowed !== true || scope.resolveGatewayContext !== resolver
+      || scope.pluginId !== 'command-center'
+      || !(scope.gatewayMethodDispatchAllowed === true || (requiredGatewayMethods.length > 0 && requiredGatewayMethods.every(method => scope.gatewayMethodDispatchMethods?.includes(method))))
+      || scope.resolveGatewayContext !== resolver
       || client.connect?.role !== role || !Array.isArray(client.connect?.scopes) || JSON.stringify([...client.connect.scopes].sort()) !== scopes
       || resolver() !== context) refuse();
   };

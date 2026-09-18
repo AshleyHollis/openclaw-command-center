@@ -35,6 +35,16 @@ test('new write commands require one owner and existing regression files', () =>
   assert.ok(auditMutationArchitecture(fixture('', { owners: [{ ...owner, tests: ['test/missing.test.mjs'] }] })).some((error) => error.includes('missing regression')));
 });
 
+test('model-callable native tools require one declared domain owner', () => {
+  const nativeOwner = { ...owner, commands: [], nativeTools: ['command_center_file_topic_attachment'] };
+  const options = fixture('', { owners: [nativeOwner], writeMethods: [], nativeTools: ['command_center_file_topic_attachment'] });
+  assert.deepEqual(auditMutationArchitecture(options), []);
+  assert.ok(auditMutationArchitecture({ ...options, nativeTools: ['command_center_other_tool'] }).some((error) => error.includes('unowned native tool')));
+  assert.ok(auditMutationArchitecture({ ...options, nativeTools: [] }).some((error) => error.includes('undeclared catalogue native tool')));
+  assert.deepEqual(auditMutationArchitecture({ ...options, nativeTools: [], deferredNativeTools: ['command_center_file_topic_attachment'] }), []);
+  assert.ok(auditMutationArchitecture({ ...options, deferredNativeTools: ['command_center_file_topic_attachment'] }).some((error) => error.includes('deferred native tool is exposed')));
+});
+
 test('closed domain delegation is allowed; recorded gaps are not passing-proof claims', () => {
   assert.deepEqual(auditMutationArchitecture(fixture("await host.request('command-center.v1.notes.edit', input);")), []);
   assert.deepEqual(auditMutationArchitecture(fixture("if (action === 'chat.send') return service.sessionsSend(input); const actions = { 'sessions.create': ['label'] };")), []);
@@ -60,8 +70,8 @@ test('native HTTP actions require one catalogue owner, including reconcile-only 
 
 test('architecture checks the current native manifest and actual closed HTTP action vocabularies', async () => {
   const result = await checkMutationArchitecture(new URL('../', import.meta.url));
-  assert.equal(result.httpRoutes, 5);
-  assert.equal(result.httpActions, 34);
+  assert.equal(result.httpRoutes, 0);
+  assert.equal(result.httpActions, 0);
 });
 
 test('new native routes and invalid HTTP ownership cannot evade the catalogue', () => {

@@ -2,6 +2,7 @@ import { sourceError } from '../sources/errors.mjs';
 import { createTopicProvisioningService } from './provisioning.mjs';
 import { createTopicLifecycleService } from './lifecycle.mjs';
 import { createTopicRecoveryService } from './recovery.mjs';
+import { createTopicFolderRecoveryBatch } from './folder-recovery-batch.mjs';
 
 const ACTIVE_GROUPS = Object.freeze(['project', 'area', 'resource']);
 const DESTINATION_TOPIC_LIMIT = 100;
@@ -69,6 +70,10 @@ export class TopicService {
     this.provisioning = options.provisioning ?? createTopicProvisioningService(shared);
     this.lifecycle = options.lifecycle ?? createTopicLifecycleService(shared);
     this.recovery = options.recovery ?? createTopicRecoveryService(shared);
+    this.folderRecoveryBatch = options.folderRecoveryBatch ?? createTopicFolderRecoveryBatch({ metadata: this.metadata, topics: {
+      recoveryInspect: input => this.recoveryInspect(input),
+      recoveryVerify: input => this.recoveryVerify(input)
+    } });
   }
 
   listTopics({ includeProvisioning = true, includeArchived = true, includeRetired = true } = {}) {
@@ -191,6 +196,7 @@ export class TopicService {
   recoveryVerify(input) { return this.recovery.verify(input); }
   recoveryRelink(input) { return this.recovery.relink(input); }
   recoveryReplace(input) { return this.recovery.replace(input); }
+  recoverNoteFoldersBatch(input) { return this.folderRecoveryBatch.recover(input); }
   recoveryInspect(input) { return this.recovery.inspect(input.topicId, input.referenceId); }
   async inspectSourceRecovery(input) {
     const inspection = await this.recoveryInspect(input);

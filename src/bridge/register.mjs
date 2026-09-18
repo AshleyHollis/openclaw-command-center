@@ -64,6 +64,45 @@ export function createAuthenticatedCoreGateway({ req, client, context, isWebchat
   });
 }
 
+/**
+ * The native sidebar's group catalogue is deliberately separate from a
+ * Session's category field.  Keep this a closed capability: Command Center
+ * may ensure one exact Topic presentation group, but it never receives a
+ * general-purpose Gateway dispatcher or permission to reorder groups.
+ */
+export function createAuthenticatedNativeGroupCatalog({ authority, gatewayRequest, assertDispatchCurrent = () => {} }) {
+  if (!authority || typeof authority.assertCurrent !== 'function') throw new SourceServiceError('unauthenticated', 'A current authenticated operator is required to organize native groups.');
+  if (typeof gatewayRequest !== 'function') throw new SourceServiceError('capability-unavailable', 'The authenticated native group dispatcher is unavailable.');
+  const namesFrom = (payload) => {
+    const groups = payload?.groups;
+    if (!Array.isArray(groups)) throw new SourceServiceError('delivery-unknown', 'The native group catalogue returned an invalid receipt.');
+    const names = groups.map((group) => group?.name);
+    if (names.some((name) => typeof name !== 'string' || !name.trim()) || new Set(names).size !== names.length) {
+      throw new SourceServiceError('delivery-unknown', 'The native group catalogue returned an unsafe receipt.');
+    }
+    return names;
+  };
+  return Object.freeze({
+    async ensureGroup(requestedName) {
+      const name = nonBlank(requestedName, 'name');
+      authority.assertCurrent();
+      assertDispatchCurrent();
+      const before = namesFrom(await gatewayRequest('sessions.groups.list', {}));
+      if (before.includes(name)) return Object.freeze({ name, alreadyPresent: true });
+      authority.assertCurrent();
+      assertDispatchCurrent();
+      // Omit sectionOrder: Command Center must not rearrange groups it does
+      // not own. The host retains its own validation, locking and audit path.
+      await gatewayRequest('sessions.groups.put', { names: [...before, name] });
+      authority.assertCurrent();
+      assertDispatchCurrent();
+      const after = namesFrom(await gatewayRequest('sessions.groups.list', {}));
+      if (!after.includes(name)) throw new SourceServiceError('delivery-unknown', 'The native group catalogue did not confirm the requested Topic group.');
+      return Object.freeze({ name, alreadyPresent: false });
+    }
+  });
+}
+
 function captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization }) {
   // Token-authenticated isolated operators may not have an external profile.
   // Bind authority to another durable host-attested user/operator identity;
@@ -142,6 +181,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.sessions.topic-context': (service, params) => service.sessionTopicContext(params),
   'command-center.v1.sessions.group-preview': (service, params) => service.sessionGroupPreview(params),
   'command-center.v1.sessions.group': (service, params, runtime) => service.sessionGroup(params, runtime),
+  'command-center.v1.sessions.assign-topic': (service, params, runtime) => service.sessionsAssignTopic(params, runtime),
   'command-center.v1.sessions.create': (service, params, runtime) => {
     const { authoritativeSession, expectedRevision, ...input } = params;
     return service.sessionsCreate({ ...input, ...(expectedRevision === undefined ? {} : { expectedTopicRevision: expectedRevision }) }, {
@@ -222,7 +262,25 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
             runtime = await createRequestScopedConversationRuntime();
           }
         }
-        if (method === 'command-center.v1.sessions.group') runtime = { creationAuthority: captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization }) };
+        if (method === 'command-center.v1.sessions.group' || method === 'command-center.v1.sessions.assign-topic') {
+          const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
+          if (method === 'command-center.v1.sessions.assign-topic') {
+            runtime = { creationAuthority: authority };
+          } else {
+          // Use the host's published request-scoped dispatcher. Calling a raw
+          // registry handler re-enters the Gateway without its completion
+          // protocol and can leave an otherwise valid native group request
+          // unresolved. The catalogue wrapper below remains method-closed.
+          const dispatched = await createRequestScopedConversationRuntime({
+            requiredGatewayMethods: ['sessions.groups.list', 'sessions.groups.put']
+          });
+          if (dispatched.creationAuthority.principalId !== authority.principalId) throw new SourceServiceError('unauthenticated', 'The authenticated native group dispatcher changed operator identity.');
+          runtime = {
+            creationAuthority: authority,
+            nativeGroupCatalog: createAuthenticatedNativeGroupCatalog({ authority, gatewayRequest: dispatched.gatewayRequest, assertDispatchCurrent: dispatched.creationAuthority.assertCurrent })
+          };
+          }
+        }
         const assertHistoryRead = method.startsWith('command-center.v1.histories.') || ['command-center.v1.sessions.topic-context', 'command-center.v1.sessions.group-preview'].includes(method) ? captureHistoryReadAuthority({ client, context, signal }) : null;
         if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
         if (schedulerRuntimeMethods.has(method) && client) runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
@@ -258,12 +316,17 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
           if (Buffer.byteLength(JSON.stringify({ schemaVersion: 1, status: 'applied', requestId, logicalOperationId, result })) > 786_432) throw new SourceServiceError('source-recovery', 'The history response exceeds the bounded page size.');
           assertHistoryRead();
         }
-        if (method === 'command-center.v1.sessions.group') runtime.creationAuthority.assertCurrent();
+        if (method === 'command-center.v1.sessions.group' || method === 'command-center.v1.sessions.assign-topic') runtime.creationAuthority.assertCurrent();
         respond(true, { schemaVersion: 1, status: result?.status ?? 'applied', requestId, logicalOperationId, result });
       } catch (error) {
         respond(false, null, errorResult(error, { requestId, logicalOperationId: params?.logicalOperationId ?? null }));
       }
-    }, { scope: contract.scope });
+    }, {
+      scope: contract.scope,
+      ...(method === 'command-center.v1.sessions.group'
+        ? { gatewayMethodDispatchMethods: ['sessions.groups.list', 'sessions.groups.put'] }
+        : {})
+    });
     registered.push(method);
   }
   return Object.freeze(registered);

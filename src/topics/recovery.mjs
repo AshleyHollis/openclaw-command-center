@@ -116,7 +116,10 @@ export class TopicRecoveryService {
     if (folder?.sourceSystem === 'obsidian' && folder.sourceKind === 'note_folder' && !ownsNoteFilesystem(this.metadata)) return withNoteFilesystemOwner(this.metadata, () => this.verify(input));
     const topicId = String(input.topicId ?? '').trim();
     const operationKind = 'topics.recovery.verify';
-    const intent = { topicId, referenceId, expectedRevision: input.expectedRevision, expectedSourceRevision: input.expectedSourceRevision, replacementLocator: input.replacementLocator ?? null };
+    const expectedReplacementIdentity = input.expectedReplacementIdentity === undefined ? null : String(input.expectedReplacementIdentity);
+    if (expectedReplacementIdentity !== null && !/^note-folder:1:[0-9a-f-]{36}:[0-9a-f]{64}$/u.test(expectedReplacementIdentity)) throw sourceError('invalid-request', 'Source Recovery rebind requires an exact current Note Folder identity.');
+    if (expectedReplacementIdentity !== null && input.replacementLocator === undefined) throw sourceError('invalid-request', 'Source Recovery rebind requires its exact replacement locator.');
+    const intent = { topicId, referenceId, expectedRevision: input.expectedRevision, expectedSourceRevision: input.expectedSourceRevision, replacementLocator: input.replacementLocator ?? null, expectedReplacementIdentity };
     const reference = this.metadata.getSourceReference(referenceId);
     const previous = this.metadata.getTopicOperation(input.logicalOperationId);
     if (reference?.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder') {
@@ -139,6 +142,7 @@ export class TopicRecoveryService {
       const recoveryIdentity = this.metadata.listSourceRecovery(topicId).find((item) => item.referenceId === referenceId)?.lastIdentity;
       if (input.expectedSourceRevision !== currentRevision && input.expectedSourceRevision !== recoveryIdentity) throw sourceError('conflict', 'Source Recovery replacement revision is stale.');
       const replacement = await this.exactReplacementLocator(input.replacementLocator, referenceId);
+      if (expectedReplacementIdentity !== null && replacement.observedRevision !== expectedReplacementIdentity) throw sourceError('conflict', 'The explicitly approved replacement Note Folder identity changed.');
       if (this.metadata.getTopic(topicId)?.revision !== input.expectedRevision || this.metadata.getSourceLocator(referenceId)?.locatorVersion !== binding?.locatorVersion) throw sourceError('conflict', 'The Source Recovery owner changed during folder enrollment.');
       folderBinding = { ...replacement, expectedLocatorVersion: intent.expectedLocatorVersion };
       inspection = { ...inspection, available: true, failure: null, locator: replacement.locator };

@@ -7,6 +7,16 @@ import { sourceError } from './errors.mjs';
 
 const ownership = new AsyncLocalStorage();
 const ownerKey = (metadata) => metadata?.databasePath ? path.resolve(metadata.databasePath) : null;
+let hostCoordinator;
+
+// Plugin activation supplies the host-owned coordinator where available. This
+// narrow setter also lets isolated contract fixtures provide the same boundary
+// without importing an arbitrary SDK implementation from the plugin tree.
+export function setHostNoteFilesystemCoordinator(acquire) {
+  const installed = typeof acquire === 'function' ? acquire : undefined;
+  hostCoordinator = installed;
+  return () => { if (hostCoordinator === installed) hostCoordinator = undefined; };
+}
 
 export function ownsNoteFilesystem(metadata) {
   const key = ownerKey(metadata);
@@ -21,7 +31,7 @@ export async function withNoteFilesystemOwner(metadata, action, { acquire } = {}
   const key = ownerKey(metadata);
   const directory = await assertSafeDirectory(path.dirname(key));
   const lockPath = path.join(directory, 'note-filesystem-coordinator.sqlite');
-  acquire ??= (await import('openclaw/plugin-sdk/sqlite-runtime')).tryAcquireExclusiveSqliteCoordinator;
+  acquire ??= hostCoordinator ?? (await import('openclaw/plugin-sdk/sqlite-runtime')).tryAcquireExclusiveSqliteCoordinator;
   if (typeof acquire !== 'function') throw sourceError('capability-unavailable', 'The host Note recovery coordinator is unavailable.');
   let lock;
   const started = Date.now();

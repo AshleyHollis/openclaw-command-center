@@ -4,8 +4,10 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { reconciliationPlanDigest, reconcilePreservedWorkspace } from './reconcile.mjs';
 import { assertPreparationPlan, prepareTopicForReconciliation } from './prepare-topic.mjs';
+import { createTopicService } from '../topics/service.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
+const recoveryFailure = receipts => { throw Object.assign(new Error('note-folder-recovery-halted'), { code: 'note-folder-recovery-halted', receipts }); };
 const MAX_PLAN_BYTES = 2 * 1024 * 1024;
 
 export async function readPinnedReconciliationPlan(filename, expectedDigest) {
@@ -103,11 +105,59 @@ export async function runConfiguredMetadataInitialization({ mode, planPath, expe
   finally { metadata.close(); }
 }
 
+function assertNoteFolderRecoveryPlan(plan, expectedDigest) {
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan) ||
+    Object.keys(plan).sort().join(',') !== 'bindings,purpose,schemaVersion,stateDirectory' ||
+    plan.schemaVersion !== 1 || plan.purpose !== 'command-center-note-folder-recovery' ||
+    typeof plan.stateDirectory !== 'string' || !path.isAbsolute(plan.stateDirectory) || path.resolve(plan.stateDirectory) !== plan.stateDirectory ||
+    !Array.isArray(plan.bindings) || plan.bindings.length < 1 || plan.bindings.length > 100 ||
+    reconciliationPlanDigest(plan) !== expectedDigest) fail('note-folder-recovery-plan-invalid');
+}
+
+// A private, digest-pinned operator plan is deliberately required. This is not
+// a Gateway RPC: it cannot scan a vault or infer a replacement folder, and its
+// stable per-binding operation IDs allow the existing recovery owner to resume
+// an interrupted marker enrollment safely.
+export async function runConfiguredNoteFolderRecovery({ mode, planPath, expectedDigest, config, signal }) {
+  if (!['preflight', 'execute', 'verify'].includes(mode)) fail('note-folder-recovery-mode-invalid');
+  const env = { ...process.env };
+  const plan = await readPinnedReconciliationPlan(planPath, expectedDigest);
+  assertNoteFolderRecoveryPlan(plan, expectedDigest);
+  const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')
+  ]);
+  const stateDir = resolveStateDir(env);
+  if (path.resolve(stateDir) !== plan.stateDirectory) fail('note-folder-recovery-state-mismatch');
+  const pluginConfig = structuredClone(config)?.plugins?.entries?.['command-center']?.config ?? {};
+  const noteRoot = pluginConfig.topics?.noteRoot;
+  if (typeof noteRoot !== 'string' || !path.isAbsolute(noteRoot)) fail('note-folder-recovery-note-root-invalid');
+  signal?.throwIfAborted();
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true }, readOnly: mode !== 'execute' });
+  try {
+    const topics = createTopicService({ metadata, noteVaultRoot: noteRoot });
+    const checks = [];
+    for (const item of plan.bindings) {
+      signal?.throwIfAborted();
+      checks.push(await topics.folderRecoveryBatch.preflight(item));
+    }
+    const publicReceipts = values => values.map((item, index) => Object.freeze({ binding: index + 1, logicalOperationId: item.logicalOperationId, status: item.status, ...(item.reason ? { reason: item.reason } : {}) }));
+    if (mode === 'preflight') return { phase: 'preflight', planDigest: expectedDigest, accounting: { ready: checks.filter(item => item.status === 'ready').length, resumeReady: checks.filter(item => item.status === 'resume-ready').length, alreadyHealthy: checks.filter(item => item.status === 'already-healthy').length, blocked: checks.filter(item => item.status === 'blocked').length }, receipts: publicReceipts(checks) };
+    if (mode === 'verify') {
+      if (checks.some(item => item.status !== 'already-healthy')) fail('note-folder-recovery-not-verified');
+      return { phase: 'verified', planDigest: expectedDigest, accounting: { verified: checks.length }, receipts: publicReceipts(checks) };
+    }
+    if (checks.some(item => !['ready', 'resume-ready', 'already-healthy'].includes(item.status))) fail('note-folder-recovery-preflight-blocked');
+    const result = await topics.recoverNoteFoldersBatch({ bindings: plan.bindings, assertCurrent: () => signal?.throwIfAborted() });
+    if (result.status !== 'completed') recoveryFailure(publicReceipts(result.receipts));
+    return { phase: result.status, planDigest: expectedDigest, accounting: { recovered: result.receipts.filter(item => item.status === 'recovered').length, replayed: result.receipts.filter(item => item.status === 'replayed').length, alreadyHealthy: result.receipts.filter(item => item.status === 'already-healthy').length, blocked: result.receipts.filter(item => item.status === 'blocked').length }, receipts: publicReceipts(result.receipts) };
+  } finally { metadata.close(); }
+}
+
 export function registerReconciliationCli({ program, config, logger }) {
   const group = program.command('command-center').description('Command Center existing-data reconciliation');
-  for (const [command, run] of [['reconcile', runConfiguredReconciliation], ['prepare-topic', runConfiguredTopicPreparation], ['initialize-metadata', runConfiguredMetadataInitialization]]) {
+  for (const [command, run] of [['reconcile', runConfiguredReconciliation], ['prepare-topic', runConfiguredTopicPreparation], ['initialize-metadata', runConfiguredMetadataInitialization], ['recover-note-folders', runConfiguredNoteFolderRecovery]]) {
   const reconcile = group.command(command).description('Inspect or run an explicitly pinned private preparation or import plan');
-  for (const mode of command === 'initialize-metadata' ? ['execute', 'verify'] : ['preflight', 'execute', 'resume', 'verify']) {
+  for (const mode of command === 'initialize-metadata' ? ['execute', 'verify'] : command === 'recover-note-folders' ? ['preflight', 'execute', 'verify'] : ['preflight', 'execute', 'resume', 'verify']) {
     reconcile.command(mode).requiredOption('--plan <absolute-path>', 'Private approved plan JSON')
       .requiredOption('--digest <sha256>', 'Approved canonical plan SHA-256')
       .action(async options => {
@@ -119,7 +169,8 @@ export function registerReconciliationCli({ program, config, logger }) {
           logger.info(JSON.stringify(result));
         } catch (error) {
           const code = typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(error.code) ? error.code : 'reconciliation-failed';
-          logger.error(code); process.exitCode = 1;
+          const receipts = Array.isArray(error?.receipts) ? error.receipts : undefined;
+          logger.error(receipts ? JSON.stringify({ code, receipts }) : code); process.exitCode = 1;
         } finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
       });
   }

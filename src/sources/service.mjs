@@ -13,6 +13,8 @@ import { reconcileReminderAttention } from './reminder-lifecycle.mjs';
 import { createSearchAdapter } from './search.mjs';
 import { createSessionAdapter } from './sessions.mjs';
 import { createSchedulerAdapter } from './scheduler.mjs';
+import { createTopicDocumentFilingService } from '../documents/filing.mjs';
+import { createTopicMaintenanceSchedule } from '../maintenance/schedule.mjs';
 import { getSessionEntry as readPublishedSessionEntry } from 'openclaw/plugin-sdk/session-store-runtime';
 
 function adapterInput(input = {}) {
@@ -48,6 +50,16 @@ export class AuthoritativeSourceService {
     this.coordinator = options.coordinator ?? createMutationCoordinator({ metadata: this.metadata });
     this.topicServices = new Map();
     this.activity = options.activity ?? createActivityService({ metadata: this.metadata });
+    this.maintenanceSchedule = options.maintenanceSchedule ?? (typeof options.api?.session?.workflow?.scheduleSessionTurn === 'function' && typeof options.api?.session?.workflow?.unscheduleSessionTurnsByTag === 'function'
+      ? createTopicMaintenanceSchedule({ sourceService: this, metadata: this.metadata, scheduleSessionTurn: options.api.session.workflow.scheduleSessionTurn.bind(options.api.session.workflow), unscheduleSessionTurnsByTag: options.api.session.workflow.unscheduleSessionTurnsByTag.bind(options.api.session.workflow) })
+      : null);
+    this.documents = options.documents ?? createTopicDocumentFilingService({
+      sourceService: this,
+      metadata: this.metadata,
+      mediaLoader: options.api?.runtime?.media?.loadWebMedia ?? (async () => {
+        throw sourceError('capability-unavailable', 'The host managed-media capability is unavailable.');
+      }),
+    });
     this.searchRefresh = Promise.resolve();
   }
 
@@ -147,7 +159,8 @@ export class AuthoritativeSourceService {
     const notePath = input.path ?? input.notePath ?? input.sourcePath;
     const folderRoot = folder && (this.metadata.getSourceLocator?.(folder.referenceId)?.locator ?? folder.externalSourceId);
     const expectedExternalId = folderRoot ? `${String(folderRoot).replace(/\/+$/u, '')}/${notePath}` : null;
-    if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || (expectedExternalId && effectiveSourceLocator(this.metadata, reference) !== expectedExternalId)) throw sourceError('source-recovery', 'The exact Topic-owned Note Source Reference does not match the requested path.');
+    const sourceKind = input.sourceKind ?? 'note';
+    if (!['note', 'document'].includes(sourceKind) || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== sourceKind || (expectedExternalId && effectiveSourceLocator(this.metadata, reference) !== expectedExternalId)) throw sourceError('source-recovery', 'The exact Topic-owned Topic-file Source Reference does not match the requested path.');
     const expectedRevision = read ? input.observedRevision : input.expectedRevision;
     const replay = input.logicalOperationId ? this.metadata.getOperation?.(input.logicalOperationId) : null;
     if (expectedRevision !== undefined && reference.observedRevision !== expectedRevision && !replay) throw sourceError('conflict', 'The Note Source Reference revision is stale.');
@@ -187,6 +200,28 @@ export class AuthoritativeSourceService {
   }
 
   async notesBrowse(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'notes'); return service.notes.browsePage(adapterInput(input)); }
+  async documentsFileAttachment(input = {}) {
+    const result = await this.documents.file(input);
+    // Filing is the durable source-of-truth phase. Only an applied/reconciled
+    // result may make a native maintenance turn pending; a retry reaches this
+    // point after the filing owner has recovered its exact receipt.
+    if (this.maintenanceSchedule && ['applied', 'reconciled'].includes(result?.status)) {
+      await this.maintenanceSchedule.schedule({ sessionKey: input.sessionKey, reason: 'a permanently filed attachment' });
+    }
+    return result;
+  }
+  maintenanceStatus(topicId) {
+    const operations = (this.metadata.listTopicOperations?.(topicId) ?? []).filter((row) => row.operationKind === 'notes.maintenance.schedule');
+    const scheduled = operations.at(-1) ?? null;
+    const activity = (this.metadata.listActivity?.(topicId) ?? []).filter((row) => row.operationKind === 'notes.maintenance').at(-1) ?? null;
+    if (activity && (!scheduled || activity.updatedAt >= scheduled.updatedAt)) {
+      if (activity.outcome === 'applied') return { state: 'saved', updatedAt: activity.updatedAt };
+      if (['conflict', 'unknown', 'failed'].includes(activity.outcome)) return { state: 'needs-attention', updatedAt: activity.updatedAt };
+    }
+    if (!scheduled) return { state: 'idle', updatedAt: null };
+    if (scheduled.state === 'unknown') return { state: 'needs-attention', updatedAt: scheduled.updatedAt };
+    return { state: 'pending', updatedAt: scheduled.updatedAt };
+  }
   async readImportedHistory(action, input, runtime) {
     const { requestId: _requestId, ...command } = input;
     const assertCurrent = () => {
@@ -208,12 +243,15 @@ export class AuthoritativeSourceService {
     requireCapability(this.capabilities, 'notes');
     this.assertExactNoteReference(input, { read: true });
     const { offset: _offset, ...noteInput } = adapterInput(input);
-    const note = await service.notes.read(noteInput);
+    // Original attachments are opaque bytes, not UTF-8 Notes. This internal
+    // option never crosses the public bridge boundary.
+    const note = await service.notes.read({ ...noteInput, ...(input.sourceKind === 'document' ? { returnBytes: true } : {}) });
     if (input.offset === undefined) return note;
     if (!Number.isInteger(input.offset) || input.offset < 0) throw sourceError('invalid-request', 'A non-negative byte offset is required.');
     if (input.offset > 0 && (typeof input.observedRevision !== 'string' || input.observedRevision !== note.revision)) throw sourceError('conflict', 'The Note changed during chunk retrieval.');
-    const bytes = Buffer.from(note.text, 'utf8');
-    if (bytes.length > 8_388_609) throw sourceError('invalid-request', 'The authoritative Note exceeds the bounded Topic Page size.');
+    const bytes = Buffer.isBuffer(note.bytes) ? note.bytes : Buffer.from(note.text, 'utf8');
+    const maximumBytes = input.sourceKind === 'document' ? 100 * 1024 * 1024 : 8_388_609;
+    if (bytes.length > maximumBytes) throw sourceError('invalid-request', input.sourceKind === 'document' ? 'The authoritative original attachment exceeds the supported download size.' : 'The authoritative Note exceeds the bounded Topic Page size.');
     if (input.offset > bytes.length) throw sourceError('invalid-request', 'The Note byte offset exceeds its authoritative length.');
     const remaining = bytes.subarray(input.offset);
     const compressed = remaining.length > 1_048_576 ? gzipSync(remaining) : null;
@@ -366,6 +404,34 @@ export class AuthoritativeSourceService {
     const find = () => this.metadata.listTopics().flatMap((topic) => this.listTopicSourceReferences(topic.topicId)
       .filter((reference) => reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session' && effectiveSourceLocator(this.metadata, reference) === input.sessionKey));
     const matches = find();
+    // Imported History owns a distinct, read-only native Session. It is never
+    // an assignment candidate, even though it deliberately has no ordinary
+    // Topic Session reference. Report that protected ownership explicitly so
+    // presentation callers cannot misclassify it as a newly-created Inbox
+    // Conversation or offer a destructive reassignment.
+    const history = (this.metadata.listImportedHistories?.() ?? []).find((row) => row?.phase === 'verified' && row?.target?.sessionKey === input.sessionKey);
+    if (history) {
+      // A preserved transcript is protected by its durable native identity,
+      // not merely its reusable session key. A missing or replaced target
+      // must remain non-assignable until the history owner repairs it; it
+      // must never fall through to Inbox as a fresh Conversation.
+      const target = history.target;
+      const sessionStore = sessionStoreWithPublishedReadback(this.api, this.defaults.sessionStore ?? this.api?.runtime?.agent?.session);
+      const rows = sessionStore?.listSessionEntries
+        ? sessionStore.listSessionEntries({ agentId: 'main', readOnly: true })
+        : [];
+      const exact = Array.isArray(rows) && target?.agentId === 'main' && typeof target.sessionId === 'string'
+        && target.sessionKey === input.sessionKey && input.sessionKey.startsWith('agent:main:')
+        && rows.filter((row) => row?.sessionKey === input.sessionKey && (row?.entry?.sessionId ?? row?.sessionId) === target.sessionId).length === 1;
+      if (!exact) return {
+        schemaVersion: 1, status: 'protected-unavailable', sessionKey: input.sessionKey,
+        topicId: history.intent?.topicId ?? null, name: 'Imported History'
+      };
+      return {
+        schemaVersion: 1, status: 'protected', sessionKey: input.sessionKey,
+        sessionId: target.sessionId, topicId: history.intent?.topicId ?? null, name: 'Imported History'
+      };
+    }
     if (matches.length === 0) return { schemaVersion: 1, status: 'unbound', sessionKey: input.sessionKey };
     if (matches.length !== 1) throw sourceError('source-recovery', 'The native Session has ambiguous Topic ownership.');
     const reference = matches[0];
@@ -389,6 +455,12 @@ export class AuthoritativeSourceService {
     requireCapability(this.capabilities, 'sessions');
     if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.');
     return service.sessions.group(adapterInput(input), runtime);
+  }
+  async sessionsAssignTopic(input = {}, runtime = {}) {
+    const service = this.requireTopicService(input, { write: true, requiredSourceKinds: ['session'] });
+    requireCapability(this.capabilities, 'sessions');
+    if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' });
+    return service.sessions.assignTopic(adapterInput(input), runtime);
   }
   async verifyPrimarySessionForCreate(topicId, sessions) {
     const primary = (this.metadata.listSourceReferences?.(topicId) ?? []).filter((reference) => reference.topicId === topicId && reference.sourceSystem === 'openclaw' && reference.sourceKind === 'session' && this.metadata.getSessionState?.(reference.referenceId)?.isPrimary === true);
@@ -497,7 +569,7 @@ export class AuthoritativeSourceService {
     if (input.topicId) {
       const topic = this.metadata.getTopic(input.topicId);
       if (topic) this.assertTopicReadiness(topic);
-      return { topic, sourceReferences: this.metadata.listSourceReferences(input.topicId), preferences: this.metadata.getPresentationPreferences(input.topicId), activity: this.metadata.listActivity(input.topicId) };
+      return { topic, sourceReferences: this.metadata.listSourceReferences(input.topicId), preferences: this.metadata.getPresentationPreferences(input.topicId), activity: this.metadata.listActivity(input.topicId), maintenance: this.maintenanceStatus(input.topicId) };
     }
     const activeTopics = this.metadata.listUsableTopics?.() ?? this.metadata.listTopics().filter((topic) => topic.lifecycle === 'active');
     const topics = activeTopics.filter((topic) => {

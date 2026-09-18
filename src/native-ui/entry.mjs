@@ -6,6 +6,7 @@ import { mountHistoryPage } from './history-page.mjs';
 import { createNativeCreationForm } from './creation-form.mjs';
 import { createNativeState } from './mutations.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
+import { mountTopicSidebar, createTopicSidebarState } from './topic-sidebar.mjs';
 
 /** Native Control UI contribution. OpenClaw owns Chat, its roster and its drafts. */
 export function mountTopics(container, context, state = createNativeState()) {
@@ -148,12 +149,29 @@ export default {
   id: 'command-center',
   activate(host) {
     const state = createNativeState(host.signal);
-    const notesPanel = host.ui.registerPanel({ id: 'topic-notes', label: 'Topic Notes', mount: (container, context) => mountTopicNotesPanel(container, context, state) });
-    const page = host.ui.registerPage({ id: 'topics', label: 'Topics', mount: (container, context) => mountTopics(container, context, state) });
+    const sidebarState = createTopicSidebarState(host.signal);
+    // Older compatible hosts still render the established Topics pages. They
+    // must not fail activation merely because they predate the optional native
+    // Files/session-list replacement surface.
+    const replacements = typeof host.ui.registerReplacement === 'function' && typeof host.ui.selectReplacement === 'function';
+    const topicFiles = replacements
+      ? host.ui.registerReplacement({ id: 'topic-files', label: 'Topic Files', surface: 'session-files', mount: (container, context) => mountTopicNotesPanel(container, context, state) })
+      : () => {};
+    const topicSidebar = replacements
+      ? host.ui.registerReplacement({ id: 'topic-sidebar', label: 'Topics', surface: 'session-list', mount: (container, context) => mountTopicSidebar(container, context, sidebarState) })
+      : () => {};
+    if (replacements) {
+      host.ui.selectReplacement('session-files', 'topic-files');
+      host.ui.selectReplacement('session-list', 'topic-sidebar');
+    }
+    // Topic browsing now lives beside native Chat. Keep this page as the
+    // explicit administrative/recovery destination rather than presenting a
+    // second competing workspace in the primary navigation.
+    const page = host.ui.registerPage({ id: 'topics', label: 'Manage Topics', mount: (container, context) => mountTopics(container, context, state) });
     const topic = host.ui.registerPage({ id: 'topic', label: 'Topic Notes', mount: (container, context) => mountTopicPage(container, context, state) });
     const histories = host.ui.registerPage({ id: 'histories', label: 'Imported History', mount: mountHistoryPage });
     const historyNavigation = host.ui.registerNavigation({ id: 'histories', label: 'Imported History', page: { id: 'histories' }, order: 11 });
-    const navigation = host.ui.registerNavigation({ id: 'topics', label: 'Topics', page: { id: 'topics' }, order: 10 });
-    return () => { state.retire(); notesPanel(); historyNavigation(); histories(); navigation(); topic(); page(); };
+    const navigation = host.ui.registerNavigation({ id: 'topics', label: 'Manage Topics', page: { id: 'topics' }, order: 10 });
+    return () => { state.retire(); sidebarState.retire(); if (replacements) { host.ui.selectReplacement('session-files', null); host.ui.selectReplacement('session-list', null); } topicSidebar(); topicFiles(); historyNavigation(); histories(); navigation(); topic(); page(); };
   }
 };

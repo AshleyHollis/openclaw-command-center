@@ -5,6 +5,12 @@ import path from 'node:path';
 import { NoteAdapter } from '../../src/sources/notes.mjs';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { enrollNoteFolderIdentity } from '../../src/sources/note-folder-identity.mjs';
+import { installHostFileAccessFixture } from '../support/host-file-access-fixture.mjs';
+
+// This fixture runs both in the parent and in a real SIGKILL child process.
+// Install the same narrow host contract in each process; production receives
+// it from plugin activation instead.
+installHostFileAccessFixture();
 
 export async function openFixture(stateDir, options = {}) {
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });

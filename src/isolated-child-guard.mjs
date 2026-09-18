@@ -45,7 +45,13 @@ wrap(net, 'connect', 'net', true);
 wrap(net, 'createConnection', 'net-create', true);
 const socketConnect = net.Socket.prototype.connect;
 net.Socket.prototype.connect = function guardedSocketConnect(value, ...rest) {
-  guard(destinationFromConnectionArguments(value, rest), 'net-socket');
+  // net.connect() is guarded above. Its implementation subsequently invokes
+  // Socket.connect() with an internal argument-less continuation; treating
+  // that continuation as a new unknown destination rejects an already
+  // admitted loopback connection. Direct Socket.connect() calls still carry
+  // their destination and remain fail-closed through this branch.
+  const target = destinationFromConnectionArguments(value, rest);
+  if (target !== undefined) guard(target, 'net-socket');
   return socketConnect.call(this, value, ...rest);
 };
 wrap(tls, 'connect', 'tls', true);

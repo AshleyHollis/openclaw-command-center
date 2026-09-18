@@ -18,7 +18,7 @@ async function originalNoteIdentity(file) {
 
 // Prepare only the user's configured input in the issued fictional world. The
 // real default startup owns all metadata, Folder enrollment and native imports.
-export async function prepareNativeLegacyBootstrap({ world, signal, scale = false }) {
+export async function prepareNativeLegacyBootstrap({ world, signal, scale = false, catalog = false }) {
   signal.throwIfAborted();
   const topicId = '44444444-4444-4444-8444-444444444444';
   const name = scale ? 'Fictional Native Scale' : 'Fictional Native Journey';
@@ -31,6 +31,7 @@ export async function prepareNativeLegacyBootstrap({ world, signal, scale = fals
   await assert.rejects(lstat(path.join(folder, NOTE_FOLDER_IDENTITY_FILE)), error => error.code === 'ENOENT');
   const noteIdentity = await originalNoteIdentity(path.join(folder, notePath));
   const scaleNotes = [];
+  const catalogNotes = [];
   if (scale) {
     for (let index = 1; index < 5_000; index += 1) {
       signal.throwIfAborted();
@@ -38,6 +39,24 @@ export async function prepareNativeLegacyBootstrap({ world, signal, scale = fals
       const text = `# Fictional scale Note ${index}\nRead-only acceptance source.\n`;
       await writeFile(path.join(folder, file), text, { flag: 'wx' });
       scaleNotes.push({ path: file, text, identity: await originalNoteIdentity(path.join(folder, file)) });
+    }
+  }
+  if (catalog) {
+    // The document-workspace rehearsal needs a realistic, bounded catalogue:
+    // nested folders, duplicate filenames in distinct folders, and enough
+    // entries to prove pagination without importing user material.
+    for (let index = 1; index < 120; index += 1) {
+      signal.throwIfAborted();
+      const branch = index % 3 === 0 ? 'Z Projects/Alpha/Planning'
+        : index % 3 === 1 ? 'Z Projects/Beta/Planning'
+          : 'Z Reference/Archive/2026';
+      const leaf = index <= 3 ? 'Plan.md' : `Fictional-Document-${String(index).padStart(3, '0')}.md`;
+      const file = `${branch}/${leaf}`;
+      const filePath = path.join(folder, ...file.split('/'));
+      await mkdir(path.dirname(filePath), { recursive: true });
+      const text = `# Fictional document ${index}\nNested catalogue fixture — read only.\n`;
+      await writeFile(filePath, text, { flag: 'wx' });
+      catalogNotes.push({ path: file, text, identity: await originalNoteIdentity(filePath) });
     }
   }
   const sourceExport = JSON.parse(await readFile(new URL('../fixtures/legacy-discord-export.v1.json', import.meta.url), 'utf8'));
@@ -63,7 +82,8 @@ export async function prepareNativeLegacyBootstrap({ world, signal, scale = fals
   await writeFile(world.manifest.configPath, `${JSON.stringify(config)}\n`);
   signal.throwIfAborted();
   return Object.freeze({ topicId, name, notePath, noteText, folder, noteIdentity, prepared, exportPath, exportBytes,
-    ...(scale ? { scale: true, scaleNotes: Object.freeze(scaleNotes) } : {}) });
+    ...(scale ? { scale: true, scaleNotes: Object.freeze(scaleNotes) } : {}),
+    ...(catalog ? { catalog: true, catalogNotes: Object.freeze(catalogNotes) } : {}) });
 }
 
 // All destination identities come from authenticated, current public readbacks;
@@ -120,11 +140,13 @@ export async function readNativeLegacyBootstrap({ world, host, signal, bootstrap
   assert.equal(target.sessionId, primary[0].sessionId);
   assert.ok(typeof target.sessionId === 'string' && target.sessionId.length > 0);
   assert.equal(target.sessionKey, `agent:main:command-center:legacy-discord:${bootstrap.prepared.migrationExport.channels[0].channelId}`);
-  const notes = await request('notes.browse', { topicId: bootstrap.topicId, ...(bootstrap.scale ? { limit: 50, offset: 0 } : {}) });
-  assert.equal(notes.total, bootstrap.scale ? 5_000 : 1);
-  assert.equal(notes.notes.length, bootstrap.scale ? 50 : 1);
-  assert.equal(notes.hasMore, !!bootstrap.scale);
-  const note = notes.notes[0];
+  const expectedNotes = bootstrap.scale ? 5_000 : 1 + (bootstrap.catalogNotes?.length ?? 0);
+  const notes = await request('notes.browse', { topicId: bootstrap.topicId, ...(bootstrap.scale || bootstrap.catalog ? { limit: 50, offset: 0 } : {}) });
+  assert.equal(notes.total, expectedNotes);
+  assert.equal(notes.notes.length, bootstrap.scale || bootstrap.catalog ? 50 : 1);
+  assert.equal(notes.hasMore, Boolean(bootstrap.scale || bootstrap.catalog));
+  const note = notes.notes.find((entry) => entry.path === bootstrap.notePath);
+  assert.ok(note, 'The authoritative overview Note must remain in the first catalogue page.');
   assert.equal(note.path, bootstrap.notePath);
   assert.equal(note.sourceReference.topicId, bootstrap.topicId);
   assert.equal(note.revision, `sha256:${createHash('sha256').update(bootstrap.noteText).digest('hex')}`);
@@ -166,7 +188,8 @@ export async function readNativeLegacyBootstrap({ world, host, signal, bootstrap
   assert.equal(occurrenceIds.size, occurrenceCount);
   return Object.freeze({
     fixture: Object.freeze({ topicId: bootstrap.topicId, name: bootstrap.name, sessionReferenceId: target.sourceReference.referenceId,
-      sessionKey: target.sessionKey, sessionId: target.sessionId, notePath: bootstrap.notePath, noteText: bootstrap.noteText, folder: bootstrap.folder }),
+      sessionKey: target.sessionKey, sessionId: target.sessionId, notePath: bootstrap.notePath, noteText: bootstrap.noteText, folder: bootstrap.folder,
+      ...(bootstrap.catalog ? { catalogNotes: bootstrap.catalogNotes } : {}) }),
     completion: status.completion, folderReferenceId: folders[0].referenceId, folderLocator: locators[0],
     noteReferenceId: note.sourceReference.referenceId, importedMessages: imported
   });

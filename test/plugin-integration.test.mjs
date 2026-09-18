@@ -135,27 +135,20 @@ test('started plugin keeps authenticated Topic reads alive across Session delete
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
-test('native manifest declares only bounded exact authenticated plugin routes', async () => {
+test('native manifest uses the supported asset declaration while routes stay registered through the authenticated plugin API', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
-  assert.deepEqual(Object.keys(manifest.controlUi).sort(), ['entry', 'httpRoutes']);
+  assert.deepEqual(Object.keys(manifest.controlUi).sort(), ['entry']);
   assert.equal(manifest.controlUi.entry, 'dist/native-ui/entry.mjs');
   assert.deepEqual(manifest.contracts.gatewayMethodDispatch, ['authenticated-request']);
   const host = fakePublishedApi(path.join(os.tmpdir(), 'fictional-native-registration'));
   delete host.api.session;
   plugin.register(host.api);
-  const declared = manifest.controlUi.httpRoutes;
-  assert.equal(new Set(declared.map((route) => `${route.method}:${route.path}`)).size, declared.length);
-  for (const declaration of declared) {
-    const routes = host.routes.filter((route) => route.path === declaration.path);
-    assert.equal(routes.length, 1);
-    assert.equal(routes[0].auth, 'gateway');
-    assert.equal(routes[0].match, 'exact');
-    assert.ok(['GET', 'POST'].includes(declaration.method));
-    assert.ok(Number.isSafeInteger(declaration.maxRequestBytes) && declaration.maxRequestBytes >= 0 && declaration.maxRequestBytes <= 12 * 1024 * 1024);
-    assert.ok(Number.isSafeInteger(declaration.maxResponseBytes) && declaration.maxResponseBytes > 0 && declaration.maxResponseBytes <= 1024 * 1024);
-    if (declaration.method === 'GET') assert.equal(declaration.maxRequestBytes, 0);
+  assert.ok(host.routes.length > 0, 'the plugin must register its authenticated API routes');
+  for (const route of host.routes) {
+    assert.equal(route.auth, ['/plugins/command-center/styles.css', '/plugins/command-center/markdown.js', '/plugins/command-center/app.js'].includes(route.path) ? 'plugin' : 'gateway');
+    assert.equal(route.match, 'exact');
   }
-  assert.ok(declared.some((route) => route.path === '/plugins/command-center/api/topic/actions' && route.method === 'POST' && route.maxRequestBytes === 12 * 1024 * 1024));
+  assert.ok(host.routes.some((route) => route.path === '/plugins/command-center/api/topic/actions'));
 });
 
 test('production first-live plugin keeps deferred analysis unavailable without dispatch', async () => {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,9 +9,7 @@ import { fixtureEnvironment } from '../src/fixtures.mjs';
 
 const guard = new URL('../src/isolated-child-guard.mjs', import.meta.url);
 
-function runGuardedChild(manifestPath) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['--import', guard.pathname, '--input-type=module', '--eval', `
+function runGuardedChild(manifestPath, script = `
       import dns from 'node:dns';
       const attempts = [
         async () => dns.promises.resolve4('example.invalid'),
@@ -24,7 +23,9 @@ function runGuardedChild(manifestPath) {
       }
       if (rejected !== attempts.length) process.exitCode = 1;
       process.stdout.write(String(rejected));
-    `], {
+    `) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', guard.pathname, '--input-type=module', '--eval', script], {
       env: { PATH: process.env.PATH, [fixtureEnvironment]: manifestPath },
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -43,6 +44,32 @@ test('guard covers promise DNS, WebSocket, and network-only transport surfaces',
   assert.match(source, /globalThis\.WebSocket/);
   assert.doesNotMatch(source, /node:child_process|subprocess-/);
   assert.match(source, /syncBuiltinESMExports/);
+});
+
+test('guarded child permits an admitted loopback fetch through Node socket internals', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-child-guard-loopback-'));
+  const trafficLog = path.join(root, 'traffic.jsonl');
+  const manifestPath = path.join(root, 'fixture-manifest.json');
+  const server = createServer((_request, response) => response.end('loopback-ok'));
+  try {
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen({ host: '127.0.0.1', port: 0 }, resolve); });
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    await writeFile(manifestPath, `${JSON.stringify({ trafficLog })}\n`);
+    const result = await runGuardedChild(manifestPath, `
+      const response = await fetch('http://127.0.0.1:${address.port}/');
+      process.stdout.write(await response.text());
+    `);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'loopback-ok');
+    const entries = (await readFile(trafficLog, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.ok(entries.some((entry) => entry.source === 'fetch' && entry.destination === '127.0.0.1'));
+    assert.ok(entries.some((entry) => entry.source === 'net' && entry.destination === '127.0.0.1'));
+    assert.ok(entries.every((entry) => entry.permitted === true));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('guarded child records and blocks network egress before dispatch', async () => {

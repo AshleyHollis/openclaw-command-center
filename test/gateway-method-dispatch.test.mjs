@@ -61,6 +61,36 @@ test('Conversation authority refuses missing identity or lifetime and detects ch
   assert.equal(runtime.creationAuthority.assertCurrent(), undefined);
 });
 
+test('native Topic grouping accepts only its host-declared Gateway method allowlist', async () => {
+  const context = {};
+  const scope = {
+    pluginId: 'command-center',
+    gatewayMethodDispatchMethods: ['sessions.groups.list', 'sessions.groups.put'],
+    client: { authenticatedUserProfile: { profileId: 'fictional-operator' }, connect: { role: 'operator', scopes: ['operator.write'] } },
+    resolveGatewayContext: () => context
+  };
+  const calls = [];
+  const runtime = await requestRuntime.createRequestScopedConversationRuntime({
+    getRequestScope: () => scope,
+    requiredGatewayMethods: ['sessions.groups.list', 'sessions.groups.put'],
+    dispatchGatewayMethod: async (method) => {
+      calls.push(method);
+      return { ok: true, payload: { groups: [] } };
+    }
+  });
+  await runtime.gatewayRequest('sessions.groups.list', {});
+  assert.deepEqual(calls, ['sessions.groups.list']);
+  scope.gatewayMethodDispatchMethods = ['sessions.groups.list'];
+  assert.throws(() => runtime.creationAuthority.assertCurrent(), { code: 'unauthenticated' });
+  await assert.rejects(
+    () => requestRuntime.createRequestScopedConversationRuntime({
+      getRequestScope: () => scope,
+      requiredGatewayMethods: ['sessions.groups.list', 'sessions.groups.put']
+    }),
+    { code: 'unauthenticated' }
+  );
+});
+
 test('request-scoped runtime can use the published plugin-owned Gateway facade', async () => {
   const context = {};
   const scope = { pluginId: 'command-center', gatewayMethodDispatchAllowed: true,

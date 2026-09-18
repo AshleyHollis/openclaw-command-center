@@ -21,12 +21,14 @@ async function fixture(t) {
   await writeFile(path.join(checkout, 'package.json'), JSON.stringify({ name: 'openclaw', version: pinnedHost.packageVersion, type: 'module', exports: {
     './plugin-sdk/sqlite-runtime': { default: './dist/sqlite-runtime.js' },
     './plugin-sdk/file-access-runtime': { default: './dist/file-access-runtime.js' },
-    './plugin-sdk/session-store-runtime': { default: './dist/session-store-runtime.js' }
+    './plugin-sdk/session-store-runtime': { default: './dist/session-store-runtime.js' },
+    './plugin-sdk/session-transcript-runtime': { default: './dist/session-transcript-runtime.js' }
   } }));
   const sdk = path.join(checkout, 'dist', 'sqlite-runtime.js');
   await writeFile(sdk, 'export const fixtureIdentity = "verified-package-export";\n');
   await writeFile(path.join(checkout, 'dist', 'file-access-runtime.js'), 'export const fixtureFileIdentity = "verified-file-export"; export const stageDurableFileInDirectory = () => { throw new Error("fixture only"); };\n');
   await writeFile(path.join(checkout, 'dist', 'session-store-runtime.js'), 'export const fixtureSessionIdentity = "verified-session-export";\n');
+  await writeFile(path.join(checkout, 'dist', 'session-transcript-runtime.js'), 'export const fixtureTranscriptIdentity = "verified-transcript-export";\n');
   const integrity = { sourceDigest: `sha256:${'a'.repeat(64)}`, executableDigest: `sha256:${createHash('sha256').update(wrapper).digest('hex')}`, contractDigest: `sha256:${'b'.repeat(64)}` };
   await writeFile(path.join(root, 'receipt.json'), JSON.stringify({ schemaVersion: 1, commit: pinnedHost.commit, ...integrity }));
   const descriptor = JSON.stringify({ checkout, executable: 'openclaw.mjs', args: [...pinnedHost.args], commit: pinnedHost.commit, integrity });
@@ -44,13 +46,14 @@ async function fixture(t) {
 
 test('ordinary test setup resolves the verified public SDKs in test children and their children', async t => {
   const f = await fixture(t);
-  const parentEnvironment = { ...process.env, COMMAND_CENTER_TEST_SQLITE_RUNTIME: 'file:///fictional/parent-sqlite.js', COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME: 'file:///fictional/parent-file.js', COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME: 'file:///fictional/parent-session.js' };
+  const parentEnvironment = { ...process.env, COMMAND_CENTER_TEST_SQLITE_RUNTIME: 'file:///fictional/parent-sqlite.js', COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME: 'file:///fictional/parent-file.js', COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME: 'file:///fictional/parent-session.js', COMMAND_CENTER_TEST_SESSION_TRANSCRIPT_RUNTIME: 'file:///fictional/parent-transcript.js' };
   const original = { ...parentEnvironment, COMMAND_CENTER_ISOLATED_HOST: f.descriptor, NODE_OPTIONS: '--no-warnings' };
   // This nested fixture owns a different verified host than its test parent.
   // Clear inherited SDK bindings; production override refusal stays intact.
   delete original.COMMAND_CENTER_TEST_SQLITE_RUNTIME;
   delete original.COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME;
   delete original.COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME;
+  delete original.COMMAND_CENTER_TEST_SESSION_TRANSCRIPT_RUNTIME;
   const environment = await prepareTestRuntimeEnvironment(original, f.verification);
   assert.equal(original.COMMAND_CENTER_TEST_SQLITE_RUNTIME, undefined);
   assert.equal(original.COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME, undefined);
@@ -59,16 +62,17 @@ test('ordinary test setup resolves the verified public SDKs in test children and
   assert.equal(environment.COMMAND_CENTER_TEST_SQLITE_RUNTIME, pathToFileURL(f.sdk).href);
   assert.match(environment.COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME, /file-access-runtime\.js$/u);
   assert.match(environment.COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME, /session-store-runtime\.js$/u);
-  const source = 'import { fixtureIdentity } from "openclaw/plugin-sdk/sqlite-runtime"; import { fixtureFileIdentity } from "openclaw/plugin-sdk/file-access-runtime"; import { fixtureSessionIdentity } from "openclaw/plugin-sdk/session-store-runtime"; process.stdout.write(fixtureIdentity + "/" + fixtureFileIdentity + "/" + fixtureSessionIdentity);';
+  assert.match(environment.COMMAND_CENTER_TEST_SESSION_TRANSCRIPT_RUNTIME, /session-transcript-runtime\.js$/u);
+  const source = 'import { fixtureIdentity } from "openclaw/plugin-sdk/sqlite-runtime"; import { fixtureFileIdentity } from "openclaw/plugin-sdk/file-access-runtime"; import { fixtureSessionIdentity } from "openclaw/plugin-sdk/session-store-runtime"; import { fixtureTranscriptIdentity } from "openclaw/plugin-sdk/session-transcript-runtime"; process.stdout.write(fixtureIdentity + "/" + fixtureFileIdentity + "/" + fixtureSessionIdentity + "/" + fixtureTranscriptIdentity);';
   const parent = `import { spawnSync } from 'node:child_process'; ${source} const child = spawnSync(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(source)}], { encoding: 'utf8' }); if (child.status !== 0) throw new Error(child.stderr); process.stdout.write(':' + child.stdout);`;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', parent], { env: environment, encoding: 'utf8', timeout: 30_000 });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'verified-package-export/verified-file-export/verified-session-export:verified-package-export/verified-file-export/verified-session-export');
+  assert.equal(result.stdout, 'verified-package-export/verified-file-export/verified-session-export/verified-transcript-export:verified-package-export/verified-file-export/verified-session-export/verified-transcript-export');
 });
 
 test('a verified host refuses conflicting SDK overrides instead of silently substituting behavior', async t => {
   const f = await fixture(t);
-  for (const key of ['COMMAND_CENTER_TEST_SQLITE_RUNTIME', 'COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME', 'COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME']) {
+  for (const key of ['COMMAND_CENTER_TEST_SQLITE_RUNTIME', 'COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME', 'COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME', 'COMMAND_CENTER_TEST_SESSION_TRANSCRIPT_RUNTIME']) {
     await assert.rejects(prepareTestRuntimeEnvironment({ COMMAND_CENTER_ISOLATED_HOST: f.descriptor, [key]: pathToFileURL(path.join(f.root, 'foreign.js')).href }, f.verification), /override conflicts/);
   }
   const equal = await prepareTestRuntimeEnvironment({ COMMAND_CENTER_ISOLATED_HOST: f.descriptor, COMMAND_CENTER_TEST_SQLITE_RUNTIME: pathToFileURL(f.sdk).href }, f.verification);

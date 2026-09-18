@@ -6,8 +6,11 @@ import test from 'node:test';
 import { NoteAdapter } from '../src/sources/notes.mjs';
 import { normalizeNotePath } from '../src/sources/note-path.mjs';
 import { enrollNoteFolderIdentity } from '../src/sources/note-folder-identity.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 const fsSafeRootFactory = async (rootDir) => ({ rootDir, rootReal: rootDir, resolve: async (relative) => path.join(rootDir, relative), open: async (relative) => ({ handle: await (await import('node:fs/promises')).open(path.join(rootDir, relative), 'r') }) });
+const releaseHostFileAccessFixture = installHostFileAccessFixture();
+test.after(() => releaseHostFileAccessFixture());
 
 async function withRoot(run) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-notes-'));

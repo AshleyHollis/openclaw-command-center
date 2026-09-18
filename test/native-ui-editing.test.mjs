@@ -13,8 +13,9 @@ const topicProvisioning = { timeout: 30000, skip: !FIRST_LIVE_FEATURES.topicProv
 async function fixture(run) {
   const server = createServer(async (req, res) => {
     if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional native host</title><main id="mount"></main></html>'); return; }
-    if (!/^\/[a-z-]+\.mjs$/.test(req.url)) { res.writeHead(404); res.end(); return; }
-    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(`../src/native-ui${req.url}`, import.meta.url))); }
+    const vendor = { '/vendor/markdown-it.mjs': '../node_modules/markdown-it/dist/browser/markdown-it.esm.min.mjs', '/vendor/purify.es.mjs': '../node_modules/dompurify/dist/purify.es.mjs' }[req.url];
+    if (!vendor && !/^\/[a-z-]+\.mjs$/.test(req.url)) { res.writeHead(404); res.end(); return; }
+    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(vendor ?? `../src/native-ui${req.url}`, import.meta.url))); }
     catch { res.writeHead(404); res.end(); }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

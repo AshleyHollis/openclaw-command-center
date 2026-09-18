@@ -9,7 +9,8 @@ import { chromium } from 'playwright';
 async function fixture(run, options = {}) {
   const server = createServer(async (req, res) => {
     if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional first-live host</title><main id="mount"></main></html>'); return; }
-    const file = ['/release-scope.mjs', '/sources/errors.mjs'].includes(req.url) || /^\/native-ui\/[a-z-]+\.mjs$/.test(req.url) ? `../src${req.url}` : null;
+    const vendor = { '/native-ui/vendor/markdown-it.mjs': '../node_modules/markdown-it/dist/browser/markdown-it.esm.min.mjs', '/native-ui/vendor/purify.es.mjs': '../node_modules/dompurify/dist/purify.es.mjs' }[req.url];
+    const file = vendor ?? (['/release-scope.mjs', '/sources/errors.mjs'].includes(req.url) || /^\/native-ui\/[a-z-]+\.mjs$/.test(req.url) ? `../src${req.url}` : null);
     if (!file) { res.writeHead(404); res.end(); return; }
     try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(file, import.meta.url))); }
     catch { res.writeHead(404); res.end(); }
@@ -36,7 +37,7 @@ async function fixture(run, options = {}) {
       const host = {
         signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: true }, redact: text => text,
         subscribe: fn => { subscribers.add(fn); return () => subscribers.delete(fn); },
-        sessions: { open: value => window.opened.push(value) },
+        sessions: { open: value => window.opened.push(value), openChat: value => window.opened.push(value) },
         navigation: { openPage(target) {
           scope?.abort(); view?.dispose(); scope = new AbortController();
           context = { host: { ...host, signal: AbortSignal.any([lifetime.signal, scope.signal]) }, signal: scope.signal, props: target.params ?? {}, presented: true };
@@ -51,6 +52,7 @@ async function fixture(run, options = {}) {
               messages: Array.from({ length: end - offset }, (_, index) => ({ messageId: `event-${offset + index}`, author: 'Fictional author',
                 bot: false, timestamp: '2026-01-01T00:00:00Z', text: `Preserved message ${offset + index + 1}`, detailsJson: '{}', attachments: [] })) } };
           }
+          if (method.endsWith('histories.list')) return { result: { histories: [] } };
           if (method.endsWith('sessions.create')) return { result: { key: 'agent:fictional:new', sessionId: 'new-id', revision: 'fictional-revision' } };
           if (method.endsWith('sources.status')) return { result: { schemaVersion: 1, mode: 'ready', unavailableCapabilities: [] } };
           if (method.endsWith('topics.list')) return { result: { activeGroups: { project: [topic], area: [], resource: [] } } };
@@ -69,7 +71,7 @@ async function fixture(run, options = {}) {
             return { result: value };
           }
           if (method.endsWith('sessions.browse')) return { result: { topicId, conversations: [{ referenceId: 'session:primary', sessionId: 'primary-id', status: 'open', isPrimary: true }, { referenceId: 'session:new', sessionId: 'new-id', status: 'open', isPrimary: false }] } };
-          if (method.endsWith('sessions.navigate')) return { result: { sessionKey: params.referenceId === 'session:primary' ? 'agent:fictional:primary' : 'agent:fictional:new', sessionId: params.referenceId === 'session:primary' ? 'primary-id' : 'new-id', sourceReference: { topicId, referenceId: params.referenceId } } };
+          if (method.endsWith('sessions.resolve-native')) return { result: { sessionKey: params.referenceId === 'session:primary' ? 'agent:fictional:primary' : 'agent:fictional:new' } };
           throw new Error(`Unsupported native host call: ${method}`);
         },
         async httpRequest(request, { signal }) {
@@ -343,7 +345,7 @@ test('Notes remain authoritative read-only content without any authoring control
   assert.equal(await page.locator('textarea').count(), 0);
   assert.equal(await page.getByRole('button', { name: /Save Note|Check save outcome|Create Note|Discard draft/ }).count(), 0);
   assert.equal(await page.getByRole('textbox', { name: 'New Note path (required)' }).count(), 0);
-  await page.getByText('Notes are read-only in this release. Edit them in your external Note application.').waitFor();
+  await page.getByText('Read-only · Edit Notes in your external Note application.').waitFor();
   await page.evaluate(() => { window.text = 'Externally updated Note'; window.notes[0].revision = 'r2'; });
   await page.getByRole('button', { name: 'Refresh Notes' }).click();
   await page.getByRole('button', { name: 'Read note-0.md', exact: true }).click();
@@ -416,8 +418,7 @@ for (const interruption of ['remount', 'permission']) test(`a late Conversation 
   assert.deepEqual(await page.evaluate(() => window.opened), []);
 }, { start: 'topic' }));
 
-test('large Notes and catalog pagination retain exact revision and cursor reads', { timeout: 30000 }, () => fixture(async page => {
-  await page.getByRole('button', { name: 'Next Notes', exact: true }).click();
+test('large Notes load one complete cursor-pinned tree and retain exact revision reads', { timeout: 30000 }, () => fixture(async page => {
   await page.getByRole('button', { name: 'Read note-50.md', exact: true }).click();
   await page.getByText('Note opened · r1', { exact: true }).waitFor();
   assert.equal(await page.getByRole('region', { name: 'Note content' }).textContent(), 'Large authoritative Note.\n'.repeat(50000));
@@ -426,8 +427,8 @@ test('large Notes and catalog pagination retain exact revision and cursor reads'
   const reads = requests.filter(row => row.method.endsWith('notes.read'));
   assert.ok(reads.length > 2);
   assert.ok(reads.every(row => row.params.referenceId === 'note:50' && row.params.path === 'note-50.md' && row.params.observedRevision === 'r1'));
-  await page.getByRole('button', { name: 'Previous Notes', exact: true }).click();
   await page.getByRole('button', { name: 'Read note-0.md', exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: /Previous Notes|Next Notes/ }).count(), 0);
   assert.equal(await page.locator('textarea').count(), 0);
 }, { start: 'topic', large: true, paginated: true }));
 

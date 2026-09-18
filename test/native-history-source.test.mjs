@@ -25,6 +25,33 @@ async function fixture(t, entries = records()) {
   return { root, file, bytes, inventory, options: { root, expectedInventorySha256: sha256(inventoryBytes), originalAgentId: 'main' } };
 }
 
+test('history list uses the exact read-only native destination label, never its opaque source ID', async t => {
+  const { readNativeHistoryInventory } = await import('../src/migration/native-history-source.mjs');
+  const { createPreservedHistoryReader } = await import('../src/migration/preserved-history-read.mjs');
+  const source = await fixture(t);
+  const prepared = (await readNativeHistoryInventory(source.options)).histories[0];
+  const receipt = { historyId: 'a'.repeat(64), phase: 'verified', logicalOperationId: 'fictional-operation', verifiedCount: 3,
+    target: { agentId: 'main', sessionKey: 'agent:main:fictional-history', sessionId: 'fictional-destination' },
+    intent: { schemaVersion: 2, sourceInventorySha256: prepared.sourceInventorySha256, originalAgentId: prepared.originalAgentId,
+      originalSessionId: prepared.originalSessionId, sourceFile: prepared.sourceFile, sourceDigest: prepared.sourceDigest,
+      expectedCount: prepared.expectedCount, topicId: null } };
+  let entry = { sessionId: receipt.target.sessionId, lifecycleRevision: receipt.logicalOperationId, sendPolicy: 'deny', label: 'Example briefing history' };
+  const reader = await createPreservedHistoryReader({ nativeSourceOptions: source.options,
+    metadata: { listImportedHistories: () => [receipt], getImportedHistory: () => receipt },
+    sessionStore: { getSessionEntry: input => { assert.deepEqual(input, { ...receipt.target, readConsistency: 'latest' }); return entry; } } });
+  const list = () => reader.list({ schemaVersion: 1 }, () => {});
+  assert.deepEqual((await list()).histories[0], { historyId: receipt.historyId, topicId: null,
+    title: 'Example briefing history', readOnly: true, totalMessages: 3 });
+  for (const label of [undefined, '', '   ', 'Imported History', 'bad\u0000label', 'x'.repeat(1001)]) {
+    entry = { ...entry, label };
+    assert.equal((await list()).histories[0].title, 'Preserved conversation — 2026-01-01T00:00:00.000Z');
+  }
+  for (const patch of [{ sessionId: 'replacement' }, { lifecycleRevision: 'replacement' }, { sendPolicy: 'allow' }]) {
+    const original = entry; entry = { ...entry, ...patch };
+    await assert.rejects(list(), { code: 'history-destination-rebound' }); entry = original;
+  }
+});
+
 test('native history admission preserves every record and original branch as inert read-only provenance', async t => {
   const { readNativeHistoryInventory } = await import('../src/migration/native-history-source.mjs');
   const source = await fixture(t);

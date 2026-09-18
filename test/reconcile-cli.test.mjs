@@ -5,7 +5,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
-import { readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
+import { readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredNoteFolderRecovery, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
 import { reconciliationPlanDigest } from '../src/migration/reconcile.mjs';
 
 test('CLI metadata declares lazy reconciliation without runtime activation', async () => {
@@ -21,9 +21,22 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
   await registration({ program: command(''), config: {}, logger: {} });
   assert.deepEqual(paths, [
     ...['reconcile', 'prepare-topic'].flatMap(command => ['preflight', 'execute', 'resume', 'verify'].map(mode => `command-center ${command} ${mode}`)),
-    'command-center initialize-metadata execute', 'command-center initialize-metadata verify'
+    'command-center initialize-metadata execute', 'command-center initialize-metadata verify',
+    ...['preflight', 'execute', 'verify'].map(mode => `command-center recover-note-folders ${mode}`)
   ]);
-  assert.equal(required.length, 20); assert.equal(actions.length, 10);
+  assert.equal(required.length, 26); assert.equal(actions.length, 13);
+});
+
+test('Note Folder recovery CLI rejects an unpinned or noncanonical plan before opening metadata', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'folder-recovery-cli-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const planPath = path.join(root, 'plan.json');
+  const plan = { schemaVersion: 1, purpose: 'command-center-note-folder-recovery', stateDirectory: root, bindings: [] };
+  await writeFile(planPath, JSON.stringify(plan));
+  const saved = process.env.OPENCLAW_STATE_DIR; process.env.OPENCLAW_STATE_DIR = root;
+  try {
+    await assert.rejects(runConfiguredNoteFolderRecovery({ mode: 'execute', planPath, expectedDigest: reconciliationPlanDigest(plan), config: { plugins: { entries: { 'command-center': { config: { topics: { noteRoot: root } } } } } } }), { code: 'note-folder-recovery-plan-invalid' });
+  } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
 });
 
 test('a noncanonical preparation name is refused before native SDK or metadata initialization', async t => {

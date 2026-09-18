@@ -9,6 +9,9 @@ import { createTopicsHttpHandler } from './topics/http.mjs';
 import { createDashboardReadHttpHandler, createDashboardActionsHttpHandler } from './dashboard/http-route.mjs';
 import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandler } from './topics/analysis-http.mjs';
 import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
+import { topicDocumentFileToolFactory } from './documents/tool.mjs';
+import { topicNoteMaintenanceToolFactory } from './maintenance/tool.mjs';
+import { createTopicMaintenanceCompletionSubscription } from './maintenance/completion.mjs';
 import { createTopicPageActionsHandler } from './topics/page-http.mjs';
 import { createSearchRebuildHttpHandler, searchRebuildRoute } from './search/http-route.mjs';
 import { assertFirstLiveTopicAction, FIRST_LIVE_FEATURES } from './release-scope.mjs';
@@ -191,6 +194,16 @@ export default definePluginEntry({
     registerNativeSessionNavigation(api, serviceProxy, { mutationsAllowed: controlUiMutationsAllowed });
     if (FIRST_LIVE_FEATURES.search) api.registerTool(topicContextToolFactory({ retrieve: (input) => service.topicContextRetrieve(input) }), { name: 'command_center_topic_context', optional: true });
     if (FIRST_LIVE_FEATURES.analysis) api.registerTool(topicAnalysisToolFactory({ run: (input) => service.topicAnalysisRun(input) }), { name: 'command_center_topic_analysis', optional: true });
+    if (FIRST_LIVE_FEATURES.topicDocuments) api.registerTool(topicDocumentFileToolFactory({ file: (input) => service.sourceService.documentsFileAttachment(input) }), { name: 'command_center_file_topic_attachment', optional: true });
+    if (FIRST_LIVE_FEATURES.noteMaintenance) api.registerTool(topicNoteMaintenanceToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_update_working_note', optional: true });
+    // The host exposes the same subscription contract in both its current
+    // flat SDK form and its nested facade form. Prefer the facade where it is
+    // present, but never silently drop automatic maintenance for a host that
+    // provides only the flat contract.
+    const registerAgentEventSubscription = api.agent?.events?.registerAgentEventSubscription ?? api.registerAgentEventSubscription;
+    if (FIRST_LIVE_FEATURES.noteMaintenance && typeof registerAgentEventSubscription === 'function') {
+      registerAgentEventSubscription(createTopicMaintenanceCompletionSubscription({ getOwners: () => ({ sourceService: service.sourceService, metadata: service.sourceService?.metadata, maintenanceSchedule: service.sourceService?.maintenanceSchedule }) }));
+    }
     api.registerService(service);
   }
 });

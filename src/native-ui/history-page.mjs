@@ -89,7 +89,11 @@ export function mountHistoryPage(container, context) {
         }
         catalog.replaceChildren(fragment); status.textContent = `${result.histories.length} preserved histories.`; return;
       }
-      const result = unwrap(await host.request('command-center.v1.histories.read', { schemaVersion: 1, historyId: props.historyId, offset, limit: 50 }));
+      // Keep each live history page comfortably below the Gateway's interactive
+      // transport budget.  Preserved histories are deliberately paginated;
+      // asking for fifty full provenance records at once can block the browser
+      // connection before the read-only view has a chance to render.
+      const result = unwrap(await host.request('command-center.v1.histories.read', { schemaVersion: 1, historyId: props.historyId, offset, limit: 10 }));
       if (!current(pending)) return;
       if (result?.historyId !== props.historyId || result.readOnly !== true || !Array.isArray(result.messages) || result.offset !== offset ||
           !boundedInteger(result.totalMessages, Number.MAX_SAFE_INTEGER) || typeof result.hasMore !== 'boolean' ||

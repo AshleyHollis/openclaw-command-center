@@ -6,6 +6,17 @@ import { assertSafeDirectory } from './note-path.mjs';
 import { sourceError } from './errors.mjs';
 
 export const NOTE_FOLDER_IDENTITY_FILE = '.command-center-folder-identity';
+let hostDurableStager;
+
+// The host injects this during plugin activation. Unit-only callers retain
+// the published SDK fallback below; a real host must supply the live runtime
+// capability so its native binding, not the plugin dependency tree, owns the
+// durable publish operation.
+export function setHostDurableFolderStager(stager) {
+  const installed = typeof stager === 'function' ? stager : undefined;
+  hostDurableStager = installed;
+  return () => { if (hostDurableStager === installed) hostDurableStager = undefined; };
+}
 const physicalIdentity = (stat) => `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
 const sameIdentity = (left, right) => left && right && physicalIdentity(left) === physicalIdentity(right);
 const directoryIdentity = stat => createHash('sha256').update(physicalIdentity(stat)).digest('hex');
@@ -30,7 +41,9 @@ async function folderIdentity(root, enroll, bootstrap) {
       if (!existing) {
         // Exact fork runtime contract: the host owns native staging and its patched
         // dependency. Never toggle global native mode or publish unfinished bytes.
-        const { stageDurableFileInDirectory } = await import('openclaw/plugin-sdk/file-access-runtime');
+        const { stageDurableFileInDirectory } = hostDurableStager
+          ? { stageDurableFileInDirectory: hostDurableStager }
+          : await import('openclaw/plugin-sdk/file-access-runtime');
         if (typeof stageDurableFileInDirectory !== 'function') throw sourceError('capability-unavailable', 'The host durable folder enrollment contract is unavailable.');
         let staged;
         try {

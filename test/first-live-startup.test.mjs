@@ -7,8 +7,10 @@ import path from 'node:path';
 import test from 'node:test';
 import { createMetadataService, runNoteMaintenance } from '../src/plugin-service.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { enrollNoteFolderIdentity } from '../src/sources/note-folder-identity.mjs';
+import { enrollNoteFolderIdentity, setHostDurableFolderStager } from '../src/sources/note-folder-identity.mjs';
+import { withNoteFilesystemOwner } from '../src/sources/note-filesystem-owner.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
+import { createHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 const topicId = 'fictional-existing-topic';
 const folderReferenceId = 'fictional-existing-folder';
@@ -19,7 +21,14 @@ const sessionId = 'fictional-existing-session';
 test('first-live startup serves existing Topics, Notes and exact Conversations without starting deferred capabilities', async (t) => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'first-live-startup-'));
   const vault = path.join(stateDir, 'vault'); const folder = path.join(vault, 'Projects', 'Fictional');
-  let service; let sdkRequests = 0;
+  let fileAccess = createHostFileAccessFixture();
+  let coordinatorLeases = 0;
+  const hostAcquire = fileAccess.tryAcquireExclusiveSqliteCoordinator;
+  fileAccess = Object.freeze({ ...fileAccess, tryAcquireExclusiveSqliteCoordinator(lockPath) {
+    coordinatorLeases += 1;
+    return hostAcquire(lockPath);
+  } });
+  let service; let releaseDurableFolderStager; let sdkRequests = 0;
   const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
     if (specifier === 'openclaw/plugin-sdk/session-transcript-runtime') { sdkRequests += 1; throw new Error('The native transcript SDK is deliberately unavailable.'); }
     return nextResolve(specifier, context);
@@ -28,6 +37,7 @@ test('first-live startup serves existing Topics, Notes and exact Conversations w
   const originalJobs = structuredClone(nativeJobs);
   try {
     await mkdir(folder, { recursive: true }); await writeFile(path.join(folder, 'Overview.md'), '# Fictional Topic\nExisting readable content.\n');
+    releaseDurableFolderStager = setHostDurableFolderStager(fileAccess.stageDurableFileInDirectory);
     const seed = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
     try {
       seed.createTopic({ topicId, name: 'Fictional Topic', paraCategory: 'project', lifecycle: 'active' });
@@ -35,10 +45,11 @@ test('first-live startup serves existing Topics, Notes and exact Conversations w
       seed.setSourceLocator({ referenceId: folderReferenceId, locator: folder, ownership: 'external', observedRevision: await enrollNoteFolderIdentity(folder) });
       seed.createSourceReference({ version: 1, referenceId: sessionReferenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey });
       seed.setSessionState({ referenceId: sessionReferenceId, sessionId, status: 'open', isPrimary: true });
-    } finally { seed.close(); }
+    } finally { seed.close(); releaseDurableFolderStager(); releaseDurableFolderStager = undefined; }
     const forbidden = label => () => { assert.fail(`Deferred ${label} capability was used during core startup.`); };
     const api = {
       runtime: {
+        fileAccess,
         state: { resolveStateDir: () => stateDir },
         agent: { session: { listSessionEntries: () => [{ sessionKey, entry: { sessionId, updatedAt: 1 } }] } },
         gateway: { request: forbidden('Gateway'), isAvailable: forbidden('Gateway availability') },
@@ -53,6 +64,11 @@ test('first-live startup serves existing Topics, Notes and exact Conversations w
     service = createMetadataService(api, { notificationEmitter: new Proxy({}, { get: forbidden('notification emitter') }), searchRebuildServiceFactory: forbidden('Search factory'), topicAnalyzerFactory: forbidden('Analysis factory') });
     await service.start({ getCron: forbidden('native Cron') });
     await new Promise(resolve => setImmediate(resolve));
+    const maintenanceOwners = service.getTopicMaintenanceOwners();
+    assert.equal(maintenanceOwners.sourceService, service.sourceService);
+    assert.ok(maintenanceOwners.metadata, 'Working-Note maintenance must retain its exact activation metadata owner.');
+    await withNoteFilesystemOwner(service.sourceService.metadata, async () => {});
+    assert.equal(coordinatorLeases, 1, 'The activation must install the host-owned Note filesystem coordinator.');
     assert.equal(sdkRequests, 0, 'core startup must not load the history/index transcript runtime');
     for (const name of ['attentionService', 'maintenanceService', 'searchService', 'searchRebuildService', 'dashboardService', 'notificationService', 'topicAnalysisRunner', 'topicAnalysisSchedule', 'topicReview']) assert.equal(service[name], undefined, name);
     assert.equal(service.topicService.listDestination().activeGroups.project[0].topicId, topicId);
@@ -69,7 +85,7 @@ test('first-live startup serves existing Topics, Notes and exact Conversations w
     await assert.rejects(service.searchRebuild({}), error => error.code === 'capability-unavailable');
     const reopened = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
     try { assert.equal(reopened.getTopicAnalysisSettings(), null); assert.equal(reopened.getTopic(topicId).revision, 0); } finally { reopened.close(); }
-  } finally { await service?.stop(); hooks.deregister(); await rm(stateDir, { recursive: true, force: true }); }
+  } finally { await service?.stop(); releaseDurableFolderStager?.(); hooks.deregister(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
 test('first-live recovery-only startup preserves refused metadata and exposes a clear core recovery status', async () => {

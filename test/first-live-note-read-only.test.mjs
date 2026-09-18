@@ -9,6 +9,7 @@ import test from 'node:test';
 import { openFixture } from './fixtures/first-live-note-read-only.mjs';
 import { withNoteFilesystemOwner } from '../src/sources/note-filesystem-owner.mjs';
 import { createMetadataService } from '../src/plugin-service.mjs';
+import { createHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 async function crash(stateDir, operation, logicalOperationId, revision, boundary = 'claimed') {
   const child = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/first-live-note-read-only.mjs', import.meta.url)), 'child', stateDir, operation, logicalOperationId, revision, boundary], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -126,7 +127,7 @@ test('production first-live startup enforces read-only recovery after a real int
     await crash(stateDir, 'edit', randomUUID(), before.revision);
     fixture = await openFixture(stateDir, { noteRecoveryEffects: false });
     const files = await tree(root); const journal = fixture.metadata.listTopicOperations('fictional-read-only');
-    service = createMetadataService({ runtime: { state: { resolveStateDir: () => stateDir } }, pluginConfig: { topics: { noteRoot: root } }, logger: {} });
+    service = createMetadataService({ runtime: { fileAccess: createHostFileAccessFixture(), state: { resolveStateDir: () => stateDir } }, pluginConfig: { topics: { noteRoot: root } }, logger: {} });
     await service.start();
     await assert.rejects(() => service.sourceService.notesRead({ schemaVersion: 1, topicId: 'fictional-read-only', path: 'original.md' }), error => error.code === 'source-recovery');
     await assert.rejects(() => service.sourceService.notesBrowse({ schemaVersion: 1, topicId: 'fictional-read-only' }), error => error.code === 'source-recovery');

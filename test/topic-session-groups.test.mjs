@@ -18,6 +18,7 @@ async function fixture(run) {
   metadata.createSessionBinding({ reference: { version: 1, referenceId: 'fixture-ref', topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey, observedRevision: '10' }, state: { referenceId: 'fixture-ref', sessionId: 'original', status: 'open', isPrimary: true, displayName: 'Overview' } });
   const entry = { sessionId: 'original', lifecycleRevision: 'lifecycle-one', updatedAt: 10 };
   let effects = 0;
+  const calls = [];
   let beforeCommit = () => {};
   let afterCommit = () => {};
   const sessionStore = {
@@ -26,6 +27,7 @@ async function fixture(run) {
     // callback/commit predicate; host conformance tests own native SQLite CAS.
     async patchSessionEntry(params) {
       assert.equal(params.sessionKey, sessionKey); assert.equal(params.preserveActivity, true);
+      calls.push('patch');
       const patch = await params.update(structuredClone(entry));
       beforeCommit(); params.assertCommitAllowed();
       Object.assign(entry, patch); effects++; afterCommit(); return { ...entry };
@@ -33,21 +35,32 @@ async function fixture(run) {
   };
   const service = new AuthoritativeSourceService({ metadata, sessionStore, capabilities: { sessions: true, notes: false, scheduler: false } });
   let allowed = true;
-  const runtime = { creationAuthority: { principalId: 'fixture-operator', assertCurrent() { if (!allowed) throw Object.assign(new Error('revoked'), { code: 'unauthenticated' }); } } };
+  const nativeGroups = new Set();
+  const runtime = {
+    creationAuthority: { principalId: 'fixture-operator', assertCurrent() { if (!allowed) throw Object.assign(new Error('revoked'), { code: 'unauthenticated' }); } },
+    nativeGroupCatalog: { async ensureGroup(name) { calls.push(`catalog:${name}`); const alreadyPresent = nativeGroups.has(name); nativeGroups.add(name); return { name, alreadyPresent }; } }
+  };
   const input = { schemaVersion: 1, topicId, logicalOperationId: randomUUID(), referenceId: 'fixture-ref', expectedSessionId: 'original', expectedLifecycleRevision: 'lifecycle-one', expectedTopicRevision: 0, name: 'Sample Project' };
   const apply = (command = input) => invokeBridgeMethod(service, 'command-center.v1.sessions.group', command, null, null, runtime);
-  try { await run({ stateDir, metadata, entry, input, apply, service, runtime, sessionStore, effects: () => effects, revoke: () => { allowed = false; }, before: fn => { beforeCommit = fn; }, after: fn => { afterCommit = fn; } }); }
+  try { await run({ stateDir, metadata, entry, input, apply, service, runtime, sessionStore, effects: () => effects, calls, nativeGroups, revoke: () => { allowed = false; }, before: fn => { beforeCommit = fn; }, after: fn => { afterCommit = fn; } }); }
   finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 }
 
-test('explicit grouping preserves native activity and durable Topic identity; retry cannot reclaim a user-moved group', () => fixture(async ({ entry, input, apply, service, effects }) => {
+test('explicit grouping preserves native activity and durable Topic identity; retry cannot reclaim a user-moved group', () => fixture(async ({ entry, input, apply, service, effects, calls, nativeGroups }) => {
   const plan = await invokeBridgeMethod(service, 'command-center.v1.sessions.group-preview', { schemaVersion: 1, topicId: input.topicId });
   assert.equal(plan.members[0].eligible, true);
   const receipt = await apply();
   assert.equal(receipt.status, 'applied'); assert.equal(entry.category, 'Sample Project'); assert.equal(entry.updatedAt, 10);
+  assert.deepEqual(calls, ['catalog:Sample Project', 'patch']); assert.deepEqual([...nativeGroups], ['Sample Project']);
   entry.category = 'User group';
   assert.deepEqual(await apply(), receipt); assert.equal(effects(), 1); assert.equal(entry.category, 'User group');
   assert.equal((await service.sessionGroupPreview({ topicId: input.topicId })).members[0].eligible, false);
+}));
+
+test('grouping refuses to patch when the narrow native catalogue capability is absent', () => fixture(async ({ runtime, apply, effects }) => {
+  delete runtime.nativeGroupCatalog;
+  await assert.rejects(apply(), /unavailable/);
+  assert.equal(effects(), 0);
 }));
 
 for (const change of ['category', 'sessionId', 'lifecycleRevision']) test(`grouping refuses stale native ${change}`, () => fixture(async ({ entry, apply, effects }) => {

@@ -70,7 +70,11 @@ test('native historical import recovers a lost append response and verifies orig
   const listing = await reader.list({ schemaVersion: 1 }, () => {});
   assert.equal(listing.histories.length, 1);
   assert.equal(listing.histories[0].readOnly, true);
+  await sessionStore.patchSessionEntry({ ...reservation.target, storePath, preserveActivity: true,
+    update: () => ({ label: 'Fictional readable history' }) });
+  assert.equal((await reader.list({ schemaVersion: 1 }, () => {})).histories[0].title, 'Fictional readable history');
   const firstPage = await reader.read({ schemaVersion: 1, historyId: reservation.historyId, limit: 1 }, () => {});
+  assert.equal(firstPage.title, 'Fictional readable history');
   assert.equal(firstPage.hasMore, true);
   assert.equal(firstPage.messages[0].author, 'assistant');
   assert.deepEqual(JSON.parse(firstPage.messages[0].detailsJson), { session: records[0], entry: records[1] });
@@ -133,6 +137,7 @@ test('native historical import recovers a lost append response and verifies orig
   const mixed = await createPreservedHistoryReader({ ...options, sourceOptions: discord.options, nativeSourceOptions });
   assert.equal((await mixed.list({ schemaVersion: 1 }, () => {})).histories.length, 2);
   const discordPage = await mixed.read({ schemaVersion: 1, historyId: importedDiscord.histories[0].historyId }, () => {});
+  assert.equal(discordPage.title, 'Fictional Discord');
   assert.equal(discordPage.messages[0].text, 'Original Discord text');
   assert.deepEqual(JSON.parse(discordPage.messages[0].detailsJson).message, discordMessage);
   assert.equal((await mixed.read({ schemaVersion: 1, historyId: reservation.historyId }, () => {})).messages.length, 2);

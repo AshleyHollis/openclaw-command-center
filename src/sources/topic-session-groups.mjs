@@ -23,7 +23,8 @@ export async function groupTopicSession(adapter, input, runtime) {
   assertNoUnexpectedKeys(input, ['schemaVersion', 'requestId', 'logicalOperationId', 'referenceId', 'expectedSessionId', 'expectedLifecycleRevision', 'expectedTopicRevision', 'name'], 'Topic Session group command');
   const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
   const authority = runtime.creationAuthority;
-  if (!authority || typeof authority.assertCurrent !== 'function' || !adapter.sessionStore?.patchSessionEntry) throw sourceError('capability-unavailable', 'Authenticated conditional Session grouping is unavailable.');
+  const nativeGroupCatalog = runtime.nativeGroupCatalog;
+  if (!authority || typeof authority.assertCurrent !== 'function' || typeof nativeGroupCatalog?.ensureGroup !== 'function' || !adapter.sessionStore?.patchSessionEntry) throw sourceError('capability-unavailable', 'Authenticated conditional Session grouping is unavailable.');
   const principalId = nonBlank(authority.principalId, 'principalId');
   const expectedSessionId = nonBlank(input.expectedSessionId, 'expectedSessionId');
   // Native ordinary Sessions may have no lifecycle revision. Explicit null
@@ -47,6 +48,12 @@ export async function groupTopicSession(adapter, input, runtime) {
     if (adapter.metadata.listSourceRecovery(adapter.topicId).some(item => item.sourceKind === 'session' && item.state === 'required')) throw sourceError('source-recovery', 'Resolve Session recovery before organizing Conversations.');
     if (topic?.revision !== input.expectedTopicRevision || topic.name !== name || topic.lifecycle !== 'active' || topic.paraCategory === 'archive' || state?.sessionId !== expectedSessionId || state.status !== 'open' || effectiveSourceLocator(adapter.metadata, currentReference) !== sessionKey) throw sourceError('conflict', 'The original Topic or Conversation binding changed.');
   };
+  assertCurrent();
+  // A native group is a presentation catalogue entry, not an ownership link.
+  // Establish this idempotent precondition before journalling the Session CAS:
+  // an interrupted retry can safely observe the same named group and continue,
+  // while no unrecorded Session mutation is ever inferred from it.
+  await nativeGroupCatalog.ensureGroup(name);
   assertCurrent();
   const value = { id: reference.referenceId, referenceId: reference.referenceId, topicId: adapter.topicId, sessionId: expectedSessionId, name };
   // The journal proves a witnessed operation, not today's category. An interrupted

@@ -12,6 +12,20 @@ import { legacyDiscordMigrationConfigDigest } from '../src/migration/config.mjs'
 import { createTopicService } from '../src/topics/service.mjs';
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
 import { NOTE_FOLDER_IDENTITY_FILE, readNoteFolderIdentity } from '../src/sources/note-folder-identity.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+
+const releaseHostFileAccessFixture = installHostFileAccessFixture();
+test.after(() => releaseHostFileAccessFixture());
+
+// Folder-marker enrollment uses retained directory descriptors. That production
+// contract exists on the Linux host only; Windows cannot provide equivalent
+// descriptor-relative publication evidence. Keep the actual migration
+// acceptance boundary for the prepared Linux/NAS candidate.
+const descriptorTest = process.platform === 'linux' ? test : (name, options, run) => {
+  const settings = typeof options === 'function' ? {} : options;
+  const body = typeof options === 'function' ? options : run;
+  return test(name, { ...settings, skip: settings.skip ?? 'requires Linux descriptor-anchored folder identity' }, body);
+};
 
 // Only native Sessions/transcripts are external fixtures. Filesystem admission,
 // the host SQLite lease, migration, metadata and retained Note reads are real.
@@ -47,7 +61,7 @@ async function fixture(run) {
   finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 }
 
-test('default mapped migration survives reopen as a usable Topic with exact read-only Notes', async () => fixture(async ({ stateDir, folder, text, topicId, config, gateway, transcriptRuntime, metadata, reopen }) => {
+descriptorTest('default mapped migration survives reopen as a usable Topic with exact read-only Notes', async () => fixture(async ({ stateDir, folder, text, topicId, config, gateway, transcriptRuntime, metadata, reopen }) => {
   const migration = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime });
   assert.equal((await migration.start()).complete, true);
   const reopened = reopen();
@@ -69,7 +83,7 @@ test('default mapped migration survives reopen as a usable Topic with exact read
   assert.equal(await readFile(path.join(folder, 'Overview.md'), 'utf8'), text);
 }));
 
-for (const change of ['missing', 'replaced']) test(`interrupted migration refuses a ${change} saved folder marker without reenrollment`, async () => fixture(async ({ folder, config, gateway, transcriptRuntime, metadata, reopen }) => {
+for (const change of ['missing', 'replaced']) descriptorTest(`interrupted migration refuses a ${change} saved folder marker without reenrollment`, async () => fixture(async ({ folder, config, gateway, transcriptRuntime, metadata, reopen }) => {
   const first = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime, hooks: { afterTopicBinding() { throw new Error('fictional interrupted binding'); } } });
   assert.equal((await first.start()).complete, false);
   const marker = path.join(folder, NOTE_FOLDER_IDENTITY_FILE);
@@ -86,7 +100,7 @@ for (const change of ['missing', 'replaced']) test(`interrupted migration refuse
   else assert.deepEqual(await readFile(marker), bytes);
 }));
 
-test('final migration activation rechecks the saved folder marker after transcript verification', async () => fixture(async ({ folder, config, gateway, transcriptRuntime, metadata }) => {
+descriptorTest('final migration activation rechecks the saved folder marker after transcript verification', async () => fixture(async ({ folder, config, gateway, transcriptRuntime, metadata }) => {
   const migration = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime, hooks: {} });
   const originalLock = transcriptRuntime.withSessionTranscriptWriteLock;
   let verifying = false;
@@ -112,7 +126,7 @@ async function killAfterBinding(stateDir, config) {
   } finally { clearTimeout(timeout); if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); }
 }
 
-for (const change of ['unchanged', 'missing', 'replaced']) test(`SIGKILL after atomic migration binding preserves ${change} folder admission on reopen`, { skip: process.platform !== 'linux' }, async () => fixture(async ({ stateDir, folder, text, config, gateway, transcriptRuntime, metadata, reopen }) => {
+for (const change of ['unchanged', 'missing', 'replaced']) descriptorTest(`SIGKILL after atomic migration binding preserves ${change} folder admission on reopen`, { skip: process.platform !== 'linux' }, async () => fixture(async ({ stateDir, folder, text, config, gateway, transcriptRuntime, metadata, reopen }) => {
   await killAfterBinding(stateDir, config);
   const binding = metadata.getSourceLocator('migration:folder:fictional-channel-alpha');
   assert.ok(binding);
@@ -129,7 +143,7 @@ for (const change of ['unchanged', 'missing', 'replaced']) test(`SIGKILL after a
   else assert.deepEqual(await readFile(marker), bytes);
 }));
 
-for (const completed of [false, true]) test(`historical unbound ${completed ? 'completed' : 'pending'} migration refuses inferred folder backfill`, async () => fixture(async ({ folder, config, gateway, transcriptRuntime, metadata, reopen }) => {
+for (const completed of [false, true]) descriptorTest(`historical unbound ${completed ? 'completed' : 'pending'} migration refuses inferred folder backfill`, async () => fixture(async ({ folder, config, gateway, transcriptRuntime, metadata, reopen }) => {
   const migration = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime, hooks: completed ? {} : { afterTopicBinding() { throw new Error('Interrupted fixture'); } } });
   assert.equal((await migration.start()).complete, completed);
   const completion = metadata.getMigrationCompletion();
@@ -148,7 +162,7 @@ for (const completed of [false, true]) test(`historical unbound ${completed ? 'c
   assert.deepEqual(await readFile(marker), bytes);
 }));
 
-test('migration refuses a changed locator generation rather than refreshing its activation base', async () => fixture(async ({ config, gateway, transcriptRuntime, metadata }) => {
+descriptorTest('migration refuses a changed locator generation rather than refreshing its activation base', async () => fixture(async ({ config, gateway, transcriptRuntime, metadata }) => {
   const migration = createLegacyDiscordMigrationService({ metadata, config, gateway, transcriptRuntime, hooks: {} });
   migration.hooks.afterVerify = () => {
     const saved = metadata.getSourceLocator('migration:folder:fictional-channel-alpha');
@@ -160,7 +174,7 @@ test('migration refuses a changed locator generation rather than refreshing its 
   assert.equal(metadata.getMigrationCompletion(), null);
 }));
 
-test('a mapped folder held by another current locator is not enrolled or taken over', async () => fixture(async ({ folder, config, gateway, transcriptRuntime, metadata }) => {
+descriptorTest('a mapped folder held by another current locator is not enrolled or taken over', async () => fixture(async ({ folder, config, gateway, transcriptRuntime, metadata }) => {
   const ownerId = '55555555-5555-4555-8555-555555555555';
   metadata.createTopic({ topicId: ownerId, paraCategory: 'area', lifecycle: 'active' });
   metadata.createSourceReference({ version: 1, referenceId: 'fictional-foreign-folder', topicId: ownerId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: path.join(folder, 'original-location') });

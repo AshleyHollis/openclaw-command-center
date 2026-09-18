@@ -20,17 +20,20 @@ async function http(h, routePath, body) {
   return { status: res.statusCode, ...payload };
 }
 
-function host() {
-  const routes = []; const methods = new Map(); const services = []; const tools = [];
+function host({ flatAgentEvents = false } = {}) {
+  const routes = []; const methods = new Map(); const services = []; const tools = []; const agentEventSubscriptions = [];
   const api = {
     pluginConfig: {},
     get notifications() { throw new Error('Optional notifications must not be acquired.'); },
     registerHttpRoute: value => routes.push(value),
     registerGatewayMethod: (name, handler) => methods.set(name, handler),
     registerService: value => services.push(value),
-    registerTool: (_factory, declaration) => tools.push(declaration.name)
+    registerTool: (_factory, declaration) => tools.push(declaration.name),
+    ...(flatAgentEvents
+      ? { registerAgentEventSubscription: value => agentEventSubscriptions.push(value) }
+      : { agent: { events: { registerAgentEventSubscription: value => agentEventSubscriptions.push(value) } } })
   };
-  return { api, routes, methods, services, tools };
+  return { api, routes, methods, services, tools, agentEventSubscriptions };
 }
 
 test('first-live registration needs no notification authority and preserves core native entry points', () => {
@@ -46,7 +49,7 @@ test('first-live registration needs no notification authority and preserves core
 
 test('registered deferred bridge commands are refused before a service or optional binding is acquired', async () => {
   const h = host(); plugin.register(h.api);
-  const retained = new Set(['sources.status', 'migration.status', 'migration.review-failures', 'topics.list', 'topics.get', 'topics.recovery.status', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.topic-context', 'sessions.group-preview', 'sessions.group', 'sessions.create', 'histories.list', 'histories.read', 'histories.attachment-read'].map(name => `command-center.v1.${name}`));
+  const retained = new Set(['sources.status', 'migration.status', 'migration.review-failures', 'topics.list', 'topics.get', 'topics.recovery.status', 'topics.recovery.verify', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.topic-context', 'sessions.group-preview', 'sessions.group', 'sessions.assign-topic', 'sessions.create', 'histories.list', 'histories.read', 'histories.attachment-read'].map(name => `command-center.v1.${name}`));
   for (const method of [...READ_METHODS, ...WRITE_METHODS].filter(name => !retained.has(name))) {
     let response;
     await h.methods.get(method)({ req: { id: 'fixture-request' }, params: {}, context: { authenticated: true },
@@ -55,6 +58,23 @@ test('registered deferred bridge commands are refused before a service or option
     assert.equal(response.error.code, 'feature-unavailable', method);
     assert.equal(response.error.details.retryable, false, method);
   }
+});
+
+test('first live retains only the authenticated, conditional Note Folder recovery command', async () => {
+  const methods = new Map(); const calls = [];
+  registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, {
+    topics: { recoveryVerify: async input => { calls.push(input); return { status: 'replaced', recovery: { state: 'replaced' } }; } }
+  });
+  const params = { schemaVersion: 1, topicId: randomUUID(), referenceId: 'note-folder:fictional', replacementLocator: '/fictional/vault/Cooking', expectedRevision: 0, expectedSourceRevision: 'note-folder:1:fictional', logicalOperationId: randomUUID() };
+  let response;
+  await methods.get('command-center.v1.topics.recovery.verify')({ req: { id: 'fixture-recovery' }, params, context: { authenticated: true }, respond: (ok, result, error) => { response = { ok, result, error }; } });
+  assert.equal(response.ok, true);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { ...params, requestId: 'fixture-recovery' });
+  let blocked;
+  await methods.get('command-center.v1.topics.recovery.replace')({ req: { id: 'fixture-recovery-replace' }, params: {}, context: { authenticated: true }, respond: (ok, result, error) => { blocked = { ok, result, error }; } });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.code, 'feature-unavailable');
 });
 
 test('first-live Reminder commands reject before owner acquisition and preserve native Cron data', async () => {
@@ -90,11 +110,13 @@ test('deferred HTTP actions are non-retryable and cannot reach services before s
   }
 });
 
-test('the first-live manifest and legacy entry do not advertise or serve deferred UI and tools', async () => {
+test('the reader MVP manifest keeps filing and maintenance tools/triggers unavailable', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
   assert.deepEqual(manifest.contracts.tools, []);
+  assert.deepEqual(manifest.contracts.workspaceSessionTurnScheduling, []);
   const h = host(); plugin.register(h.api);
   assert.deepEqual(h.tools, []);
+  assert.equal(h.agentEventSubscriptions.length, 0);
   for (const suffix of ['', '/app.js', '/styles.css', '/markdown.js']) {
     const route = h.routes.find(value => value.path === `/plugins/command-center${suffix}`);
     assert.ok(route);
@@ -104,6 +126,12 @@ test('the first-live manifest and legacy entry do not advertise or serve deferre
     assert.equal(payload.code, 'feature-unavailable');
     assert.equal(res.statusCode, 501);
   }
+});
+
+test('the reader MVP leaves the flat host maintenance subscription unavailable', () => {
+  const h = host({ flatAgentEvents: true });
+  plugin.register(h.api);
+  assert.equal(h.agentEventSubscriptions.length, 0);
 });
 
 test('first-live bootstrap status preserves failures without advertising a disabled recovery command', async () => {

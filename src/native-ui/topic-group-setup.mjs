@@ -21,6 +21,8 @@ export function createTopicGroupSetup({ host, document, topicId, signal, present
       const plan = response?.result ?? response;
       if (plan?.topicId !== topicId || !Array.isArray(plan.members) || !Number.isSafeInteger(plan.revision) || !plan.name) throw new Error('The exact group setup plan is unavailable.');
       const eligible = plan.members.filter(member => member.eligible === true);
+      const preserved = plan.members.filter(member => member.eligible !== true && member.grouped === true).length;
+      const blocked = plan.members.length - eligible.length - preserved;
       for (const member of eligible) {
         if (!current()) return;
         status.textContent = `Organizing ${applied + 1} of ${eligible.length} Conversations…`;
@@ -34,7 +36,7 @@ export function createTopicGroupSetup({ host, document, topicId, signal, present
         applied++;
       }
       await host.sessions.refresh();
-      if (current()) status.textContent = `${applied} Conversations organized. ${plan.members.length - eligible.length} left unchanged. Existing groups and Notes bindings were preserved.`;
+      if (current()) status.textContent = `${applied} Conversations organized. ${preserved} already grouped and preserved. ${blocked} blocked and left unchanged. Existing groups and Notes bindings were preserved.`;
     } catch (error) {
       if (current()) status.textContent = `${applied} Conversations confirmed. Setup stopped: ${host.redact(error?.message || 'outcome unknown')}. Inspect native Sessions before trying again.`;
     } finally { busy = false; if (!signal.aborted) sync(); }

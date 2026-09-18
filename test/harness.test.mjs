@@ -10,14 +10,12 @@ import { build } from '../src/build.mjs';
 import { createIsolatedWorld, disposeIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
-import { assertPerformanceHostIdentity, releasePerformanceIdentity } from '../src/performance-baseline.mjs';
+import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 
-test('parsed packaged descriptor retains the identity required by performance capture', () => {
+test('current reader preview refuses the retained performance-capture host identity', () => {
   const { schemaVersion, commit, ...integrity } = releasePerformanceIdentity.hostReceipt;
-  const descriptor = parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
-    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args }));
-  assert.deepEqual(assertPerformanceHostIdentity(descriptor), releasePerformanceIdentity.hostReceipt);
-  assert.throws(() => assertPerformanceHostIdentity({ ...descriptor, schemaVersion: 1 }), /pinned host/u);
+  assert.throws(() => parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
+    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args })), error => error.category === 'invalid-commit');
 });
 
 const sourceDigest = `sha256:${'a'.repeat(64)}`;
@@ -102,7 +100,7 @@ test('categorizes absent and malformed host descriptors', () => {
 });
 
 test('runtime checkout identity remains distinct from the compatibility and performance receipt identities', () => {
-  assert.equal(pinnedHost.commit, '3040eff630e5a6d9a9f9f5ce52af3c0971776f15');
+  assert.equal(pinnedHost.commit, 'd1d6fe8f35fb73bfefdf547a5f023c6bfae29ea7');
   assert.doesNotThrow(() => parseHostDescriptor(hostDescriptor()));
   assert.throws(() => parseHostDescriptor(hostDescriptor({ commit: '19686a23834910173df0fd1f77bd762ffcda2afd' })), (error) => error.category === 'invalid-commit');
 });
@@ -396,6 +394,22 @@ test('restart stops and drains the actual predecessor and preserves world, Note 
   assert.deepEqual(await readFile(world.manifestPath), manifest);
   assert.deepEqual(await readFile(world.manifest.configPath), config);
   await assert.rejects(hostHarness.restartPinnedHost(first), error => error.category === 'restart-owner');
+});
+
+test('restart retains its lifecycle owner through a stopped fixture update', async t => {
+  const { world, runs, options } = await restartFixture(t);
+  const note = path.join(world.paths.vault, 'fixture-note.md');
+  const first = await hostHarness.launchPinnedHost(options); runs.push(first);
+  await fixtureReady(first);
+  await hostHarness.stopPinnedHost(first.child);
+  await first.outputDrained;
+  await writeFile(note, '# Fictional retained Note\nUpdated while the host is stopped.\n');
+  const second = await hostHarness.restartPinnedHost(first); runs.push(second);
+  const secondReady = await fixtureReady(second);
+  assert.equal(second.endpoint, first.endpoint);
+  assert.equal(second.generations.length, 2);
+  assert.equal(secondReady.generation, 2);
+  assert.match(await readFile(note, 'utf8'), /Updated while the host is stopped/u);
 });
 
 test('restart refuses a real competing same-port listener without changing the world', async t => {

@@ -4,7 +4,20 @@ Vocabulary for the OpenClaw plugin that provides a global attention surface and 
 
 ## MVP delivery scope
 
-The approved first live release is existing Topics, read-only Notes and native Topic conversations. Domain definitions below describe the full product, not a promise that every workflow is enabled in that release. See [ADR 0004](docs/adr/0004-first-live-release-core-topics-notes-chat.md) and [scope v2](docs/research/first-live-release-scope-v2.md) for the current decision; the earlier desktop finish plan is historical.
+The approved supervised reader-MVP delivery is existing Topics, read-only Notes and native Topic conversations: filename/path filtering, formatted Reading with authoritative Source, centre-pane promotion beside native Chat, read-only history and ordinary desktop keyboard/error states. Permanent filing is deferred to #213 and automatic Note maintenance to #214; their entry points and triggers remain unavailable. Domain definitions below describe the full product, not a promise that every workflow is enabled in this delivery. See [ADR 0004](docs/adr/0004-first-live-release-core-topics-notes-chat.md) and [topic document workflow delivery](docs/research/topic-document-workflow-delivery.md) for the current decision; the earlier desktop finish plan is historical. A first-delivery Note Folder recovery batch is an operator-approved, private, digest-pinned manifest of exact existing bindings. It never discovers folders, infers ownership from names or groups, or creates a new recovery owner. A native sidebar group is presentation only: it never establishes Topic, Note Folder, or Conversation ownership.
+
+## Reader workspace correction
+
+The next reader candidate (#236) keeps an independently scrolling nested Files
+explorer beside its document reader and native Chat. Browsing preferences are
+activation-local, keyed by the exact Topic/Note Folder binding, and never grant
+access to a source. Reading may collapse raw document metadata; Source remains
+authoritative and unchanged. Authorized original-file previews cover raster
+images and PDFs using a separately bounded viewer; they do not enable document
+scripts, automatic filing, editing, maintenance or arbitrary remote resources.
+Native OpenClaw still owns the outer pane arrangement, Conversation and draft.
+This correction is candidate-only until visual review and deployment approval;
+the earlier deployed reader evidence does not qualify its new interactions.
 
 ## Navigation and context
 

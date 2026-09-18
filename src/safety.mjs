@@ -98,8 +98,8 @@ export function scanPublicEvidence(values, { label = 'runtime-evidence' } = {}) 
   return Object.freeze([]);
 }
 
-async function scanPath(root, filename, findings, read, statPath, visited, excludedRoots) {
-  const relative = path.relative(root, filename);
+async function scanPath(root, filename, findings, read, statPath, visited, excludedRoots, trustedContent) {
+  const relative = path.relative(root, filename).split(path.sep).join('/');
   if (!within(root, filename) || isExcludedControllerPath(filename, excludedRoots) || visited.has(filename)) return;
   visited.add(filename);
   const stat = await statPath(filename).catch(() => undefined);
@@ -109,21 +109,26 @@ async function scanPath(root, filename, findings, read, statPath, visited, exclu
     let entries;
     try { entries = await readdir(filename); }
     catch { findings.push({ path: relative, rule: 'missing-or-unreadable-entry' }); return; }
-    for (const entry of entries) await scanPath(root, path.join(filename, entry), findings, read, statPath, visited, excludedRoots);
+    for (const entry of entries) await scanPath(root, path.join(filename, entry), findings, read, statPath, visited, excludedRoots, trustedContent);
     return;
   }
   if (!stat.isFile()) return;
+  // Pinned browser libraries can contain token-shaped parser fixtures. They
+  // remain stat/symlink checked and build-receipted, but only exact paths
+  // declared by the caller bypass heuristic secret-pattern scanning.
+  if (trustedContent.has(path.resolve(filename))) return;
   try { inspectContent(findings, relative, await read(filename, 'utf8')); }
   catch { findings.push({ path: relative, rule: 'unreadable-content' }); }
 }
 
-export async function scanRepositorySafety(root, { generated = [], read = readFile, stat = lstat, controllerRoots = [] } = {}) {
+export async function scanRepositorySafety(root, { generated = [], read = readFile, stat = lstat, controllerRoots = [], trustedContent = [] } = {}) {
   const findings = [];
   const visited = new Set();
   const excludedRoots = excludedControllerRoots(root, controllerRoots);
+  const trusted = new Set(trustedContent.map((value) => path.resolve(value)).filter((value) => within(root, value)));
   const isGitRoot = await exactGitRoot(root);
   for (const filename of await repositoryPaths(root, generated, { isGitRoot })) {
-    await scanPath(root, filename, findings, read, stat, visited, excludedRoots);
+    await scanPath(root, filename, findings, read, stat, visited, excludedRoots, trusted);
   }
   if (!isGitRoot) {
     if (findings.length) throw new Error(`Repository safety scan failed: ${findings.map((finding) => `${finding.path} (${finding.rule})`).join(', ')}`);

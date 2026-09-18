@@ -42,8 +42,8 @@ test('fixture manifest supplies the built candidate to the isolated host seam', 
   const world = await createIsolatedWorld({ candidateRoot: process.cwd(), reserveEndpoint: reserveFixtureEndpoint });
   try {
     assert.equal(world.manifest.candidate.id, 'command-center');
-    assert.match(world.manifest.candidate.entry, /dist\/plugin\.mjs$/);
-    assert.match(world.manifest.configPath, /\.openclaw\/openclaw\.json$/);
+    assert.match(world.manifest.candidate.entry, /dist[\\/]plugin\.mjs$/);
+    assert.match(world.manifest.configPath, /\.openclaw[\\/]openclaw\.json$/);
     assert.match(world.gatewayCredential, /^fictional-control-ui-/);
     assert.equal(world.manifest.gateway.url, world.gateway.url);
     assert.notEqual(world.gateway.port, 18789);
@@ -54,6 +54,8 @@ test('fixture manifest supplies the built candidate to the isolated host seam', 
     assert.equal(config.gateway.port, world.gateway.port);
     assert.equal(config.gateway.controlUi?.experimental?.customPlugins, true);
     assert.equal(config.models.catalogRefresh.enabled, false);
+    assert.equal(config.models.providers.fixture.baseUrl, 'http://127.0.0.1:9/v1');
+    assert.equal(config.agents.defaults.model.primary, 'fixture/fixture-model');
     assert.deepEqual(config.update, { channel: 'extended-stable', checkOnStart: false });
     assert.equal(config.plugins.enabled, true);
     assert.deepEqual(config.plugins.allow, ['command-center']);

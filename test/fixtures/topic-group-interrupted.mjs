@@ -23,6 +23,9 @@ const sessionStore = {
   }
 };
 const owner = new AuthoritativeSourceService({ metadata, sessionStore, capabilities: { sessions: true, notes: false, scheduler: false } });
-await owner.sessionGroup(input, { creationAuthority: { principalId: 'fixture-operator', assertCurrent() {} } });
+await owner.sessionGroup(input, {
+  creationAuthority: { principalId: 'fixture-operator', assertCurrent() {} },
+  nativeGroupCatalog: { async ensureGroup() { return { alreadyPresent: false }; } }
+});
 if (phase === 'after-receipt') die();
 throw new Error('Crash fixture did not reach its boundary');

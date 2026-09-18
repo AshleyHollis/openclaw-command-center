@@ -5,7 +5,7 @@ test('Topic Review diagnosis reuses its exact independent real-host fixture', ()
 });
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { ordinaryTestArgv, ordinaryTestLanes, resolveRealHostAcceptancePlan, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
+import { ordinaryTestArgv, ordinaryTestLanes, resolveRealHostAcceptancePlan, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectReaderMvpTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
 import * as selection from '../src/test-selection.mjs';
 
 test('native release prerequisites have a distinct non-capture plan', () => {
@@ -98,7 +98,7 @@ test('Session recovery diagnostic uses the exact shared revocation/replacement c
 test('real-host acceptance exposes one closed authenticated mount dependency plan', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('authenticated-control-ui-mount'), {
     kind: 'focused',
-    scenarioIds: ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount']
+    scenarioIds: ['focused-control-ui-migration-readiness', 'authenticated-control-ui-mount']
   });
   assert.deepEqual(resolveRealHostAcceptancePlan('authenticated-reminder-create'), {
     kind: 'focused',
@@ -296,6 +296,33 @@ test('Topic Page browser runner is mandatory, pinned, and included in the ordina
   assert.match(setup, /evaluator-provided PLAYWRIGHT_BROWSERS_PATH/u);
 });
 test('native Chat diagnostic requires the real authenticated mount and native round trip', () => {
-  assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-handoff']);
-  assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-pointer-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-handoff').scenarioIds, ['native-topic-chat-handoff']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('native-chat-pointer-handoff').scenarioIds, ['focused-control-ui-migration-readiness', 'authenticated-control-ui-mount', 'focused-native-chat-pointer-handoff']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('topic-notes-visual').scenarioIds, ['native-topic-files-workspace']);
+});
+
+test('reader MVP selection includes its reader ownership boundaries and excludes deferred filing and maintenance', () => {
+  const selected = selectReaderMvpTestFiles([
+    'native-reader-workspace.test.mjs',
+    'topic-notes-panel.test.mjs',
+    'native-document-preview.test.mjs',
+    'native-ui-page.test.mjs',
+    'note-render.test.mjs',
+    'bridge-contract.test.mjs',
+    'topic-document-filing.test.mjs',
+    'topic-maintenance-tool.test.mjs',
+    'fixtures'
+  ]);
+  assert.deepEqual(selected, [
+    'test/bridge-contract.test.mjs',
+    'test/native-document-preview.test.mjs',
+    'test/native-reader-workspace.test.mjs',
+    'test/native-ui-page.test.mjs',
+    'test/note-render.test.mjs',
+    'test/topic-notes-panel.test.mjs'
+  ]);
+  assert.deepEqual(ordinaryTestLanes(selected), [
+    { id: 'parallel', argv: ['--test', '--test-concurrency=4', 'test/bridge-contract.test.mjs', 'test/note-render.test.mjs'] },
+    { id: 'browser', argv: ['--test', '--test-concurrency=1', 'test/native-document-preview.test.mjs', 'test/native-reader-workspace.test.mjs', 'test/native-ui-page.test.mjs', 'test/topic-notes-panel.test.mjs'] }
+  ]);
 });

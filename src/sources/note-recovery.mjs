@@ -56,11 +56,11 @@ export class NoteRecovery {
     const sourcePath = input.path ?? input.sourcePath ?? input.notePath;
     const destinationPath = ['create', 'edit'].includes(operation) ? sourcePath : input.destinationPath ?? input.newPath;
     const desiredRevision = ['create', 'edit'].includes(operation) ? revisionForBytes(Buffer.from(input.text ?? input.content)) : input.expectedRevision;
-    if (record.topicId !== this.adapter.topicId || intent.operation !== operation || intent.sourcePath !== sourcePath || intent.destinationPath !== destinationPath || intent.expectedRevision !== input.expectedRevision || intent.desiredRevision !== desiredRevision) throw sourceError('intent-mismatch', 'Note filesystem operation ID was reused with a different intent.');
+    if (record.topicId !== this.adapter.topicId || intent.operation !== operation || intent.sourcePath !== sourcePath || intent.destinationPath !== destinationPath || (intent.sourceKind ?? 'note') !== (input.sourceKind ?? 'note') || intent.expectedRevision !== input.expectedRevision || intent.desiredRevision !== desiredRevision) throw sourceError('intent-mismatch', 'Note filesystem operation ID was reused with a different intent.');
     await this.adapter.resolveRoot();
     if (!this.matchesBinding(result)) return { outcome: 'conflict' };
     if (record.state === 'not-applied' && operation === 'create') {
-      const parent = await this.adapter.openParent(result.root, intent.destinationPath, { operation: 'recovery' });
+      const parent = await this.adapter.openParent(result.root, intent.destinationPath, { operation: 'recovery', sourceKind: intent.sourceKind ?? 'note' });
       try {
         await this.recoverCreateRecord(record, parent);
         const current = this.metadata.getTopicOperation(record.logicalOperationId);
@@ -72,13 +72,13 @@ export class NoteRecovery {
     if (record.state !== 'applied') return { outcome: 'unknown' };
     const root = await this.adapter.resolveRoot();
     if (result.root !== root) return { outcome: 'conflict' };
-    const parent = await this.adapter.openParent(root, intent.destinationPath, { operation: 'recovery' });
+    const parent = await this.adapter.openParent(root, intent.destinationPath, { operation: 'recovery', sourceKind: intent.sourceKind ?? 'note' });
     try {
       const chain = result.chains[1];
       if (chain.length !== parent.chain.length || chain.some((part, index) => !sameIdentity(part.identity, identity(parent.chain[index].stat)))) return { outcome: 'conflict' };
       const current = await this.inspect(parent.target);
       if (!current || !sameIdentity(current.identity, result.publishedIdentity) || current.revision !== intent.desiredRevision) return { outcome: 'conflict' };
-      const note = await this.adapter.read({ path: intent.destinationPath });
+      const note = await this.adapter.read({ path: intent.destinationPath, sourceKind: intent.sourceKind ?? 'note' });
       if (operation === 'create' && note.sourceReference.referenceId !== result.sourceReference.referenceId) return { outcome: 'conflict' };
       const final = await this.inspect(parent.target);
       if (!final || !sameIdentity(final.identity, result.publishedIdentity) || final.revision !== intent.desiredRevision || note.revision !== intent.desiredRevision) return { outcome: 'conflict' };
@@ -106,7 +106,7 @@ export class NoteRecovery {
   async prepare({ input, operation, root, sourceParent, destinationParent = sourceParent, sourceStat, claim, temporary = null, temporaryStat = null, sourceReference }) {
     if (!this.enabled) return null;
     const logicalOperationId = `notes.fs:${input.logicalOperationId ?? randomUUID()}`;
-    const intent = { version: 1, operation, sourcePath: sourceParent.relativePath, destinationPath: destinationParent.relativePath,
+    const intent = { version: 1, operation, sourceKind: input.sourceKind ?? 'note', sourcePath: sourceParent.relativePath, destinationPath: destinationParent.relativePath,
       expectedRevision: input.expectedRevision, desiredRevision: temporary ? revisionForBytes(Buffer.from(input.text ?? input.content)) : input.expectedRevision };
     const prior = this.metadata.getTopicOperation(logicalOperationId);
     if (prior && JSON.stringify(prior.intent) !== JSON.stringify(intent)) throw sourceError('intent-mismatch', 'Note filesystem operation ID was reused with a different intent.');
@@ -217,8 +217,8 @@ export class NoteRecovery {
         const stat = await lstat(path.join(root, component.path));
         if (!stat.isDirectory() || stat.isSymbolicLink() || !sameIdentity(component.identity, identity(stat))) throw sourceError('source-recovery', 'An interrupted Note ancestor was replaced.');
       }
-      sourceParent = await this.adapter.openParent(root, intent.sourcePath, { operation: 'recovery' });
-      destinationParent = await this.adapter.openParent(root, intent.destinationPath, { operation: 'recovery' });
+      sourceParent = await this.adapter.openParent(root, intent.sourcePath, { operation: 'recovery', sourceKind: intent.sourceKind ?? 'note' });
+      destinationParent = await this.adapter.openParent(root, intent.destinationPath, { operation: 'recovery', sourceKind: intent.sourceKind ?? 'note' });
       if (intent.operation === 'create') return await this.recoverCreateRecord(record, destinationParent);
       if (path.basename(result.claimName) !== result.claimName || !result.claimName) throw sourceError('source-recovery', 'The Note recovery claim is invalid.');
       const claimPath = this.adapter.descriptorPath(sourceParent.handle, result.claimName);
@@ -244,7 +244,7 @@ export class NoteRecovery {
         if (record.currentStep !== 'filesystem-applied' && !original(claim)) throw sourceError('conflict', 'The original Note recovery claim is no longer proven.');
         await this.adapter.assertChainStable(sourceParent.chain); await this.adapter.assertChainStable(destinationParent.chain);
         const reference = intent.operation === 'edit' ? { ...result.sourceReference, observedRevision: intent.desiredRevision }
-          : this.adapter.noteReference(root, intent.destinationPath, intent.desiredRevision);
+          : this.adapter.noteReference(root, intent.destinationPath, intent.desiredRevision, null, intent.sourceKind ?? 'note');
         await this.adapter.observe(reference);
         return this.record(record, 'applied', 'metadata-applied');
       }

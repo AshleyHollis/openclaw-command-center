@@ -142,6 +142,21 @@ test('scans generated and cached artifacts while excluding paths outside the can
   }
 });
 
+test('only exact declared vendored artifacts may bypass heuristic content scanning', async () => {
+  const vendor = path.join(root, 'dist', '.fictional-vendored-artifact.mjs');
+  const adjacent = path.join(root, 'dist', '.fictional-adjacent-artifact.mjs');
+  try {
+    await mkdir(path.dirname(vendor), { recursive: true });
+    await writeFile(vendor, fictionalBearer);
+    await scanRepositorySafety(root, { generated: [vendor], trustedContent: [vendor] });
+    await writeFile(adjacent, fictionalBearer);
+    await assert.rejects(scanRepositorySafety(root, { generated: [vendor, adjacent], trustedContent: [vendor] }), /fictional-adjacent-artifact/);
+  } finally {
+    await rm(vendor, { force: true });
+    await rm(adjacent, { force: true });
+  }
+});
+
 test('fails closed when candidate content cannot be read', async () => {
   const fixture = path.join(root, '.fictional-unreadable-fixture.txt');
   try {

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createSourceReference, effectiveSourceLocator, revisionForBytes } from './reference.mjs';
 import { SourceServiceError, sourceError, nonBlank } from './errors.mjs';
-import { assertSafeDirectory, assertSafeNotePath, isWithin, normalizeNotePath } from './note-path.mjs';
+import { assertSafeDirectory, assertSafeNotePath, assertSafeTopicFilePath, isWithin, normalizeNotePath, normalizeTopicFilePath, sourceKindForTopicFilePath } from './note-path.mjs';
 import { NoteRecovery } from './note-recovery.mjs';
 import { readNoteFolderIdentity } from './note-folder-identity.mjs';
 
@@ -108,18 +108,18 @@ export class NoteAdapter {
     return this.fsSafeRoot.rootReal;
   }
 
-  noteReference(root, relativePath, revision, referencesByExternalSourceId = null) {
+  noteReference(root, relativePath, revision, referencesByExternalSourceId = null, sourceKind = sourceKindForTopicFilePath(relativePath)) {
     this.assertCurrentRoot(root);
     const externalSourceId = `${root}/${relativePath}`;
     const matches = referencesByExternalSourceId === null
-      ? this.metadata?.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note' && effectiveSourceLocator(this.metadata, reference) === externalSourceId) ?? []
+      ? this.metadata?.listSourceReferences?.(this.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === sourceKind && effectiveSourceLocator(this.metadata, reference) === externalSourceId) ?? []
       : referencesByExternalSourceId.get(externalSourceId) ?? [];
     if (matches.length > 1) throw sourceError('source-recovery', 'The Note Source Reference is ambiguous.');
     return createSourceReference({
-      referenceId: matches[0]?.referenceId ?? `note:${randomUUID()}`,
+      referenceId: matches[0]?.referenceId ?? `${sourceKind}:${randomUUID()}`,
       topicId: this.topicId,
       sourceSystem: 'obsidian',
-      sourceKind: 'note',
+      sourceKind,
       externalSourceId: matches[0]?.externalSourceId ?? externalSourceId,
       observedRevision: revision
     });
@@ -156,8 +156,8 @@ export class NoteAdapter {
     this.rootStat = undefined;
   }
 
-  async openParent(root, relativePath, { create = false, operation = 'read' } = {}) {
-    const normalized = normalizeNotePath(relativePath);
+  async openParent(root, relativePath, { create = false, operation = 'read', sourceKind = sourceKindForTopicFilePath(relativePath) } = {}) {
+    const normalized = normalizeTopicFilePath(relativePath, { sourceKind });
     const fsSafeResolved = await this.fsSafeRoot.resolve(normalized);
     if (!isWithin(root, fsSafeResolved)) throw sourceError('unsafe-path', 'The Note path escaped its fs-safe root.');
     const segments = normalized.split('/');
@@ -225,9 +225,9 @@ export class NoteAdapter {
     }
   }
 
-  async readState(root, relativePath, operation = 'read') {
-    await assertSafeNotePath(root, relativePath);
-    const parent = await this.openParent(root, relativePath, { operation });
+  async readState(root, relativePath, operation = 'read', sourceKind = sourceKindForTopicFilePath(relativePath)) {
+    await assertSafeTopicFilePath(root, relativePath, { sourceKind });
+    const parent = await this.openParent(root, relativePath, { operation, sourceKind });
     let file;
     try {
       await this.beforePathIo?.({ operation, path: parent.relativePath });
@@ -279,25 +279,30 @@ export class NoteAdapter {
   async read(input = {}) {
     if (!this.recovery.owned) return this.recovery.run(() => this.read(input));
     this.recovery.assertReadAdmission();
-    const allowed = new Set(['schemaVersion', 'path', 'notePath', 'referenceId', 'observedRevision', 'observe', 'requestId']);
+    // `returnBytes` is internal to the authenticated document-download path;
+    // it is intentionally absent from public bridge request validation.
+    const allowed = new Set(['schemaVersion', 'path', 'notePath', 'referenceId', 'observedRevision', 'observe', 'requestId', 'sourceKind', 'returnBytes']);
     for (const key of Object.keys(input)) if (!allowed.has(key)) throw sourceError('invalid-request', `Note read contains unsupported field: ${key}`);
     const root = await this.resolveRoot();
-    const state = await this.readState(root, input.path ?? input.notePath, 'read');
+    const requestedPath = input.path ?? input.notePath;
+    const sourceKind = input.sourceKind ?? sourceKindForTopicFilePath(requestedPath);
+    const state = await this.readState(root, requestedPath, 'read', sourceKind);
     if (input.referenceId !== undefined && input.referenceId !== this.noteFolderReferenceId) {
       const reference = this.metadata?.getSourceReference?.(input.referenceId);
       const expectedExternalId = `${root}/${state.relativePath}`;
-      if (!reference || reference.topicId !== this.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || effectiveSourceLocator(this.metadata, reference) !== expectedExternalId) {
+      if (!reference || reference.topicId !== this.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== sourceKind || effectiveSourceLocator(this.metadata, reference) !== expectedExternalId) {
         throw sourceError('source-recovery', 'The Note read does not match the exact Topic-owned Note Source Reference.');
       }
     }
     const revision = revisionForBytes(state.bytes);
     if (input.observedRevision !== undefined && input.observedRevision !== revision) throw sourceError('conflict', 'The authoritative Note changed after the search result was produced.');
-    const candidateReference = this.noteReference(root, state.relativePath, revision);
+    const candidateReference = this.noteReference(root, state.relativePath, revision, null, sourceKind);
     const sourceReference = input.observe === false ? candidateReference : await this.observe(candidateReference);
     return Object.freeze({
       schemaVersion: 1,
       path: state.relativePath,
       text: state.bytes.toString('utf8'),
+      ...(input.returnBytes === true ? { bytes: Buffer.from(state.bytes) } : {}),
       revision,
       sourceReference
     });
@@ -310,7 +315,7 @@ export class NoteAdapter {
     const notes = [];
     const referencesByExternalSourceId = new Map();
     for (const reference of this.metadata?.listSourceReferences?.(this.topicId) ?? []) {
-      if (reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note') continue;
+      if (reference.sourceSystem !== 'obsidian' || !['note', 'document'].includes(reference.sourceKind)) continue;
       const locator = effectiveSourceLocator(this.metadata, reference);
       const matches = referencesByExternalSourceId.get(locator) ?? [];
       matches.push(reference);
@@ -337,7 +342,9 @@ export class NoteAdapter {
             await visit(childHandle, childRelative, [...chain, { namedPath, stat }]);
           } finally { await childHandle.close(); }
         }
-        else if (stat.isFile() && /\.md$/iu.test(entry.name)) {
+        else if (stat.isFile() && entry.name !== '.command-center-folder-identity' && !entry.name.includes('.command-center-')) {
+          const sourceKind = sourceKindForTopicFilePath(childRelative);
+          if (sourceKind === 'document' && input.includeDocuments !== true) return;
           const file = await open(child, constants.O_RDONLY | constants.O_NOFOLLOW);
           let bytes;
           try {
@@ -349,12 +356,13 @@ export class NoteAdapter {
           } finally { await file.close(); }
           await this.assertChainStable(chain);
           const revision = revisionForBytes(bytes);
-          const sourceReference = this.noteReference(root, childRelative, revision, referencesByExternalSourceId);
+          const sourceReference = this.noteReference(root, childRelative, revision, referencesByExternalSourceId, sourceKind);
           notes.push({
             schemaVersion: 1,
             path: childRelative,
             revision,
             sourceReference,
+            sourceKind,
             ...(input.includeText === true ? { text: bytes.toString('utf8') } : {})
           });
         } else if (!stat.isFile()) {
@@ -398,7 +406,7 @@ export class NoteAdapter {
         throw sourceError('conflict', 'The Note catalog snapshot expired; refresh it before continuing.');
       }
     } else {
-      const notes = await this.browse({ observe: input.observe, includeText: input.includeText });
+      const notes = await this.browse({ observe: input.observe, includeText: input.includeText, includeDocuments: input.includeDocuments });
       snapshot = { cursor: randomUUID(), expiresAt: this.nowMs() + NOTE_CATALOG_SNAPSHOT_TTL_MS, notes };
       this.catalogSnapshot = snapshot;
     }
@@ -414,18 +422,19 @@ export class NoteAdapter {
     const recovered = await this.recovery.reconcile(input, 'create');
     if (recovered?.outcome === 'applied') return recovered.value;
     if (recovered && recovered.outcome !== 'not-applied') throw sourceError(recovered.outcome, 'The prior Note create is not safely replayable.');
-    const notePath = normalizeNotePath(input.path ?? input.notePath);
+    const sourceKind = input.sourceKind ?? sourceKindForTopicFilePath(input.path ?? input.notePath);
+    const notePath = normalizeTopicFilePath(input.path ?? input.notePath, { sourceKind });
     const bytes = bytesForText(input.text ?? input.content);
     const root = await this.resolveRoot();
-    await assertSafeNotePath(root, notePath, { allowMissing: true });
-    const existing = await this.read({ path: notePath }).catch((error) => {
+    await assertSafeTopicFilePath(root, notePath, { allowMissing: true, sourceKind });
+    const existing = await this.read({ path: notePath, sourceKind }).catch((error) => {
       if (error?.code === 'not-found' || error?.code === 'ENOENT') return null;
       throw error;
     });
     if (existing) {
       throw sourceError('conflict', 'The destination Note already exists.', { currentRevision: existing.revision, currentPath: notePath });
     }
-    const parent = await this.openParent(root, notePath, { create: true, operation: 'create' });
+    const parent = await this.openParent(root, notePath, { create: true, operation: 'create', sourceKind });
     let temporary = this.descriptorPath(parent.handle, `.${parent.leaf}.command-center-${randomUUID()}.tmp`);
     let publishedIdentity = null;
     let recoveryRecord;
@@ -435,7 +444,7 @@ export class NoteAdapter {
       await this.beforePathIo?.({ operation: 'create', path: notePath });
       await this.assertChainStable(parent.chain);
       if (await lstat(parent.target).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))) throw await this.pathConflict(parent.target, notePath, 'The destination Note already exists.');
-      sourceReference = this.noteReference(root, notePath, revision);
+      sourceReference = this.noteReference(root, notePath, revision, null, sourceKind);
       if (this.recovery.enabled) {
         recoveryRecord = await this.recovery.prepareCreate({ input, root, parent, bytes, sourceReference });
         temporary = this.descriptorPath(parent.handle, recoveryRecord.result.temporaryName);

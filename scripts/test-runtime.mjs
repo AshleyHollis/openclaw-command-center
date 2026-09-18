@@ -6,7 +6,8 @@ import { descriptorEnvironment, parseHostDescriptor, verifyHost } from '../src/h
 const sdkExports = Object.freeze({
   COMMAND_CENTER_TEST_SQLITE_RUNTIME: './plugin-sdk/sqlite-runtime',
   COMMAND_CENTER_TEST_FILE_ACCESS_RUNTIME: './plugin-sdk/file-access-runtime',
-  COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME: './plugin-sdk/session-store-runtime'
+  COMMAND_CENTER_TEST_SESSION_STORE_RUNTIME: './plugin-sdk/session-store-runtime',
+  COMMAND_CENTER_TEST_SESSION_TRANSCRIPT_RUNTIME: './plugin-sdk/session-transcript-runtime'
 });
 const loader = new URL('../test/fixtures/note-runtime-loader.mjs', import.meta.url).href;
 

@@ -1880,6 +1880,56 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     assertCurrent();
     return value;
   });
+  // Assignment is a local, all-or-nothing ownership publication. It never
+  // invokes native APIs while the SQLite transaction is open: callers verify
+  // the exact native incarnation immediately before and after this commit.
+  service.assignTopicConversation = (input, assertCurrent) => mutate('sessions', db => {
+    if (typeof assertCurrent !== 'function') throw new CommandCenterMetadataError('invalid-value', 'Current assignment authority is required.');
+    const request = objectValue(input.request, 'Conversation assignment request');
+    allowedKeys(request, ['topicId', 'expectedTopicRevision', 'principalId', 'sessionKey', 'expectedSessionId', 'expectedSessionRevision'], 'Conversation assignment request');
+    const logicalOperationId = requiredString(input.logicalOperationId, 'logicalOperationId');
+    const value = {
+      topicId: requiredString(request.topicId, 'topicId'),
+      expectedTopicRevision: integerValue(request.expectedTopicRevision, 'expectedTopicRevision', { minimum: 0 }),
+      principalId: requiredString(request.principalId, 'principalId'),
+      sessionKey: requiredString(request.sessionKey, 'sessionKey'),
+      expectedSessionId: requiredString(request.expectedSessionId, 'expectedSessionId'),
+      expectedSessionRevision: requiredString(request.expectedSessionRevision, 'expectedSessionRevision')
+    };
+    const kind = 'sessions.assign-topic.once';
+    const existing = db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id = ?').get(logicalOperationId);
+    const existingJournal = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
+    const digest = `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
+    if (existing) {
+      const operation = mapTopicOperation(existing);
+      const journal = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
+      if (operation.operationKind !== kind || operation.topicId !== value.topicId || canonicalJson(operation.intent?.request) !== canonicalJson(value) || journal?.operation_kind !== kind || journal?.intent_digest !== digest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different Conversation assignment.');
+      if (operation.state !== 'applied' || !operation.result?.value) throw new CommandCenterMetadataError('source-recovery', 'The prior Conversation assignment has no complete receipt.');
+      assertCurrent();
+      return { ...operation.result.value, replayed: true };
+    }
+    // A journal record without this owner's operation is not a replay. Never
+    // overwrite another operation's idempotency identity or turn an uncertain
+    // completion into a fresh assignment.
+    if (existingJournal) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID is already owned by another operation.');
+    assertCurrent();
+    const topic = db.prepare('SELECT * FROM topics WHERE topic_id = ?').get(value.topicId);
+    if (!topic || topic.lifecycle !== 'active' || topic.para_category === 'archive' || topic.revision !== value.expectedTopicRevision) throw new CommandCenterMetadataError('conflict', 'The target Topic is no longer an active matching assignment target.');
+    if (db.prepare("SELECT 1 FROM source_recovery WHERE topic_id = ? AND state = 'required' LIMIT 1").get(value.topicId)) throw new CommandCenterMetadataError('source-recovery', 'The target Topic requires Source Recovery before assignment.');
+    const owner = db.prepare("SELECT reference_id FROM source_references WHERE source_system = 'openclaw' AND source_kind = 'session' AND external_source_id = ? LIMIT 1").get(value.sessionKey);
+    if (owner) throw new CommandCenterMetadataError('conflict', 'The Conversation is already owned by a Topic.');
+    const now = timestamp(undefined, 'updatedAt');
+    const referenceId = `conversation-assignment:${logicalOperationId}`;
+    const reference = insertSourceReference(db, { version: 1, referenceId, topicId: value.topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: value.sessionKey, observedRevision: value.expectedSessionRevision }, now);
+    db.prepare('INSERT INTO session_state (reference_id, session_id, status, is_primary, was_primary, display_name, updated_at) VALUES (?, ?, ?, 0, 0, ?, ?)').run(referenceId, value.expectedSessionId, 'open', value.sessionKey, now);
+    db.prepare('UPDATE topics SET revision = revision + 1, updated_at = ? WHERE topic_id = ?').run(now, value.topicId);
+    const topicRevision = db.prepare('SELECT revision FROM topics WHERE topic_id = ?').get(value.topicId).revision;
+    const receipt = { topicId: value.topicId, referenceId, sessionKey: value.sessionKey, sessionId: value.expectedSessionId, topicRevision };
+    recordTopicOperation(db, { logicalOperationId, topicId: value.topicId, operationKind: kind, intent: { version: 1, request: value }, state: 'applied', currentStep: 'complete', result: { value: receipt }, createdAt: now, updatedAt: now });
+    db.prepare('INSERT INTO operation_journal (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(logicalOperationId, logicalOperationId, digest, kind, 'applied', 'applied', referenceId, String(topicRevision), now, now);
+    assertCurrent();
+    return receipt;
+  });
   service.recordStructuralChange = (input = {}) => mutate(null, db => {
     if (!['topics.rename', 'topics.recategorize', 'topics.archive', 'topics.restore', 'topics.replace-primary-session'].includes(input.operationKind)) throw new CommandCenterMetadataError('invalid-value', 'Unsupported Structural Change command.');
     if (input.topicId !== input.intent?.topicId || !['pending', 'unknown', 'conflict'].includes(input.state ?? 'pending')) throw new CommandCenterMetadataError('invalid-value', 'Structural Change progress must retain its Topic and cannot publish completion.');

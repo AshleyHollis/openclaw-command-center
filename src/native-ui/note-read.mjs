@@ -8,7 +8,8 @@ export async function readNativeNote(host, descriptor) {
     host.signal.throwIfAborted();
     const response = await host.request('command-center.v1.notes.read', {
       schemaVersion: 1, topicId: descriptor.topicId, referenceId: descriptor.referenceId,
-      path: descriptor.path, observedRevision: descriptor.observedRevision, offset
+      path: descriptor.path, observedRevision: descriptor.observedRevision, offset,
+      ...(descriptor.sourceKind ? { sourceKind: descriptor.sourceKind } : {})
     });
     host.signal.throwIfAborted();
     const value = response?.result ?? response;
@@ -46,6 +47,38 @@ export async function readNativeNote(host, descriptor) {
     total = value.totalBytes;
     text += decoder.decode(bytes, { stream: !value.complete });
     if (value.complete) return { text, revision: value.revision, sourceReference: value.sourceReference };
+    offset = value.nextOffset;
+  }
+}
+
+/** Read verified original-document bytes without interpreting them as text. */
+export async function readNativeDocument(host, descriptor, { maxBytes = 100 * 1024 * 1024 } = {}) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 100 * 1024 * 1024) throw new Error('The original attachment limit is invalid.');
+  let offset = 0;
+  let total;
+  const parts = [];
+  for (;;) {
+    host.signal.throwIfAborted();
+    const response = await host.request('command-center.v1.notes.read', {
+      schemaVersion: 1, topicId: descriptor.topicId, referenceId: descriptor.referenceId,
+      path: descriptor.path, observedRevision: descriptor.observedRevision, offset, sourceKind: 'document'
+    });
+    host.signal.throwIfAborted();
+    const value = response?.result ?? response;
+    if (value?.path !== descriptor.path || value?.revision !== descriptor.observedRevision ||
+        value?.sourceReference?.topicId !== descriptor.topicId || value?.sourceReference?.referenceId !== descriptor.referenceId ||
+        value.contentEncoding !== 'identity') throw new Error('The exact original attachment is unavailable.');
+    if (value.totalBytes > maxBytes) throw new Error('This attachment is too large for an inline preview. Download the original.');
+    if (!Number.isSafeInteger(value.totalBytes) || value.totalBytes < 0 ||
+        (total !== undefined && total !== value.totalBytes) || value.byteOffset !== offset ||
+        !Number.isSafeInteger(value.nextOffset) || value.nextOffset < offset || value.nextOffset > value.totalBytes ||
+        value.complete !== (value.nextOffset === value.totalBytes) || (!value.complete && value.nextOffset === offset)) {
+      throw new Error('The original attachment changed during retrieval.');
+    }
+    const bytes = Uint8Array.from(atob(value.contentBase64), (character) => character.charCodeAt(0));
+    if (bytes.length !== value.nextOffset - offset) throw new Error('The original attachment chunk length is invalid.');
+    total = value.totalBytes; parts.push(bytes);
+    if (value.complete) return { bytes: new Blob(parts), revision: value.revision, sourceReference: value.sourceReference };
     offset = value.nextOffset;
   }
 }
