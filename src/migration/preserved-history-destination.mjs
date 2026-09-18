@@ -58,6 +58,20 @@ export async function withPreservedHistoryDestination(options, run) {
         cursor = page.cursor;
       }
     }
+    async function readPage(offset, limit) {
+      assertOwner();
+      const page = await transcripts.readSessionTranscriptVisibleMessageDelta({
+        ...scope, offset, maxMessages: limit, maxBytes: 1_048_576
+      });
+      assertOwner();
+      if (page.kind === 'missing' && reservation.intent.expectedCount === 0) {
+        return Object.freeze({ entries: [], generation: null, totalMessages: 0 });
+      }
+      if (page.kind !== 'page' || !Array.isArray(page.entries) || typeof page.generation !== 'string'
+          || !page.generation || !Number.isSafeInteger(page.totalMessages) || page.totalMessages < 0
+          || page.requiredBytes) fail(page.requiredBytes ? 'history-message-too-large' : 'history-projection-unavailable');
+      return Object.freeze({ entries: page.entries, generation: page.generation, totalMessages: page.totalMessages });
+    }
     async function append(entry, replayOnly) {
       assertOwner();
       expectedMessage(entry); // Pin the expected projection before the native effect.
@@ -83,6 +97,6 @@ export async function withPreservedHistoryDestination(options, run) {
       const { storePath: ignoredPath, ...identity } = anchor;
       return Object.freeze(identity);
     }
-    return run(Object.freeze({ read, assertOwner, matchesMessage, appendFresh: entry => append(entry, false), verifyExisting: entry => append(entry, true) }));
+    return run(Object.freeze({ read, readPage, assertOwner, matchesMessage, appendFresh: entry => append(entry, false), verifyExisting: entry => append(entry, true) }));
   });
 }

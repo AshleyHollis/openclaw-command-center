@@ -52,10 +52,10 @@ export async function createPreservedHistoryReader(options) {
     if (current?.sessionId !== receipt.target.sessionId || current.lifecycleRevision !== receipt.logicalOperationId || current.sendPolicy !== 'deny') fail('history-destination-rebound');
     return current;
   }
-  async function verified(historyId, check) {
+  async function verified(historyId, check, readPage) {
     authority(check);
     const { receipt, source } = selected(historyId);
-    const result = await readVerifiedPreservedHistory({ metadata, historyId, prepared: source, sessionStore, transcripts, storePath, config, env,
+    const result = await readVerifiedPreservedHistory({ metadata, historyId, prepared: source, sessionStore, transcripts, storePath, config, env, readPage,
       assertCurrent: () => assertOwner(receipt, check) });
     assertOwner(receipt, check);
     return result;
@@ -104,11 +104,12 @@ export async function createPreservedHistoryReader(options) {
       request(input, ['historyId', 'offset', 'limit']);
       const offset = offsetOf(input.offset); const limit = input.limit ?? 50;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail('history-request-invalid');
-      const { receipt, entries } = await verified(input.historyId, check);
-      if (offset > entries.length) fail('history-request-invalid');
+      const selectedHistory = selected(input.historyId);
+      if (offset > selectedHistory.receipt.verifiedCount) fail('history-request-invalid');
+      const { receipt, entries } = await verified(input.historyId, check, { offset, limit });
       const messages = [];
       let bytes = 0;
-      for (const entry of entries.slice(offset, offset + limit)) {
+      for (const entry of entries) {
         const provenance = entry.message.__openclaw.importedHistoryV1;
         const native = entry.message.__openclaw.importedNativeHistoryV1;
         const original = provenance?.rawMessage;
@@ -126,15 +127,18 @@ export async function createPreservedHistoryReader(options) {
       assertOwner(receipt, check);
       const nextOffset = offset + messages.length;
       return { schemaVersion: 1, ...descriptor(receipt, selected(receipt.historyId).source, check), messages, offset,
-        nextOffset: nextOffset < entries.length ? nextOffset : null, hasMore: nextOffset < entries.length };
+        nextOffset: nextOffset < receipt.verifiedCount ? nextOffset : null, hasMore: nextOffset < receipt.verifiedCount };
     },
     async attachmentRead(input, check) {
       input = { ...input };
       request(input, ['historyId', 'messageId', 'attachmentId', 'offset', 'observedRevision']);
       const offset = offsetOf(input.offset);
       if (typeof input.messageId !== 'string' || !id(input.attachmentId)) fail('history-request-invalid');
-      const { receipt, entries } = await verified(input.historyId, check);
-      const entry = entries.find(item => item.entryId === input.messageId);
+      const selectedHistory = selected(input.historyId);
+      const messageIndex = selectedHistory.source.entries.findIndex(item => item.eventId === input.messageId);
+      if (messageIndex < 0) fail('history-attachment-unavailable');
+      const { receipt, entries } = await verified(input.historyId, check, { offset: messageIndex, limit: 1 });
+      const entry = entries[0]?.entryId === input.messageId ? entries[0] : null;
       const match = entry && filesFor(input.historyId, entry).find(item => item.descriptor.attachmentId === input.attachmentId);
       if (!match) fail('history-attachment-unavailable');
       const { file, descriptor: attachment } = match;

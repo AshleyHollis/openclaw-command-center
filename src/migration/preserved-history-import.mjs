@@ -73,6 +73,27 @@ async function run(options, readOnly) {
     allowCreate = true;
   }
   return withPreservedHistoryDestination({ ...options, allowCreate, reservation: row, assertCurrent: assertOperation }, async destination => {
+    if (readOnly && row.phase === 'verified' && options.readPage !== undefined) {
+      const request = options.readPage;
+      if (!request || !Number.isSafeInteger(request.offset) || request.offset < 0
+          || !Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > 200) fail('history-request-invalid');
+      const page = await destination.readPage(request.offset, request.limit);
+      // The completion path already compared every persisted byte and anchor.
+      // A native rewrite rotates generation, while a pure append changes the
+      // visible count. Reading both facts with this bounded page in one SQLite
+      // snapshot proves that durable anchor receipt still names this exact
+      // projection; no process cache or presentation identity participates.
+      if (page.generation !== row.transcriptGeneration || page.totalMessages !== row.verifiedCount
+          || row.verifiedCount !== prepared.expectedCount) fail('history-proof-conflict');
+      for (const [relativeIndex, actual] of page.entries.entries()) {
+        const expected = prepared.entries[request.offset + relativeIndex];
+        if (!expected || actual.seq !== request.offset + relativeIndex + 1 || actual.entryId !== expected.eventId
+            || actual.parentId !== expected.parentId || !destination.matchesMessage(actual.message, expected)) fail('history-prefix-conflict');
+      }
+      if (page.entries.length !== Math.min(request.limit, Math.max(0, row.verifiedCount - request.offset))) fail('history-prefix-conflict');
+      destination.assertOwner();
+      return freeze({ receipt: row, entries: page.entries });
+    }
     const anchors = [];
     function proof(count = anchors.length) {
       const selected = anchors.slice(0, count);
