@@ -4,6 +4,6 @@
 export const FIRST_LIVE_FEATURES = Object.freeze({
   topics: true, noteRead: true, conversations: true,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
-  search: false, dashboard: false, scheduler: true, analysis: false,
+  search: false, dashboard: true, scheduler: true, analysis: false,
   notifications: false, noteMaintenance: false
 });

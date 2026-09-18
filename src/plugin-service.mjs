@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { createAttentionService } from './attention/service.mjs';
+import { createDashboardService } from './dashboard/service.mjs';
 import { openCommandCenterMetadataService } from './metadata/service.mjs';
 import { createLegacyDiscordMigrationService } from './migration/service.mjs';
 import { createPreservedHistoryReader } from './migration/preserved-history-read.mjs';
@@ -32,6 +34,8 @@ async function readVisibleTranscript(input) {
 export function createMetadataService(api) {
   let metadataService;
   let sourceService;
+  let attentionService;
+  let dashboardService;
   let topicService;
   let stopPromise;
   let releaseDurableFolderStager;
@@ -59,7 +63,7 @@ export function createMetadataService(api) {
         // instantiate the rich Activity/Dashboard presentation or event owners.
         activity: configured.activity !== false,
         scheduler: FIRST_LIVE_FEATURES.scheduler && gatewayAvailable && configured.scheduler !== false,
-        search: false, analysis: false, attention: false
+        search: false, analysis: false, attention: FIRST_LIVE_FEATURES.dashboard
       };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
       recoveryOnly = metadataService.getOperatingStatus().mode === 'recovery-only';
@@ -81,6 +85,29 @@ export function createMetadataService(api) {
       }
       const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: api.pluginConfig?.legacyDiscordMigration, logger: api.logger });
       const activatedMetadata = metadataService;
+      if (FIRST_LIVE_FEATURES.dashboard) {
+        attentionService = createAttentionService({
+          metadata: metadataService,
+          host: runtimeHostIdentity(stateDir),
+          timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC',
+          sourceActions: {
+            complete: ({ episode, parameters, logicalOperationId }) => sourceService.forTopic(episode.topicId).reminders.complete({ schemaVersion: 1, referenceId: episode.sourceReferenceId, expectedConfigRevision: parameters.expectedConfigRevision, logicalOperationId }),
+            snooze: ({ episode, parameters, logicalOperationId }) => sourceService.forTopic(episode.topicId).reminders.snooze({ schemaVersion: 1, referenceId: episode.sourceReferenceId, expectedConfigRevision: parameters.expectedConfigRevision, logicalOperationId, patch: { schedule: { kind: 'at', at: parameters.until } } }),
+            verify: async ({ episode, actionId, parameters }) => {
+              const rows = await sourceService.forTopic(episode.topicId).reminders.list({ schemaVersion: 1 });
+              const row = rows.find((item) => item.sourceReference?.referenceId === episode.sourceReferenceId);
+              if (actionId === 'reminder.complete') return row?.job?.enabled === false;
+              return row?.job?.schedule?.kind === 'at' && row.job.schedule.at === parameters.until;
+            }
+          }
+        });
+        attentionService.registerSourceCapability({
+          sourceCapabilityId: 'reminders', sourceKind: 'reminder', monitoring: true,
+          deriveEvidence: (occurrence) => occurrence.evidenceFacts,
+          verifyTransition: (occurrence) => occurrence.transitionEvidence?.verifiedSource === 'scheduler-readback' && occurrence.transitionEvidence?.version === occurrence.occurrenceVersion,
+          actions: []
+        });
+      }
       const historySource = structuredClone(api.pluginConfig?.preservedHistorySource);
       const nativeHistorySource = structuredClone(api.pluginConfig?.nativeHistorySource);
       let historyReaderPromise;
@@ -98,12 +125,38 @@ export function createMetadataService(api) {
         assertActive();
         return reader;
       };
-      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, migration: migrationService, transcriptReader: readVisibleTranscript, historyReader, noteRecoveryEffects: false });
+      sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, transcriptReader: readVisibleTranscript, historyReader, noteRecoveryEffects: false });
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot });
+      const migrationResult = await migrationService.start();
+      if (FIRST_LIVE_FEATURES.dashboard) {
+        try { await sourceService.refreshReminderAttention(); }
+        catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
+        dashboardService = createDashboardService({
+          sourceService,
+          attentionService,
+          metadata: metadataService,
+          now: () => new Date().toISOString(),
+          timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC',
+          navigationResolver: async (record) => {
+            const referenceId = record?.sourceReferenceId;
+            const topicId = record?.topicId;
+            if (typeof referenceId !== 'string' || typeof topicId !== 'string') return undefined;
+            const reference = metadataService.getSourceReference?.(referenceId);
+            if (!reference || reference.topicId !== topicId) return undefined;
+            if (reference.sourceKind === 'session') {
+              try {
+                const navigation = await sourceService.sessionsNavigate({ schemaVersion: 1, topicId, referenceId });
+                if (navigation?.sessionKey && navigation?.sessionId) return Object.freeze({ kind: 'session', topicId, referenceId, sessionKey: navigation.sessionKey, sessionId: navigation.sessionId, verified: true });
+              } catch { return undefined; }
+            }
+            return Object.freeze({ kind: 'source', topicId, referenceId, sourceKind: reference.sourceKind, verified: true });
+          }
+        });
+      }
       // Existing-data bootstrap and its durable recovery remain required.
       // Native Cron is acquired only by an authenticated Reminder/Schedule
       // request; startup itself touches no job or optional background owner.
-      return migrationService.start();
+      return migrationResult;
     },
     stop() {
       if (stopPromise) return stopPromise;
@@ -115,9 +168,12 @@ export function createMetadataService(api) {
         releaseNoteFilesystemCoordinator?.();
         releaseNoteFilesystemCoordinator = undefined;
         sourceService?.close?.();
+        attentionService?.close?.();
         metadataService?.close();
         metadataService = undefined;
         sourceService = undefined;
+        attentionService = undefined;
+        dashboardService = undefined;
         topicService = undefined;
       });
       return stopPromise;
@@ -131,11 +187,11 @@ export function createMetadataService(api) {
     getTopicMaintenanceOwners() {
       return { sourceService, metadata: metadataService };
     },
-    get attentionService() { return undefined; },
+    get attentionService() { return attentionService; },
     get maintenanceService() { return undefined; },
     get searchService() { return undefined; },
     get searchRebuildService() { return undefined; },
-    get dashboardService() { return undefined; },
+    get dashboardService() { return dashboardService; },
     get notificationService() { return undefined; },
     get topicAnalysisRunner() { return undefined; },
     get topicAnalysisSchedule() { return undefined; },
@@ -148,7 +204,12 @@ export function createMetadataService(api) {
     topicReviewSnooze() { return refuseDeferred('analysis'); },
     topicReviewCheckpoint() { return refuseDeferred('analysis'); },
     topicReviewApply() { return refuseDeferred('analysis'); },
-    async dashboardGet() { return refuseDeferred('dashboard'); },
+    async dashboardGet(input = {}) {
+      requireOperational();
+      if (!dashboardService) return unavailable('dashboard');
+      try { await sourceService?.refreshReminderAttention?.(); } catch { /* unavailable scheduler rows are omitted */ }
+      return dashboardService.get(input);
+    },
     dashboardUpdateSettings() { return refuseDeferred('dashboard'); },
     notificationReconcile() { return refuseDeferred('notifications'); },
     notificationCaptureBinding() { return refuseDeferred('notifications'); },

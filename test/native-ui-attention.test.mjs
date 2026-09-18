@@ -23,17 +23,17 @@ async function fixture(run) {
       const { mountAttentionPage } = await import('/attention-page.mjs');
       const operations = new Map();
       const lifetime = new AbortController(); const pages = new Map(); const subscribers = new Set();
-      window.requests = []; window.opened = []; window.actionMode = 'success';
+      window.requests = []; window.opened = []; window.actionMode = 'success'; window.activity = [];
       const action = { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', target: { topicId: 'fictional-topic', sourceReferenceId: 'fictional-source' }, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string' } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact reminder.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true } };
       window.cards = ['one', 'two'].map((id) => ({ notificationRecordId: `record-${id}`, episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
       let context; let view; let scope;
       const host = { signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: true }, redact: (value) => value,
         subscribe: (fn) => { subscribers.add(fn); return () => subscribers.delete(fn); },
-        navigation: { openPage: (target) => window.opened.push(target) }, sessions: { open() { throw new Error('Attention must not open arbitrary Sessions'); } },
+        navigation: { openPage: (target) => window.opened.push(target) }, sessions: { openChat: (target) => window.opened.push({ session: target }), open() { throw new Error('Attention must not open arbitrary Sessions'); } },
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
-          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [] } };
+          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('attention.get')) {
             const episode = structuredClone(window.cards.find((card) => card.episodeId === params.episodeId));
             if (window.delayGet) { window.delayGet = false; await new Promise((resolve) => { window.finishGet = resolve; }); }
@@ -47,17 +47,17 @@ async function fixture(run) {
             return { schemaVersion: 1, logicalOperationId: params.logicalOperationId, result: { status: 'applied', episode, ...(navigation ? { navigation } : {}) } };
           }
           if (method.endsWith('topics.get')) return { result: { topic: { topicId: params.topicId } } };
+          if (method.endsWith('sessions.resolve-native')) return { result: { sessionKey: 'agent:main:fictional-activity' } };
           throw new Error(`Unexpected method ${method}`);
         } };
       const deactivate = plugin.activate(host);
-      // Attention is deferred (#224): retain the real page owner's regression
-      // tests without claiming it is registered or available in first-live UI.
-      if (pages.has('attention')) throw new Error('First-live activation must not register deferred Attention.');
+      if (!pages.has('attention')) throw new Error('First-live activation must register the native Attention destination.');
       window.mountRecord = (record = 'record-one') => {
         scope?.abort(); view?.dispose(); scope = new AbortController();
         context = { host, props: { notificationRecord: record }, signal: scope.signal, presented: true };
         view = mountAttentionPage(document.querySelector('#mount'), context, operations);
       };
+      window.mountInbox = () => window.mountRecord(null);
       window.selectRecord = (record) => { context = { ...context, props: { notificationRecord: record } }; view.update(context); };
       window.setPresented = (presented) => { context = { ...context, presented }; view.update(context); };
       window.setAccess = (value) => { host.connection = { ...host.connection, ...value }; for (const fn of subscribers) fn(); };
@@ -67,7 +67,7 @@ async function fixture(run) {
     });
     await page.getByRole('heading', { name: 'Fictional one' }).waitFor();
     await run(page);
-    for (const request of await page.evaluate(() => window.requests)) validateBridgeRequest(request.method, request.params);
+    for (const request of await page.evaluate(() => window.requests)) if (!request.method.endsWith('sessions.resolve-native')) validateBridgeRequest(request.method, request.params);
     assert.deepEqual(await page.evaluate(() => window.shutdown()), { pages: 0, subscribers: 0 });
   } finally { await browser?.close(); await new Promise((resolve) => server.close(resolve)); }
 }
@@ -143,4 +143,27 @@ test('native Attention explicitly leaves global Topic Review decisions unavailab
   await page.getByText('Topic Review decisions are not yet available on this native page.', { exact: false }).waitFor();
   assert.equal(await page.locator('form').count(), 0);
   assert.equal(await page.evaluate(() => window.requests.filter((r) => r.method.endsWith('attention.act')).length), 0);
+}));
+
+test('native Attention inbox exposes verified non-Session Activity through its exact Topic', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.activity = [{ activityId: 'activity-source', topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', operationKind: 'reminder.complete', outcome: 'applied', occurredAt: '2035-09-20T04:30:00.000Z', navigation: { kind: 'source', topicId: 'fictional-topic', referenceId: 'fictional-source', sourceKind: 'reminder_schedule', verified: true } }];
+    window.mountInbox();
+  });
+  await page.getByRole('heading', { name: 'Recent Activity' }).waitFor();
+  await page.getByRole('button', { name: 'Open Topic', exact: true }).click();
+  await page.waitForFunction(() => window.opened.some((target) => target?.id === 'topic'));
+  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'fictional-topic' } });
+}));
+
+test('native Attention re-resolves verified Session Activity before opening native Chat', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.activity = [{ activityId: 'activity-session', topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', operationKind: 'conversation.update', outcome: 'applied', navigation: { kind: 'session', topicId: 'fictional-topic', referenceId: 'fictional-source', sessionKey: 'agent:main:stale-is-not-used', sessionId: 'fictional-session-id', verified: true } }];
+    window.mountInbox();
+  });
+  await page.getByRole('button', { name: 'Open Conversation', exact: true }).click();
+  await page.waitForFunction(() => window.opened.some((target) => target?.session));
+  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { session: { sessionKey: 'agent:main:fictional-activity', agentId: 'main' } });
+  const request = await page.evaluate(() => window.requests.find((entry) => entry.method.endsWith('sessions.resolve-native')));
+  assert.deepEqual(request.params, { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-source', expectedSessionId: 'fictional-session-id' });
 }));

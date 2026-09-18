@@ -3,6 +3,7 @@ import { mountTopicPage } from './topic-page.mjs';
 import { mountTopicNotesPanel } from './topic-notes-panel.mjs';
 import { createTopicGroupSetup } from './topic-group-setup.mjs';
 import { mountHistoryPage } from './history-page.mjs';
+import { mountAttentionPage } from './attention-page.mjs';
 import { createNativeCreationForm } from './creation-form.mjs';
 import { createNativeState } from './mutations.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
@@ -172,6 +173,8 @@ export default {
     const histories = host.ui.registerPage({ id: 'histories', label: 'Imported History', mount: mountHistoryPage });
     const historyNavigation = host.ui.registerNavigation({ id: 'histories', label: 'Imported History', page: { id: 'histories' }, order: 11 });
     const navigation = host.ui.registerNavigation({ id: 'topics', label: 'Manage Topics', page: { id: 'topics' }, order: 10 });
-    return () => { state.retire(); sidebarState.retire(); if (replacements) { host.ui.selectReplacement('session-files', null); host.ui.selectReplacement('session-list', null); } topicSidebar(); topicFiles(); historyNavigation(); histories(); navigation(); topic(); page(); };
+    const attention = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerPage({ id: 'attention', label: 'Attention', mount: mountAttentionPage }) : () => {};
+    const attentionNavigation = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerNavigation({ id: 'attention', label: 'Attention', page: { id: 'attention' }, order: 9 }) : () => {};
+    return () => { state.retire(); sidebarState.retire(); if (replacements) { host.ui.selectReplacement('session-files', null); host.ui.selectReplacement('session-list', null); } attentionNavigation(); attention(); topicSidebar(); topicFiles(); historyNavigation(); histories(); navigation(); topic(); page(); };
   }
 };

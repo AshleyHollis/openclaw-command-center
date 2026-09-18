@@ -300,7 +300,7 @@ test('plugin shutdown aborts a deferred Search rebuild before closing owned stat
   }
 });
 
-test('real first-live plugin does not register or run the deferred notification owner', async () => {
+test('real first-live plugin activates Attention without acquiring the deferred notification owner', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-notifications-'));
   const host = fakePublishedApi(stateDir);
   try {
@@ -316,7 +316,8 @@ test('real first-live plugin does not register or run the deferred notification 
     const service = host.services[0];
     await service.start();
     assert.equal(service.notificationService, undefined);
-    assert.equal(service.attentionService, undefined);
+    assert.ok(service.attentionService);
+    assert.ok(service.dashboardService);
     assert.equal(host.candidates.length, 0);
     await service.stop();
   } finally {

@@ -25,6 +25,42 @@ export function mountAttentionPage(container, context, operations = new Map()) {
   const report = (message) => { status.textContent = host.redact(message); };
   const setBusy = (busy) => { content.setAttribute('aria-busy', String(busy)); refresh.disabled = busy; };
 
+  function renderActivity(records, pending) {
+    if (!records.length) return;
+    content.append(element('h2', 'Recent Activity'));
+    for (const record of records) {
+      const row = element('article');
+      const operation = nonBlank(record.operationKind) ? record.operationKind : nonBlank(record.actionId) ? record.actionId : 'Activity';
+      row.append(element('h3', operation), element('p', `${nonBlank(record.outcome) ? record.outcome : 'recorded'}${nonBlank(record.occurredAt) ? ` · ${record.occurredAt}` : ''}`));
+      const target = record.navigation;
+      if (target?.verified === true && target.topicId === record.topicId && target.referenceId === record.sourceReferenceId) {
+        const open = element('button', target.kind === 'session' ? 'Open Conversation' : 'Open Topic'); open.type = 'button';
+        open.addEventListener('click', async () => {
+          if (!current(pending) || !readable() || open.disabled) return;
+          open.disabled = true;
+          try {
+            if (target.kind === 'session' && nonBlank(target.sessionId)) {
+              const response = await host.request('command-center.v1.sessions.resolve-native', { schemaVersion: 1, topicId: target.topicId, referenceId: target.referenceId, expectedSessionId: target.sessionId });
+              if (!current(pending) || !readable()) return;
+              const resolved = unwrap(response);
+              const agent = /^agent:([^:]+):.+$/.exec(resolved?.sessionKey ?? '');
+              if (!agent || Object.keys(resolved ?? {}).some((key) => key !== 'sessionKey')) throw new Error('The exact Activity Conversation is unavailable.');
+              host.sessions.openChat({ sessionKey: resolved.sessionKey, agentId: agent[1] });
+            } else if (target.kind === 'source') {
+              const response = await host.request('command-center.v1.topics.get', { schemaVersion: 1, topicId: target.topicId });
+              if (!current(pending) || !readable()) return;
+              if (unwrap(response)?.topic?.topicId !== target.topicId) throw new Error('The exact Activity Topic is unavailable.');
+              host.navigation.openPage({ id: 'topic', params: { topicId: target.topicId } });
+            }
+          } catch (error) { if (current(pending)) report(error?.message || 'Activity navigation is unavailable.'); }
+          finally { if (current(pending)) open.disabled = false; }
+        }, { signal });
+        row.append(open);
+      }
+      content.append(row);
+    }
+  }
+
   function render(episode) {
     content.replaceChildren();
     const card = element('article'); card.dataset.episodeId = episode.episodeId;
@@ -125,17 +161,19 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     if (!readable()) { report('Connect with read access to view Attention.'); return; }
     setBusy(true); report('Loading Attention…');
     try {
-      const response = await host.request('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 1 });
+      const response = await host.request('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 20 });
       if (!current(pending)) return;
       const dashboard = unwrap(response);
       if (!Array.isArray(dashboard?.attention) || !Array.isArray(dashboard?.inProgress)) throw new Error('The Attention destination is unavailable.');
       const cards = [...dashboard.attention, ...dashboard.inProgress];
       if (!recordId) {
+        if (cards.length) content.append(element('h2', 'Needs Attention'));
         for (const card of cards) {
           if (!nonBlank(card.notificationRecordId)) continue;
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { notificationRecord: card.notificationRecordId } }); }, { signal }); content.append(button);
         }
+        renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending);
         report(cards.length ? 'Select an Attention item.' : 'No current Attention items.'); return;
       }
       const matches = cards.filter((card) => card.notificationRecordId === recordId);

@@ -4,7 +4,7 @@ import { SourceServiceError } from './sources/errors.mjs';
 export const FIRST_LIVE_FEATURES = Object.freeze({
   topics: true, noteRead: true, conversations: true, topicDocuments: false,
   noteWrite: false, topicProvisioning: false, structuralChanges: false,
-  search: false, dashboard: false, scheduler: true, analysis: false,
+  search: false, dashboard: true, scheduler: true, analysis: false,
   notifications: false, noteMaintenance: false
 });
 
@@ -33,7 +33,10 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.reminders.snooze', 'command-center.v1.reminders.complete',
     'command-center.v1.schedules.list', 'command-center.v1.schedules.get',
     'command-center.v1.schedules.create', 'command-center.v1.schedules.update',
-    'command-center.v1.schedules.set-enabled', 'command-center.v1.schedules.run'
+    'command-center.v1.schedules.set-enabled', 'command-center.v1.schedules.run',
+    'command-center.v1.attention.list', 'command-center.v1.attention.get',
+    'command-center.v1.attention.act', 'command-center.v1.activity.list',
+    'command-center.v1.activity.get', 'command-center.v1.dashboard.get'
   ]),
   topicAction: Object.freeze(['conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
 });

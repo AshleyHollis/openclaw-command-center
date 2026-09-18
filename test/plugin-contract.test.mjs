@@ -36,7 +36,7 @@ test('plugin service retains runtime state and source capability wiring', async 
   assert.match(source, /gatewayAvailable = typeof api\.runtime\?\.gateway\?\.request === 'function'/);
   assert.match(source, /sessions: FIRST_LIVE_FEATURES\.conversations && \(gatewayAvailable \|\| sessionCatalogAvailable\)/);
   assert.match(source, /scheduler: FIRST_LIVE_FEATURES\.scheduler && gatewayAvailable && configured\.scheduler !== false/);
-  assert.match(source, /search: false, analysis: false, attention: false/);
+  assert.match(source, /search: false, analysis: false, attention: FIRST_LIVE_FEATURES\.dashboard/);
 });
 
 test('plugin registers the bridge with grant-aware mutation denial', async () => {
@@ -107,13 +107,14 @@ test('retained legacy Topic assets preserve their guarded routes until native wo
   assert.doesNotMatch(`${app}\n${styles}`, /max-width: 1023px/u);
 });
 
-test('plugin startup preserves migration wiring without activating deferred approval owners', async () => {
+test('plugin startup preserves migration wiring and activates the durable Attention owner', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-approval-'));
   const api = { runtime: { state: { resolveStateDir: () => stateDir } }, logger: {}, pluginConfig: {} };
   const service = createMetadataService(api);
   try {
     await service.start();
-    assert.equal(service.attentionService, undefined);
+    assert.ok(service.attentionService);
+    assert.ok(service.dashboardService);
     const identity = runtimeHostIdentity(stateDir);
     assert.match(identity, /^command-center-runtime:[a-f0-9]{64}$/);
     assert.doesNotMatch(identity, new RegExp(stateDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));

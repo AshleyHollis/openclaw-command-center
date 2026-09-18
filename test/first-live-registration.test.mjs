@@ -40,7 +40,7 @@ test('first-live registration needs no notification authority and preserves core
   const h = host();
   plugin.register(h.api);
   assert.equal(h.services.length, 1);
-  for (const method of ['topics.list', 'topics.get', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.create', 'sessions.resolve-native', 'histories.list', 'histories.read', 'histories.attachment-read', 'reminders.list', 'reminders.create', 'reminders.snooze', 'reminders.complete', 'schedules.list', 'schedules.get', 'schedules.create', 'schedules.update', 'schedules.set-enabled', 'schedules.run']) {
+  for (const method of ['topics.list', 'topics.get', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.create', 'sessions.resolve-native', 'histories.list', 'histories.read', 'histories.attachment-read', 'reminders.list', 'reminders.create', 'reminders.snooze', 'reminders.complete', 'schedules.list', 'schedules.get', 'schedules.create', 'schedules.update', 'schedules.set-enabled', 'schedules.run', 'attention.list', 'attention.get', 'attention.act', 'activity.list', 'activity.get', 'dashboard.get']) {
     assert.ok(h.methods.has(`command-center.v1.${method}`), method);
   }
   assert.ok(h.routes.some(route => route.path === '/plugins/command-center/api/topic/actions' && route.auth === 'gateway'));
@@ -49,7 +49,7 @@ test('first-live registration needs no notification authority and preserves core
 
 test('registered deferred bridge commands are refused before a service or optional binding is acquired', async () => {
   const h = host(); plugin.register(h.api);
-  const retained = new Set(['sources.status', 'migration.status', 'migration.review-failures', 'topics.list', 'topics.get', 'topics.recovery.status', 'topics.recovery.verify', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.topic-context', 'sessions.group-preview', 'sessions.group', 'sessions.assign-topic', 'sessions.create', 'histories.list', 'histories.read', 'histories.attachment-read', 'reminders.list', 'reminders.create', 'reminders.snooze', 'reminders.complete', 'schedules.list', 'schedules.get', 'schedules.create', 'schedules.update', 'schedules.set-enabled', 'schedules.run'].map(name => `command-center.v1.${name}`));
+  const retained = new Set(['sources.status', 'migration.status', 'migration.review-failures', 'topics.list', 'topics.get', 'topics.recovery.status', 'topics.recovery.verify', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.topic-context', 'sessions.group-preview', 'sessions.group', 'sessions.assign-topic', 'sessions.create', 'histories.list', 'histories.read', 'histories.attachment-read', 'reminders.list', 'reminders.create', 'reminders.snooze', 'reminders.complete', 'schedules.list', 'schedules.get', 'schedules.create', 'schedules.update', 'schedules.set-enabled', 'schedules.run', 'attention.list', 'attention.get', 'attention.act', 'activity.list', 'activity.get', 'dashboard.get'].map(name => `command-center.v1.${name}`));
   for (const method of [...READ_METHODS, ...WRITE_METHODS].filter(name => !retained.has(name))) {
     let response;
     await h.methods.get(method)({ req: { id: 'fixture-request' }, params: {}, context: { authenticated: true },
@@ -77,14 +77,18 @@ test('first live retains only the authenticated, conditional Note Folder recover
   assert.equal(blocked.error.code, 'feature-unavailable');
 });
 
-test('first-live opens only native-backed Reminder and Schedule commands while Attention remains deferred', async () => {
+test('first-live opens native-backed Reminder, Schedule, and exact Attention commands', async () => {
   const methods = new Map();
   const calls = [];
   const nativeCron = Object.freeze([{ id: 'fictional-native-cron', enabled: true, schedule: Object.freeze({ kind: 'every', everyMs: 60_000 }) }]);
   const before = JSON.stringify(nativeCron);
   const owner = {
     remindersList: async input => { calls.push(['reminders.list', input]); return []; },
-    schedulesList: async input => { calls.push(['schedules.list', input]); return []; }
+    schedulesList: async input => { calls.push(['schedules.list', input]); return []; },
+    attentionAct: async (input, runtime) => {
+      calls.push(['attention.act', input, runtime]);
+      return { schemaVersion: 1, status: 'applied' };
+    }
   };
   registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, owner);
   for (const method of ['command-center.v1.reminders.list', 'command-center.v1.schedules.list']) {
@@ -93,10 +97,13 @@ test('first-live opens only native-backed Reminder and Schedule commands while A
     assert.equal(response.ok, true, method);
   }
   assert.deepEqual(calls.map(([method]) => method), ['reminders.list', 'schedules.list']);
-  let blocked;
-  await methods.get('command-center.v1.attention.act')({ req: { id: 'fictional-attention-rejection' }, params: {}, context: { authenticated: true }, respond: (ok, result, error) => { blocked = { ok, result, error }; } });
-  assert.equal(blocked.ok, false);
-  assert.equal(blocked.error.code, 'feature-unavailable');
+  const logicalOperationId = randomUUID();
+  const params = { schemaVersion: 1, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', episodeId: 'fictional-episode', expectedEpisodeRevision: 1, expectedSourceRevision: 'revision-1', actionId: 'monitor.retry', input: {}, logicalOperationId };
+  let attention;
+  await methods.get('command-center.v1.attention.act')({ req: { id: logicalOperationId }, params, client: { authenticatedUserProfile: { profileId: 'fictional-operator' } }, context: { authenticated: true }, respond: (ok, result, error) => { attention = { ok, result, error }; } });
+  assert.equal(attention.ok, true);
+  assert.equal(calls.at(-1)[0], 'attention.act');
+  assert.equal(calls.at(-1)[1].authenticatedOperatorId, 'fictional-operator');
   assert.equal(JSON.stringify(nativeCron), before);
 });
 
@@ -123,7 +130,7 @@ test('Reminder mutations return their native result without acquiring deferred n
 
 test('deferred HTTP actions are non-retryable and cannot reach services before startup', async () => {
   const h = host(); plugin.register(h.api);
-  for (const route of ['attention/actions', 'dashboard', 'dashboard/actions', 'topics/actions', 'search/rebuild', 'topic-analysis', 'topic-analysis/actions']) {
+  for (const route of ['dashboard/actions', 'topics/actions', 'search/rebuild', 'topic-analysis', 'topic-analysis/actions']) {
     const result = await http(h, `/plugins/command-center/api/${route}`, {});
     assert.equal(result.code, 'feature-unavailable', route);
     assert.equal(result.retryable, false, route);
