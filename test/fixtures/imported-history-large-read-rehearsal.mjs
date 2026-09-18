@@ -2,15 +2,10 @@ import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
-import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
-import { readNativeHistoryInventory } from '../../src/migration/native-history-source.mjs';
-import { runPreservedHistoryImport } from '../../src/migration/preserved-history-import.mjs';
-import { createPreservedHistoryReader } from '../../src/migration/preserved-history-read.mjs';
-
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 test('a 1,415-message Imported History page is bounded and leaves health work responsive', { timeout: 600_000 }, async t => {
@@ -18,6 +13,14 @@ test('a 1,415-message Imported History page is bounded and leaves health work re
   const stateDir = process.env.COMMAND_CENTER_REHEARSAL_STATE_DIR;
   assert.ok(stateDir, 'parent-owned isolated state is required');
   assert.ok(process.env.COMMAND_CENTER_REHEARSAL_HOST_PACKAGE, 'explicit isolated host is required');
+  const implementationRoot = process.env.COMMAND_CENTER_REHEARSAL_IMPLEMENTATION_ROOT
+    ? path.resolve(process.env.COMMAND_CENTER_REHEARSAL_IMPLEMENTATION_ROOT)
+    : fileURLToPath(new URL('../..', import.meta.url));
+  const implementation = relative => import(pathToFileURL(path.join(implementationRoot, relative)).href);
+  const [{ openCommandCenterMetadataService }, { readNativeHistoryInventory }, { runPreservedHistoryImport }, { createPreservedHistoryReader }] = await Promise.all([
+    implementation('src/metadata/service.mjs'), implementation('src/migration/native-history-source.mjs'),
+    implementation('src/migration/preserved-history-import.mjs'), implementation('src/migration/preserved-history-read.mjs')
+  ]);
   process.env.OPENCLAW_STATE_DIR = stateDir;
   process.env.OPENCLAW_CONFIG_PATH = path.join(stateDir, 'openclaw.json');
   const require = createRequire(process.env.COMMAND_CENTER_REHEARSAL_HOST_PACKAGE);
