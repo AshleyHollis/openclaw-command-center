@@ -21,6 +21,13 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Install pinned candidate dependencies
+        run: |
+          set -euo pipefail
+          dependencies="$RUNNER_TEMP/candidate-dependencies"
+          mkdir -p "$dependencies"
+          cp package.json package-lock.json "$dependencies/"
+          npm ci --prefix "$dependencies" --ignore-scripts --no-audit --no-fund
       # Fixed packaging toolchain only; this is not the deployed host identity.
       # No credentials, live mounts or network are passed to candidate commands.
       - name: Build and verify candidate archive
@@ -37,11 +44,11 @@ jobs:
             --cpus 2 --memory 8g --pids-limit 256 \
             --tmpfs /tmp:rw,exec,nosuid,nodev,size=1073741824,mode=1777 \
             --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/candidate,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/candidate-dependencies/node_modules,dst=/dependencies,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/candidate-package,dst=/output" \
             --entrypoint /bin/sh "$TOOLCHAIN" -eu -c '
               cp -R /candidate /tmp/source
-              mkdir /tmp/source/node_modules
-              ln -s /app /tmp/source/node_modules/openclaw
+              ln -s /dependencies /tmp/source/node_modules
               cd /tmp/source
               node --test test/plugin-artifact.test.mjs
               node scripts/package-candidate.mjs --output /output/artifact
