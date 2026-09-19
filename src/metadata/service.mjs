@@ -56,6 +56,7 @@ import { CONDITIONAL_PRIMARY_MODE, PROVISIONING_PRIMARY_OPERATION, installProvis
 import { installOpenLoopMetadata } from './open-loops.mjs';
 import { installMessageIntake } from './message-intake.mjs';
 import { installOpenLoopActions } from './open-loop-actions.mjs';
+import { installTransactionIntake } from './transaction-intake.mjs';
 
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii');
 const diagnosticLimit = 300;
@@ -2161,6 +2162,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   installOpenLoopMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
   installMessageIntake(service, { ErrorType: CommandCenterMetadataError });
   installOpenLoopActions(service, { ErrorType: CommandCenterMetadataError });
+  installTransactionIntake(service, { ErrorType: CommandCenterMetadataError });
   return Object.freeze(service);
 }
 
