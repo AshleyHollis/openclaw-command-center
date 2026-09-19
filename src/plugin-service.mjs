@@ -18,6 +18,10 @@ function unavailable(feature) {
 }
 
 const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'purchaseNamespace', 'purchaseId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId']);
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)]))
+  : value;
+const operationDigest = value => `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}`;
 function publicOpenLoopEvidence(observation) {
   return Object.freeze({
     observationId: observation.observationId,
@@ -291,6 +295,22 @@ export function createMetadataService(api) {
       if (!Array.isArray(input.selections) || input.selections.length !== 1) throw new SourceServiceError('invalid-request', 'The bounded intake pilot accepts exactly one selected document.');
       const selection = input.selections[0];
       if (!selection || typeof selection !== 'object' || Array.isArray(selection) || Object.keys(selection).some(key => !['topicId', 'path', 'occurredAt', 'observedAt'].includes(key)) || selection.topicId !== reference.topicId) throw new SourceServiceError('invalid-request', 'The selected document must identify its exact Topic, path, and selection times.');
+      const operationKind = 'selected-source-intake-root';
+      const rootIntent = { schemaVersion: 1, operatorId, authorization: input.authorization, baselineThrough: input.baselineThrough, selections: input.selections };
+      const intentDigest = operationDigest(rootIntent);
+      const prior = metadataService.getOperation(input.logicalOperationId);
+      if (prior && (prior.operationKind !== operationKind || prior.intentDigest !== intentDigest)) throw new SourceServiceError('conflict', 'The selected-source operation ID was reused with different intent.');
+      const schedule = result => {
+        const scheduled = result.results.map((item, index) => item.loop && item.historicalBaseline !== true
+          ? reconcileOpenLoopReminder({ schemaVersion: 1, disposition: item.disposition, loop: item.loop }, `${input.logicalOperationId}:${index}`)
+          : null);
+        return scheduled.some(value => value && typeof value.then === 'function')
+          ? Promise.all(scheduled.map(value => Promise.resolve(value))).then(() => result)
+          : result;
+      };
+      if (prior?.state === 'applied') return schedule(Object.freeze(JSON.parse(prior.resultIdentity)));
+      if (prior) throw new SourceServiceError('unknown', 'The selected-source operation outcome is unknown. Reconcile it before selecting the source again.');
+      const pending = metadataService.recordOperation({ logicalOperationId: input.logicalOperationId, transportRequestId: input.logicalOperationId, intentDigest, operationKind, state: 'pending', resultStatus: 'pending', resultIdentity: JSON.stringify({ schemaVersion: 1, status: 'source-read-pending' }), observedRevision: reference.observedRevision ?? 'unknown', createdAt: selection.observedAt, updatedAt: selection.observedAt });
       let note; let readFailure;
       try { note = await sourceService.notesRead({ schemaVersion: 1, topicId: reference.topicId, referenceId: reference.referenceId, path: selection.path, observedRevision: reference.observedRevision, sourceKind: 'document' }); }
       catch (error) { readFailure = error; }
@@ -322,9 +342,8 @@ export function createMetadataService(api) {
           ...(item.loop ? { loop: item.loop } : {})
         })))
       });
-      const scheduled = publicResult.results.map((item, index) => item.loop ? reconcileOpenLoopReminder({ schemaVersion: 1, disposition: item.disposition, loop: item.loop }, `${input.logicalOperationId}:${index}`) : null);
-      if (!scheduled.some(value => value && typeof value.then === 'function')) return publicResult;
-      return Promise.all(scheduled.map(value => Promise.resolve(value))).then(() => publicResult);
+      metadataService.recordOperation({ ...pending, state: 'applied', resultStatus: publicResult.disposition, resultIdentity: JSON.stringify(publicResult), updatedAt: selection.observedAt });
+      return schedule(publicResult);
     },
     openLoopsDecide(input = {}) {
       requireOperational();

@@ -98,6 +98,22 @@ test('checkpoint continuation is bounded and exact replay is idempotent', async 
   });
 });
 
+test('reselecting an unchanged source version at a later observation time is duplicate-free', async () => {
+  await withService((service, intake) => {
+    const first = intake.ingestSelectedSourceBatch(batch());
+    const repeated = intake.ingestSelectedSourceBatch(batch({
+      logicalOperationId: 'selected-source-batch-later-observation',
+      checkpoint: first.checkpoint,
+      window: { cursor: 'cursor-1', nextCursor: 'cursor-2', hasMore: false },
+      selections: [{ version: 'document-version-1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-22T01:05:00.000Z', availability: 'available', content: invoice() }]
+    }));
+    assert.equal(repeated.results[0].disposition, 'duplicate');
+    assert.equal(repeated.results[0].loop.loopId, first.results[0].loop.loopId);
+    assert.equal(service.listOpenLoopObservations().length, 1);
+    assert.equal(service.listOpenLoops()[0].revision, first.results[0].loop.revision);
+  });
+});
+
 test('changed content under one immutable source version conflicts', async () => {
   await withService((service, intake) => {
     intake.ingestSelectedSourceBatch(batch());
@@ -128,7 +144,7 @@ test('source unavailability is durable and visible without resolving its open lo
     const repeated = intake.ingestSelectedSourceBatch(batch({
       logicalOperationId: 'selected-source-unavailable-repeat', checkpoint: unavailable.checkpoint,
       window: { cursor: 'cursor-2', nextCursor: 'cursor-3', hasMore: false },
-      selections: [{ version: 'availability-v2', occurredAt: '2026-09-21T00:00:00.000Z', observedAt: '2026-09-21T00:01:00.000Z', availability: 'unavailable', unavailableReason: 'permission-revoked' }]
+      selections: [{ version: 'availability-v2', occurredAt: '2026-09-21T00:00:00.000Z', observedAt: '2026-09-22T00:01:00.000Z', availability: 'unavailable', unavailableReason: 'permission-revoked' }]
     }));
     assert.equal(repeated.results[0].disposition, 'duplicate');
     assert.equal(service.listOpenLoops()[0].revision, unavailable.results[0].loop.revision, 'repeated outage evidence must not churn the obligation');

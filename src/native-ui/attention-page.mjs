@@ -260,7 +260,11 @@ export function mountAttentionPage(container, context, operations = new Map()) {
   function appendRenovationRelationshipCorrectionControl(row, card, detail, pending) {
     if (!writable() || card.state !== 'resolved' || row.querySelector('details[data-renovation-purchase-correction]')) return;
     const requirement = detail?.evidence?.find(item => item.eventKind === 'requirement-recorded' && item.requirementKind === 'purchase' && nonBlank(item.requirementNamespace) && nonBlank(item.requirementId));
-    const purchase = [...(detail?.evidence ?? [])].reverse().find(item => item.eventKind === 'item-purchased' && nonBlank(item.purchaseNamespace) && nonBlank(item.purchaseId));
+    const corrected = new Set((detail?.evidence ?? []).filter(item => item.eventKind === 'purchase-relationship-corrected')
+      .map(item => [item.requirementNamespace, item.requirementId, item.purchaseNamespace, item.purchaseId].join('\u0000')));
+    const purchase = [...(detail?.evidence ?? [])].reverse().find(item => item.eventKind === 'item-purchased'
+      && nonBlank(item.purchaseNamespace) && nonBlank(item.purchaseId)
+      && !corrected.has([item.requirementNamespace, item.requirementId, item.purchaseNamespace, item.purchaseId].join('\u0000')));
     if (!requirement || !purchase || requirement.requirementNamespace !== purchase.purchaseNamespace) return;
     const disclosure = element('details'); disclosure.dataset.renovationPurchaseCorrection = 'true'; disclosure.append(element('summary', 'Correct purchased item relationship'));
     const form = element('form'); form.append(element('p', `This unlinks purchase ${purchase.purchaseId} from requirement ${requirement.requirementId} and reopens only that requirement.`));

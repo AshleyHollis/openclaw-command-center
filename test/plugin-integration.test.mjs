@@ -165,10 +165,15 @@ test('bounded document intake reads authoritative content and revision through t
       readInput = input;
       return { schemaVersion: 1, path: input.path, text: 'Invoice: INV-FICTIONAL-SELECTED\nPayee: Fictional Electrician\nPurpose: final switchboard work\nAmount due: AUD 480.00\nPlease pay after review.', revision: 'authoritative-v7', sourceReference: { referenceId: input.referenceId } };
     };
-    const result = await service.openLoopsIngestSelected({ schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-invoice' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-document', path: 'selected-invoice.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z' }] });
+    const request = { schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-invoice' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-document', path: 'selected-invoice.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z' }] };
+    const result = await service.openLoopsIngestSelected(request);
     assert.deepEqual(readInput, { schemaVersion: 1, topicId: 'topic-selected-document', referenceId: 'document:selected-invoice', path: 'selected-invoice.txt', observedRevision: 'authoritative-v7', sourceKind: 'document' });
     assert.equal(result.results[0].sourceVersion, 'authoritative-v7');
     assert.equal(result.results[0].loop.title, 'Pay final switchboard work from Fictional Electrician');
+    service.sourceService.notesRead = async () => ({ schemaVersion: 1, path: 'selected-invoice.txt', text: 'Invoice: INV-FICTIONAL-SELECTED\nPayee: Changed Source\nPurpose: changed after response loss\nAmount due: AUD 999.00', revision: 'authoritative-v8', sourceReference: { referenceId: 'document:selected-invoice' } });
+    const replay = await service.openLoopsIngestSelected(request);
+    assert.equal(replay.results[0].sourceVersion, 'authoritative-v7', 'an unchanged retry replays before rereading a newer document revision');
+    assert.equal(service.openLoopsGet({ loopId: result.results[0].loop.loopId }).loop.amount, 48000);
     await assert.rejects(() => service.openLoopsIngestSelected({ schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-invoice' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-document', path: 'selected-invoice.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', content: 'caller supplied' }] }), /selected document/i);
     service.sourceService.notesRead = async () => { throw Object.assign(new Error('fictional source missing'), { code: 'not-found' }); };
     const unavailable = await service.openLoopsIngestSelected({ schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-invoice' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-document', path: 'selected-invoice.txt', occurredAt: '2026-09-21T00:00:00.000Z', observedAt: '2026-09-21T00:01:00.000Z' }] });
@@ -178,6 +183,23 @@ test('bounded document intake reads authoritative content and revision through t
     const afterOutage = service.openLoopsGet({ loopId: result.results[0].loop.loopId });
     assert.equal(afterOutage.loop.state, 'confirmed', 'a source outage must not resolve the existing obligation');
     assert.equal(afterOutage.evidence.some(item => item.sourceAvailable === false), true, 'later Attention reads must expose the durable unavailable source evidence');
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('historical selected invoices remain quiet and never create an overdue native Reminder', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-historical-selected-document-'));
+  const gateway = fictionalSchedulerGateway();
+  let service;
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir });
+    seed.createTopic({ topicId: 'topic-historical-document', paraCategory: 'project', lifecycle: 'active' });
+    seed.createSourceReference({ version: 1, referenceId: 'document:historical-invoice', topicId: 'topic-historical-document', sourceSystem: 'fictional-documents', sourceKind: 'document', externalSourceId: 'historical-invoice.txt', observedRevision: 'historical-v1' });
+    seed.close();
+    const host = fakePublishedApi(stateDir, { gateway }); plugin.register(host.api); service = host.services[0]; await service.start();
+    service.sourceService.notesRead = async input => ({ schemaVersion: 1, path: input.path, text: 'Invoice: INV-HISTORICAL-1\nPayee: Fictional Historical Supplier\nPurpose: completed old work\nAmount due: AUD 125.00\nDue: 2026-08-15T00:00:00.000Z', revision: 'historical-v1', sourceReference: { referenceId: input.referenceId } });
+    const result = await service.openLoopsIngestSelected({ schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:historical-invoice' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-historical-document', path: 'historical-invoice.txt', occurredAt: '2026-08-01T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z' }] });
+    assert.equal(result.results[0].historicalBaseline, true);
+    assert.equal(gateway.jobs.size, 0);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

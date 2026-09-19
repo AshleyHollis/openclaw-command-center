@@ -42,6 +42,7 @@ async function fixture(run) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             const evidence = [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }];
             if (card.purchaseId) evidence.push({ observationId: `purchase-${card.loopId}`, type: 'order', sourceSystem: 'fictional-source', sourceKind: 'receipt', sourceVersion: 'v1', occurredAt: '2026-09-20T02:00:00.000Z', observedAt: '2026-09-20T02:01:00.000Z', historicalBaseline: false, eventKind: 'item-purchased', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId, purchaseNamespace: 'fictional-home-project', purchaseId: card.purchaseId });
+            if (Array.isArray(card.additionalEvidence)) evidence.push(...structuredClone(card.additionalEvidence));
             return { result: { schemaVersion: 1, loop: structuredClone(card), evidence } };
           }
           if (method.endsWith('open-loops.list')) {
@@ -425,6 +426,27 @@ test('native Attention corrects an exact purchase relationship from the full inv
   assert.equal(request.params.correction.requirement.id, 'buy-mixer');
   assert.equal(request.params.correction.purchase.id, 'wrong-receipt-line');
   assert.match(request.params.correction.rationale, /different mixer/);
+}));
+
+test('native Attention corrects an active purchase after a newer link was already corrected', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.allOpenLoops = [{ loopId: 'resolved-multi-purchase-loop', kind: 'general', stableSubjectId: 'renovation-requirement:multi', title: 'Buy fictional basin', state: 'resolved', requirementId: 'buy-basin', purchaseId: 'active-receipt-a', revision: 4, additionalEvidence: [
+      { observationId: 'purchase-b', type: 'order', sourceSystem: 'fictional-source', sourceKind: 'receipt', sourceVersion: 'v2', occurredAt: '2026-09-20T03:00:00.000Z', observedAt: '2026-09-20T03:01:00.000Z', historicalBaseline: false, eventKind: 'item-purchased', requirementNamespace: 'fictional-home-project', requirementId: 'buy-basin', purchaseNamespace: 'fictional-home-project', purchaseId: 'corrected-receipt-b' },
+      { observationId: 'correction-b', type: 'order', sourceSystem: 'command-center', sourceKind: 'explicit-purchase-relationship-correction', sourceVersion: 'operator-v1', occurredAt: '2026-09-20T04:00:00.000Z', observedAt: '2026-09-20T04:00:00.000Z', historicalBaseline: false, eventKind: 'purchase-relationship-corrected', requirementNamespace: 'fictional-home-project', requirementId: 'buy-basin', purchaseNamespace: 'fictional-home-project', purchaseId: 'corrected-receipt-b' }
+    ] }];
+    window.mountInbox();
+  });
+  await page.getByText('Review all open loops (1)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load open loops' }).click();
+  const row = page.locator('article[data-open-loop-id="resolved-multi-purchase-loop"]');
+  await row.getByRole('button', { name: 'Review evidence' }).click();
+  await row.getByText('Correct purchased item relationship', { exact: true }).click();
+  await row.getByLabel('Rationale').fill('The older active receipt also belongs elsewhere.');
+  await row.getByRole('button', { name: 'Unlink purchase and reopen requirement' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-purchase-correction')));
+  assert.equal(request.params.correction.purchase.id, 'active-receipt-a');
 }));
 
 test('native Attention records delivery separately from required installation', () => fixture(async (page) => {

@@ -1,4 +1,5 @@
 import { planSelectedSourceBatch } from '../open-loops/selected-source-intake.mjs';
+import { isDeepStrictEqual } from 'node:util';
 
 const freeze = value => {
   if (value && typeof value === 'object') {
@@ -13,7 +14,7 @@ export function createSelectedSourceIntake(service, { ErrorType = TypeError } = 
     if (ErrorType === TypeError) throw new TypeError(message);
     throw new ErrorType(code, message);
   };
-  for (const method of ['applyOpenLoopChange', 'replayOpenLoopChange', 'findOpenLoopBySubject', 'findOpenLoopsBySource']) {
+  for (const method of ['applyOpenLoopChange', 'replayOpenLoopChange', 'findOpenLoopBySubject', 'findOpenLoopsBySource', 'getOpenLoopObservation']) {
     if (typeof service?.[method] !== 'function') fail('selected-source-owner-missing', `Selected-source intake requires the existing ${method} owner method.`);
   }
 
@@ -61,6 +62,14 @@ export function createSelectedSourceIntake(service, { ErrorType = TypeError } = 
     };
   }
 
+  const sameImmutableSourceFact = (existing, candidate) => existing
+    && isDeepStrictEqual(existing.source, candidate.source)
+    && existing.type === candidate.type
+    && existing.occurredAt === candidate.occurredAt
+    && existing.topicId === candidate.topicId
+    && isDeepStrictEqual(existing.entityRefs, candidate.entityRefs)
+    && isDeepStrictEqual(existing.facts, candidate.facts);
+
   const ingestSelectedSourceBatch = input => {
     let planned;
     try { planned = planSelectedSourceBatch(input); } catch (error) { fail('selected-source-intake-invalid', error.message); }
@@ -76,6 +85,25 @@ export function createSelectedSourceIntake(service, { ErrorType = TypeError } = 
       const replay = service.replayOpenLoopChange({ schemaVersion: 1, logicalOperationId: rootId, operationKind: 'selected-source-intake', intent });
       if (replay) {
         results.push(freeze({ ...replay, disposition: 'duplicate', freshness: plan.freshness }));
+        continue;
+      }
+      const priorObservation = service.getOpenLoopObservation(plan.observation.observationId);
+      if (sameImmutableSourceFact(priorObservation, plan.observation)) {
+        const linkedLoop = plan.loop
+          ? service.findOpenLoopBySubject(plan.loop.kind, plan.loop.stableSubjectId)
+          : loopForUnavailableSource(plan);
+        const { digest: _digest, ...observation } = priorObservation;
+        const recorded = service.applyOpenLoopChange({
+          schemaVersion: 1,
+          logicalOperationId: rootId,
+          operationKind: 'selected-source-intake',
+          intent,
+          expectedRevision: 0,
+          observation,
+          loop: null,
+          updatedAt: plan.observation.observedAt
+        });
+        results.push(freeze({ ...recorded, disposition: 'duplicate', observation: priorObservation, loop: linkedLoop ?? null, freshness: plan.freshness }));
         continue;
       }
       const { digest: _digest, ...observation } = plan.observation;
