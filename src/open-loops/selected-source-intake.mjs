@@ -5,7 +5,7 @@ const SOURCE_KINDS = new Set(['document', 'session']);
 const AVAILABILITY = new Set(['available', 'unavailable']);
 const UNAVAILABLE_REASONS = new Set(['not-found', 'permission-revoked', 'temporarily-unavailable', 'version-replaced']);
 const ISO_CURRENCIES = new Set(Intl.supportedValuesOf('currency'));
-const RFC_3339_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
+const RFC_3339_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/u;
 const MAX_BATCH_SIZE = 20;
 const MAX_CONTENT_BYTES = 32 * 1024;
 
@@ -40,9 +40,19 @@ function text(value, field, maximum = 300) {
   if (typeof value !== 'string' || value.trim() === '' || value.length > maximum || /[\x00-\x08\x0b\x0c\x0e-\x1f]/u.test(value)) fail(`${field} must be a bounded non-blank string`);
   return value.trim();
 }
+function isStrictInstant(value) {
+  const match = value.match(RFC_3339_INSTANT);
+  if (!match) return false;
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+  const offsetHour = match[7] === undefined ? 0 : Number(match[7]);
+  const offsetMinute = match[8] === undefined ? 0 : Number(match[8]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return year > 0 && month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1] && hour <= 23 && minute <= 59 && second <= 59 && offsetHour <= 23 && offsetMinute <= 59 && !Number.isNaN(Date.parse(value));
+}
 function instant(value, field) {
   const result = text(value, field, 64);
-  if (!RFC_3339_INSTANT.test(result) || Number.isNaN(Date.parse(result))) fail(`${field} must be an RFC 3339 instant`);
+  if (!isStrictInstant(result)) fail(`${field} must be an RFC 3339 instant`);
   return result;
 }
 function optionalInstant(value, field) { return value === undefined ? undefined : instant(value, field); }
@@ -81,6 +91,15 @@ function parseAmount(content) {
   return freeze({ ...field, valid: true, amount, currency: match[1] });
 }
 
+function hasTerminalMarker(content) {
+  return content.split('\n').some(line => {
+    const match = line.trim().match(/^(?:Paid in full|Credit note|Cancelled|Canceled)\s*(?::\s*(.*))?$/iu);
+    if (!match) return false;
+    const qualifier = match[1]?.trim();
+    return qualifier === undefined || qualifier === '' || !/^(?:no|false|not\b)/iu.test(qualifier);
+  });
+}
+
 function interpretAvailableContent(content) {
   const invoice = unambiguousLabelled(content, ['Invoice', 'Invoice number', 'Invoice no.', 'Invoice #'], 300);
   const account = unambiguousLabelled(content, ['Account', 'Account number'], 300);
@@ -91,9 +110,9 @@ function interpretAvailableContent(content) {
   const status = unambiguousLabelled(content, ['Status', 'Payment status'], 100);
   const amount = parseAmount(content);
   if ([invoice, account, authority, payeeField, purposeField, due, status, amount].some(field => field.ambiguous)) return freeze({ kind: 'informational' });
-  const dueAt = due.value && RFC_3339_INSTANT.test(due.value) && !Number.isNaN(Date.parse(due.value)) ? instant(due.value, 'Due') : undefined;
+  const dueAt = due.value && isStrictInstant(due.value) ? instant(due.value, 'Due') : undefined;
   const terminalStatus = status.value && /^(?:paid(?:\s+in\s+full)?|settled|cancelled|canceled|credited|credit|credit note)$/iu.test(status.value);
-  const terminalMarker = /^(?:Paid in full|Credit note|Cancelled|Canceled)\s*(?::.*)?$/imu.test(content);
+  const terminalMarker = hasTerminalMarker(content);
   const explicitPhrase = /(?:^|\n|[.!?]\s+)[ \t]*(?:please pay|payment is due)\b/iu.test(content);
   const explicitPaymentRequest = explicitPhrase || (amount.valid && amount.amount > 0);
   if (!invoice.value || !explicitPaymentRequest || terminalStatus || terminalMarker || (amount.valid && amount.amount === 0)) return freeze({ kind: 'informational' });

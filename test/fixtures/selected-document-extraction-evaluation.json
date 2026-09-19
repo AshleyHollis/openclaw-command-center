@@ -142,6 +142,26 @@
       "id": "standalone-cancelled-marker",
       "expected": { "payment": false },
       "content": "Invoice: INV-EVAL-STANDALONE-CANCELLED\nAmount due: AUD 100.00\nCANCELLED"
+    },
+    {
+      "id": "impossible-day-is-omitted",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-DUE-DAY", "amount": 3000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-DUE-DAY\nAmount due: AUD 30.00\nDue: 2026-02-30T00:00:00Z"
+    },
+    {
+      "id": "non-leap-day-is-omitted",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-DUE-LEAP", "amount": 4000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-DUE-LEAP\nAmount due: AUD 40.00\nDue: 2025-02-29T00:00:00Z"
+    },
+    {
+      "id": "negated-paid-marker-stays-actionable",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-NOT-PAID", "amount": 5000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-NOT-PAID\nAmount due: AUD 50.00\nPaid in full: No"
+    },
+    {
+      "id": "negated-cancelled-marker-stays-actionable",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-NOT-CANCELLED", "amount": 6000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-NOT-CANCELLED\nAmount due: AUD 60.00\nCancelled: False"
     }
   ]
 }
