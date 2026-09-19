@@ -263,7 +263,12 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
           }
         }
         if (method === 'command-center.v1.sessions.group' || method === 'command-center.v1.sessions.assign-topic') {
-          const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
+          // A nested host dispatch consumes the outer mutation grant. Check it
+          // before grouping, then retain the authenticated connection and the
+          // host-published request scope as the ongoing authority fences.
+          if (method === 'command-center.v1.sessions.group') sessionMutationAuthorization?.assertCurrent?.();
+          const authority = captureAuthenticatedConversationAuthority({ client, context, signal,
+            ...(method === 'command-center.v1.sessions.assign-topic' ? { sessionMutationAuthorization } : {}) });
           if (method === 'command-center.v1.sessions.assign-topic') {
             runtime = { creationAuthority: authority };
           } else {
