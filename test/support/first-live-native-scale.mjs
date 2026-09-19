@@ -188,13 +188,22 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   const openCreated = nativePage.getByRole('button', { name: 'Open created Conversation', exact: true });
   const creationForm = openCreated.locator('xpath=..');
   await openCreated.click();
-  await waitForConsecutiveReadiness(async () => {
-    const status = await creationForm.getByRole('status').textContent();
-    const normal = /^Conversation created and verified \([^)]+\)\. Open the created Conversation or acknowledge it before creating another\.$/u;
-    if (status && !normal.test(status)) throw new Error(`Opening the applied Conversation failed: ${status}`);
-    return observed().navigation?.input?.referenceId === receipt.result.referenceId
-      && typeof observed().navigation?.value?.sessionKey === 'string';
-  }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+  try {
+    await waitForConsecutiveReadiness(async () => {
+      const status = await creationForm.getByRole('status').textContent();
+      const normal = /^Conversation created and verified \([^)]+\)\. Open the created Conversation or acknowledge it before creating another\.$/u;
+      if (status && !normal.test(status)) throw new Error(`Opening the applied Conversation failed: ${status}`);
+      return observed().navigation?.input?.referenceId === receipt.result.referenceId
+        && typeof observed().navigation?.value?.sessionKey === 'string';
+    }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+  } catch (error) {
+    const navigation = observed().navigation;
+    onProgress(`conversation-navigation-unavailable:${JSON.stringify({ observed: Boolean(navigation),
+      referenceMatches: navigation?.input?.referenceId === receipt.result.referenceId,
+      expectedSessionId: typeof navigation?.input?.expectedSessionId === 'string',
+      sessionKey: typeof navigation?.value?.sessionKey === 'string', valueKeys: Object.keys(navigation?.value ?? {}) })}`);
+    throw error;
+  }
   const resolved = observed().navigation;
   const target = { sessionKey: resolved.value.sessionKey, sessionId: resolved.input.expectedSessionId };
   assert.equal(resolved.input.topicId, fixture.topicId);

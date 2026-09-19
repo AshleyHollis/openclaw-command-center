@@ -764,7 +764,12 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           const value = message.payload?.result ?? message.payload;
           if (request.method === 'command-center.v1.topics.list') browserTopics = value;
           if (request.method === 'command-center.v1.notes.read') browserNote = { input: request.params, value };
-          if (request.method === 'command-center.v1.sessions.resolve-native') browserNavigation = { input: request.params, value };
+          if (request.method === 'command-center.v1.sessions.resolve-native') {
+            // Gateway transport and plugin-host adapters may each retain one
+            // result envelope. Observe the same flat target consumed by the
+            // native navigation client without weakening its one-key contract.
+            browserNavigation = { input: request.params, value: value?.result ?? value };
+          }
           if (scale && request.method === 'command-center.v1.notes.browse') scaleResponses.notes = { input: request.params, value };
           if (request.method === 'sessions.list') {
             if (scaleResponses.rosters.length < 256) scaleResponses.rosters.push({ input: request.params, value });
