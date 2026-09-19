@@ -28,6 +28,7 @@ export async function assertNativeNoteSource(nativePage, fixture) {
 // that a verified Topic category is actually reachable in the sidebar.
 export async function selectNativeCategoryGrouping(page) {
   let sidebar = page.locator('openclaw-app-sidebar:visible').first();
+  let groupingControl;
   try {
     if (!await sidebar.count()) {
       const expand = page.locator('button[aria-label="Expand sidebar"]:visible').first();
@@ -58,6 +59,7 @@ export async function selectNativeCategoryGrouping(page) {
     const collapseTopics = sidebar.getByRole('button', { name: 'Collapse all Topics', exact: true }).first();
     if (await collapseTopics.isVisible()) await collapseTopics.click({ timeout: 10_000 });
     const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').first();
+    groupingControl = trigger;
     const triggerInViewport = await trigger.evaluate(element => {
       const rect = element.getBoundingClientRect();
       return rect.top >= 0 && rect.left >= 0 && rect.bottom <= innerHeight && rect.right <= innerWidth;
@@ -76,14 +78,24 @@ export async function selectNativeCategoryGrouping(page) {
     await trigger.click({ timeout: 10_000 });
   }
   catch (error) {
-    const controls = await page.locator('button').evaluateAll(buttons => buttons.slice(0, 40).map(button => {
-      const style = getComputedStyle(button);
-      const rect = button.getBoundingClientRect();
-      return { label: button.getAttribute('aria-label'), text: button.textContent?.trim(), className: button.className,
-        display: style.display, visibility: style.visibility, opacity: style.opacity,
-        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
-    }));
-    throw new Error(`Native session grouping control is unavailable: ${JSON.stringify(controls)}`, { cause: error });
+    const state = groupingControl ? await groupingControl.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      const cx = rect.x + rect.width / 2;
+      const cy = rect.y + rect.height / 2;
+      const describe = node => ({ tag: node.tagName.toLowerCase(), className: node.className,
+        ariaLabel: node.getAttribute('aria-label'), pointerEvents: getComputedStyle(node).pointerEvents });
+      const scroller = element.closest('.sidebar-shell__body');
+      return {
+        viewport: { width: innerWidth, height: innerHeight },
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        disabled: element.disabled,
+        ariaExpanded: element.getAttribute('aria-expanded'),
+        hitStack: document.elementsFromPoint(cx, cy).slice(0, 6).map(describe),
+        scroller: scroller ? { scrollTop: scroller.scrollTop, scrollHeight: scroller.scrollHeight, clientHeight: scroller.clientHeight } : null
+      };
+    }) : null;
+    const failure = { name: error?.name, tail: String(error?.message ?? error).split('\n').slice(-12) };
+    throw new Error(`Native session grouping control is unavailable: ${JSON.stringify({ failure, state })}`, { cause: error });
   }
   await page.locator('wa-dropdown-item[value="grouping:category"]').waitFor({ state: 'visible', timeout: 10_000 });
   await page.locator('wa-dropdown-item[value="grouping:category"]').click({ timeout: 10_000 });
