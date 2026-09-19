@@ -57,6 +57,7 @@ import { installOpenLoopMetadata } from './open-loops.mjs';
 import { installMessageIntake } from './message-intake.mjs';
 import { installOpenLoopActions } from './open-loop-actions.mjs';
 import { installTransactionIntake } from './transaction-intake.mjs';
+import { installDecisionMemory } from './decision-memory.mjs';
 
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii');
 const diagnosticLimit = 300;
@@ -2163,6 +2164,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   installMessageIntake(service, { ErrorType: CommandCenterMetadataError });
   installOpenLoopActions(service, { ErrorType: CommandCenterMetadataError });
   installTransactionIntake(service, { ErrorType: CommandCenterMetadataError });
+  installDecisionMemory(service, { ErrorType: CommandCenterMetadataError });
   return Object.freeze(service);
 }
 
