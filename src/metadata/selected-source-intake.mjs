@@ -13,18 +13,13 @@ export function createSelectedSourceIntake(service, { ErrorType = TypeError } = 
     if (ErrorType === TypeError) throw new TypeError(message);
     throw new ErrorType(code, message);
   };
-  for (const method of ['applyOpenLoopChange', 'replayOpenLoopChange', 'findOpenLoopBySubject', 'listOpenLoops', 'getOpenLoopObservation']) {
+  for (const method of ['applyOpenLoopChange', 'replayOpenLoopChange', 'findOpenLoopBySubject', 'findOpenLoopsBySource']) {
     if (typeof service?.[method] !== 'function') fail('selected-source-owner-missing', `Selected-source intake requires the existing ${method} owner method.`);
   }
 
   function loopForUnavailableSource(plan) {
     const source = plan.observation.source;
-    const matches = service.listOpenLoops().filter(loop => loop.evidenceObservationIds.some(id => {
-      const evidence = service.getOpenLoopObservation(id);
-      return evidence?.source?.system === source.system
-        && evidence.source.kind === source.kind
-        && evidence.source.externalId === source.externalId;
-    }));
+    const matches = service.findOpenLoopsBySource(source.system, source.kind, source.externalId, 2);
     return matches.length === 1 ? matches[0] : null;
   }
 
@@ -91,7 +86,8 @@ export function createSelectedSourceIntake(service, { ErrorType = TypeError } = 
         loop = existing ? merge(existing, plan.loop, plan) : plan.loop;
       } else if (plan.freshness.status === 'unavailable') {
         existing = loopForUnavailableSource(plan);
-        if (existing) loop = { ...existing, evidenceObservationIds: [...existing.evidenceObservationIds, plan.observation.observationId], revision: existing.revision + 1 };
+        if (existing?.evidenceObservationIds.includes(plan.observation.observationId)) existing = null;
+        else if (existing) loop = { ...existing, evidenceObservationIds: [...new Set([...existing.evidenceObservationIds, plan.observation.observationId])], revision: existing.revision + 1 };
       }
       const changed = service.applyOpenLoopChange({
         schemaVersion: 1,

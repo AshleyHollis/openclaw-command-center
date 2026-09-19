@@ -35,6 +35,9 @@ async function fixture(run) {
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
           if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('topics.list')) return { result: { schemaVersion: 1, activeGroups: { project: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }], area: [], resource: [] } } };
+          if (method.endsWith('notes.browse')) return { result: { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'invoices/fictional-progress-invoice.txt', revision: 'authoritative-v1', sourceKind: 'document', sourceReference: { referenceId: 'document-fictional-progress-invoice', topicId: params.topicId, sourceSystem: 'fictional-documents', sourceKind: 'document' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-document-page' } };
+          if (method.endsWith('open-loops.intake-selected')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', checkpoint: { schemaVersion: 1 }, freshness: { status: 'available', lastObservedAt: params.selections[0].observedAt }, hasMore: false, results: [] } };
           if (method.endsWith('open-loops.get')) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             const evidence = [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }];
@@ -191,7 +194,7 @@ test('native Attention retains an unknown operation across remount and reconcile
 test('native Attention explicitly leaves global Topic Review decisions unavailable', () => fixture(async (page) => {
   await page.evaluate(() => { window.cards[0].sourceCapabilityId = 'topic-review'; window.cards[0].topicId = null; window.cards[0].sourceReferenceId = null; window.mountRecord(); });
   await page.getByText('Topic Review decisions are not yet available on this native page.', { exact: false }).waitFor();
-  assert.equal(await page.locator('form').count(), 0);
+  assert.equal(await page.locator('article[data-episode-id] form').count(), 0);
   assert.equal(await page.evaluate(() => window.requests.filter((r) => r.method.endsWith('attention.act')).length), 0);
 }));
 
@@ -330,6 +333,21 @@ test('native Attention records a partial payment amount without claiming settlem
   assert.equal(payment.paymentState, 'partially-paid');
   assert.equal(payment.paidAmount, 12050);
   assert.equal(payment.currency, 'AUD');
+}));
+
+test('native Attention browses one authorized document and submits only its exact reference', () => fixture(async (page) => {
+  await page.evaluate(() => window.mountInbox());
+  await page.getByText('Import one selected document', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load authorized documents' }).click();
+  await page.getByLabel('Document date').fill('2026-09-20T09:00');
+  await page.getByLabel('Historical baseline through').fill('2026-09-01T00:00');
+  await page.getByRole('button', { name: 'Import selected document' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('open-loops.intake-selected')));
+  assert.deepEqual(request.params.authorization, { sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document-fictional-progress-invoice' });
+  assert.equal(request.params.authorization.scopeId, undefined);
+  assert.equal(request.params.selections[0].path, 'invoices/fictional-progress-invoice.txt');
+  assert.equal(request.params.selections[0].content, undefined);
+  assert.equal(request.params.selections[0].version, undefined);
 }));
 
 test('native Attention preserves a corrected calendar due date with the local timezone', () => fixture(async (page) => {

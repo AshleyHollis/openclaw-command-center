@@ -1,6 +1,6 @@
 import { sourceError } from '../sources/errors.mjs';
 import { opaqueNotificationId } from '../notifications/preview.mjs';
-import { openLoopReminderReferenceId } from '../open-loops/reminder-coordinator.mjs';
+import { openLoopReminderReferenceId, zonedDateAtNine } from '../open-loops/reminder-coordinator.mjs';
 
 const DEFAULT_ACTIVITY_LIMIT = 50;
 const MAX_ACTIVITY_LIMIT = 50;
@@ -148,7 +148,13 @@ export async function projectDashboard({ sourceService, attentionService, metada
     catch { /* an unavailable scheduler cannot justify fabricating future entries */ }
   }
   const topics = await listTopics(metadata);
-  const openLoopReminderIds = new Set((metadata?.listOpenLoops?.() ?? []).map(loop => openLoopReminderReferenceId(loop.loopId)));
+  const openLoopByReminderId = new Map((metadata?.listOpenLoops?.() ?? []).map(loop => [openLoopReminderReferenceId(loop.loopId), loop]));
+  const reminderMatchesOpenLoop = (referenceId, dueAtMs) => {
+    const loop = openLoopByReminderId.get(referenceId);
+    if (!loop || ['suggested', 'resolved', 'cancelled'].includes(loop.state) || ['paid', 'cancelled'].includes(loop.paymentState)) return false;
+    const accepted = loop.reviewAt ?? loop.dueAt ?? (loop.dueDate ? zonedDateAtNine(loop.dueDate, loop.dueTimeZone) : undefined);
+    return Number.isSafeInteger(dueAtMs) && dateMs(accepted) === dueAtMs;
+  };
   const attentionResult = typeof sourceService?.attentionList === 'function'
     ? await sourceService.attentionList({ schemaVersion: 1 })
     : attentionService?.list?.({ schemaVersion: 1 }) ?? { episodes: [], inProgress: [] };
@@ -168,9 +174,9 @@ export async function projectDashboard({ sourceService, attentionService, metada
   const comingUp = [];
   for (const row of reminders) {
     const job = row?.job ?? row;
-    if (openLoopReminderIds.has(row?.sourceReference?.referenceId)) continue;
     if (job?.enabled !== true) continue;
     const dueAtMs = reminderDueAt(row);
+    if (reminderMatchesOpenLoop(row?.sourceReference?.referenceId, dueAtMs)) continue;
     if (!Number.isSafeInteger(dueAtMs) || dueAtMs <= serverTimeMs) continue;
     const topic = topicById.get(row.topicId ?? row.sourceReference?.topicId);
     if (!topic) continue;
@@ -185,8 +191,8 @@ export async function projectDashboard({ sourceService, attentionService, metada
   const openLoops = openLoopProjection(metadata, new Date(serverTimeMs).toISOString());
   const settings = typeof notificationSettings === 'function' ? await notificationSettings() : notificationSettings;
   const visibleAttention = Object.freeze(active.filter((episode) => {
-    if (openLoopReminderIds.has(episode.sourceReferenceId)) return false;
     const dueAtMs = dateMs(episode.evidence?.dueAt ?? episode.evidenceFacts?.dueAt);
+    if (reminderMatchesOpenLoop(episode.sourceReferenceId, dueAtMs)) return false;
     return !episode.sourceReferenceId || !Number.isSafeInteger(dueAtMs) || !futureOccurrenceKeys.has(`${episode.sourceReferenceId}:${dueAtMs}`);
   }));
   return Object.freeze({

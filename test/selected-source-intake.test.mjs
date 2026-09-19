@@ -125,6 +125,13 @@ test('source unavailability is durable and visible without resolving its open lo
     assert.equal(service.listOpenLoops().length, 1);
     assert.equal(service.listOpenLoops()[0].state, 'confirmed');
     assert.equal(service.listOpenLoops()[0].evidenceObservationIds.includes(unavailable.results[0].observation.observationId), true);
+    const repeated = intake.ingestSelectedSourceBatch(batch({
+      logicalOperationId: 'selected-source-unavailable-repeat', checkpoint: unavailable.checkpoint,
+      window: { cursor: 'cursor-2', nextCursor: 'cursor-3', hasMore: false },
+      selections: [{ version: 'availability-v2', occurredAt: '2026-09-21T00:00:00.000Z', observedAt: '2026-09-21T00:01:00.000Z', availability: 'unavailable', unavailableReason: 'permission-revoked' }]
+    }));
+    assert.equal(repeated.results[0].disposition, 'duplicate');
+    assert.equal(service.listOpenLoops()[0].revision, unavailable.results[0].loop.revision, 'repeated outage evidence must not churn the obligation');
   });
 });
 

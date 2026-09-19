@@ -17,8 +17,9 @@ export function mountAttentionPage(container, context, operations = new Map()) {
   const status = element('p'); status.setAttribute('role', 'status'); status.tabIndex = -1;
   const refresh = element('button', 'Refresh Attention'); refresh.type = 'button';
   const topics = element('button', 'All Topics'); topics.type = 'button';
+  const intake = element('details'); intake.dataset.selectedDocumentIntake = 'true'; intake.append(element('summary', 'Import one selected document'));
   const content = element('section'); content.setAttribute('aria-label', 'Attention items'); content.style.overflowWrap = 'anywhere';
-  container.replaceChildren(heading, topics, refresh, status, content);
+  container.replaceChildren(heading, topics, refresh, status, intake, content);
   const readable = () => host.connection.connected && host.connection.canRead;
   const current = (pending) => !signal.aborted && presented && readable() && pending === generation;
   const writable = () => !signal.aborted && presented && readable() && host.connection.canWrite;
@@ -82,6 +83,64 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     if (!signal.aborted && presented && readable()) report(success);
     return true;
   }
+
+  function configureSelectedDocumentIntake() {
+    const form = element('form'); form.append(element('p', 'Choose one document already authorized for a Topic. Command Center reads its current bytes and revision; this form cannot supply document content.'));
+    const topicLabel = element('label', 'Topic '); const topicChoice = element('select'); topicChoice.required = true; topicLabel.append(topicChoice);
+    const loadDocuments = element('button', 'Load authorized documents'); loadDocuments.type = 'button';
+    const documentLabel = element('label', ' Document '); const documentChoice = element('select'); documentChoice.required = true; documentLabel.append(documentChoice);
+    const occurredLabel = element('label', ' Document date '); const occurredAt = element('input'); occurredAt.type = 'datetime-local'; occurredAt.required = true; occurredLabel.append(occurredAt);
+    const baselineLabel = element('label', ' Historical baseline through '); const baselineThrough = element('input'); baselineThrough.type = 'datetime-local'; baselineThrough.required = true; baselineLabel.append(baselineThrough);
+    const submit = element('button', 'Import selected document'); submit.type = 'submit';
+    form.append(topicLabel, loadDocuments, documentLabel, occurredLabel, baselineLabel, submit); intake.append(form);
+    let initialized = false; let documents = [];
+    const setDocuments = notes => {
+      documents = notes.filter(note => note?.sourceKind === 'document' && nonBlank(note.path) && nonBlank(note.sourceReference?.referenceId) && nonBlank(note.sourceReference?.sourceSystem) && note.sourceReference?.sourceKind === 'document').slice(0, 100);
+      documentChoice.replaceChildren();
+      for (const [index, note] of documents.entries()) { const option = element('option', note.path); option.value = String(index); documentChoice.append(option); }
+      submit.disabled = documents.length === 0;
+      if (!documents.length) report('No authorized persisted documents are available for this Topic.');
+    };
+    intake.addEventListener('toggle', async () => {
+      if (!intake.open || initialized || !readable()) return; initialized = true; loadDocuments.disabled = true;
+      try {
+        const result = unwrap(await host.request('command-center.v1.topics.list', { schemaVersion: 1 }));
+        const candidates = Object.values(result?.activeGroups ?? {}).flat().filter(topic => nonBlank(topic?.topicId));
+        topicChoice.replaceChildren();
+        for (const topic of candidates) { const option = element('option', nonBlank(topic.name) ? topic.name : topic.topicId); option.value = topic.topicId; topicChoice.append(option); }
+        if (!candidates.length) { report('No active authorized Topic is available for document intake.'); return; }
+        loadDocuments.disabled = false;
+      } catch (error) { initialized = false; report(error?.message || 'Authorized Topics are unavailable.'); }
+    }, { signal });
+    loadDocuments.addEventListener('click', async () => {
+      if (!readable() || !nonBlank(topicChoice.value) || loadDocuments.disabled) return; loadDocuments.disabled = true;
+      try {
+        const result = unwrap(await host.request('command-center.v1.notes.browse', { schemaVersion: 1, topicId: topicChoice.value, offset: 0, limit: 100, includeDocuments: true }));
+        setDocuments(Array.isArray(result?.notes) ? result.notes : []);
+        if (result?.hasMore === true) report('Showing the first 100 authorized documents. Narrow the Topic before importing another document.');
+      } catch (error) { setDocuments([]); report(error?.message || 'Authorized documents are unavailable.'); }
+      finally { loadDocuments.disabled = false; }
+    }, { signal });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const note = documents[Number(documentChoice.value)];
+      if (!writable() || !note || !occurredAt.value || !baselineThrough.value || submit.disabled) return;
+      submit.disabled = true;
+      const key = `selected-document:${note.sourceReference.referenceId}:${note.path}`;
+      try {
+        let operation = operations.get(key);
+        if (!operation) {
+          operation = { method: 'command-center.v1.open-loops.intake-selected', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), authorization: { sourceSystem: note.sourceReference.sourceSystem, sourceKind: 'document', resourceId: note.sourceReference.referenceId }, baselineThrough: new Date(baselineThrough.value).toISOString(), selections: [{ topicId: topicChoice.value, path: note.path, occurredAt: new Date(occurredAt.value).toISOString(), observedAt: new Date().toISOString() }] } };
+          operations.set(key, operation);
+        }
+        const envelope = await host.request(operation.method, operation.params); const result = unwrap(envelope);
+        if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || result?.schemaVersion !== 1 || !['available', 'unavailable'].includes(result?.freshness?.status)) throw new Error('The selected-document outcome is not confirmed. Retry to reconcile the same operation.');
+        operations.delete(key); await load(); report(result.freshness.status === 'available' ? 'The selected document was read and reconciled.' : 'The source is unavailable; the obligation remains open with visible freshness evidence.');
+      } catch (error) { report(error?.message || 'The selected-document outcome is unknown. Retry the same operation.'); }
+      finally { submit.disabled = documents.length === 0; }
+    }, { signal });
+  }
+  configureSelectedDocumentIntake();
 
   function appendDecisionControls(row, card, pending) {
     if (!writable() || ['resolved', 'cancelled'].includes(card.state)) return;
@@ -450,6 +509,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
   }
 
   function render(episode) {
+    intake.hidden = true;
     content.replaceChildren();
     const card = element('article'); card.dataset.episodeId = episode.episodeId;
     card.append(element('h2', episode.context || 'Attention item'), element('p', `${episode.severity} · ${episode.state}`));
@@ -545,6 +605,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
 
   async function load(message = '') {
     const pending = ++generation; selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
+    intake.hidden = Boolean(recordId);
     if (signal.aborted || !presented) return;
     if (!readable()) { report('Connect with read access to view Attention.'); return; }
     setBusy(true); report('Loading Attention…');

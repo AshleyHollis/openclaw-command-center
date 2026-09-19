@@ -41,6 +41,10 @@ test('an exact purchase resolves only the explicitly linked stale buy requiremen
     assert.equal(corrected.loop.expectedEvent, 'explicitly linked purchase');
     assert.equal(corrected.observation.facts.eventKind, 'purchase-relationship-corrected');
     assert.equal(service.findOpenLoopBySubject('general', stableRenovationRequirementId(ref('purchase', 'buy-sink'))).state, 'waiting', 'the correction must not alter another requirement');
+    const replacementLink = api.reconcilePurchasedItem(owned({ schemaVersion: 1, logicalOperationId: 'reconcile-tap-purchase-b', expectedRevision: 3, reconciliation: { ...command.reconciliation, source: source('receipt-tap-b'), purchase: ref('purchase', 'purchase-tap-002') } }));
+    assert.equal(replacementLink.loop.state, 'resolved');
+    assert.throws(() => api.correctPurchasedItem(owned({ schemaVersion: 1, logicalOperationId: 'correct-historical-tap-purchase', expectedRevision: 4, correction: { schemaVersion: 1, source: source('correct-old-receipt-tap'), requirement: ref('purchase', 'buy-tap'), purchase: ref('purchase', 'purchase-tap-001'), occurredAt: '2026-09-24T02:00:00.000Z', observedAt: '2026-09-24T02:00:00.000Z', rationale: 'Attempt to unlink already corrected history.' } })), /relationship-missing/u);
+    assert.equal(service.findOpenLoopBySubject('general', stableRenovationRequirementId(ref('purchase', 'buy-tap'))).state, 'resolved');
   });
 });
 

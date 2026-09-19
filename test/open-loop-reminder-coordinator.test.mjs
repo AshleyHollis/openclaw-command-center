@@ -201,3 +201,17 @@ test('repeated evidence and a payment race never create or re-enable a second na
     assert.equal(lateWakeReconciliation.status, 'none'); assert.equal(lateWakeReconciliation.plan.reason, 'already-cancelled'); assert.equal([...gateway.jobs.values()][0].enabled, false); assert.equal(gateway.jobs.size, 1);
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
+
+test('an explicit stale scheduler revision fails instead of overwriting a newer native Reminder', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-open-loop-reminder-stale-'));
+  const gateway = schedulerGateway(); let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } }); metadata.createTopic({ topicId, paraCategory: 'project', lifecycle: 'active' });
+    const coordinator = createOpenLoopReminderCoordinator({ metadata, gateway });
+    const created = await coordinator.reconcile({ loop: loop(), logicalOperationId: '40000000-0000-4000-8000-000000000001' });
+    const job = [...gateway.jobs.values()][0]; job.configRevision = 'fictional-external-revision'; job.schedule = { kind: 'at', at: '2026-10-05T00:00:00.000Z' };
+    await assert.rejects(() => coordinator.reconcile({ loop: loop({ dueAt: correctedAt, revision: 2 }), logicalOperationId: '40000000-0000-4000-8000-000000000002', expectedConfigRevision: created.value.job.configRevision }), error => error.code === 'conflict');
+    assert.deepEqual([...gateway.jobs.values()][0].schedule, { kind: 'at', at: '2026-10-05T00:00:00.000Z' });
+    assert.equal(metadata.getOperation('40000000-0000-4000-8000-000000000002'), null, 'a stale precondition must fail before reserving a mutation');
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});

@@ -205,6 +205,15 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
   });
   service.getOpenLoop = loopId => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(text(loopId, 'loopId'))));
   service.findOpenLoopBySubject = (kind, stableSubjectId) => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(text(kind, 'kind', 80), text(stableSubjectId, 'stableSubjectId', 500))));
+  service.findOpenLoopsBySource = (system, kind, externalId, limit = 2) => {
+    const boundedLimit = Number(limit);
+    if (!Number.isSafeInteger(boundedLimit) || boundedLimit < 1 || boundedLimit > 10) fail('open-loop-intent-invalid');
+    return inspect(db => db.prepare(`SELECT DISTINCT l.* FROM source_observations o
+      JOIN open_loop_evidence e ON e.observation_id = o.observation_id
+      JOIN open_loops l ON l.loop_id = e.loop_id
+      WHERE o.source_system = ? AND o.source_kind = ? AND o.external_source_id = ?
+      ORDER BY l.loop_id LIMIT ?`).all(text(system, 'source.system', 80), text(kind, 'source.kind', 80), text(externalId, 'source.externalId', 500), boundedLimit).map(row => mapLoop(db, row)));
+  };
   service.listOpenLoops = () => inspect(db => db.prepare('SELECT * FROM open_loops ORDER BY updated_at, loop_id').all().map(row => mapLoop(db, row)));
   service.listOpenLoopsPage = ({ offset = 0, limit = 50, cursor } = {}) => {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || cursor !== undefined && (typeof cursor !== 'string' || cursor.trim() === '')) fail('open-loop-intent-invalid');

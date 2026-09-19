@@ -92,12 +92,9 @@ export function createMetadataService(api) {
       if (prior.state !== 'applied') throw new SourceServiceError('conflict', 'The native Reminder was not changed. Refresh the open loop and retry with a new action.');
       return Object.freeze({ ...result, reminder: reminderSummary(prior.state, plan) });
     }
-    const binding = metadataService.getSourceReference(plan.referenceId);
-    const expectedConfigRevision = binding?.observedRevision;
     return openLoopReminders.reconcile({
       loop: result.loop,
-      logicalOperationId,
-      ...(expectedConfigRevision === undefined ? {} : { expectedConfigRevision })
+      logicalOperationId
     }).then(receipt => Object.freeze({ ...result, reminder: reminderSummary(receipt.status, receipt.plan) }));
   }
   return {
@@ -286,8 +283,8 @@ export function createMetadataService(api) {
       requireOperational();
       const operatorId = typeof input.authenticatedOperatorId === 'string' ? input.authenticatedOperatorId.trim() : '';
       if (!operatorId) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for selected-source intake.');
-      if (!input.authorization || input.authorization.scopeId !== operatorId) throw new SourceServiceError('unauthenticated', 'Selected-source authorization must belong to the authenticated operator.');
-      const authorization = input.authorization;
+      if (!input.authorization || typeof input.authorization !== 'object' || Array.isArray(input.authorization) || Object.keys(input.authorization).some(key => !['sourceSystem', 'sourceKind', 'resourceId'].includes(key))) throw new SourceServiceError('invalid-request', 'Selected-source authorization must identify one exact persisted source reference.');
+      const authorization = { ...input.authorization, scopeId: operatorId };
       if (authorization.sourceKind !== 'document') throw new SourceServiceError('invalid-request', 'The bounded intake pilot accepts one existing document source reference.');
       const reference = metadataService.getSourceReference(authorization.resourceId);
       if (!reference || reference.sourceSystem !== authorization.sourceSystem || reference.sourceKind !== authorization.sourceKind) throw new SourceServiceError('source-recovery', 'The selected document is not an exact persisted source reference.');

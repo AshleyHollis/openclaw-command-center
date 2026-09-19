@@ -84,9 +84,18 @@ export function createRenovationFollowThrough(service) {
       const value = command(raw, 'correction');
       const plan = planPurchasedItemCorrection(value.correction);
       return updateExisting(service, value, plan, 'renovation-purchase-correction', existing => {
-        const linked = existing.evidenceObservationIds.map(id => service.getOpenLoopObservation(id)).some(item => item?.facts?.eventKind === 'item-purchased' && item.facts.purchaseNamespace === plan.purchase.namespace && item.facts.purchaseId === plan.purchase.id);
-        if (!linked || existing.state !== 'resolved') throw new TypeError('renovation-purchase-relationship-missing');
-        return { ...existing, state: 'waiting', expectedEvent: 'explicitly linked purchase', attention: { actions: [], activated: false, currentEvidence: true } };
+        const active = new Set();
+        const evidence = existing.evidenceObservationIds.map(id => service.getOpenLoopObservation(id)).filter(Boolean).sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || left.observationId.localeCompare(right.observationId));
+        for (const item of evidence) {
+          const key = JSON.stringify([item.facts?.purchaseNamespace, item.facts?.purchaseId]);
+          if (item.facts?.eventKind === 'item-purchased') active.add(key);
+          if (item.facts?.eventKind === 'purchase-relationship-corrected') active.delete(key);
+        }
+        const target = JSON.stringify([plan.purchase.namespace, plan.purchase.id]);
+        if (!active.delete(target) || existing.state !== 'resolved') throw new TypeError('renovation-purchase-relationship-missing');
+        return active.size > 0
+          ? { ...existing, state: 'resolved', expectedEvent: undefined, attention: { actions: [], activated: false, currentEvidence: true } }
+          : { ...existing, state: 'waiting', expectedEvent: 'explicitly linked purchase', attention: { actions: [], activated: false, currentEvidence: true } };
       });
     },
     recordDecisionConflict(raw) {

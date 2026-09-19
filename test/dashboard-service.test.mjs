@@ -94,3 +94,14 @@ test('Dashboard presents an open-loop obligation once when its owned native Remi
   assert.equal(result.openLoops.attentionTotal, 1);
   assert.equal(result.attentionBadgeCount, 1);
 });
+
+test('Dashboard does not hide an enabled Reminder that conflicts with a terminal open loop', async () => {
+  const now = '2026-09-20T01:00:00.000Z';
+  const loop = { schemaVersion: 1, loopId: 'loop-paid-obligation', kind: 'payment', stableSubjectId: 'invoice:paid', title: 'Paid fictional invoice', topicId: 'topic-one', state: 'resolved', paymentState: 'paid', dueAt: now, attention: { actions: [], activated: false, currentEvidence: true }, evidenceObservationIds: ['evidence-paid'], revision: 2 };
+  const referenceId = openLoopReminderReferenceId(loop.loopId);
+  const sourceService = { async attentionList() { return { episodes: [{ episodeId: 'conflicting-native-reminder', sourceCapabilityId: 'reminders', sourceKind: 'reminder', stableSubjectId: 'native-paid-job', state: 'Active', severity: 'Reminder', topicId: 'topic-one', sourceReferenceId: referenceId, actions: [], evidenceFacts: { reminderDue: true, dueAt: now } }], inProgress: [] }; }, async listReminderOccurrences() { return []; } };
+  const metadata = { listUsableTopics: () => [{ topicId: 'topic-one', name: 'Fictional Topic', lifecycle: 'active' }], listOpenLoops: () => [loop], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [{ loop }] }), projectActiveRenovationStagePrerequisites: () => [] };
+  const result = await projectDashboard({ sourceService, metadata, now: () => now });
+  assert.equal(result.attention.some(item => item.episodeId === 'conflicting-native-reminder'), true);
+  assert.equal(result.attentionBadgeCount, 1);
+});

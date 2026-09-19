@@ -123,7 +123,8 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
         const current = await adapterFor(sourceReference.topicId).read({ schemaVersion: 1, referenceId });
         sourceReference = current.sourceReference;
         schedulerJob = current.job;
-        expectedConfigRevision = current.job?.configRevision;
+        if (expectedConfigRevision !== undefined && expectedConfigRevision !== current.job?.configRevision) throw sourceError('conflict', 'The native Reminder changed after the requested open-loop action was formed.');
+        expectedConfigRevision ??= current.job?.configRevision;
       }
       const plan = planOpenLoopReminder({ loop, acceptedTiming: input.acceptedTiming, defaultTimeZone: input.defaultTimeZone ?? api?.config?.agents?.defaults?.userTimezone ?? 'UTC', sourceReference, schedulerJob });
       if (['none', 'blocked'].includes(plan.action)) return Object.freeze({ schemaVersion: 1, status: plan.action, logicalOperationId, plan });

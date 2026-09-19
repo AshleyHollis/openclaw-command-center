@@ -38,7 +38,7 @@ test('selected-source intake bridge accepts one persisted document selection wit
   const params = {
     schemaVersion: 1,
     logicalOperationId,
-    authorization: { scopeId: 'fictional-operator', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'fictional-source-reference' },
+    authorization: { sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'fictional-source-reference' },
     baselineThrough: '2026-09-01T00:00:00.000Z',
     selections: [{ topicId: 'fictional-topic', path: 'selected-invoice.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z' }]
   };
