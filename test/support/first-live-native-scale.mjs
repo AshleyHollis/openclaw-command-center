@@ -108,7 +108,9 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).click();
   await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
   await ready(async () => observed().notes?.value?.offset === 0 && observed().notes?.value?.total === 5_000);
+  onProgress('topic-catalog-observed');
   await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).waitFor();
+  onProgress('topic-catalog-rendered');
   observations.topicOpenMs = now() - started;
   onProgress('large-note-read');
   started = now();
