@@ -241,7 +241,8 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   const containsMessage = history => history.messages?.some(message => message.role === 'user' && (message.text === messageText || message.content === messageText
     || Array.isArray(message.content) && message.content.some(part => part.type === 'text' && part.text === messageText)));
   await ready(async () => {
-    const response = await readAuthenticatedHistory({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, sessionKey: target.sessionKey, signal });
+    const response = await readAuthenticatedHistory({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+      sessionKey: target.sessionKey, signal, responseTimeoutMs: 30_000 });
     const history = response?.result ?? response;
     assert.equal(history.sessionId, target.sessionId);
     assert.equal(history.sessionKey, target.sessionKey);

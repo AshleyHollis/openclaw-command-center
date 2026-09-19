@@ -235,6 +235,6 @@ export async function requestAuthenticatedGateway({ gatewayUrl, credential, meth
   } finally { signal?.removeEventListener('abort', abortSocket); socket.close(); }
 }
 
-export async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey, signal }) {
-  return requestAuthenticatedGateway({ gatewayUrl, credential, method: 'chat.history', params: { sessionKey }, signal });
+export async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey, signal, responseTimeoutMs }) {
+  return requestAuthenticatedGateway({ gatewayUrl, credential, method: 'chat.history', params: { sessionKey }, signal, responseTimeoutMs });
 }
