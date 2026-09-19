@@ -1,10 +1,6 @@
 name: Capture release performance baseline
 
 on:
-  push:
-    branches: [upgrade/openclaw-2026.9.5]
-    paths:
-      - .github/workflows/capture-release-performance.yml
   workflow_dispatch:
 
 permissions:
