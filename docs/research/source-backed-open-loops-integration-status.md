@@ -24,7 +24,7 @@ No control sends a message, makes a payment, purchases an item, or rewrites auth
 | Capability | Current evidence | Status |
 | --- | --- | --- |
 | Email/SMS | Closed normalized envelopes and exact source/version fixtures | No verified live mailbox or SMS reader; scanning remains unauthorized. |
-| Selected document | Real source-owner composition exists in the Linux-only source integration lane; plugin integration uses an authoritative reader fixture | Implemented pilot, pending packaged real-owner proof. |
+| Selected document | Plugin integration uses an authoritative reader fixture. A composed descriptor-backed owner → plugin → Reminder → restart/outage test is authored and explicitly skipped on Windows. | Implemented pilot, pending Linux execution and packaged real-owner proof. |
 | Original navigation | Public evidence includes source system, kind, and version | Exact document/Session navigation contract is unavailable; UI states this honestly. |
 | Scheduler | Existing Reminder adapter plus durable operation/revision/recovery owners | Implemented locally; pending packaged page-closed/process-restart proof. |
 | Device notifications | Release policy retains `notifications: false` | Disabled pending separate native authority/delivery qualification. |
@@ -43,6 +43,16 @@ No control sends a message, makes a payment, purchases an item, or rewrites auth
 | Exact renovation purchase, incorrect-link correction, replacement follow-up, split fulfilment, activated blocker, and revised-quote challenge | Verified through owners and native UI module |
 | One presentation when an owned Reminder also fires | Verified in Dashboard projection |
 | Packaged plugin, page closed, process restart, real source owner, and exact original navigation | Not yet qualified |
+
+## Exact local evidence
+
+- Foundation: PR #252 head `3a51d5021ebfca2d24159f8590bed01934ac596b`.
+- Reviewed code candidate: `1b63670` on `feature/actionable-attention-milestone`.
+- Milestone command: `node --test test/message-intake.test.mjs test/native-ui-attention.test.mjs test/open-loop-bridge.test.mjs test/open-loop-contracts.test.mjs test/open-loop-hardening.test.mjs test/open-loop-reminder-coordinator.test.mjs test/open-loop-storage.test.mjs test/plugin-integration.test.mjs test/reminder-runtime-lifecycle.test.mjs test/renovation-follow-through.test.mjs test/selected-source-intake.test.mjs test/transaction-intake.test.mjs test/dashboard-payload.integration.test.mjs test/dashboard-service.test.mjs` — **135 passed, 1 explicitly skipped on Windows, 0 failed**. The skipped test is the descriptor-backed real-owner composition intended for Linux qualification.
+- Native browser command: `node --test test/native-ui-attention.test.mjs` — **30 passed, 0 failed**. Inspected screenshots: `C:\Users\ashle\Source\OpenClaw\output\attention-bill.png` and `C:\Users\ashle\Source\OpenClaw\output\attention-renovation-stage.png`.
+- `npm run check` passed. `npm run build` passed with digest `fe2bc08420bf8c003fde57dd4f342fca3b2fe6f820de5526fa153b564c8211ac`. `git diff --check` passed.
+- The earlier broad Windows run remains non-green: 1,076 passed, 206 failed, and 79 skipped. Platform identity, symlink, `fsync`, signal, and unavailable host-coordinator failures prevent treating it as a passing lane.
+- `node scripts/package-candidate.mjs --output <empty-directory>` returned `artifact-linux-required`. No archive was fabricated. Packaged migration/rollback rehearsal therefore remains unperformed.
 
 ## Required handoff
 
