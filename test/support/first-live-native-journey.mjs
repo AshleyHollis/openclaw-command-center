@@ -631,7 +631,7 @@ export async function exerciseNativeKeyboardJourney({ descriptor, buildReceipt, 
 export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, scale = false, catalog = false, chatHandoffOnly = false, notesWorkspaceOnly = false, nativeFilesWorkspace = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
   if (scaleDiagnostic) assert.equal(process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE, undefined);
   const scaleNow = scaleDiagnostic ? () => 0 : () => performance.now();
-  const progress = stage => { if (scaleDiagnostic) onScaleProgress?.({ stage }); };
+  const progress = stage => { if (scale) onScaleProgress?.({ stage }); };
   assert.equal(keyboard && scale, false, 'Performance qualification cannot share a keyboard diagnostic');
   return withIsolatedWorld(async (world) => {
     const bootstrap = keyboard || nativeFilesWorkspace ? null : await prepareNativeLegacyBootstrap({ world, signal, scale, catalog });

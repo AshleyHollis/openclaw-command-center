@@ -8,9 +8,9 @@ import { assertNativeScaleSourcesUnchanged, readNativeLegacyBootstrap } from './
 
 // The shared journey owns launch, authentication, assets and all six finalizers.
 // Import lazily so the ordinary/keyboard entrypoints do not form an eager cycle.
-export async function exerciseNativeScaleJourney({ descriptor, buildReceipt, signal, onFinalization }) {
+export async function exerciseNativeScaleJourney({ descriptor, buildReceipt, signal, onFinalization, onScaleProgress }) {
   const { exerciseNativeJourney } = await import('./first-live-native-journey.mjs');
-  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, scale: true });
+  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, onScaleProgress, scale: true });
 }
 
 function request(world, signal, method, params = {}, scopes = ['operator.read']) {

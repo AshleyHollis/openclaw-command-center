@@ -2046,6 +2046,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     try {
       evidence = await runBoundedAcceptanceSlice(nativeDiagnostic, (signal) => journey({ descriptor, buildReceipt, signal,
         onDiagnostic: diagnostic => testContext.diagnostic(`acceptance-startup-diagnostic=${JSON.stringify(diagnostic)}`),
+        onScaleProgress: progress => testContext.diagnostic(`acceptance-scale-progress=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...progress })}`),
         onFinalization: finalization => testContext.diagnostic(`acceptance-finalization=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...finalization })}`) }),
       scale ? { timeoutMs: 285_000, cleanupTimeoutMs: 14_000 } : undefined);
     } catch (error) {
