@@ -50,6 +50,7 @@ export async function selectNativeCategoryGrouping(page) {
       await showOneAgent.click({ timeout: 10_000 });
       sidebar = page.locator('openclaw-app-sidebar:visible').first();
       await sidebar.locator('.sidebar-agent-card__main:visible').first().waitFor({ state: 'visible', timeout: 10_000 });
+      await page.locator('wa-dropdown.sidebar-agent-menu').waitFor({ state: 'hidden', timeout: 10_000 });
     }
     // Expanded plugin Topics can legitimately fill the sidebar and place the
     // native Conversations toolbar just below a 720px browser viewport. Use

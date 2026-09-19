@@ -34,12 +34,13 @@ test('native grouping journey leaves team mode through the workspace menu', { ti
   try {
     const page = await browser.newPage();
     page.setDefaultTimeout(1000);
-    await page.setContent('<openclaw-app-sidebar><button class="sidebar-workspace-header__main">Workspace</button></openclaw-app-sidebar><wa-dropdown-item hidden value="command:sidebar-agents">Show one agent</wa-dropdown-item><div hidden id="menu"><wa-dropdown-item value="grouping:category">Category</wa-dropdown-item></div>');
+    await page.setContent('<openclaw-app-sidebar><button class="sidebar-workspace-header__main">Workspace</button></openclaw-app-sidebar><wa-dropdown hidden class="sidebar-agent-menu"><wa-dropdown-item value="command:sidebar-agents">Show one agent</wa-dropdown-item></wa-dropdown><div hidden id="menu"><wa-dropdown-item value="grouping:category">Category</wa-dropdown-item></div>');
     await page.evaluate(() => {
       const sidebar = document.querySelector('openclaw-app-sidebar');
       const workspace = sidebar.querySelector('.sidebar-workspace-header__main');
+      const agentMenu = document.querySelector('wa-dropdown.sidebar-agent-menu');
       const showOne = document.querySelector('wa-dropdown-item[value="command:sidebar-agents"]');
-      workspace.addEventListener('click', () => { showOne.hidden = false; });
+      workspace.addEventListener('click', () => { agentMenu.hidden = false; });
       showOne.addEventListener('click', () => {
         workspace.remove();
         sidebar.insertAdjacentHTML('afterbegin', '<button class="sidebar-agent-card__main">Agent</button><button id="collapse-topics">Collapse all Topics</button><div class="sidebar-session-toolbar"><button id="single-agent-sort" class="sidebar-session-sort">Sort sessions</button></div>');
@@ -48,6 +49,7 @@ test('native grouping journey leaves team mode through the workspace menu', { ti
           document.querySelector('#menu').hidden = false;
           document.body.dataset.clickedSort = 'single-agent-sort';
         });
+        setTimeout(() => { agentMenu.hidden = true; }, 25);
       });
     });
     await selectNativeCategoryGrouping(page);
