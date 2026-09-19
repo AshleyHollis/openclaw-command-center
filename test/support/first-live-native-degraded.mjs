@@ -143,7 +143,7 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
         expectedRevision: beforeTopic.topic.revision, label: 'Fictional refused native Conversation', logicalOperationId: randomUUID() };
       const rejected = await fetchJsonWithDeadline(`${world.gateway.url}${actionPath}`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
         body: JSON.stringify(input)
       }, { label: 'native degraded authenticated Conversation refusal', timeoutMs: 30_000 });
       assert.equal(rejected.parseError, undefined);

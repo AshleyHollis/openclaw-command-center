@@ -21,7 +21,7 @@ function request(world, signal, method, params = {}, scopes = ['operator.read'])
 async function action(world, signal, input) {
   const response = await fetchJsonWithDeadline(`${world.gateway.url}/plugins/command-center/api/topic/actions`, {
     method: 'POST', redirect: 'error', signal,
-    headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+    headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
     body: JSON.stringify({ schemaVersion: 1, ...input })
   }, { label: 'native scale authenticated Conversation owner', timeoutMs: 30_000 });
   assert.equal(response.response.ok, true);
@@ -166,7 +166,9 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   const input = response.value.request().postDataJSON();
   assert.equal(input.topicId, fixture.topicId);
   assert.equal(input.label, conversationLabel);
-  assert.equal(response.value.request().headers()['x-openclaw-control-ui-relay'], '1');
+  const requestHeaders = response.value.request().headers();
+  assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+  assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
   const receipt = await response.value.json();
   assert.equal(receipt.status, 'applied');
   assert.equal(receipt.logicalOperationId, input.logicalOperationId);

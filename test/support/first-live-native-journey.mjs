@@ -1403,10 +1403,12 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.notEqual(newReferenceId, fixture.sessionReferenceId, 'Creating a Conversation must not reuse the existing Primary');
       // Replay the exact captured intent through the same declared authenticated
       // HTTP boundary. In particular, do not refresh its original Topic revision.
-      assert.equal(observedCreation.value.request().headers()['x-openclaw-control-ui-relay'], '1');
+      const requestHeaders = observedCreation.value.request().headers();
+      assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+      assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
       const replay = await fetchJsonWithDeadline(`${world.gateway.url}/plugins/command-center/api/topic/actions`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
         body: JSON.stringify(creationInput)
       }, { label: 'native Conversation exact-intent replay', timeoutMs: 30_000 });
       assert.equal(replay.response.ok, true);
@@ -1510,7 +1512,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const restartedReplay = await fetchJsonWithDeadline(`${world.gateway.url}/plugins/command-center/api/topic/actions`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
         body: JSON.stringify(creationInput)
       }, { label: 'native Conversation original-intent replay after restart', timeoutMs: 30_000 });
       assert.equal(restartedReplay.response.ok, true);

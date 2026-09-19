@@ -249,7 +249,7 @@ async function observeNativePluginApiRefusal({ world, host, signal, topicId, exp
   }
   const attempt = () => fetchJsonWithDeadline(`${world.gateway.url}${actionPath}`, {
     method: 'POST', redirect: 'error', signal,
-    headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+    headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
     body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId, expectedRevision, logicalOperationId, label: 'Fictional refused API Conversation' })
   }, { label: 'incompatible native plugin retained creation refusal', timeoutMs: 10_000 });
   if (startupRejected) {
@@ -383,7 +383,7 @@ async function exerciseNativeCompatibilitySurface({ world, descriptor, buildRece
     const beforeTopics = await gatewayRead('command-center.v1.topics.list');
     const refused = await fetchJsonWithDeadline(`${world.gateway.url}${actionPath}`, {
       method: 'POST', redirect: 'error', signal,
-      headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+      headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
       body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId, expectedRevision, logicalOperationId, label: 'Fictional refused compatibility Conversation' })
     }, { label: 'native compatibility retained Conversation refusal', timeoutMs: 30_000 });
     assert.equal(refused.parseError, undefined); assert.equal(refused.response.status, 422);

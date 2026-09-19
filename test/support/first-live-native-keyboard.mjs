@@ -170,7 +170,9 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     && new URL(response.url()).pathname === actionPath && response.request().postDataJSON()?.action === action, { timeout: 30_000 }));
   const appliedReceipt = async (observed, action, original) => {
     assert.equal(hasSuccessfulBrowserResponse(observed), true, `Actual native HTTP ${action} must succeed`);
-    assert.equal(observed.value.request().headers()['x-openclaw-control-ui-relay'], '1');
+    const requestHeaders = observed.value.request().headers();
+    assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+    assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
     const input = observed.value.request().postDataJSON();
     assert.equal(input.action, action); assert.equal(input.topicId, fixture.topicId);
     const receipt = await observed.value.json();
@@ -256,7 +258,9 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
       assert.equal(intercepted, 1, 'An uncertain operation must never automatically redispatch creation');
       assert.equal(new URL(request.url()).origin, new URL(world.gateway.url).origin);
       browserGuard.assert(new URL(request.url()).hostname, 'browser-native-lost-reply');
-      assert.equal(request.headers()['x-openclaw-control-ui-relay'], '1');
+      const requestHeaders = request.headers();
+      assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+      assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
       response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: 30_000 });
       assert.equal(response.ok(), true);
       lost = { input: request.postDataJSON(), receipt: await response.json() };
@@ -364,7 +368,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     assert.deepEqual(withoutObservationTimes(beforeRefusal.topic), withoutObservationTimes(retainedTopic.topic), 'Capability changes must preserve the existing Topic identity and revision');
     const refusal = await fetchJsonWithDeadline(`${world.gateway.url}${actionPath}`, {
       method: 'POST', redirect: 'error', signal,
-      headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+      headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
       body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: fixture.topicId, expectedRevision: retainedTopic.topic.revision, logicalOperationId: randomUUID(), label: 'Fictional refused keyboard creation' })
     }, { label: `native keyboard ${state} authenticated refusal`, timeoutMs: 30_000 });
     assert.equal(refusal.parseError, undefined); assert.equal(refusal.response.status, 422);

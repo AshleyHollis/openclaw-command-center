@@ -245,7 +245,7 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       const blockedId = randomUUID();
       const refused = await fetchJsonWithDeadline(`${world.gateway.url}/plugins/command-center/api/topic/actions`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
         body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: '44444444-4444-4444-8444-444444444444', expectedRevision: 0, logicalOperationId: blockedId, label: 'Fictional refused recovery Conversation' })
       }, { label: 'native recovery-only retained write refusal', timeoutMs: 30_000 });
       assert.equal(refused.parseError, undefined);
@@ -272,7 +272,9 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).press('Enter');
       const observed = await creationResponse;
       assert.equal(hasSuccessfulBrowserResponse(observed), true);
-      assert.equal(observed.value.request().headers()['x-openclaw-control-ui-relay'], '1');
+      const requestHeaders = observed.value.request().headers();
+      assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+      assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
       const input = observed.value.request().postDataJSON();
       assert.deepEqual(Object.keys(input).sort(), ['action', 'expectedRevision', 'label', 'logicalOperationId', 'schemaVersion', 'topicId']);
       assert.equal(input.topicId, fixture.topicId);
