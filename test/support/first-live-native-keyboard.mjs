@@ -351,9 +351,12 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     await announced(creation, /unavailable|recovery|write access|refused/iu);
     assert.equal(await createButton().isDisabled(), true);
     if (state === 'source-unavailable') {
-      const topicRow = nativePage.getByRole('listitem').filter({ has: button('Open Topic in Chat') });
-      await press(topicRow.getByRole('button', { name: 'Open Topic in Chat', exact: true }));
-      await announced(topicRow, /capability.*unavailable/iu);
+      await press(button('Open Topic in Chat'));
+      const navigationStatus = nativePage.locator('.reader-status').filter({ hasText: /capability.*unavailable/iu });
+      await navigationStatus.waitFor();
+      const value = await navigationStatus.textContent();
+      assert.ok(value?.trim(), 'A failed Chat handoff must expose an exact readable status');
+      announcements.push(value);
       assert.equal(await chatPane.count(), 0);
     } else {
       const inspection = actionResponse('conversations.creation.inspect');

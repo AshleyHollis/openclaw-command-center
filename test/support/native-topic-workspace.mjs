@@ -27,11 +27,15 @@ export async function assertNativeNoteSource(nativePage, fixture) {
 // ownership. Exercise the host control explicitly so this journey can prove
 // that a verified Topic category is actually reachable in the sidebar.
 export async function selectNativeCategoryGrouping(page) {
-  const trigger = page.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)');
+  const trigger = page.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').filter({ visible: true }).first();
   try {
+    if (!await trigger.count()) {
+      const expand = page.getByRole('button', { name: 'Expand sidebar', exact: true }).filter({ visible: true }).first();
+      await expand.click({ timeout: 10_000 });
+    }
+    await trigger.waitFor({ state: 'visible', timeout: 10_000 });
     await trigger.scrollIntoViewIfNeeded({ timeout: 10_000 });
-    if (await trigger.isVisible()) await trigger.click({ timeout: 10_000 });
-    else await trigger.evaluate(button => button.click());
+    await trigger.click({ timeout: 10_000 });
   }
   catch (error) {
     const controls = await page.locator('button').evaluateAll(buttons => buttons.slice(0, 40).map(button => {
@@ -57,14 +61,21 @@ export async function organizeNativeTopicConversations({ page, nativePage, fixtu
   assert.match(await status.textContent(), /1 Conversations organized\. 0 already grouped and preserved\. 0 blocked and left unchanged\./);
   // Sidebar reconciliation can briefly retain a hidden predecessor beside
   // the current section. Bind the journey to the visible native section.
-  const group = page.locator(`[data-session-section="category:${fixture.name}"]`).filter({ visible: true });
+  const sidebar = page.locator('openclaw-app-sidebar').filter({ visible: true }).first();
+  const group = sidebar.locator(`[data-session-section="category:${fixture.name}"]`);
   try { await group.waitFor({ state: 'visible', timeout: 30_000 }); }
   catch (error) {
     const rosters = observedRosters().slice(-3).map(item => ({
       keys: Object.keys(item),
       matching: (item.value?.sessions ?? item.sessions ?? []).filter(session => session.key === fixture.sessionKey).map(session => ({ category: session.category, kind: session.kind, ownerPresent: Boolean(session.ownerId) }))
     }));
-    const sections = await page.locator('[data-session-section]').evaluateAll(elements => elements.map(element => ({ id: element.getAttribute('data-session-section'), visible: element.getClientRects().length > 0 })));
+    const sections = await page.locator('[data-session-section]').evaluateAll(elements => elements.map(element => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return { id: element.getAttribute('data-session-section'), display: style.display, visibility: style.visibility,
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        sidebarVisible: Boolean(element.closest('openclaw-app-sidebar')?.getBoundingClientRect().width) };
+    }));
     throw new Error(`Native grouping sidebar not visible: ${JSON.stringify({ rosters, sections })}`, { cause: error });
   }
   const toggle = group.getByRole('button', { name: fixture.name, exact: true });
