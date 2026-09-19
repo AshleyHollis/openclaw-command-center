@@ -4,6 +4,7 @@ import { normalizeLoop, normalizeObservation } from './contracts.mjs';
 const SOURCE_KINDS = new Set(['document', 'session']);
 const AVAILABILITY = new Set(['available', 'unavailable']);
 const UNAVAILABLE_REASONS = new Set(['not-found', 'permission-revoked', 'temporarily-unavailable', 'version-replaced']);
+const ISO_CURRENCIES = new Set(Intl.supportedValuesOf('currency'));
 const MAX_BATCH_SIZE = 20;
 const MAX_CONTENT_BYTES = 32 * 1024;
 
@@ -53,52 +54,56 @@ function boundedContent(value) {
   return value.replace(/\r\n?/gu, '\n');
 }
 
-function labelled(content, label, maximum = 300) {
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-  const match = content.match(new RegExp(`^${escaped}\\s*:\\s*(.+)$`, 'imu'));
-  if (!match) return undefined;
-  return text(match[1], label, maximum);
+function labelledValues(content, labels, maximum = 300) {
+  const values = [];
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    for (const match of content.matchAll(new RegExp(`^${escaped}\\s*:\\s*(.+)$`, 'imgu'))) values.push(text(match[1], label, maximum));
+  }
+  return [...new Set(values)];
 }
 
-function labelledAny(content, labels, maximum = 300) {
-  for (const label of labels) {
-    const value = labelled(content, label, maximum);
-    if (value !== undefined) return value;
-  }
-  return undefined;
+function unambiguousLabelled(content, labels, maximum = 300) {
+  const values = labelledValues(content, labels, maximum);
+  return freeze({ present: values.length > 0, ambiguous: values.length > 1, value: values.length === 1 ? values[0] : undefined });
 }
 
 function parseAmount(content) {
-  const raw = labelledAny(content, ['Amount due', 'Total due', 'Balance due'], 80);
-  if (!raw) return {};
-  const match = raw.match(/^([A-Z]{3})\s+([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)(?:\.([0-9]{2}))?$/u);
-  if (!match) return {};
+  const field = unambiguousLabelled(content, ['Amount due', 'Total due', 'Balance due'], 80);
+  if (!field.present || field.ambiguous) return freeze({ ...field, valid: false });
+  const match = field.value.match(/^([A-Z]{3})\s+([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)(?:\.([0-9]{2}))?$/u);
+  if (!match || !ISO_CURRENCIES.has(match?.[1])) return freeze({ ...field, valid: false });
   const major = Number(match[2].replaceAll(',', ''));
   const minor = Number(match[3] ?? '00');
   const amount = major * 100 + minor;
-  if (!Number.isSafeInteger(amount)) return {};
-  return { amount, currency: match[1] };
+  if (!Number.isSafeInteger(amount)) return freeze({ ...field, valid: false });
+  return freeze({ ...field, valid: true, amount, currency: match[1] });
 }
 
 function interpretAvailableContent(content) {
-  const invoiceId = labelledAny(content, ['Invoice', 'Invoice number', 'Invoice no.', 'Invoice #'], 300);
-  const accountId = labelledAny(content, ['Account', 'Account number'], 300);
-  const authorityId = labelled(content, 'Authority', 300);
-  const payee = labelledAny(content, ['Payee', 'Supplier', 'Vendor', 'Biller'], 200);
-  const purpose = labelledAny(content, ['Purpose', 'Description', 'For'], 300);
-  const dueRaw = labelledAny(content, ['Due', 'Due date', 'Payment due'], 64);
-  const dueAt = dueRaw && /^\d{4}-\d{2}-\d{2}T/u.test(dueRaw) && !Number.isNaN(Date.parse(dueRaw)) ? instant(dueRaw, 'Due') : undefined;
+  const invoice = unambiguousLabelled(content, ['Invoice', 'Invoice number', 'Invoice no.', 'Invoice #'], 300);
+  const account = unambiguousLabelled(content, ['Account', 'Account number'], 300);
+  const authority = unambiguousLabelled(content, ['Authority'], 300);
+  const payeeField = unambiguousLabelled(content, ['Payee', 'Supplier', 'Vendor', 'Biller'], 200);
+  const purposeField = unambiguousLabelled(content, ['Purpose', 'Description', 'For'], 300);
+  const due = unambiguousLabelled(content, ['Due', 'Due date', 'Payment due'], 64);
+  const status = unambiguousLabelled(content, ['Status', 'Payment status'], 100);
   const amount = parseAmount(content);
-  const explicitPaymentRequest = /(?:^|[.!?]\s+)(?:please pay|payment is due)\b/iu.test(content) || /^(?:Amount due|Total due|Balance due)\s*:/imu.test(content);
-  if (!invoiceId || !explicitPaymentRequest) return freeze({ kind: 'informational' });
+  if ([invoice, account, authority, payeeField, purposeField, due, status, amount].some(field => field.ambiguous)) return freeze({ kind: 'informational' });
+  const dueAt = due.value && /^\d{4}-\d{2}-\d{2}T/u.test(due.value) && !Number.isNaN(Date.parse(due.value)) ? instant(due.value, 'Due') : undefined;
+  const terminalStatus = status.value && /^(?:paid(?:\s+in\s+full)?|settled|cancelled|canceled|credited|credit|credit note)$/iu.test(status.value);
+  const terminalMarker = /^(?:Paid in full|Credit note|Cancelled|Canceled)\s*:/imu.test(content);
+  const explicitPhrase = /(?:^|\n|[.!?]\s+)[ \t]*(?:please pay|payment is due)\b/iu.test(content);
+  const explicitPaymentRequest = explicitPhrase || (amount.valid && amount.amount > 0);
+  if (!invoice.value || !explicitPaymentRequest || terminalStatus || terminalMarker || (amount.valid && amount.amount === 0)) return freeze({ kind: 'informational' });
   return freeze({
     kind: 'payment-request',
-    invoiceId,
-    ...(accountId ? { accountId } : {}),
-    ...(authorityId ? { authorityId } : {}),
-    ...(payee ? { payee } : {}),
-    ...(purpose ? { purpose } : {}),
-    ...amount,
+    invoiceId: invoice.value,
+    ...(account.value ? { accountId: account.value } : {}),
+    ...(authority.value ? { authorityId: authority.value } : {}),
+    ...(payeeField.value ? { payee: payeeField.value } : {}),
+    ...(purposeField.value ? { purpose: purposeField.value } : {}),
+    ...(amount.valid ? { amount: amount.amount, currency: amount.currency } : {}),
     ...(dueAt ? { dueAt } : {})
   });
 }

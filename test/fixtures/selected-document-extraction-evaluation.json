@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "supportedFormat": "UTF-8 plaintext invoice with a labelled invoice identifier and an explicit payment phrase or labelled ISO-currency amount; RFC 3339 due instants are optional",
-  "minimums": { "precision": 1, "recall": 0.8, "fieldAccuracy": 0.9 },
+  "minimums": { "precision": 1, "recall": 1, "fieldAccuracy": 1 },
   "cases": [
     {
       "id": "standard-labels",
@@ -62,6 +62,66 @@
       "id": "binary-placeholder",
       "expected": { "payment": false },
       "content": "%PDF-1.7 binary bytes are not a supported plaintext invoice representation"
+    },
+    {
+      "id": "paid-invoice",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-PAID\nAmount due: AUD 100.00\nStatus: Paid in full"
+    },
+    {
+      "id": "settled-invoice",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-SETTLED\nTotal due: AUD 100.00\nPayment status: Settled"
+    },
+    {
+      "id": "zero-balance",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-ZERO\nBalance due: AUD 0.00"
+    },
+    {
+      "id": "credit-note",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-CREDIT\nAmount due: AUD 25.00\nStatus: Credit note"
+    },
+    {
+      "id": "cancelled-invoice",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-CANCELLED\nAmount due: AUD 25.00\nStatus: Cancelled"
+    },
+    {
+      "id": "malformed-amount",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-TBD\nAmount due: TBD"
+    },
+    {
+      "id": "unsupported-currency",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-CURRENCY\nAmount due: XYZ 100.00"
+    },
+    {
+      "id": "conflicting-invoice-identifiers",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-A\nInvoice number: INV-EVAL-B\nAmount due: AUD 100.00"
+    },
+    {
+      "id": "conflicting-account-identifiers",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-ACCOUNT\nAccount: ACCOUNT-A\nAccount number: ACCOUNT-B\nAmount due: AUD 100.00"
+    },
+    {
+      "id": "conflicting-amounts",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-AMOUNT\nAmount due: AUD 100.00\nTotal due: AUD 120.00"
+    },
+    {
+      "id": "conflicting-due-instants",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-DUE\nAmount due: AUD 100.00\nDue: 2026-10-10T00:00:00.000Z\nDue date: 2026-10-11T00:00:00.000Z"
+    },
+    {
+      "id": "duplicate-identical-identifiers-remain-unambiguous",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-DUPLICATE", "amount": 10000, "currency": "AUD", "accountId": "ACCOUNT-DUPLICATE" },
+      "content": "Invoice: INV-EVAL-DUPLICATE\nInvoice number: INV-EVAL-DUPLICATE\nAccount: ACCOUNT-DUPLICATE\nAccount number: ACCOUNT-DUPLICATE\nAmount due: AUD 100.00"
     }
   ]
 }

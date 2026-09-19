@@ -199,6 +199,7 @@ test('declared plaintext invoice extraction meets the bounded evaluation thresho
       }]
     })).plans[0];
     const recognized = planned.interpretation.kind === 'payment-request';
+    assert.equal(recognized, evaluationCase.expected.payment, `${evaluationCase.id} classification must match its declared expectation`);
 
     if (recognized && evaluationCase.expected.payment) truePositive += 1;
     if (recognized && !evaluationCase.expected.payment) falsePositive += 1;
@@ -208,6 +209,7 @@ test('declared plaintext invoice extraction meets the bounded evaluation thresho
       for (const [field, expected] of Object.entries(evaluationCase.expected)) {
         if (field === 'payment') continue;
         expectedFields += 1;
+        assert.equal(planned.interpretation[field], expected, `${evaluationCase.id}.${field} must match its declared expectation`);
         if (planned.interpretation[field] === expected) matchingFields += 1;
       }
     }
