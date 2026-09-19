@@ -125,6 +125,7 @@ export default definePluginEntry({
         if (property === 'openLoopsRenovationStage') return (input) => service.openLoopsRenovationStage(input);
         if (property === 'openLoopsRenovationStagePrerequisites') return (input) => service.openLoopsRenovationStagePrerequisites(input);
         if (property === 'openLoopsRenovationDecisionConflict') return (input) => service.openLoopsRenovationDecisionConflict(input);
+        if (property === 'openLoopsRenovationDecisionRevise') return (input) => service.openLoopsRenovationDecisionRevise(input);
         if (property === 'dashboardUpdateSettings') return (input) => service.dashboardUpdateSettings(input);
         if (property === 'notificationReconcile') return (runtime) => service.notificationReconcile(runtime);
         if (property === 'notificationCaptureBinding') return () => service.notificationCaptureBinding();

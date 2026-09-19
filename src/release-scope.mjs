@@ -46,7 +46,8 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.open-loops.renovation-fulfilment',
     'command-center.v1.open-loops.renovation-stage',
     'command-center.v1.open-loops.renovation-stage-prerequisites',
-    'command-center.v1.open-loops.renovation-decision-conflict'
+    'command-center.v1.open-loops.renovation-decision-conflict',
+    'command-center.v1.open-loops.renovation-decision-revise'
   ]),
   topicAction: Object.freeze(['conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
 });

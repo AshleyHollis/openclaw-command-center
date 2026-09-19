@@ -30,6 +30,14 @@ function updateExisting(service, value, plan, operationKind, transform) {
 
 export function createRenovationFollowThrough(service) {
   if (!service || typeof service.applyOpenLoopChange !== 'function') throw new TypeError('open-loop metadata service is required');
+  const projectStagePrerequisites = ({ stage, topicId } = {}) => {
+    if (!stage || typeof stage.namespace !== 'string' || typeof stage.id !== 'string') throw new TypeError('exact stage identity is required');
+    const activations = service.listOpenLoopObservations().filter(item => item.facts?.stageNamespace === stage.namespace && item.facts?.stageId === stage.id && ['stage-activated', 'stage-deactivated'].includes(item.facts?.eventKind)).sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || left.observationId.localeCompare(right.observationId));
+    const current = activations.at(-1);
+    if (!current?.facts?.active) return freeze({ schemaVersion: 1, active: false, stage: { namespace: stage.namespace, id: stage.id }, items: [] });
+    const items = service.listOpenLoops().filter(loop => !['resolved', 'cancelled'].includes(loop.state) && (topicId === undefined || loop.topicId === topicId)).filter(loop => loop.evidenceObservationIds.some(id => { const evidence = service.getOpenLoopObservation(id); return evidence?.facts?.eventKind === 'requirement-recorded' && evidence.facts.requirementKind === 'prerequisite' && evidence.facts.stageNamespace === stage.namespace && evidence.facts.stageId === stage.id; })).map(loop => freeze({ loop, reason: 'activated-blocker', whyNow: `${loop.title} blocks the explicitly activated stage.`, actions: ['Open source', 'Mark resolved', 'Defer'] }));
+    return freeze({ schemaVersion: 1, active: true, stage: { namespace: stage.namespace, id: stage.id }, activationObservationId: current.observationId, items });
+  };
   return freeze({
     recordRequirement(raw) {
       const value = command(raw, 'requirement');
@@ -57,13 +65,16 @@ export function createRenovationFollowThrough(service) {
       const plan = planStageActivation(value.activation);
       return service.ingestOpenLoopObservation({ schemaVersion: 1, logicalOperationId: value.logicalOperationId.trim(), observation: plan.observation });
     },
-    projectStagePrerequisites({ stage, topicId } = {}) {
-      if (!stage || typeof stage.namespace !== 'string' || typeof stage.id !== 'string') throw new TypeError('exact stage identity is required');
-      const activations = service.listOpenLoopObservations().filter(item => item.facts?.stageNamespace === stage.namespace && item.facts?.stageId === stage.id && ['stage-activated', 'stage-deactivated'].includes(item.facts?.eventKind)).sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || left.observationId.localeCompare(right.observationId));
-      const current = activations.at(-1);
-      if (!current?.facts?.active) return freeze({ schemaVersion: 1, active: false, stage: { namespace: stage.namespace, id: stage.id }, items: [] });
-      const items = service.listOpenLoops().filter(loop => !['resolved', 'cancelled'].includes(loop.state) && (topicId === undefined || loop.topicId === topicId)).filter(loop => loop.evidenceObservationIds.some(id => { const evidence = service.getOpenLoopObservation(id); return evidence?.facts?.eventKind === 'requirement-recorded' && evidence.facts.requirementKind === 'prerequisite' && evidence.facts.stageNamespace === stage.namespace && evidence.facts.stageId === stage.id; })).map(loop => freeze({ loop, reason: 'activated-blocker', whyNow: `${loop.title} blocks the explicitly activated stage.`, actions: ['Open source', 'Mark resolved', 'Defer'] }));
-      return freeze({ schemaVersion: 1, active: true, stage: { namespace: stage.namespace, id: stage.id }, activationObservationId: current.observationId, items });
+    projectStagePrerequisites,
+    projectActiveStagePrerequisites({ topicId } = {}) {
+      const stages = new Map();
+      for (const item of service.listOpenLoopObservations()) {
+        if (!['stage-activated', 'stage-deactivated'].includes(item.facts?.eventKind)) continue;
+        const key = `${item.facts.stageNamespace}\u0000${item.facts.stageId}`;
+        const previous = stages.get(key);
+        if (!previous || Date.parse(previous.occurredAt) < Date.parse(item.occurredAt) || previous.occurredAt === item.occurredAt && previous.observationId.localeCompare(item.observationId) < 0) stages.set(key, item);
+      }
+      return freeze([...stages.values()].filter(item => item.facts.active === true).map(item => projectStagePrerequisites({ stage: { namespace: item.facts.stageNamespace, id: item.facts.stageId }, ...(topicId ? { topicId } : {}) })).filter(group => group.items.length > 0));
     },
     recordDecisionConflict(raw) {
       const value = command(raw, 'conflict');

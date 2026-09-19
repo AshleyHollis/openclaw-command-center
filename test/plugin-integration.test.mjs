@@ -161,6 +161,25 @@ test('registered renovation bridge preserves exact purchase relationships and se
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('registered renovation decision revision keeps the prior record and resolves the exact challenged loop', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-renovation-decision-'));
+  let service;
+  const at = '2026-09-20T02:00:00.000Z';
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir });
+    seed.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: 'seed-finish-choice', expectedRevision: 0, decision: { schemaVersion: 1, decisionId: 'cabinet-finish-choice', status: 'confirmed', decidedAt: at, actorId: 'fictional-operator', subject: { kind: 'product-choice', id: 'cabinet-finish', label: 'Fictional cabinet finish' }, chosenOption: 'warm white', alternatives: ['cool white'], rationale: 'Matches the fictional room.', assumptions: [], sourceObservationIds: [] } });
+    const challenged = seed.recordRenovationDecisionConflict({ schemaVersion: 1, logicalOperationId: 'seed-finish-conflict', expectedRevision: 1, conflict: { schemaVersion: 1, decisionId: 'cabinet-finish-choice', source: { system: 'fictional-renovation-source', kind: 'quote', externalId: 'quote-1', version: 'v2' }, conflictKind: 'revised-quote', occurredAt: at, observedAt: at, historicalBaseline: false, summary: 'The revised fictional quote names cool white.', recordedChoice: 'warm white', observedChoice: 'cool white', evidenceSelectors: ['quote:finish'] } });
+    seed.close();
+    const host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
+    const revised = await host.authenticatedGatewayRequest('command-center.v1.open-loops.renovation-decision-revise', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: challenged.decision.loop.loopId, expectedRevision: 2, chosenOption: 'cool white', rationale: 'The fictional revised quote was accepted after review.' });
+    assert.equal(revised.result.loop.state, 'resolved');
+    assert.equal(revised.result.loop.revision, 3);
+    const detail = await host.authenticatedGatewayRequest('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: challenged.decision.loop.loopId });
+    assert.ok(detail.result.evidence.some(item => item.chosenOption === 'warm white'));
+    assert.ok(detail.result.evidence.some(item => item.chosenOption === 'cool white'));
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('Session cleanup does not stop the plugin-wide service; disable and restart do', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-cleanup-'));
   try {

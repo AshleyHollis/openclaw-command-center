@@ -225,6 +225,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.open-loops.renovation-stage': (service, params) => service.openLoopsRenovationStage(params),
   'command-center.v1.open-loops.renovation-stage-prerequisites': (service, params) => service.openLoopsRenovationStagePrerequisites(params),
   'command-center.v1.open-loops.renovation-decision-conflict': (service, params) => service.openLoopsRenovationDecisionConflict(params),
+  'command-center.v1.open-loops.renovation-decision-revise': (service, params) => service.openLoopsRenovationDecisionRevise(params),
   'command-center.v1.search.query': (service, params) => service.searchQuery(params),
   'command-center.v1.search.prepare-rebuild': (service, params) => service.searchPrepareRebuild(params)
 });

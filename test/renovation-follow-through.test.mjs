@@ -75,8 +75,11 @@ test('prerequisites surface as individually addressable items only for an explic
     assert.equal(new Set(group.items.map(item => item.loop.loopId)).size, 2);
     assert.ok(group.items.every(item => item.reason === 'activated-blocker'));
     assert.deepEqual(api.projectStagePrerequisites({ stage: ref('renovation-stage', 'painting') }).items, []);
+    assert.equal(api.projectActiveStagePrerequisites().length, 1);
+    assert.equal(api.projectActiveStagePrerequisites()[0].items.length, 2);
     api.recordStageActivation({ schemaVersion: 1, logicalOperationId: 'deactivate-cabinet-installation', expectedRevision: 0, activation: { schemaVersion: 1, source: source('stage-cabinet', 'v2', 'explicit-stage-state'), stage, active: false, occurredAt: '2026-09-23T02:00:00.000Z', observedAt: '2026-09-23T02:00:00.000Z' } });
     assert.deepEqual(api.projectStagePrerequisites({ stage }).items, []);
+    assert.deepEqual(api.projectActiveStagePrerequisites(), []);
   });
 });
 

@@ -90,20 +90,26 @@ function compactOpenLoop(projected) {
 }
 
 function openLoopProjection(metadata, serverTime) {
-  if (typeof metadata?.getQuietAttentionInbox !== 'function') return Object.freeze({ total: 0, attentionTotal: 0, highlighted: Object.freeze([]), comingUpTotal: 0, comingUp: Object.freeze([]), waitingTotal: 0, waiting: Object.freeze([]), suggestedTotal: 0, suggested: Object.freeze([]), deferredTotal: 0, deferred: Object.freeze([]), reconciliationTotal: 0, reconciliation: Object.freeze([]) });
+  if (typeof metadata?.getQuietAttentionInbox !== 'function') return Object.freeze({ total: 0, attentionTotal: 0, highlighted: Object.freeze([]), stageReviewTotal: 0, stageReviews: Object.freeze([]), comingUpTotal: 0, comingUp: Object.freeze([]), waitingTotal: 0, waiting: Object.freeze([]), suggestedTotal: 0, suggested: Object.freeze([]), deferredTotal: 0, deferred: Object.freeze([]), reconciliationTotal: 0, reconciliation: Object.freeze([]) });
   const inbox = metadata.getQuietAttentionInbox({ now: serverTime });
-  const conflicts = inbox.attention.filter(item => item.reason === 'evidence-conflict');
-  const ordinary = inbox.attention.filter(item => item.reason !== 'evidence-conflict').slice(0, HIGHLIGHTED_OPEN_LOOP_LIMIT);
+  const rawStageReviews = typeof metadata.projectActiveRenovationStagePrerequisites === 'function' ? metadata.projectActiveRenovationStagePrerequisites() : [];
+  const activeStageIds = new Set(rawStageReviews.flatMap(group => group.items.map(item => item.loop.loopId)));
+  const stageReviews = rawStageReviews.map(group => Object.freeze({ stage: group.stage, activationObservationId: group.activationObservationId, items: Object.freeze(group.items.map(item => compactOpenLoop(item))) }));
+  const attention = inbox.attention.filter(item => !activeStageIds.has(item.loop.loopId));
+  const conflicts = attention.filter(item => item.reason === 'evidence-conflict');
+  const ordinary = attention.filter(item => item.reason !== 'evidence-conflict').slice(0, HIGHLIGHTED_OPEN_LOOP_LIMIT);
   const highlighted = [...conflicts, ...ordinary].filter((item, index, values) => values.findIndex(candidate => candidate.loop.loopId === item.loop.loopId) === index).map(compactOpenLoop);
   const total = Object.values(inbox).reduce((sum, values) => sum + values.length, 0);
   return Object.freeze({
     total,
-    attentionTotal: inbox.attention.length,
+    attentionTotal: attention.length + activeStageIds.size,
     highlighted: Object.freeze(highlighted),
+    stageReviewTotal: stageReviews.length,
+    stageReviews: Object.freeze(stageReviews),
     comingUpTotal: inbox.comingUp.length,
     comingUp: Object.freeze(inbox.comingUp.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
-    waitingTotal: inbox.waiting.length,
-    waiting: Object.freeze(inbox.waiting.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    waitingTotal: inbox.waiting.filter(item => !activeStageIds.has(item.loop.loopId)).length,
+    waiting: Object.freeze(inbox.waiting.filter(item => !activeStageIds.has(item.loop.loopId)).slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
     suggestedTotal: inbox.suggested.length,
     suggested: Object.freeze(inbox.suggested.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
     deferredTotal: inbox.deferred.length,

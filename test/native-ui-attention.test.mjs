@@ -37,7 +37,7 @@ async function fixture(run) {
           if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('open-loops.get')) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
-            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence: [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title }] } };
+            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence: [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}) }] } };
           }
           if (method.endsWith('open-loops.list')) {
             const loops = window.allOpenLoops.slice(params.offset, params.offset + params.limit);
@@ -53,6 +53,16 @@ async function fixture(run) {
           if (method.endsWith('open-loops.decide')) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             Object.assign(card, { state: params.decision === 'confirm' ? 'confirmed' : params.decision === 'defer' ? 'waiting' : params.decision === 'dismiss' ? 'cancelled' : 'resolved', ...(params.reviewAt ? { reviewAt: params.reviewAt } : {}), revision: card.revision + 1 });
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
+          if (method.endsWith('open-loops.renovation-decision-revise')) {
+            const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.reconciliation ?? [])].find(item => item.loopId === params.loopId);
+            Object.assign(card, { state: 'resolved', revision: card.revision + 1 });
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
+          if (method.endsWith('open-loops.renovation-purchase')) {
+            const card = [...(window.openLoops.waiting ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
+            Object.assign(card, { state: 'resolved', revision: card.revision + 1 });
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('attention.get')) {
@@ -239,7 +249,7 @@ test('native Attention reviews evidence and records status without paying or sen
   const bill = page.locator('article[data-open-loop-id="bill-loop"]');
   await bill.getByRole('button', { name: 'Review evidence' }).click();
   await bill.getByText('Source evidence', { exact: true }).waitFor();
-  await bill.getByText('Source: fictional-source · email', { exact: true }).waitFor();
+  await bill.getByText('Source: fictional-source · email · v1', { exact: true }).waitFor();
   assert.equal(await bill.locator('details[data-open-loop-evidence] pre').count(), 0);
   await bill.getByText('Record payment status', { exact: true }).click();
   await bill.getByLabel('Evidence or rationale').fill('The fictional bank transfer was initiated; settlement remains pending.');
@@ -299,6 +309,55 @@ test('native Attention records a partial payment amount without claiming settlem
   assert.equal(payment.paymentState, 'partially-paid');
   assert.equal(payment.paidAmount, 12050);
   assert.equal(payment.currency, 'AUD');
+}));
+
+test('native Attention records an explicit revised renovation decision and preserves prior evidence', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 1, reconciliation: [{ loopId: 'decision-finish', kind: 'decision', stableSubjectId: 'decision:cabinet-finish', title: 'Fictional cabinet finish choice', state: 'decision-needed', whyNow: 'A revised quote names a different finish.', evidenceCount: 2, revision: 2 }] };
+    window.mountInbox();
+  });
+  await page.getByText('Needs reconciliation (1 shown)', { exact: true }).click();
+  const decision = page.locator('article[data-open-loop-id="decision-finish"]');
+  await decision.getByText('Revise recorded decision', { exact: true }).click();
+  await decision.getByLabel('Chosen option').fill('cool white');
+  await decision.getByLabel('Rationale').first().fill('The fictional revised quote and room palette were reviewed together.');
+  await decision.getByRole('button', { name: 'Record revised decision' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-decision-revise')));
+  assert.equal(request.params.chosenOption, 'cool white');
+  assert.match(request.params.rationale, /revised quote/);
+}));
+
+test('native Attention links an exact renovation purchase only after reviewing requirement evidence', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 1, waiting: [{ loopId: 'buy-mixer-loop', kind: 'general', stableSubjectId: 'renovation-requirement:fictional', title: 'Buy fictional sink mixer', state: 'waiting', requirementId: 'buy-mixer', evidenceCount: 1, revision: 1 }], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Waiting (1 shown)', { exact: true }).click();
+  const requirement = page.locator('article[data-open-loop-id="buy-mixer-loop"]');
+  assert.equal(await requirement.getByText('Confirm exact purchased item', { exact: true }).count(), 0);
+  await requirement.getByRole('button', { name: 'Review evidence' }).click();
+  await requirement.getByText('Confirm exact purchased item', { exact: true }).click();
+  await requirement.getByLabel('Purchase or receipt item ID').fill('receipt-line-mixer-001');
+  await requirement.getByRole('button', { name: 'Link purchase to requirement' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-purchase')));
+  assert.equal(request.params.reconciliation.requirement.id, 'buy-mixer');
+  assert.equal(request.params.reconciliation.purchase.id, 'receipt-line-mixer-001');
+  assert.equal(request.params.reconciliation.source.externalId, request.params.logicalOperationId);
+}));
+
+test('native Attention presents one grouped active-stage review with individual blocker controls', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const blocker = { loopId: 'clear-area-loop', kind: 'general', title: 'Clear the fictional cabinet work area', state: 'waiting', whyNow: 'This blocks the explicitly activated stage.', evidenceCount: 1, revision: 1 };
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [], stageReviewTotal: 1, stageReviews: [{ stage: { namespace: 'fictional-home-project', id: 'cabinet-installation' }, items: [blocker] }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByRole('heading', { name: 'Active renovation stage: cabinet-installation' }).waitFor();
+  const blocker = page.locator('article[data-open-loop-id="clear-area-loop"]');
+  await blocker.getByText('Defer or resolve', { exact: true }).click();
+  assert.equal(await page.getByRole('heading', { name: 'Clear the fictional cabinet work area' }).count(), 1);
 }));
 
 test('native Attention re-resolves verified Session Activity before opening native Chat', () => fixture(async (page) => {

@@ -51,7 +51,9 @@ export function mountAttentionPage(container, context, operations = new Map()) {
         ['Payee', item.payee], ['Purpose', item.purpose], ['Invoice', item.invoiceId], ['Account', item.accountId],
         ['Amount', Number.isSafeInteger(item.amount) && nonBlank(item.currency) ? `${item.currency} ${(item.amount / 100).toFixed(2)}` : null],
         ['Due', nonBlank(item.dueAt) ? formatInstant(item.dueAt) : null], ['Event', item.eventKind],
-        ['Choice', item.chosenOption], ['Rationale', item.rationale], ['Assumption', item.assumption],
+        ['Requirement', nonBlank(item.requirementKind) && nonBlank(item.requirementId) ? `${item.requirementKind}: ${item.requirementId}` : null],
+        ['Stage', nonBlank(item.stageId) ? item.stageId : null], ['Choice', item.chosenOption],
+        ['Recorded choice', item.recordedChoice], ['Observed choice', item.observedChoice], ['Rationale', item.rationale], ['Assumption', item.assumption],
         ['Assessment', item.assessment], ['Status', item.status]
       ].filter(([, value]) => value !== undefined && value !== null && value !== '');
       if (facts.length) {
@@ -156,11 +158,42 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     }
   }
 
+  function appendRenovationRelationshipControl(row, card, detail, pending) {
+    if (!writable() || ['resolved', 'cancelled'].includes(card.state) || row.querySelector('details[data-renovation-purchase]')) return;
+    const requirement = detail?.evidence?.find(item => item.eventKind === 'requirement-recorded' && item.requirementKind === 'purchase' && nonBlank(item.requirementNamespace) && nonBlank(item.requirementId));
+    if (!requirement) return;
+    const disclosure = element('details'); disclosure.dataset.renovationPurchase = 'true'; disclosure.append(element('summary', 'Confirm exact purchased item'));
+    const form = element('form'); form.append(element('p', `This resolves only requirement ${requirement.requirementId}. A name match alone is not accepted.`));
+    const purchaseLabel = element('label', 'Purchase or receipt item ID '); const purchaseId = element('input'); purchaseId.required = true; purchaseId.maxLength = 300; purchaseLabel.append(purchaseId);
+    const save = element('button', 'Link purchase to requirement'); save.type = 'submit'; form.append(purchaseLabel, save);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!current(pending) || !writable() || save.disabled || !purchaseId.value.trim()) return;
+      save.disabled = true;
+      const key = `renovation-purchase:${card.loopId}`;
+      try {
+        let operation = operations.get(key);
+        if (!operation) {
+          const logicalOperationId = crypto.randomUUID(); const now = new Date().toISOString();
+          operation = { method: 'command-center.v1.open-loops.renovation-purchase', params: { schemaVersion: 1, logicalOperationId, expectedRevision: card.revision, reconciliation: { schemaVersion: 1, source: { system: 'command-center', kind: 'explicit-purchase-relationship', externalId: logicalOperationId, version: 'operator-v1' }, requirement: { kind: 'purchase', namespace: requirement.requirementNamespace, id: requirement.requirementId }, purchase: { kind: 'purchase', namespace: requirement.requirementNamespace, id: purchaseId.value.trim() }, occurredAt: now, observedAt: now, historicalBaseline: false, ...(card.topicId ? { topicId: card.topicId } : {}) } } };
+          operations.set(key, operation);
+        }
+        const envelope = await host.request(operation.method, operation.params); const response = unwrap(envelope);
+        if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId || response.loop.state !== 'resolved') throw new Error('The purchase relationship outcome is not confirmed. Retry to reconcile the same operation.');
+        if (!current(pending)) return;
+        operations.delete(key); await load(); if (current(pending)) report('The exact purchase was linked. Other requirements and any return obligation remain separate.');
+      } catch (error) { if (current(pending)) report(error?.message || 'The purchase relationship outcome is unknown. Retry to reconcile the same operation.'); }
+      finally { if (current(pending)) save.disabled = false; }
+    }, { signal });
+    disclosure.append(form); row.append(disclosure);
+  }
+
   function renderOpenLoops(openLoops, pending) {
     if (!openLoops || typeof openLoops !== 'object' || !Number.isSafeInteger(openLoops.total)) return;
     content.append(element('h2', 'Open loops'));
     content.append(element('p', `${openLoops.attentionTotal} need attention · ${openLoops.comingUpTotal} coming up · ${openLoops.waitingTotal} waiting · ${openLoops.suggestedTotal} suggestions · ${openLoops.deferredTotal} deferred`));
-    const groups = [['Needs attention', openLoops.highlighted], ['Coming up', openLoops.comingUp], ['Waiting', openLoops.waiting], ['Suggestions', openLoops.suggested], ['Deferred', openLoops.deferred], ['Needs reconciliation', openLoops.reconciliation]];
+    const stageGroups = Array.isArray(openLoops.stageReviews) ? openLoops.stageReviews.map(group => [`Active renovation stage: ${group.stage?.id ?? 'stage'}`, group.items]) : [];
+    const groups = [['Needs attention', openLoops.highlighted], ...stageGroups, ['Coming up', openLoops.comingUp], ['Waiting', openLoops.waiting], ['Suggestions', openLoops.suggested], ['Deferred', openLoops.deferred], ['Needs reconciliation', openLoops.reconciliation]];
     for (const [label, cards] of groups) {
       if (!Array.isArray(cards) || cards.length === 0) continue;
       const quiet = ['Waiting', 'Suggestions', 'Deferred', 'Needs reconciliation'].includes(label);
@@ -185,6 +218,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             let disclosure = row.querySelector('details[data-open-loop-evidence]');
             if (!disclosure) { disclosure = element('details'); disclosure.dataset.openLoopEvidence = 'true'; disclosure.append(element('summary', 'Source evidence')); row.append(disclosure); }
             renderEvidence(disclosure, detail);
+            appendRenovationRelationshipControl(row, card, detail, pending);
             disclosure.open = true;
           } catch (error) { if (current(pending)) report(error?.message || 'Open-loop evidence is unavailable.'); }
           finally { if (current(pending)) evidence.disabled = false; }
@@ -230,6 +264,23 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             try {
               await submitOpenLoopOperation({ key: `open-loop-response:${card.loopId}`, method: 'command-center.v1.open-loops.decide', params: { decision: 'resolve', rationale: rationale.value.trim() }, card, pending, success: 'Response outcome recorded. No message was sent.' });
             } catch (error) { if (current(pending)) report(error?.message || 'Response outcome is unknown. Retry to reconcile the same operation.'); }
+            finally { if (current(pending)) save.disabled = false; }
+          }, { signal });
+          actionDisclosure.append(form); row.append(actionDisclosure);
+        } else if (writable() && card.kind === 'decision' && card.state === 'decision-needed') {
+          const form = element('form');
+          const actionDisclosure = element('details'); actionDisclosure.append(element('summary', 'Revise recorded decision'));
+          form.append(element('p', 'Record the choice you now want to keep. The prior choice and source evidence remain in history.'));
+          const choiceLabel = element('label', 'Chosen option '); const chosenOption = element('input'); chosenOption.required = true; chosenOption.maxLength = 500; choiceLabel.append(chosenOption);
+          const rationaleLabel = element('label', ' Rationale '); const rationale = element('textarea'); rationale.required = true; rationale.maxLength = 2000; rationaleLabel.append(rationale);
+          const save = element('button', 'Record revised decision'); save.type = 'submit'; form.append(choiceLabel, rationaleLabel, save);
+          form.addEventListener('submit', async event => {
+            event.preventDefault();
+            if (!current(pending) || !writable() || save.disabled || !chosenOption.value.trim() || !rationale.value.trim()) return;
+            save.disabled = true;
+            try {
+              await submitOpenLoopOperation({ key: `renovation-decision:${card.loopId}`, method: 'command-center.v1.open-loops.renovation-decision-revise', params: { chosenOption: chosenOption.value.trim(), rationale: rationale.value.trim() }, card, pending, success: 'The revised decision was recorded; earlier evidence remains available.' });
+            } catch (error) { if (current(pending)) report(error?.message || 'The decision outcome is unknown. Retry to reconcile the same operation.'); }
             finally { if (current(pending)) save.disabled = false; }
           }, { signal });
           actionDisclosure.append(form); row.append(actionDisclosure);

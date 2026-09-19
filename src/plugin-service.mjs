@@ -17,7 +17,7 @@ function unavailable(feature) {
   throw new SourceServiceError('capability-unavailable', `Command Center ${feature} ${reason}.`);
 }
 
-const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'chosenOption', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId']);
+const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'stageNamespace', 'stageId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId']);
 function publicOpenLoopEvidence(observation) {
   return Object.freeze({
     observationId: observation.observationId,
@@ -350,7 +350,27 @@ export function createMetadataService(api) {
     openLoopsRenovationDecisionConflict(input = {}) {
       requireOperational(); requireOperator(input, 'renovation decision review');
       const result = metadataService.recordRenovationDecisionConflict({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, conflict: input.conflict });
-      return result.decision;
+      return Object.freeze({ schemaVersion: 1, disposition: result.disposition, loop: result.decision.loop });
+    },
+    openLoopsRenovationDecisionRevise(input = {}) {
+      requireOperational();
+      const actorId = requireOperator(input, 'renovation decision revision');
+      const loop = metadataService.getOpenLoop(input.loopId);
+      if (!loop || loop.kind !== 'decision' || !loop.stableSubjectId.startsWith('decision:')) throw new SourceServiceError('not-found', 'The exact renovation decision is unavailable.');
+      if (loop.revision !== input.expectedRevision) throw new SourceServiceError('conflict', 'The renovation decision changed. Refresh before revising it.');
+      const decisionId = loop.stableSubjectId.slice('decision:'.length);
+      const memory = metadataService.getDecisionMemory(decisionId);
+      const current = memory?.currentRecord;
+      const subject = current?.entityRefs?.[0];
+      if (!current || !subject) throw new SourceServiceError('not-found', 'The current recorded decision evidence is unavailable.');
+      const result = metadataService.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: loop.revision, decision: {
+        schemaVersion: 1, decisionId, status: 'confirmed', decidedAt: new Date().toISOString(), actorId,
+        subject: { kind: subject.kind, id: subject.id, ...(subject.label ? { label: subject.label } : {}) },
+        ...(loop.topicId ? { topicId: loop.topicId } : {}), chosenOption: input.chosenOption,
+        alternatives: [...new Set([...(current.facts.alternatives ?? []), current.facts.chosenOption].filter(value => value && value !== input.chosenOption))],
+        rationale: input.rationale, assumptions: current.facts.assumptions ?? [], sourceObservationIds: [loop.evidenceObservationIds.at(-1)].filter(Boolean)
+      } });
+      return Object.freeze({ schemaVersion: 1, disposition: result.disposition, loop: result.decision.loop });
     },
     dashboardUpdateSettings() { return refuseDeferred('dashboard'); },
     notificationReconcile() { return refuseDeferred('notifications'); },
