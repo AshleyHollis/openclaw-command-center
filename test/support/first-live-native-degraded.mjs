@@ -12,6 +12,7 @@ import { TrafficGuard } from '../../src/isolation.mjs';
 import { runtimeCapability } from '../../src/runtime-capability.mjs';
 import { scanPublicEvidence } from '../../src/safety.mjs';
 import { seedNativeExistingTopic } from './first-live-native-journey.mjs';
+import { assertNativeFormattedNote } from './native-topic-workspace.mjs';
 import { boundedHostEvidence, closeManagedBrowser, configureEvidencePage, launchManagedBrowser, redactBrowserEvidence, requestAuthenticatedGateway, stopHostOnAbort, withDeadline } from './real-host-runtime.mjs';
 
 const actionPath = '/plugins/command-center/api/topic/actions';
@@ -110,8 +111,8 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       managedBrowser = await withDeadline('native degraded browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }), 60_000, signal);
       progress('browser-launched');
       const page = await managedBrowser.browser.newPage({ viewport: { width: 1440, height: 900 } });
-      page.setDefaultTimeout(30_000);
       await configureEvidencePage(page, browserGuard, evidence);
+      page.setDefaultTimeout(30_000);
       const entryResponse = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'GET' && response.url() === entryUrl.href, { timeout: 60_000 }),
         error => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       await page.goto(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topics',
@@ -129,9 +130,8 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
       progress('note-opened');
       const note = nativePage.getByRole('region', { name: 'Note content', exact: true });
-      await note.filter({ hasText: fixture.noteText.trim() }).waitFor();
+      await assertNativeFormattedNote(note, fixture);
       progress('note-visible');
-      assert.equal(await note.textContent(), fixture.noteText);
       assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
       assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
       const notes = await gatewayRead('command-center.v1.notes.browse', { schemaVersion: 1, topicId: fixture.topicId, offset: 0, limit: 50 });
@@ -145,7 +145,7 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
         progress('chat-refusal-requested');
         await nativePage.getByRole('status').filter({ hasText: /capability.*unavailable/iu }).waitFor();
         assert.equal(await page.locator('openclaw-chat-pane[aria-hidden="false"]').count(), 0, 'Unavailable Sessions must not open an unverified native Chat');
-        assert.equal(await note.textContent(), fixture.noteText);
+        await assertNativeFormattedNote(note, fixture);
       }
       progress('safe-read-passed');
 
@@ -179,8 +179,7 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       progress('rejection-passed');
       await nativePage.getByRole('button', { name: 'Refresh Notes', exact: true }).press('Enter');
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
-      await note.filter({ hasText: fixture.noteText.trim() }).waitFor();
-      assert.equal(await note.textContent(), fixture.noteText, 'Safe authoritative Note reading survives the refused write');
+      await assertNativeFormattedNote(note, fixture);
 
       await waitForConsecutiveReadiness(async () => {
         const activation = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
