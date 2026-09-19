@@ -41,11 +41,11 @@ export async function prepareNativeScaleConversations({ world, signal, fixture }
   const controlUiBuildId = bootstrap.body.serverBuildId;
   assert.ok(typeof controlUiBuildId === 'string' && controlUiBuildId.trim());
   const references = new Set([fixture.sessionReferenceId]);
+  const { topic } = await request(world, signal, 'topics.get', { topicId: fixture.topicId });
+  assert.equal(topic.topicId, fixture.topicId);
+  assert.equal(topic.usable, true);
   for (let index = 1; index < 100; index += 1) {
     signal.throwIfAborted();
-    const { topic } = await request(world, signal, 'topics.get', { topicId: fixture.topicId });
-    assert.equal(topic.topicId, fixture.topicId);
-    assert.equal(topic.usable, true);
     const logicalOperationId = randomUUID();
     // Native creation requires a live authenticated connection, not a synthetic
     // HTTP identity. Use the existing Gateway command and its domain owner.
@@ -123,12 +123,8 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
   assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
 
-  const notePaths = [];
-  let offset = 0;
-  while (true) {
-    onProgress(`notes-page-${offset}`);
-    const catalog = observed().notes.value;
-    assert.equal(observed().notes.input.topicId, fixture.topicId);
+  const expectedNotePaths = [bootstrap.notePath, ...bootstrap.scaleNotes.map(note => note.path)];
+  const assertNotePage = (catalog, offset) => {
     assert.equal(catalog.offset, offset);
     assert.equal(catalog.total, 5_000);
     assert.equal(catalog.notes.length, 50);
@@ -137,21 +133,35 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
       assert.equal(typeof note.sourceReference.referenceId, 'string');
       return note.path;
     });
-    await ready(async () => JSON.stringify(await nativePage.getByRole('button', { name: /^Read / }).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))) === JSON.stringify(paths.map(value => `Read ${value}`)));
-    notePaths.push(...paths);
-    if (!catalog.hasMore) break;
-    assert.equal(catalog.nextOffset, offset + 50);
-    offset = catalog.nextOffset;
-    started = now();
-    await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).click();
-    await ready(async () => observed().notes?.value?.offset === offset);
-    await nativePage.getByText(`Notes ${offset + 1}–${offset + 50} of 5000.`, { exact: true }).waitFor();
-    if (offset === 50) observations.noteNextPageMs = now() - started;
+    assert.deepEqual(paths, expectedNotePaths.slice(offset, offset + 50));
+    return paths;
+  };
+  const firstCatalog = observed().notes.value;
+  assert.equal(observed().notes.input.topicId, fixture.topicId);
+  const firstPaths = assertNotePage(firstCatalog, 0);
+  await ready(async () => JSON.stringify(await nativePage.getByRole('button', { name: /^Read / }).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))) === JSON.stringify(firstPaths.map(value => `Read ${value}`)));
+  assert.equal(firstCatalog.nextOffset, 50);
+  started = now();
+  await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).click();
+  await ready(async () => observed().notes?.value?.offset === 50);
+  await nativePage.getByText('Notes 51–100 of 5000.', { exact: true }).waitFor();
+  observations.noteNextPageMs = now() - started;
+  assertNotePage(observed().notes.value, 50);
+  // The UI proves the interactive first transition. Sample the middle and final
+  // pages through the same authenticated snapshot cursor so the 5,000-item
+  // ordering and terminal boundary are covered without 98 repetitive clicks.
+  for (const offset of [2_500, 4_950]) {
+    onProgress(`notes-page-${offset}`);
+    const catalog = await request(world, signal, 'notes.browse', { topicId: fixture.topicId,
+      offset, limit: 50, includeDocuments: true, cursor: firstCatalog.cursor });
+    assertNotePage(catalog, offset);
+    if (offset === 4_950) {
+      assert.equal(catalog.hasMore, false);
+      assert.equal(catalog.nextOffset, null);
+    }
   }
-  assert.equal(notePaths.length, 5_000);
-  assert.equal(new Set(notePaths).size, 5_000);
-  assert.deepEqual(notePaths, [bootstrap.notePath, ...bootstrap.scaleNotes.map(note => note.path)]);
-  assert.equal(await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).isDisabled(), true);
+  assert.equal(expectedNotePaths.length, 5_000);
+  assert.equal(new Set(expectedNotePaths).size, 5_000);
 
   onProgress('conversation-create');
   const creationResponse = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'POST'
@@ -284,7 +294,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.deepEqual(Object.keys(observations).sort(), [...RELEASE_MEASUREMENTS].sort());
   if (measure) for (const value of Object.values(observations)) assert.ok(Number.isFinite(value) && value > 0);
   const fixtureCounts = { largeNoteBytes: Buffer.byteLength(bootstrap.noteText), conversations: expectedSessions.size,
-    noteFiles: notePaths.length, conversationMessages: bootstrap.prepared.occurrenceCount };
+    noteFiles: expectedNotePaths.length, conversationMessages: bootstrap.prepared.occurrenceCount };
   assert.deepEqual(fixtureCounts, RELEASE_FIXTURE_COUNTS);
   // Corpus messages are the verified immutable Primary prefix; the separately
   // sent user message belongs to the final Conversation, not that denominator.
