@@ -23,7 +23,7 @@ async function fixture(run) {
       const { mountAttentionPage } = await import('/attention-page.mjs');
       const operations = new Map();
       const lifetime = new AbortController(); const pages = new Map(); const subscribers = new Set();
-      window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.activity = []; window.allOpenLoops = [];
+      window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.activity = []; window.allOpenLoops = []; window.intakeResult = null;
       window.openLoops = { total: 0, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 };
       const action = { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', target: { topicId: 'fictional-topic', sourceReferenceId: 'fictional-source' }, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string' } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact reminder.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true } };
       window.cards = ['one', 'two'].map((id) => ({ notificationRecordId: `record-${id}`, episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
@@ -37,7 +37,7 @@ async function fixture(run) {
           if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('topics.list')) return { result: { schemaVersion: 1, activeGroups: { project: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }], area: [], resource: [] } } };
           if (method.endsWith('notes.browse')) return { result: { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'invoices/fictional-progress-invoice.txt', revision: 'authoritative-v1', sourceKind: 'document', sourceReference: { referenceId: 'document-fictional-progress-invoice', topicId: params.topicId, sourceSystem: 'fictional-documents', sourceKind: 'document' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-document-page' } };
-          if (method.endsWith('open-loops.intake-selected')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', checkpoint: { schemaVersion: 1 }, freshness: { status: 'available', lastObservedAt: params.selections[0].observedAt }, hasMore: false, results: [] } };
+          if (method.endsWith('open-loops.intake-selected')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: window.intakeResult ?? { schemaVersion: 1, disposition: 'applied', checkpoint: { schemaVersion: 1 }, freshness: { status: 'available', lastObservedAt: params.selections[0].observedAt }, hasMore: false, results: [{ disposition: 'applied', observationId: 'selected-observation', sourceVersion: 'authoritative-v1', historicalBaseline: false, loop: { loopId: 'selected-loop', kind: 'payment', state: 'confirmed', revision: 1 } }] } };
           if (method.endsWith('open-loops.get')) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             const evidence = [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }];
@@ -351,6 +351,19 @@ test('native Attention browses one authorized document and submits only its exac
   assert.equal(request.params.selections[0].version, undefined);
 }));
 
+test('native Attention reports when a selected document matches no supported obligation', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.intakeResult = { schemaVersion: 1, disposition: 'applied', checkpoint: { schemaVersion: 1 }, freshness: { status: 'available', lastObservedAt: '2026-09-20T00:01:00.000Z' }, hasMore: false, results: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Import one selected document', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load authorized documents' }).click();
+  await page.getByLabel('Document date').fill('2026-09-20T09:00');
+  await page.getByLabel('Historical baseline through').fill('2026-09-01T00:00');
+  await page.getByRole('button', { name: 'Import selected document' }).click();
+  await page.getByRole('status').filter({ hasText: 'no supported obligation was recognized' }).waitFor();
+}));
+
 test('native Attention preserves a corrected calendar due date with the local timezone', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];
@@ -453,8 +466,8 @@ test('native Attention can correct a purchase that was explicitly relinked after
   await page.evaluate(() => {
     window.cards = [];
     window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
-    const link = (observationId, eventKind, sourceVersion) => ({ observationId, type: 'order', sourceSystem: 'fictional-source', sourceKind: 'receipt', sourceVersion, occurredAt: '2026-09-20T03:00:00.000Z', observedAt: '2026-09-20T03:01:00.000Z', historicalBaseline: false, eventKind, requirementNamespace: 'fictional-home-project', requirementId: 'buy-tap', purchaseNamespace: 'fictional-home-project', purchaseId: 'receipt-a' });
-    window.allOpenLoops = [{ loopId: 'resolved-relinked-purchase-loop', kind: 'general', stableSubjectId: 'renovation-requirement:relinked', title: 'Buy fictional tap', state: 'resolved', requirementId: 'buy-tap', purchaseId: 'receipt-a', revision: 4, additionalEvidence: [link('correction-a', 'purchase-relationship-corrected', 'v2'), link('relinked-a', 'item-purchased', 'v3')] }];
+    const link = (observationId, eventKind, sourceVersion, occurredAt) => ({ observationId, type: 'order', sourceSystem: 'fictional-source', sourceKind: 'receipt', sourceVersion, occurredAt, observedAt: occurredAt, historicalBaseline: false, eventKind, requirementNamespace: 'fictional-home-project', requirementId: 'buy-tap', purchaseNamespace: 'fictional-home-project', purchaseId: 'receipt-a' });
+    window.allOpenLoops = [{ loopId: 'resolved-relinked-purchase-loop', kind: 'general', stableSubjectId: 'renovation-requirement:relinked', title: 'Buy fictional tap', state: 'resolved', requirementId: 'buy-tap', purchaseId: 'receipt-a', revision: 4, additionalEvidence: [link('relinked-a', 'item-purchased', 'v3', '2026-09-20T04:00:00.000Z'), link('correction-a', 'purchase-relationship-corrected', 'v2', '2026-09-20T03:00:00.000Z')] }];
     window.mountInbox();
   });
   await page.getByText('Review all open loops (1)', { exact: true }).click();

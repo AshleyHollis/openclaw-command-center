@@ -290,11 +290,9 @@ export function createMetadataService(api) {
       if (!input.authorization || typeof input.authorization !== 'object' || Array.isArray(input.authorization) || Object.keys(input.authorization).some(key => !['sourceSystem', 'sourceKind', 'resourceId'].includes(key))) throw new SourceServiceError('invalid-request', 'Selected-source authorization must identify one exact persisted source reference.');
       const authorization = { ...input.authorization, scopeId: operatorId };
       if (authorization.sourceKind !== 'document') throw new SourceServiceError('invalid-request', 'The bounded intake pilot accepts one existing document source reference.');
-      const reference = metadataService.getSourceReference(authorization.resourceId);
-      if (!reference || reference.sourceSystem !== authorization.sourceSystem || reference.sourceKind !== authorization.sourceKind) throw new SourceServiceError('source-recovery', 'The selected document is not an exact persisted source reference.');
       if (!Array.isArray(input.selections) || input.selections.length !== 1) throw new SourceServiceError('invalid-request', 'The bounded intake pilot accepts exactly one selected document.');
       const selection = input.selections[0];
-      if (!selection || typeof selection !== 'object' || Array.isArray(selection) || Object.keys(selection).some(key => !['topicId', 'path', 'occurredAt', 'observedAt'].includes(key)) || selection.topicId !== reference.topicId) throw new SourceServiceError('invalid-request', 'The selected document must identify its exact Topic, path, and selection times.');
+      if (!selection || typeof selection !== 'object' || Array.isArray(selection) || Object.keys(selection).some(key => !['topicId', 'path', 'occurredAt', 'observedAt'].includes(key))) throw new SourceServiceError('invalid-request', 'The selected document must identify its exact Topic, path, and selection times.');
       const operationKind = 'selected-source-intake-root';
       const rootIntent = { schemaVersion: 1, operatorId, authorization: input.authorization, baselineThrough: input.baselineThrough, selections: input.selections };
       const intentDigest = operationDigest(rootIntent);
@@ -324,9 +322,18 @@ export function createMetadataService(api) {
       });
       if (prior?.state === 'applied') return schedule(Object.freeze(JSON.parse(prior.resultIdentity)));
       if (prior && prior.state !== 'pending') throw new SourceServiceError('unknown', 'The selected-source operation outcome is unknown. Reconcile it before selecting the source again.');
-      let pending = prior ?? metadataService.recordOperation({ logicalOperationId: input.logicalOperationId, transportRequestId: input.logicalOperationId, intentDigest, operationKind, state: 'pending', resultStatus: 'pending', resultIdentity: JSON.stringify({ schemaVersion: 1, status: 'source-read-pending' }), observedRevision: reference.observedRevision ?? 'unknown', createdAt: selection.observedAt, updatedAt: selection.observedAt });
-      const recovery = JSON.parse(pending.resultIdentity);
+      let pending = prior;
+      const recovery = pending ? JSON.parse(pending.resultIdentity) : null;
       let prepared = recovery?.status === 'prepared' ? recovery.prepared : null;
+      if (prepared) {
+        const publicResult = publicize(metadataService.applyPreparedSelectedSourceBatch(prepared));
+        metadataService.recordOperation({ ...pending, state: 'applied', resultStatus: publicResult.disposition, resultIdentity: JSON.stringify(publicResult), updatedAt: selection.observedAt });
+        return schedule(publicResult);
+      }
+      const reference = metadataService.getSourceReference(authorization.resourceId);
+      if (!reference || reference.sourceSystem !== authorization.sourceSystem || reference.sourceKind !== authorization.sourceKind) throw new SourceServiceError('source-recovery', 'The selected document is not an exact persisted source reference.');
+      if (selection.topicId !== reference.topicId) throw new SourceServiceError('invalid-request', 'The selected document Topic does not match its persisted Source Reference.');
+      pending ??= metadataService.recordOperation({ logicalOperationId: input.logicalOperationId, transportRequestId: input.logicalOperationId, intentDigest, operationKind, state: 'pending', resultStatus: 'pending', resultIdentity: JSON.stringify({ schemaVersion: 1, status: 'source-read-pending' }), observedRevision: reference.observedRevision ?? 'unknown', createdAt: selection.observedAt, updatedAt: selection.observedAt });
       if (!prepared) {
         const expectedSourceRevision = pending.observedRevision === 'unknown' ? undefined : pending.observedRevision;
         let note; let readFailure;

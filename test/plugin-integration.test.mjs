@@ -3,20 +3,30 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
 import { createMetadataService } from '../src/plugin-service.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
 import { invokeBridgeMethod } from '../src/bridge/register.mjs';
+import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 
 const qualifyOpenLoop = (service, method, params) => invokeBridgeMethod(service, method, params, 'fictional-qualification-request', 'fictional-operator');
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)]))
   : value;
 const operationDigest = value => `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}`;
+const removePersistedSourceReference = (stateDir, referenceId) => {
+  const database = new DatabaseSync(path.join(stateDir, 'plugins', 'command-center', 'metadata.sqlite'));
+  try {
+    database.exec('PRAGMA foreign_keys = OFF');
+    database.prepare('DELETE FROM source_references WHERE reference_id = ?').run(referenceId);
+  } finally { database.close(); }
+};
 
-function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {}, gateway } = {}) {
+function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {}, gateway, fileAccess } = {}) {
   const declarations = [];
   const descriptors = [];
   const routes = [];
@@ -35,7 +45,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     config: { agents: { defaults: { userTimezone: 'UTC' } } },
     pluginConfig,
     logger: { warn() {} },
-    runtime: { state: { resolveStateDir: () => stateDir }, ...(gateway ? { gateway } : {}) },
+    runtime: { state: { resolveStateDir: () => stateDir }, ...(gateway ? { gateway } : {}), ...(fileAccess ? { fileAccess } : {}) },
     session: { controls: { registerControlUiDescriptor(value) { descriptors.push(structuredClone(value)); } } },
     lifecycle: { registerRuntimeLifecycle(value) { lifecycles.push(value); } },
     notifications: {
@@ -187,6 +197,11 @@ test('bounded document intake reads authoritative content and revision through t
     const afterOutage = service.openLoopsGet({ loopId: result.results[0].loop.loopId });
     assert.equal(afterOutage.loop.state, 'confirmed', 'a source outage must not resolve the existing obligation');
     assert.equal(afterOutage.evidence.some(item => item.sourceAvailable === false), true, 'later Attention reads must expose the durable unavailable source evidence');
+    await service.stop(); service = undefined;
+    removePersistedSourceReference(stateDir, 'document:selected-invoice');
+    const restartedHost = fakePublishedApi(stateDir); plugin.register(restartedHost.api); service = restartedHost.services[0]; await service.start();
+    const replayWithoutReference = await service.openLoopsIngestSelected(request);
+    assert.equal(replayWithoutReference.results[0].sourceVersion, 'authoritative-v7', 'a completed receipt replays after its Source Reference is removed');
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
@@ -200,18 +215,54 @@ test('selected-source root reconciles a committed child after process interrupti
     seed.close();
     const host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
     const input = { schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-recovery' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-recovery', path: 'selected-recovery.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z' }] };
-    const metadata = service.getTopicMaintenanceOwners().metadata;
+    let metadata = service.getTopicMaintenanceOwners().metadata;
     const prepared = metadata.prepareSelectedSourceBatch({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, authorization: { ...input.authorization, scopeId: 'fictional-operator' }, baselineThrough: input.baselineThrough, window: { cursor: `selected:${input.logicalOperationId}`, nextCursor: `complete:${input.logicalOperationId}`, hasMore: false }, selections: [{ version: 'authoritative-recovery-v1', occurredAt: input.selections[0].occurredAt, observedAt: input.selections[0].observedAt, availability: 'available', content: 'Invoice: INV-RECOVERY-1\nPayee: Fictional Recovery Supplier\nPurpose: recovery proof\nAmount due: AUD 77.00', topicId: 'topic-selected-recovery' }] });
     const rootIntent = { schemaVersion: 1, operatorId: 'fictional-operator', authorization: input.authorization, baselineThrough: input.baselineThrough, selections: input.selections };
     const pending = metadata.recordOperation({ logicalOperationId: input.logicalOperationId, transportRequestId: input.logicalOperationId, intentDigest: operationDigest(rootIntent), operationKind: 'selected-source-intake-root', state: 'pending', resultStatus: 'pending', resultIdentity: JSON.stringify({ schemaVersion: 1, status: 'prepared', prepared }), observedRevision: 'authoritative-recovery-v1', createdAt: input.selections[0].observedAt, updatedAt: input.selections[0].observedAt });
     assert.equal(pending.resultIdentity.includes('Amount due'), false, 'recoverable intent must not persist raw source content');
     metadata.applyPreparedSelectedSourceBatch(prepared);
+    await service.stop(); service = undefined;
+    removePersistedSourceReference(stateDir, 'document:selected-recovery');
+    const restartedHost = fakePublishedApi(stateDir); plugin.register(restartedHost.api); service = restartedHost.services[0]; await service.start(); metadata = service.getTopicMaintenanceOwners().metadata;
     let reads = 0; service.sourceService.notesRead = async () => { reads += 1; throw new Error('prepared recovery must not reread'); };
     const recovered = await service.openLoopsIngestSelected(input);
     assert.equal(reads, 0);
     assert.equal(recovered.results[0].loop.amount, 7700);
     assert.equal(metadata.getOperation(input.logicalOperationId).state, 'applied');
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('selected-source plugin route composes the descriptor-backed document owner through restart', { skip: process.platform === 'win32' ? 'Linux descriptor-backed source owner required' : false }, async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-selected-document-owner-'));
+  const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-selected-document-vault-'));
+  const gateway = fictionalSchedulerGateway(); const fileAccess = createHostFileAccessFixture();
+  let service; let seed;
+  try {
+    seed = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, scheduler: true } });
+    seed.createTopic({ topicId: 'topic-real-selected-document', paraCategory: 'project', lifecycle: 'active' });
+    seed.createSourceReference({ version: 1, referenceId: 'folder:real-selected-document', topicId: 'topic-real-selected-document', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    const releaseEnrollmentAccess = installHostFileAccessFixture();
+    try { await enrollFixtureFolder(seed, 'folder:real-selected-document', vault); }
+    finally { releaseEnrollmentAccess(); }
+    seed.close(); seed = undefined;
+    const firstHost = fakePublishedApi(stateDir, { gateway, fileAccess }); plugin.register(firstHost.api); service = firstHost.services[0]; await service.start();
+    const documentText = 'Invoice: INV-REAL-OWNER-1\nPayee: Fictional Tiler\nPurpose: laundry floor preparation\nAmount due: AUD 910.00\nDue: 2026-10-08T03:00:00.000Z';
+    const created = await service.sourceService.notesCreate({ schemaVersion: 1, topicId: 'topic-real-selected-document', path: 'fictional-invoice.txt', content: Buffer.from(documentText, 'utf8'), sourceKind: 'document', logicalOperationId: randomUUID() });
+    const reference = created.value.note.sourceReference;
+    const input = { schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { sourceSystem: reference.sourceSystem, sourceKind: 'document', resourceId: reference.referenceId }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-real-selected-document', path: 'fictional-invoice.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z' }] };
+    const ingested = await service.openLoopsIngestSelected(input);
+    assert.equal(ingested.results[0].loop.amount, 91000); assert.equal(gateway.jobs.size, 1);
+    const loopId = ingested.results[0].loop.loopId; await service.stop(); service = undefined;
+    const restartedHost = fakePublishedApi(stateDir, { gateway, fileAccess }); plugin.register(restartedHost.api); service = restartedHost.services[0]; await service.start();
+    assert.equal(service.openLoopsGet({ loopId }).loop.amount, 91000);
+    await rm(path.join(vault, 'fictional-invoice.txt'));
+    const unavailable = await service.openLoopsIngestSelected({ ...input, logicalOperationId: randomUUID(), selections: [{ ...input.selections[0], observedAt: '2026-09-21T00:01:00.000Z' }] });
+    assert.equal(unavailable.freshness.status, 'unavailable'); assert.equal(service.openLoopsGet({ loopId }).loop.state, 'confirmed'); assert.equal(gateway.jobs.size, 1);
+  } finally {
+    seed?.close(); await service?.stop();
+    await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(vault, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 });
 
 test('historical selected invoices remain quiet and never create an overdue native Reminder', async () => {

@@ -135,7 +135,12 @@ export function mountAttentionPage(container, context, operations = new Map()) {
         }
         const envelope = await host.request(operation.method, operation.params); const result = unwrap(envelope);
         if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || result?.schemaVersion !== 1 || !['available', 'unavailable'].includes(result?.freshness?.status)) throw new Error('The selected-document outcome is not confirmed. Retry to reconcile the same operation.');
-        operations.delete(key); await load(); report(result.freshness.status === 'available' ? 'The selected document was read and reconciled.' : 'The source is unavailable; the obligation remains open with visible freshness evidence.');
+        operations.delete(key); await load();
+        report(result.freshness.status !== 'available'
+          ? 'The source is unavailable; the obligation remains open with visible freshness evidence.'
+          : result.results.some(item => item?.loop)
+            ? 'The selected document was read and reconciled.'
+            : 'The selected document was read, but no supported obligation was recognized. No Attention item was created.');
       } catch (error) { report(error?.message || 'The selected-document outcome is unknown. Retry the same operation.'); }
       finally { submit.disabled = documents.length === 0; }
     }, { signal });
@@ -261,7 +266,8 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     if (!writable() || card.state !== 'resolved' || row.querySelector('details[data-renovation-purchase-correction]')) return;
     const requirement = detail?.evidence?.find(item => item.eventKind === 'requirement-recorded' && item.requirementKind === 'purchase' && nonBlank(item.requirementNamespace) && nonBlank(item.requirementId));
     const activePurchases = new Map();
-    for (const item of detail?.evidence ?? []) {
+    const orderedEvidence = [...(detail?.evidence ?? [])].sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || String(left.observationId).localeCompare(String(right.observationId)));
+    for (const item of orderedEvidence) {
       if (!['item-purchased', 'purchase-relationship-corrected'].includes(item.eventKind) || !nonBlank(item.purchaseNamespace) || !nonBlank(item.purchaseId)) continue;
       const key = [item.requirementNamespace, item.requirementId, item.purchaseNamespace, item.purchaseId].join('\u0000');
       if (item.eventKind === 'item-purchased') activePurchases.set(key, item);
