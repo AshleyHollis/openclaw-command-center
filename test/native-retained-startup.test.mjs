@@ -11,10 +11,10 @@ test('retained startup cannot read migration before authenticated readiness or r
   let reported = 0;
   const gate = new Promise(resolve => { ready = resolve; });
   const options = { world: {}, host: {}, signal: controller.signal, bootstrap: {},
-    expectedConversationCount: 100, onReady: () => { reported += 1; } };
+    expectedConversationCount: 100, scale: true, onReady: () => { reported += 1; } };
   const expected = { completion: { verified: true } };
   const result = readRetainedNativeBootstrap(options, {
-    waitForReady: async input => { assert.deepEqual(input, { ...options, scale: false }); await gate; },
+    waitForReady: async input => { assert.deepEqual(input, options); await gate; },
     readBootstrap: async input => { reads += 1; assert.equal(input, options); input.onReady(); return expected; }
   });
   await new Promise(resolve => setImmediate(resolve));

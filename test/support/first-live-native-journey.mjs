@@ -311,13 +311,17 @@ async function waitForNativeControlUiReadiness({ world, host, signal, scale, obs
   await waitForConsecutiveReadiness(async (probeSignal) => {
     const observation = { stage: 'http', attempt: ++attempt, url: `${world.gateway.url}${runtimeCapability.bootstrap.path}`, status: null, error: null, bodyKeys: [] };
     try {
-      const { response, body, parseError } = await fetchJsonWithDeadline(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal: probeSignal }, { label: 'native Control UI readiness', timeoutMs: 30_000 });
+      const { response, body, parseError } = await fetchJsonWithDeadline(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal: probeSignal }, { label: 'native Control UI readiness', timeoutMs: 10_000 });
       observation.status = response.status;
       observation.bodyKeys = body && typeof body === 'object' ? Object.keys(body).sort().slice(0, 24) : [];
       observation.error = parseError ? redactBrowserEvidence(parseError.message) : null;
       return response.ok && !parseError;
     } catch (error) {
       observation.error = redactBrowserEvidence(`${error?.category ?? error?.cause?.code ?? error?.code ?? 'transport'}: ${error?.message ?? 'readiness failed'}`);
+      // The Gateway can accept bootstrap HTTP before plugin startup releases
+      // the request. Treat only that bounded transport timeout as pending; the
+      // outer readiness deadline and early-exit owner remain authoritative.
+      if (error?.category === 'transport-timeout') return false;
       throw error;
     } finally {
       record(observation);
@@ -559,7 +563,7 @@ export async function exerciseNativeRetainedStartup(options, { scale = true, con
 export async function readRetainedNativeBootstrap(options, { waitForReady = waitForNativeControlUiReadiness, readBootstrap = readNativeLegacyBootstrap } = {}) {
   // A spawned successor is not yet an authenticated, listening Gateway.
   // This wait remains inside the caller's startup measurement and deadline.
-  await waitForReady({ ...options, scale: false });
+  await waitForReady({ ...options, scale: options.scale === true });
   return readBootstrap(options);
 }
 
@@ -588,7 +592,7 @@ async function exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinal
         removeAbortCleanup();
         removeAbortCleanup = stopHostOnAbort(signal, host);
         stages.push('successor-launched');
-        await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: conversations ? 100 : 1 });
+        await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: conversations ? 100 : 1, scale });
         stages.push('retained-readback-passed');
       }
       result = Object.freeze({ schemaVersion: 1, pluginId: 'command-center', revision: plugin.revision, fixtureCounts: Object.freeze({ noteBytes: Buffer.byteLength(bootstrap.noteText), noteFiles: (bootstrap.scaleNotes?.length ?? 0) + 1, conversationMessages: bootstrap.prepared.occurrenceCount, conversations: conversations ? 100 : 1 }), readinessAttempts: Object.freeze([...readinessAttempts]), migrationReady: Boolean(imported.completion), retainedRestartVerified: restart });
@@ -696,7 +700,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         progress('retained-restart');
         const started = scaleNow();
         await restartHost();
-        bootstrapped = await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 100,
+        bootstrapped = await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 100, scale: true,
           onReady: () => { startupReadinessMs = scaleNow() - started; } });
       }
       const fixture = keyboard || nativeFilesWorkspace
