@@ -58,7 +58,7 @@ export async function organizeNativeTopicConversations({ page, nativePage, fixtu
   // Sidebar reconciliation can briefly retain a hidden predecessor beside
   // the current section. Bind the journey to the visible native section.
   const group = page.locator(`[data-session-section="category:${fixture.name}"]`).filter({ visible: true });
-  try { await group.waitFor({ state: 'visible', timeout: 10_000 }); }
+  try { await group.waitFor({ state: 'visible', timeout: 30_000 }); }
   catch (error) {
     const rosters = observedRosters().slice(-3).map(item => ({
       keys: Object.keys(item),

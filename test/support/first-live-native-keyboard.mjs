@@ -351,8 +351,9 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     await announced(creation, /unavailable|recovery|write access|refused/iu);
     assert.equal(await createButton().isDisabled(), true);
     if (state === 'source-unavailable') {
-      await press(button('Open Topic in Chat'));
-      await announced(nativePage, /capability.*unavailable/iu);
+      const topicRow = nativePage.getByRole('listitem').filter({ has: button('Open Topic in Chat') });
+      await press(topicRow.getByRole('button', { name: 'Open Topic in Chat', exact: true }));
+      await announced(topicRow, /capability.*unavailable/iu);
       assert.equal(await chatPane.count(), 0);
     } else {
       const inspection = actionResponse('conversations.creation.inspect');
