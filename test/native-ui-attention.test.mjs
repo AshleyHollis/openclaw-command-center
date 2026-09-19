@@ -177,9 +177,9 @@ test('native Attention reviews evidence and records status without paying or sen
     window.openLoops = {
       total: 2,
       attentionTotal: 1,
-      highlighted: [{ loopId: 'reply-loop', kind: 'reply', title: 'Confirm the fictional cabinet delivery access window.', state: 'confirmed', reason: 'response-requested', whyNow: 'The source explicitly asks for a response.', actions: ['Open original', 'Draft reply', 'Remind me'], evidenceCount: 1, revision: 1 }],
-      comingUpTotal: 1,
-      comingUp: [{ loopId: 'bill-loop', kind: 'payment', title: 'A fictional renovation progress invoice is ready.', state: 'confirmed', paymentState: 'unpaid', amount: 245000, currency: 'AUD', dueAt: '2026-10-04T13:59:59.000Z', actions: ['Open bill', 'Record payment status', 'Remind me'], evidenceCount: 2, revision: 2 }],
+      highlighted: [{ loopId: 'reply-loop', kind: 'reply', title: 'Confirm the fictional cabinet delivery access window.', state: 'confirmed', reason: 'response-requested', whyNow: 'The source explicitly asks for a response.', actions: ['Open original', 'Draft reply', 'Remind me'], evidenceCount: 1, revision: 1 }, { loopId: 'bill-loop', kind: 'payment', title: 'A fictional renovation progress invoice is ready.', state: 'confirmed', paymentState: 'unpaid', amount: 245000, currency: 'AUD', dueAt: '2026-10-04T13:59:59.000Z', reason: 'due-window', whyNow: 'The accepted payment date is approaching.', actions: ['Open bill', 'Record payment status', 'Remind me'], evidenceCount: 2, revision: 2 }],
+      comingUpTotal: 0,
+      comingUp: [],
       waitingTotal: 0,
       suggestedTotal: 0,
       deferredTotal: 0,
@@ -194,6 +194,7 @@ test('native Attention reviews evidence and records status without paying or sen
   const bill = page.locator('article[data-open-loop-id="bill-loop"]');
   await bill.getByRole('button', { name: 'Review evidence' }).click();
   await bill.getByText('Source evidence', { exact: true }).waitFor();
+  await bill.getByText('Record payment status', { exact: true }).click();
   await bill.getByLabel('Evidence or rationale').fill('The fictional bank transfer was initiated; settlement remains pending.');
   await bill.getByRole('button', { name: 'Save payment status' }).click();
   await page.getByRole('status').filter({ hasText: 'No payment was submitted.' }).waitFor();

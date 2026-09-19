@@ -85,17 +85,18 @@ export function mountAttentionPage(container, context, operations = new Map()) {
           try {
             const detail = unwrap(await host.request('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: card.loopId }));
             if (!current(pending) || detail?.loop?.loopId !== card.loopId) return;
-            let disclosure = row.querySelector('details');
-            if (!disclosure) { disclosure = element('details'); disclosure.append(element('summary', 'Source evidence')); row.append(disclosure); }
+            let disclosure = row.querySelector('details[data-open-loop-evidence]');
+            if (!disclosure) { disclosure = element('details'); disclosure.dataset.openLoopEvidence = 'true'; disclosure.append(element('summary', 'Source evidence')); row.append(disclosure); }
             disclosure.replaceChildren(element('summary', 'Source evidence'), element('pre', text(detail.evidence)));
             disclosure.open = true;
           } catch (error) { if (current(pending)) report(error?.message || 'Open-loop evidence is unavailable.'); }
           finally { if (current(pending)) evidence.disabled = false; }
         }, { signal });
         row.append(evidence);
-        if (writable() && card.kind === 'payment' && !['paid', 'cancelled'].includes(card.paymentState)) {
+        if (label === 'Needs attention' && writable() && card.kind === 'payment' && !['paid', 'cancelled'].includes(card.paymentState)) {
           const form = element('form');
-          form.append(element('h5', 'Record payment status'), element('p', 'This records your status assertion. It does not pay the bill or contact the sender.'));
+          const actionDisclosure = element('details'); actionDisclosure.append(element('summary', 'Record payment status'));
+          form.append(element('p', 'This records your status assertion. It does not pay the bill or contact the sender.'));
           const statusLabel = element('label', 'Status '); const choice = element('select'); choice.name = 'paymentState';
           for (const [value, label] of [['payment-pending', 'Payment initiated; settlement pending'], ['paid', 'Paid and verified by me'], ['disputed', 'Disputed'], ['uncertain', 'Needs reconciliation']]) { const option = element('option', label); option.value = value; choice.append(option); }
           statusLabel.append(choice);
@@ -114,10 +115,11 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             } catch (error) { if (current(pending)) report(error?.message || 'Payment status was not recorded.'); }
             finally { if (current(pending)) save.disabled = false; }
           }, { signal });
-          row.append(form);
-        } else if (writable() && card.kind === 'response' && !['resolved', 'cancelled'].includes(card.state)) {
+          actionDisclosure.append(form); row.append(actionDisclosure);
+        } else if (label === 'Needs attention' && writable() && card.kind === 'response' && !['resolved', 'cancelled'].includes(card.state)) {
           const form = element('form');
-          form.append(element('h5', 'Record response outcome'), element('p', 'This records that the request was addressed. It does not send a message.'));
+          const actionDisclosure = element('details'); actionDisclosure.append(element('summary', 'Record response outcome'));
+          form.append(element('p', 'This records that the request was addressed. It does not send a message.'));
           const rationaleLabel = element('label', ' Evidence or rationale '); const rationale = element('textarea'); rationale.required = true; rationale.maxLength = 1000; rationaleLabel.append(rationale);
           const save = element('button', 'Mark response addressed'); save.type = 'submit'; form.append(rationaleLabel, save);
           form.addEventListener('submit', async event => {
@@ -132,7 +134,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             } catch (error) { if (current(pending)) report(error?.message || 'Response outcome was not recorded.'); }
             finally { if (current(pending)) save.disabled = false; }
           }, { signal });
-          row.append(form);
+          actionDisclosure.append(form); row.append(actionDisclosure);
         }
         content.append(row);
       }

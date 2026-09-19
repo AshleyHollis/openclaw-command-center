@@ -103,6 +103,18 @@ test('an exact cancellation closes only its order and retains cancellation evide
   });
 });
 
+test('appointment revisions retain history and request a decision for the exact appointment', async () => {
+  await withService(service => {
+    const confirmed = ingest(service, 'appointment-confirmed', event({ eventKind: 'appointment-confirmed', subject: { kind: 'appointment', id: 'APPOINTMENT-FICTIONAL-1' }, source: { system: 'fictional-calendar-mail', kind: 'appointment', externalId: 'appointment-message', version: 'v1' }, amount: undefined, currency: undefined, amountBasis: undefined, installationRequired: undefined, expectedAt: '2026-10-01T03:00:00.000Z', summary: 'Fictional benchtop measure appointment.' }));
+    assert.equal(confirmed.loop.state, 'suggested');
+    const revised = ingest(service, 'appointment-revised', event({ eventKind: 'appointment-revised', subject: { kind: 'appointment', id: 'APPOINTMENT-FICTIONAL-1' }, source: { system: 'fictional-calendar-mail', kind: 'appointment', externalId: 'appointment-message', version: 'v2' }, amount: undefined, currency: undefined, amountBasis: undefined, installationRequired: undefined, expectedAt: '2026-10-03T05:00:00.000Z', summary: 'Fictional benchtop measure appointment changed.', materialChanges: ['appointment-time-changed'] }));
+    assert.equal(revised.loop.loopId, confirmed.loop.loopId);
+    assert.equal(revised.loop.state, 'decision-needed');
+    assert.equal(projectQuietAttention(revised.loop, { now }).reason, 'material-change');
+    assert.equal(revised.loop.evidenceObservationIds.length, 2);
+  });
+});
+
 test('historical orders and old expected dates build a quiet baseline', async () => {
   await withService(service => {
     const historical = ingest(service, 'historical-order', event({ historicalBaseline: true, occurredAt: '2024-01-01T00:00:00.000Z', expectedAt: '2024-02-01T00:00:00.000Z' }));
