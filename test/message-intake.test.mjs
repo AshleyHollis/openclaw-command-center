@@ -156,6 +156,10 @@ test('confirmation, deferral and dismissal are revisioned decisions with durable
     assert.equal(confirmed.loop.paymentState, 'unpaid');
     assert.equal(confirmed.loop.evidenceObservationIds.length, 2);
     assert.equal(service.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'confirm-potential-bill', loopId: suggested.loop.loopId, expectedRevision: 1, decision: 'confirm', actorId: 'operator-fictional', rationale: 'The invoice identity matches the accepted work.', updatedAt: '2026-09-20T02:00:00.000Z' }).disposition, 'duplicate');
+    const corrected = service.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'correct-potential-bill-date', loopId: suggested.loop.loopId, expectedRevision: 2, decision: 'correct-date', dueAt: '2026-10-15T13:59:59.000Z', actorId: 'operator-fictional', rationale: 'The authoritative fictional invoice shows the corrected date.', updatedAt: '2026-09-20T02:05:00.000Z' });
+    assert.equal(corrected.loop.dueAt, '2026-10-15T13:59:59.000Z');
+    assert.equal(projectQuietAttention(corrected.loop, { now: '2026-09-21T00:00:00.000Z' }).group, 'coming-up');
+    assert.equal(service.getOpenLoopObservation(corrected.loop.evidenceObservationIds.at(-1)).facts.dueAt, '2026-10-15T13:59:59.000Z');
 
     const reply = service.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'reply-to-defer', message: message({ source: { system: 'fictional-mail', externalId: 'reply-message', version: 'v1' }, disposition: 'explicit-request', requestKind: 'reply', amount: undefined, currency: undefined, dueAt: undefined, invoiceId: undefined, conversationId: 'conversation-to-defer', summary: 'Confirm the fictional access details.' }) });
     const deferred = service.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'defer-reply', loopId: reply.loop.loopId, expectedRevision: 1, decision: 'defer', reviewAt: '2026-09-25T00:00:00.000Z', actorId: 'operator-fictional', rationale: 'Review after the contractor sends the access plan.', updatedAt: '2026-09-20T02:10:00.000Z' });

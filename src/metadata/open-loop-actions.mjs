@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-const decisions = new Set(['confirm', 'defer', 'dismiss', 'resolve']);
+const decisions = new Set(['confirm', 'defer', 'dismiss', 'resolve', 'correct-date']);
 const paymentStates = new Set(['partially-paid', 'payment-pending', 'paid', 'disputed', 'cancelled', 'uncertain']);
 const hash = value => createHash('sha256').update(value).digest('hex');
 
@@ -57,18 +57,21 @@ export function installOpenLoopActions(service, { ErrorType }) {
   }
 
   service.recordOpenLoopDecision = input => {
-    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'decision', 'reviewAt', 'actorId', 'rationale', 'updatedAt']);
+    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'actorId', 'rationale', 'updatedAt']);
     if (value.schemaVersion !== 1 || !decisions.has(value.decision)) fail('open-loop-action-invalid');
     if ((value.decision === 'defer') !== (value.reviewAt !== undefined)) fail('open-loop-action-invalid', 'Only defer requires reviewAt.');
+    if ((value.decision === 'correct-date') !== (value.dueAt !== undefined)) fail('open-loop-action-invalid', 'Only correct-date requires dueAt.');
     const reviewAt = value.reviewAt === undefined ? undefined : instant(value.reviewAt, 'reviewAt');
+    const dueAt = value.dueAt === undefined ? undefined : instant(value.dueAt, 'dueAt');
     return record({
       input: value,
       operationKind: `decision-${value.decision}`,
-      facts: { decision: value.decision, ...(reviewAt === undefined ? {} : { reviewAt }) },
+      facts: { decision: value.decision, ...(reviewAt === undefined ? {} : { reviewAt }), ...(dueAt === undefined ? {} : { dueAt }) },
       transition(loop) {
         if (['resolved', 'cancelled'].includes(loop.state) && value.decision !== 'resolve') fail('open-loop-terminal');
         if (value.decision === 'confirm') return { ...loop, state: 'confirmed', ...(loop.kind === 'payment' && loop.paymentState === 'potential' ? { paymentState: 'unpaid' } : {}) };
         if (value.decision === 'defer') return { ...loop, state: 'waiting', reviewAt, attention: { ...(loop.attention ?? {}), activated: false, currentEvidence: false } };
+        if (value.decision === 'correct-date') return { ...loop, dueAt, reviewAt: undefined, attention: { ...(loop.attention ?? {}), activated: false, currentEvidence: true } };
         if (value.decision === 'dismiss') {
           if (loop.kind === 'payment' && loop.state !== 'suggested') fail('open-loop-payment-status-required');
           return { ...loop, state: 'cancelled', ...(loop.kind === 'payment' ? { paymentState: 'cancelled' } : {}), attention: { actions: [], activated: false, currentEvidence: true } };

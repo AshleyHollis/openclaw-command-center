@@ -25,6 +25,101 @@ export function mountAttentionPage(container, context, operations = new Map()) {
   const report = (message) => { status.textContent = host.redact(message); };
   const setBusy = (busy) => { content.setAttribute('aria-busy', String(busy)); refresh.disabled = busy; };
 
+  const formatInstant = value => {
+    if (!nonBlank(value) || Number.isNaN(Date.parse(value))) return value;
+    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+  };
+
+  function renderEvidence(disclosure, detail) {
+    disclosure.replaceChildren(element('summary', 'Source evidence'));
+    const loop = detail?.loop;
+    if (nonBlank(loop?.expectedEvent)) disclosure.append(element('p', `Expected next event: ${loop.expectedEvent}`));
+    if (nonBlank(loop?.reviewAt)) disclosure.append(element('p', `Review after ${formatInstant(loop.reviewAt)}`));
+    const evidence = Array.isArray(detail?.evidence) ? detail.evidence : [];
+    if (evidence.length === 0) {
+      disclosure.append(element('p', 'No readable source facts are currently available. The source may be unavailable or require a separately authorized reader.'));
+      return;
+    }
+    for (const item of evidence) {
+      const article = element('article');
+      article.append(element('h5', nonBlank(item.summary) ? item.summary : `${item.type ?? 'Evidence'} from ${item.sourceKind ?? item.sourceSystem ?? 'source'}`));
+      const source = [item.sourceSystem, item.sourceKind, item.sourceVersion].filter(nonBlank).join(' · ');
+      if (source) article.append(element('p', `Source: ${source}`));
+      const timing = [nonBlank(item.occurredAt) ? `Occurred ${formatInstant(item.occurredAt)}` : null, nonBlank(item.observedAt) ? `Observed ${formatInstant(item.observedAt)}` : null, item.historicalBaseline === true ? 'Historical baseline' : null].filter(Boolean);
+      if (timing.length) article.append(element('p', timing.join(' · ')));
+      const facts = [
+        ['Payee', item.payee], ['Purpose', item.purpose], ['Invoice', item.invoiceId], ['Account', item.accountId],
+        ['Amount', Number.isSafeInteger(item.amount) && nonBlank(item.currency) ? `${item.currency} ${(item.amount / 100).toFixed(2)}` : null],
+        ['Due', nonBlank(item.dueAt) ? formatInstant(item.dueAt) : null], ['Event', item.eventKind],
+        ['Choice', item.chosenOption], ['Rationale', item.rationale], ['Assumption', item.assumption],
+        ['Assessment', item.assessment], ['Status', item.status]
+      ].filter(([, value]) => value !== undefined && value !== null && value !== '');
+      if (facts.length) {
+        const list = element('dl');
+        for (const [label, value] of facts) list.append(element('dt', label), element('dd', String(value)));
+        article.append(list);
+      }
+      if (item.sourceAvailable === false) article.append(element('p', 'The original source is currently unavailable. This does not mean the open loop is complete.'));
+      disclosure.append(article);
+    }
+  }
+
+  async function submitOpenLoopOperation({ key, method, params, card, pending, success }) {
+    const operation = operations.get(key) ?? { method, params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, ...params } };
+    operations.set(key, operation);
+    const envelope = await host.request(operation.method, operation.params);
+    const response = unwrap(envelope);
+    if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId) throw new Error('The action outcome is not confirmed. Retry to reconcile the same operation.');
+    if (!current(pending)) return false;
+    operations.delete(key);
+    await load();
+    if (!signal.aborted && presented && readable()) report(success);
+    return true;
+  }
+
+  function appendDecisionControls(row, card, pending) {
+    if (!writable() || ['resolved', 'cancelled'].includes(card.state)) return;
+    const disclosure = element('details'); disclosure.dataset.openLoopDecisions = 'true';
+    disclosure.append(element('summary', card.state === 'suggested' ? 'Review suggestion' : 'Defer or resolve'));
+    const form = element('form');
+    const decisionLabel = element('label', 'Action '); const decision = element('select');
+    const choices = card.state === 'suggested'
+      ? [['confirm', 'Confirm this obligation'], ['dismiss', 'Dismiss this suggestion']]
+      : [['defer', 'Defer until a review time'], ['correct-date', 'Correct the accepted due date'], ...(card.kind === 'payment' || card.kind === 'response' ? [] : [['resolve', 'Mark resolved']])];
+    for (const [value, label] of choices) { const option = element('option', label); option.value = value; decision.append(option); }
+    if (!choices.length) return;
+    decisionLabel.append(decision);
+    const reviewLabel = element('label', ' Review time '); const reviewAt = element('input'); reviewAt.type = 'datetime-local'; reviewLabel.append(reviewAt);
+    const dueLabel = element('label', ' Corrected due date '); const dueAt = element('input'); dueAt.type = 'datetime-local'; dueLabel.append(dueAt);
+    const rationaleLabel = element('label', ' Rationale '); const rationale = element('textarea'); rationale.required = true; rationale.maxLength = 1000; rationaleLabel.append(rationale);
+    const update = () => {
+      const deferred = decision.value === 'defer'; const correcting = decision.value === 'correct-date';
+      reviewLabel.hidden = !deferred; reviewAt.required = deferred;
+      dueLabel.hidden = !correcting; dueAt.required = correcting;
+    };
+    decision.addEventListener('change', update, { signal }); update();
+    const save = element('button', 'Save action'); save.type = 'submit';
+    form.append(decisionLabel, reviewLabel, dueLabel, rationaleLabel, save);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
+      save.disabled = true;
+      try {
+        const review = decision.value === 'defer' ? new Date(reviewAt.value).toISOString() : undefined;
+        const due = decision.value === 'correct-date' ? new Date(dueAt.value).toISOString() : undefined;
+        await submitOpenLoopOperation({
+          key: `open-loop-decision:${card.loopId}:${decision.value}`,
+          method: 'command-center.v1.open-loops.decide',
+          params: { decision: decision.value, ...(review === undefined ? {} : { reviewAt: review }), ...(due === undefined ? {} : { dueAt: due }), rationale: rationale.value.trim() },
+          card, pending,
+          success: decision.value === 'defer' ? 'The item was deferred to the selected review time.' : decision.value === 'correct-date' ? 'The accepted due date was corrected.' : decision.value === 'confirm' ? 'The suggestion was confirmed.' : decision.value === 'dismiss' ? 'The suggestion was dismissed.' : 'The outcome was recorded.'
+        });
+      } catch (error) { if (current(pending)) report(error?.message || 'Action outcome is unknown. Retry to reconcile the same operation.'); }
+      finally { if (current(pending)) save.disabled = false; }
+    }, { signal });
+    disclosure.append(form); row.append(disclosure);
+  }
+
   function renderActivity(records, pending) {
     if (!records.length) return;
     content.append(element('h2', 'Recent Activity'));
@@ -79,7 +174,6 @@ export function mountAttentionPage(container, context, operations = new Map()) {
         const facts = [card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, nonBlank(card.dueAt) ? `Due ${card.dueAt}` : null].filter(Boolean);
         if (facts.length) row.append(element('p', facts.join(' · ')));
         if (nonBlank(card.whyNow)) row.append(element('p', card.whyNow));
-        if (Array.isArray(card.actions) && card.actions.length) row.append(element('p', `Available actions: ${card.actions.join(', ')}.`));
         row.append(element('p', `${Number.isSafeInteger(card.evidenceCount) ? card.evidenceCount : 0} linked source ${card.evidenceCount === 1 ? 'item' : 'items'}.`));
         const evidence = element('button', 'Review evidence'); evidence.type = 'button';
         evidence.addEventListener('click', async () => {
@@ -90,42 +184,40 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             if (!current(pending) || detail?.loop?.loopId !== card.loopId) return;
             let disclosure = row.querySelector('details[data-open-loop-evidence]');
             if (!disclosure) { disclosure = element('details'); disclosure.dataset.openLoopEvidence = 'true'; disclosure.append(element('summary', 'Source evidence')); row.append(disclosure); }
-            disclosure.replaceChildren(element('summary', 'Source evidence'), element('pre', text(detail.evidence)));
+            renderEvidence(disclosure, detail);
             disclosure.open = true;
           } catch (error) { if (current(pending)) report(error?.message || 'Open-loop evidence is unavailable.'); }
           finally { if (current(pending)) evidence.disabled = false; }
         }, { signal });
         row.append(evidence);
-        if (label === 'Needs attention' && writable() && card.kind === 'payment' && !['paid', 'cancelled'].includes(card.paymentState)) {
+        if (writable() && card.kind === 'payment' && card.state !== 'suggested' && !['resolved', 'cancelled'].includes(card.state) && !['paid', 'cancelled'].includes(card.paymentState)) {
           const form = element('form');
           const actionDisclosure = element('details'); actionDisclosure.append(element('summary', 'Record payment status'));
           form.append(element('p', 'This records your status assertion. It does not pay the bill or contact the sender.'));
           const statusLabel = element('label', 'Status '); const choice = element('select'); choice.name = 'paymentState';
-          for (const [value, label] of [['payment-pending', 'Payment initiated; settlement pending'], ['paid', 'Paid and verified by me'], ['disputed', 'Disputed'], ['uncertain', 'Needs reconciliation']]) { const option = element('option', label); option.value = value; choice.append(option); }
+          for (const [value, label] of [['payment-pending', 'Payment initiated; settlement pending'], ['partially-paid', 'Partially paid'], ['paid', 'Paid and verified by me'], ['disputed', 'Disputed'], ['cancelled', 'Cancelled by the authority'], ['uncertain', 'Needs reconciliation']]) { const option = element('option', label); option.value = value; choice.append(option); }
           statusLabel.append(choice);
+          const amountLabel = element('label', ' Amount paid '); const paidAmount = element('input'); paidAmount.name = 'paidAmount'; paidAmount.type = 'number'; paidAmount.min = '0.01'; paidAmount.step = '0.01'; amountLabel.append(paidAmount);
+          const currencyLabel = element('label', ' Currency '); const currency = element('input'); currency.name = 'currency'; currency.maxLength = 3; currency.value = card.currency ?? ''; currencyLabel.append(currency);
+          const updatePartialInputs = () => { const partial = choice.value === 'partially-paid'; paidAmount.disabled = !partial; currency.disabled = !partial; paidAmount.required = partial; currency.required = partial; };
+          choice.addEventListener('change', updatePartialInputs, { signal }); updatePartialInputs();
           const rationaleLabel = element('label', ' Evidence or rationale '); const rationale = element('textarea'); rationale.name = 'rationale'; rationale.required = true; rationale.maxLength = 1000; rationaleLabel.append(rationale);
           const save = element('button', 'Save payment status'); save.type = 'submit';
-          form.append(statusLabel, rationaleLabel, save);
+          form.append(statusLabel, amountLabel, currencyLabel, rationaleLabel, save);
           form.addEventListener('submit', async event => {
             event.preventDefault();
             if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
             save.disabled = true;
             try {
-              const key = `open-loop-payment:${card.loopId}`;
-              const operation = operations.get(key) ?? { method: 'command-center.v1.open-loops.payment-status', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, paymentState: choice.value, rationale: rationale.value.trim() } };
-              operations.set(key, operation);
-              const envelope = await host.request(operation.method, operation.params);
-              const response = unwrap(envelope);
-              if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId) throw new Error('The payment outcome is not confirmed. Retry to reconcile the same operation.');
-              if (!current(pending)) return;
-              operations.delete(key);
-              await load();
-              if (!signal.aborted && presented && readable()) report('Payment status recorded. No payment was submitted.');
+              const partial = choice.value === 'partially-paid';
+              const amountMinor = partial ? Math.round(Number(paidAmount.value) * 100) : undefined;
+              if (partial && (!Number.isSafeInteger(amountMinor) || amountMinor <= 0 || !/^[A-Za-z]{3}$/u.test(currency.value.trim()))) throw new Error('Enter a positive partial amount and three-letter currency.');
+              await submitOpenLoopOperation({ key: `open-loop-payment:${card.loopId}`, method: 'command-center.v1.open-loops.payment-status', params: { paymentState: choice.value, ...(partial ? { paidAmount: amountMinor, currency: currency.value.trim().toUpperCase() } : {}), rationale: rationale.value.trim() }, card, pending, success: 'Payment status recorded. No payment was submitted.' });
             } catch (error) { if (current(pending)) report(error?.message || 'Payment outcome is unknown. Retry to reconcile the same operation.'); }
             finally { if (current(pending)) save.disabled = false; }
           }, { signal });
           actionDisclosure.append(form); row.append(actionDisclosure);
-        } else if (label === 'Needs attention' && writable() && card.kind === 'response' && !['resolved', 'cancelled'].includes(card.state)) {
+        } else if (writable() && card.kind === 'response' && !['resolved', 'cancelled'].includes(card.state)) {
           const form = element('form');
           const actionDisclosure = element('details'); actionDisclosure.append(element('summary', 'Record response outcome'));
           form.append(element('p', 'This records that the request was addressed. It does not send a message.'));
@@ -136,21 +228,13 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
             save.disabled = true;
             try {
-              const key = `open-loop-response:${card.loopId}`;
-              const operation = operations.get(key) ?? { method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, decision: 'resolve', rationale: rationale.value.trim() } };
-              operations.set(key, operation);
-              const envelope = await host.request(operation.method, operation.params);
-              const response = unwrap(envelope);
-              if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId) throw new Error('The response outcome is not confirmed. Retry to reconcile the same operation.');
-              if (!current(pending)) return;
-              operations.delete(key);
-              await load();
-              if (!signal.aborted && presented && readable()) report('Response outcome recorded. No message was sent.');
+              await submitOpenLoopOperation({ key: `open-loop-response:${card.loopId}`, method: 'command-center.v1.open-loops.decide', params: { decision: 'resolve', rationale: rationale.value.trim() }, card, pending, success: 'Response outcome recorded. No message was sent.' });
             } catch (error) { if (current(pending)) report(error?.message || 'Response outcome is unknown. Retry to reconcile the same operation.'); }
             finally { if (current(pending)) save.disabled = false; }
           }, { signal });
           actionDisclosure.append(form); row.append(actionDisclosure);
         }
+        appendDecisionControls(row, card, pending);
         group.append(row);
       }
     }
@@ -167,6 +251,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
           if (!nonBlank(loop.loopId) || !nonBlank(loop.title) || inventoryRows.querySelector(`[data-open-loop-id="${CSS.escape(loop.loopId)}"]`)) continue;
           const row = element('article'); row.dataset.openLoopId = loop.loopId;
           row.append(element('h4', loop.title), element('p', [loop.paymentState ?? loop.state, nonBlank(loop.dueAt) ? `Due ${loop.dueAt}` : null].filter(Boolean).join(' · ')));
+          appendDecisionControls(row, loop, pending);
           inventoryRows.append(row);
         }
         offset = page.nextOffset ?? offset + page.loops.length;

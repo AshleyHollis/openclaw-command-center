@@ -23,10 +23,12 @@ function publicOpenLoopEvidence(observation) {
     type: observation.type,
     sourceSystem: observation.source.system,
     sourceKind: observation.source.kind,
+    sourceVersion: observation.source.version,
     occurredAt: observation.occurredAt,
     observedAt: observation.observedAt,
     historicalBaseline: observation.historicalBaseline,
-    ...Object.fromEntries(publicEvidenceFields.filter(key => observation.facts[key] !== undefined).map(key => [key, observation.facts[key]]))
+    ...Object.fromEntries(publicEvidenceFields.filter(key => observation.facts[key] !== undefined).map(key => [key, observation.facts[key]])),
+    ...(typeof observation.facts.sourceAvailable === 'boolean' ? { sourceAvailable: observation.facts.sourceAvailable } : {})
   });
 }
 
@@ -241,7 +243,7 @@ export function createMetadataService(api) {
     openLoopsDecide(input = {}) {
       requireOperational();
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for open-loop decisions.');
-      return metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
+      return metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
     },
     openLoopsPaymentStatus(input = {}) {
       requireOperational();

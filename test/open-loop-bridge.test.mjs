@@ -26,16 +26,19 @@ test('open-loop bridge contracts use read and operator-write scopes with closed 
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: decisionId, loopId: loop.loopId, expectedRevision: 1, decision: 'defer', reviewAt: '2026-09-30T00:00:00.000Z', rationale: 'Wait for the fictional corrected invoice.' }));
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: decisionId, loopId: loop.loopId, expectedRevision: 1, decision: 'defer', rationale: 'Missing review time.' }), /reviewAt/);
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: decisionId, loopId: loop.loopId, expectedRevision: 1, decision: 'resolve', reviewAt: '2026-09-30T00:00:00.000Z', rationale: 'Unexpected review time.' }), /reviewAt/);
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, decision: 'correct-date', dueAt: '2026-10-04T13:59:59.000Z', rationale: 'The fictional original shows this corrected date.' }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, decision: 'correct-date', rationale: 'Missing corrected date.' }), /dueAt/);
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, paymentState: 'paid', paidAmount: 12300, rationale: 'Missing currency.' }), /currency/);
 });
 
 test('open-loop detail sanitization withholds raw source fields and attachment identifiers', async () => {
   const result = await invokeBridgeMethod({
-    openLoopsGet: () => ({ schemaVersion: 1, loop: { ...loop, secretLocator: 'private-source' }, evidence: [{ observationId: 'observation-fictional', type: 'bill', sourceSystem: 'fictional-mail', sourceKind: 'email', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T01:00:00.000Z', historicalBaseline: false, summary: 'Fictional bill', invoiceId: 'INVOICE-FICTIONAL', attachmentIds: ['private-attachment'], rawBody: 'private-body' }] })
+    openLoopsGet: () => ({ schemaVersion: 1, loop: { ...loop, secretLocator: 'private-source' }, evidence: [{ observationId: 'observation-fictional', type: 'bill', sourceSystem: 'fictional-mail', sourceKind: 'email', sourceVersion: 'v1', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T01:00:00.000Z', historicalBaseline: false, summary: 'Fictional bill', invoiceId: 'INVOICE-FICTIONAL', attachmentIds: ['private-attachment'], rawBody: 'private-body' }] })
   }, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: loop.loopId });
   assert.equal(result.loop.secretLocator, undefined);
   assert.equal(result.evidence[0].attachmentIds, undefined);
   assert.equal(result.evidence[0].rawBody, undefined);
+  assert.equal(result.evidence[0].sourceVersion, 'v1');
   assert.equal(result.evidence[0].invoiceId, 'INVOICE-FICTIONAL');
 });
 

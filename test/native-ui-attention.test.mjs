@@ -36,7 +36,7 @@ async function fixture(run) {
           window.requests.push({ method, params: structuredClone(params) });
           if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('open-loops.get')) {
-            const card = [...window.openLoops.highlighted, ...window.openLoops.comingUp].find(item => item.loopId === params.loopId);
+            const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             return { result: { schemaVersion: 1, loop: structuredClone(card), evidence: [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title }] } };
           }
           if (method.endsWith('open-loops.list')) {
@@ -46,13 +46,13 @@ async function fixture(run) {
           }
           if (method.endsWith('open-loops.payment-status')) {
             if (window.openLoopActionMode === 'unknown') throw new Error('The transport outcome is unknown.');
-            const card = [...window.openLoops.highlighted, ...window.openLoops.comingUp].find(item => item.loopId === params.loopId);
+            const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             Object.assign(card, { paymentState: params.paymentState, state: params.paymentState === 'paid' ? 'resolved' : params.paymentState === 'payment-pending' ? 'monitoring' : card.state, revision: card.revision + 1 });
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('open-loops.decide')) {
-            const card = [...window.openLoops.highlighted, ...window.openLoops.comingUp].find(item => item.loopId === params.loopId);
-            Object.assign(card, { state: 'resolved', revision: card.revision + 1 });
+            const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
+            Object.assign(card, { state: params.decision === 'confirm' ? 'confirmed' : params.decision === 'defer' ? 'waiting' : params.decision === 'dismiss' ? 'cancelled' : 'resolved', ...(params.reviewAt ? { reviewAt: params.reviewAt } : {}), revision: card.revision + 1 });
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('attention.get')) {
@@ -236,10 +236,11 @@ test('native Attention reviews evidence and records status without paying or sen
   await page.getByText('AUD 2450.00', { exact: false }).waitFor();
   await page.getByText('Waiting (1 shown)', { exact: true }).click();
   await page.getByRole('heading', { name: 'Wait for the fictional cabinet delivery.' }).waitFor();
-  await page.getByText('Available actions: Open bill, Record payment status, Remind me.', { exact: true }).waitFor();
   const bill = page.locator('article[data-open-loop-id="bill-loop"]');
   await bill.getByRole('button', { name: 'Review evidence' }).click();
   await bill.getByText('Source evidence', { exact: true }).waitFor();
+  await bill.getByText('Source: fictional-source · email', { exact: true }).waitFor();
+  assert.equal(await bill.locator('details[data-open-loop-evidence] pre').count(), 0);
   await bill.getByText('Record payment status', { exact: true }).click();
   await bill.getByLabel('Evidence or rationale').fill('The fictional bank transfer was initiated; settlement remains pending.');
   await bill.getByRole('button', { name: 'Save payment status' }).click();
@@ -249,6 +250,55 @@ test('native Attention reviews evidence and records status without paying or sen
   assert.equal(payment.paidAmount, undefined);
   assert.equal(await page.getByRole('button', { name: /^Pay|^Send$/i }).count(), 0);
   assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('attention.act')).length), 0);
+}));
+
+test('native Attention confirms or dismisses suggestions and defers quiet items with exact review times', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = {
+      total: 2, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 1,
+      waiting: [{ loopId: 'waiting-order', kind: 'order', title: 'Wait for the fictional delivery.', state: 'monitoring', evidenceCount: 1, revision: 2 }],
+      suggestedTotal: 1, suggested: [{ loopId: 'suggested-bill', kind: 'payment', title: 'Review a possible fictional bill.', state: 'suggested', paymentState: 'potential', evidenceCount: 1, revision: 1 }],
+      deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: []
+    };
+    window.mountInbox();
+  });
+  await page.getByText('Suggestions (1 shown)', { exact: true }).click();
+  const suggestion = page.locator('article[data-open-loop-id="suggested-bill"]');
+  await suggestion.getByText('Review suggestion', { exact: true }).click();
+  const suggestionDecision = suggestion.locator('details[data-open-loop-decisions]');
+  await suggestionDecision.getByLabel('Rationale', { exact: true }).fill('The exact fictional invoice and account are recognized.');
+  await suggestionDecision.getByRole('button', { name: 'Save action' }).click();
+  await page.waitForFunction(() => window.requests.some(request => request.method.endsWith('open-loops.decide') && request.params.decision === 'confirm'));
+
+  await page.evaluate(() => window.mountInbox());
+  await page.getByText('Waiting (1 shown)', { exact: true }).click();
+  const waiting = page.locator('article[data-open-loop-id="waiting-order"]');
+  await waiting.getByText('Defer or resolve', { exact: true }).click();
+  await waiting.getByLabel('Review time', { exact: true }).fill('2026-10-10T09:30');
+  await waiting.getByLabel('Rationale').fill('Review after the fictional supplier update is expected.');
+  await waiting.getByRole('button', { name: 'Save action' }).click();
+  const deferred = await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.decide') && request.params.decision === 'defer')?.params);
+  assert.equal(deferred.reviewAt, new Date('2026-10-10T09:30').toISOString());
+}));
+
+test('native Attention records a partial payment amount without claiming settlement', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'partial-bill', kind: 'payment', title: 'Fictional staged invoice.', state: 'confirmed', paymentState: 'unpaid', amount: 48000, currency: 'AUD', evidenceCount: 1, revision: 1 }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  const bill = page.locator('article[data-open-loop-id="partial-bill"]');
+  await bill.getByText('Record payment status', { exact: true }).click();
+  await bill.getByLabel('Status').selectOption('partially-paid');
+  await bill.getByLabel('Amount paid').fill('120.50');
+  await bill.getByLabel('Currency').fill('aud');
+  await bill.getByLabel('Evidence or rationale').fill('A fictional first installment was verified.');
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  const payment = await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.payment-status'))?.params);
+  assert.equal(payment.paymentState, 'partially-paid');
+  assert.equal(payment.paidAmount, 12050);
+  assert.equal(payment.currency, 'AUD');
 }));
 
 test('native Attention re-resolves verified Session Activity before opening native Chat', () => fixture(async (page) => {
