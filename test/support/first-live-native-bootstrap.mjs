@@ -187,7 +187,7 @@ export async function readNativeLegacyBootstrap({ world, host, signal, bootstrap
   }
   assert.equal(occurrenceIds.size, occurrenceCount);
   return Object.freeze({
-    fixture: Object.freeze({ topicId: bootstrap.topicId, name: bootstrap.name, sessionReferenceId: target.sourceReference.referenceId,
+    fixture: Object.freeze({ topicId: bootstrap.topicId, name: bootstrap.name, paraCategory: topic.paraCategory, sessionReferenceId: target.sourceReference.referenceId,
       sessionKey: target.sessionKey, sessionId: target.sessionId, notePath: bootstrap.notePath, noteText: bootstrap.noteText, folder: bootstrap.folder,
       ...(bootstrap.catalog ? { catalogNotes: bootstrap.catalogNotes } : {}) }),
     completion: status.completion, folderReferenceId: folders[0].referenceId, folderLocator: locators[0],
