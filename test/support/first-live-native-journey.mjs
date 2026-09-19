@@ -744,7 +744,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         socket.onMessage((payload) => {
           server.send(payload);
           let message; try { message = JSON.parse(String(payload)); } catch { return; }
-          if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(scale ? ['command-center.v1.notes.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) requests.set(message.id, { method: message.method, params: message.params });
+          if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(scale ? ['command-center.v1.notes.browse', 'command-center.v1.sessions.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) {
+            requests.set(message.id, { method: message.method, params: message.params });
+            if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native'].includes(message.method)) progress(`browser-rpc-request:${message.method}`);
+          }
           if (message?.type === 'req' && message.method === 'chat.send' && [messageText, attachmentMessageText].includes(message.params?.message)) {
             browserChatSend = message;
           }
@@ -757,6 +760,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           const request = requests.get(message.id);
           requests.delete(message.id);
           if (!request || message.ok !== true) return;
+          if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native'].includes(request.method)) progress(`browser-rpc-response:${request.method}`);
           const value = message.payload?.result ?? message.payload;
           if (request.method === 'command-center.v1.topics.list') browserTopics = value;
           if (request.method === 'command-center.v1.notes.read') browserNote = { input: request.params, value };
