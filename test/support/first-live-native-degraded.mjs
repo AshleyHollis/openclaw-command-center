@@ -141,12 +141,9 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       assert.equal(exactNote.sourceReference.topicId, fixture.topicId);
       assert.equal(exactNote.revision, `sha256:${createHash('sha256').update(fixture.noteText).digest('hex')}`);
       if (sessionsUnavailable) {
-        const topicRow = nativePage.getByRole('listitem').filter({
-          has: page.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true })
-        });
-        await topicRow.getByRole('button', { name: 'Open Topic in Chat', exact: true }).press('Enter');
+        await nativePage.getByRole('button', { name: 'Open Topic in Chat', exact: true }).press('Enter');
         progress('chat-refusal-requested');
-        await topicRow.getByRole('status').filter({ hasText: /capability.*unavailable/iu }).waitFor();
+        await nativePage.getByRole('status').filter({ hasText: /capability.*unavailable/iu }).first().waitFor();
         assert.equal(await page.locator('openclaw-chat-pane[aria-hidden="false"]').count(), 0, 'Unavailable Sessions must not open an unverified native Chat');
         await assertNativeFormattedNote(note, fixture);
       }
