@@ -148,3 +148,15 @@ _Avoid_: Topic task, To-do
 **Reminder**:
 A lightweight commitment associated with a Topic and scheduled through OpenClaw's internal scheduler. It becomes an Attention Item when due.
 _Avoid_: Workboard item, OpenClaw Task
+
+**Renovation Requirement**:
+An unresolved renovation commitment identified by an exact durable subject, such as buying one specified item, returning its predecessor, or completing installation. A purchase may satisfy only the Requirement it explicitly names.
+_Avoid_: shopping-list text, inferred match
+
+**Replacement Purchase**:
+A purchase explicitly recorded as a substitute for an existing item. It does not itself resolve the separate return, refund, or resale commitment for the replaced item.
+_Avoid_: exchange, completed replacement
+
+**Activated Stage**:
+A renovation stage the user has explicitly marked as underway. Its exact outstanding prerequisites may qualify for Attention as blockers until the stage is deactivated or each Requirement is resolved.
+_Avoid_: inferred stage, planned stage
