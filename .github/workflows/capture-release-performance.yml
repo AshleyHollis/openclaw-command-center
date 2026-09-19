@@ -1,0 +1,137 @@
+name: Capture release performance baseline
+
+on:
+  push:
+    branches: [upgrade/openclaw-2026.9.5]
+    paths:
+      - .github/workflows/capture-release-performance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: capture-release-performance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:f20b645907bdfb4bedcc14a3af3e2a7ea060c507635a9eca071fd3592a618d9d
+      OPENCLAW_COMMIT: 8490d8016bdd46c8e29301efbc91f99eaab7de8d
+      OPENCLAW_VERSION: 2026.9.5
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Checkout exact OpenClaw source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: AshleyHollis/openclaw
+          ref: 8490d8016bdd46c8e29301efbc91f99eaab7de8d
+          fetch-depth: 1
+          persist-credentials: false
+          path: _openclaw-source
+
+      - name: Install sealed candidate and browser dependencies
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          npm run build
+
+      - name: Materialize authenticated host descriptor
+        run: |
+          set -euo pipefail
+          test ! -e test/fixtures/release-performance-baseline.native-workspace.v3.json
+          docker pull "$IMAGE"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE")" = "$OPENCLAW_COMMIT"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE")" = "$OPENCLAW_VERSION"
+
+          host="$RUNNER_TEMP/command-center-host"
+          mkdir -p "$host/checkout" "$host/runtime"
+          tar --exclude=.git -C _openclaw-source -cf - . | tar --no-same-owner -C "$host/checkout" -xf -
+          cp -a _openclaw-source/.git "$host/checkout/.git"
+          git -C "$host/checkout" rev-parse HEAD | grep -Fx "$OPENCLAW_COMMIT"
+          test -z "$(git -C "$host/checkout" status --porcelain --untracked-files=no)"
+          git -C _openclaw-source archive --format=tar "$OPENCLAW_COMMIT" > "$RUNNER_TEMP/openclaw-source.tar"
+          printf 'sha256:%s\n' "$(sha256sum "$RUNNER_TEMP/openclaw-source.tar" | cut -d ' ' -f 1)" > "$RUNNER_TEMP/source-digest.txt"
+
+          container="$(docker create "$IMAGE")"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:/app/." "$host/runtime"
+          docker rm "$container" >/dev/null
+          trap - EXIT
+          sudo chown -R "$(id -u):$(id -g)" "$host"
+
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFile, writeFile, appendFile } from 'node:fs/promises';
+          import path from 'node:path';
+          import { parseHostDescriptor, pinnedHost, verifyHost } from './src/host-harness.mjs';
+          import { packagedHostDigest } from './src/packaged-host-integrity.mjs';
+          import { releasePerformanceIdentity } from './src/performance-baseline.mjs';
+
+          const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+          const host = path.join(process.env.RUNNER_TEMP, 'command-center-host');
+          const checkout = path.join(host, 'checkout');
+          const runtimeRoot = path.join(host, 'runtime');
+          const receipt = {
+            schemaVersion: 2,
+            sourceDigest: (await readFile(path.join(process.env.RUNNER_TEMP, 'source-digest.txt'), 'utf8')).trim(),
+            commit: pinnedHost.commit,
+            executableDigest: digest(await readFile(path.join(runtimeRoot, 'node_modules/openclaw/openclaw.mjs'))),
+            contractDigest: digest(Buffer.from(JSON.stringify(JSON.parse(await readFile('src/runtime-capability.json', 'utf8'))))),
+            packageDigest: pinnedHost.packageDigest,
+            runtimeDigest: await packagedHostDigest(runtimeRoot)
+          };
+          if (JSON.stringify(receipt) !== JSON.stringify(releasePerformanceIdentity.hostReceipt)) throw new Error('Prepared host receipt differs from the frozen performance identity');
+          await writeFile(path.join(host, 'receipt.json'), `${JSON.stringify(receipt)}\n`, { mode: 0o400 });
+          const descriptor = {
+            schemaVersion: 2,
+            checkout,
+            runtimeRoot,
+            commit: pinnedHost.commit,
+            command: { executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args },
+            integrity: receipt
+          };
+          await verifyHost(parseHostDescriptor(JSON.stringify(descriptor)));
+          await appendFile(process.env.GITHUB_ENV, `COMMAND_CENTER_ISOLATED_HOST=${JSON.stringify(descriptor)}\n`);
+          NODE
+
+      - name: Capture first exact browser observation
+        env:
+          COMMAND_CENTER_ACCEPTANCE_SCENARIO: scale-performance
+          COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE: "1"
+          COMMAND_CENTER_SEALED_CANDIDATE: "1"
+        run: node --test --test-isolation=none test/real-host.acceptance.test.mjs
+
+      - name: Verify captured baseline
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/performance"
+          cp test/fixtures/release-performance-baseline.native-workspace.v3.json "$RUNNER_TEMP/performance/"
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { readBuiltReceipt } from './src/build.mjs';
+          import { assertPerformanceBaselineBuildIdentity, validateReleasePerformanceBaseline } from './src/performance-baseline.mjs';
+          const baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile('test/fixtures/release-performance-baseline.native-workspace.v3.json', 'utf8')));
+          const build = await readBuiltReceipt();
+          assertPerformanceBaselineBuildIdentity(baseline, `sha256:${build.digest}`);
+          NODE
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: command-center-performance-baseline-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/performance
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Record capture boundary
+        run: |
+          printf '%s\n' 'First exact performance capture only. Commit and independently requalify this immutable baseline before release.' >> "$GITHUB_STEP_SUMMARY"
