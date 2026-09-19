@@ -1376,7 +1376,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       });
       // Return through the host's native navigation contribution, not a new
       // page.goto/document or a synthetic plugin activation.
-      await page.locator('openclaw-app-sidebar openclaw-plugin-contributions').getByRole('link', { name: 'Topics', exact: true }).press('Enter');
+      await page.locator('openclaw-app-sidebar [data-sidebar-entry="plugin:command-center/topics"]').getByRole('link', { name: 'Manage Topics', exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
@@ -1477,7 +1477,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const primaryHistory = primaryHistoryResponse?.result ?? primaryHistoryResponse;
       assert.equal(primaryHistory.sessionId, fixture.sessionId);
       assert.equal(containsUserMessage(primaryHistory), false, 'New Conversation input must not leak into the existing Primary');
-      await page.locator('openclaw-app-sidebar openclaw-plugin-contributions').getByRole('link', { name: 'Topics', exact: true }).press('Enter');
+      await page.locator('openclaw-app-sidebar [data-sidebar-entry="plugin:command-center/topics"]').getByRole('link', { name: 'Manage Topics', exact: true }).press('Enter');
       await nativePage.getByRole('button', { name: 'Refresh Topics', exact: true }).press('Enter');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();

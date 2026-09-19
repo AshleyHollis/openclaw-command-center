@@ -147,7 +147,9 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     await button(`Read ${fixture.notePath}`).waitFor();
   };
   const returnFromChat = async () => {
-    const returnLink = page.locator('openclaw-app-sidebar openclaw-plugin-contributions').getByRole('link', { name: 'Topics', exact: true });
+    const returnLink = page
+      .locator('openclaw-app-sidebar [data-sidebar-entry="plugin:command-center/topics"]')
+      .getByRole('link', { name: 'Manage Topics', exact: true });
     await press(returnLink);
     await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
     // Native sidebar navigation retains its invoker; it does not call the
