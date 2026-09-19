@@ -27,7 +27,7 @@ export async function assertNativeNoteSource(nativePage, fixture) {
 // ownership. Exercise the host control explicitly so this journey can prove
 // that a verified Topic category is actually reachable in the sidebar.
 export async function selectNativeCategoryGrouping(page) {
-  const trigger = page.locator('.sidebar-session-toolbar .sidebar-session-sort');
+  const trigger = page.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping):visible');
   try { await trigger.waitFor({ state: 'visible', timeout: 10_000 }); }
   catch (error) {
     const controls = await page.locator('button').evaluateAll(buttons => buttons.slice(0, 40).map(button => ({ label: button.getAttribute('aria-label'), text: button.textContent?.trim() })));
