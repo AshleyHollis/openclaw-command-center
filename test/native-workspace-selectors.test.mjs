@@ -55,3 +55,20 @@ test('native grouping journey leaves team mode through the workspace menu', { ti
     assert.equal(await page.locator('body').getAttribute('data-clicked-sort'), 'single-agent-sort');
   } finally { await browser.close(); }
 });
+
+test('native grouping journey scrolls the sidebar body to the Conversations toolbar', { timeout: 10_000 }, async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  try {
+    const page = await browser.newPage({ viewport: { width: 800, height: 400 } });
+    await page.setContent('<openclaw-app-sidebar><div class="sidebar-shell__body" style="height: 200px; overflow-y: auto"><div style="height: 500px"></div><button id="scrolled-sort" class="sidebar-session-sort">Sort sessions</button></div></openclaw-app-sidebar><wa-dropdown-item hidden value="grouping:category">Category</wa-dropdown-item>');
+    await page.evaluate(() => {
+      document.querySelector('#scrolled-sort').addEventListener('click', () => {
+        document.querySelector('wa-dropdown-item[value="grouping:category"]').hidden = false;
+        document.body.dataset.clickedSort = 'scrolled-sort';
+      });
+    });
+    await selectNativeCategoryGrouping(page);
+    assert.equal(await page.locator('body').getAttribute('data-clicked-sort'), 'scrolled-sort');
+    assert.ok(await page.locator('.sidebar-shell__body').evaluate(element => element.scrollTop > 0));
+  } finally { await browser.close(); }
+});
