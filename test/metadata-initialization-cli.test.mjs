@@ -13,7 +13,7 @@ test('pinned initialization CLI verifies without creating and refuses another re
   const stateDir = path.join(root, 'state');
   const { mkdir } = await import('node:fs/promises'); await mkdir(stateDir);
   const planPath = path.join(root, 'plan.json');
-  const plan = { schemaVersion: 1, purpose: 'command-center-metadata-initialization', stateDirectory: stateDir, metadataSchemaVersion: 8 };
+  const plan = { schemaVersion: 1, purpose: 'command-center-metadata-initialization', stateDirectory: stateDir, metadataSchemaVersion: 9 };
   await writeFile(planPath, JSON.stringify(plan));
   const previous = process.env.OPENCLAW_STATE_DIR; process.env.OPENCLAW_STATE_DIR = stateDir;
   t.after(() => { if (previous === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = previous; });
@@ -27,9 +27,9 @@ test('pinned initialization CLI verifies without creating and refuses another re
   await assert.rejects(invoke('execute'), { code: 'initialization-state-mismatch' });
   process.env.OPENCLAW_STATE_DIR = stateDir;
   assert.deepEqual(await readdir(stateDir), []);
-  assert.deepEqual(await invoke('execute'), { phase: 'verified', schemaVersion: 8, disposition: 'created' });
+  assert.deepEqual(await invoke('execute'), { phase: 'verified', schemaVersion: 9, disposition: 'created' });
   const bytes = await readFile(resolveCommandCenterDatabasePath(stateDir));
-  assert.deepEqual(await invoke('verify'), { phase: 'verified', schemaVersion: 8, disposition: 'existing' });
-  assert.deepEqual(await invoke('execute'), { phase: 'verified', schemaVersion: 8, disposition: 'existing' });
+  assert.deepEqual(await invoke('verify'), { phase: 'verified', schemaVersion: 9, disposition: 'existing' });
+  assert.deepEqual(await invoke('execute'), { phase: 'verified', schemaVersion: 9, disposition: 'existing' });
   assert.deepEqual(await readFile(resolveCommandCenterDatabasePath(stateDir)), bytes);
 });
