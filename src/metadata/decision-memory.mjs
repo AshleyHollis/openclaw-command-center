@@ -1,7 +1,4 @@
-import { createHash } from 'node:crypto';
 import { planDecisionChallenge, planDecisionRecord } from '../open-loops/decision-memory.mjs';
-
-const hash = value => createHash('sha256').update(value).digest('hex');
 
 export function installDecisionMemory(service, { ErrorType }) {
   const fail = (code, message = code) => { throw new ErrorType(code, message); };
@@ -10,35 +7,32 @@ export function installDecisionMemory(service, { ErrorType }) {
     return value;
   };
   const planned = (planner, value) => { try { return planner(value); } catch (error) { fail('decision-memory-invalid', error.message); } };
-  const ids = (prefix, logicalOperationId) => {
-    const digest = hash(logicalOperationId.trim()).slice(0, 40);
-    return { observe: `${prefix}:observe:${digest}`, reconcile: `${prefix}:reconcile:${digest}` };
-  };
 
   service.recordDecisionMemory = raw => {
     const value = input(raw, 'decision');
     const plan = planned(planDecisionRecord, value.decision);
+    const operationKind = 'decision-memory';
+    const replay = service.replayOpenLoopChange({ schemaVersion: 1, logicalOperationId: value.logicalOperationId, operationKind, intent: value });
+    if (replay) return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', observation: replay.observation, decision: Object.freeze({ loop: replay.loop, evidence: Object.freeze(replay.loop.evidenceObservationIds.map(id => service.getOpenLoopObservation(id))) }) });
     const existing = service.findOpenLoopBySubject('decision', `decision:${plan.decisionId}`);
-    if (existing?.evidenceObservationIds.includes(plan.observation.observationId) && service.getOpenLoopObservation(plan.observation.observationId)) return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', observation: service.getOpenLoopObservation(plan.observation.observationId), decision: service.getDecisionMemory(plan.decisionId) });
     if ((existing?.revision ?? 0) !== value.expectedRevision) fail('open-loop-stale-revision');
     for (const observationId of plan.sourceObservationIds) if (!service.getOpenLoopObservation(observationId)) fail('decision-memory-source-missing');
-    const operation = ids('decision-memory', value.logicalOperationId);
-    const observed = service.ingestOpenLoopObservation({ schemaVersion: 1, logicalOperationId: operation.observe, observation: plan.observation });
+    for (const relatedId of [plan.observation.facts.supersedesDecisionId, plan.observation.facts.supersededByDecisionId].filter(Boolean)) if (!service.findOpenLoopBySubject('decision', `decision:${relatedId}`)) fail('decision-memory-related-missing');
     const evidenceObservationIds = [...new Set([...(existing?.evidenceObservationIds ?? []), ...plan.sourceObservationIds, plan.observation.observationId])];
     const next = { ...plan.loop, loopId: existing?.loopId ?? plan.loop.loopId, evidenceObservationIds, revision: value.expectedRevision + 1 };
-    const reconciled = service.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: operation.reconcile, expectedRevision: value.expectedRevision, loop: next, evidenceRoles: Object.fromEntries(evidenceObservationIds.filter(id => !(existing?.evidenceObservationIds ?? []).includes(id)).map(id => [id, id === plan.observation.observationId ? 'resolution' : 'update'])), updatedAt: plan.observation.observedAt });
-    return Object.freeze({ schemaVersion: 1, disposition: 'applied', observation: observed.observation, decision: Object.freeze({ loop: reconciled.loop, evidence: reconciled.loop.evidenceObservationIds.map(id => service.getOpenLoopObservation(id)) }) });
+    const reconciled = service.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: value.logicalOperationId, operationKind, intent: value, expectedRevision: value.expectedRevision, observation: plan.observation, loop: next, evidenceRoles: Object.fromEntries(evidenceObservationIds.filter(id => !(existing?.evidenceObservationIds ?? []).includes(id)).map(id => [id, id === plan.observation.observationId ? 'resolution' : 'update'])), updatedAt: plan.observation.observedAt });
+    return Object.freeze({ schemaVersion: 1, disposition: 'applied', observation: reconciled.observation, decision: Object.freeze({ loop: reconciled.loop, evidence: reconciled.loop.evidenceObservationIds.map(id => service.getOpenLoopObservation(id)) }) });
   };
 
   service.challengeDecisionMemory = raw => {
     const value = input(raw, 'challenge');
     const plan = planned(planDecisionChallenge, value.challenge);
+    const operationKind = 'decision-challenge';
+    const replay = service.replayOpenLoopChange({ schemaVersion: 1, logicalOperationId: value.logicalOperationId, operationKind, intent: value });
+    if (replay) return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', observation: replay.observation, decision: Object.freeze({ loop: replay.loop, evidence: Object.freeze(replay.loop.evidenceObservationIds.map(id => service.getOpenLoopObservation(id))) }) });
     const loop = service.findOpenLoopBySubject('decision', `decision:${plan.decisionId}`);
     if (!loop) fail('decision-memory-missing');
-    if (loop.evidenceObservationIds.includes(plan.observation.observationId) && service.getOpenLoopObservation(plan.observation.observationId)) return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', observation: service.getOpenLoopObservation(plan.observation.observationId), decision: service.getDecisionMemory(plan.decisionId) });
     if (loop.revision !== value.expectedRevision) fail('open-loop-stale-revision');
-    const operation = ids('decision-challenge', value.logicalOperationId);
-    const observed = service.ingestOpenLoopObservation({ schemaVersion: 1, logicalOperationId: operation.observe, observation: plan.observation });
     const actionable = plan.observation.historicalBaseline !== true && plan.observation.facts.material === true && plan.observation.facts.assessment === 'contradicted';
     const ambiguous = plan.observation.historicalBaseline !== true && plan.observation.facts.assessment === 'ambiguous';
     const next = {
@@ -48,14 +42,22 @@ export function installDecisionMemory(service, { ErrorType }) {
       evidenceObservationIds: [...loop.evidenceObservationIds, plan.observation.observationId],
       revision: loop.revision + 1
     };
-    const reconciled = service.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: operation.reconcile, expectedRevision: loop.revision, loop: next, evidenceRoles: { [plan.observation.observationId]: actionable || ambiguous ? 'conflict' : 'update' }, updatedAt: plan.observation.observedAt });
-    return Object.freeze({ schemaVersion: 1, disposition: 'applied', observation: observed.observation, decision: Object.freeze({ loop: reconciled.loop, evidence: reconciled.loop.evidenceObservationIds.map(id => service.getOpenLoopObservation(id)) }) });
+    const reconciled = service.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: value.logicalOperationId, operationKind, intent: value, expectedRevision: loop.revision, observation: plan.observation, loop: next, evidenceRoles: { [plan.observation.observationId]: actionable || ambiguous ? 'conflict' : 'update' }, updatedAt: plan.observation.observedAt });
+    return Object.freeze({ schemaVersion: 1, disposition: 'applied', observation: reconciled.observation, decision: Object.freeze({ loop: reconciled.loop, evidence: reconciled.loop.evidenceObservationIds.map(id => service.getOpenLoopObservation(id)) }) });
   };
 
   service.getDecisionMemory = decisionId => {
     if (typeof decisionId !== 'string' || decisionId.trim() === '') fail('decision-memory-invalid');
     const loop = service.findOpenLoopBySubject('decision', `decision:${decisionId.trim()}`);
-    return loop ? Object.freeze({ loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => service.getOpenLoopObservation(id))) }) : null;
+    if (!loop) return null;
+    const evidence = Object.freeze(loop.evidenceObservationIds.map(id => service.getOpenLoopObservation(id)));
+    const currentRecord = evidence.filter(item => item?.source?.kind === 'explicit-decision' && item?.facts?.decisionId === decisionId.trim()).sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || left.observationId.localeCompare(right.observationId)).at(-1);
+    return Object.freeze({ loop, evidence, ...(currentRecord ? { currentRecord } : {}) });
   };
   service.listDecisionMemories = () => Object.freeze(service.listOpenLoops().filter(loop => loop.kind === 'decision' && loop.stableSubjectId.startsWith('decision:')).map(loop => service.getDecisionMemory(loop.stableSubjectId.slice('decision:'.length))));
+  service.listCurrentDecisionMemories = () => {
+    const memories = service.listDecisionMemories();
+    const superseded = new Set(memories.flatMap(memory => memory.currentRecord?.facts?.supersedesDecisionId ? [memory.currentRecord.facts.supersedesDecisionId] : []));
+    return Object.freeze(memories.filter(memory => memory.currentRecord?.facts?.status !== 'superseded' && !superseded.has(memory.currentRecord?.facts?.decisionId)));
+  };
 }

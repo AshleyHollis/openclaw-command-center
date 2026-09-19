@@ -13,7 +13,7 @@ function event(overrides = {}) {
     schemaVersion: 1,
     source: { system: 'fictional-orders', kind: 'order-event', externalId: 'event-1', version: 'v1' },
     eventKind: 'order-placed',
-    subject: { kind: 'order', id: 'ORDER-FICTIONAL-1' },
+    subject: { kind: 'order', namespace: 'example-joinery', id: 'ORDER-FICTIONAL-1' },
     occurredAt: now,
     observedAt: now,
     historicalBaseline: false,
@@ -38,9 +38,9 @@ const ingest = (service, logicalOperationId, value) => service.ingestTransaction
 
 test('quote revisions preserve both sources and request comparison without claiming an increase', async () => {
   await withService(service => {
-    const first = ingest(service, 'quote-v1', event({ eventKind: 'quote-issued', subject: { kind: 'quote', id: 'QUOTE-FICTIONAL-8' }, source: { system: 'fictional-documents', externalId: 'quote-8', version: 'v1' }, summary: 'Initial fictional benchtop quote.', amount: 910000, amountBasis: 'excluding-tax', expectedAt: undefined, installationRequired: undefined }));
+    const first = ingest(service, 'quote-v1', event({ eventKind: 'quote-issued', subject: { kind: 'quote', namespace: 'example-joinery', id: 'QUOTE-FICTIONAL-8' }, source: { system: 'fictional-documents', externalId: 'quote-8', version: 'v1' }, summary: 'Initial fictional benchtop quote.', amount: 910000, amountBasis: 'excluding-tax', expectedAt: undefined, installationRequired: undefined }));
     assert.equal(projectQuietAttention(first.loop, { now }).group, 'suggested');
-    const revised = ingest(service, 'quote-v2', event({ eventKind: 'quote-revised', subject: { kind: 'quote', id: 'QUOTE-FICTIONAL-8' }, source: { system: 'fictional-documents', externalId: 'quote-8', version: 'v2' }, summary: 'Revised fictional benchtop quote.', amount: 995000, amountBasis: 'including-tax', expectedAt: undefined, installationRequired: undefined, materialChanges: ['amount-or-basis-changed'] }));
+    const revised = ingest(service, 'quote-v2', event({ eventKind: 'quote-revised', subject: { kind: 'quote', namespace: 'example-joinery', id: 'QUOTE-FICTIONAL-8' }, source: { system: 'fictional-documents', externalId: 'quote-8', version: 'v2' }, summary: 'Revised fictional benchtop quote.', amount: 995000, amountBasis: 'including-tax', expectedAt: undefined, installationRequired: undefined, materialChanges: ['amount-or-basis-changed'] }));
     assert.equal(revised.loop.loopId, first.loop.loopId);
     assert.equal(revised.loop.evidenceObservationIds.length, 2);
     assert.equal(projectQuietAttention(revised.loop, { now }).reason, 'material-change');
@@ -84,10 +84,41 @@ test('a corrected expected date surfaces once while exact replay remains duplica
 test('same supplier does not let an unrelated delivery close another exact order', async () => {
   await withService(service => {
     const first = ingest(service, 'first-order', event());
-    const other = ingest(service, 'other-delivery', event({ subject: { kind: 'order', id: 'ORDER-FICTIONAL-2' }, source: { system: 'fictional-orders', kind: 'order-event', externalId: 'event-other', version: 'v1' }, eventKind: 'delivery-complete', amount: undefined, currency: undefined, amountBasis: undefined, installationRequired: false, summary: 'A different fictional order arrived.' }));
+    const other = ingest(service, 'other-delivery', event({ subject: { kind: 'order', namespace: 'example-joinery', id: 'ORDER-FICTIONAL-2' }, source: { system: 'fictional-orders', kind: 'order-event', externalId: 'event-other', version: 'v1' }, eventKind: 'delivery-complete', amount: undefined, currency: undefined, amountBasis: undefined, installationRequired: false, summary: 'A different fictional order arrived.' }));
     assert.notEqual(first.loop.loopId, other.loop.loopId);
     assert.equal(other.loop.state, 'resolved');
     assert.equal(service.getOpenLoop(first.loop.loopId).state, 'confirmed');
+  });
+});
+
+test('the same order number in different authority namespaces never merges', async () => {
+  await withService(service => {
+    const first = ingest(service, 'namespace-order-one', event());
+    const second = ingest(service, 'namespace-order-two', event({ subject: { kind: 'order', namespace: 'other-supplier-account', id: 'ORDER-FICTIONAL-1' }, source: { system: 'other-orders', kind: 'order-event', externalId: 'other-event', version: 'v1' } }));
+    assert.notEqual(first.loop.loopId, second.loop.loopId);
+  });
+});
+
+test('delimiter characters in transaction namespace fields cannot create tuple collisions', async () => {
+  await withService(service => {
+    const first = ingest(service, 'transaction-delimiter-one', event({ subject: { kind: 'order', namespace: 'authority:account', id: 'one' }, source: { system: 'fictional-orders', kind: 'order-event', externalId: 'delimiter-one', version: 'v1' } }));
+    const second = ingest(service, 'transaction-delimiter-two', event({ subject: { kind: 'order', namespace: 'authority', id: 'account:one' }, source: { system: 'fictional-orders', kind: 'order-event', externalId: 'delimiter-two', version: 'v1' } }));
+    assert.notEqual(first.loop.loopId, second.loop.loopId);
+  });
+});
+
+test('delayed historical and older current events append evidence without reopening a completed order', async () => {
+  await withService(service => {
+    ingest(service, 'terminal-order-place', event({ occurredAt: '2026-09-18T00:00:00.000Z' }));
+    const completed = ingest(service, 'terminal-order-installed', event({ eventKind: 'installation-complete', source: { system: 'fictional-installer', kind: 'installation-record', externalId: 'terminal-installation', version: 'v1' }, occurredAt: '2026-09-20T00:00:00.000Z', amount: undefined, currency: undefined, amountBasis: undefined, expectedAt: undefined, summary: 'Installation completed.' }));
+    const historical = ingest(service, 'late-historical-dispatch', event({ eventKind: 'dispatch', source: { system: 'fictional-orders', kind: 'order-event', externalId: 'late-history', version: 'v1' }, historicalBaseline: true, occurredAt: '2026-09-19T00:00:00.000Z', amount: undefined, currency: undefined, amountBasis: undefined, summary: 'An archived dispatch arrived late.' }));
+    assert.equal(historical.loop.state, 'resolved');
+    const olderCurrent = ingest(service, 'late-current-dispatch', event({ eventKind: 'dispatch', source: { system: 'fictional-orders', kind: 'order-event', externalId: 'late-current', version: 'v1' }, occurredAt: '2026-09-19T12:00:00.000Z', observedAt: '2026-09-21T00:00:00.000Z', amount: undefined, currency: undefined, amountBasis: undefined, summary: 'A delayed dispatch notification arrived.' }));
+    assert.equal(olderCurrent.loop.state, 'resolved');
+    assert.equal(olderCurrent.loop.evidenceObservationIds.length, completed.loop.evidenceObservationIds.length + 2);
+    const newerOffset = ingest(service, 'newer-offset-dispatch', event({ eventKind: 'dispatch', source: { system: 'fictional-orders', kind: 'order-event', externalId: 'newer-offset', version: 'v1' }, occurredAt: '2026-09-19T20:30:00-04:00', observedAt: '2026-09-21T01:00:00.000Z', amount: undefined, currency: undefined, amountBasis: undefined, summary: 'A genuinely newer dispatch event conflicts with completion.' }));
+    assert.equal(newerOffset.loop.state, 'uncertain');
+    assert.equal(newerOffset.loop.attention.reason, 'evidence-conflict');
   });
 });
 
@@ -103,11 +134,27 @@ test('an exact cancellation closes only its order and retains cancellation evide
   });
 });
 
+test('older terminal evidence cannot replace a newer terminal outcome and newer contradictions reconcile', async () => {
+  await withService(service => {
+    ingest(service, 'terminal-conflict-place', event({ occurredAt: '2026-09-18T00:00:00.000Z' }));
+    ingest(service, 'terminal-conflict-installed', event({ eventKind: 'installation-complete', source: { system: 'fictional-installer', kind: 'installation-record', externalId: 'terminal-conflict-install', version: 'v1' }, occurredAt: '2026-09-20T00:00:00.000Z', amount: undefined, currency: undefined, amountBasis: undefined, expectedAt: undefined, summary: 'Installation completed.' }));
+    const oldCancellation = ingest(service, 'terminal-conflict-old-cancel', event({ eventKind: 'order-cancelled', source: { system: 'fictional-orders', kind: 'order-event', externalId: 'terminal-conflict-cancel-old', version: 'v1' }, historicalBaseline: true, occurredAt: '2026-09-19T00:00:00.000Z', amount: undefined, currency: undefined, amountBasis: undefined, expectedAt: undefined, summary: 'An archived cancellation event arrived late.', materialChanges: ['order-cancelled'] }));
+    assert.equal(oldCancellation.loop.state, 'resolved');
+    const newCancellation = ingest(service, 'terminal-conflict-new-cancel', event({ eventKind: 'order-cancelled', source: { system: 'fictional-orders', kind: 'order-event', externalId: 'terminal-conflict-cancel-new', version: 'v1' }, occurredAt: '2026-09-21T00:00:00.000Z', observedAt: '2026-09-21T01:00:00.000Z', amount: undefined, currency: undefined, amountBasis: undefined, expectedAt: undefined, summary: 'A newer cancellation conflicts with installation.', materialChanges: ['order-cancelled'] }));
+    assert.equal(newCancellation.loop.state, 'uncertain');
+
+    ingest(service, 'cancelled-first-place', event({ subject: { kind: 'order', namespace: 'example-joinery', id: 'ORDER-CANCELLED-FIRST' }, source: { system: 'fictional-orders', kind: 'order-event', externalId: 'cancelled-first-place', version: 'v1' }, occurredAt: '2026-09-18T00:00:00.000Z' }));
+    ingest(service, 'cancelled-first-cancel', event({ eventKind: 'order-cancelled', subject: { kind: 'order', namespace: 'example-joinery', id: 'ORDER-CANCELLED-FIRST' }, source: { system: 'fictional-orders', kind: 'order-event', externalId: 'cancelled-first-cancel', version: 'v1' }, occurredAt: '2026-09-20T00:00:00.000Z', amount: undefined, currency: undefined, amountBasis: undefined, expectedAt: undefined, summary: 'Order cancelled.', materialChanges: ['order-cancelled'] }));
+    const oldInstallation = ingest(service, 'cancelled-first-old-install', event({ eventKind: 'installation-complete', subject: { kind: 'order', namespace: 'example-joinery', id: 'ORDER-CANCELLED-FIRST' }, source: { system: 'fictional-installer', kind: 'installation-record', externalId: 'cancelled-first-old-install', version: 'v1' }, historicalBaseline: true, occurredAt: '2026-09-19T00:00:00.000Z', amount: undefined, currency: undefined, amountBasis: undefined, expectedAt: undefined, summary: 'An older installation claim arrived.' }));
+    assert.equal(oldInstallation.loop.state, 'cancelled');
+  });
+});
+
 test('appointment revisions retain history and request a decision for the exact appointment', async () => {
   await withService(service => {
-    const confirmed = ingest(service, 'appointment-confirmed', event({ eventKind: 'appointment-confirmed', subject: { kind: 'appointment', id: 'APPOINTMENT-FICTIONAL-1' }, source: { system: 'fictional-calendar-mail', kind: 'appointment', externalId: 'appointment-message', version: 'v1' }, amount: undefined, currency: undefined, amountBasis: undefined, installationRequired: undefined, expectedAt: '2026-10-01T03:00:00.000Z', summary: 'Fictional benchtop measure appointment.' }));
+    const confirmed = ingest(service, 'appointment-confirmed', event({ eventKind: 'appointment-confirmed', subject: { kind: 'appointment', namespace: 'example-joinery', id: 'APPOINTMENT-FICTIONAL-1' }, source: { system: 'fictional-calendar-mail', kind: 'appointment', externalId: 'appointment-message', version: 'v1' }, amount: undefined, currency: undefined, amountBasis: undefined, installationRequired: undefined, expectedAt: '2026-10-01T03:00:00.000Z', summary: 'Fictional benchtop measure appointment.' }));
     assert.equal(confirmed.loop.state, 'suggested');
-    const revised = ingest(service, 'appointment-revised', event({ eventKind: 'appointment-revised', subject: { kind: 'appointment', id: 'APPOINTMENT-FICTIONAL-1' }, source: { system: 'fictional-calendar-mail', kind: 'appointment', externalId: 'appointment-message', version: 'v2' }, amount: undefined, currency: undefined, amountBasis: undefined, installationRequired: undefined, expectedAt: '2026-10-03T05:00:00.000Z', summary: 'Fictional benchtop measure appointment changed.', materialChanges: ['appointment-time-changed'] }));
+    const revised = ingest(service, 'appointment-revised', event({ eventKind: 'appointment-revised', subject: { kind: 'appointment', namespace: 'example-joinery', id: 'APPOINTMENT-FICTIONAL-1' }, source: { system: 'fictional-calendar-mail', kind: 'appointment', externalId: 'appointment-message', version: 'v2' }, amount: undefined, currency: undefined, amountBasis: undefined, installationRequired: undefined, expectedAt: '2026-10-03T05:00:00.000Z', summary: 'Fictional benchtop measure appointment changed.', materialChanges: ['appointment-time-changed'] }));
     assert.equal(revised.loop.loopId, confirmed.loop.loopId);
     assert.equal(revised.loop.state, 'decision-needed');
     assert.equal(projectQuietAttention(revised.loop, { now }).reason, 'material-change');
@@ -125,7 +172,7 @@ test('historical orders and old expected dates build a quiet baseline', async ()
 });
 
 test('transaction intake rejects ambiguous identity and invalid event families', () => {
-  assert.throws(() => planTransactionEvent(event({ subject: { kind: 'order', id: '' } })), /subject.id/);
-  assert.throws(() => planTransactionEvent(event({ eventKind: 'quote-issued', subject: { kind: 'order', id: 'ORDER-FICTIONAL-1' } })), /does not match/);
+  assert.throws(() => planTransactionEvent(event({ subject: { kind: 'order', namespace: 'example-joinery', id: '' } })), /subject.id/);
+  assert.throws(() => planTransactionEvent(event({ eventKind: 'quote-issued', subject: { kind: 'order', namespace: 'example-joinery', id: 'ORDER-FICTIONAL-1' } })), /does not match/);
   assert.throws(() => planTransactionEvent(event({ amountBasis: 'probably-taxed' })), /amountBasis/);
 });

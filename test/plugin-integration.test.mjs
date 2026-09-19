@@ -93,7 +93,7 @@ test('native registration exposes authenticated Topic methods without an iframe 
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
-test('registered open-loop bridge reads evidence and records payment status without making a payment', async () => {
+test('registered open-loop bridge remains unavailable before host-pair qualification', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-open-loop-bridge-'));
   let service;
   try {
@@ -123,17 +123,16 @@ test('registered open-loop bridge reads evidence and records payment status with
     plugin.register(host.api);
     service = host.services[0];
     await service.start();
-    const listed = await host.authenticatedGatewayRequest('command-center.v1.open-loops.list', { schemaVersion: 1, offset: 0, limit: 20 });
-    assert.equal(listed.result.total, 1);
-    assert.equal(listed.result.loops[0].loopId, created.loop.loopId);
-    const detail = await host.authenticatedGatewayRequest('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: created.loop.loopId });
-    assert.equal(detail.result.evidence[0].invoiceId, 'INVOICE-FICTIONAL-48');
-    assert.equal(JSON.stringify(detail).includes('private-attachment-id'), false);
-    const pending = await host.authenticatedGatewayRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 1, paymentState: 'payment-pending', rationale: 'A fictional transfer was initiated; settlement is not yet verified.' });
-    assert.equal(pending.result.loop.paymentState, 'payment-pending');
-    assert.equal(pending.result.loop.state, 'monitoring');
-    const after = await host.authenticatedGatewayRequest('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: created.loop.loopId });
-    assert.equal(after.result.evidence.some(item => item.sourceKind === 'user-decision'), true);
+    const operationId = randomUUID();
+    const intent = { schemaVersion: 1, logicalOperationId: operationId, loopId: created.loop.loopId, expectedRevision: 1, paymentState: 'payment-pending', rationale: 'A fictional transfer was initiated; settlement is not yet verified.', authenticatedOperatorId: 'fictional-operator' };
+    const applied = service.openLoopsPaymentStatus(intent);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const replayed = service.openLoopsPaymentStatus(intent);
+    assert.equal(applied.disposition, 'applied');
+    assert.equal(replayed.disposition, 'duplicate');
+    assert.equal(replayed.loop.revision, applied.loop.revision);
+    await assert.rejects(host.authenticatedGatewayRequest('command-center.v1.open-loops.list', { schemaVersion: 1, offset: 0, limit: 20 }), error => error.code === 'feature-unavailable');
+    await assert.rejects(host.authenticatedGatewayRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, paymentState: 'paid', rationale: 'A fictional settlement was verified.' }), error => error.code === 'feature-unavailable');
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

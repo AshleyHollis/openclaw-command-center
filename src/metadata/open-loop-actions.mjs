@@ -23,16 +23,16 @@ export function installOpenLoopActions(service, { ErrorType }) {
     const logicalOperationId = text(input.logicalOperationId, 'logicalOperationId', 300);
     return {
       logicalOperationId,
-      observationId: `user-decision:${hash(`${operationKind}\u0000${logicalOperationId}`).slice(0, 40)}`,
-      observeOperationId: `open-loop-action:observe:${hash(logicalOperationId).slice(0, 40)}`,
-      reconcileOperationId: `open-loop-action:reconcile:${hash(logicalOperationId).slice(0, 40)}`
+      observationId: `user-decision:${hash(`${operationKind}\u0000${logicalOperationId}`).slice(0, 40)}`
     };
   }
   function record({ input, operationKind, facts, transition }) {
     const ids = identifiers(input, operationKind);
+    const { updatedAt: _ownerTime, ...rootIntent } = input;
+    const replay = service.replayOpenLoopChange({ schemaVersion: 1, logicalOperationId: ids.logicalOperationId, operationKind, intent: rootIntent });
+    if (replay) return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', loop: replay.loop });
     const loop = service.getOpenLoop(text(input.loopId, 'loopId', 300));
     if (!loop) fail('open-loop-missing');
-    if (service.getOpenLoopObservation(ids.observationId) && loop.evidenceObservationIds.includes(ids.observationId)) return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', loop });
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision !== loop.revision) fail('open-loop-stale-revision');
     const updatedAt = instant(input.updatedAt, 'updatedAt');
     const actorId = text(input.actorId, 'actorId', 200);
@@ -52,9 +52,8 @@ export function installOpenLoopActions(service, { ErrorType }) {
       entityRefs: [{ kind: 'open-loop', id: loop.loopId, evidence: ['explicit-user-action'] }],
       facts: { operationKind, actorId, rationale, ...facts }
     };
-    service.ingestOpenLoopObservation({ schemaVersion: 1, logicalOperationId: ids.observeOperationId, observation });
-    const reconciled = service.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: ids.reconcileOperationId, expectedRevision: loop.revision, loop: { ...next, evidenceObservationIds: [...loop.evidenceObservationIds, ids.observationId], revision: loop.revision + 1 }, evidenceRoles: { [ids.observationId]: next.state === 'resolved' || next.state === 'cancelled' ? 'resolution' : 'update' }, updatedAt });
-    return Object.freeze({ schemaVersion: 1, disposition: 'applied', loop: reconciled.loop });
+    const changed = service.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: ids.logicalOperationId, operationKind, intent: rootIntent, expectedRevision: loop.revision, observation, loop: { ...next, evidenceObservationIds: [...loop.evidenceObservationIds, ids.observationId], revision: loop.revision + 1 }, evidenceRoles: { [ids.observationId]: next.state === 'resolved' || next.state === 'cancelled' ? 'resolution' : 'update' }, updatedAt });
+    return Object.freeze({ schemaVersion: 1, disposition: changed.disposition === 'updated' ? 'applied' : changed.disposition, loop: changed.loop });
   }
 
   service.recordOpenLoopDecision = input => {

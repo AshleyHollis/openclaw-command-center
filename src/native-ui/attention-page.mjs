@@ -65,10 +65,13 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     if (!openLoops || typeof openLoops !== 'object' || !Number.isSafeInteger(openLoops.total)) return;
     content.append(element('h2', 'Open loops'));
     content.append(element('p', `${openLoops.attentionTotal} need attention · ${openLoops.comingUpTotal} coming up · ${openLoops.waitingTotal} waiting · ${openLoops.suggestedTotal} suggestions · ${openLoops.deferredTotal} deferred`));
-    const groups = [['Needs attention', openLoops.highlighted], ['Coming up', openLoops.comingUp]];
+    const groups = [['Needs attention', openLoops.highlighted], ['Coming up', openLoops.comingUp], ['Waiting', openLoops.waiting], ['Suggestions', openLoops.suggested], ['Deferred', openLoops.deferred], ['Needs reconciliation', openLoops.reconciliation]];
     for (const [label, cards] of groups) {
       if (!Array.isArray(cards) || cards.length === 0) continue;
-      content.append(element('h3', label));
+      const quiet = ['Waiting', 'Suggestions', 'Deferred', 'Needs reconciliation'].includes(label);
+      const group = quiet ? element('details') : content;
+      if (quiet) { group.dataset.openLoopGroup = label; group.append(element('summary', `${label} (${cards.length} shown)`)); content.append(group); }
+      else content.append(element('h3', label));
       for (const card of cards) {
         if (!nonBlank(card.loopId) || !nonBlank(card.title)) continue;
         const row = element('article'); row.dataset.openLoopId = card.loopId;
@@ -108,11 +111,17 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
             save.disabled = true;
             try {
-              const response = unwrap(await host.request('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, paymentState: choice.value, rationale: rationale.value.trim() }));
-              if (!current(pending) || response?.loop?.loopId !== card.loopId) return;
+              const key = `open-loop-payment:${card.loopId}`;
+              const operation = operations.get(key) ?? { method: 'command-center.v1.open-loops.payment-status', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, paymentState: choice.value, rationale: rationale.value.trim() } };
+              operations.set(key, operation);
+              const envelope = await host.request(operation.method, operation.params);
+              const response = unwrap(envelope);
+              if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId) throw new Error('The payment outcome is not confirmed. Retry to reconcile the same operation.');
+              if (!current(pending)) return;
+              operations.delete(key);
               await load();
               if (!signal.aborted && presented && readable()) report('Payment status recorded. No payment was submitted.');
-            } catch (error) { if (current(pending)) report(error?.message || 'Payment status was not recorded.'); }
+            } catch (error) { if (current(pending)) report(error?.message || 'Payment outcome is unknown. Retry to reconcile the same operation.'); }
             finally { if (current(pending)) save.disabled = false; }
           }, { signal });
           actionDisclosure.append(form); row.append(actionDisclosure);
@@ -127,18 +136,46 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
             save.disabled = true;
             try {
-              const response = unwrap(await host.request('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, decision: 'resolve', rationale: rationale.value.trim() }));
-              if (!current(pending) || response?.loop?.loopId !== card.loopId) return;
+              const key = `open-loop-response:${card.loopId}`;
+              const operation = operations.get(key) ?? { method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, decision: 'resolve', rationale: rationale.value.trim() } };
+              operations.set(key, operation);
+              const envelope = await host.request(operation.method, operation.params);
+              const response = unwrap(envelope);
+              if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId) throw new Error('The response outcome is not confirmed. Retry to reconcile the same operation.');
+              if (!current(pending)) return;
+              operations.delete(key);
               await load();
               if (!signal.aborted && presented && readable()) report('Response outcome recorded. No message was sent.');
-            } catch (error) { if (current(pending)) report(error?.message || 'Response outcome was not recorded.'); }
+            } catch (error) { if (current(pending)) report(error?.message || 'Response outcome is unknown. Retry to reconcile the same operation.'); }
             finally { if (current(pending)) save.disabled = false; }
           }, { signal });
           actionDisclosure.append(form); row.append(actionDisclosure);
         }
-        content.append(row);
+        group.append(row);
       }
     }
+    const inventory = element('details'); inventory.dataset.openLoopInventory = 'true'; inventory.append(element('summary', `Review all open loops (${openLoops.total})`));
+    const inventoryRows = element('section'); inventoryRows.setAttribute('aria-label', 'All open loops');
+    const more = element('button', 'Load open loops'); more.type = 'button'; let offset = 0; let cursor;
+    more.addEventListener('click', async () => {
+      if (!current(pending) || more.disabled) return;
+      more.disabled = true;
+      try {
+        const page = unwrap(await host.request('command-center.v1.open-loops.list', { schemaVersion: 1, offset, limit: 20, ...(cursor === undefined ? {} : { cursor }) }));
+        if (!current(pending) || !Array.isArray(page?.loops) || page.offset !== offset) throw new Error('The open-loop inventory changed. Refresh before continuing.');
+        for (const loop of page.loops) {
+          if (!nonBlank(loop.loopId) || !nonBlank(loop.title) || inventoryRows.querySelector(`[data-open-loop-id="${CSS.escape(loop.loopId)}"]`)) continue;
+          const row = element('article'); row.dataset.openLoopId = loop.loopId;
+          row.append(element('h4', loop.title), element('p', [loop.paymentState ?? loop.state, nonBlank(loop.dueAt) ? `Due ${loop.dueAt}` : null].filter(Boolean).join(' · ')));
+          inventoryRows.append(row);
+        }
+        offset = page.nextOffset ?? offset + page.loops.length;
+        cursor = page.nextCursor ?? cursor;
+        if (page.hasMore && nonBlank(page.nextCursor)) { more.textContent = 'Load more open loops'; more.disabled = false; }
+        else more.remove();
+      } catch (error) { if (current(pending)) { more.disabled = false; report(error?.message || 'The open-loop inventory is unavailable.'); } }
+    }, { signal });
+    inventory.append(inventoryRows, more); content.append(inventory);
   }
 
   function render(episode) {

@@ -1,11 +1,7 @@
-import { createHash } from 'node:crypto';
 import { planMessageIntake } from '../open-loops/message-intake.mjs';
-
-const digest = value => createHash('sha256').update(value).digest('hex');
 
 export function installMessageIntake(service, { ErrorType }) {
   const fail = (code, message = code) => { throw new ErrorType(code, message); };
-  const operationId = (root, suffix) => `message-intake:${suffix}:${digest(root).slice(0, 40)}`;
   const merge = (existing, candidate, historicalBaseline, disposition) => {
     const evidenceObservationIds = [...new Set([...existing.evidenceObservationIds, ...candidate.evidenceObservationIds])];
     const incomingCurrent = !historicalBaseline;
@@ -57,21 +53,28 @@ export function installMessageIntake(service, { ErrorType }) {
     const rootId = input.logicalOperationId.trim();
     const plan = planMessageIntake(input.message);
     const { digest: _observationDigest, ...observation } = plan.observation;
-    const observationResult = service.ingestOpenLoopObservation({ schemaVersion: 1, logicalOperationId: operationId(rootId, 'observation'), observation });
-    if (!plan.loop) return Object.freeze({ schemaVersion: 1, disposition: 'informational', observation: observationResult.observation, loop: null });
+    const operationKind = 'message-intake';
+    const replay = service.replayOpenLoopChange({ schemaVersion: 1, logicalOperationId: rootId, operationKind, intent: input.message });
+    if (replay) return Object.freeze({ ...replay, disposition: 'duplicate' });
+    if (!plan.loop) {
+      const changed = service.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: rootId, operationKind, intent: input.message, expectedRevision: 0, observation, loop: null, updatedAt: plan.observation.observedAt });
+      return Object.freeze({ schemaVersion: 1, disposition: 'informational', observation: changed.observation, loop: null });
+    }
     const existing = service.findOpenLoopBySubject(plan.loop.kind, plan.loop.stableSubjectId);
-    if (existing?.evidenceObservationIds.includes(plan.observation.observationId)) return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', observation: observationResult.observation, loop: existing });
     const loop = existing ? merge(existing, plan.loop, plan.observation.historicalBaseline, input.message.disposition) : plan.loop;
     const newObservationId = plan.observation.observationId;
     const conflict = loop.attention?.reason === 'evidence-conflict';
-    const result = service.reconcileOpenLoop({
+    const result = service.applyOpenLoopChange({
       schemaVersion: 1,
-      logicalOperationId: operationId(rootId, 'loop'),
+      logicalOperationId: rootId,
+      operationKind,
+      intent: input.message,
       expectedRevision: existing?.revision ?? 0,
+      observation,
       loop,
       evidenceRoles: { [newObservationId]: conflict ? 'conflict' : existing ? 'update' : 'origin' },
       updatedAt: plan.observation.observedAt
     });
-    return Object.freeze({ schemaVersion: 1, disposition: result.disposition, observation: observationResult.observation, loop: result.loop });
+    return Object.freeze({ schemaVersion: 1, disposition: result.disposition, observation: result.observation, loop: result.loop });
   };
 }

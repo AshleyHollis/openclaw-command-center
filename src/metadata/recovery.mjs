@@ -200,7 +200,7 @@ function validateManifestShape(manifest) {
   if (!manifest.migration || canonicalJson(manifest.migration) !== canonicalJson(currentContract.migration)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest migration contract differs.');
   if (manifest.snapshotId !== manifest.snapshot.sha256) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery snapshot identity does not match its content digest.');
   const releaseMatches = canonicalJson(manifest.sourceRelease) === canonicalJson(currentContract.sourceRelease)
-    && [currentContract.targetRelease, legacyContract.targetRelease, schemaFiveRelease, schemaFourRelease, schemaSixRelease, schemaSevenRelease, ...(manifest.snapshot.schemaVersion === 1 ? [schemaTwoRelease] : [])].some((target) => canonicalJson(manifest.targetRelease) === canonicalJson(target));
+    && [currentContract.targetRelease, legacyContract.targetRelease, schemaFiveRelease, schemaFourRelease, schemaSixRelease, schemaSevenRelease, schemaEightRelease, ...(manifest.snapshot.schemaVersion === 1 ? [schemaTwoRelease] : [])].some((target) => canonicalJson(manifest.targetRelease) === canonicalJson(target));
   if (!releaseMatches) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest compatibility facts differ.');
   if (!['prepared', 'committed'].includes(manifest.state)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest state is invalid.');
   return manifest;

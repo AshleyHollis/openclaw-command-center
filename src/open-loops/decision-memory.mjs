@@ -24,7 +24,7 @@ function subject(value) {
 
 export function planDecisionRecord(input) {
   const value = object(input, 'decision record');
-  closed(value, ['schemaVersion', 'decisionId', 'status', 'decidedAt', 'actorId', 'subject', 'topicId', 'chosenOption', 'alternatives', 'rationale', 'assumptions', 'sourceObservationIds'], 'decision record');
+  closed(value, ['schemaVersion', 'decisionId', 'status', 'decidedAt', 'actorId', 'subject', 'topicId', 'chosenOption', 'alternatives', 'rationale', 'assumptions', 'sourceObservationIds', 'supersedesDecisionId', 'supersededByDecisionId'], 'decision record');
   if (value.schemaVersion !== 1 || !decisionStatuses.has(value.status)) fail('decision status is unsupported');
   const decisionId = text(value.decisionId, 'decisionId', 300);
   const decidedAt = instant(value.decidedAt, 'decidedAt');
@@ -36,7 +36,11 @@ export function planDecisionRecord(input) {
   const assumptions = strings(value.assumptions, 'assumptions', 24, 1000);
   const sourceObservationIds = strings(value.sourceObservationIds, 'sourceObservationIds', 24, 300);
   const rationale = value.rationale === undefined ? undefined : text(value.rationale, 'rationale', 2000);
-  const observationId = `decision:${hash(JSON.stringify({ decisionId, decidedAt, actorId, status: value.status, chosenOption, alternatives, rationale, assumptions, sourceObservationIds })).slice(0, 40)}`;
+  const supersedesDecisionId = value.supersedesDecisionId === undefined ? undefined : text(value.supersedesDecisionId, 'supersedesDecisionId', 300);
+  const supersededByDecisionId = value.supersededByDecisionId === undefined ? undefined : text(value.supersededByDecisionId, 'supersededByDecisionId', 300);
+  if (supersedesDecisionId && supersededByDecisionId || supersedesDecisionId === decisionId || supersededByDecisionId === decisionId) fail('decision supersession relationship is invalid');
+  if ((value.status === 'superseded') !== (supersededByDecisionId !== undefined)) fail('superseded decisions require supersededByDecisionId, and other statuses cannot use it');
+  const observationId = `decision:${hash(JSON.stringify({ decisionId, decidedAt, actorId, status: value.status, chosenOption, alternatives, rationale, assumptions, sourceObservationIds, supersedesDecisionId, supersededByDecisionId })).slice(0, 40)}`;
   const title = relatedSubject.label ?? `Decision about ${relatedSubject.kind} ${relatedSubject.id}`;
   return Object.freeze({
     schemaVersion: 1,
@@ -52,7 +56,7 @@ export function planDecisionRecord(input) {
       historicalBaseline: false,
       ...(value.topicId === undefined ? {} : { topicId: text(value.topicId, 'topicId', 300) }),
       entityRefs: Object.freeze([{ ...relatedSubject, evidence: Object.freeze(['explicit-user-decision']) }]),
-      facts: Object.freeze({ decisionId, status: value.status, actorId, ...(chosenOption === undefined ? {} : { chosenOption }), alternatives, ...(rationale === undefined ? {} : { rationale }), assumptions, sourceObservationIds })
+      facts: Object.freeze({ decisionId, status: value.status, actorId, ...(chosenOption === undefined ? {} : { chosenOption }), alternatives, ...(rationale === undefined ? {} : { rationale }), assumptions, sourceObservationIds, ...(supersedesDecisionId === undefined ? {} : { supersedesDecisionId }), ...(supersededByDecisionId === undefined ? {} : { supersededByDecisionId }) })
     }),
     loop: Object.freeze({
       schemaVersion: 1,

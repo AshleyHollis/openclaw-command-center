@@ -30,7 +30,7 @@ export function planTransactionEvent(input) {
   const source = object(value.source, 'source');
   closed(source, ['system', 'kind', 'externalId', 'version'], 'source');
   const subject = object(value.subject, 'subject');
-  closed(subject, ['kind', 'id'], 'subject');
+  closed(subject, ['kind', 'namespace', 'id'], 'subject');
   if (!subjectKinds.has(subject.kind)) fail('subject.kind is unsupported');
   if (subject.kind === 'quote' && !value.eventKind.startsWith('quote-') || subject.kind === 'appointment' && !value.eventKind.startsWith('appointment-') || subject.kind === 'order' && (value.eventKind.startsWith('quote-') || value.eventKind.startsWith('appointment-'))) fail('eventKind does not match subject.kind');
   const amount = value.amount === undefined ? undefined : Number(value.amount);
@@ -46,6 +46,7 @@ export function planTransactionEvent(input) {
   const materialChanges = strings(value.materialChanges, 'materialChanges', 12);
   const evidenceSelectors = strings(value.evidenceSelectors, 'evidenceSelectors');
   const subjectId = text(subject.id, 'subject.id', 300);
+  const subjectNamespace = text(subject.namespace, 'subject.namespace', 300);
   const sourceValue = {
     system: text(source.system, 'source.system', 80),
     kind: source.kind === undefined ? 'transaction-event' : text(source.kind, 'source.kind', 80),
@@ -55,7 +56,7 @@ export function planTransactionEvent(input) {
   const observationId = `transaction:${hash(`${sourceValue.system}\u0000${sourceValue.kind}\u0000${sourceValue.externalId}\u0000${sourceValue.version}`).slice(0, 40)}`;
   const historicalBaseline = value.historicalBaseline === true;
   const observationType = value.eventKind.startsWith('quote-') ? 'quote' : value.eventKind === 'dispatch' ? 'dispatch' : value.eventKind.startsWith('delivery-') ? 'delivery' : value.eventKind.startsWith('appointment-') ? 'appointment' : 'order';
-  const stableSubjectId = `${subject.kind}:${subjectId}`;
+  const stableSubjectId = `${subject.kind}:${hash(JSON.stringify([subjectNamespace, subjectId])).slice(0, 40)}`;
   const loopKind = subject.kind === 'quote' || subject.kind === 'appointment' ? 'decision' : 'order';
   const title = text(value.summary, 'summary', 300);
   const isRevision = ['quote-revised', 'appointment-revised'].includes(value.eventKind);
@@ -85,8 +86,8 @@ export function planTransactionEvent(input) {
       observedAt,
       historicalBaseline,
       ...(value.topicId === undefined ? {} : { topicId: text(value.topicId, 'topicId', 300) }),
-      entityRefs: Object.freeze([{ kind: subject.kind, id: subjectId, ...(value.supplier === undefined ? {} : { label: text(value.supplier, 'supplier', 200) }), evidence: Object.freeze(evidenceSelectors) }]),
-      facts: Object.freeze({ eventKind: value.eventKind, subjectKind: subject.kind, subjectId, summary: title, ...(value.supplier === undefined ? {} : { supplier: text(value.supplier, 'supplier', 200) }), ...(amount === undefined ? {} : { amount, currency, amountBasis }), ...(expectedAt === undefined ? {} : { expectedAt }), installationRequired: value.installationRequired === true, lineItemIds, materialChanges, evidenceSelectors })
+      entityRefs: Object.freeze([{ kind: subject.kind, id: `${subjectNamespace}:${subjectId}`, ...(value.supplier === undefined ? {} : { label: text(value.supplier, 'supplier', 200) }), evidence: Object.freeze(evidenceSelectors) }]),
+      facts: Object.freeze({ eventKind: value.eventKind, subjectKind: subject.kind, subjectNamespace, subjectId, summary: title, ...(value.supplier === undefined ? {} : { supplier: text(value.supplier, 'supplier', 200) }), ...(amount === undefined ? {} : { amount, currency, amountBasis }), ...(expectedAt === undefined ? {} : { expectedAt }), installationRequired: value.installationRequired === true, lineItemIds, materialChanges, evidenceSelectors })
     }),
     loop: Object.freeze({
       schemaVersion: 1,

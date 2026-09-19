@@ -119,3 +119,21 @@ test('decision contract requires explicit choice for confirmation and bounds ass
   assert.throws(() => planDecisionRecord(decision({ chosenOption: undefined })), /chosenOption/);
   assert.throws(() => planDecisionRecord(decision({ assumptions: Array.from({ length: 25 }, (_, index) => `Assumption ${index}`) })), /assumptions/);
 });
+
+test('explicit supersession has a reversible relationship and a current-decision projection', async () => {
+  await withService(service => {
+    service.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: 'supersession-original', expectedRevision: 0, decision: decision({ decisionId: 'original-choice' }) });
+    service.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: 'supersession-successor', expectedRevision: 0, decision: decision({ decisionId: 'successor-choice', decidedAt: '2026-09-21T02:00:00.000Z', chosenOption: 'Example Stone B', supersedesDecisionId: 'original-choice' }) });
+    assert.deepEqual(service.listCurrentDecisionMemories().map(item => item.currentRecord.facts.decisionId), ['successor-choice']);
+    service.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: 'supersession-reversed', expectedRevision: 1, decision: decision({ decisionId: 'successor-choice', decidedAt: '2026-09-22T02:00:00.000Z', chosenOption: 'Example Stone B', rationale: 'The replacement remains valid without superseding the separate original decision.' }) });
+    assert.deepEqual(service.listCurrentDecisionMemories().map(item => item.currentRecord.facts.decisionId).sort(), ['original-choice', 'successor-choice']);
+  });
+});
+
+test('current decision evidence is ordered by instants rather than timestamp spelling', async () => {
+  await withService(service => {
+    service.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: 'instant-decision-later', expectedRevision: 0, decision: decision({ decisionId: 'instant-choice', decidedAt: '2026-09-20T23:30:00Z', chosenOption: 'Chronologically later choice' }) });
+    service.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: 'instant-decision-earlier', expectedRevision: 1, decision: decision({ decisionId: 'instant-choice', decidedAt: '2026-09-21T01:00:00+10:00', chosenOption: 'Chronologically earlier choice' }) });
+    assert.equal(service.getDecisionMemory('instant-choice').currentRecord.facts.chosenOption, 'Chronologically later choice');
+  });
+});

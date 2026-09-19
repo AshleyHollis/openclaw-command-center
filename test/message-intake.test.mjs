@@ -26,6 +26,7 @@ function message(overrides = {}) {
     currency: 'AUD',
     dueAt: '2026-09-28T13:59:59.000Z',
     invoiceId: 'INV-FICTIONAL-42',
+    authorityId: 'EXAMPLE-ENERGY-AUTHORITY',
     accountId: 'ACCOUNT-FICTIONAL-7',
     attachmentIds: ['attachment-fictional-invoice'],
     evidenceSelectors: ['subject', 'attachment:1:invoice-number'],
@@ -94,6 +95,32 @@ test('sender, account and amount similarity never merge distinct invoices', asyn
   });
 });
 
+test('the same invoice number in different authority accounts never merges', async () => {
+  await withService(service => {
+    const first = service.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'authority-account-one', message: message() });
+    const second = service.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'authority-account-two', message: message({ source: { system: 'other-fictional-mail', externalId: 'other-account-message', version: 'v1' }, authorityId: 'OTHER-ENERGY-AUTHORITY' }) });
+    assert.notEqual(first.loop.loopId, second.loop.loopId);
+    assert.equal(service.listOpenLoops().length, 2);
+  });
+});
+
+test('delimiter characters in authority identity fields cannot create tuple collisions', async () => {
+  await withService(service => {
+    const first = service.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'delimiter-bill-one', message: message({ source: { system: 'mail-one', externalId: 'delimiter-one', version: 'v1' }, authorityId: 'authority:account', accountId: 'one', invoiceId: 'shared' }) });
+    const second = service.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'delimiter-bill-two', message: message({ source: { system: 'mail-two', externalId: 'delimiter-two', version: 'v1' }, authorityId: 'authority', accountId: 'account:one', invoiceId: 'shared' }) });
+    assert.notEqual(first.loop.loopId, second.loop.loopId);
+  });
+});
+
+test('reusing an operation ID with changed message intent fails without partial evidence', async () => {
+  await withService(service => {
+    service.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'message-root-intent', message: message() });
+    const before = service.listOpenLoopObservations().length;
+    assert.throws(() => service.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'message-root-intent', message: message({ summary: 'Changed intent under the same operation.' }) }), error => error.code === 'open-loop-intent-mismatch');
+    assert.equal(service.listOpenLoopObservations().length, before);
+  });
+});
+
 test('a current reminder after recorded payment creates reconciliation instead of silently reopening or clearing', async () => {
   await withService(service => {
     const created = service.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'intake-before-payment', message: message() });
@@ -153,7 +180,10 @@ test('partial and pending payment assertions remain open while paid resolves wit
     assert.equal(paid.loop.state, 'resolved');
     assert.equal(paid.loop.paymentState, 'paid');
     assert.equal(projectQuietAttention(paid.loop, { now: '2026-09-21T00:00:00.000Z' }).group, 'terminal');
-    assert.equal(service.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: 'paid-payment', loopId: created.loop.loopId, expectedRevision: 3, paymentState: 'paid', paidAmount: 12900, currency: 'AUD', actorId: 'operator-fictional', rationale: 'I verified the fictional payment record.', updatedAt: '2026-09-20T03:20:00.000Z' }).disposition, 'duplicate');
+    const replay = service.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: 'paid-payment', loopId: created.loop.loopId, expectedRevision: 3, paymentState: 'paid', paidAmount: 12900, currency: 'AUD', actorId: 'operator-fictional', rationale: 'I verified the fictional payment record.', updatedAt: '2026-09-20T03:21:00.000Z' });
+    assert.equal(replay.disposition, 'duplicate');
+    assert.equal(replay.loop.revision, 4);
+    assert.throws(() => service.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: 'paid-payment', loopId: created.loop.loopId, expectedRevision: 3, paymentState: 'paid', paidAmount: 12900, currency: 'AUD', actorId: 'operator-fictional', rationale: 'Changed intent under the prior operation ID.', updatedAt: '2026-09-20T03:22:00.000Z' }), error => error.code === 'open-loop-intent-mismatch');
     const observationCount = service.listOpenLoopObservations().length;
     assert.throws(() => service.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: 'invalid-partial', loopId: created.loop.loopId, expectedRevision: 4, paymentState: 'partially-paid', paidAmount: 12900, currency: 'AUD', actorId: 'operator-fictional', rationale: 'Invalid full amount as partial.', updatedAt: '2026-09-20T03:30:00.000Z' }), error => error.code === 'open-loop-partial-payment-invalid');
     assert.equal(service.listOpenLoopObservations().length, observationCount);

@@ -7,7 +7,7 @@ const channels = new Set(['email', 'sms']);
 const keys = new Set([
   'schemaVersion', 'channel', 'source', 'occurredAt', 'observedAt', 'historicalBaseline', 'topicId',
   'disposition', 'requestKind', 'explicitRequest', 'summary', 'payee', 'purpose', 'amount',
-  'currency', 'dueAt', 'deadlineAt', 'invoiceId', 'accountId', 'obligationId', 'conversationId',
+  'currency', 'dueAt', 'deadlineAt', 'authorityId', 'invoiceId', 'accountId', 'obligationId', 'conversationId',
   'appointmentId', 'attachmentIds', 'evidenceSelectors'
 ]);
 const sourceKeys = new Set(['system', 'externalId', 'version']);
@@ -36,7 +36,7 @@ function closed(value, allowed, field) {
   if (extra) fail(`${field} contains unsupported field ${extra}`);
   return value;
 }
-function stableId(parts) { return createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 32); }
+function stableId(parts) { return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32); }
 
 export function normalizeMessageIntake(input) {
   const value = closed(input, keys, 'message intake');
@@ -70,7 +70,7 @@ export function normalizeMessageIntake(input) {
     ...(amount === undefined ? {} : { amount, currency }),
     ...(value.dueAt === undefined ? {} : { dueAt: timestamp(value.dueAt, 'dueAt') }),
     ...(value.deadlineAt === undefined ? {} : { deadlineAt: timestamp(value.deadlineAt, 'deadlineAt') }),
-    ...Object.fromEntries(['invoiceId', 'accountId', 'obligationId', 'conversationId', 'appointmentId'].flatMap(field => value[field] === undefined ? [] : [[field, text(value[field], field, 300)]])),
+    ...Object.fromEntries(['authorityId', 'invoiceId', 'accountId', 'obligationId', 'conversationId', 'appointmentId'].flatMap(field => value[field] === undefined ? [] : [[field, text(value[field], field, 300)]])),
     attachmentIds: Object.freeze(stringList(value.attachmentIds, 'attachmentIds', 16)),
     evidenceSelectors: Object.freeze(stringList(value.evidenceSelectors, 'evidenceSelectors', 24))
   });
@@ -78,8 +78,10 @@ export function normalizeMessageIntake(input) {
 
 function subjectFor(value) {
   if (value.requestKind === 'payment') {
-    if (value.invoiceId) return `invoice:${value.invoiceId}`;
-    if (value.obligationId) return `obligation:${value.obligationId}`;
+    const authority = value.authorityId ?? value.source.system;
+    const account = value.accountId ?? 'unscoped';
+    if (value.invoiceId) return `invoice:${stableId([authority, account, value.invoiceId])}`;
+    if (value.obligationId) return `obligation:${stableId([authority, account, value.obligationId])}`;
   }
   if (value.conversationId) return `conversation:${value.conversationId}`;
   if (value.appointmentId) return `appointment:${value.appointmentId}`;
@@ -94,7 +96,7 @@ export function planMessageIntake(input) {
     requestKind: value.requestKind,
     explicitRequest: value.explicitRequest,
     summary: value.summary,
-    ...Object.fromEntries(['payee', 'purpose', 'amount', 'currency', 'dueAt', 'deadlineAt', 'invoiceId', 'accountId', 'obligationId', 'conversationId', 'appointmentId'].flatMap(field => value[field] === undefined ? [] : [[field, value[field]]])),
+    ...Object.fromEntries(['payee', 'purpose', 'amount', 'currency', 'dueAt', 'deadlineAt', 'authorityId', 'invoiceId', 'accountId', 'obligationId', 'conversationId', 'appointmentId'].flatMap(field => value[field] === undefined ? [] : [[field, value[field]]])),
     attachmentIds: value.attachmentIds,
     evidenceSelectors: value.evidenceSelectors
   };

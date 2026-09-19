@@ -16,7 +16,7 @@ function unavailable(feature) {
   throw new SourceServiceError('capability-unavailable', `Command Center ${feature} ${reason}.`);
 }
 
-const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectId', 'chosenOption', 'rationale', 'assumption', 'assessment', 'material']);
+const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'chosenOption', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId']);
 function publicOpenLoopEvidence(observation) {
   return Object.freeze({
     observationId: observation.observationId,
@@ -230,7 +230,7 @@ export function createMetadataService(api) {
       requireOperational();
       const offset = Number.isInteger(input.offset) ? input.offset : 0;
       const limit = Number.isInteger(input.limit) ? input.limit : 50;
-      return metadataService.listOpenLoopsPage({ offset, limit });
+      return metadataService.listOpenLoopsPage({ offset, limit, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) });
     },
     openLoopsGet(input = {}) {
       requireOperational();

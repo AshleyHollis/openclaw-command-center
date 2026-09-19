@@ -90,7 +90,7 @@ function compactOpenLoop(projected) {
 }
 
 function openLoopProjection(metadata, serverTime) {
-  if (typeof metadata?.getQuietAttentionInbox !== 'function') return Object.freeze({ total: 0, attentionTotal: 0, highlighted: Object.freeze([]), comingUpTotal: 0, comingUp: Object.freeze([]), waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 });
+  if (typeof metadata?.getQuietAttentionInbox !== 'function') return Object.freeze({ total: 0, attentionTotal: 0, highlighted: Object.freeze([]), comingUpTotal: 0, comingUp: Object.freeze([]), waitingTotal: 0, waiting: Object.freeze([]), suggestedTotal: 0, suggested: Object.freeze([]), deferredTotal: 0, deferred: Object.freeze([]), reconciliationTotal: 0, reconciliation: Object.freeze([]) });
   const inbox = metadata.getQuietAttentionInbox({ now: serverTime });
   const conflicts = inbox.attention.filter(item => item.reason === 'evidence-conflict');
   const ordinary = inbox.attention.filter(item => item.reason !== 'evidence-conflict').slice(0, HIGHLIGHTED_OPEN_LOOP_LIMIT);
@@ -103,9 +103,13 @@ function openLoopProjection(metadata, serverTime) {
     comingUpTotal: inbox.comingUp.length,
     comingUp: Object.freeze(inbox.comingUp.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
     waitingTotal: inbox.waiting.length,
+    waiting: Object.freeze(inbox.waiting.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
     suggestedTotal: inbox.suggested.length,
+    suggested: Object.freeze(inbox.suggested.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
     deferredTotal: inbox.deferred.length,
-    reconciliationTotal: inbox.reconciliation.length
+    deferred: Object.freeze(inbox.deferred.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    reconciliationTotal: inbox.reconciliation.length,
+    reconciliation: Object.freeze(inbox.reconciliation.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop))
   });
 }
 

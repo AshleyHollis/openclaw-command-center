@@ -27,6 +27,7 @@ function bill(overrides = {}) {
     currency: 'AUD',
     dueAt: '2026-09-28T13:59:59.000Z',
     invoiceId: 'INVOICE-FICTIONAL-RESTART',
+    authorityId: 'EXAMPLE-RENOVATIONS-AUTHORITY',
     evidenceSelectors: ['subject', 'attachment:invoice-number'],
     ...overrides
   };
@@ -49,9 +50,9 @@ test('restart preserves one bill, payment provenance and duplicate-free source r
       assert.equal(loops[0].evidenceObservationIds.length, 2);
       const replay = reopened.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'restart-intake', message: bill() });
       assert.equal(replay.disposition, 'duplicate');
-      assert.equal(replay.loop.revision, 2);
+      assert.equal(replay.loop.revision, 1, 'the intake receipt remains the immutable revision produced by that operation');
       assert.equal(reopened.listOpenLoopObservations().length, 2);
-      assert.deepEqual(reopened.listOpenLoopsPage({ offset: 0, limit: 1 }), { schemaVersion: 1, loops, total: 1, offset: 0, nextOffset: null, hasMore: false });
+      assert.deepEqual(reopened.listOpenLoopsPage({ offset: 0, limit: 1 }), { schemaVersion: 1, loops, total: 1, offset: 0, nextOffset: null, nextCursor: null, hasMore: false });
     } finally { reopened.close(); }
   } finally { first?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
@@ -90,6 +91,8 @@ test('a large historical baseline stays quiet while current requests retain hone
   assert.equal(dashboard.openLoops.attentionTotal, 5);
   assert.equal(dashboard.openLoops.highlighted.length, 3);
   assert.equal(dashboard.openLoops.waitingTotal, 500);
+  assert.equal(dashboard.openLoops.waiting.length, 20);
+  assert.equal(dashboard.openLoops.waiting[0].state, 'confirmed');
   assert.equal(dashboard.attentionBadgeCount, 5);
 });
 
@@ -107,4 +110,23 @@ test('informational history remains source evidence without producing loops', ()
   })));
   assert.equal(plans.filter(plan => plan.loop !== null).length, 0);
   assert.equal(plans.every(plan => plan.observation.type === 'general'), true);
+});
+
+test('cursor inventory does not skip or duplicate loops when an earlier row is updated', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-open-loop-cursor-'));
+  const service = openCommandCenterMetadataService({ stateDir });
+  try {
+    for (let index = 0; index < 5; index += 1) service.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: `cursor-bill-${index}`, message: bill({ source: { system: 'fictional-mail', externalId: `cursor-source-${index}`, version: 'v1' }, invoiceId: `CURSOR-INVOICE-${index}` }) });
+    const first = service.listOpenLoopsPage({ offset: 0, limit: 2 });
+    service.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: 'cursor-update-first', loopId: first.loops[0].loopId, expectedRevision: 1, paymentState: 'payment-pending', actorId: 'operator-fictional', rationale: 'Update while the bounded inventory is being reviewed.', updatedAt: '2026-09-20T02:00:00.000Z' });
+    const seen = [...first.loops.map(loop => loop.loopId)];
+    let cursor = first.nextCursor; let offset = first.nextOffset;
+    while (cursor) {
+      const page = service.listOpenLoopsPage({ offset, limit: 2, cursor });
+      seen.push(...page.loops.map(loop => loop.loopId));
+      cursor = page.nextCursor; offset = page.nextOffset;
+    }
+    assert.equal(new Set(seen).size, 5);
+    assert.deepEqual(seen.slice().sort(), service.listOpenLoops().map(loop => loop.loopId).sort());
+  } finally { service.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
