@@ -137,7 +137,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
       assert.equal(typeof note.sourceReference.referenceId, 'string');
       return note.path;
     });
-    await ready(async () => JSON.stringify(await nativePage.getByRole('button', { name: /^Read / }).allTextContents()) === JSON.stringify(paths.map(value => `Read ${value}`)));
+    await ready(async () => JSON.stringify(await nativePage.getByRole('button', { name: /^Read / }).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))) === JSON.stringify(paths.map(value => `Read ${value}`)));
     notePaths.push(...paths);
     if (!catalog.hasMore) break;
     assert.equal(catalog.nextOffset, offset + 50);
