@@ -8,9 +8,9 @@ test('native grouping journey selects a Topic row relative to its shadow-root pa
   try {
     const page = await browser.newPage();
     page.setDefaultTimeout(1000);
-    await page.setContent('<div class="sidebar-session-toolbar" hidden><button id="hidden-toolbar-sort" class="sidebar-session-sort">Sort sessions</button></div><div class="sidebar-brand__actions"><button id="visible-global-sort" class="sidebar-session-sort">Sort sessions</button></div><button id="catalog-sort" class="sidebar-session-sort sidebar-session-catalog-grouping">Catalog view</button><div role="menu"><wa-dropdown-item value="grouping:category" role="menuitemradio">Category</wa-dropdown-item></div><openclaw-plugin-page></openclaw-plugin-page><section data-session-section="category:Sample"><button aria-expanded="true">Sample</button><div data-session-key="agent:main:sample">Overview</div></section>');
+    await page.setContent('<div style="height:20px;overflow:auto"><div style="height:100px"></div><div class="sidebar-session-toolbar"><button id="visible-global-sort" class="sidebar-session-sort">Sort sessions</button></div></div><button id="catalog-sort" class="sidebar-session-sort sidebar-session-catalog-grouping">Catalog view</button><div role="menu"><wa-dropdown-item value="grouping:category" role="menuitemradio">Category</wa-dropdown-item></div><openclaw-plugin-page></openclaw-plugin-page><section data-session-section="category:Sample"><button aria-expanded="true">Sample</button><div data-session-key="agent:main:sample">Overview</div></section>');
     await page.evaluate(() => {
-      for (const id of ['hidden-toolbar-sort', 'visible-global-sort', 'catalog-sort']) {
+      for (const id of ['visible-global-sort', 'catalog-sort']) {
         document.getElementById(id).addEventListener('click', () => document.body.dataset.clickedSort = id);
       }
     });
