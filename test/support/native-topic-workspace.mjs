@@ -40,7 +40,10 @@ export async function selectNativeCategoryGrouping(page) {
     if (await invitation.count()) await invitation.click({ timeout: 10_000 });
     const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').first();
     await trigger.scrollIntoViewIfNeeded({ timeout: 10_000 });
-    await trigger.click({ timeout: 10_000 });
+    // The sidebar body and footer are independent sticky layers. Keyboard
+    // activation exercises the same native button without relying on their
+    // transient pointer hit-test boundary while the roster lays out.
+    await trigger.press('Enter', { timeout: 10_000 });
   }
   catch (error) {
     const controls = await page.locator('button').evaluateAll(buttons => buttons.slice(0, 40).map(button => {
