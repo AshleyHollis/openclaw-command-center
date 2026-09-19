@@ -1,4 +1,4 @@
-name: Capture release performance baseline
+name: Qualify Command Center release
 
 on:
   workflow_dispatch:
@@ -8,13 +8,13 @@ permissions:
   packages: read
 
 concurrency:
-  group: capture-release-performance-${{ github.ref }}
+  group: qualify-command-center-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  capture:
+  qualify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:f20b645907bdfb4bedcc14a3af3e2a7ea060c507635a9eca071fd3592a618d9d
       OPENCLAW_COMMIT: 8490d8016bdd46c8e29301efbc91f99eaab7de8d
@@ -53,7 +53,6 @@ jobs:
       - name: Materialize authenticated host descriptor
         run: |
           set -euo pipefail
-          test ! -e test/fixtures/release-performance-baseline.native-workspace.v3.json
           docker pull "$IMAGE"
           test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE")" = "$OPENCLAW_COMMIT"
           test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE")" = "$OPENCLAW_VERSION"
@@ -109,34 +108,52 @@ jobs:
           await appendFile(process.env.GITHUB_ENV, `COMMAND_CENTER_ISOLATED_HOST=${JSON.stringify(descriptor)}\n`);
           NODE
 
-      - name: Capture first exact browser observation
+      - name: Run coherent native release qualification
         env:
-          COMMAND_CENTER_ACCEPTANCE_SCENARIO: scale-performance
-          COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE: "1"
           COMMAND_CENTER_SEALED_CANDIDATE: "1"
-        run: node --test --test-isolation=none test/real-host.acceptance.test.mjs
-
-      - name: Verify captured baseline
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/performance"
-          cp test/fixtures/release-performance-baseline.native-workspace.v3.json "$RUNNER_TEMP/performance/"
+          node --test --test-isolation=none test/real-host.acceptance.test.mjs 2>&1 | tee "$RUNNER_TEMP/qualification.log"
+
+      - name: Seal qualification receipt
+        run: |
+          set -euo pipefail
           node --input-type=module <<'NODE'
-          import { readFile } from 'node:fs/promises';
+          import assert from 'node:assert/strict';
+          import { mkdir, readFile, writeFile } from 'node:fs/promises';
+          import path from 'node:path';
           import { readBuiltReceipt } from './src/build.mjs';
-          import { assertPerformanceBaselineBuildIdentity, validateReleasePerformanceBaseline } from './src/performance-baseline.mjs';
-          const baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile('test/fixtures/release-performance-baseline.native-workspace.v3.json', 'utf8')));
+          import { scanPublicEvidence } from './src/safety.mjs';
+
+          const marker = 'acceptance-result=';
+          const log = await readFile(path.join(process.env.RUNNER_TEMP, 'qualification.log'), 'utf8');
+          const lines = log.split(/\r?\n/u).filter(line => line.includes(marker));
+          assert.equal(lines.length, 1, 'qualification must emit one canonical completion receipt');
+          const acceptance = JSON.parse(lines[0].slice(lines[0].indexOf(marker) + marker.length));
           const build = await readBuiltReceipt();
-          assertPerformanceBaselineBuildIdentity(baseline, `sha256:${build.digest}`);
+          assert.equal(acceptance.outcome, 'passed');
+          assert.equal(acceptance.buildDigest, build.digest);
+          assert.equal(acceptance.performanceBaseline?.pluginBuildDigest, `sha256:${build.digest}`);
+          const receipt = {
+            schemaVersion: 1,
+            sourceCommit: process.env.GITHUB_SHA,
+            workflowRun: process.env.GITHUB_RUN_ID,
+            hostImage: process.env.IMAGE,
+            acceptance
+          };
+          scanPublicEvidence([JSON.stringify(receipt)], { label: 'qualification-receipt' });
+          const output = path.join(process.env.RUNNER_TEMP, 'qualification');
+          await mkdir(output, { recursive: true });
+          await writeFile(path.join(output, 'receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });
           NODE
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: command-center-performance-baseline-${{ github.sha }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/performance
+          name: command-center-release-qualification-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/qualification/receipt.json
           if-no-files-found: error
           retention-days: 14
 
-      - name: Record capture boundary
+      - name: Record qualification boundary
         run: |
-          printf '%s\n' 'First exact performance capture only. Commit and independently requalify this immutable baseline before release.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Coherent native release qualification passed for the exact source, plugin build, host receipt, image digest, browser and frozen performance baseline.' >> "$GITHUB_STEP_SUMMARY"
