@@ -187,7 +187,10 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   };
   const acknowledge = async receipt => {
     const pending = actionResponse('conversations.creation.acknowledge');
-    await press(creation.getByRole('button', { name: 'Acknowledge created Conversation', exact: true }));
+    // Traverse backward from the mounted page boundary. The host may replace
+    // its desktop sidebar collapse control during a forward wrap, while the
+    // plugin-owned reverse path remains stable and fully sequential.
+    await press(creation.getByRole('button', { name: 'Acknowledge created Conversation', exact: true }), { reverse: true });
     const observed = await pending;
     assert.equal(hasSuccessfulBrowserResponse(observed), true);
     assert.deepEqual(observed.value.request().postDataJSON(), { schemaVersion: 1, action: 'conversations.creation.acknowledge', topicId: fixture.topicId, logicalOperationId: receipt.logicalOperationId, referenceId: receipt.result.referenceId });
