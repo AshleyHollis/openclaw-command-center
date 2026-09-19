@@ -220,6 +220,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.open-loops.payment-status': (service, params) => service.openLoopsPaymentStatus(params),
   'command-center.v1.open-loops.renovation-requirement': (service, params) => service.openLoopsRenovationRequirement(params),
   'command-center.v1.open-loops.renovation-purchase': (service, params) => service.openLoopsRenovationPurchase(params),
+  'command-center.v1.open-loops.renovation-purchase-correction': (service, params) => service.openLoopsRenovationPurchaseCorrection(params),
   'command-center.v1.open-loops.renovation-replacement': (service, params) => service.openLoopsRenovationReplacement(params),
   'command-center.v1.open-loops.renovation-fulfilment': (service, params) => service.openLoopsRenovationFulfilment(params),
   'command-center.v1.open-loops.renovation-stage': (service, params) => service.openLoopsRenovationStage(params),

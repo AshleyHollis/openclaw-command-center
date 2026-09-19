@@ -117,11 +117,13 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
       const referenceId = reminderReferenceId(loop.loopId);
       let sourceReference = metadata.getSourceReference(referenceId);
       let schedulerJob = input.schedulerJob;
+      let expectedConfigRevision = input.expectedConfigRevision;
       const priorOperation = metadata.getOperation?.(logicalOperationId);
       if (sourceReference && schedulerJob === undefined && !priorOperation) {
         const current = await adapterFor(sourceReference.topicId).read({ schemaVersion: 1, referenceId });
         sourceReference = current.sourceReference;
         schedulerJob = current.job;
+        expectedConfigRevision = current.job?.configRevision;
       }
       const plan = planOpenLoopReminder({ loop, acceptedTiming: input.acceptedTiming, defaultTimeZone: input.defaultTimeZone ?? api?.config?.agents?.defaults?.userTimezone ?? 'UTC', sourceReference, schedulerJob });
       if (['none', 'blocked'].includes(plan.action)) return Object.freeze({ schemaVersion: 1, status: plan.action, logicalOperationId, plan });
@@ -131,7 +133,7 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
         const receipt = await reminder.create({ schemaVersion: 1, requestId: input.requestId, referenceId, logicalOperationId, declaration: plan.declaration });
         return Object.freeze({ ...receipt, plan });
       }
-      const expectedConfigRevision = nonBlank(input.expectedConfigRevision, 'expectedConfigRevision');
+      expectedConfigRevision = nonBlank(expectedConfigRevision, 'expectedConfigRevision');
       if (plan.action === 'reschedule') {
         const receipt = await reminder.reschedule({ schemaVersion: 1, requestId: input.requestId, referenceId, logicalOperationId, expectedConfigRevision, patch: { schedule: plan.declaration.schedule } });
         return Object.freeze({ ...receipt, plan });

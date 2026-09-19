@@ -17,7 +17,7 @@ function unavailable(feature) {
   throw new SourceServiceError('capability-unavailable', `Command Center ${feature} ${reason}.`);
 }
 
-const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId']);
+const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'purchaseNamespace', 'purchaseId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId']);
 function publicOpenLoopEvidence(observation) {
   return Object.freeze({
     observationId: observation.observationId,
@@ -89,6 +89,7 @@ export function createMetadataService(api) {
     const prior = metadataService.getOperation(logicalOperationId);
     if (prior) {
       if (prior.state === 'unknown') throw new SourceServiceError('unknown', 'The native Reminder outcome is unknown. Retry the unchanged open-loop action to reconcile it.');
+      if (prior.state !== 'applied') throw new SourceServiceError('conflict', 'The native Reminder was not changed. Refresh the open loop and retry with a new action.');
       return Object.freeze({ ...result, reminder: reminderSummary(prior.state, plan) });
     }
     const binding = metadataService.getSourceReference(plan.referenceId);
@@ -348,6 +349,11 @@ export function createMetadataService(api) {
     openLoopsRenovationPurchase(input = {}) {
       requireOperational(); const actorId = requireOperator(input, 'renovation purchase reconciliation');
       const result = metadataService.reconcileRenovationPurchase({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, actorId, reconciliation: input.reconciliation });
+      return reconcileOpenLoopReminder(result, input.logicalOperationId);
+    },
+    openLoopsRenovationPurchaseCorrection(input = {}) {
+      requireOperational(); const actorId = requireOperator(input, 'renovation purchase relationship corrections');
+      const result = metadataService.correctRenovationPurchase({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, actorId, correction: input.correction });
       return reconcileOpenLoopReminder(result, input.logicalOperationId);
     },
     openLoopsRenovationReplacement(input = {}) {

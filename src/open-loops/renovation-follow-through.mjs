@@ -60,6 +60,31 @@ export function planPurchasedItemReconciliation(input) {
   return Object.freeze({ requirementStableSubjectId: stableRenovationRequirementId(requirement), observation: Object.freeze({ schemaVersion: 1, observationId: observationId('renovation-purchase', sourceValue), source: sourceValue, type: 'order', occurredAt: instant(value.occurredAt, 'occurredAt'), observedAt: instant(value.observedAt, 'observedAt'), historicalBaseline: value.historicalBaseline === true, ...(value.topicId === undefined ? {} : { topicId: text(value.topicId, 'topicId') }), entityRefs: Object.freeze([entity(requirement, ['explicit-satisfies-requirement']), entity(purchase, ['exact-purchase-id'])]), facts: Object.freeze({ eventKind: 'item-purchased', requirementNamespace: requirement.namespace, requirementId: requirement.id, purchaseNamespace: purchase.namespace, purchaseId: purchase.id }) }) });
 }
 
+export function planPurchasedItemCorrection(input) {
+  const value = object(input, 'purchased item correction');
+  closed(value, ['schemaVersion', 'source', 'requirement', 'purchase', 'occurredAt', 'observedAt', 'topicId', 'rationale'], 'purchased item correction');
+  if (value.schemaVersion !== 1) fail('purchased item correction is unsupported');
+  const requirement = reference(value.requirement, 'requirement', new Set(['purchase']));
+  const purchase = reference(value.purchase, 'purchase', new Set(['purchase']));
+  const sourceValue = source(value.source);
+  return Object.freeze({
+    requirementStableSubjectId: stableRenovationRequirementId(requirement),
+    purchase,
+    observation: Object.freeze({
+      schemaVersion: 1,
+      observationId: observationId('renovation-purchase-correction', sourceValue),
+      source: sourceValue,
+      type: 'order',
+      occurredAt: instant(value.occurredAt, 'occurredAt'),
+      observedAt: instant(value.observedAt, 'observedAt'),
+      historicalBaseline: false,
+      ...(value.topicId === undefined ? {} : { topicId: text(value.topicId, 'topicId') }),
+      entityRefs: Object.freeze([entity(requirement, ['exact-requirement-id']), entity(purchase, ['explicitly-unlinked-purchase'])]),
+      facts: Object.freeze({ eventKind: 'purchase-relationship-corrected', requirementNamespace: requirement.namespace, requirementId: requirement.id, purchaseNamespace: purchase.namespace, purchaseId: purchase.id, rationale: text(value.rationale, 'rationale', 1000) })
+    })
+  });
+}
+
 export function planReplacementDisposition(input) {
   const value = object(input, 'replacement disposition');
   closed(value, ['schemaVersion', 'source', 'replacementPurchase', 'replacedItem', 'obligation', 'occurredAt', 'observedAt', 'historicalBaseline', 'topicId', 'title', 'dueAt'], 'replacement disposition');

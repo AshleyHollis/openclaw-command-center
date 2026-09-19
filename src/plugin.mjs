@@ -120,6 +120,7 @@ export default definePluginEntry({
         if (property === 'openLoopsPaymentStatus') return (input) => service.openLoopsPaymentStatus(input);
         if (property === 'openLoopsRenovationRequirement') return (input) => service.openLoopsRenovationRequirement(input);
         if (property === 'openLoopsRenovationPurchase') return (input) => service.openLoopsRenovationPurchase(input);
+        if (property === 'openLoopsRenovationPurchaseCorrection') return (input) => service.openLoopsRenovationPurchaseCorrection(input);
         if (property === 'openLoopsRenovationReplacement') return (input) => service.openLoopsRenovationReplacement(input);
         if (property === 'openLoopsRenovationFulfilment') return (input) => service.openLoopsRenovationFulfilment(input);
         if (property === 'openLoopsRenovationStage') return (input) => service.openLoopsRenovationStage(input);

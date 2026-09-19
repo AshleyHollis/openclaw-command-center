@@ -173,9 +173,11 @@ test('bounded document intake reads authoritative content and revision through t
     service.sourceService.notesRead = async () => { throw Object.assign(new Error('fictional source missing'), { code: 'not-found' }); };
     const unavailable = await service.openLoopsIngestSelected({ schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { scopeId: 'fictional-operator', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-invoice' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-document', path: 'selected-invoice.txt', occurredAt: '2026-09-21T00:00:00.000Z', observedAt: '2026-09-21T00:01:00.000Z' }] });
     assert.equal(unavailable.freshness.status, 'unavailable');
-    assert.equal(unavailable.results[0].loop, undefined);
+    assert.equal(unavailable.results[0].loop.state, 'confirmed');
     assert.match(unavailable.results[0].sourceVersion, /^unavailable:authoritative-v7:not-found$/u);
-    assert.equal(service.openLoopsGet({ loopId: result.results[0].loop.loopId }).loop.state, 'confirmed', 'a source outage must not resolve the existing obligation');
+    const afterOutage = service.openLoopsGet({ loopId: result.results[0].loop.loopId });
+    assert.equal(afterOutage.loop.state, 'confirmed', 'a source outage must not resolve the existing obligation');
+    assert.equal(afterOutage.evidence.some(item => item.sourceAvailable === false), true, 'later Attention reads must expose the durable unavailable source evidence');
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
@@ -191,8 +193,9 @@ test('registered bill actions create, defer, and cancel one native Reminder thro
     const corrected = await qualifyOpenLoop(service, 'command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 1, decision: 'correct-date', dueDate: '2026-10-05', dueTimeZone: 'Australia/Brisbane', rationale: 'The fictional invoice states a local calendar date without a time.' });
     assert.equal(corrected.loop.dueDate, '2026-10-05'); assert.equal(corrected.loop.dueAt, undefined);
     assert.equal(corrected.reminder.action, 'create'); assert.equal(gateway.jobs.size, 1); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-04T23:00:00.000Z');
+    const externallyChanged = [...gateway.jobs.values()][0]; externallyChanged.configRevision = 'revision-external-change';
     const deferred = await qualifyOpenLoop(service, 'command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, decision: 'defer', reviewAt: '2026-10-02T09:00:00.000Z', rationale: 'Review after the fictional pay cycle.' });
-    assert.equal(deferred.reminder.action, 'reschedule'); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T09:00:00.000Z');
+    assert.equal(deferred.reminder.action, 'reschedule'); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T09:00:00.000Z', 'authoritative Cron revision wins over the stale Source Reference revision');
     const paid = await qualifyOpenLoop(service, 'command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 3, paymentState: 'paid', rationale: 'The fictional settlement was verified.' });
     assert.equal(paid.reminder.action, 'cancel'); assert.equal([...gateway.jobs.values()][0].enabled, false);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
@@ -213,6 +216,8 @@ test('registered renovation bridge preserves exact purchase relationships and se
     assert.equal(requirement.loop.state, 'waiting');
     const purchased = await qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-purchase', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 1, reconciliation: { schemaVersion: 1, source: source('receipt-mixer'), requirement: ref('purchase', 'buy-mixer'), purchase: ref('purchase', 'purchased-mixer-001'), occurredAt: at, observedAt: at, historicalBaseline: false } });
     assert.equal(purchased.loop.state, 'resolved');
+    const correctedPurchase = await qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-purchase-correction', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 2, correction: { schemaVersion: 1, source: source('receipt-mixer-correction'), requirement: ref('purchase', 'buy-mixer'), purchase: ref('purchase', 'purchased-mixer-001'), occurredAt: at, observedAt: at, rationale: 'The fictional receipt line was linked to the wrong requirement.' } });
+    assert.equal(correctedPurchase.loop.state, 'waiting');
     const replacement = await qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-replacement', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 0, replacement: { schemaVersion: 1, source: source('replacement-mixer'), replacementPurchase: ref('purchase', 'replacement-mixer-002'), replacedItem: ref('renovation-item', 'faulty-mixer-001'), obligation: ref('return', 'return-faulty-mixer-001'), occurredAt: at, observedAt: at, historicalBaseline: false, title: 'Return fictional faulty mixer', dueAt: '2026-09-27T00:00:00.000Z' } });
     assert.equal(replacement.loop.state, 'confirmed');
     assert.equal(replacement.loop.expectedEvent, 'return completion');

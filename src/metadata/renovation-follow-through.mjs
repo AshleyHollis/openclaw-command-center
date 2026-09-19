@@ -1,5 +1,6 @@
 import {
   planPurchasedItemReconciliation,
+  planPurchasedItemCorrection,
   planRenovationDecisionConflict,
   planRenovationFulfilment,
   planRenovationRequirement,
@@ -78,6 +79,15 @@ export function createRenovationFollowThrough(service) {
         if (!previous || Date.parse(previous.occurredAt) < Date.parse(item.occurredAt) || previous.occurredAt === item.occurredAt && previous.observationId.localeCompare(item.observationId) < 0) stages.set(key, item);
       }
       return freeze([...stages.values()].filter(item => item.facts.active === true).map(item => projectStagePrerequisites({ stage: { namespace: item.facts.stageNamespace, id: item.facts.stageId }, ...(topicId ? { topicId } : {}) })).filter(group => group.items.length > 0));
+    },
+    correctPurchasedItem(raw) {
+      const value = command(raw, 'correction');
+      const plan = planPurchasedItemCorrection(value.correction);
+      return updateExisting(service, value, plan, 'renovation-purchase-correction', existing => {
+        const linked = existing.evidenceObservationIds.map(id => service.getOpenLoopObservation(id)).some(item => item?.facts?.eventKind === 'item-purchased' && item.facts.purchaseNamespace === plan.purchase.namespace && item.facts.purchaseId === plan.purchase.id);
+        if (!linked || existing.state !== 'resolved') throw new TypeError('renovation-purchase-relationship-missing');
+        return { ...existing, state: 'waiting', expectedEvent: 'explicitly linked purchase', attention: { actions: [], activated: false, currentEvidence: true } };
+      });
     },
     recordDecisionConflict(raw) {
       const value = command(raw, 'conflict');

@@ -198,6 +198,26 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     disclosure.append(form); row.append(disclosure);
   }
 
+  function appendRenovationRelationshipCorrectionControl(row, card, detail, pending) {
+    if (!writable() || card.state !== 'resolved' || row.querySelector('details[data-renovation-purchase-correction]')) return;
+    const requirement = detail?.evidence?.find(item => item.eventKind === 'requirement-recorded' && item.requirementKind === 'purchase' && nonBlank(item.requirementNamespace) && nonBlank(item.requirementId));
+    const purchase = [...(detail?.evidence ?? [])].reverse().find(item => item.eventKind === 'item-purchased' && nonBlank(item.purchaseNamespace) && nonBlank(item.purchaseId));
+    if (!requirement || !purchase || requirement.requirementNamespace !== purchase.purchaseNamespace) return;
+    const disclosure = element('details'); disclosure.dataset.renovationPurchaseCorrection = 'true'; disclosure.append(element('summary', 'Correct purchased item relationship'));
+    const form = element('form'); form.append(element('p', `This unlinks purchase ${purchase.purchaseId} from requirement ${requirement.requirementId} and reopens only that requirement.`));
+    const rationaleLabel = element('label', ' Rationale '); const rationale = element('textarea'); rationale.required = true; rationale.maxLength = 1000; rationaleLabel.append(rationale);
+    const save = element('button', 'Unlink purchase and reopen requirement'); save.type = 'submit'; form.append(rationaleLabel, save);
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return; save.disabled = true;
+      try {
+        const now = new Date().toISOString();
+        await submitOpenLoopOperation({ key: `renovation-purchase-correction:${card.loopId}`, method: 'command-center.v1.open-loops.renovation-purchase-correction', params: { correction: { schemaVersion: 1, source: { system: 'command-center', kind: 'explicit-purchase-relationship-correction', externalId: crypto.randomUUID(), version: 'operator-v1' }, requirement: { kind: 'purchase', namespace: requirement.requirementNamespace, id: requirement.requirementId }, purchase: { kind: 'purchase', namespace: purchase.purchaseNamespace, id: purchase.purchaseId }, occurredAt: now, observedAt: now, rationale: rationale.value.trim(), ...(card.topicId ? { topicId: card.topicId } : {}) } }, card, pending, includeLoopId: false, success: 'The incorrect purchase link was removed and the exact requirement was reopened.' });
+      } catch (error) { if (current(pending)) report(error?.message || 'The relationship correction is unknown. Retry the same operation.'); }
+      finally { if (current(pending)) save.disabled = false; }
+    }, { signal });
+    disclosure.append(form); row.append(disclosure);
+  }
+
   function appendRenovationFulfilmentControl(row, card, detail, pending) {
     if (!writable() || row.querySelector('details[data-renovation-fulfilment]')) return;
     const requirement = detail?.evidence?.find(item => item.eventKind === 'requirement-recorded' && ['purchase', 'installation'].includes(item.requirementKind) && nonBlank(item.requirementNamespace) && nonBlank(item.requirementId));
@@ -316,6 +336,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             if (!disclosure) { disclosure = element('details'); disclosure.dataset.openLoopEvidence = 'true'; disclosure.append(element('summary', 'Source evidence')); row.append(disclosure); }
             renderEvidence(disclosure, detail);
             appendRenovationRelationshipControl(row, card, detail, pending);
+            appendRenovationRelationshipCorrectionControl(row, card, detail, pending);
             appendRenovationFulfilmentControl(row, card, detail, pending);
             appendRenovationReplacementControl(row, card, detail, pending);
             appendRenovationStageControl(row, card, detail, pending);
@@ -403,6 +424,19 @@ export function mountAttentionPage(container, context, operations = new Map()) {
           if (!nonBlank(loop.loopId) || !nonBlank(loop.title) || inventoryRows.querySelector(`[data-open-loop-id="${CSS.escape(loop.loopId)}"]`)) continue;
           const row = element('article'); row.dataset.openLoopId = loop.loopId;
           row.append(element('h4', loop.title), element('p', [loop.paymentState ?? loop.state, formatDue(loop) ? `Due ${formatDue(loop)}` : null].filter(Boolean).join(' · ')));
+          const evidence = element('button', 'Review evidence'); evidence.type = 'button';
+          evidence.addEventListener('click', async () => {
+            if (!current(pending) || evidence.disabled) return; evidence.disabled = true;
+            try {
+              const detail = unwrap(await host.request('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: loop.loopId }));
+              if (!current(pending) || detail?.loop?.loopId !== loop.loopId) return;
+              let disclosure = row.querySelector('details[data-open-loop-evidence]');
+              if (!disclosure) { disclosure = element('details'); disclosure.dataset.openLoopEvidence = 'true'; row.append(disclosure); }
+              renderEvidence(disclosure, detail); appendRenovationRelationshipCorrectionControl(row, loop, detail, pending); disclosure.open = true;
+            } catch (error) { if (current(pending)) report(error?.message || 'Open-loop evidence is unavailable.'); }
+            finally { if (current(pending)) evidence.disabled = false; }
+          }, { signal });
+          row.append(evidence);
           appendDecisionControls(row, loop, pending);
           inventoryRows.append(row);
         }

@@ -190,21 +190,8 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     return mutate(null, db => {
       const replay = operation(db, logicalOperationId, RECONCILE_OPERATION, intentDigest);
       if (replay) return replay;
-      const existing = db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(loop.loopId);
-      if ((existing?.revision ?? 0) !== value.expectedRevision) fail('open-loop-stale-revision', 'The open loop revision is stale.');
-      const owner = db.prepare('SELECT loop_id FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(loop.kind, loop.stableSubjectId);
-      if (owner && owner.loop_id !== loop.loopId) fail('open-loop-subject-conflict');
-      if (loop.topicId && !db.prepare('SELECT 1 FROM topics WHERE topic_id = ?').get(loop.topicId)) fail('open-loop-topic-missing');
-      const observations = loop.evidenceObservationIds.map(id => db.prepare('SELECT observation_id FROM source_observations WHERE observation_id = ?').get(id));
-      if (observations.some(item => !item)) fail('open-loop-evidence-missing');
-      const oldEvidence = existing ? db.prepare('SELECT observation_id FROM open_loop_evidence WHERE loop_id = ?').all(loop.loopId).map(item => item.observation_id) : [];
-      if (oldEvidence.some(id => !loop.evidenceObservationIds.includes(id))) fail('open-loop-evidence-removal', 'Evidence links are append-only.');
-      const values = [loop.kind, loop.stableSubjectId, loop.title, loop.topicId ?? null, loop.state, loop.paymentState ?? null, loop.amount ?? null, loop.currency ?? null, loop.dueAt ?? null, loop.reviewAt ?? null, loop.expectedEvent ?? null, JSON.stringify(loop.attention ?? {}), loop.revision, updatedAt, loop.loopId];
-      if (existing) db.prepare(`UPDATE open_loops SET loop_kind=?, stable_subject_id=?, title=?, topic_id=?, state=?, payment_state=?, amount_minor=?, currency=?, due_at=?, review_at=?, expected_event=?, attention_json=?, revision=?, updated_at=? WHERE loop_id=?`).run(...values);
-      else db.prepare(`INSERT INTO open_loops (loop_kind, stable_subject_id, title, topic_id, state, payment_state, amount_minor, currency, due_at, review_at, expected_event, attention_json, revision, updated_at, loop_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...values, updatedAt);
-      for (const observationId of loop.evidenceObservationIds) db.prepare(`INSERT INTO open_loop_evidence (loop_id, observation_id, evidence_role, linked_at) VALUES (?, ?, ?, ?)
-        ON CONFLICT(loop_id, observation_id) DO UPDATE SET evidence_role=excluded.evidence_role`).run(loop.loopId, observationId, roles[observationId] ?? (existing ? 'update' : 'origin'), updatedAt);
-      const result = { schemaVersion: 1, disposition: existing ? 'updated' : 'created', loop: mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(loop.loopId)) };
+      const changed = storeLoop(db, loop, value.expectedRevision, roles, updatedAt);
+      const result = { schemaVersion: 1, disposition: changed.disposition, loop: changed.loop };
       return receipt(db, logicalOperationId, RECONCILE_OPERATION, intentDigest, result, updatedAt);
     });
   };

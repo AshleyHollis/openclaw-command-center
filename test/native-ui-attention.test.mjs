@@ -37,7 +37,9 @@ async function fixture(run) {
           if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('open-loops.get')) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
-            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence: [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }] } };
+            const evidence = [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }];
+            if (card.purchaseId) evidence.push({ observationId: `purchase-${card.loopId}`, type: 'order', sourceSystem: 'fictional-source', sourceKind: 'receipt', sourceVersion: 'v1', occurredAt: '2026-09-20T02:00:00.000Z', observedAt: '2026-09-20T02:01:00.000Z', historicalBaseline: false, eventKind: 'item-purchased', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId, purchaseNamespace: 'fictional-home-project', purchaseId: card.purchaseId });
+            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence } };
           }
           if (method.endsWith('open-loops.list')) {
             const loops = window.allOpenLoops.slice(params.offset, params.offset + params.limit);
@@ -63,6 +65,11 @@ async function fixture(run) {
           if (method.endsWith('open-loops.renovation-purchase')) {
             const card = [...(window.openLoops.waiting ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             Object.assign(card, { state: 'resolved', revision: card.revision + 1 });
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
+          if (method.endsWith('open-loops.renovation-purchase-correction')) {
+            const card = window.allOpenLoops.find(item => item.requirementId === params.correction.requirement.id && item.purchaseId === params.correction.purchase.id);
+            Object.assign(card, { state: 'waiting', revision: card.revision + 1 });
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('open-loops.renovation-fulfilment')) {
@@ -380,6 +387,26 @@ test('native Attention links an exact renovation purchase only after reviewing r
   assert.equal(request.params.reconciliation.requirement.id, 'buy-mixer');
   assert.equal(request.params.reconciliation.purchase.id, 'receipt-line-mixer-001');
   assert.equal(request.params.reconciliation.source.externalId, request.params.logicalOperationId);
+}));
+
+test('native Attention corrects an exact purchase relationship from the full inventory', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.allOpenLoops = [{ loopId: 'resolved-buy-mixer-loop', kind: 'general', stableSubjectId: 'renovation-requirement:fictional', title: 'Buy fictional sink mixer', state: 'resolved', requirementId: 'buy-mixer', purchaseId: 'wrong-receipt-line', evidenceObservationIds: ['requirement', 'purchase'], revision: 2 }];
+    window.mountInbox();
+  });
+  await page.getByText('Review all open loops (1)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load open loops' }).click();
+  const row = page.locator('article[data-open-loop-id="resolved-buy-mixer-loop"]');
+  await row.getByRole('button', { name: 'Review evidence' }).click();
+  await row.getByText('Correct purchased item relationship', { exact: true }).click();
+  await row.getByLabel('Rationale').fill('The fictional receipt line belongs to a different mixer.');
+  await row.getByRole('button', { name: 'Unlink purchase and reopen requirement' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-purchase-correction')));
+  assert.equal(request.params.correction.requirement.id, 'buy-mixer');
+  assert.equal(request.params.correction.purchase.id, 'wrong-receipt-line');
+  assert.match(request.params.correction.rationale, /different mixer/);
 }));
 
 test('native Attention records delivery separately from required installation', () => fixture(async (page) => {

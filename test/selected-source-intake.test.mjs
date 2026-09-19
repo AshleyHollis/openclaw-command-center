@@ -120,9 +120,11 @@ test('source unavailability is durable and visible without resolving its open lo
     assert.equal(unavailable.freshness.status, 'unavailable');
     assert.equal(unavailable.freshness.lastAvailableAt, first.freshness.lastAvailableAt);
     assert.equal(unavailable.results[0].observation.facts.unavailableReason, 'permission-revoked');
-    assert.equal(unavailable.results[0].loop, null);
+    assert.equal(unavailable.results[0].loop.state, 'confirmed');
+    assert.equal(unavailable.results[0].loop.revision, first.results[0].loop.revision + 1);
     assert.equal(service.listOpenLoops().length, 1);
     assert.equal(service.listOpenLoops()[0].state, 'confirmed');
+    assert.equal(service.listOpenLoops()[0].evidenceObservationIds.includes(unavailable.results[0].observation.observationId), true);
   });
 });
 

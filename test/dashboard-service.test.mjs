@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { projectDashboard } from '../src/dashboard/service.mjs';
 import { createReminderAdapter } from '../src/sources/reminders.mjs';
+import { openLoopReminderReferenceId } from '../src/open-loops/reminder-coordinator.mjs';
 
 test('dashboard partitions current and future Reminder occurrences and pages Activity', async () => {
   const serverTime = '2026-08-27T12:00:00.000Z';
@@ -76,4 +77,20 @@ test('Dashboard Coming Up uses native recurring state through the Reminder adapt
   ]);
   assert.deepEqual(result.comingUp.map((item) => item.time), ['1:00 PM', '2:00 PM', '3:00 PM']);
   assert.equal(result.attentionBadgeCount, 0);
+});
+
+test('Dashboard presents an open-loop obligation once when its owned native Reminder also fires', async () => {
+  const now = '2026-09-20T01:00:00.000Z';
+  const loop = { schemaVersion: 1, loopId: 'loop-one-obligation', kind: 'payment', stableSubjectId: 'invoice:one', title: 'Pay fictional invoice', topicId: 'topic-one', state: 'confirmed', paymentState: 'unpaid', dueAt: now, attention: { reason: 'due-window', whyNow: 'The accepted payment date is due.', actions: ['Open bill'], activated: true, currentEvidence: true }, evidenceObservationIds: ['evidence-one'], revision: 1 };
+  const referenceId = openLoopReminderReferenceId(loop.loopId);
+  const sourceService = {
+    async attentionList() { return { episodes: [{ episodeId: 'native-reminder-episode', sourceCapabilityId: 'reminders', sourceKind: 'reminder', stableSubjectId: 'native-job', state: 'Active', severity: 'Reminder', topicId: 'topic-one', sourceReferenceId: referenceId, actions: [], evidenceFacts: { reminderDue: true, dueAt: now } }], inProgress: [] }; },
+    async listReminderOccurrences() { return [{ topicId: 'topic-one', sourceReference: { referenceId, sourceKind: 'reminder_schedule' }, job: { id: 'native-job', enabled: true, schedule: { kind: 'at', at: now } } }]; }
+  };
+  const metadata = { listUsableTopics: () => [{ topicId: 'topic-one', name: 'Fictional Topic', lifecycle: 'active' }], listOpenLoops: () => [loop], getQuietAttentionInbox: () => ({ attention: [{ loop, reason: 'due-window', whyNow: loop.attention.whyNow, actions: loop.attention.actions }], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
+  const result = await projectDashboard({ sourceService, metadata, now: () => now });
+  assert.equal(result.attention.length, 0, 'the scheduler-owned projection is suppressed');
+  assert.equal(result.comingUp.length, 0, 'the scheduler-owned future row is suppressed');
+  assert.equal(result.openLoops.attentionTotal, 1);
+  assert.equal(result.attentionBadgeCount, 1);
 });

@@ -88,6 +88,7 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.open-loops.payment-status',
   'command-center.v1.open-loops.renovation-requirement',
   'command-center.v1.open-loops.renovation-purchase',
+  'command-center.v1.open-loops.renovation-purchase-correction',
   'command-center.v1.open-loops.renovation-replacement',
   'command-center.v1.open-loops.renovation-fulfilment',
   'command-center.v1.open-loops.renovation-stage',
@@ -111,13 +112,14 @@ export const ADMIN_METHODS = Object.freeze([
   'command-center.v1.open-loops.payment-status',
   'command-center.v1.open-loops.renovation-requirement',
   'command-center.v1.open-loops.renovation-purchase',
+  'command-center.v1.open-loops.renovation-purchase-correction',
   'command-center.v1.open-loops.renovation-replacement',
   'command-center.v1.open-loops.renovation-fulfilment'
 ]);
 
 const common = ['schemaVersion'];
 const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption']);
-const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession', 'authorization', 'checkpoint', 'window', 'requirement', 'reconciliation', 'replacement', 'fulfilment', 'activation', 'stage', 'conflict']);
+const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession', 'authorization', 'checkpoint', 'window', 'requirement', 'reconciliation', 'correction', 'replacement', 'fulfilment', 'activation', 'stage', 'conflict']);
 const arrayFields = new Set(['expectedRevisions', 'selections']);
 
 function parameterSchema(field, method) {
@@ -161,7 +163,7 @@ function actionResultSchema(method) {
       const item = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ disposition: { type: 'string' }, observationId: { type: 'string' }, sourceVersion: { type: 'string' }, historicalBaseline: { type: 'boolean' }, loop }), required: ['disposition', 'observationId', 'sourceVersion', 'historicalBaseline'] });
       return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, disposition: { enum: ['applied', 'duplicate'] }, checkpoint, freshness, hasMore: { type: 'boolean' }, results: { type: 'array', items: item } }), required: ['schemaVersion', 'disposition', 'checkpoint', 'freshness', 'hasMore', 'results'] });
     }
-    const evidence = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ observationId: { type: 'string' }, type: { type: 'string' }, sourceSystem: { type: 'string' }, sourceKind: { type: 'string' }, sourceVersion: { type: 'string' }, sourceAvailable: { type: 'boolean' }, occurredAt: { type: 'string' }, observedAt: { type: 'string' }, historicalBaseline: { type: 'boolean' }, summary: { type: 'string' }, payee: { type: 'string' }, purpose: { type: 'string' }, amount: { type: 'integer' }, currency: { type: 'string' }, dueAt: { type: 'string' }, dueDate: { type: 'string' }, dueTimeZone: { type: 'string' }, authorityId: { type: 'string' }, invoiceId: { type: 'string' }, accountId: { type: 'string' }, eventKind: { type: 'string' }, subjectKind: { type: 'string' }, subjectNamespace: { type: 'string' }, subjectId: { type: 'string' }, requirementKind: { type: 'string' }, requirementNamespace: { type: 'string' }, requirementId: { type: 'string' }, stageNamespace: { type: 'string' }, stageId: { type: 'string' }, chosenOption: { type: 'string' }, recordedChoice: { type: 'string' }, observedChoice: { type: 'string' }, conflictKind: { type: 'string' }, rationale: { type: 'string' }, assumption: { type: 'string' }, assessment: { type: 'string' }, material: { type: 'boolean' }, decisionId: { type: 'string' }, status: { type: 'string' }, supersedesDecisionId: { type: 'string' }, supersededByDecisionId: { type: 'string' } }), required: ['observationId', 'type', 'sourceSystem', 'sourceKind', 'sourceVersion', 'occurredAt', 'observedAt', 'historicalBaseline'] });
+    const evidence = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ observationId: { type: 'string' }, type: { type: 'string' }, sourceSystem: { type: 'string' }, sourceKind: { type: 'string' }, sourceVersion: { type: 'string' }, sourceAvailable: { type: 'boolean' }, occurredAt: { type: 'string' }, observedAt: { type: 'string' }, historicalBaseline: { type: 'boolean' }, summary: { type: 'string' }, payee: { type: 'string' }, purpose: { type: 'string' }, amount: { type: 'integer' }, currency: { type: 'string' }, dueAt: { type: 'string' }, dueDate: { type: 'string' }, dueTimeZone: { type: 'string' }, authorityId: { type: 'string' }, invoiceId: { type: 'string' }, accountId: { type: 'string' }, eventKind: { type: 'string' }, subjectKind: { type: 'string' }, subjectNamespace: { type: 'string' }, subjectId: { type: 'string' }, requirementKind: { type: 'string' }, requirementNamespace: { type: 'string' }, requirementId: { type: 'string' }, purchaseNamespace: { type: 'string' }, purchaseId: { type: 'string' }, stageNamespace: { type: 'string' }, stageId: { type: 'string' }, chosenOption: { type: 'string' }, recordedChoice: { type: 'string' }, observedChoice: { type: 'string' }, conflictKind: { type: 'string' }, rationale: { type: 'string' }, assumption: { type: 'string' }, assessment: { type: 'string' }, material: { type: 'boolean' }, decisionId: { type: 'string' }, status: { type: 'string' }, supersedesDecisionId: { type: 'string' }, supersededByDecisionId: { type: 'string' } }), required: ['observationId', 'type', 'sourceSystem', 'sourceKind', 'sourceVersion', 'occurredAt', 'observedAt', 'historicalBaseline'] });
     if (method.endsWith('.list')) return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loops: { type: 'array', items: loop }, total: { type: 'integer' }, offset: { type: 'integer' }, nextOffset: { type: ['integer', 'null'] }, nextCursor: { type: ['string', 'null'] }, hasMore: { type: 'boolean' } }), required: ['schemaVersion', 'loops', 'total', 'offset', 'nextOffset', 'nextCursor', 'hasMore'] });
     if (method.endsWith('.get')) return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loop, evidence: { type: 'array', items: evidence } }), required: ['schemaVersion', 'loop', 'evidence'] });
     const reminder = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ status: { type: 'string' }, action: { enum: ['create', 'reschedule', 'cancel', 'none', 'blocked'] }, referenceId: { type: 'string' }, reason: { type: 'string' } }), required: ['status', 'action', 'referenceId'] });
@@ -445,6 +447,7 @@ const required = Object.freeze({
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'rationale'],
   'command-center.v1.open-loops.renovation-requirement': ['expectedRevision', 'requirement'],
   'command-center.v1.open-loops.renovation-purchase': ['expectedRevision', 'reconciliation'],
+  'command-center.v1.open-loops.renovation-purchase-correction': ['expectedRevision', 'correction'],
   'command-center.v1.open-loops.renovation-replacement': ['expectedRevision', 'replacement'],
   'command-center.v1.open-loops.renovation-fulfilment': ['expectedRevision', 'fulfilment'],
   'command-center.v1.open-loops.renovation-stage': ['expectedRevision', 'activation'],
@@ -533,6 +536,7 @@ const fields = Object.freeze({
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'paidAmount', 'currency', 'rationale', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-requirement': ['expectedRevision', 'requirement', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-purchase': ['expectedRevision', 'reconciliation', 'logicalOperationId'],
+  'command-center.v1.open-loops.renovation-purchase-correction': ['expectedRevision', 'correction', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-replacement': ['expectedRevision', 'replacement', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-fulfilment': ['expectedRevision', 'fulfilment', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-stage': ['expectedRevision', 'activation', 'logicalOperationId'],

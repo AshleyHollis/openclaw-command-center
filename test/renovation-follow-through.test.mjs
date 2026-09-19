@@ -36,6 +36,11 @@ test('an exact purchase resolves only the explicitly linked stale buy requiremen
     assert.equal(result.loop.evidenceObservationIds.length, 2);
     assert.equal(api.reconcilePurchasedItem(command).loop.revision, 2);
     assert.throws(() => api.reconcilePurchasedItem({ ...command, reconciliation: { ...command.reconciliation, purchase: ref('purchase', 'purchase-tap-002') } }), error => error.code === 'open-loop-intent-mismatch');
+    const corrected = api.correctPurchasedItem(owned({ schemaVersion: 1, logicalOperationId: 'correct-tap-purchase', expectedRevision: 2, correction: { schemaVersion: 1, source: source('correct-receipt-tap'), requirement: ref('purchase', 'buy-tap'), purchase: ref('purchase', 'purchase-tap-001'), occurredAt: '2026-09-23T02:00:00.000Z', observedAt: '2026-09-23T02:00:00.000Z', rationale: 'The fictional receipt line belongs to another item.' } }));
+    assert.equal(corrected.loop.state, 'waiting');
+    assert.equal(corrected.loop.expectedEvent, 'explicitly linked purchase');
+    assert.equal(corrected.observation.facts.eventKind, 'purchase-relationship-corrected');
+    assert.equal(service.findOpenLoopBySubject('general', stableRenovationRequirementId(ref('purchase', 'buy-sink'))).state, 'waiting', 'the correction must not alter another requirement');
   });
 });
 

@@ -97,6 +97,19 @@ test('historical bill evidence remains out of Attention until current evidence a
   });
 });
 
+test('direct reconciliation preserves evidence-backed calendar timing', async () => {
+  await withService(async service => {
+    const observation = { ...bill(), observationId: 'obs-calendar-date', facts: { ...bill().facts, dueAt: undefined, dueDate: '2026-10-04', dueTimeZone: 'Australia/Brisbane' } };
+    service.ingestOpenLoopObservation({ schemaVersion: 1, logicalOperationId: 'observe-calendar-date', observation });
+    const { dueAt: _dueAt, ...withoutInstant } = paymentLoop({ evidence: ['obs-calendar-date'] });
+    const loop = { ...withoutInstant, dueDate: '2026-10-04', dueTimeZone: 'Australia/Brisbane' };
+    const result = service.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: 'reconcile-calendar-date', expectedRevision: 0, loop, evidenceRoles: { 'obs-calendar-date': 'origin' }, updatedAt: at });
+    assert.equal(result.loop.dueAt, undefined);
+    assert.equal(result.loop.dueDate, '2026-10-04');
+    assert.equal(service.getOpenLoop(loop.loopId).dueTimeZone, 'Australia/Brisbane');
+  });
+});
+
 test('schema 8 upgrades additively to schema 9 with a contiguous durable receipt', () => {
   const database = new DatabaseSync(':memory:');
   try {

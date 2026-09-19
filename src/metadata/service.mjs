@@ -2173,6 +2173,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   const renovation = createRenovationFollowThrough(service);
   service.recordRenovationRequirement = renovation.recordRequirement;
   service.reconcileRenovationPurchase = renovation.reconcilePurchasedItem;
+  service.correctRenovationPurchase = renovation.correctPurchasedItem;
   service.recordRenovationReplacement = renovation.recordReplacementDisposition;
   service.recordRenovationFulfilment = renovation.recordFulfilment;
   service.recordRenovationStageActivation = renovation.recordStageActivation;
