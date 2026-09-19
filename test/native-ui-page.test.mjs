@@ -352,7 +352,9 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       assert.equal(await page.evaluate(() => window.methods.some((method) => method.endsWith('metadata.read'))), false);
       await page.getByRole('button', { name: 'Read brief.md' }).click({ timeout: 2000 });
       await page.waitForFunction(() => document.querySelector('[aria-label="Note content"]')?.textContent.includes('Fictional Note'));
-      assert.equal(await page.getByRole('region', { name: 'Note content' }).innerText(), '<img src=x onerror=alert(1)>Fictional Note');
+      const noteContent = page.getByRole('region', { name: 'Note content' });
+      assert.equal(await noteContent.innerText(), '<img src=x onerror=alert(1)>Fictional Note');
+      assert.equal(await noteContent.evaluate(node => document.activeElement === node), true);
       assert.equal(await page.locator('img').count(), 0);
       await page.getByRole('button', { name: 'Open Topic in Chat' }).click();
       await page.waitForFunction(() => window.opened.length === 1);

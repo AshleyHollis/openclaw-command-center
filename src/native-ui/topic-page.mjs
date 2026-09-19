@@ -527,6 +527,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       if (!FIRST_LIVE_FEATURES.noteWrite) {
         announce(`Note opened · ${result.revision}`); status.title = result.revision;
         if (panel && !showPanelInMain()) return;
+        (noteView === 'reading' ? content : source).focus();
         return;
       }
       let draft = drafts.get(key);
