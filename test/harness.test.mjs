@@ -12,10 +12,11 @@ import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputCl
 import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
 import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 
-test('current reader preview refuses the retained performance-capture host identity', () => {
+test('current reader accepts the authenticated performance-capture host identity', () => {
   const { schemaVersion, commit, ...integrity } = releasePerformanceIdentity.hostReceipt;
-  assert.throws(() => parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
-    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args })), error => error.category === 'invalid-commit');
+  const descriptor = parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
+    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args }));
+  assert.equal(descriptor.commit, pinnedHost.commit);
 });
 
 const sourceDigest = `sha256:${'a'.repeat(64)}`;
