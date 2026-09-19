@@ -2046,7 +2046,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     try {
       evidence = await runBoundedAcceptanceSlice(nativeDiagnostic, (signal) => journey({ descriptor, buildReceipt, signal,
         onDiagnostic: diagnostic => testContext.diagnostic(`acceptance-startup-diagnostic=${JSON.stringify(diagnostic)}`),
-        onFinalization: finalization => testContext.diagnostic(`acceptance-finalization=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...finalization })}`) }));
+        onFinalization: finalization => testContext.diagnostic(`acceptance-finalization=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...finalization })}`) }),
+      ...(scale ? { timeoutMs: 285_000, cleanupTimeoutMs: 14_000 } : {}));
     } catch (error) {
       testContext.diagnostic(`acceptance-scenario-failure=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, errors: boundedAcceptanceErrors(error) })}`);
       throw error;
@@ -2080,6 +2081,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const execute = prerequisitesOnly ? runNativeReleasePrerequisites : runNativeReleaseCapture;
     const nativeResult = await execute({
       descriptor, buildReceipt, ...(prerequisitesOnly ? {} : { baseline, capturePerformanceBaseline }),
+      timeoutMs: 285_000,
+      cleanupTimeoutMs: 14_000,
       runners: {
         primary: bind(exerciseNativeControlUiActivation),
         keyboard: bind(exerciseNativeKeyboardJourney),

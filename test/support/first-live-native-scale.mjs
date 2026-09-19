@@ -91,7 +91,10 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   conversationLabel, messageText, startupReadinessMs, topicsStarted, observed, measure = true, onProgress = () => {} }) {
   const now = measure ? () => performance.now() : () => 0;
   const observations = { startupReadinessMs };
-  const ready = (probe) => waitForConsecutiveReadiness(probe, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+  // These waits surround the measured actions; they do not replace their
+  // elapsed observations. Keep enough bounded headroom to record a slow first
+  // exact observation so the immutable baseline and later budget can judge it.
+  const ready = (probe) => waitForConsecutiveReadiness(probe, host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
   const nativePage = page.locator('openclaw-plugin-page');
   onProgress('topics-ready');
   await ready(async () => !!observed().topics?.activeGroups?.project?.some(topic => topic.topicId === fixture.topicId && topic.usable));
