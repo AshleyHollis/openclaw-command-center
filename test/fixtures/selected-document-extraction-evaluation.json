@@ -162,6 +162,11 @@
       "id": "negated-cancelled-marker-stays-actionable",
       "expected": { "payment": true, "invoiceId": "INV-EVAL-NOT-CANCELLED", "amount": 6000, "currency": "AUD" },
       "content": "Invoice: INV-EVAL-NOT-CANCELLED\nAmount due: AUD 60.00\nCancelled: False"
+    },
+    {
+      "id": "overlong-optional-due-is-omitted",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-DUE-OVERLONG", "amount": 7000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-DUE-OVERLONG\nAmount due: AUD 70.00\nDue: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
     }
   ]
 }

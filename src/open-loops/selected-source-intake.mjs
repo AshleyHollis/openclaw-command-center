@@ -67,16 +67,20 @@ function boundedContent(value) {
 
 function labelledValues(content, labels, maximum = 300) {
   const values = [];
+  let invalid = false;
   for (const label of labels) {
     const escaped = label.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-    for (const match of content.matchAll(new RegExp(`^${escaped}\\s*:\\s*(.+)$`, 'imgu'))) values.push(text(match[1], label, maximum));
+    for (const match of content.matchAll(new RegExp(`^${escaped}\\s*:\\s*(.+)$`, 'imgu'))) {
+      try { values.push(text(match[1], label, maximum)); }
+      catch { invalid = true; }
+    }
   }
-  return [...new Set(values)];
+  return freeze({ values: [...new Set(values)], invalid });
 }
 
 function unambiguousLabelled(content, labels, maximum = 300) {
-  const values = labelledValues(content, labels, maximum);
-  return freeze({ present: values.length > 0, ambiguous: values.length > 1, value: values.length === 1 ? values[0] : undefined });
+  const { values, invalid } = labelledValues(content, labels, maximum);
+  return freeze({ present: values.length > 0 || invalid, invalid, ambiguous: values.length > 1 || (invalid && values.length > 0), value: values.length === 1 && !invalid ? values[0] : undefined });
 }
 
 function parseAmount(content) {
@@ -109,7 +113,7 @@ function interpretAvailableContent(content) {
   const due = unambiguousLabelled(content, ['Due', 'Due date', 'Payment due'], 64);
   const status = unambiguousLabelled(content, ['Status', 'Payment status'], 100);
   const amount = parseAmount(content);
-  if ([invoice, account, authority, payeeField, purposeField, due, status, amount].some(field => field.ambiguous)) return freeze({ kind: 'informational' });
+  if ([invoice, account, authority, payeeField, purposeField, due, status, amount].some(field => field.ambiguous) || [invoice, account, authority, status].some(field => field.invalid)) return freeze({ kind: 'informational' });
   const dueAt = due.value && isStrictInstant(due.value) ? instant(due.value, 'Due') : undefined;
   const terminalStatus = status.value && /^(?:paid(?:\s+in\s+full)?|settled|cancelled|canceled|credited|credit|credit note)$/iu.test(status.value);
   const terminalMarker = hasTerminalMarker(content);

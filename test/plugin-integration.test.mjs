@@ -205,7 +205,7 @@ test('bounded document intake reads authoritative content and revision through t
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
-test('impossible optional selected-document due date completes and replays without rereading or scheduling', async () => {
+test('malformed optional selected-document due dates complete and replay without rereading or scheduling', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-selected-document-malformed-due-'));
   const gateway = fictionalSchedulerGateway();
   let service;
@@ -230,6 +230,19 @@ test('impossible optional selected-document due date completes and replays witho
     const replayed = await service.openLoopsIngestSelected(request);
     assert.equal(replayed.results[0].loop.loopId, applied.results[0].loop.loopId);
     assert.equal(reads, 1);
+    const overlongRequest = { ...request, logicalOperationId: randomUUID(), selections: [{ ...request.selections[0], observedAt: '2026-09-20T00:02:00.000Z' }] };
+    service.sourceService.notesRead = async input => {
+      reads += 1;
+      return { schemaVersion: 1, path: input.path, text: `Invoice: INV-FICTIONAL-OVERLONG-DUE\nAmount due: AUD 70.00\nDue: ${'x'.repeat(65)}`, revision: 'authoritative-malformed-v2', sourceReference: { referenceId: input.referenceId } };
+    };
+    const overlong = await service.openLoopsIngestSelected(overlongRequest);
+    assert.equal(overlong.results[0].loop.amount, 7000);
+    assert.equal(overlong.results[0].loop.dueAt, undefined);
+    assert.equal(gateway.jobs.size, 0);
+    service.sourceService.notesRead = async () => { reads += 1; throw new Error('completed overlong-date intake must not reread'); };
+    const overlongReplay = await service.openLoopsIngestSelected(overlongRequest);
+    assert.equal(overlongReplay.results[0].loop.loopId, overlong.results[0].loop.loopId);
+    assert.equal(reads, 2);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
