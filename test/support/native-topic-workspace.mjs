@@ -30,7 +30,13 @@ export async function selectNativeCategoryGrouping(page) {
   const trigger = page.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping):visible');
   try { await trigger.waitFor({ state: 'visible', timeout: 10_000 }); }
   catch (error) {
-    const controls = await page.locator('button').evaluateAll(buttons => buttons.slice(0, 40).map(button => ({ label: button.getAttribute('aria-label'), text: button.textContent?.trim() })));
+    const controls = await page.locator('button').evaluateAll(buttons => buttons.slice(0, 40).map(button => {
+      const style = getComputedStyle(button);
+      const rect = button.getBoundingClientRect();
+      return { label: button.getAttribute('aria-label'), text: button.textContent?.trim(), className: button.className,
+        display: style.display, visibility: style.visibility, opacity: style.opacity,
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+    }));
     throw new Error(`Native session grouping control is unavailable: ${JSON.stringify(controls)}`, { cause: error });
   }
   await trigger.click({ timeout: 10_000 });
