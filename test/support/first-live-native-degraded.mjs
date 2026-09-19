@@ -110,6 +110,7 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       managedBrowser = await withDeadline('native degraded browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }), 60_000, signal);
       progress('browser-launched');
       const page = await managedBrowser.browser.newPage({ viewport: { width: 1440, height: 900 } });
+      page.setDefaultTimeout(30_000);
       await configureEvidencePage(page, browserGuard, evidence);
       const entryResponse = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'GET' && response.url() === entryUrl.href, { timeout: 60_000 }),
         error => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
@@ -123,10 +124,13 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       progress('page-mounted');
       assert.equal(await nativePage.locator('iframe').count(), 0);
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
+      progress('notes-opened');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
+      progress('note-opened');
       const note = nativePage.getByRole('region', { name: 'Note content', exact: true });
       await note.filter({ hasText: fixture.noteText.trim() }).waitFor();
+      progress('note-visible');
       assert.equal(await note.textContent(), fixture.noteText);
       assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
       assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
@@ -138,6 +142,7 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       assert.equal(exactNote.revision, `sha256:${createHash('sha256').update(fixture.noteText).digest('hex')}`);
       if (sessionsUnavailable) {
         await nativePage.getByRole('button', { name: 'Open Topic in Chat', exact: true }).press('Enter');
+        progress('chat-refusal-requested');
         await nativePage.getByRole('status').filter({ hasText: /capability.*unavailable/iu }).waitFor();
         assert.equal(await page.locator('openclaw-chat-pane[aria-hidden="false"]').count(), 0, 'Unavailable Sessions must not open an unverified native Chat');
         assert.equal(await note.textContent(), fixture.noteText);
