@@ -1,4 +1,5 @@
 import net from 'node:net';
+import path from 'node:path';
 
 const trafficEvidenceLimit = 10;
 
@@ -31,6 +32,13 @@ export function isLoopbackDestination(destination) {
   const normalized = destination.startsWith('[') && destination.endsWith(']') ? destination.slice(1, -1) : destination;
   const family = net.isIP(normalized);
   return (family === 4 && normalized.split('.').every((part, index) => index === 0 ? part === '127' : /^\d{1,3}$/.test(part) && Number(part) <= 255)) || (family === 6 && normalized === '::1');
+}
+
+/** Admit a local IPC endpoint only when its resolved path is below its owner. */
+export function isContainedIpcDestination(destination, ownerRoot) {
+  if (typeof destination !== 'string' || typeof ownerRoot !== 'string' || !path.isAbsolute(destination) || !path.isAbsolute(ownerRoot)) return false;
+  const relative = path.relative(path.resolve(ownerRoot), path.resolve(destination));
+  return relative.length > 0 && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 export class TrafficGuard {
