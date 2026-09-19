@@ -449,6 +449,25 @@ test('native Attention corrects an active purchase after a newer link was alread
   assert.equal(request.params.correction.purchase.id, 'active-receipt-a');
 }));
 
+test('native Attention can correct a purchase that was explicitly relinked after correction', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    const link = (observationId, eventKind, sourceVersion) => ({ observationId, type: 'order', sourceSystem: 'fictional-source', sourceKind: 'receipt', sourceVersion, occurredAt: '2026-09-20T03:00:00.000Z', observedAt: '2026-09-20T03:01:00.000Z', historicalBaseline: false, eventKind, requirementNamespace: 'fictional-home-project', requirementId: 'buy-tap', purchaseNamespace: 'fictional-home-project', purchaseId: 'receipt-a' });
+    window.allOpenLoops = [{ loopId: 'resolved-relinked-purchase-loop', kind: 'general', stableSubjectId: 'renovation-requirement:relinked', title: 'Buy fictional tap', state: 'resolved', requirementId: 'buy-tap', purchaseId: 'receipt-a', revision: 4, additionalEvidence: [link('correction-a', 'purchase-relationship-corrected', 'v2'), link('relinked-a', 'item-purchased', 'v3')] }];
+    window.mountInbox();
+  });
+  await page.getByText('Review all open loops (1)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load open loops' }).click();
+  const row = page.locator('article[data-open-loop-id="resolved-relinked-purchase-loop"]');
+  await row.getByRole('button', { name: 'Review evidence' }).click();
+  await row.getByText('Correct purchased item relationship', { exact: true }).click();
+  await row.getByLabel('Rationale').fill('The explicitly relinked receipt is still incorrect.');
+  await row.getByRole('button', { name: 'Unlink purchase and reopen requirement' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-purchase-correction')));
+  assert.equal(request.params.correction.purchase.id, 'receipt-a');
+}));
+
 test('native Attention records delivery separately from required installation', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];

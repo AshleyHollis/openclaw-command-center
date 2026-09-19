@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,10 @@ import { createNotificationService } from '../src/notifications/service.mjs';
 import { invokeBridgeMethod } from '../src/bridge/register.mjs';
 
 const qualifyOpenLoop = (service, method, params) => invokeBridgeMethod(service, method, params, 'fictional-qualification-request', 'fictional-operator');
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)]))
+  : value;
+const operationDigest = value => `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}`;
 
 function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {}, gateway } = {}) {
   const declarations = [];
@@ -183,6 +187,30 @@ test('bounded document intake reads authoritative content and revision through t
     const afterOutage = service.openLoopsGet({ loopId: result.results[0].loop.loopId });
     assert.equal(afterOutage.loop.state, 'confirmed', 'a source outage must not resolve the existing obligation');
     assert.equal(afterOutage.evidence.some(item => item.sourceAvailable === false), true, 'later Attention reads must expose the durable unavailable source evidence');
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('selected-source root reconciles a committed child after process interruption without rereading content', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-selected-document-recovery-'));
+  let service;
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir });
+    seed.createTopic({ topicId: 'topic-selected-recovery', paraCategory: 'project', lifecycle: 'active' });
+    seed.createSourceReference({ version: 1, referenceId: 'document:selected-recovery', topicId: 'topic-selected-recovery', sourceSystem: 'fictional-documents', sourceKind: 'document', externalSourceId: 'selected-recovery.txt', observedRevision: 'authoritative-recovery-v1' });
+    seed.close();
+    const host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
+    const input = { schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-recovery' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-recovery', path: 'selected-recovery.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z' }] };
+    const metadata = service.getTopicMaintenanceOwners().metadata;
+    const prepared = metadata.prepareSelectedSourceBatch({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, authorization: { ...input.authorization, scopeId: 'fictional-operator' }, baselineThrough: input.baselineThrough, window: { cursor: `selected:${input.logicalOperationId}`, nextCursor: `complete:${input.logicalOperationId}`, hasMore: false }, selections: [{ version: 'authoritative-recovery-v1', occurredAt: input.selections[0].occurredAt, observedAt: input.selections[0].observedAt, availability: 'available', content: 'Invoice: INV-RECOVERY-1\nPayee: Fictional Recovery Supplier\nPurpose: recovery proof\nAmount due: AUD 77.00', topicId: 'topic-selected-recovery' }] });
+    const rootIntent = { schemaVersion: 1, operatorId: 'fictional-operator', authorization: input.authorization, baselineThrough: input.baselineThrough, selections: input.selections };
+    const pending = metadata.recordOperation({ logicalOperationId: input.logicalOperationId, transportRequestId: input.logicalOperationId, intentDigest: operationDigest(rootIntent), operationKind: 'selected-source-intake-root', state: 'pending', resultStatus: 'pending', resultIdentity: JSON.stringify({ schemaVersion: 1, status: 'prepared', prepared }), observedRevision: 'authoritative-recovery-v1', createdAt: input.selections[0].observedAt, updatedAt: input.selections[0].observedAt });
+    assert.equal(pending.resultIdentity.includes('Amount due'), false, 'recoverable intent must not persist raw source content');
+    metadata.applyPreparedSelectedSourceBatch(prepared);
+    let reads = 0; service.sourceService.notesRead = async () => { reads += 1; throw new Error('prepared recovery must not reread'); };
+    const recovered = await service.openLoopsIngestSelected(input);
+    assert.equal(reads, 0);
+    assert.equal(recovered.results[0].loop.amount, 7700);
+    assert.equal(metadata.getOperation(input.logicalOperationId).state, 'applied');
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

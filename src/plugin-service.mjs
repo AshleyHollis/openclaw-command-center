@@ -308,27 +308,7 @@ export function createMetadataService(api) {
           ? Promise.all(scheduled.map(value => Promise.resolve(value))).then(() => result)
           : result;
       };
-      if (prior?.state === 'applied') return schedule(Object.freeze(JSON.parse(prior.resultIdentity)));
-      if (prior) throw new SourceServiceError('unknown', 'The selected-source operation outcome is unknown. Reconcile it before selecting the source again.');
-      const pending = metadataService.recordOperation({ logicalOperationId: input.logicalOperationId, transportRequestId: input.logicalOperationId, intentDigest, operationKind, state: 'pending', resultStatus: 'pending', resultIdentity: JSON.stringify({ schemaVersion: 1, status: 'source-read-pending' }), observedRevision: reference.observedRevision ?? 'unknown', createdAt: selection.observedAt, updatedAt: selection.observedAt });
-      let note; let readFailure;
-      try { note = await sourceService.notesRead({ schemaVersion: 1, topicId: reference.topicId, referenceId: reference.referenceId, path: selection.path, observedRevision: reference.observedRevision, sourceKind: 'document' }); }
-      catch (error) { readFailure = error; }
-      const content = Buffer.isBuffer(note?.bytes) ? note.bytes.toString('utf8') : note?.text;
-      if (!readFailure && (typeof content !== 'string' || typeof note.revision !== 'string' || note.revision.trim() === '')) throw new SourceServiceError('source-recovery', 'The selected document did not return authoritative text and version evidence.');
-      const unavailableReason = readFailure?.code === 'not-found' ? 'not-found' : readFailure?.code === 'unauthenticated' || readFailure?.code === 'forbidden' ? 'permission-revoked' : readFailure?.code === 'conflict' || readFailure?.code === 'source-recovery' ? 'version-replaced' : 'temporarily-unavailable';
-      const request = {
-        schemaVersion: 1,
-        logicalOperationId: input.logicalOperationId,
-        authorization,
-        baselineThrough: input.baselineThrough,
-        window: { cursor: `selected:${input.logicalOperationId}`, nextCursor: `complete:${input.logicalOperationId}`, hasMore: false },
-        selections: [readFailure
-          ? { version: `unavailable:${reference.observedRevision ?? 'unknown'}:${unavailableReason}`, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'unavailable', unavailableReason, ...(selection.topicId ? { topicId: selection.topicId } : {}) }
-          : { version: note.revision, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'available', content, ...(selection.topicId ? { topicId: selection.topicId } : {}) }]
-      };
-      const result = metadataService.ingestSelectedSourceBatch(request);
-      const publicResult = Object.freeze({
+      const publicize = result => Object.freeze({
         schemaVersion: 1,
         disposition: result.disposition,
         checkpoint: result.checkpoint,
@@ -342,6 +322,32 @@ export function createMetadataService(api) {
           ...(item.loop ? { loop: item.loop } : {})
         })))
       });
+      if (prior?.state === 'applied') return schedule(Object.freeze(JSON.parse(prior.resultIdentity)));
+      if (prior && prior.state !== 'pending') throw new SourceServiceError('unknown', 'The selected-source operation outcome is unknown. Reconcile it before selecting the source again.');
+      let pending = prior ?? metadataService.recordOperation({ logicalOperationId: input.logicalOperationId, transportRequestId: input.logicalOperationId, intentDigest, operationKind, state: 'pending', resultStatus: 'pending', resultIdentity: JSON.stringify({ schemaVersion: 1, status: 'source-read-pending' }), observedRevision: reference.observedRevision ?? 'unknown', createdAt: selection.observedAt, updatedAt: selection.observedAt });
+      const recovery = JSON.parse(pending.resultIdentity);
+      let prepared = recovery?.status === 'prepared' ? recovery.prepared : null;
+      if (!prepared) {
+        const expectedSourceRevision = pending.observedRevision === 'unknown' ? undefined : pending.observedRevision;
+        let note; let readFailure;
+        try { note = await sourceService.notesRead({ schemaVersion: 1, topicId: reference.topicId, referenceId: reference.referenceId, path: selection.path, ...(expectedSourceRevision === undefined ? {} : { observedRevision: expectedSourceRevision }), sourceKind: 'document' }); }
+        catch (error) { readFailure = error; }
+        const content = Buffer.isBuffer(note?.bytes) ? note.bytes.toString('utf8') : note?.text;
+        if (!readFailure && (typeof content !== 'string' || typeof note.revision !== 'string' || note.revision.trim() === '')) throw new SourceServiceError('source-recovery', 'The selected document did not return authoritative text and version evidence.');
+        const unavailableReason = readFailure?.code === 'not-found' ? 'not-found' : readFailure?.code === 'unauthenticated' || readFailure?.code === 'forbidden' ? 'permission-revoked' : readFailure?.code === 'conflict' || readFailure?.code === 'source-recovery' ? 'version-replaced' : 'temporarily-unavailable';
+        prepared = metadataService.prepareSelectedSourceBatch({
+          schemaVersion: 1,
+          logicalOperationId: input.logicalOperationId,
+          authorization,
+          baselineThrough: input.baselineThrough,
+          window: { cursor: `selected:${input.logicalOperationId}`, nextCursor: `complete:${input.logicalOperationId}`, hasMore: false },
+          selections: [readFailure
+            ? { version: `unavailable:${expectedSourceRevision ?? 'unknown'}:${unavailableReason}`, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'unavailable', unavailableReason, ...(selection.topicId ? { topicId: selection.topicId } : {}) }
+            : { version: note.revision, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'available', content, ...(selection.topicId ? { topicId: selection.topicId } : {}) }]
+        });
+        pending = metadataService.recordOperation({ ...pending, resultIdentity: JSON.stringify({ schemaVersion: 1, status: 'prepared', prepared }), updatedAt: selection.observedAt });
+      }
+      const publicResult = publicize(metadataService.applyPreparedSelectedSourceBatch(prepared));
       metadataService.recordOperation({ ...pending, state: 'applied', resultStatus: publicResult.disposition, resultIdentity: JSON.stringify(publicResult), updatedAt: selection.observedAt });
       return schedule(publicResult);
     },

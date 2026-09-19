@@ -1,5 +1,5 @@
-import { planSelectedSourceBatch } from '../open-loops/selected-source-intake.mjs';
 import { isDeepStrictEqual } from 'node:util';
+import { planSelectedSourceBatch } from '../open-loops/selected-source-intake.mjs';
 
 const freeze = value => {
   if (value && typeof value === 'object') {
@@ -70,9 +70,28 @@ export function createSelectedSourceIntake(service, { ErrorType = TypeError } = 
     && isDeepStrictEqual(existing.entityRefs, candidate.entityRefs)
     && isDeepStrictEqual(existing.facts, candidate.facts);
 
-  const ingestSelectedSourceBatch = input => {
+  const prepareSelectedSourceBatch = input => {
     let planned;
     try { planned = planSelectedSourceBatch(input); } catch (error) { fail('selected-source-intake-invalid', error.message); }
+    return freeze({
+      schemaVersion: 1,
+      batch: {
+        schemaVersion: 1,
+        logicalOperationId: planned.batch.logicalOperationId,
+        authorization: planned.batch.authorization,
+        baselineThrough: planned.batch.baselineThrough,
+        window: planned.batch.window
+      },
+      checkpoint: planned.checkpoint,
+      plans: planned.plans.map(plan => {
+        const { content: _content, ...selection } = plan.selection;
+        return { schemaVersion: 1, selection, observation: plan.observation, loop: plan.loop, freshness: plan.freshness };
+      })
+    });
+  };
+
+  const applyPreparedSelectedSourceBatch = planned => {
+    if (planned?.schemaVersion !== 1 || planned?.batch?.schemaVersion !== 1 || !Array.isArray(planned.plans) || !planned.plans.length || !planned.checkpoint) fail('selected-source-intake-invalid', 'Prepared selected-source intake is invalid.');
     const results = [];
     for (const [index, plan] of planned.plans.entries()) {
       const rootId = `${planned.batch.logicalOperationId}:${index}:${plan.observation.observationId}`;
@@ -144,12 +163,16 @@ export function createSelectedSourceIntake(service, { ErrorType = TypeError } = 
     });
   };
 
-  return freeze({ ingestSelectedSourceBatch });
+  const ingestSelectedSourceBatch = input => applyPreparedSelectedSourceBatch(prepareSelectedSourceBatch(input));
+
+  return freeze({ prepareSelectedSourceBatch, applyPreparedSelectedSourceBatch, ingestSelectedSourceBatch });
 }
 
 export function installSelectedSourceIntake(service, options) {
   const intake = createSelectedSourceIntake(service, options);
   if (!Object.isExtensible(service)) throw new TypeError('Selected-source intake must be installed before the metadata service is frozen.');
+  service.prepareSelectedSourceBatch = intake.prepareSelectedSourceBatch;
+  service.applyPreparedSelectedSourceBatch = intake.applyPreparedSelectedSourceBatch;
   service.ingestSelectedSourceBatch = intake.ingestSelectedSourceBatch;
   return service;
 }
