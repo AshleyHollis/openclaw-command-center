@@ -187,10 +187,10 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   };
   const acknowledge = async receipt => {
     const pending = actionResponse('conversations.creation.acknowledge');
-    // Traverse backward from the mounted page boundary. The host may replace
-    // its desktop sidebar collapse control during a forward wrap, while the
-    // plugin-owned reverse path remains stable and fully sequential.
-    await press(creation.getByRole('button', { name: 'Acknowledge created Conversation', exact: true }), { reverse: true });
+    // The preceding assertion leaves focus on the adjacent plugin-owned Open
+    // control. Advance once through the real sequential order and activate
+    // the acknowledgment with the keyboard.
+    await press(creation.getByRole('button', { name: 'Acknowledge created Conversation', exact: true }));
     const observed = await pending;
     assert.equal(hasSuccessfulBrowserResponse(observed), true);
     assert.deepEqual(observed.value.request().postDataJSON(), { schemaVersion: 1, action: 'conversations.creation.acknowledge', topicId: fixture.topicId, logicalOperationId: receipt.logicalOperationId, referenceId: receipt.result.referenceId });

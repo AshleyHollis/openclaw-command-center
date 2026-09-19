@@ -55,7 +55,9 @@ export async function organizeNativeTopicConversations({ page, nativePage, fixtu
   const status = row.getByRole('status');
   await status.filter({ hasText: /Conversations organized|Setup stopped/ }).waitFor({ timeout: 30_000 });
   assert.match(await status.textContent(), /1 Conversations organized\. 0 already grouped and preserved\. 0 blocked and left unchanged\./);
-  const group = page.locator(`[data-session-section="category:${fixture.name}"]`);
+  // Sidebar reconciliation can briefly retain a hidden predecessor beside
+  // the current section. Bind the journey to the visible native section.
+  const group = page.locator(`[data-session-section="category:${fixture.name}"]`).filter({ visible: true });
   try { await group.waitFor({ state: 'visible', timeout: 10_000 }); }
   catch (error) {
     const rosters = observedRosters().slice(-3).map(item => ({
