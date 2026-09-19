@@ -75,7 +75,7 @@ export function planDecisionRecord(input) {
 
 export function planDecisionChallenge(input) {
   const value = object(input, 'decision challenge');
-  closed(value, ['schemaVersion', 'decisionId', 'source', 'occurredAt', 'observedAt', 'historicalBaseline', 'summary', 'assumption', 'assessment', 'material', 'evidenceSelectors'], 'decision challenge');
+  closed(value, ['schemaVersion', 'decisionId', 'source', 'occurredAt', 'observedAt', 'historicalBaseline', 'summary', 'assumption', 'assessment', 'material', 'evidenceSelectors', 'actorId'], 'decision challenge');
   if (value.schemaVersion !== 1 || !assessments.has(value.assessment) || typeof value.material !== 'boolean') fail('decision challenge is unsupported');
   const source = object(value.source, 'source');
   closed(source, ['system', 'kind', 'externalId', 'version'], 'source');
@@ -94,7 +94,7 @@ export function planDecisionChallenge(input) {
       observedAt: instant(value.observedAt, 'observedAt'),
       historicalBaseline: value.historicalBaseline === true,
       entityRefs: Object.freeze([{ kind: 'decision', id: decisionId, evidence: Object.freeze(evidenceSelectors) }]),
-      facts: Object.freeze({ decisionId, summary: text(value.summary, 'summary', 1000), assumption: text(value.assumption, 'assumption', 1000), assessment: value.assessment, material: value.material, evidenceSelectors })
+      facts: Object.freeze({ decisionId, summary: text(value.summary, 'summary', 1000), assumption: text(value.assumption, 'assumption', 1000), assessment: value.assessment, material: value.material, evidenceSelectors, ...(value.actorId === undefined ? {} : { actorId: text(value.actorId, 'actorId', 200) }) })
     })
   });
 }

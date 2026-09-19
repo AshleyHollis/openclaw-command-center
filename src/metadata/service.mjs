@@ -2179,6 +2179,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   service.projectRenovationStagePrerequisites = renovation.projectStagePrerequisites;
   service.projectActiveRenovationStagePrerequisites = renovation.projectActiveStagePrerequisites;
   service.recordRenovationDecisionConflict = renovation.recordDecisionConflict;
+  service.reviseRenovationDecision = renovation.reviseDecision;
   return Object.freeze(service);
 }
 

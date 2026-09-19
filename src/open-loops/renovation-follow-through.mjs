@@ -85,11 +85,11 @@ export function planRenovationFulfilment(input) {
 
 export function planStageActivation(input) {
   const value = object(input, 'stage activation');
-  closed(value, ['schemaVersion', 'source', 'stage', 'active', 'occurredAt', 'observedAt', 'topicId'], 'stage activation');
+  closed(value, ['schemaVersion', 'source', 'stage', 'active', 'occurredAt', 'observedAt', 'topicId', 'actorId'], 'stage activation');
   if (value.schemaVersion !== 1 || typeof value.active !== 'boolean') fail('stage activation is unsupported');
   const stage = reference(value.stage, 'stage', new Set(['renovation-stage']));
   const sourceValue = source(value.source);
-  return Object.freeze({ stageKey: `${stage.namespace}:${stage.id}`, observation: Object.freeze({ schemaVersion: 1, observationId: observationId('renovation-stage', sourceValue), source: sourceValue, type: 'general', occurredAt: instant(value.occurredAt, 'occurredAt'), observedAt: instant(value.observedAt, 'observedAt'), historicalBaseline: false, ...(value.topicId === undefined ? {} : { topicId: text(value.topicId, 'topicId') }), entityRefs: Object.freeze([entity(stage, ['explicit-stage-activation'])]), facts: Object.freeze({ eventKind: value.active ? 'stage-activated' : 'stage-deactivated', stageNamespace: stage.namespace, stageId: stage.id, active: value.active }) }) });
+  return Object.freeze({ stageKey: `${stage.namespace}:${stage.id}`, observation: Object.freeze({ schemaVersion: 1, observationId: observationId('renovation-stage', sourceValue), source: sourceValue, type: 'general', occurredAt: instant(value.occurredAt, 'occurredAt'), observedAt: instant(value.observedAt, 'observedAt'), historicalBaseline: false, ...(value.topicId === undefined ? {} : { topicId: text(value.topicId, 'topicId') }), entityRefs: Object.freeze([entity(stage, ['explicit-stage-activation'])]), facts: Object.freeze({ eventKind: value.active ? 'stage-activated' : 'stage-deactivated', stageNamespace: stage.namespace, stageId: stage.id, active: value.active, ...(value.actorId === undefined ? {} : { actorId: text(value.actorId, 'actorId', 200) }) }) }) });
 }
 
 export function planRenovationDecisionConflict(input) {

@@ -8,6 +8,9 @@ import plugin from '../src/plugin.mjs';
 import { createMetadataService } from '../src/plugin-service.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
+import { invokeBridgeMethod } from '../src/bridge/register.mjs';
+
+const qualifyOpenLoop = (service, method, params) => invokeBridgeMethod(service, method, params, 'fictional-qualification-request', 'fictional-operator');
 
 function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {}, gateway } = {}) {
   const declarations = [];
@@ -87,9 +90,7 @@ test('native registration exposes authenticated Topic methods without an iframe 
       'command-center.v1.sessions.browse', 'command-center.v1.sessions.history',
       'command-center.v1.sessions.navigate', 'command-center.v1.sessions.resolve-native',
       'command-center.v1.notes.browse', 'command-center.v1.notes.read',
-      'command-center.v1.search.query', 'command-center.v1.open-loops.list',
-      'command-center.v1.open-loops.get', 'command-center.v1.open-loops.decide',
-      'command-center.v1.open-loops.payment-status'
+      'command-center.v1.search.query'
     ]) assert.equal(host.methods.has(method), true, `${method} remains registered without the iframe API`);
     assert.equal(host.methods.has('chat.send'), false, 'native Chat owns message sending');
     assert.equal(host.methods.has('sessions.create'), false, 'host Session creation must not be shadowed');
@@ -142,11 +143,33 @@ test('registered open-loop bridge applies authenticated lifecycle changes and re
     assert.equal(applied.disposition, 'applied');
     assert.equal(replayed.disposition, 'duplicate');
     assert.equal(replayed.loop.revision, applied.loop.revision);
-    const page = await host.authenticatedGatewayRequest('command-center.v1.open-loops.list', { schemaVersion: 1, offset: 0, limit: 20 });
-    assert.equal(page.result.loops[0].paymentState, 'payment-pending');
-    const settled = await host.authenticatedGatewayRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, paymentState: 'paid', rationale: 'A fictional settlement was verified.' });
-    assert.equal(settled.result.loop.paymentState, 'paid');
-    assert.equal(settled.result.loop.state, 'resolved');
+    const page = await qualifyOpenLoop(service, 'command-center.v1.open-loops.list', { schemaVersion: 1, offset: 0, limit: 20 });
+    assert.equal(page.loops[0].paymentState, 'payment-pending');
+    const settled = await qualifyOpenLoop(service, 'command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, paymentState: 'paid', rationale: 'A fictional settlement was verified.' });
+    assert.equal(settled.loop.paymentState, 'paid');
+    assert.equal(settled.loop.state, 'resolved');
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('bounded document intake reads authoritative content and revision through the existing source owner', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-selected-document-'));
+  let service;
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir });
+    seed.createTopic({ topicId: 'topic-selected-document', paraCategory: 'project', lifecycle: 'active' });
+    seed.createSourceReference({ version: 1, referenceId: 'document:selected-invoice', topicId: 'topic-selected-document', sourceSystem: 'fictional-documents', sourceKind: 'document', externalSourceId: 'selected-invoice.txt', observedRevision: 'authoritative-v7' });
+    seed.close();
+    const host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
+    let readInput;
+    service.sourceService.notesRead = async input => {
+      readInput = input;
+      return { schemaVersion: 1, path: input.path, text: 'Invoice: INV-FICTIONAL-SELECTED\nPayee: Fictional Electrician\nPurpose: final switchboard work\nAmount due: AUD 480.00\nPlease pay after review.', revision: 'authoritative-v7', sourceReference: { referenceId: input.referenceId } };
+    };
+    const result = await service.openLoopsIngestSelected({ schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { scopeId: 'fictional-operator', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-invoice' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-document', path: 'selected-invoice.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z' }] });
+    assert.deepEqual(readInput, { schemaVersion: 1, topicId: 'topic-selected-document', referenceId: 'document:selected-invoice', path: 'selected-invoice.txt', observedRevision: 'authoritative-v7', sourceKind: 'document' });
+    assert.equal(result.results[0].sourceVersion, 'authoritative-v7');
+    assert.equal(result.results[0].loop.title, 'Pay final switchboard work from Fictional Electrician');
+    await assert.rejects(() => service.openLoopsIngestSelected({ schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { scopeId: 'fictional-operator', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-invoice' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-document', path: 'selected-invoice.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', content: 'caller supplied' }] }), /selected document/i);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
@@ -159,12 +182,12 @@ test('registered bill actions create, defer, and cancel one native Reminder thro
     const created = seed.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'seed-topic-bill', message: { schemaVersion: 1, channel: 'email', source: { system: 'fictional-mail', externalId: 'bill-reminder-source', version: 'v1' }, occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:00:00.000Z', historicalBaseline: false, topicId: 'topic-fictional-bill', disposition: 'confirmed-obligation', requestKind: 'payment', explicitRequest: true, summary: 'Pay the fictional electrical invoice.', payee: 'Fictional Electrical', purpose: 'renovation work', amount: 48000, currency: 'AUD', dueAt: '2026-10-04T00:00:00.000Z', invoiceId: 'FICTIONAL-ELEC-1', evidenceSelectors: ['subject'] } });
     seed.close();
     const gateway = fictionalSchedulerGateway(); const host = fakePublishedApi(stateDir, { gateway }); plugin.register(host.api); service = host.services[0]; await service.start();
-    const corrected = await host.authenticatedGatewayRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 1, decision: 'correct-date', dueAt: '2026-10-05T00:00:00.000Z', rationale: 'The fictional invoice date was checked.' });
-    assert.equal(corrected.result.reminder.action, 'create'); assert.equal(gateway.jobs.size, 1); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-05T00:00:00.000Z');
-    const deferred = await host.authenticatedGatewayRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, decision: 'defer', reviewAt: '2026-10-02T09:00:00.000Z', rationale: 'Review after the fictional pay cycle.' });
-    assert.equal(deferred.result.reminder.action, 'reschedule'); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T09:00:00.000Z');
-    const paid = await host.authenticatedGatewayRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 3, paymentState: 'paid', rationale: 'The fictional settlement was verified.' });
-    assert.equal(paid.result.reminder.action, 'cancel'); assert.equal([...gateway.jobs.values()][0].enabled, false);
+    const corrected = await qualifyOpenLoop(service, 'command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 1, decision: 'correct-date', dueAt: '2026-10-05T00:00:00.000Z', rationale: 'The fictional invoice date was checked.' });
+    assert.equal(corrected.reminder.action, 'create'); assert.equal(gateway.jobs.size, 1); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-05T00:00:00.000Z');
+    const deferred = await qualifyOpenLoop(service, 'command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, decision: 'defer', reviewAt: '2026-10-02T09:00:00.000Z', rationale: 'Review after the fictional pay cycle.' });
+    assert.equal(deferred.reminder.action, 'reschedule'); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T09:00:00.000Z');
+    const paid = await qualifyOpenLoop(service, 'command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 3, paymentState: 'paid', rationale: 'The fictional settlement was verified.' });
+    assert.equal(paid.reminder.action, 'cancel'); assert.equal([...gateway.jobs.values()][0].enabled, false);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
@@ -179,14 +202,14 @@ test('registered renovation bridge preserves exact purchase relationships and se
     plugin.register(host.api);
     service = host.services[0];
     await service.start();
-    const requirement = await host.authenticatedGatewayRequest('command-center.v1.open-loops.renovation-requirement', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 0, requirement: { schemaVersion: 1, source: source('required-mixer'), requirement: ref('purchase', 'buy-mixer'), occurredAt: at, observedAt: at, historicalBaseline: false, title: 'Buy fictional sink mixer' } });
-    assert.equal(requirement.result.loop.state, 'waiting');
-    const purchased = await host.authenticatedGatewayRequest('command-center.v1.open-loops.renovation-purchase', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 1, reconciliation: { schemaVersion: 1, source: source('receipt-mixer'), requirement: ref('purchase', 'buy-mixer'), purchase: ref('purchase', 'purchased-mixer-001'), occurredAt: at, observedAt: at, historicalBaseline: false } });
-    assert.equal(purchased.result.loop.state, 'resolved');
-    const replacement = await host.authenticatedGatewayRequest('command-center.v1.open-loops.renovation-replacement', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 0, replacement: { schemaVersion: 1, source: source('replacement-mixer'), replacementPurchase: ref('purchase', 'replacement-mixer-002'), replacedItem: ref('renovation-item', 'faulty-mixer-001'), obligation: ref('return', 'return-faulty-mixer-001'), occurredAt: at, observedAt: at, historicalBaseline: false, title: 'Return fictional faulty mixer', dueAt: '2026-09-27T00:00:00.000Z' } });
-    assert.equal(replacement.result.loop.state, 'confirmed');
-    assert.equal(replacement.result.loop.expectedEvent, 'return completion');
-    assert.notEqual(replacement.result.loop.loopId, purchased.result.loop.loopId);
+    const requirement = await qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-requirement', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 0, requirement: { schemaVersion: 1, source: source('required-mixer'), requirement: ref('purchase', 'buy-mixer'), occurredAt: at, observedAt: at, historicalBaseline: false, title: 'Buy fictional sink mixer' } });
+    assert.equal(requirement.loop.state, 'waiting');
+    const purchased = await qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-purchase', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 1, reconciliation: { schemaVersion: 1, source: source('receipt-mixer'), requirement: ref('purchase', 'buy-mixer'), purchase: ref('purchase', 'purchased-mixer-001'), occurredAt: at, observedAt: at, historicalBaseline: false } });
+    assert.equal(purchased.loop.state, 'resolved');
+    const replacement = await qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-replacement', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 0, replacement: { schemaVersion: 1, source: source('replacement-mixer'), replacementPurchase: ref('purchase', 'replacement-mixer-002'), replacedItem: ref('renovation-item', 'faulty-mixer-001'), obligation: ref('return', 'return-faulty-mixer-001'), occurredAt: at, observedAt: at, historicalBaseline: false, title: 'Return fictional faulty mixer', dueAt: '2026-09-27T00:00:00.000Z' } });
+    assert.equal(replacement.loop.state, 'confirmed');
+    assert.equal(replacement.loop.expectedEvent, 'return completion');
+    assert.notEqual(replacement.loop.loopId, purchased.loop.loopId);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
@@ -197,15 +220,21 @@ test('registered renovation decision revision keeps the prior record and resolve
   try {
     const seed = openCommandCenterMetadataService({ stateDir });
     seed.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: 'seed-finish-choice', expectedRevision: 0, decision: { schemaVersion: 1, decisionId: 'cabinet-finish-choice', status: 'confirmed', decidedAt: at, actorId: 'fictional-operator', subject: { kind: 'product-choice', id: 'cabinet-finish', label: 'Fictional cabinet finish' }, chosenOption: 'warm white', alternatives: ['cool white'], rationale: 'Matches the fictional room.', assumptions: [], sourceObservationIds: [] } });
-    const challenged = seed.recordRenovationDecisionConflict({ schemaVersion: 1, logicalOperationId: 'seed-finish-conflict', expectedRevision: 1, conflict: { schemaVersion: 1, decisionId: 'cabinet-finish-choice', source: { system: 'fictional-renovation-source', kind: 'quote', externalId: 'quote-1', version: 'v2' }, conflictKind: 'revised-quote', occurredAt: at, observedAt: at, historicalBaseline: false, summary: 'The revised fictional quote names cool white.', recordedChoice: 'warm white', observedChoice: 'cool white', evidenceSelectors: ['quote:finish'] } });
+    const challenged = seed.recordRenovationDecisionConflict({ schemaVersion: 1, logicalOperationId: 'seed-finish-conflict', expectedRevision: 1, actorId: 'fictional-operator', conflict: { schemaVersion: 1, decisionId: 'cabinet-finish-choice', source: { system: 'fictional-renovation-source', kind: 'quote', externalId: 'quote-1', version: 'v2' }, conflictKind: 'revised-quote', occurredAt: at, observedAt: at, historicalBaseline: false, summary: 'The revised fictional quote names cool white.', recordedChoice: 'warm white', observedChoice: 'cool white', evidenceSelectors: ['quote:finish'] } });
     seed.close();
     const host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
-    const revised = await host.authenticatedGatewayRequest('command-center.v1.open-loops.renovation-decision-revise', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: challenged.decision.loop.loopId, expectedRevision: 2, chosenOption: 'cool white', rationale: 'The fictional revised quote was accepted after review.' });
-    assert.equal(revised.result.loop.state, 'resolved');
-    assert.equal(revised.result.loop.revision, 3);
-    const detail = await host.authenticatedGatewayRequest('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: challenged.decision.loop.loopId });
-    assert.ok(detail.result.evidence.some(item => item.chosenOption === 'warm white'));
-    assert.ok(detail.result.evidence.some(item => item.chosenOption === 'cool white'));
+    const revisionOperationId = randomUUID();
+    const revisionParams = { schemaVersion: 1, logicalOperationId: revisionOperationId, loopId: challenged.decision.loop.loopId, expectedRevision: 2, chosenOption: 'cool white', rationale: 'The fictional revised quote was accepted after review.', decidedAt: '2026-09-20T02:05:00.000Z' };
+    const revised = await qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-decision-revise', revisionParams);
+    assert.equal(revised.loop.state, 'resolved');
+    assert.equal(revised.loop.revision, 3);
+    const replayed = await qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-decision-revise', revisionParams);
+    assert.equal(replayed.disposition, 'duplicate');
+    assert.equal(replayed.loop.revision, revised.loop.revision);
+    await assert.rejects(() => qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-decision-revise', { ...revisionParams, chosenOption: 'warm white' }), /intent/i);
+    const detail = await qualifyOpenLoop(service, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: challenged.decision.loop.loopId });
+    assert.ok(detail.evidence.some(item => item.chosenOption === 'warm white'));
+    assert.ok(detail.evidence.some(item => item.chosenOption === 'cool white'));
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

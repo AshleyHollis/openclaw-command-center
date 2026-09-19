@@ -31,15 +31,14 @@ test('open-loop bridge contracts use read and native-Reminder admin scopes with 
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, paymentState: 'paid', paidAmount: 12300, rationale: 'Missing currency.' }), /currency/);
 });
 
-test('selected-source intake bridge accepts only the bounded raw-source envelope and returns a closed summary', async () => {
+test('selected-source intake bridge accepts one persisted document selection without caller-supplied content or versions', async () => {
   const logicalOperationId = randomUUID();
   const params = {
     schemaVersion: 1,
     logicalOperationId,
     authorization: { scopeId: 'fictional-operator', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'fictional-source-reference' },
     baselineThrough: '2026-09-01T00:00:00.000Z',
-    window: { cursor: 'cursor-0', nextCursor: 'cursor-1', hasMore: false },
-    selections: [{ version: 'v1', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', availability: 'available', content: 'Invoice: INV-FICTIONAL\nAmount due: AUD 48.00' }]
+    selections: [{ topicId: 'fictional-topic', path: 'selected-invoice.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z' }]
   };
   assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.intake-selected'].scope, 'operator.admin');
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.intake-selected', params));
@@ -47,6 +46,8 @@ test('selected-source intake bridge accepts only the bounded raw-source envelope
   const result = await invokeBridgeMethod({
     openLoopsIngestSelected(input) {
       assert.equal(input.authenticatedOperatorId, 'fictional-operator');
+      assert.equal(input.selections[0].content, undefined);
+      assert.equal(input.selections[0].version, undefined);
       return { schemaVersion: 1, disposition: 'applied', checkpoint: { schemaVersion: 1, laneId: 'lane', scopeId: 'fictional-operator', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'fictional-source-reference', cursor: 'cursor-1', processedCount: 1, lastObservedAt: '2026-09-20T00:01:00.000Z', lastAvailableAt: '2026-09-20T00:01:00.000Z', freshness: 'available', digest: `sha256:${'a'.repeat(64)}` }, freshness: { status: 'available', lastObservedAt: '2026-09-20T00:01:00.000Z', lastAvailableAt: '2026-09-20T00:01:00.000Z' }, hasMore: false, results: [{ disposition: 'created', observationId: 'fictional-observation', sourceVersion: 'v1', historicalBaseline: false, loop }] };
     }
   }, 'command-center.v1.open-loops.intake-selected', params, null, 'fictional-operator');
@@ -65,7 +66,7 @@ test('open-loop detail sanitization withholds raw source fields and attachment i
   assert.equal(result.evidence[0].invoiceId, 'INVOICE-FICTIONAL');
 });
 
-test('registered open-loop mutations require an authenticated operator and reach the qualified service', async () => {
+test('release-gated open-loop mutations are refused before acquiring operator or service authority', async () => {
   const methods = new Map();
   let received;
   registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, {
@@ -75,10 +76,10 @@ test('registered open-loop mutations require an authenticated operator and reach
   let unauthenticated;
   await methods.get('command-center.v1.open-loops.payment-status')({ req: { id: 'request-unauthenticated' }, params, context: { authenticated: true }, respond: (ok, result, error) => { unauthenticated = { ok, result, error }; } });
   assert.equal(unauthenticated.ok, false);
-  assert.equal(unauthenticated.error.code, 'unauthenticated');
+  assert.equal(unauthenticated.error.code, 'feature-unavailable');
   let authenticated;
   await methods.get('command-center.v1.open-loops.payment-status')({ req: { id: 'request-authenticated' }, params, client: { authenticatedUserProfile: { profileId: 'fictional-operator' } }, context: { authenticated: true }, respond: (ok, result, error) => { authenticated = { ok, result, error }; } });
-  assert.equal(authenticated.ok, true);
-  assert.equal(authenticated.result.result.loop.paymentState, 'payment-pending');
-  assert.equal(received.authenticatedOperatorId, 'fictional-operator');
+  assert.equal(authenticated.ok, false);
+  assert.equal(authenticated.error.code, 'feature-unavailable');
+  assert.equal(received, undefined);
 });

@@ -250,6 +250,7 @@ test('native Attention reviews evidence and records status without paying or sen
   await bill.getByRole('button', { name: 'Review evidence' }).click();
   await bill.getByText('Source evidence', { exact: true }).waitFor();
   await bill.getByText('Source: fictional-source · email · v1', { exact: true }).waitFor();
+  await bill.getByText('Exact original-source navigation is not available from this item yet.', { exact: false }).waitFor();
   assert.equal(await bill.locator('details[data-open-loop-evidence] pre').count(), 0);
   await bill.getByText('Record payment status', { exact: true }).click();
   await bill.getByLabel('Evidence or rationale').fill('The fictional bank transfer was initiated; settlement remains pending.');

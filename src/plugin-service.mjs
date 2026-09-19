@@ -281,12 +281,29 @@ export function createMetadataService(api) {
       if (!loop) throw new SourceServiceError('not-found', 'The exact open loop is unavailable.');
       return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id)))) });
     },
-    openLoopsIngestSelected(input = {}) {
+    async openLoopsIngestSelected(input = {}) {
       requireOperational();
       const operatorId = typeof input.authenticatedOperatorId === 'string' ? input.authenticatedOperatorId.trim() : '';
       if (!operatorId) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for selected-source intake.');
       if (!input.authorization || input.authorization.scopeId !== operatorId) throw new SourceServiceError('unauthenticated', 'Selected-source authorization must belong to the authenticated operator.');
-      const { authenticatedOperatorId: _operator, ...request } = input;
+      const authorization = input.authorization;
+      if (authorization.sourceKind !== 'document') throw new SourceServiceError('invalid-request', 'The bounded intake pilot accepts one existing document source reference.');
+      const reference = metadataService.getSourceReference(authorization.resourceId);
+      if (!reference || reference.sourceSystem !== authorization.sourceSystem || reference.sourceKind !== authorization.sourceKind) throw new SourceServiceError('source-recovery', 'The selected document is not an exact persisted source reference.');
+      if (!Array.isArray(input.selections) || input.selections.length !== 1) throw new SourceServiceError('invalid-request', 'The bounded intake pilot accepts exactly one selected document.');
+      const selection = input.selections[0];
+      if (!selection || typeof selection !== 'object' || Array.isArray(selection) || Object.keys(selection).some(key => !['topicId', 'path', 'occurredAt', 'observedAt'].includes(key)) || selection.topicId !== reference.topicId) throw new SourceServiceError('invalid-request', 'The selected document must identify its exact Topic, path, and selection times.');
+      const note = await sourceService.notesRead({ schemaVersion: 1, topicId: reference.topicId, referenceId: reference.referenceId, path: selection.path, observedRevision: reference.observedRevision, sourceKind: 'document' });
+      const content = Buffer.isBuffer(note.bytes) ? note.bytes.toString('utf8') : note.text;
+      if (typeof content !== 'string' || typeof note.revision !== 'string' || note.revision.trim() === '') throw new SourceServiceError('source-recovery', 'The selected document did not return authoritative text and version evidence.');
+      const request = {
+        schemaVersion: 1,
+        logicalOperationId: input.logicalOperationId,
+        authorization,
+        baselineThrough: input.baselineThrough,
+        window: { cursor: `selected:${input.logicalOperationId}`, nextCursor: `complete:${input.logicalOperationId}`, hasMore: false },
+        selections: [{ version: note.revision, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'available', content, ...(selection.topicId ? { topicId: selection.topicId } : {}) }]
+      };
       const result = metadataService.ingestSelectedSourceBatch(request);
       const publicResult = Object.freeze({
         schemaVersion: 1,
@@ -319,28 +336,28 @@ export function createMetadataService(api) {
       return reconcileOpenLoopReminder(result, input.logicalOperationId);
     },
     openLoopsRenovationRequirement(input = {}) {
-      requireOperational(); requireOperator(input, 'renovation requirement records');
-      const result = metadataService.recordRenovationRequirement({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, requirement: input.requirement });
+      requireOperational(); const actorId = requireOperator(input, 'renovation requirement records');
+      const result = metadataService.recordRenovationRequirement({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, actorId, requirement: input.requirement });
       return reconcileOpenLoopReminder(result, input.logicalOperationId);
     },
     openLoopsRenovationPurchase(input = {}) {
-      requireOperational(); requireOperator(input, 'renovation purchase reconciliation');
-      const result = metadataService.reconcileRenovationPurchase({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, reconciliation: input.reconciliation });
+      requireOperational(); const actorId = requireOperator(input, 'renovation purchase reconciliation');
+      const result = metadataService.reconcileRenovationPurchase({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, actorId, reconciliation: input.reconciliation });
       return reconcileOpenLoopReminder(result, input.logicalOperationId);
     },
     openLoopsRenovationReplacement(input = {}) {
-      requireOperational(); requireOperator(input, 'renovation replacement records');
-      const result = metadataService.recordRenovationReplacement({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, replacement: input.replacement });
+      requireOperational(); const actorId = requireOperator(input, 'renovation replacement records');
+      const result = metadataService.recordRenovationReplacement({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, actorId, replacement: input.replacement });
       return reconcileOpenLoopReminder(result, input.logicalOperationId);
     },
     openLoopsRenovationFulfilment(input = {}) {
-      requireOperational(); requireOperator(input, 'renovation fulfilment records');
-      const result = metadataService.recordRenovationFulfilment({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, fulfilment: input.fulfilment });
+      requireOperational(); const actorId = requireOperator(input, 'renovation fulfilment records');
+      const result = metadataService.recordRenovationFulfilment({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, actorId, fulfilment: input.fulfilment });
       return reconcileOpenLoopReminder(result, input.logicalOperationId);
     },
     openLoopsRenovationStage(input = {}) {
-      requireOperational(); requireOperator(input, 'renovation stage activation');
-      const result = metadataService.recordRenovationStageActivation({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, activation: input.activation });
+      requireOperational(); const actorId = requireOperator(input, 'renovation stage activation');
+      const result = metadataService.recordRenovationStageActivation({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, actorId, activation: input.activation });
       return Object.freeze({ schemaVersion: 1, disposition: result.disposition, observationId: result.observation.observationId });
     },
     openLoopsRenovationStagePrerequisites(input = {}) {
@@ -348,29 +365,14 @@ export function createMetadataService(api) {
       return metadataService.projectRenovationStagePrerequisites({ stage: input.stage, ...(input.topicId ? { topicId: input.topicId } : {}) });
     },
     openLoopsRenovationDecisionConflict(input = {}) {
-      requireOperational(); requireOperator(input, 'renovation decision review');
-      const result = metadataService.recordRenovationDecisionConflict({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, conflict: input.conflict });
+      requireOperational(); const actorId = requireOperator(input, 'renovation decision review');
+      const result = metadataService.recordRenovationDecisionConflict({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, actorId, conflict: input.conflict });
       return Object.freeze({ schemaVersion: 1, disposition: result.disposition, loop: result.decision.loop });
     },
     openLoopsRenovationDecisionRevise(input = {}) {
       requireOperational();
       const actorId = requireOperator(input, 'renovation decision revision');
-      const loop = metadataService.getOpenLoop(input.loopId);
-      if (!loop || loop.kind !== 'decision' || !loop.stableSubjectId.startsWith('decision:')) throw new SourceServiceError('not-found', 'The exact renovation decision is unavailable.');
-      if (loop.revision !== input.expectedRevision) throw new SourceServiceError('conflict', 'The renovation decision changed. Refresh before revising it.');
-      const decisionId = loop.stableSubjectId.slice('decision:'.length);
-      const memory = metadataService.getDecisionMemory(decisionId);
-      const current = memory?.currentRecord;
-      const subject = current?.entityRefs?.[0];
-      if (!current || !subject) throw new SourceServiceError('not-found', 'The current recorded decision evidence is unavailable.');
-      const result = metadataService.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: loop.revision, decision: {
-        schemaVersion: 1, decisionId, status: 'confirmed', decidedAt: new Date().toISOString(), actorId,
-        subject: { kind: subject.kind, id: subject.id, ...(subject.label ? { label: subject.label } : {}) },
-        ...(loop.topicId ? { topicId: loop.topicId } : {}), chosenOption: input.chosenOption,
-        alternatives: [...new Set([...(current.facts.alternatives ?? []), current.facts.chosenOption].filter(value => value && value !== input.chosenOption))],
-        rationale: input.rationale, assumptions: current.facts.assumptions ?? [], sourceObservationIds: [loop.evidenceObservationIds.at(-1)].filter(Boolean)
-      } });
-      return Object.freeze({ schemaVersion: 1, disposition: result.disposition, loop: result.decision.loop });
+      return metadataService.reviseRenovationDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, actorId, revision: { loopId: input.loopId, chosenOption: input.chosenOption, rationale: input.rationale, decidedAt: input.decidedAt } });
     },
     dashboardUpdateSettings() { return refuseDeferred('dashboard'); },
     notificationReconcile() { return refuseDeferred('notifications'); },

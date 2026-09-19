@@ -112,12 +112,12 @@ test('Dashboard groups blockers only for an explicitly active renovation stage a
   const stage = { kind: 'renovation-stage', namespace: 'fictional-home-project', id: 'cabinet-installation' };
   const source = (externalId) => ({ system: 'fictional-renovation-source', kind: 'operator-evidence', externalId, version: 'v1' });
   try {
-    metadata.recordRenovationRequirement({ schemaVersion: 1, logicalOperationId: 'dashboard-stage-prerequisite', expectedRevision: 0, requirement: { schemaVersion: 1, source: source('clear-area'), requirement: { kind: 'prerequisite', namespace: 'fictional-home-project', id: 'clear-work-area' }, stage, occurredAt: now, observedAt: now, historicalBaseline: false, title: 'Clear the fictional cabinet work area' } });
+    metadata.recordRenovationRequirement({ schemaVersion: 1, logicalOperationId: 'dashboard-stage-prerequisite', expectedRevision: 0, actorId: 'fictional-operator', requirement: { schemaVersion: 1, source: source('clear-area'), requirement: { kind: 'prerequisite', namespace: 'fictional-home-project', id: 'clear-work-area' }, stage, occurredAt: now, observedAt: now, historicalBaseline: false, title: 'Clear the fictional cabinet work area' } });
     let result = await createDashboardService({ metadata, now: () => now }).get({ schemaVersion: 1 });
     assert.equal(result.openLoops.attentionTotal, 0);
     assert.equal(result.openLoops.waitingTotal, 1);
     assert.equal(result.openLoops.stageReviewTotal, 0);
-    metadata.recordRenovationStageActivation({ schemaVersion: 1, logicalOperationId: 'dashboard-activate-stage', expectedRevision: 0, activation: { schemaVersion: 1, source: source('stage-state'), stage, active: true, occurredAt: now, observedAt: now } });
+    metadata.recordRenovationStageActivation({ schemaVersion: 1, logicalOperationId: 'dashboard-activate-stage', expectedRevision: 0, actorId: 'fictional-operator', activation: { schemaVersion: 1, source: source('stage-state'), stage, active: true, occurredAt: now, observedAt: now } });
     result = await createDashboardService({ metadata, now: () => now }).get({ schemaVersion: 1 });
     assert.equal(result.openLoops.attentionTotal, 1);
     assert.equal(result.openLoops.waitingTotal, 0);

@@ -13,7 +13,7 @@ const freeze = value => {
 };
 
 function command(raw, field) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['schemaVersion', 'logicalOperationId', 'expectedRevision', field].includes(key)) || raw.schemaVersion !== 1 || typeof raw.logicalOperationId !== 'string' || raw.logicalOperationId.trim() === '' || !Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 0) throw new TypeError('renovation-follow-through-invalid');
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['schemaVersion', 'logicalOperationId', 'expectedRevision', 'actorId', field].includes(key)) || raw.schemaVersion !== 1 || typeof raw.logicalOperationId !== 'string' || raw.logicalOperationId.trim() === '' || !Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 0 || typeof raw.actorId !== 'string' || raw.actorId.trim() === '') throw new TypeError('renovation-follow-through-invalid');
   return raw;
 }
 
@@ -62,7 +62,7 @@ export function createRenovationFollowThrough(service) {
     recordStageActivation(raw) {
       const value = command(raw, 'activation');
       if (value.expectedRevision !== 0) throw new TypeError('stage activation does not use an open-loop revision');
-      const plan = planStageActivation(value.activation);
+      const plan = planStageActivation({ ...value.activation, actorId: value.actorId.trim() });
       return service.ingestOpenLoopObservation({ schemaVersion: 1, logicalOperationId: value.logicalOperationId.trim(), observation: plan.observation });
     },
     projectStagePrerequisites,
@@ -78,8 +78,21 @@ export function createRenovationFollowThrough(service) {
     },
     recordDecisionConflict(raw) {
       const value = command(raw, 'conflict');
-      const challenge = planRenovationDecisionConflict(value.conflict);
+      const challenge = { ...planRenovationDecisionConflict(value.conflict), actorId: value.actorId.trim() };
       return service.challengeDecisionMemory({ schemaVersion: 1, logicalOperationId: value.logicalOperationId.trim(), expectedRevision: value.expectedRevision, challenge });
+    },
+    reviseDecision(raw) {
+      const value = command(raw, 'revision');
+      const revision = value.revision;
+      if (!revision || typeof revision !== 'object' || Array.isArray(revision) || Object.keys(revision).some(key => !['loopId', 'chosenOption', 'rationale', 'decidedAt'].includes(key)) || typeof revision.loopId !== 'string' || typeof revision.chosenOption !== 'string' || !revision.chosenOption.trim() || typeof revision.rationale !== 'string' || !revision.rationale.trim() || typeof revision.decidedAt !== 'string' || Number.isNaN(Date.parse(revision.decidedAt))) throw new TypeError('renovation-decision-revision-invalid');
+      const loop = service.getOpenLoop(revision.loopId);
+      if (!loop || loop.kind !== 'decision' || !loop.stableSubjectId.startsWith('decision:')) throw new TypeError('renovation-decision-missing');
+      const decisionId = loop.stableSubjectId.slice('decision:'.length);
+      const memory = service.getDecisionMemory(decisionId); const current = memory?.currentRecord; const subject = current?.entityRefs?.[0];
+      if (!current || !subject) throw new TypeError('renovation-decision-evidence-missing');
+      const conflictObservationId = memory.evidence.filter(item => item?.source?.kind !== 'explicit-decision').at(-1)?.observationId;
+      const result = service.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: value.logicalOperationId.trim(), expectedRevision: value.expectedRevision, decision: { schemaVersion: 1, decisionId, status: 'confirmed', decidedAt: revision.decidedAt, actorId: value.actorId.trim(), subject: { kind: subject.kind, id: subject.id, ...(subject.label ? { label: subject.label } : {}) }, ...(loop.topicId ? { topicId: loop.topicId } : {}), chosenOption: revision.chosenOption.trim(), alternatives: [...new Set([...(current.facts.alternatives ?? []), current.facts.chosenOption].filter(option => option && option !== revision.chosenOption.trim()))], rationale: revision.rationale.trim(), assumptions: current.facts.assumptions ?? [], sourceObservationIds: [conflictObservationId].filter(Boolean) } });
+      return freeze({ schemaVersion: 1, disposition: result.disposition, loop: result.decision.loop });
     }
   });
 }

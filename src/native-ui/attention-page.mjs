@@ -64,6 +64,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
       if (item.sourceAvailable === false) article.append(element('p', 'The original source is currently unavailable. This does not mean the open loop is complete.'));
       disclosure.append(article);
     }
+    disclosure.append(element('p', 'Exact original-source navigation is not available from this item yet. Use the displayed source system, kind, and version to verify it in its authorized reader.'));
   }
 
   async function submitOpenLoopOperation({ key, method, params, card, pending, success }) {
@@ -279,7 +280,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             if (!current(pending) || !writable() || save.disabled || !chosenOption.value.trim() || !rationale.value.trim()) return;
             save.disabled = true;
             try {
-              await submitOpenLoopOperation({ key: `renovation-decision:${card.loopId}`, method: 'command-center.v1.open-loops.renovation-decision-revise', params: { chosenOption: chosenOption.value.trim(), rationale: rationale.value.trim() }, card, pending, success: 'The revised decision was recorded; earlier evidence remains available.' });
+              await submitOpenLoopOperation({ key: `renovation-decision:${card.loopId}`, method: 'command-center.v1.open-loops.renovation-decision-revise', params: { chosenOption: chosenOption.value.trim(), rationale: rationale.value.trim(), decidedAt: new Date().toISOString() }, card, pending, success: 'The revised decision was recorded; earlier evidence remains available.' });
             } catch (error) { if (current(pending)) report(error?.message || 'The decision outcome is unknown. Retry to reconcile the same operation.'); }
             finally { if (current(pending)) save.disabled = false; }
           }, { signal });

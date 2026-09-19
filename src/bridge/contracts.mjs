@@ -116,7 +116,7 @@ export const ADMIN_METHODS = Object.freeze([
 ]);
 
 const common = ['schemaVersion'];
-const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'dueAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption']);
+const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'dueAt', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption']);
 const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession', 'authorization', 'checkpoint', 'window', 'requirement', 'reconciliation', 'replacement', 'fulfilment', 'activation', 'stage', 'conflict']);
 const arrayFields = new Set(['expectedRevisions', 'selections']);
 
@@ -440,7 +440,7 @@ const required = Object.freeze({
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit'],
   'command-center.v1.open-loops.list': [],
   'command-center.v1.open-loops.get': ['loopId'],
-  'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'window', 'selections'],
+  'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'selections'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'rationale'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'rationale'],
   'command-center.v1.open-loops.renovation-requirement': ['expectedRevision', 'requirement'],
@@ -450,7 +450,7 @@ const required = Object.freeze({
   'command-center.v1.open-loops.renovation-stage': ['expectedRevision', 'activation'],
   'command-center.v1.open-loops.renovation-stage-prerequisites': ['stage'],
   'command-center.v1.open-loops.renovation-decision-conflict': ['expectedRevision', 'conflict'],
-  'command-center.v1.open-loops.renovation-decision-revise': ['loopId', 'expectedRevision', 'chosenOption', 'rationale']
+  'command-center.v1.open-loops.renovation-decision-revise': ['loopId', 'expectedRevision', 'chosenOption', 'rationale', 'decidedAt']
 });
 const fields = Object.freeze({
   'command-center.v1.histories.list': ['topicId'],
@@ -528,7 +528,7 @@ const fields = Object.freeze({
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit'],
   'command-center.v1.open-loops.list': ['offset', 'limit', 'cursor'],
   'command-center.v1.open-loops.get': ['loopId'],
-  'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'checkpoint', 'window', 'selections', 'logicalOperationId'],
+  'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'selections', 'logicalOperationId'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'rationale', 'logicalOperationId'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'paidAmount', 'currency', 'rationale', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-requirement': ['expectedRevision', 'requirement', 'logicalOperationId'],
@@ -538,7 +538,7 @@ const fields = Object.freeze({
   'command-center.v1.open-loops.renovation-stage': ['expectedRevision', 'activation', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-stage-prerequisites': ['stage', 'topicId'],
   'command-center.v1.open-loops.renovation-decision-conflict': ['expectedRevision', 'conflict', 'logicalOperationId'],
-  'command-center.v1.open-loops.renovation-decision-revise': ['loopId', 'expectedRevision', 'chosenOption', 'rationale', 'logicalOperationId']
+  'command-center.v1.open-loops.renovation-decision-revise': ['loopId', 'expectedRevision', 'chosenOption', 'rationale', 'decidedAt', 'logicalOperationId']
 });
 
 export const BRIDGE_CONTRACTS = Object.freeze(Object.fromEntries([...READ_METHODS, ...WRITE_METHODS].map((method) => {
