@@ -27,7 +27,7 @@ export async function assertNativeNoteSource(nativePage, fixture) {
 // ownership. Exercise the host control explicitly so this journey can prove
 // that a verified Topic category is actually reachable in the sidebar.
 export async function selectNativeCategoryGrouping(page) {
-  const sidebar = page.locator('openclaw-app-sidebar:visible').first();
+  let sidebar = page.locator('openclaw-app-sidebar:visible').first();
   try {
     if (!await sidebar.count()) {
       const expand = page.locator('button[aria-label="Expand sidebar"]:visible').first();
@@ -38,6 +38,19 @@ export async function selectNativeCategoryGrouping(page) {
     // the grouping control so the click remains an actual pointer interaction.
     const invitation = sidebar.locator('button[aria-label="Dismiss and don\'t show again"]:visible').first();
     if (await invitation.count()) await invitation.click({ timeout: 10_000 });
+
+    // Team mode deliberately offers only roster filters. Switch through the
+    // native workspace menu to the single-agent presentation before choosing
+    // a category grouping, which exists only in that presentation's menu.
+    const workspaceMenu = sidebar.locator('.sidebar-workspace-header__main:visible').first();
+    if (await workspaceMenu.count()) {
+      await workspaceMenu.click({ timeout: 10_000 });
+      const showOneAgent = page.locator('wa-dropdown-item[value="command:sidebar-agents"]:visible').first();
+      await showOneAgent.waitFor({ state: 'visible', timeout: 10_000 });
+      await showOneAgent.click({ timeout: 10_000 });
+      sidebar = page.locator('openclaw-app-sidebar:visible').first();
+      await sidebar.locator('.sidebar-agent-card__main:visible').first().waitFor({ state: 'visible', timeout: 10_000 });
+    }
     const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').first();
     await trigger.scrollIntoViewIfNeeded({ timeout: 10_000 });
     // The sidebar body and footer are independent sticky layers. Keyboard

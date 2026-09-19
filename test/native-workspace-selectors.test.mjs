@@ -28,3 +28,28 @@ test('native grouping journey selects a Topic row relative to its shadow-root pa
     await organizeNativeTopicConversations({ page, nativePage: page.locator('openclaw-plugin-page'), fixture: { name: 'Sample', sessionKey: 'agent:main:sample' } });
   } finally { await browser.close(); }
 });
+
+test('native grouping journey leaves team mode through the workspace menu', { timeout: 10_000 }, async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(1000);
+    await page.setContent('<openclaw-app-sidebar><button class="sidebar-workspace-header__main">Workspace</button></openclaw-app-sidebar><wa-dropdown-item hidden value="command:sidebar-agents">Show one agent</wa-dropdown-item><div hidden id="menu"><wa-dropdown-item value="grouping:category">Category</wa-dropdown-item></div>');
+    await page.evaluate(() => {
+      const sidebar = document.querySelector('openclaw-app-sidebar');
+      const workspace = sidebar.querySelector('.sidebar-workspace-header__main');
+      const showOne = document.querySelector('wa-dropdown-item[value="command:sidebar-agents"]');
+      workspace.addEventListener('click', () => { showOne.hidden = false; });
+      showOne.addEventListener('click', () => {
+        workspace.remove();
+        sidebar.insertAdjacentHTML('afterbegin', '<button class="sidebar-agent-card__main">Agent</button><div class="sidebar-session-toolbar"><button id="single-agent-sort" class="sidebar-session-sort">Sort sessions</button></div>');
+        document.querySelector('#single-agent-sort').addEventListener('click', () => {
+          document.querySelector('#menu').hidden = false;
+          document.body.dataset.clickedSort = 'single-agent-sort';
+        });
+      });
+    });
+    await selectNativeCategoryGrouping(page);
+    assert.equal(await page.locator('body').getAttribute('data-clicked-sort'), 'single-agent-sort');
+  } finally { await browser.close(); }
+});
