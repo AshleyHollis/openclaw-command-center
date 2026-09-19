@@ -18,10 +18,7 @@ export function createNativeTopicNavigation(host) {
   }
   async function open({ topicId, referenceId, expectedSessionId }, current = ++generation) {
       const target = await resolve({ topicId, referenceId, expectedSessionId }, current);
-      // The native Files action opens this exact Chat with its Topic explorer.
-      // Older hosts still retain their existing Chat-only navigation contract.
-      if (typeof host.sessions.openFiles === 'function') host.sessions.openFiles(target);
-      else host.sessions.openChat(target);
+      host.sessions.openChat(target);
       return Object.freeze({ referenceId, sessionId: expectedSessionId });
   }
   async function resolve({ topicId, referenceId, expectedSessionId }, current = ++generation) {
