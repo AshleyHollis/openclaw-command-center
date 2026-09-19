@@ -2024,7 +2024,10 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   return Object.freeze(measurements);
 }
 
-test('mounts the built plugin through the isolated authenticated external tab', { timeout: 900_000, concurrency: true }, async (testContext) => {
+// Complete qualification owns seven sequential participant pairs. Each pair
+// retains a 285-second slice bound, so the outer owner must outlive the closed
+// matrix plus preparation and final evidence scanning.
+test('mounts the built plugin through the isolated authenticated external tab', { timeout: 2_400_000, concurrency: true }, async (testContext) => {
   let descriptor, buildReceipt, baseline, baselineSeed;
   const nativeDiagnostic = acceptancePlan.kind === 'focused' && acceptancePlan.scenarioIds?.length === 1
     ? ['native-control-ui-activation', 'native-topic-chat-handoff', 'native-topic-notes-workspace', 'native-topic-files-workspace', 'topic-notes-visual', 'topic-document-tools', 'desktop-keyboard-journey', 'diagnostic-scale-startup', 'scale-performance'].find(id => acceptancePlan.scenarioIds[0] === id) : undefined;

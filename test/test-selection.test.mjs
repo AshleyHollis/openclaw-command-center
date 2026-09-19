@@ -40,6 +40,9 @@ test('native UI and source/recovery diagnostics are the two disjoint non-perform
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-compatibility-startup').isolatedSliceIds, ['host-tuple-refusal', 'build-variant']);
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-native-ui-session-authority'), { kind: 'focused', scenarioIds: ['native-control-ui-activation'] });
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-source-identity-import-recovery').isolatedSliceIds, ['host-tuple-refusal', 'build-variant', 'plugin-api-variant', 'bridge-protocol-variant', 'binding-mismatch', 'foreign-database-restoration', 'secure-origin', 'degraded-bridge-grants', 'degraded-source-availability', 'combined-degraded', 'recovery-only-compatibility', 'destructive-migration-restoration']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-degraded-bridge').isolatedSliceIds, ['degraded-bridge-grants']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-degraded-source').isolatedSliceIds, ['degraded-source-availability']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-combined-degraded').isolatedSliceIds, ['combined-degraded']);
   const review = resolveRealHostAcceptancePlan('desktop-review-journey');
   assert.deepEqual(review.scenarioIds, ['focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'desktop-primary-journey', 'desktop-primary-journey-review']);
   assert.deepEqual(resolveRealHostAcceptancePlan('mobile-primary-journey').scenarioIds, ['pinned-host-startup', 'focused-control-ui-migration-readiness', 'focused-control-ui-search-projection', 'focused-full-corpus-fixture', 'authenticated-control-ui-mount', 'focused-scale-session-seeding', 'mobile-accessibility-journey']);

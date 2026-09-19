@@ -2,13 +2,19 @@ name: Qualify Command Center release
 
 on:
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: Optional focused acceptance scenario; blank runs the complete release qualification
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
   packages: read
 
 concurrency:
-  group: qualify-command-center-release-${{ github.ref }}
+  group: qualify-command-center-release-${{ github.ref }}-${{ inputs.scenario || 'release' }}
   cancel-in-progress: false
 
 jobs:
@@ -20,6 +26,7 @@ jobs:
       OPENCLAW_COMMIT: 8490d8016bdd46c8e29301efbc91f99eaab7de8d
       OPENCLAW_VERSION: 2026.9.5
       COMMAND_CENTER_CONTROLLER_SOURCE_ROOT: ${{ github.workspace }}/_openclaw-source
+      COMMAND_CENTER_ACCEPTANCE_SCENARIO: ${{ inputs.scenario }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -116,6 +123,7 @@ jobs:
           node --test --test-isolation=none test/real-host.acceptance.test.mjs 2>&1 | tee "$RUNNER_TEMP/qualification.log"
 
       - name: Seal qualification receipt
+        if: inputs.scenario == ''
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
@@ -148,6 +156,7 @@ jobs:
           NODE
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: inputs.scenario == ''
         with:
           name: command-center-release-qualification-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/qualification/receipt.json
@@ -155,5 +164,6 @@ jobs:
           retention-days: 14
 
       - name: Record qualification boundary
+        if: inputs.scenario == ''
         run: |
           printf '%s\n' 'Coherent native release qualification passed for the exact source, plugin build, host receipt, image digest, browser and frozen performance baseline.' >> "$GITHUB_STEP_SUMMARY"
