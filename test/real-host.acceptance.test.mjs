@@ -50,6 +50,19 @@ const acceptancePlan = resolveRealHostAcceptancePlan(process.env.COMMAND_CENTER_
 if (capturePerformanceBaseline && acceptancePlan.kind === 'prerequisites') throw new Error('Native prerequisites cannot capture performance.');
 if (capturePerformanceBaseline && acceptancePlan.kind === 'focused' && !acceptancePlan.scenarioIds?.includes('scale-performance')) throw new Error('Only the focused scale-performance acceptance can capture a performance baseline.');
 
+function boundedAcceptanceErrors(error, entries = [], seen = new Set()) {
+  if (!error || seen.has(error) || entries.length >= 24) return entries;
+  seen.add(error);
+  entries.push(Object.freeze({
+    name: typeof error.name === 'string' ? error.name : 'Error',
+    message: redactBrowserEvidence(error.message ?? error),
+    ...(typeof error.category === 'string' ? { category: error.category } : {})
+  }));
+  for (const nested of Array.isArray(error.errors) ? error.errors : []) boundedAcceptanceErrors(nested, entries, seen);
+  if (error.cause) boundedAcceptanceErrors(error.cause, entries, seen);
+  return entries;
+}
+
 function executeFile(command, args) {
   return new Promise((resolve, reject) => execFile(command, args, (error) => error ? reject(error) : resolve()));
 }
@@ -2029,8 +2042,15 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     // Use the owner's default execution/cleanup budget so every focused slice
     // stays below controller inactivity. Diagnostics never qualify performance.
     const journey = nativeDiagnostic === 'diagnostic-scale-startup' ? exerciseNativeScaleStartup : nativeDiagnostic === 'native-topic-chat-handoff' ? exerciseNativeTopicChatHandoffJourney : nativeDiagnostic === 'native-topic-notes-workspace' ? exerciseNativeTopicNotesWorkspaceJourney : nativeDiagnostic === 'native-topic-files-workspace' ? exerciseNativeTopicFilesWorkspaceJourney : nativeDiagnostic === 'topic-notes-visual' ? exerciseNativeTopicNotesVisualJourney : nativeDiagnostic === 'topic-document-tools' ? exerciseNativeTopicToolsJourney : scale ? exerciseNativeScaleJourney : keyboard ? exerciseNativeKeyboardJourney : exerciseNativeControlUiActivation;
-    const evidence = await runBoundedAcceptanceSlice(nativeDiagnostic, (signal) => journey({ descriptor, buildReceipt, signal,
-      onDiagnostic: diagnostic => testContext.diagnostic(`acceptance-startup-diagnostic=${JSON.stringify(diagnostic)}`) }));
+    let evidence;
+    try {
+      evidence = await runBoundedAcceptanceSlice(nativeDiagnostic, (signal) => journey({ descriptor, buildReceipt, signal,
+        onDiagnostic: diagnostic => testContext.diagnostic(`acceptance-startup-diagnostic=${JSON.stringify(diagnostic)}`),
+        onFinalization: finalization => testContext.diagnostic(`acceptance-finalization=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...finalization })}`) }));
+    } catch (error) {
+      testContext.diagnostic(`acceptance-scenario-failure=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, errors: boundedAcceptanceErrors(error) })}`);
+      throw error;
+    }
     await scanSealedCandidateSafety(buildReceipt);
     scanPublicEvidence([JSON.stringify(evidence)]);
     let capturedBaseline;
