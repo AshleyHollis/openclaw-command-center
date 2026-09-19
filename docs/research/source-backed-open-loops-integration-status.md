@@ -24,7 +24,7 @@ No control sends a message, makes a payment, purchases an item, or rewrites auth
 | Capability | Current evidence | Status |
 | --- | --- | --- |
 | Email/SMS | Closed normalized envelopes and exact source/version fixtures | No verified live mailbox or SMS reader; scanning remains unauthorized. |
-| Selected document | Plugin integration uses an authoritative reader fixture. A bounded extraction corpus measures twelve supported layouts against twenty negative/adversarial documents, requiring every declared result and field plus 1.0 aggregate precision, recall, and field accuracy. Strict calendar validation omits impossible optional dates without creating a Reminder or stranding replay. A composed descriptor-backed owner → plugin → Reminder → restart/outage test is authored and explicitly skipped on Windows. | Implemented plaintext pilot, pending Linux execution and packaged real-owner proof. |
+| Selected document | Plugin integration uses an authoritative reader fixture. A bounded extraction corpus measures thirteen supported layouts against twenty negative/adversarial documents, requiring every declared result and field plus 1.0 aggregate precision, recall, and field accuracy. Strict and bounded optional-date validation omits impossible or overlong values without creating a Reminder or stranding replay. A composed descriptor-backed owner → plugin → Reminder → restart/outage test is authored and explicitly skipped on Windows. | Implemented plaintext pilot, pending Linux execution and packaged real-owner proof. |
 | Original navigation | Public evidence includes source system, kind, and version | Exact document/Session navigation contract is unavailable; UI states this honestly. |
 | Scheduler | Existing Reminder adapter plus durable operation/revision/recovery owners | Implemented locally; pending packaged page-closed/process-restart proof. |
 | Device notifications | Release policy retains `notifications: false` | Disabled pending separate native authority/delivery qualification. |
@@ -47,10 +47,10 @@ No control sends a message, makes a payment, purchases an item, or rewrites auth
 ## Exact local evidence
 
 - Foundation: PR #252 head `3a51d5021ebfca2d24159f8590bed01934ac596b`.
-- Reviewed code candidate: `247c5e5` on `feature/actionable-attention-milestone`.
+- Reviewed code candidate: `039c2c6` on `feature/actionable-attention-milestone`.
 - Milestone command: `node --test test/message-intake.test.mjs test/native-ui-attention.test.mjs test/open-loop-bridge.test.mjs test/open-loop-contracts.test.mjs test/open-loop-hardening.test.mjs test/open-loop-reminder-coordinator.test.mjs test/open-loop-storage.test.mjs test/plugin-integration.test.mjs test/reminder-runtime-lifecycle.test.mjs test/renovation-follow-through.test.mjs test/selected-source-intake.test.mjs test/transaction-intake.test.mjs test/dashboard-payload.integration.test.mjs test/dashboard-service.test.mjs` — **137 passed, 1 explicitly skipped on Windows, 0 failed**. The skipped test is the descriptor-backed real-owner composition intended for Linux qualification.
 - Native browser command: `node --test test/native-ui-attention.test.mjs` — **30 passed, 0 failed**. Inspected screenshots: `<workspace-output>/attention-bill.png` and `<workspace-output>/attention-renovation-stage.png`.
-- `npm run check` passed. `npm run build` passed with digest `aa5175bae79098c97326cb67f3c0157bf4f29079f4e7d3c2c02530f9c3b317e9`. `git diff --check` passed.
+- `npm run check` passed. `npm run build` passed with digest `92238a44e6d0046a59b8832b9d4ee48c5f19ab98f8dc91ac73dd9deb3f806a20`. `git diff --check` passed.
 - The earlier broad Windows run remains non-green: 1,076 passed, 206 failed, and 79 skipped. Platform identity, symlink, `fsync`, signal, and unavailable host-coordinator failures prevent treating it as a passing lane.
 - `node scripts/package-candidate.mjs --output <empty-directory>` returned `artifact-linux-required`. No archive was fabricated. Packaged migration/rollback rehearsal therefore remains unperformed.
 
