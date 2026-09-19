@@ -246,6 +246,7 @@ function actionResultSchema(method) {
     attention: Object.freeze({ type: 'array' }),
     attentionBadgeCount: Object.freeze({ type: 'integer' }),
     comingUp: Object.freeze({ type: 'array' }),
+    openLoops: Object.freeze({ type: 'object' }),
     activityOffset: Object.freeze({ type: 'integer' }),
     activityLimit: Object.freeze({ type: 'integer' }),
     notificationSettings: Object.freeze({ type: 'object' }),
@@ -307,7 +308,7 @@ function actionResultSchema(method) {
     : method.endsWith('activity.get')
     ? ['schemaVersion', 'record']
     : method.endsWith('dashboard.get')
-    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'topics', 'activity', 'activityOffset', 'activityLimit', 'notificationSettings']
+    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'openLoops', 'topics', 'activity', 'activityOffset', 'activityLimit', 'notificationSettings']
     : method.endsWith('analysis.read')
     ? ['status', 'analysisId', 'observedRevision']
     : ['schemaVersion', 'status', 'requestId', 'logicalOperationId', 'value', 'note', 'sourceReference', 'job', 'results', 'activity', 'episode', 'attempt', 'navigation', 'approval'];

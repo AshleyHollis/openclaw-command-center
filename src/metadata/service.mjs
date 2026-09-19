@@ -54,6 +54,8 @@ import { TOPIC_BOOTSTRAP_OPERATION, installTopicBootstrapMetadata } from './topi
 import { RECONCILIATION_OPERATION, installReconciliationMetadata } from './reconciliation.mjs';
 import { CONDITIONAL_PRIMARY_MODE, PROVISIONING_PRIMARY_OPERATION, installProvisioningPrimaryMetadata, assertConditionalFolderClaims } from './provisioning-primary.mjs';
 import { installOpenLoopMetadata } from './open-loops.mjs';
+import { installMessageIntake } from './message-intake.mjs';
+import { installOpenLoopActions } from './open-loop-actions.mjs';
 
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii');
 const diagnosticLimit = 300;
@@ -2157,6 +2159,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   installTopicBootstrapMetadata(service, { mutate, inspect, readMany, assertMutation, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
   installProvisioningPrimaryMetadata(service, { mutate, inspect, readMany, assertMutation, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
   installOpenLoopMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
+  installMessageIntake(service, { ErrorType: CommandCenterMetadataError });
+  installOpenLoopActions(service, { ErrorType: CommandCenterMetadataError });
   return Object.freeze(service);
 }
 

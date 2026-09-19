@@ -24,6 +24,7 @@ async function fixture(run) {
       const operations = new Map();
       const lifetime = new AbortController(); const pages = new Map(); const subscribers = new Set();
       window.requests = []; window.opened = []; window.actionMode = 'success'; window.activity = [];
+      window.openLoops = { total: 0, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 };
       const action = { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', target: { topicId: 'fictional-topic', sourceReferenceId: 'fictional-source' }, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string' } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact reminder.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true } };
       window.cards = ['one', 'two'].map((id) => ({ notificationRecordId: `record-${id}`, episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
       let context; let view; let scope;
@@ -33,7 +34,7 @@ async function fixture(run) {
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
-          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('attention.get')) {
             const episode = structuredClone(window.cards.find((card) => card.episodeId === params.episodeId));
             if (window.delayGet) { window.delayGet = false; await new Promise((resolve) => { window.finishGet = resolve; }); }
@@ -154,6 +155,30 @@ test('native Attention inbox exposes verified non-Session Activity through its e
   await page.getByRole('button', { name: 'Open Topic', exact: true }).click();
   await page.waitForFunction(() => window.opened.some((target) => target?.id === 'topic'));
   assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'fictional-topic' } });
+}));
+
+test('native Attention presents bill and reply open loops as evidence-backed read-only cards', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = {
+      total: 2,
+      attentionTotal: 1,
+      highlighted: [{ loopId: 'reply-loop', kind: 'reply', title: 'Confirm the fictional cabinet delivery access window.', state: 'confirmed', reason: 'response-requested', whyNow: 'The source explicitly asks for a response.', actions: ['Open original', 'Draft reply', 'Remind me'], evidenceCount: 1, revision: 1 }],
+      comingUpTotal: 1,
+      comingUp: [{ loopId: 'bill-loop', kind: 'payment', title: 'A fictional renovation progress invoice is ready.', state: 'confirmed', paymentState: 'unpaid', amount: 245000, currency: 'AUD', dueAt: '2026-10-04T13:59:59.000Z', actions: ['Open bill', 'Record payment status', 'Remind me'], evidenceCount: 2, revision: 2 }],
+      waitingTotal: 0,
+      suggestedTotal: 0,
+      deferredTotal: 0,
+      reconciliationTotal: 0
+    };
+    window.mountInbox();
+  });
+  await page.getByRole('heading', { name: 'Open loops' }).waitFor();
+  await page.getByRole('heading', { name: 'Confirm the fictional cabinet delivery access window.' }).waitFor();
+  await page.getByText('AUD 2450.00', { exact: false }).waitFor();
+  await page.getByText('Available actions: Open bill, Record payment status, Remind me.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: /pay|send|draft reply|record payment/i }).count(), 0);
+  assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('attention.act')).length), 0);
 }));
 
 test('native Attention re-resolves verified Session Activity before opening native Chat', () => fixture(async (page) => {

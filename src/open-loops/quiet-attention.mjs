@@ -29,6 +29,8 @@ export function projectQuietAttention(input, { now = new Date().toISOString(), l
 
   const dueMs = loop.dueAt === undefined ? undefined : instant(loop.dueAt, 'dueAt');
   const explicitReason = loop.attention?.reason;
+  const reviewMs = loop.reviewAt === undefined ? undefined : instant(loop.reviewAt, 'reviewAt');
+  if (reviewMs !== undefined && reviewMs > nowMs && explicitReason !== 'evidence-conflict') return Object.freeze({ group: 'deferred', reviewAt: loop.reviewAt, loop });
   const historicalOnly = loop.attention && loop.attention.currentEvidence !== true;
   let reason;
   if (explicitReason && ['response-requested', 'decision-requested', 'material-change', 'activated-blocker', 'evidence-conflict'].includes(explicitReason)) reason = explicitReason;
@@ -39,7 +41,6 @@ export function projectQuietAttention(input, { now = new Date().toISOString(), l
   const actionable = reason !== undefined && actions.length > 0 && !historicalOnly;
   if (actionable) return Object.freeze({ group: 'attention', reason, whyNow: explain(loop, reason), actions, loop });
   if (dueMs !== undefined && dueMs >= nowMs) return Object.freeze({ group: 'coming-up', dueAt: loop.dueAt, loop });
-  if (loop.reviewAt !== undefined && instant(loop.reviewAt, 'reviewAt') > nowMs) return Object.freeze({ group: 'deferred', reviewAt: loop.reviewAt, loop });
   return Object.freeze({ group: loop.state === 'uncertain' ? 'reconciliation' : 'waiting', loop });
 }
 
@@ -56,4 +57,3 @@ export function projectQuietInbox(loops, options = {}) {
   groups.comingUp.sort(byDue);
   return Object.freeze(Object.fromEntries(Object.entries(groups).map(([key, value]) => [key, Object.freeze(value)])));
 }
-

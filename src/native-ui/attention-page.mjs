@@ -61,6 +61,28 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     }
   }
 
+  function renderOpenLoops(openLoops) {
+    if (!openLoops || typeof openLoops !== 'object' || !Number.isSafeInteger(openLoops.total)) return;
+    content.append(element('h2', 'Open loops'));
+    content.append(element('p', `${openLoops.attentionTotal} need attention · ${openLoops.comingUpTotal} coming up · ${openLoops.waitingTotal} waiting · ${openLoops.suggestedTotal} suggestions · ${openLoops.deferredTotal} deferred`));
+    const groups = [['Needs attention', openLoops.highlighted], ['Coming up', openLoops.comingUp]];
+    for (const [label, cards] of groups) {
+      if (!Array.isArray(cards) || cards.length === 0) continue;
+      content.append(element('h3', label));
+      for (const card of cards) {
+        if (!nonBlank(card.loopId) || !nonBlank(card.title)) continue;
+        const row = element('article'); row.dataset.openLoopId = card.loopId;
+        row.append(element('h4', card.title));
+        const facts = [card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, nonBlank(card.dueAt) ? `Due ${card.dueAt}` : null].filter(Boolean);
+        if (facts.length) row.append(element('p', facts.join(' · ')));
+        if (nonBlank(card.whyNow)) row.append(element('p', card.whyNow));
+        if (Array.isArray(card.actions) && card.actions.length) row.append(element('p', `Available actions: ${card.actions.join(', ')}.`));
+        row.append(element('p', `${Number.isSafeInteger(card.evidenceCount) ? card.evidenceCount : 0} linked source ${card.evidenceCount === 1 ? 'item' : 'items'}.`));
+        content.append(row);
+      }
+    }
+  }
+
   function render(episode) {
     content.replaceChildren();
     const card = element('article'); card.dataset.episodeId = episode.episodeId;
@@ -173,8 +195,9 @@ export function mountAttentionPage(container, context, operations = new Map()) {
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { notificationRecord: card.notificationRecordId } }); }, { signal }); content.append(button);
         }
+        renderOpenLoops(dashboard.openLoops);
         renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending);
-        report(cards.length ? 'Select an Attention item.' : 'No current Attention items.'); return;
+        report(cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : 'No current Attention items.'); return;
       }
       const matches = cards.filter((card) => card.notificationRecordId === recordId);
       if (matches.length !== 1) { report(`${message ? `${message} ` : ''}The exact Attention item is no longer available in the current inbox. Refresh to check again.`); return; }
