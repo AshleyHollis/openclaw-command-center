@@ -42,7 +42,8 @@ test('native grouping journey leaves team mode through the workspace menu', { ti
       workspace.addEventListener('click', () => { showOne.hidden = false; });
       showOne.addEventListener('click', () => {
         workspace.remove();
-        sidebar.insertAdjacentHTML('afterbegin', '<button class="sidebar-agent-card__main">Agent</button><div class="sidebar-session-toolbar"><button id="single-agent-sort" class="sidebar-session-sort">Sort sessions</button></div>');
+        sidebar.insertAdjacentHTML('afterbegin', '<button class="sidebar-agent-card__main">Agent</button><button id="collapse-topics">Collapse all Topics</button><div class="sidebar-session-toolbar"><button id="single-agent-sort" class="sidebar-session-sort">Sort sessions</button></div>');
+        document.querySelector('#collapse-topics').addEventListener('click', () => { document.body.dataset.collapsedTopics = 'true'; });
         document.querySelector('#single-agent-sort').addEventListener('click', () => {
           document.querySelector('#menu').hidden = false;
           document.body.dataset.clickedSort = 'single-agent-sort';
@@ -50,6 +51,7 @@ test('native grouping journey leaves team mode through the workspace menu', { ti
       });
     });
     await selectNativeCategoryGrouping(page);
+    assert.equal(await page.locator('body').getAttribute('data-collapsed-topics'), 'true');
     assert.equal(await page.locator('body').getAttribute('data-clicked-sort'), 'single-agent-sort');
   } finally { await browser.close(); }
 });

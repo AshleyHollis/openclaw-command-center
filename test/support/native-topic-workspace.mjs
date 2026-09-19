@@ -51,6 +51,11 @@ export async function selectNativeCategoryGrouping(page) {
       sidebar = page.locator('openclaw-app-sidebar:visible').first();
       await sidebar.locator('.sidebar-agent-card__main:visible').first().waitFor({ state: 'visible', timeout: 10_000 });
     }
+    // Expanded plugin Topics can legitimately fill the sidebar and place the
+    // native Conversations toolbar just below a 720px browser viewport. Use
+    // the plugin's visible bulk control to make the native toolbar reachable.
+    const collapseTopics = sidebar.getByRole('button', { name: 'Collapse all Topics', exact: true }).first();
+    if (await collapseTopics.isVisible()) await collapseTopics.click({ timeout: 10_000 });
     const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').first();
     await trigger.scrollIntoViewIfNeeded({ timeout: 10_000 });
     // The team header control can sit beneath the sticky community invitation;
