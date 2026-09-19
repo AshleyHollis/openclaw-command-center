@@ -1,80 +1,53 @@
 # Source-backed open loops: integration and qualification status
 
-Status recorded 20 September 2026. All examples and tests use fictional data. This record describes isolated development evidence; it does not authorize deployment or live-source access.
+Status recorded 20 September 2026. All examples and tests use fictional data. This record describes isolated local development evidence; it does not authorize deployment, live-source access, messages, payments, purchases, live scheduled jobs, or notification delivery.
 
-## Implemented ownership and entry points
+## Current candidate boundary
 
-Original messages, documents and native Sessions remain authoritative. Command Center schema 9 stores immutable source observations, exact entity references, explicit user decisions, workflow state and rebuildable quiet-Attention projections. [ADR 0006](../adr/0006-source-backed-open-loops-and-quiet-attention.md) defines the ownership boundary.
+The branch builds on PR #252 head `3a51d5021ebfca2d24159f8590bed01934ac596b`. Original messages, documents, and native Sessions remain authoritative. Command Center stores immutable observations, exact identities, explicit user decisions, workflow state, and rebuildable quiet-Attention projections. [ADR 0006](../adr/0006-source-backed-open-loops-and-quiet-attention.md) defines that ownership boundary.
 
-The package contains these authenticated host contracts, but the open-loop methods are withheld from `FIRST_LIVE_COMMANDS` until the final host/plugin pair is qualified:
+The package contains authenticated `command-center.v1.open-loops.*` contracts, but the build-owned first-live allowlist still withholds them until a sealed Linux package passes isolated-host qualification. Local tests invoke the real service, bridge validator/dispatcher, SQLite owners, native UI module, and isolated fake host/Scheduler boundaries. They do not constitute a packaged OpenClaw-host run.
 
-- `command-center.v1.open-loops.list` and `.get` use `operator.read`, bounded paging and a closed result projection. Detail reads expose selected source facts and withhold raw bodies, attachment identifiers and private locators.
-- `command-center.v1.open-loops.decide` and `.payment-status` use `operator.write`, canonical operation identifiers, optimistic revisions and the authenticated operator identity. They update Command Center workflow evidence only. They cannot send a message, submit a form or make a payment.
-- `command-center.v1.dashboard.get` projects a small highlighted set, honest totals, bounded Coming-up rows and bounded on-demand Waiting, Suggestions, Deferred and Reconciliation inventories. Historical-only evidence remains quiet.
+## Implemented locally
 
-The normalized message and transaction intake contracts are internal source-adapter boundaries. They are not presented as live email, SMS, attachment or bank integrations.
+- **Actionable Attention:** readable evidence and provenance; confirm/dismiss, defer, precise or calendar-date correction, resolve, response-addressed, and non-paying payment-status controls; stable logical-operation retries; bounded full inventory with honest totals.
+- **Quiet identity:** exact authority/account/invoice correlation can unite email and SMS evidence into one obligation. Sender, supplier, name, wording, and amount similarity cannot merge obligations. Historical and informational evidence remains quiet.
+- **Selected document pilot:** one persisted document Source Reference is read through the existing document/Note owner. The public caller cannot provide content, source version, cursor, scope identity, or availability claims. The owner journals the caller's closed intent before reading; an unchanged retry replays the recorded outcome rather than rereading a newer revision. Batches are bounded and restart-safe. Re-selecting an unchanged version is duplicate-free even at a later observation time. A read outage becomes linked, visible unavailable evidence and does not resolve the existing obligation.
+- **Native timing:** confirmed Topic-bound obligations own one deterministic native Reminder. Corrected dates and deferrals reschedule it; paid/resolved/cancelled outcomes disable it. Historical selected documents never create overdue Reminder jobs. Calendar dates retain their IANA timezone separately from precise instants and schedule at 09:00 local time. Reconciliation rereads the authoritative job revision, preserves unknown outcomes, and does not recreate a disabled job after a late wakeup.
+- **Single presentation:** Dashboard suppresses the Scheduler-owned projection for an open-loop-owned Reminder, leaving one actionable open-loop item and one badge count.
+- **Renovation:** exact purchase-to-requirement confirmation and correction, separate return/refund/resale obligations, delivered-versus-installed outcomes, explicit stage activation, grouped active-stage blockers with individual controls, revised-quote and purchase-choice challenges, and explicit decision revision with retained prior evidence.
+
+No control sends a message, makes a payment, purchases an item, or rewrites authoritative Notes.
 
 ## Source and host inventory
 
-| Capability | Current evidence | Status and consequence |
+| Capability | Current evidence | Status |
 | --- | --- | --- |
-| Email and SMS intake | Closed normalized envelope plus exact source/version identity; fictional adapter tests | **Adapter gap.** No supported live mailbox or SMS event contract has been verified or enabled. No mailbox scan is implemented. |
-| Attachments | Envelope retains bounded attachment identities and evidence selectors; public detail projection withholds attachment identifiers | **Reader/navigation gap.** No authorized host attachment reader or Open-original route is wired for these sources. |
-| Bills and payment requests | One obligation can correlate exact invoice/account evidence across channels; payment states and conflicts persist | **Implemented locally.** A request is evidence, not proof that the debt is accepted. No payment execution exists. |
-| Reply requests | Explicit requests surface immediately; informational messages remain quiet | **Implemented locally.** The UI can record that a response was addressed. Drafting and sending remain unavailable. |
-| Quote/order/delivery lifecycle | Authority-namespaced quote/order identities, revisions, dispatch, partial delivery, delivery, installation, cancellation and corrected dates | **Implemented locally.** Same supplier/name/amount or a reused order number in another authority namespace never provides correlation authority. Late older evidence cannot reopen a terminal lifecycle. |
-| Decision memory | Tentative versus explicit decisions, alternatives, rationale, assumptions, revision, reversible supersession and material challenges | **Implemented locally.** New evidence requests reconsideration without changing the decision. Human-readable Note ownership remains a later integration choice. |
-| Entity correction | Exact-observation confirm/reject/replace corrections with reversible provenance | **Implemented locally.** There is no inferred automatic merge or cross-Topic expansion. |
-| Scheduler | Existing native Reminder/Scheduler owner remains unchanged | **Integration gap.** Due-window projection is evaluated on Dashboard reads. No bill-specific native wakeup is created in this branch. |
-| Local notifications | Release policy has `notifications: false` | **Host/release gap.** No notification binding or delivery was activated. Attention remains available in the native page. |
-| Incremental source checkpoints | Immutable source versions and operation replay are durable | **Adapter gap.** A live adapter must own a bounded cursor/checkpoint contract before backfill is enabled. The common intake does not claim this work is complete. |
-
-## Batch evidence
-
-| Batch | Commit | Evidence |
-| --- | --- | --- |
-| Ownership and domain contracts | `3170542` | ADR, closed observation/open-loop contracts and quiet projection tests |
-| Persistence and recovery | `7ba5a36` | Additive schema 9 migration, recovery ledger, restart-safe operation receipts and packaged modules |
-| Messages, bills and native projection | `8305b4e` | Informational silence, immediate reply requests, future bills, exact cross-channel invoices, payment lifecycle, dashboard and browser tests |
-| Transactions and corrections | `c9d4164` | Quote revisions, split delivery, delivery versus installation, corrected dates, cancellation and exact-order isolation |
-| Decision memory | `fe93039` | Tentative/explicit choices, retained rationale, changed assumptions and explicit supersession |
-| Entity identity corrections | `e89191a` | Same-name isolation and reversible exact-observation correction |
-| Registered host paths and UI actions | `792f19b` | Authenticated bridge reads/writes, bounded projections, public-result redaction, native evidence review and non-executing payment/response status forms |
-| Restart and noise hardening | `666a745` | Restart/replay convergence, 500 historical bills with zero active Attention, five current requests with three highlights and honest count, 1,000 informational messages with zero loops |
-| Review hardening | this PR's review follow-up | Atomic owner transactions and root-intent receipts, collision-safe authority namespaces, terminal late-event reconciliation, durable native retries, collapsed quiet queues with keyset-paged full inventory, reversible decision supersession, schema-8 recovery compatibility and release gating |
-
-The repository check passes. The focused open-loop, dashboard, bridge, plugin-startup and browser clusters pass. The broader Windows storage/build runs pass all executable cases; three existing fixtures fail before product code because the current Windows account cannot create symbolic links (`EPERM`). Linux or Developer Mode qualification remains required for those symlink cases.
+| Email/SMS | Closed normalized envelopes and exact source/version fixtures | No verified live mailbox or SMS reader; scanning remains unauthorized. |
+| Selected document | Real source-owner composition exists in the Linux-only source integration lane; plugin integration uses an authoritative reader fixture | Implemented pilot, pending packaged real-owner proof. |
+| Original navigation | Public evidence includes source system, kind, and version | Exact document/Session navigation contract is unavailable; UI states this honestly. |
+| Scheduler | Existing Reminder adapter plus durable operation/revision/recovery owners | Implemented locally; pending packaged page-closed/process-restart proof. |
+| Device notifications | Release policy retains `notifications: false` | Disabled pending separate native authority/delivery qualification. |
+| Renovation capture | Registered owner/bridge/UI contracts with fictional browser and service tests | Implemented locally; pending packaged-host proof. |
 
 ## Acceptance status
 
-| Case | Status | Local evidence or remaining proof |
-| --- | --- | --- |
-| Bill across email and SMS | Locally verified | Exact authority/account plus invoice identity produces one loop and two immutable observations; a reused invoice number in another account does not merge. |
-| Future and missing bill dates | Locally verified | Future bill stays Coming up until the due window; a missing date remains unknown and actionable without an invented deadline. |
-| Payment lifecycle | Locally verified | Partial and pending stay open; explicit paid evidence resolves; a later reminder creates reconciliation; dismissing a confirmed bill cannot imply cancellation. |
-| Message requiring reply | Locally verified | Explicit request is active; informational message is quiet; native outcome recording states that it sends nothing. |
-| Historical import noise | Locally verified | Large fictional baseline produces no new urgent backlog; 1,000 informational messages create no loops. |
-| Revised quote | Locally verified | Versions remain distinct; a total with a different tax basis is flagged for comparison without asserting an increase. |
-| Order and delivery | Locally verified | Partial delivery stays open; delivery and installation remain distinct; unrelated same-supplier delivery cannot close the order. |
-| Appointment revisions | Locally verified | Exact authority-namespaced appointment revisions use material-change handling and retain prior evidence. |
-| Decision change | Locally verified | Old rationale/choice remain; contradictory assumption evidence does not reverse the decision; explicit revision and reversible supersession are modeled. |
-| Parts already purchased, replacement follow-up and plan/purchase conflicts | Not yet specialized | The generic event/loop contracts can retain the evidence, but these workflows still need an explicit vocabulary and fictional acceptance fixtures before activation. |
-| Activated-stage blockers and genuine recurrence | Not yet specialized | Current loops support waiting, monitoring, decision-needed and material changes. Stage activation and recurrence identity remain separate bounded design work so they do not create noisy duplicate loops. |
-| Same-name entity correction | Locally verified | Correction affects one exact observation and can be explicitly reversed. |
-| Live email/SMS/attachment intake | Blocked by missing verified source contracts | Requires a separately authorized adapter and bounded checkpoint proof. |
-| Native due wakeups and device notifications | Awaiting host/release qualification | Must reuse Scheduler and notification owners after final host compatibility is pinned. |
+| Case | Local status |
+| --- | --- |
+| One bill across exact email and SMS identity; distinct invoices remain distinct | Verified |
+| Missing, corrected, precise, and date-only due timing | Verified locally |
+| Partial, pending, paid, and paid-plus-later-conflict lifecycle | Verified |
+| Native Reminder create/reschedule/cancel, restart replay, lost response, repeated evidence, stale stored revision, and payment/wakeup race | Verified at isolated owner/service boundaries |
+| Explicit reply request and later addressed outcome | Verified without sending |
+| Historical baseline, informational messages, and unavailable source | Verified quiet/visible as applicable |
+| Exact renovation purchase, incorrect-link correction, replacement follow-up, split fulfilment, activated blocker, and revised-quote challenge | Verified through owners and native UI module |
+| One presentation when an owned Reminder also fires | Verified in Dashboard projection |
+| Packaged plugin, page closed, process restart, real source owner, and exact original navigation | Not yet qualified |
 
-## Compatibility and staged integration
+## Required handoff
 
-This branch retains the repository's pinned host tuple: OpenClaw `2026.9.4`, commit `9eb16e01c14dd7eaf654aa2d2a9121b9e9f74b84`, Command Center package `0.4.0`, capability bridge protocol 1 and schema 9. It deliberately does not edit host/plugin version or commit pins.
-
-The separate upgrade task reported candidate OpenClaw `2026.9.5` at `8490d8016bdd46c8e29301efbc91f99eaab7de8d`, based on upstream `ec9c1a13db8938e5a3eaa51fca2e981cde2395a9`. That pair has not been qualified by this branch and must not be inferred compatible from version strings. The open-loop bridge methods therefore remain registered as contracts but fail closed with `feature-unavailable` under the current first-live allowlist.
-
-Later integration should proceed in this order:
-
-1. Rebase or merge after the host upgrade lands, resolve only source-level conflicts, and pin the exact candidate pair.
-2. Run schema 8-to-9 migration and rollback rehearsal on copied fictional state; retain recovery material and ledger evidence.
-3. Build the package and run registered bridge/native browser journeys on the exact isolated host, including stale revisions and restart replay.
-4. Add one source adapter at a time only after its authorization, attachment, deletion, cursor and bounded-backfill contracts are verified. Keep the normalized envelope as the seam.
-5. Wire due resurfacing through native Scheduler and qualify notification delivery separately. A missing notification capability must leave the native Inbox readable.
-6. Deploy in a later authorized batch with pre-deployment backup, health checks and rollback criteria. This branch performs none of those production actions.
+1. Produce a sealed candidate on Linux from the exact reviewed commit and retain its digest. The packaging script intentionally refuses Windows with `artifact-linux-required`.
+2. Install that archive into a disposable host pinned to OpenClaw `2026.9.4` / `9eb16e01c14dd7eaf654aa2d2a9121b9e9f74b84`, using fictional state and no live source or Scheduler bindings.
+3. Exercise the registered bridge and native page for the bill, source outage, timing, payment, deduplication, and renovation journeys. Close/remount the page and restart the host between steps.
+4. Prove the real selected-document owner and record the remaining exact-navigation contract gap. Rehearse migration/rollback against copied fictional state.
+5. Only after those receipts exist, prepare a separate release-manifest admission change and seek deployment approval.
