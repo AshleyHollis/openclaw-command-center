@@ -60,12 +60,20 @@ function labelled(content, label, maximum = 300) {
   return text(match[1], label, maximum);
 }
 
+function labelledAny(content, labels, maximum = 300) {
+  for (const label of labels) {
+    const value = labelled(content, label, maximum);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 function parseAmount(content) {
-  const raw = labelled(content, 'Amount due', 80);
+  const raw = labelledAny(content, ['Amount due', 'Total due', 'Balance due'], 80);
   if (!raw) return {};
-  const match = raw.match(/^([A-Z]{3})\s+([0-9]+)(?:\.([0-9]{2}))?$/u);
+  const match = raw.match(/^([A-Z]{3})\s+([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)(?:\.([0-9]{2}))?$/u);
   if (!match) return {};
-  const major = Number(match[2]);
+  const major = Number(match[2].replaceAll(',', ''));
   const minor = Number(match[3] ?? '00');
   const amount = major * 100 + minor;
   if (!Number.isSafeInteger(amount)) return {};
@@ -73,15 +81,15 @@ function parseAmount(content) {
 }
 
 function interpretAvailableContent(content) {
-  const invoiceId = labelled(content, 'Invoice', 300);
-  const accountId = labelled(content, 'Account', 300);
+  const invoiceId = labelledAny(content, ['Invoice', 'Invoice number', 'Invoice no.', 'Invoice #'], 300);
+  const accountId = labelledAny(content, ['Account', 'Account number'], 300);
   const authorityId = labelled(content, 'Authority', 300);
-  const payee = labelled(content, 'Payee', 200);
-  const purpose = labelled(content, 'Purpose', 300);
-  const dueRaw = labelled(content, 'Due', 64);
+  const payee = labelledAny(content, ['Payee', 'Supplier', 'Vendor', 'Biller'], 200);
+  const purpose = labelledAny(content, ['Purpose', 'Description', 'For'], 300);
+  const dueRaw = labelledAny(content, ['Due', 'Due date', 'Payment due'], 64);
   const dueAt = dueRaw && /^\d{4}-\d{2}-\d{2}T/u.test(dueRaw) && !Number.isNaN(Date.parse(dueRaw)) ? instant(dueRaw, 'Due') : undefined;
   const amount = parseAmount(content);
-  const explicitPaymentRequest = /(?:^|[.!?]\s+)(?:please pay|payment is due)\b/iu.test(content) || /^Amount due\s*:/imu.test(content);
+  const explicitPaymentRequest = /(?:^|[.!?]\s+)(?:please pay|payment is due)\b/iu.test(content) || /^(?:Amount due|Total due|Balance due)\s*:/imu.test(content);
   if (!invoiceId || !explicitPaymentRequest) return freeze({ kind: 'informational' });
   return freeze({
     kind: 'payment-request',

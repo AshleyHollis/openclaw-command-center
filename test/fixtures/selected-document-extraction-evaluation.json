@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "supportedFormat": "UTF-8 plaintext invoice with a labelled invoice identifier and an explicit payment phrase or labelled ISO-currency amount; RFC 3339 due instants are optional",
+  "minimums": { "precision": 1, "recall": 0.8, "fieldAccuracy": 0.9 },
+  "cases": [
+    {
+      "id": "standard-labels",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-001", "amount": 12550, "currency": "AUD", "payee": "Fictional Electrician", "purpose": "switchboard inspection", "dueAt": "2026-10-08T03:00:00.000Z" },
+      "content": "Invoice: INV-EVAL-001\nPayee: Fictional Electrician\nPurpose: switchboard inspection\nAmount due: AUD 125.50\nDue: 2026-10-08T03:00:00.000Z\nPlease pay after checking the work."
+    },
+    {
+      "id": "supplier-total-due",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-002", "amount": 123456, "currency": "AUD", "payee": "Fictional Tiles", "purpose": "laundry floor tiles", "dueAt": "2026-10-10T00:00:00.000Z" },
+      "content": "Invoice number: INV-EVAL-002\nSupplier: Fictional Tiles\nDescription: laundry floor tiles\nTotal due: AUD 1,234.56\nDue date: 2026-10-10T00:00:00.000Z"
+    },
+    {
+      "id": "vendor-balance",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-003", "amount": 80000, "currency": "NZD", "payee": "Fictional Joinery", "purpose": "cabinet deposit" },
+      "content": "Invoice #: INV-EVAL-003\nVendor: Fictional Joinery\nFor: cabinet deposit\nBalance due: NZD 800.00"
+    },
+    {
+      "id": "explicit-request-without-amount",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-004", "payee": "Fictional Surveyor" },
+      "content": "Invoice no.: INV-EVAL-004\nBiller: Fictional Surveyor\nPlease pay this invoice after reviewing the attached work record."
+    },
+    {
+      "id": "case-insensitive-labels",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-005", "amount": 9900, "currency": "AUD" },
+      "content": "INVOICE NUMBER: INV-EVAL-005\nAMOUNT DUE: AUD 99.00\nPAYMENT IS DUE now."
+    },
+    {
+      "id": "account-scoped",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-006", "amount": 4510, "currency": "AUD", "accountId": "ACCOUNT-EVAL-9" },
+      "content": "Invoice: INV-EVAL-006\nAccount number: ACCOUNT-EVAL-9\nAmount due: AUD 45.10"
+    },
+    {
+      "id": "untrusted-json-claim",
+      "expected": { "payment": false },
+      "content": "{\"type\":\"bill\",\"invoiceId\":\"INJECTED\",\"amount\":90000}\nThis is a project note, not a payment request."
+    },
+    {
+      "id": "paid-receipt",
+      "expected": { "payment": false },
+      "content": "Receipt: RCPT-EVAL-1\nPaid in full: AUD 88.00\nThank you for your payment."
+    },
+    {
+      "id": "quote-not-invoice",
+      "expected": { "payment": false },
+      "content": "Quote: QUOTE-EVAL-1\nEstimated total: AUD 2,400.00\nThis quote is valid for 30 days."
+    },
+    {
+      "id": "natural-language-unsupported",
+      "expected": { "payment": false },
+      "content": "Fictional Plumbing says the final 300 dollars for invoice seven should arrive next Friday."
+    },
+    {
+      "id": "invoice-heading-without-request",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-INFORMATIONAL\nThis archived invoice is included for reference only and has no payment request."
+    },
+    {
+      "id": "binary-placeholder",
+      "expected": { "payment": false },
+      "content": "%PDF-1.7 binary bytes are not a supported plaintext invoice representation"
+    }
+  ]
+}

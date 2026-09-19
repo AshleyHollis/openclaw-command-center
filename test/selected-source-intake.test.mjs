@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { planSelectedSourceBatch, SELECTED_SOURCE_BATCH_LIMIT } from '../src/open-loops/selected-source-intake.mjs';
+
+const extractionEvaluation = JSON.parse(await readFile(new URL('./fixtures/selected-document-extraction-evaluation.json', import.meta.url), 'utf8'));
 
 const authorization = Object.freeze({ scopeId: 'selection-scope-fictional-1', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document-fictional-invoice-41' });
 const invoice = ({ amount = '129.00', due = '2026-09-28T00:00:00.000Z', invoiceId = 'INV-FICTIONAL-41' } = {}) => `Fictional Electrical Services\nInvoice: ${invoiceId}\nAccount: ACCOUNT-FICTIONAL-8\nAuthority: AUTHORITY-FICTIONAL-ELECTRICAL\nPayee: Fictional Electrical Services\nPurpose: switchboard work\nAmount due: AUD ${amount}\nDue: ${due}\nPlease pay this invoice by the due date.`;
@@ -175,4 +177,46 @@ test('batch, content and authorization boundaries fail closed', () => {
   assert.throws(() => planSelectedSourceBatch(batch({ selections: Array.from({ length: SELECTED_SOURCE_BATCH_LIMIT + 1 }, (_, index) => ({ version: `v-${index}`, occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:05:00.000Z', availability: 'available', content: invoice({ invoiceId: `INV-${index}` }) })) })), /between 1 and 20/u);
   assert.throws(() => planSelectedSourceBatch(batch({ selections: [{ version: 'v-large', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:05:00.000Z', availability: 'available', content: 'x'.repeat(33 * 1024) }] })), /32768/u);
   assert.throws(() => planSelectedSourceBatch(batch({ authorization: { ...authorization, sourceKind: 'mailbox' } })), /sourceKind/u);
+});
+
+test('declared plaintext invoice extraction meets the bounded evaluation thresholds', () => {
+  let truePositive = 0;
+  let falsePositive = 0;
+  let falseNegative = 0;
+  let matchingFields = 0;
+  let expectedFields = 0;
+
+  for (const [index, evaluationCase] of extractionEvaluation.cases.entries()) {
+    const planned = planSelectedSourceBatch(batch({
+      logicalOperationId: `selected-source-evaluation-${evaluationCase.id}`,
+      authorization: { ...authorization, resourceId: `document-evaluation-${index}` },
+      selections: [{
+        version: 'evaluation-v1',
+        occurredAt: '2026-09-20T01:00:00.000Z',
+        observedAt: '2026-09-20T01:05:00.000Z',
+        availability: 'available',
+        content: evaluationCase.content
+      }]
+    })).plans[0];
+    const recognized = planned.interpretation.kind === 'payment-request';
+
+    if (recognized && evaluationCase.expected.payment) truePositive += 1;
+    if (recognized && !evaluationCase.expected.payment) falsePositive += 1;
+    if (!recognized && evaluationCase.expected.payment) falseNegative += 1;
+
+    if (evaluationCase.expected.payment) {
+      for (const [field, expected] of Object.entries(evaluationCase.expected)) {
+        if (field === 'payment') continue;
+        expectedFields += 1;
+        if (planned.interpretation[field] === expected) matchingFields += 1;
+      }
+    }
+  }
+
+  const precision = truePositive / (truePositive + falsePositive);
+  const recall = truePositive / (truePositive + falseNegative);
+  const fieldAccuracy = matchingFields / expectedFields;
+  assert.ok(precision >= extractionEvaluation.minimums.precision, `precision ${precision} must meet ${extractionEvaluation.minimums.precision}`);
+  assert.ok(recall >= extractionEvaluation.minimums.recall, `recall ${recall} must meet ${extractionEvaluation.minimums.recall}`);
+  assert.ok(fieldAccuracy >= extractionEvaluation.minimums.fieldAccuracy, `field accuracy ${fieldAccuracy} must meet ${extractionEvaluation.minimums.fieldAccuracy}`);
 });
