@@ -100,7 +100,7 @@ test('categorizes absent and malformed host descriptors', () => {
 });
 
 test('runtime checkout identity remains distinct from the compatibility and performance receipt identities', () => {
-  assert.equal(pinnedHost.commit, '9eb16e01c14dd7eaf654aa2d2a9121b9e9f74b84');
+  assert.equal(pinnedHost.commit, '8490d8016bdd46c8e29301efbc91f99eaab7de8d');
   assert.doesNotThrow(() => parseHostDescriptor(hostDescriptor()));
   assert.throws(() => parseHostDescriptor(hostDescriptor({ commit: '19686a23834910173df0fd1f77bd762ffcda2afd' })), (error) => error.category === 'invalid-commit');
 });
