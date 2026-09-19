@@ -2039,15 +2039,15 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     if (capturePerformanceBaseline) assertPerformanceHostIdentity(descriptor);
     const keyboard = nativeDiagnostic === 'desktop-keyboard-journey';
     const scale = nativeDiagnostic === 'scale-performance';
-    // Use the owner's default execution/cleanup budget so every focused slice
-    // stays below controller inactivity. Diagnostics never qualify performance.
+    // Keep every focused slice below controller inactivity. Scale capture gets
+    // additional bounded headroom because its elapsed actions remain recorded.
     const journey = nativeDiagnostic === 'diagnostic-scale-startup' ? exerciseNativeScaleStartup : nativeDiagnostic === 'native-topic-chat-handoff' ? exerciseNativeTopicChatHandoffJourney : nativeDiagnostic === 'native-topic-notes-workspace' ? exerciseNativeTopicNotesWorkspaceJourney : nativeDiagnostic === 'native-topic-files-workspace' ? exerciseNativeTopicFilesWorkspaceJourney : nativeDiagnostic === 'topic-notes-visual' ? exerciseNativeTopicNotesVisualJourney : nativeDiagnostic === 'topic-document-tools' ? exerciseNativeTopicToolsJourney : scale ? exerciseNativeScaleJourney : keyboard ? exerciseNativeKeyboardJourney : exerciseNativeControlUiActivation;
     let evidence;
     try {
       evidence = await runBoundedAcceptanceSlice(nativeDiagnostic, (signal) => journey({ descriptor, buildReceipt, signal,
         onDiagnostic: diagnostic => testContext.diagnostic(`acceptance-startup-diagnostic=${JSON.stringify(diagnostic)}`),
         onFinalization: finalization => testContext.diagnostic(`acceptance-finalization=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...finalization })}`) }),
-      ...(scale ? { timeoutMs: 285_000, cleanupTimeoutMs: 14_000 } : {}));
+      scale ? { timeoutMs: 285_000, cleanupTimeoutMs: 14_000 } : undefined);
     } catch (error) {
       testContext.diagnostic(`acceptance-scenario-failure=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, errors: boundedAcceptanceErrors(error) })}`);
       throw error;
