@@ -85,7 +85,7 @@ function unambiguousLabelled(content, labels, maximum = 300) {
 
 function parseAmount(content) {
   const field = unambiguousLabelled(content, ['Amount due', 'Total due', 'Balance due'], 80);
-  if (!field.present || field.ambiguous) return freeze({ ...field, valid: false });
+  if (!field.present || field.invalid || field.ambiguous) return freeze({ ...field, valid: false });
   const match = field.value.match(/^([A-Z]{3})\s+([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)(?:\.([0-9]{2}))?$/u);
   if (!match || !ISO_CURRENCIES.has(match?.[1])) return freeze({ ...field, valid: false });
   const major = Number(match[2].replaceAll(',', ''));

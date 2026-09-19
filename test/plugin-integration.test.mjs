@@ -205,7 +205,7 @@ test('bounded document intake reads authoritative content and revision through t
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
-test('malformed optional selected-document due dates complete and replay without rereading or scheduling', async () => {
+test('malformed selected-document fields complete and replay without rereading or scheduling', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-selected-document-malformed-due-'));
   const gateway = fictionalSchedulerGateway();
   let service;
@@ -243,6 +243,19 @@ test('malformed optional selected-document due dates complete and replay without
     const overlongReplay = await service.openLoopsIngestSelected(overlongRequest);
     assert.equal(overlongReplay.results[0].loop.loopId, overlong.results[0].loop.loopId);
     assert.equal(reads, 2);
+    const amountRequest = { ...request, logicalOperationId: randomUUID(), selections: [{ ...request.selections[0], observedAt: '2026-09-20T00:03:00.000Z' }] };
+    service.sourceService.notesRead = async input => {
+      reads += 1;
+      return { schemaVersion: 1, path: input.path, text: `Invoice: INV-FICTIONAL-OVERLONG-AMOUNT\nAmount due: ${'x'.repeat(81)}\nPlease pay this invoice after review.`, revision: 'authoritative-malformed-v3', sourceReference: { referenceId: input.referenceId } };
+    };
+    const amountless = await service.openLoopsIngestSelected(amountRequest);
+    assert.equal(amountless.results[0].loop.amount, undefined);
+    assert.equal(amountless.results[0].loop.currency, undefined);
+    assert.equal(gateway.jobs.size, 0);
+    service.sourceService.notesRead = async () => { reads += 1; throw new Error('completed overlong-amount intake must not reread'); };
+    const amountReplay = await service.openLoopsIngestSelected(amountRequest);
+    assert.equal(amountReplay.results[0].loop.loopId, amountless.results[0].loop.loopId);
+    assert.equal(reads, 3);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

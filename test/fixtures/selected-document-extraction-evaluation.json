@@ -167,6 +167,11 @@
       "id": "overlong-optional-due-is-omitted",
       "expected": { "payment": true, "invoiceId": "INV-EVAL-DUE-OVERLONG", "amount": 7000, "currency": "AUD" },
       "content": "Invoice: INV-EVAL-DUE-OVERLONG\nAmount due: AUD 70.00\nDue: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "id": "overlong-amount-needs-explicit-request",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-AMOUNT-OVERLONG" },
+      "content": "Invoice: INV-EVAL-AMOUNT-OVERLONG\nAmount due: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nPlease pay this invoice after review."
     }
   ]
 }
