@@ -33,6 +33,11 @@ export async function selectNativeCategoryGrouping(page) {
       const expand = page.locator('button[aria-label="Expand sidebar"]:visible').first();
       await expand.click({ timeout: 10_000 });
     }
+    // A fresh isolated host can place its sticky community invitation over
+    // the session toolbar. Dismiss that real native surface before exercising
+    // the grouping control so the click remains an actual pointer interaction.
+    const invitation = sidebar.locator('button[aria-label="Dismiss and don\'t show again"]:visible').first();
+    if (await invitation.count()) await invitation.click({ timeout: 10_000 });
     const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').first();
     await trigger.scrollIntoViewIfNeeded({ timeout: 10_000 });
     await trigger.click({ timeout: 10_000 });

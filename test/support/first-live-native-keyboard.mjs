@@ -406,7 +406,11 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     // Source observation timestamps may advance on the earlier real Note read;
     // the refused command itself must leave the complete current projection alone.
     assert.deepEqual(await gatewayRead('command-center.v1.topics.get', { schemaVersion: 1, topicId: fixture.topicId }), beforeRefusal);
-    assert.equal(await note.textContent(), fixture.noteText);
+    await press(button('Source'));
+    const authoritativeSource = nativePage.getByRole('region', { name: 'Note source', exact: true });
+    await authoritativeSource.filter({ hasText: fixture.noteText.trim() }).waitFor();
+    assert.equal(await authoritativeSource.textContent(), fixture.noteText);
+    await press(button('Reading'));
     await complete(state);
   }
   assert.equal(states.length, 8); assert.equal(new Set(states).size, 8);
