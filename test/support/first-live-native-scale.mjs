@@ -184,15 +184,13 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(receipt.logicalOperationId, input.logicalOperationId);
   assert.equal(receipt.result.topicId, fixture.topicId);
   assert.equal(receipt.result.action, 'conversations.create');
+  assert.equal(typeof receipt.result.referenceId, 'string');
   onProgress('conversation-open');
-  const openCreated = nativePage.getByRole('button', { name: 'Open created Conversation', exact: true });
-  const creationForm = openCreated.locator('xpath=..');
-  await openCreated.click();
+  // Successful creation already calls the verified onCreated navigation.
+  // The retained button is a recovery action; clicking it while that route is
+  // detaching the plugin page makes Playwright wait on a duplicate handoff.
   try {
     await waitForConsecutiveReadiness(async () => {
-      const status = await creationForm.getByRole('status').textContent();
-      const normal = /^Conversation created and verified \([^)]+\)\. Open the created Conversation or acknowledge it before creating another\.$/u;
-      if (status && !normal.test(status)) throw new Error(`Opening the applied Conversation failed: ${status}`);
       return observed().navigation?.input?.referenceId === receipt.result.referenceId
         && typeof observed().navigation?.value?.sessionKey === 'string';
     }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
