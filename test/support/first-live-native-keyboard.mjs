@@ -14,7 +14,10 @@ const unwrap = response => response?.result ?? response;
 // This only reads DOM/CSS: it does not add names, focus styles or host authority.
 async function auditNativeState(page, surface, label) {
   await assertKeyboardFocus(page);
-  const audit = await surface.evaluate(root => {
+  let audit;
+  const deadline = Date.now() + 2_000;
+  do {
+    audit = await surface.evaluate(root => {
     const parent = node => node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host ?? null;
     const visible = node => {
       if (!node.getClientRects().length) return false;
@@ -39,20 +42,29 @@ async function auditNativeState(page, surface, label) {
     const durations = value => value.split(',').every(part => parseFloat(part) <= 0.001);
     const layouts = [document.documentElement, document.body, ...shown.filter(node => node === root || node.matches('main, [role="main"], pre[role="region"]'))].filter(node => node.clientWidth > 0);
     const stateful = shown.filter(node => node.matches('[aria-selected], [aria-current], [aria-checked], [data-status], [role="status"], [role="alert"], :disabled'));
+    const motion = shown.map(node => {
+      const style = getComputedStyle(node);
+      return { node, animationDuration: style.animationDuration, transitionDuration: style.transitionDuration, scrollBehavior: style.scrollBehavior };
+    }).filter(item => !durations(item.animationDuration) || !durations(item.transitionDuration) || item.scrollBehavior === 'smooth');
     return {
       forcedColors: matchMedia('(forced-colors: active)').matches,
       reducedMotionPreference: matchMedia('(prefers-reduced-motion: reduce)').matches,
-      reducedMotion: shown.every(node => { const style = getComputedStyle(node); return durations(style.animationDuration) && durations(style.transitionDuration) && style.scrollBehavior !== 'smooth'; }),
+      reducedMotion: motion.length === 0,
+      motion: motion.slice(0, 10).map(item => ({ tag: item.node.tagName, className: item.node.className,
+        animationDuration: item.animationDuration, transitionDuration: item.transitionDuration, scrollBehavior: item.scrollBehavior })),
       unnamed: shown.filter(node => node.matches('button, input, textarea, select, a[href]') && !name(node)).map(node => node.tagName),
       colorIndependent: stateful.every(node => !node.textContent?.trim() && node.matches('[role="status"], [role="alert"]') || Boolean(name(node))),
       overflow: layouts.filter(node => node.scrollWidth > node.clientWidth).map(node => ({ name: node.tagName, width: node.clientWidth, content: node.scrollWidth })),
       checked: shown.length
     };
-  });
+    });
+    if (audit.reducedMotion) break;
+    await page.waitForTimeout(50);
+  } while (Date.now() < deadline);
   assert.ok(audit.checked > 0, `${label}: no visible native content audited`);
   assert.equal(audit.forcedColors, true, `${label}: forced colors must remain enabled`);
   assert.equal(audit.reducedMotionPreference, true);
-  assert.equal(audit.reducedMotion, true, `${label}: native content retains motion under reduced-motion preference`);
+  assert.deepEqual(audit.motion, [], `${label}: native content retains motion under reduced-motion preference`);
   assert.deepEqual(audit.unnamed, [], `${label}: native controls need accessible names`);
   assert.equal(audit.colorIndependent, true, `${label}: state must have a non-color label`);
   assert.deepEqual(audit.overflow, [], `${label}: native page/Note content has horizontal overflow`);

@@ -27,12 +27,13 @@ export async function assertNativeNoteSource(nativePage, fixture) {
 // ownership. Exercise the host control explicitly so this journey can prove
 // that a verified Topic category is actually reachable in the sidebar.
 export async function selectNativeCategoryGrouping(page) {
-  const trigger = page.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').filter({ visible: true }).first();
+  const sidebar = page.locator('openclaw-app-sidebar:visible').first();
   try {
-    if (!await trigger.count()) {
-      const expand = page.getByRole('button', { name: 'Expand sidebar', exact: true }).filter({ visible: true }).first();
+    if (!await sidebar.count()) {
+      const expand = page.locator('button[aria-label="Expand sidebar"]:visible').first();
       await expand.click({ timeout: 10_000 });
     }
+    const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').first();
     await trigger.waitFor({ state: 'visible', timeout: 10_000 });
     await trigger.scrollIntoViewIfNeeded({ timeout: 10_000 });
     await trigger.click({ timeout: 10_000 });
@@ -61,7 +62,7 @@ export async function organizeNativeTopicConversations({ page, nativePage, fixtu
   assert.match(await status.textContent(), /1 Conversations organized\. 0 already grouped and preserved\. 0 blocked and left unchanged\./);
   // Sidebar reconciliation can briefly retain a hidden predecessor beside
   // the current section. Bind the journey to the visible native section.
-  const sidebar = page.locator('openclaw-app-sidebar').filter({ visible: true }).first();
+  const sidebar = page.locator('openclaw-app-sidebar:visible').first();
   const group = sidebar.locator(`[data-session-section="category:${fixture.name}"]`);
   try { await group.waitFor({ state: 'visible', timeout: 30_000 }); }
   catch (error) {
