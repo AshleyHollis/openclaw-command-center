@@ -37,7 +37,7 @@ async function fixture(run) {
           if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('open-loops.get')) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
-            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence: [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}) }] } };
+            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence: [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }] } };
           }
           if (method.endsWith('open-loops.list')) {
             const loops = window.allOpenLoops.slice(params.offset, params.offset + params.limit);
@@ -63,6 +63,18 @@ async function fixture(run) {
           if (method.endsWith('open-loops.renovation-purchase')) {
             const card = [...(window.openLoops.waiting ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             Object.assign(card, { state: 'resolved', revision: card.revision + 1 });
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
+          if (method.endsWith('open-loops.renovation-fulfilment')) {
+            const card = [...(window.openLoops.waiting ?? []), ...(window.openLoops.highlighted ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
+            Object.assign(card, { state: params.fulfilment.fulfilmentKind === 'delivered' && params.fulfilment.installationRequired ? 'monitoring' : 'resolved', revision: card.revision + 1 });
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
+          if (method.endsWith('open-loops.renovation-replacement')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: { loopId: 'separate-replacement-follow-up', state: 'confirmed', revision: 1 } } };
+          if (method.endsWith('open-loops.renovation-stage')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'inserted', observationId: 'fictional-stage-observation' } };
+          if (method.endsWith('open-loops.renovation-decision-conflict')) {
+            const card = [...(window.openLoops.waiting ?? []), ...(window.openLoops.highlighted ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
+            Object.assign(card, { state: params.conflict.recordedChoice === params.conflict.observedChoice ? card.state : 'decision-needed', revision: card.revision + 1 });
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('attention.get')) {
@@ -347,6 +359,50 @@ test('native Attention links an exact renovation purchase only after reviewing r
   assert.equal(request.params.reconciliation.requirement.id, 'buy-mixer');
   assert.equal(request.params.reconciliation.purchase.id, 'receipt-line-mixer-001');
   assert.equal(request.params.reconciliation.source.externalId, request.params.logicalOperationId);
+}));
+
+test('native Attention records delivery separately from required installation', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 1, waiting: [{ loopId: 'install-oven-loop', kind: 'general', title: 'Install fictional oven', state: 'waiting', requirementId: 'install-oven', evidenceCount: 1, revision: 1, evidence: { eventKind: 'requirement-recorded', requirementKind: 'installation', requirementNamespace: 'fictional-home-project', requirementId: 'install-oven' } }], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Waiting (1 shown)', { exact: true }).click();
+  const row = page.locator('article[data-open-loop-id="install-oven-loop"]'); await row.getByRole('button', { name: 'Review evidence' }).click(); await row.getByText('Record delivery or installation', { exact: true }).click();
+  await row.getByLabel('Outcome').selectOption('delivered'); await row.getByLabel('Installation still required').check(); await row.getByRole('button', { name: 'Record fulfilment' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-fulfilment')));
+  assert.equal(request.params.fulfilment.requirement.id, 'install-oven'); assert.equal(request.params.fulfilment.fulfilmentKind, 'delivered'); assert.equal(request.params.fulfilment.installationRequired, true);
+}));
+
+test('native Attention creates a separate replacement disposition obligation', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 1, waiting: [{ loopId: 'buy-mixer-replacement-loop', kind: 'general', title: 'Buy fictional sink mixer', state: 'waiting', requirementId: 'buy-mixer', evidenceCount: 1, revision: 1 }], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Waiting (1 shown)', { exact: true }).click(); const row = page.locator('article[data-open-loop-id="buy-mixer-replacement-loop"]'); await row.getByRole('button', { name: 'Review evidence' }).click(); await row.getByText('Record replacement follow-up', { exact: true }).click();
+  await row.getByLabel('Replacement purchase ID').fill('replacement-mixer-2'); await row.getByLabel('Replaced item ID').fill('faulty-mixer-1'); await row.locator('details[data-renovation-replacement] select').selectOption('return'); await row.getByLabel('Follow-up ID').fill('return-faulty-mixer-1'); await row.getByLabel('Follow-up title').fill('Return fictional faulty mixer'); await row.getByLabel('Deadline').fill('2026-09-27T10:00'); await row.getByRole('button', { name: 'Record replacement and follow-up' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-replacement'))); assert.equal(request.params.replacement.replacementPurchase.id, 'replacement-mixer-2'); assert.equal(request.params.replacement.obligation.id, 'return-faulty-mixer-1'); assert.equal(request.params.replacement.obligation.kind, 'return');
+}));
+
+test('native Attention explicitly activates an exact prerequisite stage', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 1, waiting: [{ loopId: 'clear-area-inactive-loop', kind: 'general', title: 'Clear fictional cabinet area', state: 'waiting', evidenceCount: 1, revision: 1, evidence: { eventKind: 'requirement-recorded', requirementKind: 'prerequisite', requirementNamespace: 'fictional-home-project', requirementId: 'clear-area', stageNamespace: 'fictional-home-project', stageId: 'cabinet-installation' } }], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Waiting (1 shown)', { exact: true }).click(); const row = page.locator('article[data-open-loop-id="clear-area-inactive-loop"]'); await row.getByRole('button', { name: 'Review evidence' }).click(); await row.getByText('Set exact renovation stage', { exact: true }).click(); await row.getByLabel('Stage state').selectOption('true'); await row.getByRole('button', { name: 'Save stage state' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-stage'))); assert.equal(request.params.activation.stage.id, 'cabinet-installation'); assert.equal(request.params.activation.active, true);
+}));
+
+test('native Attention records revised quote evidence without silently changing a decision', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'decision-capture-loop', kind: 'decision', title: 'Fictional cabinet finish', state: 'resolved', evidenceCount: 1, revision: 1, evidence: { eventKind: 'decision-recorded', decisionId: 'cabinet-finish', chosenOption: 'warm white' } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  const row = page.locator('article[data-open-loop-id="decision-capture-loop"]'); await row.getByRole('button', { name: 'Review evidence' }).click(); await row.getByText('Record changed quote or purchase', { exact: true }).click(); await row.getByLabel('Evidence kind').selectOption('revised-quote'); await row.getByLabel('Observed choice').fill('cool white'); await row.getByLabel('Summary').fill('The fictional revised quote names cool white.'); await row.getByRole('button', { name: 'Record evidence for review' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-decision-conflict'))); assert.equal(request.params.conflict.recordedChoice, 'warm white'); assert.equal(request.params.conflict.observedChoice, 'cool white'); assert.equal(request.params.conflict.conflictKind, 'revised-quote');
 }));
 
 test('native Attention presents one grouped active-stage review with individual blocker controls', () => fixture(async (page) => {

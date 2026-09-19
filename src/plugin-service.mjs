@@ -17,7 +17,7 @@ function unavailable(feature) {
   throw new SourceServiceError('capability-unavailable', `Command Center ${feature} ${reason}.`);
 }
 
-const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'stageNamespace', 'stageId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId']);
+const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId']);
 function publicOpenLoopEvidence(observation) {
   return Object.freeze({
     observationId: observation.observationId,

@@ -67,8 +67,8 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     disclosure.append(element('p', 'Exact original-source navigation is not available from this item yet. Use the displayed source system, kind, and version to verify it in its authorized reader.'));
   }
 
-  async function submitOpenLoopOperation({ key, method, params, card, pending, success }) {
-    const operation = operations.get(key) ?? { method, params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, ...params } };
+  async function submitOpenLoopOperation({ key, method, params, card, pending, success, includeLoopId = true }) {
+    const operation = operations.get(key) ?? { method, params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), ...(includeLoopId ? { loopId: card.loopId } : {}), expectedRevision: card.revision, ...params } };
     operations.set(key, operation);
     const envelope = await host.request(operation.method, operation.params);
     const response = unwrap(envelope);
@@ -189,6 +189,93 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     disclosure.append(form); row.append(disclosure);
   }
 
+  function appendRenovationFulfilmentControl(row, card, detail, pending) {
+    if (!writable() || row.querySelector('details[data-renovation-fulfilment]')) return;
+    const requirement = detail?.evidence?.find(item => item.eventKind === 'requirement-recorded' && ['purchase', 'installation'].includes(item.requirementKind) && nonBlank(item.requirementNamespace) && nonBlank(item.requirementId));
+    if (!requirement) return;
+    const disclosure = element('details'); disclosure.dataset.renovationFulfilment = 'true'; disclosure.append(element('summary', 'Record delivery or installation'));
+    const form = element('form'); form.append(element('p', `Record fulfilment only for exact requirement ${requirement.requirementId}. Delivery does not imply installation.`));
+    const kindLabel = element('label', 'Outcome '); const kind = element('select');
+    for (const [value, label] of [['delivered', 'Delivered'], ['installed', 'Installed']]) { const option = element('option', label); option.value = value; kind.append(option); } kindLabel.append(kind);
+    const installationLabel = element('label', ' Installation still required '); const installationRequired = element('input'); installationRequired.type = 'checkbox'; installationRequired.checked = requirement.requirementKind === 'installation'; installationLabel.append(installationRequired);
+    const save = element('button', 'Record fulfilment'); save.type = 'submit'; form.append(kindLabel, installationLabel, save);
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); if (!current(pending) || !writable() || save.disabled) return; save.disabled = true;
+      try {
+        const now = new Date().toISOString();
+        await submitOpenLoopOperation({ key: `renovation-fulfilment:${card.loopId}`, method: 'command-center.v1.open-loops.renovation-fulfilment', params: { fulfilment: { schemaVersion: 1, source: { system: 'command-center', kind: 'explicit-fulfilment', externalId: crypto.randomUUID(), version: 'operator-v1' }, requirement: { kind: requirement.requirementKind, namespace: requirement.requirementNamespace, id: requirement.requirementId }, fulfilmentKind: kind.value, installationRequired: kind.value === 'installed' ? false : installationRequired.checked, occurredAt: now, observedAt: now, historicalBaseline: false, ...(card.topicId ? { topicId: card.topicId } : {}) } }, card, pending, includeLoopId: false, success: kind.value === 'installed' ? 'Installation recorded.' : 'Delivery recorded; any required installation remains open.' });
+      } catch (error) { if (current(pending)) report(error?.message || 'The fulfilment outcome is unknown. Retry the same operation.'); }
+      finally { if (current(pending)) save.disabled = false; }
+    }, { signal });
+    disclosure.append(form); row.append(disclosure);
+  }
+
+  function appendRenovationReplacementControl(row, card, detail, pending) {
+    if (!writable() || row.querySelector('details[data-renovation-replacement]')) return;
+    const requirement = detail?.evidence?.find(item => item.eventKind === 'requirement-recorded' && item.requirementKind === 'purchase' && nonBlank(item.requirementNamespace));
+    if (!requirement) return;
+    const disclosure = element('details'); disclosure.dataset.renovationReplacement = 'true'; disclosure.append(element('summary', 'Record replacement follow-up'));
+    const form = element('form'); form.append(element('p', 'A replacement purchase and its return, refund, or resale obligation remain separate records.'));
+    const field = (labelText, required = true) => { const label = element('label', `${labelText} `); const input = element('input'); input.required = required; input.maxLength = 300; label.append(input); form.append(label); return input; };
+    const replacementId = field('Replacement purchase ID'); const replacedItemId = field('Replaced item ID');
+    const kindLabel = element('label', 'Follow-up '); const obligationKind = element('select'); for (const value of ['return', 'refund', 'resale']) { const option = element('option', value[0].toUpperCase() + value.slice(1)); option.value = value; obligationKind.append(option); } kindLabel.append(obligationKind); form.append(kindLabel);
+    const obligationId = field('Follow-up ID'); const title = field('Follow-up title'); const dueLabel = element('label', 'Deadline '); const due = element('input'); due.type = 'datetime-local'; due.required = true; dueLabel.append(due); form.append(dueLabel);
+    const save = element('button', 'Record replacement and follow-up'); save.type = 'submit'; form.append(save);
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); if (!current(pending) || !writable() || save.disabled || !replacementId.value.trim() || !replacedItemId.value.trim() || !obligationId.value.trim() || !title.value.trim() || !due.value) return; save.disabled = true;
+      const key = `renovation-replacement:${card.loopId}`;
+      try {
+        let operation = operations.get(key);
+        if (!operation) {
+          const logicalOperationId = crypto.randomUUID(); const now = new Date().toISOString();
+          operation = { method: 'command-center.v1.open-loops.renovation-replacement', params: { schemaVersion: 1, logicalOperationId, expectedRevision: 0, replacement: { schemaVersion: 1, source: { system: 'command-center', kind: 'explicit-replacement-follow-up', externalId: logicalOperationId, version: 'operator-v1' }, replacementPurchase: { kind: 'purchase', namespace: requirement.requirementNamespace, id: replacementId.value.trim() }, replacedItem: { kind: 'renovation-item', namespace: requirement.requirementNamespace, id: replacedItemId.value.trim() }, obligation: { kind: obligationKind.value, namespace: requirement.requirementNamespace, id: obligationId.value.trim() }, occurredAt: now, observedAt: now, historicalBaseline: false, title: title.value.trim(), dueAt: new Date(due.value).toISOString(), ...(card.topicId ? { topicId: card.topicId } : {}) } } };
+          operations.set(key, operation);
+        }
+        const envelope = await host.request(operation.method, operation.params); const response = unwrap(envelope);
+        if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || !nonBlank(response?.loop?.loopId) || response.loop.loopId === card.loopId) throw new Error('The separate replacement follow-up was not confirmed. Retry the same operation.');
+        if (!current(pending)) return; operations.delete(key); await load(); if (current(pending)) report('Replacement recorded with a separate follow-up obligation.');
+      } catch (error) { if (current(pending)) report(error?.message || 'The replacement outcome is unknown. Retry the same operation.'); }
+      finally { if (current(pending)) save.disabled = false; }
+    }, { signal });
+    disclosure.append(form); row.append(disclosure);
+  }
+
+  function appendRenovationStageControl(row, card, detail, pending) {
+    if (!writable() || row.querySelector('details[data-renovation-stage]')) return;
+    const prerequisite = detail?.evidence?.find(item => item.eventKind === 'requirement-recorded' && item.requirementKind === 'prerequisite' && nonBlank(item.stageNamespace) && nonBlank(item.stageId));
+    if (!prerequisite) return;
+    const disclosure = element('details'); disclosure.dataset.renovationStage = 'true'; disclosure.append(element('summary', 'Set exact renovation stage'));
+    const form = element('form'); form.append(element('p', `Only prerequisites for stage ${prerequisite.stageId} will surface together.`));
+    const stateLabel = element('label', 'Stage state '); const active = element('select'); for (const [value, label] of [['true', 'Active'], ['false', 'Inactive']]) { const option = element('option', label); option.value = value; active.append(option); } stateLabel.append(active);
+    const save = element('button', 'Save stage state'); save.type = 'submit'; form.append(stateLabel, save);
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); if (!current(pending) || !writable() || save.disabled) return; save.disabled = true; const key = `renovation-stage:${prerequisite.stageNamespace}:${prerequisite.stageId}`;
+      try {
+        let operation = operations.get(key); if (!operation) { const logicalOperationId = crypto.randomUUID(); const now = new Date().toISOString(); operation = { method: 'command-center.v1.open-loops.renovation-stage', params: { schemaVersion: 1, logicalOperationId, expectedRevision: 0, activation: { schemaVersion: 1, source: { system: 'command-center', kind: 'explicit-stage-state', externalId: logicalOperationId, version: 'operator-v1' }, stage: { kind: 'renovation-stage', namespace: prerequisite.stageNamespace, id: prerequisite.stageId }, active: active.value === 'true', occurredAt: now, observedAt: now, ...(card.topicId ? { topicId: card.topicId } : {}) } } }; operations.set(key, operation); }
+        const envelope = await host.request(operation.method, operation.params); const response = unwrap(envelope); if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || !nonBlank(response?.observationId)) throw new Error('The stage state was not confirmed. Retry the same operation.');
+        if (!current(pending)) return; operations.delete(key); await load(); if (current(pending)) report(active.value === 'true' ? 'The exact stage is active.' : 'The exact stage is inactive.');
+      } catch (error) { if (current(pending)) report(error?.message || 'The stage outcome is unknown. Retry the same operation.'); }
+      finally { if (current(pending)) save.disabled = false; }
+    }, { signal }); disclosure.append(form); row.append(disclosure);
+  }
+
+  function appendRenovationDecisionConflictControl(row, card, detail, pending) {
+    if (!writable() || card.kind !== 'decision' || card.state === 'decision-needed' || row.querySelector('details[data-renovation-conflict]')) return;
+    const decision = detail?.evidence?.filter(item => nonBlank(item.decisionId) && nonBlank(item.chosenOption)).at(-1);
+    if (!decision) return;
+    const disclosure = element('details'); disclosure.dataset.renovationConflict = 'true'; disclosure.append(element('summary', 'Record changed quote or purchase'));
+    const form = element('form'); form.append(element('p', `The recorded choice remains ${decision.chosenOption} until you explicitly revise it.`));
+    const kindLabel = element('label', 'Evidence kind '); const kind = element('select'); for (const [value, label] of [['revised-quote', 'Revised quote'], ['purchase-vs-choice', 'Purchase differs from choice']]) { const option = element('option', label); option.value = value; kind.append(option); } kindLabel.append(kind);
+    const choiceLabel = element('label', 'Observed choice '); const observedChoice = element('input'); observedChoice.required = true; observedChoice.maxLength = 500; choiceLabel.append(observedChoice);
+    const summaryLabel = element('label', 'Summary '); const summary = element('textarea'); summary.required = true; summary.maxLength = 1000; summaryLabel.append(summary); const save = element('button', 'Record evidence for review'); save.type = 'submit'; form.append(kindLabel, choiceLabel, summaryLabel, save);
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); if (!current(pending) || !writable() || save.disabled || !observedChoice.value.trim() || !summary.value.trim()) return; save.disabled = true;
+      try { const now = new Date().toISOString(); await submitOpenLoopOperation({ key: `renovation-conflict:${card.loopId}`, method: 'command-center.v1.open-loops.renovation-decision-conflict', params: { conflict: { schemaVersion: 1, decisionId: decision.decisionId, source: { system: 'command-center', kind: kind.value, externalId: crypto.randomUUID(), version: 'operator-v1' }, conflictKind: kind.value, occurredAt: now, observedAt: now, historicalBaseline: false, summary: summary.value.trim(), recordedChoice: decision.chosenOption, observedChoice: observedChoice.value.trim(), evidenceSelectors: ['explicit-operator-evidence'] } }, card, pending, includeLoopId: false, success: observedChoice.value.trim() === decision.chosenOption ? 'Matching evidence recorded without changing Attention.' : 'Changed evidence recorded for explicit decision review.' }); }
+      catch (error) { if (current(pending)) report(error?.message || 'The changed evidence outcome is unknown. Retry the same operation.'); }
+      finally { if (current(pending)) save.disabled = false; }
+    }, { signal }); disclosure.append(form); row.append(disclosure);
+  }
+
   function renderOpenLoops(openLoops, pending) {
     if (!openLoops || typeof openLoops !== 'object' || !Number.isSafeInteger(openLoops.total)) return;
     content.append(element('h2', 'Open loops'));
@@ -220,6 +307,10 @@ export function mountAttentionPage(container, context, operations = new Map()) {
             if (!disclosure) { disclosure = element('details'); disclosure.dataset.openLoopEvidence = 'true'; disclosure.append(element('summary', 'Source evidence')); row.append(disclosure); }
             renderEvidence(disclosure, detail);
             appendRenovationRelationshipControl(row, card, detail, pending);
+            appendRenovationFulfilmentControl(row, card, detail, pending);
+            appendRenovationReplacementControl(row, card, detail, pending);
+            appendRenovationStageControl(row, card, detail, pending);
+            appendRenovationDecisionConflictControl(row, card, detail, pending);
             disclosure.open = true;
           } catch (error) { if (current(pending)) report(error?.message || 'Open-loop evidence is unavailable.'); }
           finally { if (current(pending)) evidence.disabled = false; }
