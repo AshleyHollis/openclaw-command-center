@@ -6,11 +6,14 @@ import {
   planReplacementDisposition,
   planStageActivation
 } from '../open-loops/renovation-follow-through.mjs';
+import { createHash } from 'node:crypto';
 
 const freeze = value => {
   if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
   return value;
 };
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)])) : value;
+const intentDigest = value => `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}`;
 
 function command(raw, field) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['schemaVersion', 'logicalOperationId', 'expectedRevision', 'actorId', field].includes(key)) || raw.schemaVersion !== 1 || typeof raw.logicalOperationId !== 'string' || raw.logicalOperationId.trim() === '' || !Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 0 || typeof raw.actorId !== 'string' || raw.actorId.trim() === '') throw new TypeError('renovation-follow-through-invalid');
@@ -85,14 +88,30 @@ export function createRenovationFollowThrough(service) {
       const value = command(raw, 'revision');
       const revision = value.revision;
       if (!revision || typeof revision !== 'object' || Array.isArray(revision) || Object.keys(revision).some(key => !['loopId', 'chosenOption', 'rationale', 'decidedAt'].includes(key)) || typeof revision.loopId !== 'string' || typeof revision.chosenOption !== 'string' || !revision.chosenOption.trim() || typeof revision.rationale !== 'string' || !revision.rationale.trim() || typeof revision.decidedAt !== 'string' || Number.isNaN(Date.parse(revision.decidedAt))) throw new TypeError('renovation-decision-revision-invalid');
+      const operationKind = 'renovation-decision-revision';
+      const digest = intentDigest(value);
+      const previous = service.getOperation(value.logicalOperationId.trim());
+      if (previous && (previous.operationKind !== operationKind || previous.intentDigest !== digest)) throw new TypeError('renovation-decision-revision-intent-mismatch');
+      if (previous?.state === 'applied') return freeze({ ...JSON.parse(previous.resultIdentity), disposition: 'duplicate' });
+      let childCommand = previous?.resultIdentity ? JSON.parse(previous.resultIdentity).childCommand : null;
+      if (childCommand) {
+        const result = service.recordDecisionMemory(childCommand);
+        const response = { schemaVersion: 1, disposition: result.disposition, loop: result.decision.loop };
+        service.recordOperation({ ...previous, state: 'applied', resultStatus: result.disposition, resultIdentity: JSON.stringify(response), observedRevision: String(result.decision.loop.revision), updatedAt: revision.decidedAt });
+        return freeze(response);
+      }
       const loop = service.getOpenLoop(revision.loopId);
       if (!loop || loop.kind !== 'decision' || !loop.stableSubjectId.startsWith('decision:')) throw new TypeError('renovation-decision-missing');
       const decisionId = loop.stableSubjectId.slice('decision:'.length);
       const memory = service.getDecisionMemory(decisionId); const current = memory?.currentRecord; const subject = current?.entityRefs?.[0];
       if (!current || !subject) throw new TypeError('renovation-decision-evidence-missing');
       const conflictObservationId = memory.evidence.filter(item => item?.source?.kind !== 'explicit-decision').at(-1)?.observationId;
-      const result = service.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: value.logicalOperationId.trim(), expectedRevision: value.expectedRevision, decision: { schemaVersion: 1, decisionId, status: 'confirmed', decidedAt: revision.decidedAt, actorId: value.actorId.trim(), subject: { kind: subject.kind, id: subject.id, ...(subject.label ? { label: subject.label } : {}) }, ...(loop.topicId ? { topicId: loop.topicId } : {}), chosenOption: revision.chosenOption.trim(), alternatives: [...new Set([...(current.facts.alternatives ?? []), current.facts.chosenOption].filter(option => option && option !== revision.chosenOption.trim()))], rationale: revision.rationale.trim(), assumptions: current.facts.assumptions ?? [], sourceObservationIds: [conflictObservationId].filter(Boolean) } });
-      return freeze({ schemaVersion: 1, disposition: result.disposition, loop: result.decision.loop });
+      childCommand = { schemaVersion: 1, logicalOperationId: value.logicalOperationId.trim(), expectedRevision: value.expectedRevision, decision: { schemaVersion: 1, decisionId, status: 'confirmed', decidedAt: revision.decidedAt, actorId: value.actorId.trim(), subject: { kind: subject.kind, id: subject.id, ...(subject.label ? { label: subject.label } : {}) }, ...(loop.topicId ? { topicId: loop.topicId } : {}), chosenOption: revision.chosenOption.trim(), alternatives: [...new Set([...(current.facts.alternatives ?? []), current.facts.chosenOption].filter(option => option && option !== revision.chosenOption.trim()))], rationale: revision.rationale.trim(), assumptions: current.facts.assumptions ?? [], sourceObservationIds: [conflictObservationId].filter(Boolean) } };
+      const pending = service.recordOperation({ logicalOperationId: value.logicalOperationId.trim(), transportRequestId: value.logicalOperationId.trim(), intentDigest: digest, operationKind, state: 'pending', resultStatus: 'pending', resultIdentity: JSON.stringify({ childCommand }), observedRevision: String(value.expectedRevision), createdAt: revision.decidedAt, updatedAt: revision.decidedAt });
+      const result = service.recordDecisionMemory(childCommand);
+      const response = { schemaVersion: 1, disposition: result.disposition, loop: result.decision.loop };
+      service.recordOperation({ ...pending, state: 'applied', resultStatus: result.disposition, resultIdentity: JSON.stringify(response), observedRevision: String(result.decision.loop.revision), updatedAt: revision.decidedAt });
+      return freeze(response);
     }
   });
 }

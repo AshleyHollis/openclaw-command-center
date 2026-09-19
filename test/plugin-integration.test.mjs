@@ -232,6 +232,11 @@ test('registered renovation decision revision keeps the prior record and resolve
     assert.equal(replayed.disposition, 'duplicate');
     assert.equal(replayed.loop.revision, revised.loop.revision);
     await assert.rejects(() => qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-decision-revise', { ...revisionParams, chosenOption: 'warm white' }), /intent/i);
+    const later = await qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-decision-revise', { ...revisionParams, logicalOperationId: randomUUID(), expectedRevision: 3, chosenOption: 'soft grey', rationale: 'A later fictional sample was accepted.', decidedAt: '2026-09-20T03:05:00.000Z' });
+    assert.equal(later.loop.revision, 4);
+    const oldReplayAfterLaterRevision = await qualifyOpenLoop(service, 'command-center.v1.open-loops.renovation-decision-revise', revisionParams);
+    assert.equal(oldReplayAfterLaterRevision.disposition, 'duplicate');
+    assert.equal(oldReplayAfterLaterRevision.loop.revision, 3, 'the completed receipt must not acquire the later decision revision');
     const detail = await qualifyOpenLoop(service, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: challenged.decision.loop.loopId });
     assert.ok(detail.evidence.some(item => item.chosenOption === 'warm white'));
     assert.ok(detail.evidence.some(item => item.chosenOption === 'cool white'));
