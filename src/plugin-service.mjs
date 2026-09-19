@@ -240,6 +240,28 @@ export function createMetadataService(api) {
       if (!loop) throw new SourceServiceError('not-found', 'The exact open loop is unavailable.');
       return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id)))) });
     },
+    openLoopsIngestSelected(input = {}) {
+      requireOperational();
+      const operatorId = typeof input.authenticatedOperatorId === 'string' ? input.authenticatedOperatorId.trim() : '';
+      if (!operatorId) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for selected-source intake.');
+      if (!input.authorization || input.authorization.scopeId !== operatorId) throw new SourceServiceError('unauthenticated', 'Selected-source authorization must belong to the authenticated operator.');
+      const { authenticatedOperatorId: _operator, ...request } = input;
+      const result = metadataService.ingestSelectedSourceBatch(request);
+      return Object.freeze({
+        schemaVersion: 1,
+        disposition: result.disposition,
+        checkpoint: result.checkpoint,
+        freshness: result.freshness,
+        hasMore: result.hasMore,
+        results: Object.freeze(result.results.map(item => Object.freeze({
+          disposition: item.disposition,
+          observationId: item.observation.observationId,
+          sourceVersion: item.observation.source.version,
+          historicalBaseline: item.observation.historicalBaseline,
+          ...(item.loop ? { loop: item.loop } : {})
+        })))
+      });
+    },
     openLoopsDecide(input = {}) {
       requireOperational();
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for open-loop decisions.');

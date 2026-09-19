@@ -59,6 +59,7 @@ import { installOpenLoopActions } from './open-loop-actions.mjs';
 import { installTransactionIntake } from './transaction-intake.mjs';
 import { installDecisionMemory } from './decision-memory.mjs';
 import { installEntityCorrections } from './entity-corrections.mjs';
+import { installSelectedSourceIntake } from './selected-source-intake.mjs';
 
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii');
 const diagnosticLimit = 300;
@@ -2167,6 +2168,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   installTransactionIntake(service, { ErrorType: CommandCenterMetadataError });
   installDecisionMemory(service, { ErrorType: CommandCenterMetadataError });
   installEntityCorrections(service, { ErrorType: CommandCenterMetadataError });
+  installSelectedSourceIntake(service, { ErrorType: CommandCenterMetadataError });
   return Object.freeze(service);
 }
 

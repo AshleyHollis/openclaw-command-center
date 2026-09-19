@@ -31,6 +31,29 @@ test('open-loop bridge contracts use read and operator-write scopes with closed 
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, paymentState: 'paid', paidAmount: 12300, rationale: 'Missing currency.' }), /currency/);
 });
 
+test('selected-source intake bridge accepts only the bounded raw-source envelope and returns a closed summary', async () => {
+  const logicalOperationId = randomUUID();
+  const params = {
+    schemaVersion: 1,
+    logicalOperationId,
+    authorization: { scopeId: 'fictional-operator', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'fictional-source-reference' },
+    baselineThrough: '2026-09-01T00:00:00.000Z',
+    window: { cursor: 'cursor-0', nextCursor: 'cursor-1', hasMore: false },
+    selections: [{ version: 'v1', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', availability: 'available', content: 'Invoice: INV-FICTIONAL\nAmount due: AUD 48.00' }]
+  };
+  assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.intake-selected'].scope, 'operator.write');
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.intake-selected', params));
+  assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.intake-selected', { ...params, interpretation: { type: 'bill' } }), /Unsupported bridge request field/);
+  const result = await invokeBridgeMethod({
+    openLoopsIngestSelected(input) {
+      assert.equal(input.authenticatedOperatorId, 'fictional-operator');
+      return { schemaVersion: 1, disposition: 'applied', checkpoint: { schemaVersion: 1, laneId: 'lane', scopeId: 'fictional-operator', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'fictional-source-reference', cursor: 'cursor-1', processedCount: 1, lastObservedAt: '2026-09-20T00:01:00.000Z', lastAvailableAt: '2026-09-20T00:01:00.000Z', freshness: 'available', digest: `sha256:${'a'.repeat(64)}` }, freshness: { status: 'available', lastObservedAt: '2026-09-20T00:01:00.000Z', lastAvailableAt: '2026-09-20T00:01:00.000Z' }, hasMore: false, results: [{ disposition: 'created', observationId: 'fictional-observation', sourceVersion: 'v1', historicalBaseline: false, loop }] };
+    }
+  }, 'command-center.v1.open-loops.intake-selected', params, null, 'fictional-operator');
+  assert.equal(result.results[0].loop.loopId, loop.loopId);
+  assert.equal(result.checkpoint.scopeId, 'fictional-operator');
+});
+
 test('open-loop detail sanitization withholds raw source fields and attachment identifiers', async () => {
   const result = await invokeBridgeMethod({
     openLoopsGet: () => ({ schemaVersion: 1, loop: { ...loop, secretLocator: 'private-source' }, evidence: [{ observationId: 'observation-fictional', type: 'bill', sourceSystem: 'fictional-mail', sourceKind: 'email', sourceVersion: 'v1', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T01:00:00.000Z', historicalBaseline: false, summary: 'Fictional bill', invoiceId: 'INVOICE-FICTIONAL', attachmentIds: ['private-attachment'], rawBody: 'private-body' }] })

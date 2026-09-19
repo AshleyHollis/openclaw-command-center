@@ -215,6 +215,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.dashboard.get': (service, params, runtime) => service.dashboardGet(params, runtime),
   'command-center.v1.open-loops.list': (service, params) => service.openLoopsList(params),
   'command-center.v1.open-loops.get': (service, params) => service.openLoopsGet(params),
+  'command-center.v1.open-loops.intake-selected': (service, params) => service.openLoopsIngestSelected(params),
   'command-center.v1.open-loops.decide': (service, params) => service.openLoopsDecide(params),
   'command-center.v1.open-loops.payment-status': (service, params) => service.openLoopsPaymentStatus(params),
   'command-center.v1.search.query': (service, params) => service.searchQuery(params),
@@ -251,7 +252,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
           ? client.authenticatedUserProfile?.profileId
           : client?.authenticatedOperatorId ?? client?.authenticatedUserId;
         const authenticatedOperatorId = typeof principal === 'string' && principal.trim() !== '' ? principal : null;
-        const operatorMutation = method === 'command-center.v1.attention.act' || method === 'command-center.v1.open-loops.decide' || method === 'command-center.v1.open-loops.payment-status';
+        const operatorMutation = method === 'command-center.v1.attention.act' || method === 'command-center.v1.open-loops.intake-selected' || method === 'command-center.v1.open-loops.decide' || method === 'command-center.v1.open-loops.payment-status';
         if (operatorMutation && authenticatedOperatorId === null) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for this action.');
         const operatorId = method.startsWith('command-center.v1.attention.') || method.startsWith('command-center.v1.open-loops.') ? authenticatedOperatorId : null;
         let runtime = {};

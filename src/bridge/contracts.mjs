@@ -82,6 +82,7 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.attention.act',
   'command-center.v1.analysis.run',
   'command-center.v1.search.prepare-rebuild',
+  'command-center.v1.open-loops.intake-selected',
   'command-center.v1.open-loops.decide',
   'command-center.v1.open-loops.payment-status'
 ]);
@@ -100,9 +101,9 @@ export const ADMIN_METHODS = Object.freeze([
 ]);
 
 const common = ['schemaVersion'];
-const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'rationale', 'currency']);
-const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession']);
-const arrayFields = new Set(['expectedRevisions']);
+const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'dueAt', 'baselineThrough', 'rationale', 'currency']);
+const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession', 'authorization', 'checkpoint', 'window']);
+const arrayFields = new Set(['expectedRevisions', 'selections']);
 
 function parameterSchema(field, method) {
   if (field === 'expectedTopicRevision') return Object.freeze({ type: 'integer', minimum: 0 });
@@ -133,6 +134,12 @@ function actionResultSchema(method) {
   if (method.startsWith('command-center.v1.open-loops.')) {
     const attention = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ reason: { type: 'string' }, whyNow: { type: 'string' }, actions: { type: 'array', items: { type: 'string' } }, materialRevision: { type: 'string' }, activated: { type: 'boolean' }, currentEvidence: { type: 'boolean' } }) });
     const loop = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loopId: { type: 'string' }, kind: { type: 'string' }, stableSubjectId: { type: 'string' }, title: { type: 'string' }, topicId: { type: 'string' }, state: { type: 'string' }, paymentState: { type: 'string' }, amount: { type: 'integer' }, currency: { type: 'string' }, dueAt: { type: 'string' }, reviewAt: { type: 'string' }, expectedEvent: { type: 'string' }, attention, evidenceObservationIds: { type: 'array', items: { type: 'string' } }, revision: { type: 'integer' } }), required: ['schemaVersion', 'loopId', 'kind', 'stableSubjectId', 'title', 'state', 'evidenceObservationIds', 'revision'] });
+    if (method.endsWith('.intake-selected')) {
+      const checkpoint = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, laneId: { type: 'string' }, scopeId: { type: 'string' }, sourceSystem: { type: 'string' }, sourceKind: { type: 'string' }, resourceId: { type: 'string' }, cursor: { type: 'string' }, processedCount: { type: 'integer' }, lastObservedAt: { type: 'string' }, lastAvailableAt: { type: 'string' }, freshness: { type: 'string' }, digest: { type: 'string' } }), required: ['schemaVersion', 'laneId', 'scopeId', 'sourceSystem', 'sourceKind', 'resourceId', 'cursor', 'processedCount', 'lastObservedAt', 'freshness', 'digest'] });
+      const freshness = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ status: { type: 'string' }, lastObservedAt: { type: 'string' }, lastAvailableAt: { type: 'string' } }), required: ['status', 'lastObservedAt'] });
+      const item = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ disposition: { type: 'string' }, observationId: { type: 'string' }, sourceVersion: { type: 'string' }, historicalBaseline: { type: 'boolean' }, loop }), required: ['disposition', 'observationId', 'sourceVersion', 'historicalBaseline'] });
+      return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, disposition: { enum: ['applied', 'duplicate'] }, checkpoint, freshness, hasMore: { type: 'boolean' }, results: { type: 'array', items: item } }), required: ['schemaVersion', 'disposition', 'checkpoint', 'freshness', 'hasMore', 'results'] });
+    }
     const evidence = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ observationId: { type: 'string' }, type: { type: 'string' }, sourceSystem: { type: 'string' }, sourceKind: { type: 'string' }, sourceVersion: { type: 'string' }, sourceAvailable: { type: 'boolean' }, occurredAt: { type: 'string' }, observedAt: { type: 'string' }, historicalBaseline: { type: 'boolean' }, summary: { type: 'string' }, payee: { type: 'string' }, purpose: { type: 'string' }, amount: { type: 'integer' }, currency: { type: 'string' }, dueAt: { type: 'string' }, authorityId: { type: 'string' }, invoiceId: { type: 'string' }, accountId: { type: 'string' }, eventKind: { type: 'string' }, subjectKind: { type: 'string' }, subjectNamespace: { type: 'string' }, subjectId: { type: 'string' }, chosenOption: { type: 'string' }, rationale: { type: 'string' }, assumption: { type: 'string' }, assessment: { type: 'string' }, material: { type: 'boolean' }, decisionId: { type: 'string' }, status: { type: 'string' }, supersedesDecisionId: { type: 'string' }, supersededByDecisionId: { type: 'string' } }), required: ['observationId', 'type', 'sourceSystem', 'sourceKind', 'sourceVersion', 'occurredAt', 'observedAt', 'historicalBaseline'] });
     if (method.endsWith('.list')) return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loops: { type: 'array', items: loop }, total: { type: 'integer' }, offset: { type: 'integer' }, nextOffset: { type: ['integer', 'null'] }, nextCursor: { type: ['string', 'null'] }, hasMore: { type: 'boolean' } }), required: ['schemaVersion', 'loops', 'total', 'offset', 'nextOffset', 'nextCursor', 'hasMore'] });
     if (method.endsWith('.get')) return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loop, evidence: { type: 'array', items: evidence } }), required: ['schemaVersion', 'loop', 'evidence'] });
@@ -411,6 +418,7 @@ const required = Object.freeze({
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit'],
   'command-center.v1.open-loops.list': [],
   'command-center.v1.open-loops.get': ['loopId'],
+  'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'window', 'selections'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'rationale'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'rationale']
 });
@@ -490,6 +498,7 @@ const fields = Object.freeze({
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit'],
   'command-center.v1.open-loops.list': ['offset', 'limit', 'cursor'],
   'command-center.v1.open-loops.get': ['loopId'],
+  'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'checkpoint', 'window', 'selections', 'logicalOperationId'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'rationale', 'logicalOperationId'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'paidAmount', 'currency', 'rationale', 'logicalOperationId']
 });

@@ -3,8 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { CommandCenterMetadataError, openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { createSelectedSourceIntake } from '../src/metadata/selected-source-intake.mjs';
+import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { planSelectedSourceBatch, SELECTED_SOURCE_BATCH_LIMIT } from '../src/open-loops/selected-source-intake.mjs';
 
 const authorization = Object.freeze({ scopeId: 'selection-scope-fictional-1', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document-fictional-invoice-41' });
@@ -34,7 +33,7 @@ async function withService(run) {
   let service;
   try {
     service = openCommandCenterMetadataService({ stateDir });
-    const intake = createSelectedSourceIntake(service, { ErrorType: CommandCenterMetadataError });
+    const intake = { ingestSelectedSourceBatch: service.ingestSelectedSourceBatch };
     await run(service, intake, stateDir);
   } finally {
     service?.close();
