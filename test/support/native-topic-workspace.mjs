@@ -58,7 +58,7 @@ export async function selectNativeCategoryGrouping(page) {
     // the plugin's visible bulk control to make the native toolbar reachable.
     const collapseTopics = sidebar.getByRole('button', { name: 'Collapse all Topics', exact: true }).first();
     if (await collapseTopics.isVisible()) await collapseTopics.click({ timeout: 10_000 });
-    const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').first();
+    const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping):visible').first();
     groupingControl = trigger;
     const triggerInViewport = await trigger.evaluate(element => {
       const rect = element.getBoundingClientRect();
