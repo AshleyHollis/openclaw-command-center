@@ -39,13 +39,15 @@ import {
   V6_TO_V7_MIGRATION_ID,
   V7_TO_V8_MIGRATION_DIGEST,
   V7_TO_V8_MIGRATION_ID,
+  V8_TO_V9_MIGRATION_DIGEST,
+  V8_TO_V9_MIGRATION_ID,
   validateMigrationLedger
 } from './migration-ledger.mjs';
 import { inspectSchema } from './schema.mjs';
 
 export const RECOVERY_FORMAT_VERSION = 1;
 export const RECOVERY_SNAPSHOT_SCHEMA_VERSION = 1;
-const recoverySnapshotSchemaVersions = new Set([1, 2, 3, 4, 5, 6, 7]);
+const recoverySnapshotSchemaVersions = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
 
 const currentRelease = Object.freeze({
   package: canonical.package,
@@ -66,6 +68,10 @@ const schemaSevenRelease = Object.freeze({
   ...currentRelease,
   commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 7 }), migratable: Object.freeze({ min: 1, max: 6 }), writable: Object.freeze({ min: 7, max: 7 }) })
 });
+const schemaEightRelease = Object.freeze({
+  ...currentRelease,
+  commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 8 }), migratable: Object.freeze({ min: 1, max: 7 }), writable: Object.freeze({ min: 8, max: 8 }) })
+});
 const schemaOneRelease = Object.freeze({
   package: Object.freeze({ name: canonical.package.name, version: '0.1.0', build: '0.1.0' }),
   host: Object.freeze({ range: '=2026.8.1-beta.2' }),
@@ -81,6 +87,7 @@ function recoveryContractForSchema(schemaVersion, { legacyTarget = false } = {})
   if (schemaVersion === 4) return { migration: { id: V4_TO_V5_MIGRATION_ID, digest: V4_TO_V5_MIGRATION_DIGEST, fromVersion: 4, toVersion: 5 }, sourceRelease: schemaFourRelease, targetRelease: currentRelease };
   if (schemaVersion === 6) return { migration: { id: V6_TO_V7_MIGRATION_ID, digest: V6_TO_V7_MIGRATION_DIGEST, fromVersion: 6, toVersion: 7 }, sourceRelease: schemaSixRelease, targetRelease: currentRelease };
   if (schemaVersion === 7) return { migration: { id: V7_TO_V8_MIGRATION_ID, digest: V7_TO_V8_MIGRATION_DIGEST, fromVersion: 7, toVersion: 8 }, sourceRelease: schemaSevenRelease, targetRelease: currentRelease };
+  if (schemaVersion === 8) return { migration: { id: V8_TO_V9_MIGRATION_ID, digest: V8_TO_V9_MIGRATION_DIGEST, fromVersion: 8, toVersion: 9 }, sourceRelease: schemaEightRelease, targetRelease: currentRelease };
   return { migration: { id: MIGRATION_ID, digest: MIGRATION_DIGEST, fromVersion: MIGRATION_FROM_VERSION, toVersion: MIGRATION_TO_VERSION }, sourceRelease: schemaFiveRelease, targetRelease: currentRelease };
 }
 
@@ -193,7 +200,7 @@ function validateManifestShape(manifest) {
   if (!manifest.migration || canonicalJson(manifest.migration) !== canonicalJson(currentContract.migration)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest migration contract differs.');
   if (manifest.snapshotId !== manifest.snapshot.sha256) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery snapshot identity does not match its content digest.');
   const releaseMatches = canonicalJson(manifest.sourceRelease) === canonicalJson(currentContract.sourceRelease)
-    && [currentContract.targetRelease, legacyContract.targetRelease, schemaFiveRelease, schemaFourRelease, schemaSixRelease, schemaSevenRelease, ...(manifest.snapshot.schemaVersion === 1 ? [schemaTwoRelease] : [])].some((target) => canonicalJson(manifest.targetRelease) === canonicalJson(target));
+    && [currentContract.targetRelease, legacyContract.targetRelease, schemaFiveRelease, schemaFourRelease, schemaSixRelease, schemaSevenRelease, schemaEightRelease, ...(manifest.snapshot.schemaVersion === 1 ? [schemaTwoRelease] : [])].some((target) => canonicalJson(manifest.targetRelease) === canonicalJson(target));
   if (!releaseMatches) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest compatibility facts differ.');
   if (!['prepared', 'committed'].includes(manifest.state)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest state is invalid.');
   return manifest;

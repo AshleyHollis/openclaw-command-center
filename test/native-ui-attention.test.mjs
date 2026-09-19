@@ -23,7 +23,8 @@ async function fixture(run) {
       const { mountAttentionPage } = await import('/attention-page.mjs');
       const operations = new Map();
       const lifetime = new AbortController(); const pages = new Map(); const subscribers = new Set();
-      window.requests = []; window.opened = []; window.actionMode = 'success'; window.activity = [];
+      window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.activity = []; window.allOpenLoops = [];
+      window.openLoops = { total: 0, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 };
       const action = { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', target: { topicId: 'fictional-topic', sourceReferenceId: 'fictional-source' }, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string' } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact reminder.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true } };
       window.cards = ['one', 'two'].map((id) => ({ notificationRecordId: `record-${id}`, episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
       let context; let view; let scope;
@@ -33,7 +34,27 @@ async function fixture(run) {
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
-          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('open-loops.get')) {
+            const card = [...window.openLoops.highlighted, ...window.openLoops.comingUp].find(item => item.loopId === params.loopId);
+            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence: [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title }] } };
+          }
+          if (method.endsWith('open-loops.list')) {
+            const loops = window.allOpenLoops.slice(params.offset, params.offset + params.limit);
+            const nextOffset = params.offset + loops.length < window.allOpenLoops.length ? params.offset + loops.length : null;
+            return { result: { schemaVersion: 1, loops: structuredClone(loops), total: window.allOpenLoops.length, offset: params.offset, nextOffset, nextCursor: nextOffset === null ? null : loops.at(-1).loopId, hasMore: nextOffset !== null } };
+          }
+          if (method.endsWith('open-loops.payment-status')) {
+            if (window.openLoopActionMode === 'unknown') throw new Error('The transport outcome is unknown.');
+            const card = [...window.openLoops.highlighted, ...window.openLoops.comingUp].find(item => item.loopId === params.loopId);
+            Object.assign(card, { paymentState: params.paymentState, state: params.paymentState === 'paid' ? 'resolved' : params.paymentState === 'payment-pending' ? 'monitoring' : card.state, revision: card.revision + 1 });
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
+          if (method.endsWith('open-loops.decide')) {
+            const card = [...window.openLoops.highlighted, ...window.openLoops.comingUp].find(item => item.loopId === params.loopId);
+            Object.assign(card, { state: 'resolved', revision: card.revision + 1 });
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
           if (method.endsWith('attention.get')) {
             const episode = structuredClone(window.cards.find((card) => card.episodeId === params.episodeId));
             if (window.delayGet) { window.delayGet = false; await new Promise((resolve) => { window.finishGet = resolve; }); }
@@ -154,6 +175,80 @@ test('native Attention inbox exposes verified non-Session Activity through its e
   await page.getByRole('button', { name: 'Open Topic', exact: true }).click();
   await page.waitForFunction(() => window.opened.some((target) => target?.id === 'topic'));
   assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'fictional-topic' } });
+}));
+
+test('native open-loop retry reconciles the same logical operation after an unknown outcome', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoopActionMode = 'unknown';
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'retry-bill', kind: 'payment', title: 'Fictional bill requiring reconciliation.', state: 'confirmed', paymentState: 'unpaid', actions: ['Record payment status'], evidenceCount: 1, revision: 1 }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  const bill = page.locator('article[data-open-loop-id="retry-bill"]');
+  await bill.getByText('Record payment status', { exact: true }).click();
+  await bill.getByLabel('Evidence or rationale').fill('Fictional bank evidence.');
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  await page.getByRole('status').filter({ hasText: 'transport outcome is unknown' }).waitFor();
+  await page.evaluate(() => { window.openLoopActionMode = 'success'; });
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  await page.getByRole('status').filter({ hasText: 'No payment was submitted.' }).waitFor();
+  const ids = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.payment-status')).map(request => request.params.logicalOperationId));
+  assert.equal(ids.length, 2);
+  assert.equal(ids[0], ids[1]);
+}));
+
+test('native on-demand inventory pages through every quiet open loop', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.allOpenLoops = Array.from({ length: 25 }, (_, index) => ({ schemaVersion: 1, loopId: `quiet-${index}`, kind: 'order', stableSubjectId: `order:fictional:${index}`, title: `Quiet fictional loose end ${index}`, state: 'monitoring', evidenceObservationIds: [`evidence-${index}`], revision: 1 }));
+    window.openLoops = { total: 25, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 25, waiting: window.allOpenLoops.slice(0, 20).map(loop => ({ ...loop, evidenceCount: 1, actions: [] })), suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Review all open loops (25)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load open loops' }).click();
+  await page.getByRole('button', { name: 'Load more open loops' }).click();
+  await page.getByRole('heading', { name: 'Quiet fictional loose end 24' }).waitFor();
+  assert.equal(await page.locator('details[data-open-loop-inventory] article').count(), 25);
+}));
+
+test('native Attention reviews evidence and records status without paying or sending', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = {
+      total: 2,
+      attentionTotal: 1,
+      highlighted: [{ loopId: 'reply-loop', kind: 'reply', title: 'Confirm the fictional cabinet delivery access window.', state: 'confirmed', reason: 'response-requested', whyNow: 'The source explicitly asks for a response.', actions: ['Open original', 'Draft reply', 'Remind me'], evidenceCount: 1, revision: 1 }, { loopId: 'bill-loop', kind: 'payment', title: 'A fictional renovation progress invoice is ready.', state: 'confirmed', paymentState: 'unpaid', amount: 245000, currency: 'AUD', dueAt: '2026-10-04T13:59:59.000Z', reason: 'due-window', whyNow: 'The accepted payment date is approaching.', actions: ['Open bill', 'Record payment status', 'Remind me'], evidenceCount: 2, revision: 2 }],
+      comingUpTotal: 0,
+      comingUp: [],
+      waitingTotal: 0,
+      waiting: [{ loopId: 'waiting-loop', kind: 'order', title: 'Wait for the fictional cabinet delivery.', state: 'monitoring', actions: [], evidenceCount: 2, revision: 2 }],
+      suggestedTotal: 0,
+      suggested: [],
+      deferredTotal: 0,
+      deferred: [],
+      reconciliationTotal: 0,
+      reconciliation: []
+    };
+    window.mountInbox();
+  });
+  await page.getByRole('heading', { name: 'Open loops' }).waitFor();
+  await page.getByRole('heading', { name: 'Confirm the fictional cabinet delivery access window.' }).waitFor();
+  await page.getByText('AUD 2450.00', { exact: false }).waitFor();
+  await page.getByText('Waiting (1 shown)', { exact: true }).click();
+  await page.getByRole('heading', { name: 'Wait for the fictional cabinet delivery.' }).waitFor();
+  await page.getByText('Available actions: Open bill, Record payment status, Remind me.', { exact: true }).waitFor();
+  const bill = page.locator('article[data-open-loop-id="bill-loop"]');
+  await bill.getByRole('button', { name: 'Review evidence' }).click();
+  await bill.getByText('Source evidence', { exact: true }).waitFor();
+  await bill.getByText('Record payment status', { exact: true }).click();
+  await bill.getByLabel('Evidence or rationale').fill('The fictional bank transfer was initiated; settlement remains pending.');
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  await page.getByRole('status').filter({ hasText: 'No payment was submitted.' }).waitFor();
+  const payment = await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.payment-status')).params);
+  assert.equal(payment.paymentState, 'payment-pending');
+  assert.equal(payment.paidAmount, undefined);
+  assert.equal(await page.getByRole('button', { name: /^Pay|^Send$/i }).count(), 0);
+  assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('attention.act')).length), 0);
 }));
 
 test('native Attention re-resolves verified Session Activity before opening native Chat', () => fixture(async (page) => {

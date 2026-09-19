@@ -16,6 +16,20 @@ function unavailable(feature) {
   throw new SourceServiceError('capability-unavailable', `Command Center ${feature} ${reason}.`);
 }
 
+const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'chosenOption', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId']);
+function publicOpenLoopEvidence(observation) {
+  return Object.freeze({
+    observationId: observation.observationId,
+    type: observation.type,
+    sourceSystem: observation.source.system,
+    sourceKind: observation.source.kind,
+    occurredAt: observation.occurredAt,
+    observedAt: observation.observedAt,
+    historicalBaseline: observation.historicalBaseline,
+    ...Object.fromEntries(publicEvidenceFields.filter(key => observation.facts[key] !== undefined).map(key => [key, observation.facts[key]]))
+  });
+}
+
 export function runtimeHostIdentity(stateDir) {
   const value = String(stateDir ?? '').trim();
   if (!value) throw new TypeError('Runtime host identity requires a resolved state directory.');
@@ -211,6 +225,28 @@ export function createMetadataService(api) {
       const request = { ...input };
       delete request.requestId;
       return dashboardService.get(request);
+    },
+    openLoopsList(input = {}) {
+      requireOperational();
+      const offset = Number.isInteger(input.offset) ? input.offset : 0;
+      const limit = Number.isInteger(input.limit) ? input.limit : 50;
+      return metadataService.listOpenLoopsPage({ offset, limit, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) });
+    },
+    openLoopsGet(input = {}) {
+      requireOperational();
+      const loop = metadataService.getOpenLoop(input.loopId);
+      if (!loop) throw new SourceServiceError('not-found', 'The exact open loop is unavailable.');
+      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id)))) });
+    },
+    openLoopsDecide(input = {}) {
+      requireOperational();
+      if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for open-loop decisions.');
+      return metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
+    },
+    openLoopsPaymentStatus(input = {}) {
+      requireOperational();
+      if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for payment status records.');
+      return metadataService.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, paymentState: input.paymentState, ...(input.paidAmount === undefined ? {} : { paidAmount: input.paidAmount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
     },
     dashboardUpdateSettings() { return refuseDeferred('dashboard'); },
     notificationReconcile() { return refuseDeferred('notifications'); },

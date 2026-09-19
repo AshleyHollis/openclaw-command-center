@@ -3,6 +3,8 @@ import { opaqueNotificationId } from '../notifications/preview.mjs';
 
 const DEFAULT_ACTIVITY_LIMIT = 50;
 const MAX_ACTIVITY_LIMIT = 50;
+const HIGHLIGHTED_OPEN_LOOP_LIMIT = 3;
+const OPEN_LOOP_GROUP_LIMIT = 20;
 
 function asArray(value) { return Array.isArray(value) ? value : []; }
 function dateMs(value) {
@@ -68,6 +70,49 @@ function compactEpisode(episode) {
   });
 }
 
+function compactOpenLoop(projected) {
+  const loop = projected.loop;
+  return Object.freeze({
+    loopId: loop.loopId,
+    kind: loop.kind,
+    title: loop.title.slice(0, 300),
+    state: loop.state,
+    ...(loop.topicId === undefined ? {} : { topicId: loop.topicId }),
+    ...(loop.paymentState === undefined ? {} : { paymentState: loop.paymentState }),
+    ...(loop.amount === undefined ? {} : { amount: loop.amount, currency: loop.currency }),
+    ...(loop.dueAt === undefined ? {} : { dueAt: loop.dueAt }),
+    ...(projected.reason === undefined ? {} : { reason: projected.reason }),
+    ...(projected.whyNow === undefined ? {} : { whyNow: projected.whyNow.slice(0, 500) }),
+    actions: Object.freeze(asArray(projected.actions).slice(0, 4)),
+    evidenceCount: loop.evidenceObservationIds.length,
+    revision: loop.revision
+  });
+}
+
+function openLoopProjection(metadata, serverTime) {
+  if (typeof metadata?.getQuietAttentionInbox !== 'function') return Object.freeze({ total: 0, attentionTotal: 0, highlighted: Object.freeze([]), comingUpTotal: 0, comingUp: Object.freeze([]), waitingTotal: 0, waiting: Object.freeze([]), suggestedTotal: 0, suggested: Object.freeze([]), deferredTotal: 0, deferred: Object.freeze([]), reconciliationTotal: 0, reconciliation: Object.freeze([]) });
+  const inbox = metadata.getQuietAttentionInbox({ now: serverTime });
+  const conflicts = inbox.attention.filter(item => item.reason === 'evidence-conflict');
+  const ordinary = inbox.attention.filter(item => item.reason !== 'evidence-conflict').slice(0, HIGHLIGHTED_OPEN_LOOP_LIMIT);
+  const highlighted = [...conflicts, ...ordinary].filter((item, index, values) => values.findIndex(candidate => candidate.loop.loopId === item.loop.loopId) === index).map(compactOpenLoop);
+  const total = Object.values(inbox).reduce((sum, values) => sum + values.length, 0);
+  return Object.freeze({
+    total,
+    attentionTotal: inbox.attention.length,
+    highlighted: Object.freeze(highlighted),
+    comingUpTotal: inbox.comingUp.length,
+    comingUp: Object.freeze(inbox.comingUp.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    waitingTotal: inbox.waiting.length,
+    waiting: Object.freeze(inbox.waiting.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    suggestedTotal: inbox.suggested.length,
+    suggested: Object.freeze(inbox.suggested.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    deferredTotal: inbox.deferred.length,
+    deferred: Object.freeze(inbox.deferred.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    reconciliationTotal: inbox.reconciliation.length,
+    reconciliation: Object.freeze(inbox.reconciliation.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop))
+  });
+}
+
 async function activityPage({ sourceService, attentionService, metadata, offset, limit, navigationResolver }) {
   let result;
   if (typeof sourceService?.activityList === 'function') result = await sourceService.activityList({ schemaVersion: 1, offset, limit });
@@ -127,6 +172,7 @@ export async function projectDashboard({ sourceService, attentionService, metada
   }
   comingUp.sort((left, right) => left.dueAt.localeCompare(right.dueAt) || left.context.localeCompare(right.context));
   const activity = await activityPage({ sourceService, attentionService, metadata, offset: activityOffset, limit: activityLimit, navigationResolver });
+  const openLoops = openLoopProjection(metadata, new Date(serverTimeMs).toISOString());
   const settings = typeof notificationSettings === 'function' ? await notificationSettings() : notificationSettings;
   const visibleAttention = Object.freeze(active.filter((episode) => {
     const dueAtMs = dateMs(episode.evidence?.dueAt ?? episode.evidenceFacts?.dueAt);
@@ -136,9 +182,10 @@ export async function projectDashboard({ sourceService, attentionService, metada
     schemaVersion: 1,
     serverTime: new Date(serverTimeMs).toISOString(),
     attention: visibleAttention,
-    attentionBadgeCount: visibleAttention.length,
+    attentionBadgeCount: visibleAttention.length + openLoops.attentionTotal,
     inProgress: Object.freeze(inProgress),
     comingUp: Object.freeze(comingUp),
+    openLoops,
     topics: Object.freeze(topics.map((topic) => Object.freeze({ topicId: topic.topicId, name: topicName(topic), paraCategory: topic.paraCategory }))),
     activity,
     activityOffset,

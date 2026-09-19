@@ -113,6 +113,10 @@ export default definePluginEntry({
         if (property === 'topics') return service.topicService;
         if (property === 'dashboard') return { get: (input, runtime) => service.dashboardGet(input, runtime) };
         if (property === 'dashboardGet') return (input, runtime) => service.dashboardGet(input, runtime);
+        if (property === 'openLoopsList') return (input) => service.openLoopsList(input);
+        if (property === 'openLoopsGet') return (input) => service.openLoopsGet(input);
+        if (property === 'openLoopsDecide') return (input) => service.openLoopsDecide(input);
+        if (property === 'openLoopsPaymentStatus') return (input) => service.openLoopsPaymentStatus(input);
         if (property === 'dashboardUpdateSettings') return (input) => service.dashboardUpdateSettings(input);
         if (property === 'notificationReconcile') return (runtime) => service.notificationReconcile(runtime);
         if (property === 'notificationCaptureBinding') return () => service.notificationCaptureBinding();

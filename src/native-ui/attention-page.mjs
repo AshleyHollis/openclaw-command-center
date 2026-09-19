@@ -61,6 +61,123 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     }
   }
 
+  function renderOpenLoops(openLoops, pending) {
+    if (!openLoops || typeof openLoops !== 'object' || !Number.isSafeInteger(openLoops.total)) return;
+    content.append(element('h2', 'Open loops'));
+    content.append(element('p', `${openLoops.attentionTotal} need attention · ${openLoops.comingUpTotal} coming up · ${openLoops.waitingTotal} waiting · ${openLoops.suggestedTotal} suggestions · ${openLoops.deferredTotal} deferred`));
+    const groups = [['Needs attention', openLoops.highlighted], ['Coming up', openLoops.comingUp], ['Waiting', openLoops.waiting], ['Suggestions', openLoops.suggested], ['Deferred', openLoops.deferred], ['Needs reconciliation', openLoops.reconciliation]];
+    for (const [label, cards] of groups) {
+      if (!Array.isArray(cards) || cards.length === 0) continue;
+      const quiet = ['Waiting', 'Suggestions', 'Deferred', 'Needs reconciliation'].includes(label);
+      const group = quiet ? element('details') : content;
+      if (quiet) { group.dataset.openLoopGroup = label; group.append(element('summary', `${label} (${cards.length} shown)`)); content.append(group); }
+      else content.append(element('h3', label));
+      for (const card of cards) {
+        if (!nonBlank(card.loopId) || !nonBlank(card.title)) continue;
+        const row = element('article'); row.dataset.openLoopId = card.loopId;
+        row.append(element('h4', card.title));
+        const facts = [card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, nonBlank(card.dueAt) ? `Due ${card.dueAt}` : null].filter(Boolean);
+        if (facts.length) row.append(element('p', facts.join(' · ')));
+        if (nonBlank(card.whyNow)) row.append(element('p', card.whyNow));
+        if (Array.isArray(card.actions) && card.actions.length) row.append(element('p', `Available actions: ${card.actions.join(', ')}.`));
+        row.append(element('p', `${Number.isSafeInteger(card.evidenceCount) ? card.evidenceCount : 0} linked source ${card.evidenceCount === 1 ? 'item' : 'items'}.`));
+        const evidence = element('button', 'Review evidence'); evidence.type = 'button';
+        evidence.addEventListener('click', async () => {
+          if (!current(pending) || evidence.disabled) return;
+          evidence.disabled = true;
+          try {
+            const detail = unwrap(await host.request('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: card.loopId }));
+            if (!current(pending) || detail?.loop?.loopId !== card.loopId) return;
+            let disclosure = row.querySelector('details[data-open-loop-evidence]');
+            if (!disclosure) { disclosure = element('details'); disclosure.dataset.openLoopEvidence = 'true'; disclosure.append(element('summary', 'Source evidence')); row.append(disclosure); }
+            disclosure.replaceChildren(element('summary', 'Source evidence'), element('pre', text(detail.evidence)));
+            disclosure.open = true;
+          } catch (error) { if (current(pending)) report(error?.message || 'Open-loop evidence is unavailable.'); }
+          finally { if (current(pending)) evidence.disabled = false; }
+        }, { signal });
+        row.append(evidence);
+        if (label === 'Needs attention' && writable() && card.kind === 'payment' && !['paid', 'cancelled'].includes(card.paymentState)) {
+          const form = element('form');
+          const actionDisclosure = element('details'); actionDisclosure.append(element('summary', 'Record payment status'));
+          form.append(element('p', 'This records your status assertion. It does not pay the bill or contact the sender.'));
+          const statusLabel = element('label', 'Status '); const choice = element('select'); choice.name = 'paymentState';
+          for (const [value, label] of [['payment-pending', 'Payment initiated; settlement pending'], ['paid', 'Paid and verified by me'], ['disputed', 'Disputed'], ['uncertain', 'Needs reconciliation']]) { const option = element('option', label); option.value = value; choice.append(option); }
+          statusLabel.append(choice);
+          const rationaleLabel = element('label', ' Evidence or rationale '); const rationale = element('textarea'); rationale.name = 'rationale'; rationale.required = true; rationale.maxLength = 1000; rationaleLabel.append(rationale);
+          const save = element('button', 'Save payment status'); save.type = 'submit';
+          form.append(statusLabel, rationaleLabel, save);
+          form.addEventListener('submit', async event => {
+            event.preventDefault();
+            if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
+            save.disabled = true;
+            try {
+              const key = `open-loop-payment:${card.loopId}`;
+              const operation = operations.get(key) ?? { method: 'command-center.v1.open-loops.payment-status', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, paymentState: choice.value, rationale: rationale.value.trim() } };
+              operations.set(key, operation);
+              const envelope = await host.request(operation.method, operation.params);
+              const response = unwrap(envelope);
+              if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId) throw new Error('The payment outcome is not confirmed. Retry to reconcile the same operation.');
+              if (!current(pending)) return;
+              operations.delete(key);
+              await load();
+              if (!signal.aborted && presented && readable()) report('Payment status recorded. No payment was submitted.');
+            } catch (error) { if (current(pending)) report(error?.message || 'Payment outcome is unknown. Retry to reconcile the same operation.'); }
+            finally { if (current(pending)) save.disabled = false; }
+          }, { signal });
+          actionDisclosure.append(form); row.append(actionDisclosure);
+        } else if (label === 'Needs attention' && writable() && card.kind === 'response' && !['resolved', 'cancelled'].includes(card.state)) {
+          const form = element('form');
+          const actionDisclosure = element('details'); actionDisclosure.append(element('summary', 'Record response outcome'));
+          form.append(element('p', 'This records that the request was addressed. It does not send a message.'));
+          const rationaleLabel = element('label', ' Evidence or rationale '); const rationale = element('textarea'); rationale.required = true; rationale.maxLength = 1000; rationaleLabel.append(rationale);
+          const save = element('button', 'Mark response addressed'); save.type = 'submit'; form.append(rationaleLabel, save);
+          form.addEventListener('submit', async event => {
+            event.preventDefault();
+            if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
+            save.disabled = true;
+            try {
+              const key = `open-loop-response:${card.loopId}`;
+              const operation = operations.get(key) ?? { method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, decision: 'resolve', rationale: rationale.value.trim() } };
+              operations.set(key, operation);
+              const envelope = await host.request(operation.method, operation.params);
+              const response = unwrap(envelope);
+              if (envelope?.schemaVersion !== 1 || envelope.status !== 'applied' || envelope.logicalOperationId !== operation.params.logicalOperationId || response?.loop?.loopId !== card.loopId) throw new Error('The response outcome is not confirmed. Retry to reconcile the same operation.');
+              if (!current(pending)) return;
+              operations.delete(key);
+              await load();
+              if (!signal.aborted && presented && readable()) report('Response outcome recorded. No message was sent.');
+            } catch (error) { if (current(pending)) report(error?.message || 'Response outcome is unknown. Retry to reconcile the same operation.'); }
+            finally { if (current(pending)) save.disabled = false; }
+          }, { signal });
+          actionDisclosure.append(form); row.append(actionDisclosure);
+        }
+        group.append(row);
+      }
+    }
+    const inventory = element('details'); inventory.dataset.openLoopInventory = 'true'; inventory.append(element('summary', `Review all open loops (${openLoops.total})`));
+    const inventoryRows = element('section'); inventoryRows.setAttribute('aria-label', 'All open loops');
+    const more = element('button', 'Load open loops'); more.type = 'button'; let offset = 0; let cursor;
+    more.addEventListener('click', async () => {
+      if (!current(pending) || more.disabled) return;
+      more.disabled = true;
+      try {
+        const page = unwrap(await host.request('command-center.v1.open-loops.list', { schemaVersion: 1, offset, limit: 20, ...(cursor === undefined ? {} : { cursor }) }));
+        if (!current(pending) || !Array.isArray(page?.loops) || page.offset !== offset) throw new Error('The open-loop inventory changed. Refresh before continuing.');
+        for (const loop of page.loops) {
+          if (!nonBlank(loop.loopId) || !nonBlank(loop.title) || inventoryRows.querySelector(`[data-open-loop-id="${CSS.escape(loop.loopId)}"]`)) continue;
+          const row = element('article'); row.dataset.openLoopId = loop.loopId;
+          row.append(element('h4', loop.title), element('p', [loop.paymentState ?? loop.state, nonBlank(loop.dueAt) ? `Due ${loop.dueAt}` : null].filter(Boolean).join(' · ')));
+          inventoryRows.append(row);
+        }
+        offset = page.nextOffset ?? offset + page.loops.length;
+        cursor = page.nextCursor ?? cursor;
+        if (page.hasMore && nonBlank(page.nextCursor)) { more.textContent = 'Load more open loops'; more.disabled = false; }
+        else more.remove();
+      } catch (error) { if (current(pending)) { more.disabled = false; report(error?.message || 'The open-loop inventory is unavailable.'); } }
+    }, { signal });
+    inventory.append(inventoryRows, more); content.append(inventory);
+  }
+
   function render(episode) {
     content.replaceChildren();
     const card = element('article'); card.dataset.episodeId = episode.episodeId;
@@ -173,8 +290,9 @@ export function mountAttentionPage(container, context, operations = new Map()) {
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { notificationRecord: card.notificationRecordId } }); }, { signal }); content.append(button);
         }
+        renderOpenLoops(dashboard.openLoops, pending);
         renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending);
-        report(cards.length ? 'Select an Attention item.' : 'No current Attention items.'); return;
+        report(cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : 'No current Attention items.'); return;
       }
       const matches = cards.filter((card) => card.notificationRecordId === recordId);
       if (matches.length !== 1) { report(`${message ? `${message} ` : ''}The exact Attention item is no longer available in the current inbox. Refresh to check again.`); return; }
