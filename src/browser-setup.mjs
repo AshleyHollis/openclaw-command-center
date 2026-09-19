@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-export const PLAYWRIGHT_VERSION = '1.62.1';
+export const PLAYWRIGHT_VERSION = '1.63.0';
 const installedPlaywrightVersion = require('playwright/package.json').version;
 export async function launchPinnedChromium({
   version = installedPlaywrightVersion,
