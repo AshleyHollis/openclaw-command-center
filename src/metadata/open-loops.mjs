@@ -65,6 +65,10 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     if (!row) return null;
     const evidenceObservationIds = db.prepare('SELECT observation_id FROM open_loop_evidence WHERE loop_id = ? ORDER BY observation_id').all(row.loop_id).map(item => item.observation_id);
     const attention = JSON.parse(row.attention_json);
+    const dateTiming = row.due_at === null ? db.prepare(`SELECT json_extract(o.facts_json, '$.dueDate') AS due_date, json_extract(o.facts_json, '$.dueTimeZone') AS due_time_zone
+      FROM open_loop_evidence e JOIN source_observations o ON o.observation_id = e.observation_id
+      WHERE e.loop_id = ? AND json_type(o.facts_json, '$.dueDate') = 'text' AND json_type(o.facts_json, '$.dueTimeZone') = 'text'
+      ORDER BY e.linked_at DESC, e.observation_id DESC LIMIT 1`).get(row.loop_id) : null;
     return freeze({
       schemaVersion: 1,
       loopId: row.loop_id,
@@ -76,6 +80,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       ...(row.payment_state === null ? {} : { paymentState: row.payment_state }),
       ...(row.amount_minor === null ? {} : { amount: row.amount_minor, currency: row.currency }),
       ...(row.due_at === null ? {} : { dueAt: row.due_at }),
+      ...(dateTiming?.due_date ? { dueDate: dateTiming.due_date, dueTimeZone: dateTiming.due_time_zone } : {}),
       ...(row.review_at === null ? {} : { reviewAt: row.review_at }),
       ...(row.expected_event === null ? {} : { expectedEvent: row.expected_event }),
       ...(Object.keys(attention).length === 0 ? {} : { attention }),
@@ -101,6 +106,12 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     if (owner && owner.loop_id !== loop.loopId) fail('open-loop-subject-conflict');
     if (loop.topicId && !db.prepare('SELECT 1 FROM topics WHERE topic_id = ?').get(loop.topicId)) fail('open-loop-topic-missing');
     if (loop.evidenceObservationIds.some(id => !db.prepare('SELECT 1 FROM source_observations WHERE observation_id = ?').get(id))) fail('open-loop-evidence-missing');
+    if (loop.dueDate && !loop.evidenceObservationIds.some(id => {
+      const facts = db.prepare('SELECT facts_json FROM source_observations WHERE observation_id = ?').get(id);
+      if (!facts) return false;
+      const value = JSON.parse(facts.facts_json);
+      return value.dueDate === loop.dueDate && value.dueTimeZone === loop.dueTimeZone;
+    })) fail('open-loop-evidence-missing', 'A date-only due date requires matching evidence with its timezone.');
     const oldEvidence = existing ? db.prepare('SELECT observation_id FROM open_loop_evidence WHERE loop_id = ?').all(loop.loopId).map(item => item.observation_id) : [];
     if (oldEvidence.some(id => !loop.evidenceObservationIds.includes(id))) fail('open-loop-evidence-removal', 'Evidence links are append-only.');
     const values = [loop.kind, loop.stableSubjectId, loop.title, loop.topicId ?? null, loop.state, loop.paymentState ?? null, loop.amount ?? null, loop.currency ?? null, loop.dueAt ?? null, loop.reviewAt ?? null, loop.expectedEvent ?? null, JSON.stringify(loop.attention ?? {}), loop.revision, updatedAt, loop.loopId];

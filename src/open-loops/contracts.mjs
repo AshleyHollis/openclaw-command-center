@@ -27,7 +27,7 @@ const sourceKeys = Object.freeze(['system', 'kind', 'externalId', 'version']);
 const entityKeys = Object.freeze(['kind', 'id', 'label', 'confidence', 'evidence']);
 const loopKeys = Object.freeze([
   'schemaVersion', 'loopId', 'kind', 'stableSubjectId', 'title', 'topicId', 'state',
-  'paymentState', 'amount', 'currency', 'dueAt', 'reviewAt', 'expectedEvent',
+  'paymentState', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'reviewAt', 'expectedEvent',
   'attention', 'evidenceObservationIds', 'revision'
 ]);
 const attentionKeys = Object.freeze([
@@ -53,6 +53,19 @@ function timestamp(value, label) {
   return result;
 }
 function optionalTimestamp(value, label) { return value === undefined || value === null ? undefined : timestamp(value, label); }
+function calendarDate(value, label) {
+  const result = text(value, label, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(result)) fail(`${label} must be a calendar date`);
+  const [year, month, day] = result.split('-').map(Number);
+  const check = new Date(Date.UTC(year, month - 1, day));
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) fail(`${label} must be a valid calendar date`);
+  return result;
+}
+function timeZone(value, label) {
+  const result = text(value, label, 100);
+  try { new Intl.DateTimeFormat('en-US', { timeZone: result }).format(); } catch { fail(`${label} must be a valid IANA timezone`); }
+  return result;
+}
 function boolean(value, label, fallback = false) {
   if (value === undefined) return fallback;
   if (typeof value !== 'boolean') fail(`${label} must be a boolean`);
@@ -155,6 +168,8 @@ export function normalizeLoop(input) {
   })();
   const revision = Number(value.revision ?? 1);
   if (!Number.isSafeInteger(revision) || revision < 1) fail('revision must be a positive safe integer');
+  if ((value.dueDate === undefined) !== (value.dueTimeZone === undefined)) fail('dueDate and dueTimeZone must be provided together');
+  if (value.dueAt !== undefined && value.dueDate !== undefined) fail('dueAt and dueDate are mutually exclusive');
   return Object.freeze({
     schemaVersion: 1,
     loopId: text(value.loopId, 'loopId', 300),
@@ -166,6 +181,7 @@ export function normalizeLoop(input) {
     ...(value.paymentState === undefined ? {} : { paymentState: value.paymentState }),
     ...(amount === undefined ? {} : { amount, currency }),
     ...(value.dueAt === undefined ? {} : { dueAt: optionalTimestamp(value.dueAt, 'dueAt') }),
+    ...(value.dueDate === undefined ? {} : { dueDate: calendarDate(value.dueDate, 'dueDate'), dueTimeZone: timeZone(value.dueTimeZone, 'dueTimeZone') }),
     ...(value.reviewAt === undefined ? {} : { reviewAt: optionalTimestamp(value.reviewAt, 'reviewAt') }),
     ...(value.expectedEvent === undefined ? {} : { expectedEvent: optionalText(value.expectedEvent, 'expectedEvent', 500) }),
     ...(attention === undefined ? {} : { attention }),

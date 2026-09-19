@@ -1,4 +1,5 @@
 import { normalizeLoop } from './contracts.mjs';
+import { zonedDateAtNine } from './reminder-coordinator.mjs';
 
 const terminal = new Set(['resolved', 'cancelled']);
 
@@ -27,7 +28,8 @@ export function projectQuietAttention(input, { now = new Date().toISOString(), l
   if (loop.state === 'action-running') return Object.freeze({ group: 'in-progress', loop });
   if (loop.state === 'suggested') return Object.freeze({ group: 'suggested', loop });
 
-  const dueMs = loop.dueAt === undefined ? undefined : instant(loop.dueAt, 'dueAt');
+  const acceptedDueAt = loop.dueAt ?? (loop.dueDate === undefined ? undefined : zonedDateAtNine(loop.dueDate, loop.dueTimeZone));
+  const dueMs = acceptedDueAt === undefined ? undefined : instant(acceptedDueAt, 'accepted due time');
   const explicitReason = loop.attention?.reason;
   const reviewMs = loop.reviewAt === undefined ? undefined : instant(loop.reviewAt, 'reviewAt');
   if (reviewMs !== undefined && reviewMs > nowMs && explicitReason !== 'evidence-conflict') return Object.freeze({ group: 'deferred', reviewAt: loop.reviewAt, loop });
@@ -40,7 +42,7 @@ export function projectQuietAttention(input, { now = new Date().toISOString(), l
   const actions = loop.attention?.actions ?? [];
   const actionable = reason !== undefined && actions.length > 0 && !historicalOnly;
   if (actionable) return Object.freeze({ group: 'attention', reason, whyNow: explain(loop, reason), actions, loop });
-  if (dueMs !== undefined && dueMs >= nowMs) return Object.freeze({ group: 'coming-up', dueAt: loop.dueAt, loop });
+  if (dueMs !== undefined && dueMs >= nowMs) return Object.freeze({ group: 'coming-up', dueAt: acceptedDueAt, loop });
   return Object.freeze({ group: loop.state === 'uncertain' ? 'reconciliation' : 'waiting', loop });
 }
 
@@ -52,7 +54,8 @@ export function projectQuietInbox(loops, options = {}) {
     const key = ({ 'in-progress': 'inProgress', 'coming-up': 'comingUp' })[projected.group] ?? projected.group;
     groups[key].push(projected);
   }
-  const byDue = (left, right) => Date.parse(left.loop.dueAt ?? '9999-12-31T23:59:59Z') - Date.parse(right.loop.dueAt ?? '9999-12-31T23:59:59Z') || left.loop.loopId.localeCompare(right.loop.loopId);
+  const sortableDue = item => item.dueAt ?? item.loop.dueAt ?? (item.loop.dueDate ? zonedDateAtNine(item.loop.dueDate, item.loop.dueTimeZone) : '9999-12-31T23:59:59Z');
+  const byDue = (left, right) => Date.parse(sortableDue(left)) - Date.parse(sortableDue(right)) || left.loop.loopId.localeCompare(right.loop.loopId);
   groups.attention.sort(byDue);
   groups.comingUp.sort(byDue);
   return Object.freeze(Object.fromEntries(Object.entries(groups).map(([key, value]) => [key, Object.freeze(value)])));

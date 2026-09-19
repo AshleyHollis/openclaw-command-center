@@ -29,6 +29,9 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     if (!nonBlank(value) || Number.isNaN(Date.parse(value))) return value;
     return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
   };
+  const formatDue = value => nonBlank(value?.dueDate)
+    ? `${value.dueDate} (${value.dueTimeZone}, calendar date)`
+    : nonBlank(value?.dueAt) ? formatInstant(value.dueAt) : null;
 
   function renderEvidence(disclosure, detail) {
     disclosure.replaceChildren(element('summary', 'Source evidence'));
@@ -50,7 +53,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
       const facts = [
         ['Payee', item.payee], ['Purpose', item.purpose], ['Invoice', item.invoiceId], ['Account', item.accountId],
         ['Amount', Number.isSafeInteger(item.amount) && nonBlank(item.currency) ? `${item.currency} ${(item.amount / 100).toFixed(2)}` : null],
-        ['Due', nonBlank(item.dueAt) ? formatInstant(item.dueAt) : null], ['Event', item.eventKind],
+        ['Due', formatDue(item)], ['Event', item.eventKind],
         ['Requirement', nonBlank(item.requirementKind) && nonBlank(item.requirementId) ? `${item.requirementKind}: ${item.requirementId}` : null],
         ['Stage', nonBlank(item.stageId) ? item.stageId : null], ['Choice', item.chosenOption],
         ['Recorded choice', item.recordedChoice], ['Observed choice', item.observedChoice], ['Rationale', item.rationale], ['Assumption', item.assumption],
@@ -93,27 +96,33 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     if (!choices.length) return;
     decisionLabel.append(decision);
     const reviewLabel = element('label', ' Review time '); const reviewAt = element('input'); reviewAt.type = 'datetime-local'; reviewLabel.append(reviewAt);
-    const dueLabel = element('label', ' Corrected due date '); const dueAt = element('input'); dueAt.type = 'datetime-local'; dueLabel.append(dueAt);
+    const dateOnlyLabel = element('label', ' Calendar date only '); const dateOnly = element('input'); dateOnly.type = 'checkbox'; dateOnlyLabel.prepend(dateOnly);
+    const dueLabel = element('label', ' Corrected due date and time '); const dueAt = element('input'); dueAt.type = 'datetime-local'; dueLabel.append(dueAt);
+    const dueDateLabel = element('label', ' Corrected calendar date '); const dueDate = element('input'); dueDate.type = 'date'; dueDateLabel.append(dueDate);
     const rationaleLabel = element('label', ' Rationale '); const rationale = element('textarea'); rationale.required = true; rationale.maxLength = 1000; rationaleLabel.append(rationale);
     const update = () => {
       const deferred = decision.value === 'defer'; const correcting = decision.value === 'correct-date';
       reviewLabel.hidden = !deferred; reviewAt.required = deferred;
-      dueLabel.hidden = !correcting; dueAt.required = correcting;
+      dateOnlyLabel.hidden = !correcting;
+      dueLabel.hidden = !correcting || dateOnly.checked; dueAt.required = correcting && !dateOnly.checked;
+      dueDateLabel.hidden = !correcting || !dateOnly.checked; dueDate.required = correcting && dateOnly.checked;
     };
-    decision.addEventListener('change', update, { signal }); update();
+    decision.addEventListener('change', update, { signal }); dateOnly.addEventListener('change', update, { signal }); update();
     const save = element('button', 'Save action'); save.type = 'submit';
-    form.append(decisionLabel, reviewLabel, dueLabel, rationaleLabel, save);
+    form.append(decisionLabel, reviewLabel, dateOnlyLabel, dueLabel, dueDateLabel, rationaleLabel, save);
     form.addEventListener('submit', async event => {
       event.preventDefault();
       if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
       save.disabled = true;
       try {
         const review = decision.value === 'defer' ? new Date(reviewAt.value).toISOString() : undefined;
-        const due = decision.value === 'correct-date' ? new Date(dueAt.value).toISOString() : undefined;
+        const due = decision.value === 'correct-date' && !dateOnly.checked ? new Date(dueAt.value).toISOString() : undefined;
+        const calendarDue = decision.value === 'correct-date' && dateOnly.checked ? dueDate.value : undefined;
+        const dueTimeZone = calendarDue === undefined ? undefined : Intl.DateTimeFormat().resolvedOptions().timeZone;
         await submitOpenLoopOperation({
           key: `open-loop-decision:${card.loopId}:${decision.value}`,
           method: 'command-center.v1.open-loops.decide',
-          params: { decision: decision.value, ...(review === undefined ? {} : { reviewAt: review }), ...(due === undefined ? {} : { dueAt: due }), rationale: rationale.value.trim() },
+          params: { decision: decision.value, ...(review === undefined ? {} : { reviewAt: review }), ...(due === undefined ? {} : { dueAt: due }), ...(calendarDue === undefined ? {} : { dueDate: calendarDue, dueTimeZone }), rationale: rationale.value.trim() },
           card, pending,
           success: decision.value === 'defer' ? 'The item was deferred to the selected review time.' : decision.value === 'correct-date' ? 'The accepted due date was corrected.' : decision.value === 'confirm' ? 'The suggestion was confirmed.' : decision.value === 'dismiss' ? 'The suggestion was dismissed.' : 'The outcome was recorded.'
         });
@@ -292,7 +301,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
         if (!nonBlank(card.loopId) || !nonBlank(card.title)) continue;
         const row = element('article'); row.dataset.openLoopId = card.loopId;
         row.append(element('h4', card.title));
-        const facts = [card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, nonBlank(card.dueAt) ? `Due ${card.dueAt}` : null].filter(Boolean);
+        const facts = [card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, formatDue(card) ? `Due ${formatDue(card)}` : null].filter(Boolean);
         if (facts.length) row.append(element('p', facts.join(' · ')));
         if (nonBlank(card.whyNow)) row.append(element('p', card.whyNow));
         row.append(element('p', `${Number.isSafeInteger(card.evidenceCount) ? card.evidenceCount : 0} linked source ${card.evidenceCount === 1 ? 'item' : 'items'}.`));
@@ -393,7 +402,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
         for (const loop of page.loops) {
           if (!nonBlank(loop.loopId) || !nonBlank(loop.title) || inventoryRows.querySelector(`[data-open-loop-id="${CSS.escape(loop.loopId)}"]`)) continue;
           const row = element('article'); row.dataset.openLoopId = loop.loopId;
-          row.append(element('h4', loop.title), element('p', [loop.paymentState ?? loop.state, nonBlank(loop.dueAt) ? `Due ${loop.dueAt}` : null].filter(Boolean).join(' · ')));
+          row.append(element('h4', loop.title), element('p', [loop.paymentState ?? loop.state, formatDue(loop) ? `Due ${formatDue(loop)}` : null].filter(Boolean).join(' · ')));
           appendDecisionControls(row, loop, pending);
           inventoryRows.append(row);
         }

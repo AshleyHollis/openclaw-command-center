@@ -78,7 +78,7 @@ function schedulerGateway() {
   };
 }
 
-test('planning preserves unknown and date-only timing and requires an existing Topic', () => {
+test('planning preserves unknown timing, resolves date-only timing in its timezone, and requires an existing Topic', () => {
   assert.deepEqual(planOpenLoopReminder({ loop: loop({ dueAt: undefined }) }), {
     schemaVersion: 1,
     action: 'none',
@@ -86,9 +86,11 @@ test('planning preserves unknown and date-only timing and requires an existing T
     reason: 'accepted-time-unknown'
   });
   const dateOnly = planOpenLoopReminder({ loop: loop(), acceptedTiming: { kind: 'date', date: '2026-10-04', timeZone: 'Australia/Brisbane' } });
-  assert.equal(dateOnly.action, 'blocked');
-  assert.equal(dateOnly.reason, 'date-time-required');
+  assert.equal(dateOnly.action, 'create');
   assert.equal(dateOnly.timing.date, '2026-10-04');
+  assert.equal(dateOnly.timing.timeZone, 'Australia/Brisbane');
+  assert.equal(dateOnly.timing.at, '2026-10-03T23:00:00.000Z');
+  assert.deepEqual(dateOnly.declaration.schedule, { kind: 'at', at: '2026-10-03T23:00:00.000Z' });
   assert.equal(planOpenLoopReminder({ loop: loop({ topicId: undefined }) }).reason, 'topic-required');
   assert.equal(planOpenLoopReminder({ loop: loop({ state: 'suggested' }) }).reason, 'confirmation-required');
   const deferred = planOpenLoopReminder({ loop: loop({ state: 'waiting', reviewAt: correctedAt }) });
@@ -182,4 +184,20 @@ test('a lost reschedule response remains unknown across restart and never reread
     metadata?.close();
     await rm(stateDir, { recursive: true, force: true });
   }
+});
+
+test('repeated evidence and a payment race never create or re-enable a second native Reminder', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-open-loop-reminder-race-'));
+  const gateway = schedulerGateway(); let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } }); metadata.createTopic({ topicId, paraCategory: 'project', lifecycle: 'active' });
+    const coordinator = createOpenLoopReminderCoordinator({ metadata, gateway });
+    const created = await coordinator.reconcile({ loop: loop(), logicalOperationId: '30000000-0000-4000-8000-000000000001' });
+    const repeated = await coordinator.reconcile({ loop: loop({ revision: 2 }), logicalOperationId: '30000000-0000-4000-8000-000000000002' });
+    assert.equal(repeated.status, 'none'); assert.equal(repeated.plan.reason, 'already-scheduled'); assert.equal(gateway.jobs.size, 1);
+    const paid = await coordinator.reconcile({ loop: loop({ revision: 3, state: 'resolved', paymentState: 'paid' }), logicalOperationId: '30000000-0000-4000-8000-000000000003', expectedConfigRevision: created.value.job.configRevision });
+    assert.equal(paid.plan.action, 'cancel'); assert.equal([...gateway.jobs.values()][0].enabled, false);
+    const lateWakeReconciliation = await coordinator.reconcile({ loop: loop({ revision: 3, state: 'resolved', paymentState: 'paid' }), logicalOperationId: '30000000-0000-4000-8000-000000000004' });
+    assert.equal(lateWakeReconciliation.status, 'none'); assert.equal(lateWakeReconciliation.plan.reason, 'already-cancelled'); assert.equal([...gateway.jobs.values()][0].enabled, false); assert.equal(gateway.jobs.size, 1);
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });

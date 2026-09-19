@@ -325,6 +325,27 @@ test('native Attention records a partial payment amount without claiming settlem
   assert.equal(payment.currency, 'AUD');
 }));
 
+test('native Attention preserves a corrected calendar due date with the local timezone', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 1, waiting: [{ loopId: 'date-only-order', kind: 'order', title: 'Fictional cabinet delivery.', state: 'monitoring', evidenceCount: 1, revision: 1 }], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Waiting (1 shown)', { exact: true }).click();
+  const item = page.locator('article[data-open-loop-id="date-only-order"]');
+  await item.getByText('Defer or resolve', { exact: true }).click();
+  await item.getByLabel('Action').selectOption('correct-date');
+  await item.getByLabel('Calendar date only').check();
+  await item.getByLabel('Corrected calendar date').fill('2026-10-04');
+  await item.getByLabel('Rationale').fill('The fictional supplier committed to a date without a delivery time.');
+  await item.getByRole('button', { name: 'Save action' }).click();
+  const correction = await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.decide') && request.params.decision === 'correct-date')?.params);
+  assert.equal(correction.dueDate, '2026-10-04');
+  assert.equal(typeof correction.dueTimeZone, 'string');
+  assert.ok(correction.dueTimeZone.length > 0);
+  assert.equal(correction.dueAt, undefined);
+}));
+
 test('native Attention records an explicit revised renovation decision and preserves prior evidence', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];

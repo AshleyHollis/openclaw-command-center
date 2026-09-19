@@ -19,7 +19,19 @@ function instant(value, field) {
   return value;
 }
 
-function normalizedTiming(loop, acceptedTiming) {
+export function zonedDateAtNine(date, timeZone) {
+  try { new Intl.DateTimeFormat('en-US', { timeZone }).format(); } catch { throw sourceError('invalid-request', 'acceptedTiming.timeZone must be a valid IANA timezone.'); }
+  const [year, month, day] = date.split('-').map(Number); const desiredUtcShape = Date.UTC(year, month - 1, day, 9); let candidate = desiredUtcShape;
+  const formatter = new Intl.DateTimeFormat('en-US-u-hc-h23', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+  for (let iteration = 0; iteration < 6; iteration += 1) {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(candidate)).filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]));
+    const observedUtcShape = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second); const correction = desiredUtcShape - observedUtcShape;
+    if (correction === 0) return new Date(candidate).toISOString(); candidate += correction;
+  }
+  throw sourceError('invalid-request', 'The accepted calendar date could not be resolved in its timezone.');
+}
+
+function normalizedTiming(loop, acceptedTiming, defaultTimeZone = 'UTC') {
   if (acceptedTiming !== undefined) {
     if (!acceptedTiming || typeof acceptedTiming !== 'object' || Array.isArray(acceptedTiming)) throw sourceError('invalid-request', 'acceptedTiming must be an object.');
     const keys = Object.keys(acceptedTiming);
@@ -33,12 +45,14 @@ function normalizedTiming(loop, acceptedTiming) {
       const basis = acceptedTiming.basis ?? 'explicit';
       if (typeof basis !== 'string' || basis.trim() === '') throw sourceError('invalid-request', 'acceptedTiming.basis must be a non-blank string.');
       if (acceptedTiming.timeZone !== undefined && (typeof acceptedTiming.timeZone !== 'string' || acceptedTiming.timeZone.trim() === '')) throw sourceError('invalid-request', 'acceptedTiming.timeZone must be a non-blank string.');
-      return { kind: 'date', date: acceptedTiming.date, ...(acceptedTiming.timeZone ? { timeZone: acceptedTiming.timeZone.trim() } : {}), basis: basis.trim() };
+      const timeZone = acceptedTiming.timeZone?.trim() || defaultTimeZone;
+      return { kind: 'date', date: acceptedTiming.date, timeZone, at: zonedDateAtNine(acceptedTiming.date, timeZone), basis: basis.trim() };
     }
     if (acceptedTiming.kind === 'unknown' && keys.length === 1) return { kind: 'unknown' };
     throw sourceError('invalid-request', 'acceptedTiming is unsupported.');
   }
   if (loop.reviewAt) return { kind: 'instant', at: loop.reviewAt, basis: 'review-at' };
+  if (loop.dueDate) return { kind: 'date', date: loop.dueDate, timeZone: loop.dueTimeZone, at: zonedDateAtNine(loop.dueDate, loop.dueTimeZone), basis: 'due-date' };
   if (loop.dueAt) return { kind: 'instant', at: loop.dueAt, basis: 'due-at' };
   return { kind: 'unknown' };
 }
@@ -56,11 +70,12 @@ export function planOpenLoopReminder(input = {}) {
   }
   const terminal = terminalStates.has(loop.state) || terminalPaymentStates.has(loop.paymentState);
   if (terminal) return Object.freeze(binding
-    ? { schemaVersion: 1, action: 'cancel', referenceId, topicId: binding.topicId, reason: 'loop-terminal' }
+    ? input.schedulerJob?.enabled === false
+      ? { schemaVersion: 1, action: 'none', referenceId, topicId: binding.topicId, reason: 'already-cancelled' }
+      : { schemaVersion: 1, action: 'cancel', referenceId, topicId: binding.topicId, reason: 'loop-terminal' }
     : { schemaVersion: 1, action: 'none', referenceId, reason: 'loop-terminal-without-reminder' });
 
-  const timing = normalizedTiming(loop, input.acceptedTiming);
-  if (timing.kind === 'date') return Object.freeze({ schemaVersion: 1, action: 'blocked', referenceId, reason: 'date-time-required', timing });
+  const timing = normalizedTiming(loop, input.acceptedTiming, input.defaultTimeZone);
   if (timing.kind === 'unknown') return Object.freeze(binding
     ? { schemaVersion: 1, action: 'cancel', referenceId, topicId: binding.topicId, reason: 'accepted-time-removed' }
     : { schemaVersion: 1, action: 'none', referenceId, reason: 'accepted-time-unknown' });
@@ -94,14 +109,21 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
     plan(input = {}) {
       const loop = normalizeLoop(input.loop);
       const referenceId = reminderReferenceId(loop.loopId);
-      return planOpenLoopReminder({ ...input, loop, sourceReference: input.sourceReference ?? metadata.getSourceReference(referenceId) });
+      return planOpenLoopReminder({ ...input, loop, defaultTimeZone: input.defaultTimeZone ?? api?.config?.agents?.defaults?.userTimezone ?? 'UTC', sourceReference: input.sourceReference ?? metadata.getSourceReference(referenceId) });
     },
     async reconcile(input = {}) {
       const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
       const loop = normalizeLoop(input.loop);
       const referenceId = reminderReferenceId(loop.loopId);
-      const sourceReference = metadata.getSourceReference(referenceId);
-      const plan = planOpenLoopReminder({ loop, acceptedTiming: input.acceptedTiming, sourceReference, schedulerJob: input.schedulerJob });
+      let sourceReference = metadata.getSourceReference(referenceId);
+      let schedulerJob = input.schedulerJob;
+      const priorOperation = metadata.getOperation?.(logicalOperationId);
+      if (sourceReference && schedulerJob === undefined && !priorOperation) {
+        const current = await adapterFor(sourceReference.topicId).read({ schemaVersion: 1, referenceId });
+        sourceReference = current.sourceReference;
+        schedulerJob = current.job;
+      }
+      const plan = planOpenLoopReminder({ loop, acceptedTiming: input.acceptedTiming, defaultTimeZone: input.defaultTimeZone ?? api?.config?.agents?.defaults?.userTimezone ?? 'UTC', sourceReference, schedulerJob });
       if (['none', 'blocked'].includes(plan.action)) return Object.freeze({ schemaVersion: 1, status: plan.action, logicalOperationId, plan });
       const topicId = plan.topicId;
       const reminder = adapterFor(topicId);

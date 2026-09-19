@@ -97,6 +97,9 @@ test('quiet inbox separates suggestions, waiting work, upcoming dates and active
 
 test('contracts reject invented due dates, unsafe money and unbounded evidence', () => {
   assert.throws(() => normalizeLoop(loop({ dueAt: 'Friday' })), /RFC 3339/u);
+  assert.throws(() => normalizeLoop(loop({ dueAt: undefined, dueDate: '2026-02-30', dueTimeZone: 'Australia/Brisbane' })), /valid calendar date/u);
+  assert.throws(() => normalizeLoop(loop({ dueAt: undefined, dueDate: '2026-10-04' })), /provided together/u);
+  assert.deepEqual(normalizeLoop(loop({ dueAt: undefined, dueDate: '2026-10-04', dueTimeZone: 'Australia/Brisbane' })).dueDate, '2026-10-04');
   assert.throws(() => normalizeLoop(loop({ amount: 45.2 })), /minor currency units/u);
   assert.throws(() => normalizeObservation(observation({ facts: { body: 'x'.repeat(13 * 1024) } })), /exceeds/u);
 });

@@ -81,6 +81,7 @@ function compactOpenLoop(projected) {
     ...(loop.paymentState === undefined ? {} : { paymentState: loop.paymentState }),
     ...(loop.amount === undefined ? {} : { amount: loop.amount, currency: loop.currency }),
     ...(loop.dueAt === undefined ? {} : { dueAt: loop.dueAt }),
+    ...(loop.dueDate === undefined ? {} : { dueDate: loop.dueDate, dueTimeZone: loop.dueTimeZone }),
     ...(projected.reason === undefined ? {} : { reason: projected.reason }),
     ...(projected.whyNow === undefined ? {} : { whyNow: projected.whyNow.slice(0, 500) }),
     actions: Object.freeze(asArray(projected.actions).slice(0, 4)),

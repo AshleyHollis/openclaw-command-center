@@ -57,21 +57,30 @@ export function installOpenLoopActions(service, { ErrorType }) {
   }
 
   service.recordOpenLoopDecision = input => {
-    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'actorId', 'rationale', 'updatedAt']);
+    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'actorId', 'rationale', 'updatedAt']);
     if (value.schemaVersion !== 1 || !decisions.has(value.decision)) fail('open-loop-action-invalid');
     if ((value.decision === 'defer') !== (value.reviewAt !== undefined)) fail('open-loop-action-invalid', 'Only defer requires reviewAt.');
-    if ((value.decision === 'correct-date') !== (value.dueAt !== undefined)) fail('open-loop-action-invalid', 'Only correct-date requires dueAt.');
+    const dateOnly = value.dueDate !== undefined || value.dueTimeZone !== undefined;
+    if ((value.dueDate === undefined) !== (value.dueTimeZone === undefined) || value.dueAt !== undefined && dateOnly) fail('open-loop-action-invalid', 'Corrected timing must be one instant or one calendar date with timezone.');
+    if ((value.decision === 'correct-date') !== (value.dueAt !== undefined || dateOnly)) fail('open-loop-action-invalid', 'Only correct-date requires corrected timing.');
     const reviewAt = value.reviewAt === undefined ? undefined : instant(value.reviewAt, 'reviewAt');
     const dueAt = value.dueAt === undefined ? undefined : instant(value.dueAt, 'dueAt');
+    const dueDate = value.dueDate === undefined ? undefined : text(value.dueDate, 'dueDate', 10);
+    if (dueDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/u.test(dueDate)) fail('open-loop-action-invalid', 'dueDate must be a calendar date');
+    const dueTimeZone = value.dueTimeZone === undefined ? undefined : text(value.dueTimeZone, 'dueTimeZone', 100);
+    if (dueTimeZone !== undefined) try { new Intl.DateTimeFormat('en-US', { timeZone: dueTimeZone }).format(); } catch { fail('open-loop-action-invalid', 'dueTimeZone must be a valid IANA timezone'); }
     return record({
       input: value,
       operationKind: `decision-${value.decision}`,
-      facts: { decision: value.decision, ...(reviewAt === undefined ? {} : { reviewAt }), ...(dueAt === undefined ? {} : { dueAt }) },
+      facts: { decision: value.decision, ...(reviewAt === undefined ? {} : { reviewAt }), ...(dueAt === undefined ? {} : { dueAt }), ...(dueDate === undefined ? {} : { dueDate, dueTimeZone }) },
       transition(loop) {
         if (['resolved', 'cancelled'].includes(loop.state) && value.decision !== 'resolve') fail('open-loop-terminal');
         if (value.decision === 'confirm') return { ...loop, state: 'confirmed', ...(loop.kind === 'payment' && loop.paymentState === 'potential' ? { paymentState: 'unpaid' } : {}) };
         if (value.decision === 'defer') return { ...loop, state: 'waiting', reviewAt, attention: { ...(loop.attention ?? {}), activated: false, currentEvidence: false } };
-        if (value.decision === 'correct-date') return { ...loop, dueAt, reviewAt: undefined, attention: { ...(loop.attention ?? {}), activated: false, currentEvidence: true } };
+        if (value.decision === 'correct-date') {
+          const { dueAt: _oldAt, dueDate: _oldDate, dueTimeZone: _oldZone, ...withoutTiming } = loop;
+          return { ...withoutTiming, ...(dueAt === undefined ? { dueDate, dueTimeZone } : { dueAt }), reviewAt: undefined, attention: { ...(loop.attention ?? {}), activated: false, currentEvidence: true } };
+        }
         if (value.decision === 'dismiss') {
           if (loop.kind === 'payment' && loop.state !== 'suggested') fail('open-loop-payment-status-required');
           return { ...loop, state: 'cancelled', ...(loop.kind === 'payment' ? { paymentState: 'cancelled' } : {}), attention: { actions: [], activated: false, currentEvidence: true } };
