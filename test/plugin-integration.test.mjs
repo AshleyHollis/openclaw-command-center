@@ -62,6 +62,17 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
   };
 }
 
+function fictionalSchedulerGateway() {
+  const jobs = new Map(); let revision = 0;
+  return { jobs, async request(method, params) {
+    if (method === 'cron.list') return { jobs: [...jobs.values()].map(job => structuredClone(job)) };
+    if (method === 'cron.get') return structuredClone(jobs.get(params.id));
+    if (method === 'cron.add') { const id = `fictional-open-loop-${jobs.size + 1}`; const job = { ...structuredClone(params), id, configRevision: `revision-${++revision}` }; jobs.set(id, job); return { created: true, job: structuredClone(job) }; }
+    if (method === 'cron.update') { const current = jobs.get(params.id); if (current.configRevision !== params.expectedConfigRevision) throw Object.assign(new Error('changed'), { code: 'CRON_JOB_CHANGED', actualConfigRevision: current.configRevision }); const job = { ...current, ...structuredClone(params.patch), configRevision: `revision-${++revision}` }; jobs.set(job.id, job); return structuredClone(job); }
+    throw new Error(`Unexpected fictional Scheduler method ${method}`);
+  } };
+}
+
 test('native registration exposes authenticated Topic methods without an iframe descriptor API', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-descriptor-'));
   let service;
@@ -136,6 +147,24 @@ test('registered open-loop bridge applies authenticated lifecycle changes and re
     const settled = await host.authenticatedGatewayRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, paymentState: 'paid', rationale: 'A fictional settlement was verified.' });
     assert.equal(settled.result.loop.paymentState, 'paid');
     assert.equal(settled.result.loop.state, 'resolved');
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('registered bill actions create, defer, and cancel one native Reminder through the plugin service', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-bill-reminder-'));
+  let service;
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir });
+    seed.createTopic({ topicId: 'topic-fictional-bill', paraCategory: 'project', lifecycle: 'active' });
+    const created = seed.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'seed-topic-bill', message: { schemaVersion: 1, channel: 'email', source: { system: 'fictional-mail', externalId: 'bill-reminder-source', version: 'v1' }, occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:00:00.000Z', historicalBaseline: false, topicId: 'topic-fictional-bill', disposition: 'confirmed-obligation', requestKind: 'payment', explicitRequest: true, summary: 'Pay the fictional electrical invoice.', payee: 'Fictional Electrical', purpose: 'renovation work', amount: 48000, currency: 'AUD', dueAt: '2026-10-04T00:00:00.000Z', invoiceId: 'FICTIONAL-ELEC-1', evidenceSelectors: ['subject'] } });
+    seed.close();
+    const gateway = fictionalSchedulerGateway(); const host = fakePublishedApi(stateDir, { gateway }); plugin.register(host.api); service = host.services[0]; await service.start();
+    const corrected = await host.authenticatedGatewayRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 1, decision: 'correct-date', dueAt: '2026-10-05T00:00:00.000Z', rationale: 'The fictional invoice date was checked.' });
+    assert.equal(corrected.result.reminder.action, 'create'); assert.equal(gateway.jobs.size, 1); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-05T00:00:00.000Z');
+    const deferred = await host.authenticatedGatewayRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, decision: 'defer', reviewAt: '2026-10-02T09:00:00.000Z', rationale: 'Review after the fictional pay cycle.' });
+    assert.equal(deferred.result.reminder.action, 'reschedule'); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T09:00:00.000Z');
+    const paid = await host.authenticatedGatewayRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 3, paymentState: 'paid', rationale: 'The fictional settlement was verified.' });
+    assert.equal(paid.result.reminder.action, 'cancel'); assert.equal([...gateway.jobs.values()][0].enabled, false);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

@@ -253,6 +253,7 @@ test('native Attention reviews evidence and records status without paying or sen
   assert.equal(await bill.locator('details[data-open-loop-evidence] pre').count(), 0);
   await bill.getByText('Record payment status', { exact: true }).click();
   await bill.getByLabel('Evidence or rationale').fill('The fictional bank transfer was initiated; settlement remains pending.');
+  if (process.env.COMMAND_CENTER_BILL_SCREENSHOT) await page.screenshot({ path: process.env.COMMAND_CENTER_BILL_SCREENSHOT, fullPage: true });
   await bill.getByRole('button', { name: 'Save payment status' }).click();
   await page.getByRole('status').filter({ hasText: 'No payment was submitted.' }).waitFor();
   const payment = await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.payment-status')).params);
@@ -358,6 +359,7 @@ test('native Attention presents one grouped active-stage review with individual 
   const blocker = page.locator('article[data-open-loop-id="clear-area-loop"]');
   await blocker.getByText('Defer or resolve', { exact: true }).click();
   assert.equal(await page.getByRole('heading', { name: 'Clear the fictional cabinet work area' }).count(), 1);
+  if (process.env.COMMAND_CENTER_RENOVATION_SCREENSHOT) await page.screenshot({ path: process.env.COMMAND_CENTER_RENOVATION_SCREENSHOT, fullPage: true });
 }));
 
 test('native Attention re-resolves verified Session Activity before opening native Chat', () => fixture(async (page) => {
