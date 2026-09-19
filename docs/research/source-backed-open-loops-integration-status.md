@@ -6,7 +6,7 @@ Status recorded 20 September 2026. All examples and tests use fictional data. Th
 
 The branch builds on PR #252 head `3a51d5021ebfca2d24159f8590bed01934ac596b`. Original messages, documents, and native Sessions remain authoritative. Command Center stores immutable observations, exact identities, explicit user decisions, workflow state, and rebuildable quiet-Attention projections. [ADR 0006](../adr/0006-source-backed-open-loops-and-quiet-attention.md) defines that ownership boundary.
 
-The package contains authenticated `command-center.v1.open-loops.*` contracts, but the build-owned first-live allowlist still withholds them until a sealed Linux package passes isolated-host qualification. Local tests invoke the real service, bridge validator/dispatcher, SQLite owners, native UI module, and isolated fake host/Scheduler boundaries. They do not constitute a packaged OpenClaw-host run.
+The package contains authenticated `command-center.v1.open-loops.*` contracts, but the build-owned first-live allowlist still withholds them pending a separately reviewed admission change. A sealed Linux package now passes authenticated mount and closed-page Reminder restart qualification. Open-loop service journeys use the real plugin, bridge validator/dispatcher, SQLite owners, and isolated source/Scheduler boundaries; the release gate intentionally prevents claiming registered public-route qualification for those new methods.
 
 ## Implemented locally
 
@@ -24,11 +24,11 @@ No control sends a message, makes a payment, purchases an item, or rewrites auth
 | Capability | Current evidence | Status |
 | --- | --- | --- |
 | Email/SMS | Closed normalized envelopes and exact source/version fixtures | No verified live mailbox or SMS reader; scanning remains unauthorized. |
-| Selected document | Plugin integration uses an authoritative reader fixture. A bounded extraction corpus measures fourteen supported layouts against twenty negative/adversarial documents, requiring every declared result and field plus 1.0 aggregate precision, recall, and field accuracy. Strict and bounded optional-field validation omits impossible or overlong dates and invalid amounts without creating a Reminder or stranding replay. A composed descriptor-backed owner → plugin → Reminder → restart/outage test is authored and explicitly skipped on Windows. | Implemented plaintext pilot, pending Linux execution and packaged real-owner proof. |
+| Selected document | Plugin integration uses an authoritative reader fixture. A bounded extraction corpus measures fourteen supported layouts against twenty negative/adversarial documents, requiring every declared result and field plus 1.0 aggregate precision, recall, and field accuracy. Strict and bounded optional-field validation omits impossible or overlong dates and invalid amounts without creating a Reminder or stranding replay. The composed descriptor-backed owner → plugin → Reminder → restart/outage test passed on Linux. | Implemented plaintext pilot; live email/SMS and exact original navigation remain unavailable. |
 | Original navigation | Public evidence includes source system, kind, and version | Exact document/Session navigation contract is unavailable; UI states this honestly. |
-| Scheduler | Existing Reminder adapter plus durable operation/revision/recovery owners | Implemented locally; pending packaged page-closed/process-restart proof. |
+| Scheduler | Existing Reminder adapter plus durable operation/revision/recovery owners | Packaged page-closed, completion, and two-restart quietness proof passed. |
 | Device notifications | Release policy retains `notifications: false` | Disabled pending separate native authority/delivery qualification. |
-| Renovation capture | Registered owner/bridge/UI contracts with fictional browser and service tests | Implemented locally; pending packaged-host proof. |
+| Renovation capture | Registered owner/bridge/UI contracts with fictional browser and service tests | Implemented and package-byte-correlated; public host-route proof awaits the separate release allowlist change. |
 
 ## Acceptance status
 
@@ -42,22 +42,27 @@ No control sends a message, makes a payment, purchases an item, or rewrites auth
 | Historical baseline, informational messages, and unavailable source | Verified quiet/visible as applicable |
 | Exact renovation purchase, incorrect-link correction, replacement follow-up, split fulfilment, activated blocker, and revised-quote challenge | Verified through owners and native UI module |
 | One presentation when an owned Reminder also fires | Verified in Dashboard projection |
-| Packaged plugin, page closed, process restart, real source owner, and exact original navigation | Not yet qualified |
+| Packaged plugin, page closed, process restart, and real source owner | Qualified with fictional isolated state; exact original navigation remains unavailable |
 
 ## Exact local evidence
 
 - Foundation: PR #252 head `3a51d5021ebfca2d24159f8590bed01934ac596b`.
-- Reviewed code candidate: `0585973` on `feature/actionable-attention-milestone`.
+- Sealed code candidate: `e7dadbb` on `feature/actionable-attention-milestone`.
 - Milestone command: `node --test test/message-intake.test.mjs test/native-ui-attention.test.mjs test/open-loop-bridge.test.mjs test/open-loop-contracts.test.mjs test/open-loop-hardening.test.mjs test/open-loop-reminder-coordinator.test.mjs test/open-loop-storage.test.mjs test/plugin-integration.test.mjs test/reminder-runtime-lifecycle.test.mjs test/renovation-follow-through.test.mjs test/selected-source-intake.test.mjs test/transaction-intake.test.mjs test/dashboard-payload.integration.test.mjs test/dashboard-service.test.mjs` — **137 passed, 1 explicitly skipped on Windows, 0 failed**. The skipped test is the descriptor-backed real-owner composition intended for Linux qualification.
 - Native browser command: `node --test test/native-ui-attention.test.mjs` — **30 passed, 0 failed**. Inspected screenshots: `<workspace-output>/attention-bill.png` and `<workspace-output>/attention-renovation-stage.png`.
-- `npm run check` passed. `npm run build` passed with digest `3d55b1495ba74b6af54d82f115694dd1b3c9429e57fb91698330a54accbeb513`. `git diff --check` passed.
+- Clean Linux `npm run check` passed. `npm run build` passed with digest `a25877340c67d932c08b9b4f2093b9febc4416b2d9afe04866ba59b3775a7a2d`. `git diff --check` passed.
+- Linux plugin integration passed 24/24, including the previously Windows-skipped descriptor-backed owner composition.
+- Archive SHA-256: `992863d0dc0bd06653543b66bd0f294f90d1e97e12dc3f5ccc85f78ab5bfea97`. Installed `dist` matched the clean build byte-for-byte.
+- The isolated pinned-host journey passed 8/8: authenticated package mount, page closed, same due episode after restart, native Scheduler completion, and continued quietness after a second restart.
+- Final authenticated bridge and native Attention browser regression passed 51/51. The bridge no longer acquires deferred notification reconciliation after an in-app Attention mutation.
 - The earlier broad Windows run remains non-green: 1,076 passed, 206 failed, and 79 skipped. Platform identity, symlink, `fsync`, signal, and unavailable host-coordinator failures prevent treating it as a passing lane.
-- `node scripts/package-candidate.mjs --output <empty-directory>` returned `artifact-linux-required`. No archive was fabricated. Packaged migration/rollback rehearsal therefore remains unperformed.
+- An earlier legacy restoration slice still observed zero restored rows where one was expected. Migration/rollback remains unqualified despite the green package mount and restart journey.
 
 ## Required handoff
 
-1. Produce a sealed candidate on Linux from the exact reviewed commit and retain its digest. The packaging script intentionally refuses Windows with `artifact-linux-required`.
-2. Install that archive into a disposable host pinned to OpenClaw `2026.9.4` / `9eb16e01c14dd7eaf654aa2d2a9121b9e9f74b84`, using fictional state and no live source or Scheduler bindings.
-3. Exercise the registered bridge and native page for the bill, source outage, timing, payment, deduplication, and renovation journeys. Close/remount the page and restart the host between steps.
-4. Prove the real selected-document owner and record the remaining exact-navigation contract gap. Rehearse migration/rollback against copied fictional state.
-5. Only after those receipts exist, prepare a separate release-manifest admission change and seek deployment approval.
+1. Review the sealed candidate and the notification-independent Attention fix at `e7dadbb`.
+2. Prepare a separate release-manifest admission change for the exact open-loop methods intended for release.
+3. Rebuild and reinstall the resulting archive in a fresh disposable pinned host, then rerun the 24 plugin-integration tests, 51 focused bridge/browser tests, and 8-check restart journey.
+4. Exercise registered public routes for the bill and renovation journeys only after that reviewed admission change exists.
+5. Repair or clarify the restoration-row mismatch and rehearse migration/rollback against copied fictional state.
+6. Present the package, host, traffic, restart, restoration, and known-adapter evidence for deployment approval.
