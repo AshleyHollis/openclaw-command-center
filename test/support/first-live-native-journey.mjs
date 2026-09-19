@@ -155,6 +155,7 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
   await waitForConsecutiveReadiness(async () => isCommandCenterMetadataReady(resolveCommandCenterDatabasePath(stateDir)), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
   const topicId = '44444444-4444-4444-8444-444444444444';
   const name = 'Fictional Native Journey';
+  const paraCategory = 'area';
   const folderReferenceId = 'fictional-native-journey-folder';
   const sessionReferenceId = 'fictional-native-journey-primary';
   const notePath = 'Overview.md';
@@ -215,13 +216,13 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
   const identity = await readNoteFolderIdentity(folder);
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
   try {
-    metadata.createTopic({ topicId, name, paraCategory: 'area', lifecycle: 'active' });
+    metadata.createTopic({ topicId, name, paraCategory, lifecycle: 'active' });
     metadata.createSourceReference({ version: 1, referenceId: folderReferenceId, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: folder });
     metadata.setSourceLocator({ referenceId: folderReferenceId, locator: folder, ownership: 'external', observedRevision: identity });
     metadata.createSourceReference({ version: 1, referenceId: sessionReferenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey });
     metadata.setSessionState({ referenceId: sessionReferenceId, sessionId: created.sessionId, status: 'open', isPrimary: true, displayName: name });
   } finally { metadata.close(); }
-  return Object.freeze({ topicId, name, sessionReferenceId, sessionKey, sessionId: created.sessionId, notePath, noteText, folder,
+  return Object.freeze({ topicId, name, paraCategory, sessionReferenceId, sessionKey, sessionId: created.sessionId, notePath, noteText, folder,
     ...(catalog ? { catalog: true, catalogNotes: Object.freeze(catalogNotes), documents: Object.freeze({ pdfPath: 'Evidence/PDF/receipt-01.pdf', pngPath: 'Evidence/Images/photo-01.png', unsupportedPath: 'Evidence/unavailable.bin' }) } : {}) });
 }
 
@@ -1235,7 +1236,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       } else if (notesWorkspaceOnly) {
       await retainNativeJourneyStage('topics-loaded');
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const fixtureTopic = browserTopics.activeGroups.project.find((topic) => topic.topicId === fixture.topicId);
+      const fixtureTopic = browserTopics.activeGroups[fixture.paraCategory].find((topic) => topic.topicId === fixture.topicId);
       assert.ok(fixtureTopic?.usable, 'The Notes workspace must start from a usable existing Topic.');
       await retainNativeJourneyStage('open-topic-notes');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
@@ -1280,7 +1281,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         nativeChatDraftRetained: true, exactNativeChatHandoff: true };
       } else if (chatHandoffOnly) {
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const fixtureTopic = browserTopics.activeGroups.project.find((topic) => topic.topicId === fixture.topicId);
+      const fixtureTopic = browserTopics.activeGroups[fixture.paraCategory].find((topic) => topic.topicId === fixture.topicId);
       assert.ok(fixtureTopic?.usable, 'The exact native Chat handoff must start from a usable existing Topic.');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor({ timeout: 30_000 });
@@ -1314,7 +1315,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         assert.deepEqual(browserTopics.activeGroups[category], topics.activeGroups[category]);
       }
       await nativePage.getByRole('button', { name: 'Refresh Topics', exact: true }).waitFor();
-      const fixtureTopic = topics.activeGroups.project.find((topic) => topic.name === 'Fictional Native Journey');
+      const fixtureTopic = topics.activeGroups[fixture.paraCategory].find((topic) => topic.name === fixture.name);
       assert.ok(fixtureTopic, 'The native journey must exercise an existing Topic, not an empty Topics diagnostic');
       assert.equal(fixtureTopic.usable, true, 'The existing Topic must have verified source bindings');
       assert.equal(fixtureTopic.topicId, fixture.topicId);
@@ -1551,7 +1552,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         method: 'command-center.v1.topics.list', params: { schemaVersion: 1 }, signal });
       const restartedTopics = restartedTopicResponse?.result ?? restartedTopicResponse;
       for (const category of ['project', 'area', 'resource']) assert.deepEqual(browserTopics.activeGroups[category], restartedTopics.activeGroups[category]);
-      const restartedTopic = restartedTopics.activeGroups.project.filter((topic) => topic.topicId === fixture.topicId);
+      const restartedTopic = restartedTopics.activeGroups[fixture.paraCategory].filter((topic) => topic.topicId === fixture.topicId);
       assert.equal(restartedTopic.length, 1);
       assert.equal(restartedTopic[0].name, fixture.name);
       assert.equal(restartedTopic[0].usable, true);

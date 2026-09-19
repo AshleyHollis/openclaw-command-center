@@ -197,7 +197,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
 
   assert.deepEqual(page.viewportSize(), { width: 1440, height: 900 });
   const topics = await gatewayRead('command-center.v1.topics.list');
-  assert.equal(topics.activeGroups.project.find(row => row.topicId === fixture.topicId)?.usable, true);
+  assert.equal(topics.activeGroups[fixture.paraCategory].find(row => row.topicId === fixture.topicId)?.usable, true);
   await press(button('Refresh Topics'));
   await announced(nativePage, '1 Topics. Conversations open in native Chat.');
   await requireExactFocus(page, button('Refresh Topics'), 'Refreshing Topics must preserve the exact keyboard invoker');

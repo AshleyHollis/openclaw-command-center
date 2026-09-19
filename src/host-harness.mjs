@@ -443,6 +443,10 @@ export async function waitForConsecutiveReadiness(observe, earlyExit, { required
         // are transport-level non-readiness; authenticated response failures
         // still propagate immediately.
         if (['ECONNREFUSED', 'ECONNRESET'].includes(error?.cause?.code ?? error?.code)) { refusedConnections += 1; return false; }
+        // A listener can accept the bootstrap request before startup releases
+        // the route. The request keeps its own short transport deadline while
+        // this owner retains the authoritative, longer startup deadline.
+        if (error?.category === 'transport-timeout') return false;
         throw error;
       });
       result = await withAbort(Promise.race([observation, earlyExit.then((error) => { throw error; })]), probeSignal);
@@ -465,7 +469,7 @@ export async function waitForConsecutiveReadiness(observe, earlyExit, { required
   throw failure;
 }
 
-export async function fetchJsonWithDeadline(url, options = {}, { label = 'HTTP operation', timeoutMs = 10_000, fetchImpl = fetchWithRuntimeDispatcher } = {}) {
+export async function fetchJsonWithDeadline(url, options = {}, { label = 'HTTP operation', timeoutMs = 10_000, fetchImpl = fetchWithRuntimeDispatcher, captureNonJsonBody = false } = {}) {
   const controller = new AbortController();
   const parentSignal = options.signal;
   let timedOut = false;
@@ -478,12 +482,23 @@ export async function fetchJsonWithDeadline(url, options = {}, { label = 'HTTP o
     controller.signal.throwIfAborted();
     let body;
     let parseError;
-    try { body = await response.json(); }
-    catch (error) {
-      if (controller.signal.aborted) throw error;
-      parseError = error;
+    let rawBody;
+    if (typeof response.text === 'function') {
+      const text = await response.text();
+      try { body = JSON.parse(text); }
+      catch (error) {
+        if (controller.signal.aborted) throw error;
+        parseError = error;
+        if (captureNonJsonBody) rawBody = text;
+      }
+    } else {
+      try { body = await response.json(); }
+      catch (error) {
+        if (controller.signal.aborted) throw error;
+        parseError = error;
+      }
     }
-    return { response, body, parseError };
+    return { response, body, parseError, ...(captureNonJsonBody ? { rawBody } : {}) };
   } catch (error) {
     if (parentSignal?.aborted) throw parentSignal.reason ?? error;
     if (timedOut) throw new HarnessFailure('transport-timeout', `${label} exceeded its ${timeoutMs} ms deadline`);

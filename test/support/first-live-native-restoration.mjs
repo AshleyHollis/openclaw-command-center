@@ -253,7 +253,7 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       assert.equal(refused.body?.code, 'recovery-only', 'A retained write must be refused by recovery admission, not merely by the deferred-feature gate');
       result = { safeReadObserved: true, mutationsRejected: true, mountedUiObserved: true, unsupportedControlsAbsent: true };
     } else {
-      const matching = topics.activeGroups.project.filter(topic => topic.topicId === fixture.topicId);
+      const matching = topics.activeGroups[fixture.paraCategory].filter(topic => topic.topicId === fixture.topicId);
       assert.equal(matching.length, 1);
       assert.equal(matching[0].usable, true);
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');

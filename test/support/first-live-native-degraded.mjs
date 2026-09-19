@@ -96,7 +96,7 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       assert.equal(status.unavailableCapabilities.includes('sessions'), sessionsUnavailable);
       assert.equal(status.unavailableCapabilities.includes('control-ui-grant'), writeGrantDenied);
       const topics = await gatewayRead('command-center.v1.topics.list');
-      const destination = topics.activeGroups.project.find(topic => topic.topicId === fixture.topicId);
+      const destination = topics.activeGroups[fixture.paraCategory].find(topic => topic.topicId === fixture.topicId);
       assert.equal(destination?.usable, true, 'Exact source identity remains readable despite the configured operation capability refusal');
       assert.equal(destination.name, fixture.name);
 

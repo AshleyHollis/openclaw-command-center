@@ -148,6 +148,40 @@ test('elapsed readiness deadlines allow late success and reject flapping without
   assert.equal(clock, 250);
 });
 
+test('elapsed readiness retries bounded transport timeouts inside the startup deadline', async () => {
+  let clock = 0;
+  const observations = [new HarnessFailure('transport-timeout', 'startup route remained pending'), true, true];
+  await waitForConsecutiveReadiness(() => {
+    const value = observations.shift();
+    if (value instanceof Error) throw value;
+    return value;
+  }, new Promise(() => {}), {
+    deadlineMs: 1_000,
+    delayMs: 100,
+    now: () => clock,
+    wait: async (delayMs) => { clock += delayMs; }
+  });
+  assert.equal(clock, 200);
+  assert.deepEqual(observations, []);
+});
+
+test('JSON fetch retains an exact non-JSON refusal body', async () => {
+  const ordinary = await fetchJsonWithDeadline('http://127.0.0.1/refusal', {}, {
+    fetchImpl: async () => new Response('Not Found', { status: 404 }),
+    timeoutMs: 1_000
+  });
+  assert.equal(Object.hasOwn(ordinary, 'rawBody'), false, 'Non-JSON bodies remain private unless the caller explicitly owns their validation');
+  const result = await fetchJsonWithDeadline('http://127.0.0.1/refusal', {}, {
+    fetchImpl: async () => new Response('Not Found', { status: 404 }),
+    timeoutMs: 1_000,
+    captureNonJsonBody: true
+  });
+  assert.equal(result.response.status, 404);
+  assert.equal(result.body, undefined);
+  assert.ok(result.parseError instanceof SyntaxError);
+  assert.equal(result.rawBody, 'Not Found');
+});
+
 test('readiness cancellation settles during a pending probe and between attempts', async () => {
   const duringProbe = new AbortController();
   let probeAborted = false;
