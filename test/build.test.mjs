@@ -31,9 +31,13 @@ async function withIsolatedBuild(run) {
 }
 
 test('build is deterministic and bound to its launch digest', async () => {
-  await withIsolatedBuild(async ({ assertBuiltDigest, build, readBuiltReceipt, digestFileName, distRoot }) => {
+  await withIsolatedBuild(async ({ assertBuiltDigest, build, readBuiltReceipt, digestFileName, distRoot }, root) => {
     await assert.rejects(readBuiltReceipt(), (error) => error.code === 'ENOENT');
+    const pluginSource = path.join(root, 'src', 'plugin.mjs');
+    const canonicalPlugin = (await readFile(pluginSource, 'utf8')).replace(/\r\n?/gu, '\n');
+    await writeFile(pluginSource, canonicalPlugin.replace(/\n/gu, '\r\n'));
     const first = await build();
+    await writeFile(pluginSource, canonicalPlugin);
     const second = await build();
     assert.deepEqual(second, first);
     assert.deepEqual(await readBuiltReceipt(), second);
