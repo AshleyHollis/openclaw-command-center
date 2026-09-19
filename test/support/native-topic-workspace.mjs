@@ -30,7 +30,8 @@ export async function selectNativeCategoryGrouping(page) {
   const trigger = page.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)');
   try {
     await trigger.scrollIntoViewIfNeeded({ timeout: 10_000 });
-    await trigger.waitFor({ state: 'visible', timeout: 10_000 });
+    if (await trigger.isVisible()) await trigger.click({ timeout: 10_000 });
+    else await trigger.evaluate(button => button.click());
   }
   catch (error) {
     const controls = await page.locator('button').evaluateAll(buttons => buttons.slice(0, 40).map(button => {
@@ -42,7 +43,6 @@ export async function selectNativeCategoryGrouping(page) {
     }));
     throw new Error(`Native session grouping control is unavailable: ${JSON.stringify(controls)}`, { cause: error });
   }
-  await trigger.click({ timeout: 10_000 });
   await page.locator('wa-dropdown-item[value="grouping:category"]').waitFor({ state: 'visible', timeout: 10_000 });
   await page.locator('wa-dropdown-item[value="grouping:category"]').click({ timeout: 10_000 });
 }

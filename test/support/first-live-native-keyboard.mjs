@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { fetchJsonWithDeadline, waitForConsecutiveReadiness } from '../../src/host-harness.mjs';
 import { hasSuccessfulBrowserResponse, observeBrowserResponse } from '../../src/browser-evidence.mjs';
 import { assertKeyboardFocus, tabTo } from './keyboard-navigation.mjs';
+import { assertNativeFormattedNote } from './native-topic-workspace.mjs';
 import { requestAuthenticatedGateway } from './real-host-runtime.mjs';
 
 const actionPath = '/plugins/command-center/api/topic/actions';
@@ -159,8 +160,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   };
   const readNote = async () => {
     await press(button(`Read ${fixture.notePath}`));
-    await note.filter({ hasText: fixture.noteText.trim() }).waitFor();
-    assert.equal(await note.textContent(), fixture.noteText);
+    await assertNativeFormattedNote(note, fixture);
     await requireExactFocus(page, note, 'Opening a Note must restore focus to its exact content, including inside native shadow DOM');
     await announced(nativePage, /Note opened · sha256:/u);
     assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
