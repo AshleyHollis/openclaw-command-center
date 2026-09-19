@@ -176,14 +176,18 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(receipt.result.action, 'conversations.create');
   onProgress('conversation-open');
   await nativePage.getByRole('button', { name: 'Open created Conversation', exact: true }).click();
-  await ready(async () => observed().navigation?.value?.sourceReference?.referenceId === receipt.result.referenceId);
-  const target = observed().navigation.value;
+  await ready(async () => observed().navigation?.input?.referenceId === receipt.result.referenceId
+    && typeof observed().navigation?.value?.sessionKey === 'string');
+  const resolved = observed().navigation;
+  const target = { sessionKey: resolved.value.sessionKey, sessionId: resolved.input.expectedSessionId };
+  assert.equal(resolved.input.topicId, fixture.topicId);
+  assert.equal(resolved.input.referenceId, receipt.result.referenceId);
+  assert.deepEqual(Object.keys(resolved.value), ['sessionKey']);
   const chat = page.locator('openclaw-chat-pane[aria-hidden="false"]');
   await chat.waitFor();
   await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, target.sessionKey);
   observations.conversationCreateMs = now() - started;
   assert.notEqual(target.sessionId, fixture.sessionId);
-  assert.equal(target.sourceReference.topicId, fixture.topicId);
   const catalog = await request(world, signal, 'sessions.browse', { topicId: fixture.topicId, includeClosed: false });
   assert.equal(catalog.conversations.length, 101);
   assert.equal(catalog.conversations.find(row => row.referenceId === receipt.result.referenceId)?.sessionId, target.sessionId);

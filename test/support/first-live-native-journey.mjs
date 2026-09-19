@@ -1288,10 +1288,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 30_000 });
       assert.equal(browserNavigation?.input.topicId, fixture.topicId);
       assert.equal(browserNavigation?.input.referenceId, fixture.sessionReferenceId);
-      assert.equal(browserNavigation?.input.nativeChat, true);
+      assert.equal(browserNavigation?.input.expectedSessionId, fixture.sessionId);
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
-      assert.equal(browserNavigation?.value.sessionId, fixture.sessionId);
-      assert.equal(browserNavigation?.value.sourceReference?.referenceId, fixture.sessionReferenceId);
+      assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       result = { existingTopicVerified: true, authoritativeNoteRead: true, exactNativeChatHandoff: true,
         sessionKey: fixture.sessionKey, sessionId: fixture.sessionId, referenceId: fixture.sessionReferenceId };
       } else if (keyboard) {
@@ -1356,11 +1355,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 30_000 });
       assert.equal(browserNavigation?.input.topicId, fixture.topicId);
       assert.equal(browserNavigation?.input.referenceId, fixture.sessionReferenceId);
-      assert.equal(browserNavigation?.input.nativeChat, true);
+      assert.equal(browserNavigation?.input.expectedSessionId, fixture.sessionId);
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
-      assert.equal(browserNavigation?.value.sessionId, fixture.sessionId);
-      assert.equal(browserNavigation?.value.sourceReference.topicId, fixture.topicId);
-      assert.equal(browserNavigation?.value.sourceReference.referenceId, fixture.sessionReferenceId);
+      assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       if (!keyboard) await verifyNativeTopicNotesPane({ page, fixture,
         onPromoted: catalog ? async () => {
           await page.setViewportSize({ width: 1440, height: 900 });
@@ -1427,12 +1424,13 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(createdConversation.isPrimary, false);
       assert.notEqual(createdConversation.sessionId, fixture.sessionId);
       await nativePage.getByRole('button', { name: 'Open created Conversation', exact: true }).press('Enter');
-      await waitForConsecutiveReadiness(async () => browserNavigation?.value.sourceReference?.referenceId === newReferenceId,
+      await waitForConsecutiveReadiness(async () => browserNavigation?.input?.referenceId === newReferenceId
+        && typeof browserNavigation?.value?.sessionKey === 'string',
         host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const createdTarget = browserNavigation.value;
+      const createdTarget = { sessionKey: browserNavigation.value.sessionKey, sessionId: browserNavigation.input.expectedSessionId };
       assert.equal(browserNavigation.input.topicId, fixture.topicId);
       assert.equal(browserNavigation.input.referenceId, newReferenceId);
-      assert.equal(createdTarget.sourceReference.topicId, fixture.topicId);
+      assert.deepEqual(Object.keys(browserNavigation.value), ['sessionKey']);
       assert.equal(createdTarget.sessionId, createdConversation.sessionId);
       assert.notEqual(createdTarget.sessionKey, fixture.sessionKey);
       assert.match(createdTarget.sessionKey, /^agent:main:.+$/u);
@@ -1572,10 +1570,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey);
       assert.equal(browserNavigation?.input.topicId, fixture.topicId);
       assert.equal(browserNavigation?.input.referenceId, fixture.sessionReferenceId);
+      assert.equal(browserNavigation?.input.expectedSessionId, fixture.sessionId);
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
-      assert.equal(browserNavigation?.value.sessionId, fixture.sessionId);
-      assert.equal(browserNavigation?.value.sourceReference.referenceId, fixture.sessionReferenceId);
-      assert.equal(browserNavigation?.value.sourceReference.topicId, fixture.topicId);
+      assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       let activation;
       await waitForConsecutiveReadiness(async () => {
         // Admin is restricted to this diagnostic read; no synthetic activation
