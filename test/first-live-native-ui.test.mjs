@@ -418,7 +418,10 @@ for (const interruption of ['remount', 'permission']) test(`a late Conversation 
   assert.deepEqual(await page.evaluate(() => window.opened), []);
 }, { start: 'topic' }));
 
-test('large Notes load one complete cursor-pinned tree and retain exact revision reads', { timeout: 30000 }, () => fixture(async page => {
+test('large Notes page through one cursor-pinned catalog and retain exact revision reads', { timeout: 30000 }, () => fixture(async page => {
+  await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Next Notes', exact: true }).click();
+  await page.getByText('Notes 51–51 of 51.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Read note-50.md', exact: true }).click();
   await page.getByText('Note opened · r1', { exact: true }).waitFor();
   assert.equal(await page.getByRole('region', { name: 'Note content' }).textContent(), 'Large authoritative Note.\n'.repeat(50000));
@@ -427,8 +430,10 @@ test('large Notes load one complete cursor-pinned tree and retain exact revision
   const reads = requests.filter(row => row.method.endsWith('notes.read'));
   assert.ok(reads.length > 2);
   assert.ok(reads.every(row => row.params.referenceId === 'note:50' && row.params.path === 'note-50.md' && row.params.observedRevision === 'r1'));
+  await page.getByRole('button', { name: 'Previous Notes', exact: true }).click();
+  await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Read note-0.md', exact: true }).waitFor();
-  assert.equal(await page.getByRole('button', { name: /Previous Notes|Next Notes/ }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: /Previous Notes|Next Notes/ }).count(), 2);
   assert.equal(await page.locator('textarea').count(), 0);
 }, { start: 'topic', large: true, paginated: true }));
 

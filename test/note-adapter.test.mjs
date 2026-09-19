@@ -63,6 +63,27 @@ test('Note browse resolves identities once and batches durable observations', as
   });
 });
 
+test('Note catalog pages materialize only requested files and reuse exact cursor rows', async () => {
+  await withRoot(async (root) => {
+    await Promise.all(Array.from({ length: 21 }, (_, index) => writeFile(path.join(root, `note-${String(index).padStart(2, '0')}.md`), `note ${index}`)));
+    const adapter = new NoteAdapter({ fsSafeRootFactory, topicId: 'topic-paged-notes', root });
+    const readState = adapter.readState.bind(adapter);
+    let materialized = 0;
+    adapter.readState = async (...args) => { materialized += 1; return readState(...args); };
+    const first = await adapter.browsePage({ limit: 10, observe: false });
+    assert.equal(first.total, 21);
+    assert.equal(first.notes.length, 10);
+    assert.equal(materialized, 10);
+    const second = await adapter.browsePage({ limit: 10, offset: first.nextOffset, cursor: first.cursor });
+    assert.equal(second.offset, 10);
+    assert.equal(materialized, 20);
+    const repeated = await adapter.browsePage({ limit: 10, offset: first.nextOffset, cursor: first.cursor });
+    assert.deepEqual(repeated.notes, second.notes);
+    assert.equal(materialized, 20);
+    adapter.close();
+  });
+});
+
 test('a bound Note adapter refreshes its versioned folder locator after explicit replacement', async () => {
   const first = await mkdtemp(path.join(os.tmpdir(), 'command-center-note-locator-first-'));
   const second = await mkdtemp(path.join(os.tmpdir(), 'command-center-note-locator-second-'));

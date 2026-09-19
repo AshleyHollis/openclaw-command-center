@@ -20,6 +20,10 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   let topic;
   let selected;
   let catalogNotes = [];
+  let catalogOffset = 0;
+  let catalogTotal = 0;
+  let catalogNextOffset = null;
+  let catalogCursor;
   let catalogConversations = [];
   let catalogHistories = [];
   let noteText = '';
@@ -66,6 +70,10 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   filter.setAttribute('aria-describedby', filterStatus.id);
   const tree = element('section'); tree.id = `native-topic-notes-tree-${crypto.randomUUID()}`; tree.dataset.topicNotes = ''; tree.setAttribute('aria-labelledby', notesLabel.id);
   tree.style.maxInlineSize = '100%';
+  const notePageStatus = element('p'); notePageStatus.setAttribute('role', 'status');
+  const previousNotes = element('button', 'Previous Notes'); previousNotes.type = 'button'; previousNotes.disabled = true;
+  const nextNotes = element('button', 'Next Notes'); nextNotes.type = 'button'; nextNotes.disabled = true;
+  const notePagination = element('nav'); notePagination.setAttribute('aria-label', 'Note pages'); notePagination.append(previousNotes, nextNotes);
   const noteTitle = element('h2', 'Select a Note');
   const breadcrumb = element('nav'); breadcrumb.className = 'reader-breadcrumb'; breadcrumb.setAttribute('aria-label', 'File path');
   const noteModes = element('div'); noteModes.setAttribute('role', 'group'); noteModes.setAttribute('aria-label', 'Note view');
@@ -83,7 +91,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   const nativeExplorerHost = element('section'); nativeExplorerHost.dataset.nativeTopicFiles = '';
   tree.removeAttribute('aria-labelledby'); tree.setAttribute('aria-label', 'Topic files');
   notesWorkspace.removeAttribute('aria-labelledby'); notesWorkspace.setAttribute('aria-label', 'Topic Notes workspace');
-  files.append(nativeExplorerHost, filterLabel, filter, filterStatus, tree);
+  files.append(nativeExplorerHost, filterLabel, filter, filterStatus, tree, notePageStatus, notePagination);
   if (canUseNativeExplorer) {
     // The selected replacement is still an ordinary native Files panel. The
     // host rail supplies its own search and keyboard semantics, so avoid
@@ -92,6 +100,8 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     filter.hidden = true;
     filterStatus.hidden = true;
     tree.hidden = true;
+    notePageStatus.hidden = true;
+    notePagination.hidden = true;
     refresh.hidden = true;
   }
   const reader = element('section'); reader.className = 'reader-document'; reader.setAttribute('aria-label', 'Reader');
@@ -378,42 +388,49 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     }
     return values.sort((left, right) => left.title.localeCompare(right.title) || left.historyId.localeCompare(right.historyId));
   }
-  async function loadCatalog(pending) {
+  async function loadCatalog(pending, pageOffset = 0, pageCursor = undefined) {
     const notes = [];
     const identities = new Set();
     const paths = new Set();
-    let pageOffset = 0;
-    let pageCursor;
-    let total;
-    let snapshotCursor;
-    for (;;) {
-      const notesResponse = await host.request('command-center.v1.notes.browse', { schemaVersion: 1, topicId, offset: pageOffset, limit: 100, includeDocuments: true, ...(pageCursor ? { cursor: pageCursor } : {}) });
-      if (!currentCatalog(pending)) return null;
-      const catalog = notesResponse?.result ?? notesResponse;
-      if (!Array.isArray(catalog?.notes) || catalog.offset !== pageOffset || !Number.isSafeInteger(catalog.total) || catalog.total < 0 ||
-          typeof catalog.hasMore !== 'boolean' || (catalog.hasMore && (!Number.isSafeInteger(catalog.nextOffset) || catalog.nextOffset <= pageOffset || catalog.nextOffset >= catalog.total || typeof catalog.cursor !== 'string'))) {
-        throw new Error('The Note catalogue is unavailable; refresh Notes.');
-      }
-      if (total === undefined) { total = catalog.total; snapshotCursor = catalog.cursor; }
-      else if (catalog.total !== total || catalog.cursor !== snapshotCursor) throw new Error('The Note catalogue changed during retrieval; refresh Notes.');
-      for (const note of catalog.notes) {
-        validateCatalogNote(note);
-        const identity = JSON.stringify([note.sourceReference.referenceId, note.path]);
-        // Native Files identifies its selection by the presented path. A
-        // duplicate path would make that presentation ambiguous, so retain no
-        // catalog rather than allowing a first-match selection.
-        if (identities.has(identity) || paths.has(note.path)) throw new Error('The exact Note catalogue is unavailable.');
-        identities.add(identity); notes.push(note);
-        paths.add(note.path);
-      }
-      if (notes.length > total) throw new Error('The exact Note catalogue is unavailable.');
-      if (!catalog.hasMore) {
-        if (notes.length !== total) throw new Error('The Note catalogue is incomplete; refresh Notes.');
-        return notes;
-      }
-      pageOffset = catalog.nextOffset;
-      pageCursor = catalog.cursor;
+    const notesResponse = await host.request('command-center.v1.notes.browse', { schemaVersion: 1, topicId, offset: pageOffset, limit: 50, includeDocuments: true, ...(pageCursor ? { cursor: pageCursor } : {}) });
+    if (!currentCatalog(pending)) return null;
+    const catalog = notesResponse?.result ?? notesResponse;
+    if (!Array.isArray(catalog?.notes) || catalog.offset !== pageOffset || !Number.isSafeInteger(catalog.total) || catalog.total < 0 ||
+        typeof catalog.hasMore !== 'boolean' || typeof catalog.cursor !== 'string' ||
+        (catalog.hasMore && (!Number.isSafeInteger(catalog.nextOffset) || catalog.nextOffset <= pageOffset || catalog.nextOffset >= catalog.total))) {
+      throw new Error('The Note catalogue is unavailable; refresh Notes.');
     }
+    for (const note of catalog.notes) {
+      validateCatalogNote(note);
+      const identity = JSON.stringify([note.sourceReference.referenceId, note.path]);
+      if (identities.has(identity) || paths.has(note.path)) throw new Error('The exact Note catalogue is unavailable.');
+      identities.add(identity); notes.push(note); paths.add(note.path);
+    }
+    if (notes.length > 50 || pageOffset + notes.length > catalog.total || (catalog.hasMore && notes.length === 0)) throw new Error('The exact Note catalogue is unavailable.');
+    return { notes, total: catalog.total, offset: catalog.offset, nextOffset: catalog.hasMore ? catalog.nextOffset : null, cursor: catalog.cursor };
+  }
+  function presentCatalogPage(catalog) {
+    catalogNotes = catalog.notes;
+    catalogOffset = catalog.offset;
+    catalogTotal = catalog.total;
+    catalogNextOffset = catalog.nextOffset;
+    catalogCursor = catalog.cursor;
+    renderNoteTree();
+    const first = catalogTotal === 0 ? 0 : catalogOffset + 1;
+    notePageStatus.textContent = catalogTotal === 0 ? 'No Notes.' : `Notes ${first}–${catalogOffset + catalogNotes.length} of ${catalogTotal}.`;
+    previousNotes.disabled = catalogOffset === 0;
+    nextNotes.disabled = catalogNextOffset === null;
+  }
+  async function loadCatalogPage(offset) {
+    if (!presented || !readable() || !catalogCursor || offset < 0 || offset >= catalogTotal) return;
+    const pending = ++catalogGeneration;
+    previousNotes.disabled = true; nextNotes.disabled = true;
+    notePageStatus.textContent = 'Loading Note page…';
+    try {
+      const catalog = await loadCatalog(pending, offset, catalogCursor);
+      if (!catalog || catalog.total !== catalogTotal || catalog.cursor !== catalogCursor) throw new Error('The Note catalogue changed during retrieval; refresh Notes.');
+      presentCatalogPage(catalog);
+    } catch (error) { if (currentCatalog(pending)) report(error); }
   }
   function showDraft() {
     if (!FIRST_LIVE_FEATURES.noteWrite) return;
@@ -581,16 +598,15 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       }).catch((error) => {
         if (currentCatalog(pending)) historyStatus.textContent = host.redact(error?.message || 'Preserved history is unavailable.');
       });
-      const notes = await loadCatalog(pending);
+      const catalog = await loadCatalog(pending);
       if (!currentCatalog(pending)) return;
-      if (!notes) return;
-      catalogNotes = notes;
+      if (!catalog) return;
+      presentCatalogPage(catalog);
       // The folder tree begins collapsed. Direct selection and filtering may
       // temporarily reveal only the ancestors needed for that exact result.
-      renderNoteTree();
-      status.textContent = notes.length ? '' : 'No Notes or filed attachments in this Topic.';
+      status.textContent = catalogTotal ? '' : 'No Notes or filed attachments in this Topic.';
       const prior = viewState.selected;
-      const restore = prior && notes.find(note => note.path === prior.path && note.sourceReference.referenceId === prior.referenceId);
+      const restore = prior && catalogNotes.find(note => note.path === prior.path && note.sourceReference.referenceId === prior.referenceId);
       if (restore) {
         if (sourceKindFor(restore) === 'note') await openNote(restore);
         else await openDocument(restore);
@@ -657,6 +673,8 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   reload.addEventListener('click', () => void reloadNote(), { signal });
   discard.addEventListener('click', () => void reloadNote(true), { signal });
   filter.addEventListener('input', () => { if (viewState) viewState.filter = filter.value; renderNoteTree(); }, { signal });
+  previousNotes.addEventListener('click', () => void loadCatalogPage(Math.max(0, catalogOffset - 50)), { signal });
+  nextNotes.addEventListener('click', () => { if (catalogNextOffset !== null) void loadCatalogPage(catalogNextOffset); }, { signal });
   tree.addEventListener('scroll', () => { if (viewState && tree.childNodes.length && !filter.value.trim()) viewState.scroll = tree.scrollTop; }, { signal });
   function setFilesVisible(visible) {
     files.hidden = !visible; notesWorkspace.toggleAttribute('data-files-hidden', !visible);
