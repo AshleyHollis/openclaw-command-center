@@ -354,7 +354,6 @@ export class NoteAdapter {
             const after = await file.stat();
             if (!sameStat(before, after)) throw sourceError('conflict', 'A Note changed during browse.');
           } finally { await file.close(); }
-          await this.assertChainStable(chain);
           const revision = revisionForBytes(bytes);
           const sourceReference = this.noteReference(root, childRelative, revision, referencesByExternalSourceId, sourceKind);
           notes.push({
@@ -376,6 +375,11 @@ export class NoteAdapter {
           await Promise.all(entries.slice(offset, offset + NOTE_BROWSE_CONCURRENCY).map(visitEntry));
         }
       }
+      // Every file is opened through the held directory descriptor and checked
+      // before and after its read. Validate the named directory chain once after
+      // the complete batch so a replacement still rejects the whole browse,
+      // without reopening and re-reading the durable folder witness per file.
+      await this.assertChainStable(chain);
     };
     try {
       await visit(rootHandle);
