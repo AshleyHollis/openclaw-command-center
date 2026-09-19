@@ -205,6 +205,32 @@ test('bounded document intake reads authoritative content and revision through t
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('malformed optional selected-document due date completes and replays without rereading', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-selected-document-malformed-due-'));
+  let service;
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir });
+    seed.createTopic({ topicId: 'topic-selected-malformed-due', paraCategory: 'project', lifecycle: 'active' });
+    seed.createSourceReference({ version: 1, referenceId: 'document:selected-malformed-due', topicId: 'topic-selected-malformed-due', sourceSystem: 'fictional-documents', sourceKind: 'document', externalSourceId: 'selected-malformed-due.txt', observedRevision: 'authoritative-malformed-v1' });
+    seed.close();
+    const host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
+    let reads = 0;
+    service.sourceService.notesRead = async input => {
+      reads += 1;
+      return { schemaVersion: 1, path: input.path, text: 'Invoice: INV-FICTIONAL-MALFORMED-DUE\nAmount due: AUD 20.00\nDue: 2026-10-10T00:00:00z', revision: 'authoritative-malformed-v1', sourceReference: { referenceId: input.referenceId } };
+    };
+    const request = { schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-malformed-due' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-malformed-due', path: 'selected-malformed-due.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z' }] };
+    const applied = await service.openLoopsIngestSelected(request);
+    assert.equal(applied.results[0].loop.amount, 2000);
+    assert.equal(applied.results[0].loop.dueAt, undefined);
+    assert.equal(reads, 1);
+    service.sourceService.notesRead = async () => { reads += 1; throw new Error('completed malformed-date intake must not reread'); };
+    const replayed = await service.openLoopsIngestSelected(request);
+    assert.equal(replayed.results[0].loop.loopId, applied.results[0].loop.loopId);
+    assert.equal(reads, 1);
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('selected-source root reconciles a committed child after process interruption without rereading content', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-selected-document-recovery-'));
   let service;

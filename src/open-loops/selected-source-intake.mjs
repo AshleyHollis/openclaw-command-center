@@ -5,6 +5,7 @@ const SOURCE_KINDS = new Set(['document', 'session']);
 const AVAILABILITY = new Set(['available', 'unavailable']);
 const UNAVAILABLE_REASONS = new Set(['not-found', 'permission-revoked', 'temporarily-unavailable', 'version-replaced']);
 const ISO_CURRENCIES = new Set(Intl.supportedValuesOf('currency'));
+const RFC_3339_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
 const MAX_BATCH_SIZE = 20;
 const MAX_CONTENT_BYTES = 32 * 1024;
 
@@ -41,7 +42,7 @@ function text(value, field, maximum = 300) {
 }
 function instant(value, field) {
   const result = text(value, field, 64);
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(result) || Number.isNaN(Date.parse(result))) fail(`${field} must be an RFC 3339 instant`);
+  if (!RFC_3339_INSTANT.test(result) || Number.isNaN(Date.parse(result))) fail(`${field} must be an RFC 3339 instant`);
   return result;
 }
 function optionalInstant(value, field) { return value === undefined ? undefined : instant(value, field); }
@@ -90,9 +91,9 @@ function interpretAvailableContent(content) {
   const status = unambiguousLabelled(content, ['Status', 'Payment status'], 100);
   const amount = parseAmount(content);
   if ([invoice, account, authority, payeeField, purposeField, due, status, amount].some(field => field.ambiguous)) return freeze({ kind: 'informational' });
-  const dueAt = due.value && /^\d{4}-\d{2}-\d{2}T/u.test(due.value) && !Number.isNaN(Date.parse(due.value)) ? instant(due.value, 'Due') : undefined;
+  const dueAt = due.value && RFC_3339_INSTANT.test(due.value) && !Number.isNaN(Date.parse(due.value)) ? instant(due.value, 'Due') : undefined;
   const terminalStatus = status.value && /^(?:paid(?:\s+in\s+full)?|settled|cancelled|canceled|credited|credit|credit note)$/iu.test(status.value);
-  const terminalMarker = /^(?:Paid in full|Credit note|Cancelled|Canceled)\s*:/imu.test(content);
+  const terminalMarker = /^(?:Paid in full|Credit note|Cancelled|Canceled)\s*(?::.*)?$/imu.test(content);
   const explicitPhrase = /(?:^|\n|[.!?]\s+)[ \t]*(?:please pay|payment is due)\b/iu.test(content);
   const explicitPaymentRequest = explicitPhrase || (amount.valid && amount.amount > 0);
   if (!invoice.value || !explicitPaymentRequest || terminalStatus || terminalMarker || (amount.valid && amount.amount === 0)) return freeze({ kind: 'informational' });

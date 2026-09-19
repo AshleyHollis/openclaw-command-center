@@ -122,6 +122,26 @@
       "id": "duplicate-identical-identifiers-remain-unambiguous",
       "expected": { "payment": true, "invoiceId": "INV-EVAL-DUPLICATE", "amount": 10000, "currency": "AUD", "accountId": "ACCOUNT-DUPLICATE" },
       "content": "Invoice: INV-EVAL-DUPLICATE\nInvoice number: INV-EVAL-DUPLICATE\nAccount: ACCOUNT-DUPLICATE\nAccount number: ACCOUNT-DUPLICATE\nAmount due: AUD 100.00"
+    },
+    {
+      "id": "malformed-optional-due-is-omitted",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-DUE-MALFORMED", "amount": 2000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-DUE-MALFORMED\nAmount due: AUD 20.00\nDue: 2026-10-10T00:00:00z"
+    },
+    {
+      "id": "standalone-paid-marker",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-STANDALONE-PAID\nAmount due: AUD 100.00\nPAID IN FULL"
+    },
+    {
+      "id": "standalone-credit-marker",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-STANDALONE-CREDIT\nAmount due: AUD 100.00\nCREDIT NOTE"
+    },
+    {
+      "id": "standalone-cancelled-marker",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-STANDALONE-CANCELLED\nAmount due: AUD 100.00\nCANCELLED"
     }
   ]
 }
