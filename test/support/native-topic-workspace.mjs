@@ -53,10 +53,10 @@ export async function selectNativeCategoryGrouping(page) {
     }
     const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').first();
     await trigger.scrollIntoViewIfNeeded({ timeout: 10_000 });
-    // The sidebar body and footer are independent sticky layers. Keyboard
-    // activation exercises the same native button without relying on their
-    // transient pointer hit-test boundary while the roster lays out.
-    await trigger.press('Enter', { timeout: 10_000 });
+    // The team header control can sit beneath the sticky community invitation;
+    // after switching presentations this is the unobstructed session toolbar
+    // control, so exercise it with the same pointer action an operator uses.
+    await trigger.click({ timeout: 10_000 });
   }
   catch (error) {
     const controls = await page.locator('button').evaluateAll(buttons => buttons.slice(0, 40).map(button => {
