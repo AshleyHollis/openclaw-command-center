@@ -7,7 +7,7 @@ test('native grouping journey selects a Topic row relative to its shadow-root pa
   try {
     const page = await browser.newPage();
     page.setDefaultTimeout(1000);
-    await page.setContent('<button class="sidebar-session-sort">Sort sessions</button><div role="menu"><wa-dropdown-item value="grouping:category" role="menuitemradio">Category</wa-dropdown-item></div><openclaw-plugin-page></openclaw-plugin-page><section data-session-section="category:Sample"><button aria-expanded="true">Sample</button><div data-session-key="agent:main:sample">Overview</div></section>');
+    await page.setContent('<div class="sidebar-session-toolbar"><button class="sidebar-session-sort">Sort sessions</button></div><div role="menu"><wa-dropdown-item value="grouping:category" role="menuitemradio">Category</wa-dropdown-item></div><openclaw-plugin-page></openclaw-plugin-page><section data-session-section="category:Sample"><button aria-expanded="true">Sample</button><div data-session-key="agent:main:sample">Overview</div></section>');
     await page.evaluate(() => {
       const root = document.querySelector('openclaw-plugin-page').attachShadow({ mode: 'open' });
       root.innerHTML = '<ul><li><button>View Notes for Sample</button><button id="organize">Organize Conversations in native group</button><p role="status"></p></li></ul>';
