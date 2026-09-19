@@ -311,13 +311,17 @@ async function waitForNativeControlUiReadiness({ world, host, signal, scale, obs
   await waitForConsecutiveReadiness(async (probeSignal) => {
     const observation = { stage: 'http', attempt: ++attempt, url: `${world.gateway.url}${runtimeCapability.bootstrap.path}`, status: null, error: null, bodyKeys: [] };
     try {
-      const { response, body, parseError } = await fetchJsonWithDeadline(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal: probeSignal }, { label: 'native Control UI readiness', timeoutMs: 30_000 });
+      const { response, body, parseError } = await fetchJsonWithDeadline(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal: probeSignal }, { label: 'native Control UI readiness', timeoutMs: 10_000 });
       observation.status = response.status;
       observation.bodyKeys = body && typeof body === 'object' ? Object.keys(body).sort().slice(0, 24) : [];
       observation.error = parseError ? redactBrowserEvidence(parseError.message) : null;
       return response.ok && !parseError;
     } catch (error) {
       observation.error = redactBrowserEvidence(`${error?.category ?? error?.cause?.code ?? error?.code ?? 'transport'}: ${error?.message ?? 'readiness failed'}`);
+      // The Gateway can accept bootstrap HTTP before plugin startup releases
+      // the request. Treat only that bounded transport timeout as pending; the
+      // outer readiness deadline and early-exit owner remain authoritative.
+      if (error?.category === 'transport-timeout') return false;
       throw error;
     } finally {
       record(observation);
@@ -559,7 +563,7 @@ export async function exerciseNativeRetainedStartup(options, { scale = true, con
 export async function readRetainedNativeBootstrap(options, { waitForReady = waitForNativeControlUiReadiness, readBootstrap = readNativeLegacyBootstrap } = {}) {
   // A spawned successor is not yet an authenticated, listening Gateway.
   // This wait remains inside the caller's startup measurement and deadline.
-  await waitForReady({ ...options, scale: false });
+  await waitForReady({ ...options, scale: options.scale === true });
   return readBootstrap(options);
 }
 
@@ -588,7 +592,7 @@ async function exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinal
         removeAbortCleanup();
         removeAbortCleanup = stopHostOnAbort(signal, host);
         stages.push('successor-launched');
-        await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: conversations ? 100 : 1 });
+        await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: conversations ? 100 : 1, scale });
         stages.push('retained-readback-passed');
       }
       result = Object.freeze({ schemaVersion: 1, pluginId: 'command-center', revision: plugin.revision, fixtureCounts: Object.freeze({ noteBytes: Buffer.byteLength(bootstrap.noteText), noteFiles: (bootstrap.scaleNotes?.length ?? 0) + 1, conversationMessages: bootstrap.prepared.occurrenceCount, conversations: conversations ? 100 : 1 }), readinessAttempts: Object.freeze([...readinessAttempts]), migrationReady: Boolean(imported.completion), retainedRestartVerified: restart });
@@ -627,7 +631,8 @@ export async function exerciseNativeKeyboardJourney({ descriptor, buildReceipt, 
 export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, scale = false, catalog = false, chatHandoffOnly = false, notesWorkspaceOnly = false, nativeFilesWorkspace = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
   if (scaleDiagnostic) assert.equal(process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE, undefined);
   const scaleNow = scaleDiagnostic ? () => 0 : () => performance.now();
-  const progress = stage => { if (scaleDiagnostic) onScaleProgress?.({ stage }); };
+  const progressStarted = performance.now();
+  const progress = stage => { if (scale) onScaleProgress?.({ stage, elapsedMs: Math.round(performance.now() - progressStarted) }); };
   assert.equal(keyboard && scale, false, 'Performance qualification cannot share a keyboard diagnostic');
   return withIsolatedWorld(async (world) => {
     const bootstrap = keyboard || nativeFilesWorkspace ? null : await prepareNativeLegacyBootstrap({ world, signal, scale, catalog });
@@ -696,7 +701,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         progress('retained-restart');
         const started = scaleNow();
         await restartHost();
-        bootstrapped = await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 100,
+        bootstrapped = await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 100, scale: true,
           onReady: () => { startupReadinessMs = scaleNow() - started; } });
       }
       const fixture = keyboard || nativeFilesWorkspace
@@ -739,7 +744,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         socket.onMessage((payload) => {
           server.send(payload);
           let message; try { message = JSON.parse(String(payload)); } catch { return; }
-          if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(scale ? ['command-center.v1.notes.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) requests.set(message.id, { method: message.method, params: message.params });
+          if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(scale ? ['command-center.v1.notes.browse', 'command-center.v1.sessions.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) {
+            requests.set(message.id, { method: message.method, params: message.params });
+            if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native'].includes(message.method)) progress(`browser-rpc-request:${message.method}`);
+          }
           if (message?.type === 'req' && message.method === 'chat.send' && [messageText, attachmentMessageText].includes(message.params?.message)) {
             browserChatSend = message;
           }
@@ -752,6 +760,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           const request = requests.get(message.id);
           requests.delete(message.id);
           if (!request || message.ok !== true) return;
+          if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native'].includes(request.method)) progress(`browser-rpc-response:${request.method}`);
           const value = message.payload?.result ?? message.payload;
           if (request.method === 'command-center.v1.topics.list') browserTopics = value;
           if (request.method === 'command-center.v1.notes.read') browserNote = { input: request.params, value };
@@ -1283,10 +1292,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 30_000 });
       assert.equal(browserNavigation?.input.topicId, fixture.topicId);
       assert.equal(browserNavigation?.input.referenceId, fixture.sessionReferenceId);
-      assert.equal(browserNavigation?.input.nativeChat, true);
+      assert.equal(browserNavigation?.input.expectedSessionId, fixture.sessionId);
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
-      assert.equal(browserNavigation?.value.sessionId, fixture.sessionId);
-      assert.equal(browserNavigation?.value.sourceReference?.referenceId, fixture.sessionReferenceId);
+      assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       result = { existingTopicVerified: true, authoritativeNoteRead: true, exactNativeChatHandoff: true,
         sessionKey: fixture.sessionKey, sessionId: fixture.sessionId, referenceId: fixture.sessionReferenceId };
       } else if (keyboard) {
@@ -1351,11 +1359,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 30_000 });
       assert.equal(browserNavigation?.input.topicId, fixture.topicId);
       assert.equal(browserNavigation?.input.referenceId, fixture.sessionReferenceId);
-      assert.equal(browserNavigation?.input.nativeChat, true);
+      assert.equal(browserNavigation?.input.expectedSessionId, fixture.sessionId);
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
-      assert.equal(browserNavigation?.value.sessionId, fixture.sessionId);
-      assert.equal(browserNavigation?.value.sourceReference.topicId, fixture.topicId);
-      assert.equal(browserNavigation?.value.sourceReference.referenceId, fixture.sessionReferenceId);
+      assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       if (!keyboard) await verifyNativeTopicNotesPane({ page, fixture,
         onPromoted: catalog ? async () => {
           await page.setViewportSize({ width: 1440, height: 900 });
@@ -1398,10 +1404,12 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.notEqual(newReferenceId, fixture.sessionReferenceId, 'Creating a Conversation must not reuse the existing Primary');
       // Replay the exact captured intent through the same declared authenticated
       // HTTP boundary. In particular, do not refresh its original Topic revision.
-      assert.equal(observedCreation.value.request().headers()['x-openclaw-control-ui-relay'], '1');
+      const requestHeaders = observedCreation.value.request().headers();
+      assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+      assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
       const replay = await fetchJsonWithDeadline(`${world.gateway.url}/plugins/command-center/api/topic/actions`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
         body: JSON.stringify(creationInput)
       }, { label: 'native Conversation exact-intent replay', timeoutMs: 30_000 });
       assert.equal(replay.response.ok, true);
@@ -1419,12 +1427,14 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(createdConversation.status, 'open');
       assert.equal(createdConversation.isPrimary, false);
       assert.notEqual(createdConversation.sessionId, fixture.sessionId);
-      await waitForConsecutiveReadiness(async () => browserNavigation?.value.sourceReference?.referenceId === newReferenceId,
+      await nativePage.getByRole('button', { name: 'Open created Conversation', exact: true }).press('Enter');
+      await waitForConsecutiveReadiness(async () => browserNavigation?.input?.referenceId === newReferenceId
+        && typeof browserNavigation?.value?.sessionKey === 'string',
         host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const createdTarget = browserNavigation.value;
+      const createdTarget = { sessionKey: browserNavigation.value.sessionKey, sessionId: browserNavigation.input.expectedSessionId };
       assert.equal(browserNavigation.input.topicId, fixture.topicId);
       assert.equal(browserNavigation.input.referenceId, newReferenceId);
-      assert.equal(createdTarget.sourceReference.topicId, fixture.topicId);
+      assert.deepEqual(Object.keys(browserNavigation.value), ['sessionKey']);
       assert.equal(createdTarget.sessionId, createdConversation.sessionId);
       assert.notEqual(createdTarget.sessionKey, fixture.sessionKey);
       assert.match(createdTarget.sessionKey, /^agent:main:.+$/u);
@@ -1505,7 +1515,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const restartedReplay = await fetchJsonWithDeadline(`${world.gateway.url}/plugins/command-center/api/topic/actions`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
         body: JSON.stringify(creationInput)
       }, { label: 'native Conversation original-intent replay after restart', timeoutMs: 30_000 });
       assert.equal(restartedReplay.response.ok, true);
@@ -1564,10 +1574,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey);
       assert.equal(browserNavigation?.input.topicId, fixture.topicId);
       assert.equal(browserNavigation?.input.referenceId, fixture.sessionReferenceId);
+      assert.equal(browserNavigation?.input.expectedSessionId, fixture.sessionId);
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
-      assert.equal(browserNavigation?.value.sessionId, fixture.sessionId);
-      assert.equal(browserNavigation?.value.sourceReference.referenceId, fixture.sessionReferenceId);
-      assert.equal(browserNavigation?.value.sourceReference.topicId, fixture.topicId);
+      assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       let activation;
       await waitForConsecutiveReadiness(async () => {
         // Admin is restricted to this diagnostic read; no synthetic activation

@@ -245,7 +245,7 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       const blockedId = randomUUID();
       const refused = await fetchJsonWithDeadline(`${world.gateway.url}/plugins/command-center/api/topic/actions`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
         body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: '44444444-4444-4444-8444-444444444444', expectedRevision: 0, logicalOperationId: blockedId, label: 'Fictional refused recovery Conversation' })
       }, { label: 'native recovery-only retained write refusal', timeoutMs: 30_000 });
       assert.equal(refused.parseError, undefined);
@@ -272,7 +272,9 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).press('Enter');
       const observed = await creationResponse;
       assert.equal(hasSuccessfulBrowserResponse(observed), true);
-      assert.equal(observed.value.request().headers()['x-openclaw-control-ui-relay'], '1');
+      const requestHeaders = observed.value.request().headers();
+      assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+      assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
       const input = observed.value.request().postDataJSON();
       assert.deepEqual(Object.keys(input).sort(), ['action', 'expectedRevision', 'label', 'logicalOperationId', 'schemaVersion', 'topicId']);
       assert.equal(input.topicId, fixture.topicId);
@@ -294,6 +296,7 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       assert.equal(created[0].isPrimary, false);
       assert.equal(created[0].status, 'open');
       assert.notEqual(created[0].sessionId, fixture.sessionId);
+      await nativePage.getByRole('button', { name: 'Open created Conversation', exact: true }).press('Enter');
       const navigationResponse = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId: fixture.topicId, referenceId: receipt.result.referenceId, nativeChat: true }, signal });
       const navigation = navigationResponse?.result ?? navigationResponse;
       assert.equal(navigation.sourceReference.referenceId, receipt.result.referenceId);

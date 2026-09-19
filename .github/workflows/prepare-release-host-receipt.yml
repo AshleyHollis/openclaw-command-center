@@ -1,0 +1,138 @@
+name: Prepare release host receipt
+
+on:
+  push:
+    branches: [upgrade/openclaw-2026.9.5]
+    paths:
+      - .github/workflows/prepare-release-host-receipt.yml
+      - src/host-harness.mjs
+      - src/packaged-host-integrity.mjs
+      - src/runtime-capability.json
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: Immutable ghcr.io/ashleyhollis/openclaw image digest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: prepare-release-host-receipt-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  receipt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Validate immutable selection
+        env:
+          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:f20b645907bdfb4bedcc14a3af3e2a7ea060c507635a9eca071fd3592a618d9d' }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Checkout exact OpenClaw source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: AshleyHollis/openclaw
+          ref: 8490d8016bdd46c8e29301efbc91f99eaab7de8d
+          fetch-depth: 1
+          persist-credentials: false
+          path: _openclaw-source
+
+      - name: Install pinned verifier dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Materialize and verify packaged host
+        env:
+          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:f20b645907bdfb4bedcc14a3af3e2a7ea060c507635a9eca071fd3592a618d9d' }}
+          IMAGE_REPOSITORY: ghcr.io/ashleyhollis/openclaw
+          OPENCLAW_COMMIT: 8490d8016bdd46c8e29301efbc91f99eaab7de8d
+          OPENCLAW_VERSION: 2026.9.5
+        run: |
+          set -euo pipefail
+          image="$IMAGE_REPOSITORY@$IMAGE_DIGEST"
+          docker pull "$image"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$OPENCLAW_COMMIT"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")" = "$OPENCLAW_VERSION"
+
+          host="$RUNNER_TEMP/command-center-host"
+          mkdir -p "$host/checkout" "$host/runtime" "$RUNNER_TEMP/receipt"
+          tar --exclude=.git -C _openclaw-source -cf - . | tar --no-same-owner -C "$host/checkout" -xf -
+          cp -a _openclaw-source/.git "$host/checkout/.git"
+          git -C "$host/checkout" rev-parse HEAD | grep -Fx "$OPENCLAW_COMMIT"
+          test -z "$(git -C "$host/checkout" status --porcelain --untracked-files=no)"
+
+          git -C _openclaw-source archive --format=tar "$OPENCLAW_COMMIT" > "$RUNNER_TEMP/openclaw-source.tar"
+          printf 'sha256:%s\n' "$(sha256sum "$RUNNER_TEMP/openclaw-source.tar" | cut -d ' ' -f 1)" > "$RUNNER_TEMP/source-digest.txt"
+
+          container="$(docker create "$image")"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:/app/." "$host/runtime"
+          docker rm "$container" >/dev/null
+          trap - EXIT
+          sudo chown -R "$(id -u):$(id -g)" "$host"
+
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFile, writeFile } from 'node:fs/promises';
+          import path from 'node:path';
+          import { parseHostDescriptor, pinnedHost, verifyHost } from './src/host-harness.mjs';
+          import { packagedHostDigest } from './src/packaged-host-integrity.mjs';
+
+          const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+          const host = path.join(process.env.RUNNER_TEMP, 'command-center-host');
+          const checkout = path.join(host, 'checkout');
+          const runtimeRoot = path.join(host, 'runtime');
+          const sourceDigest = (await readFile(path.join(process.env.RUNNER_TEMP, 'source-digest.txt'), 'utf8')).trim();
+          const executableDigest = digest(await readFile(path.join(runtimeRoot, 'node_modules/openclaw/openclaw.mjs')));
+          const contract = JSON.parse(await readFile('src/runtime-capability.json', 'utf8'));
+          const contractDigest = digest(Buffer.from(JSON.stringify(contract)));
+          const runtimeDigest = await packagedHostDigest(runtimeRoot);
+          const receipt = {
+            schemaVersion: 2,
+            sourceDigest,
+            commit: pinnedHost.commit,
+            executableDigest,
+            contractDigest,
+            packageDigest: pinnedHost.packageDigest,
+            runtimeDigest
+          };
+          await writeFile(path.join(host, 'receipt.json'), `${JSON.stringify(receipt)}\n`, { mode: 0o400 });
+          const descriptor = {
+            schemaVersion: 2,
+            checkout,
+            runtimeRoot,
+            commit: pinnedHost.commit,
+            command: { executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args },
+            integrity: receipt
+          };
+          await verifyHost(parseHostDescriptor(JSON.stringify(descriptor)));
+          await writeFile(path.join(process.env.RUNNER_TEMP, 'receipt', 'host-receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`);
+          await writeFile(path.join(process.env.RUNNER_TEMP, 'receipt', 'provenance.json'), `${JSON.stringify({
+            schemaVersion: 1,
+            image: `ghcr.io/ashleyhollis/openclaw@${process.env.IMAGE_DIGEST}`,
+            sourceCommit: process.env.OPENCLAW_COMMIT,
+            hostVersion: process.env.OPENCLAW_VERSION,
+            receipt
+          }, null, 2)}\n`);
+          NODE
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: command-center-host-receipt-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/receipt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Record receipt boundary
+        run: |
+          printf '%s\n' 'Verified packaged-host receipt only. Real-host acceptance, performance capture, migration/restore rehearsal and deployment remain required.' >> "$GITHUB_STEP_SUMMARY"

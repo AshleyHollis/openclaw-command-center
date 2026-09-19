@@ -900,18 +900,30 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     const values = inputs.map(referenceInput);
     return mutate(null, (db) => {
       const now = timestamp(undefined, 'updatedAt');
+      // A catalogue observation can contain thousands of Notes. Compile each
+      // statement once for the transaction instead of recompiling the same
+      // lookup/update/insert statements for every Source Reference.
+      const findReference = db.prepare('SELECT * FROM source_references WHERE reference_id = ?');
+      const findTopic = db.prepare('SELECT 1 FROM topics WHERE topic_id = ?');
+      const findSessionOwner = db.prepare(`SELECT reference.reference_id FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+        WHERE reference.source_system = 'openclaw' AND reference.source_kind = 'session' AND locator.locator = ? LIMIT 1`);
+      const insertReference = db.prepare('INSERT INTO source_references (reference_id, topic_id, source_system, source_kind, external_source_id, last_observed_revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+      const updateReference = db.prepare('UPDATE source_references SET last_observed_revision = ?, updated_at = ? WHERE reference_id = ?');
       return values.map((value) => {
-        const current = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(value.referenceId);
+        const current = findReference.get(value.referenceId);
         if (!current) {
           mutateCapabilityInsideTransaction(value.sourceSystem);
-          return insertSourceReference(db, value, now);
+          if (!findTopic.get(value.topicId)) throw new CommandCenterMetadataError('not-found', 'Topic was not found.');
+          if (value.sourceSystem === 'openclaw' && value.sourceKind === 'session' && findSessionOwner.get(value.externalSourceId)) throw new CommandCenterMetadataError('conflict', 'Session identity is already owned by another Source Reference locator.');
+          insertReference.run(value.referenceId, value.topicId, value.sourceSystem, value.sourceKind, value.externalSourceId, value.observedRevision, value.createdAt ?? now, value.updatedAt ?? value.createdAt ?? now);
+          return mapSourceReference(findReference.get(value.referenceId));
         }
         for (const [field, column] of [['topicId', 'topic_id'], ['sourceSystem', 'source_system'], ['sourceKind', 'source_kind'], ['externalSourceId', 'external_source_id']]) {
           if (value[field] !== current[column]) throw new CommandCenterMetadataError('identity-change', 'Source Reference identity is immutable.');
         }
         mutateCapabilityInsideTransaction(current.source_system);
-        db.prepare('UPDATE source_references SET last_observed_revision = ?, updated_at = ? WHERE reference_id = ?').run(value.observedRevision, value.updatedAt ?? now, value.referenceId);
-        return mapSourceReference(db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(value.referenceId));
+        updateReference.run(value.observedRevision, value.updatedAt ?? now, value.referenceId);
+        return mapSourceReference(findReference.get(value.referenceId));
       });
     });
   };

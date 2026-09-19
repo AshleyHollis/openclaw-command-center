@@ -354,7 +354,6 @@ export class NoteAdapter {
             const after = await file.stat();
             if (!sameStat(before, after)) throw sourceError('conflict', 'A Note changed during browse.');
           } finally { await file.close(); }
-          await this.assertChainStable(chain);
           const revision = revisionForBytes(bytes);
           const sourceReference = this.noteReference(root, childRelative, revision, referencesByExternalSourceId, sourceKind);
           notes.push({
@@ -376,6 +375,11 @@ export class NoteAdapter {
           await Promise.all(entries.slice(offset, offset + NOTE_BROWSE_CONCURRENCY).map(visitEntry));
         }
       }
+      // Every file is opened through the held directory descriptor and checked
+      // before and after its read. Validate the named directory chain once after
+      // the complete batch so a replacement still rejects the whole browse,
+      // without reopening and re-reading the durable folder witness per file.
+      await this.assertChainStable(chain);
     };
     try {
       await visit(rootHandle);
@@ -392,6 +396,90 @@ export class NoteAdapter {
     return Object.freeze(notes.map((note) => Object.freeze(note)));
   }
 
+  async scanCatalog(input = {}) {
+    const root = await this.resolveRoot();
+    const entries = [];
+    const referencesByExternalSourceId = new Map();
+    for (const reference of this.metadata?.listSourceReferences?.(this.topicId) ?? []) {
+      if (reference.sourceSystem !== 'obsidian' || !['note', 'document'].includes(reference.sourceKind)) continue;
+      const locator = effectiveSourceLocator(this.metadata, reference);
+      const matches = referencesByExternalSourceId.get(locator) ?? [];
+      matches.push(reference);
+      referencesByExternalSourceId.set(locator, matches);
+    }
+    const rootStat = this.rootStat;
+    const rootHandle = await this.duplicateRootHandle();
+    const visit = async (directoryHandle, relative = '', chain = [{ namedPath: root, stat: rootStat }]) => {
+      const directoryEntries = await readdir(this.descriptorPath(directoryHandle), { withFileTypes: true });
+      directoryEntries.sort((left, right) => left.name.localeCompare(right.name));
+      const visitEntry = async (entry) => {
+        const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+        await this.beforePathIo?.({ operation: 'browse', path: childRelative });
+        const child = this.descriptorPath(directoryHandle, entry.name);
+        const stat = await lstat(child);
+        if (stat.isSymbolicLink()) throw sourceError('unsafe-path', 'Symlinked Note paths are not supported.');
+        if (stat.isDirectory()) {
+          const childHandle = await open(child, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+          try {
+            if (!sameIdentity(stat, await childHandle.stat())) throw sourceError('conflict', 'A Note directory changed while it was opened.');
+            const namedPath = path.join(root, ...childRelative.split('/'));
+            const named = await lstat(namedPath).catch(() => null);
+            if (!sameIdentity(stat, named)) throw sourceError('conflict', 'A Note directory path changed during browse.');
+            await visit(childHandle, childRelative, [...chain, { namedPath, stat }]);
+          } finally { await childHandle.close(); }
+          return;
+        }
+        if (!stat.isFile()) throw sourceError('unsafe-path', 'The Note Folder contains a non-regular entry.');
+        if (entry.name === '.command-center-folder-identity' || entry.name.includes('.command-center-')) return;
+        const sourceKind = sourceKindForTopicFilePath(childRelative);
+        if (sourceKind === 'document' && input.includeDocuments !== true) return;
+        const file = await open(child, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          const held = await file.stat();
+          if (!sameIdentity(stat, held) || (held.nlink !== 1 && !(await this.hasOnlyInternalAliases({ handle: directoryHandle, leaf: entry.name }, held)))) throw sourceError('unsafe-path', 'Hard-linked or replaced Note aliases are not supported.');
+        } finally { await file.close(); }
+        entries.push(Object.freeze({ path: childRelative, sourceKind, stat }));
+      };
+      if (this.beforePathIo) {
+        for (const entry of directoryEntries) await visitEntry(entry);
+      } else {
+        for (let offset = 0; offset < directoryEntries.length; offset += NOTE_BROWSE_CONCURRENCY) {
+          await Promise.all(directoryEntries.slice(offset, offset + NOTE_BROWSE_CONCURRENCY).map(visitEntry));
+        }
+      }
+      await this.assertChainStable(chain);
+    };
+    try {
+      await visit(rootHandle);
+    } finally { await rootHandle.close(); }
+    entries.sort((left, right) => left.path.localeCompare(right.path));
+    this.assertCurrentRoot(root);
+    return { root, entries: Object.freeze(entries), referencesByExternalSourceId };
+  }
+
+  async materializeCatalogEntries(snapshot, entries) {
+    const notes = await Promise.all(entries.map(async (entry) => {
+      const state = await this.readState(snapshot.root, entry.path, 'browse', entry.sourceKind);
+      if (!sameStat(entry.stat, state.stat)) throw sourceError('conflict', 'The Note catalog changed after its snapshot was created.');
+      const revision = revisionForBytes(state.bytes);
+      return {
+        schemaVersion: 1,
+        path: entry.path,
+        revision,
+        sourceReference: this.noteReference(snapshot.root, entry.path, revision, snapshot.referencesByExternalSourceId, entry.sourceKind),
+        sourceKind: entry.sourceKind,
+        ...(snapshot.includeText ? { text: state.bytes.toString('utf8') } : {})
+      };
+    }));
+    if (snapshot.observe) {
+      const observed = typeof this.metadata?.observeSourceReferences === 'function'
+        ? this.metadata.observeSourceReferences(notes.map((note) => note.sourceReference))
+        : await Promise.all(notes.map((note) => this.observe(note.sourceReference)));
+      for (let index = 0; index < notes.length; index += 1) notes[index].sourceReference = observed[index];
+    }
+    for (const note of notes) snapshot.materialized.set(note.path, Object.freeze(note));
+  }
+
   async browsePage(input = {}) {
     if (!this.recovery.owned) return this.recovery.run(() => this.browsePage(input));
     this.recovery.assertReadAdmission();
@@ -406,13 +494,19 @@ export class NoteAdapter {
         throw sourceError('conflict', 'The Note catalog snapshot expired; refresh it before continuing.');
       }
     } else {
-      const notes = await this.browse({ observe: input.observe, includeText: input.includeText, includeDocuments: input.includeDocuments });
-      snapshot = { cursor: randomUUID(), expiresAt: this.nowMs() + NOTE_CATALOG_SNAPSHOT_TTL_MS, notes };
+      const catalog = await this.scanCatalog({ includeDocuments: input.includeDocuments });
+      snapshot = { cursor: randomUUID(), expiresAt: this.nowMs() + NOTE_CATALOG_SNAPSHOT_TTL_MS, ...catalog,
+        includeText: input.includeText === true, observe: input.observe !== false, materialized: new Map() };
       this.catalogSnapshot = snapshot;
     }
-    const total = snapshot.notes.length;
+    const total = snapshot.entries.length;
     const offset = Math.min(requestedOffset, Math.max(0, Math.floor(Math.max(0, total - 1) / limit) * limit));
-    const notes = snapshot.notes.slice(offset, offset + limit);
+    const selected = snapshot.entries.slice(offset, offset + limit);
+    const missing = selected.filter((entry) => !snapshot.materialized.has(entry.path));
+    for (let index = 0; index < missing.length; index += NOTE_BROWSE_CONCURRENCY) {
+      await this.materializeCatalogEntries(snapshot, missing.slice(index, index + NOTE_BROWSE_CONCURRENCY));
+    }
+    const notes = selected.map((entry) => snapshot.materialized.get(entry.path));
     const nextOffset = offset + notes.length < total ? offset + notes.length : null;
     return Object.freeze({ schemaVersion: 1, notes, total, offset, nextOffset, hasMore: nextOffset !== null, cursor: snapshot.cursor });
   }

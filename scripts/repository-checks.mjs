@@ -38,9 +38,9 @@ export async function runRepositoryChecks({ purpose = 'qualification' } = {}) {
   ];
   if (pluginManifest.controlUi.httpRoutes !== undefined && JSON.stringify(pluginManifest.controlUi.httpRoutes) !== JSON.stringify(nativeHttpRoutes)) throw new Error('Native Control UI HTTP route boundary drift');
   if (!Array.isArray(packageJson.openclaw?.extensions) || !packageJson.openclaw.extensions.includes('./dist/plugin.mjs')) throw new Error('OpenClaw extension discovery must name the built plugin entry');
-  const pinnedPackageVersion = '2026.9.4';
+  const pinnedPackageVersion = '2026.9.5';
   if (packageJson.peerDependencies?.openclaw !== pinnedPackageVersion || packageJson.devDependencies?.openclaw !== pinnedPackageVersion) throw new Error('OpenClaw host peer and development packages must be pinned exactly');
-  if (packageJson.openclaw?.compat?.pluginApi !== '=2026.9.4') throw new Error('OpenClaw plugin API must match the current authenticated host exactly');
+  if (packageJson.openclaw?.compat?.pluginApi !== '=2026.9.5') throw new Error('OpenClaw plugin API must match the current authenticated host exactly');
   if (packageLock.packages?.['']?.peerDependencies?.openclaw !== pinnedPackageVersion || packageLock.packages?.['']?.devDependencies?.openclaw !== pinnedPackageVersion || packageLock.packages?.['node_modules/openclaw']?.version !== pinnedPackageVersion) throw new Error('OpenClaw lockfile peer and development packages must match the pinned host package');
   if (packageLock.packages?.['node_modules/openclaw']?.dependencies?.['@openclaw/ai'] !== pinnedPackageVersion || packageLock.packages?.['node_modules/@openclaw/ai']?.version !== pinnedPackageVersion) throw new Error('OpenClaw lockfile dependency graph must match the stable host package');
   for (const [name, version] of Object.entries(packageLock.packages['node_modules/openclaw'].dependencies)) if (packageLock.packages[`node_modules/${name}`]?.version !== version) throw new Error(`OpenClaw lockfile dependency ${name} does not match the stable host package`);
