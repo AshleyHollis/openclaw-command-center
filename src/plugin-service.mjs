@@ -293,16 +293,21 @@ export function createMetadataService(api) {
       if (!Array.isArray(input.selections) || input.selections.length !== 1) throw new SourceServiceError('invalid-request', 'The bounded intake pilot accepts exactly one selected document.');
       const selection = input.selections[0];
       if (!selection || typeof selection !== 'object' || Array.isArray(selection) || Object.keys(selection).some(key => !['topicId', 'path', 'occurredAt', 'observedAt'].includes(key)) || selection.topicId !== reference.topicId) throw new SourceServiceError('invalid-request', 'The selected document must identify its exact Topic, path, and selection times.');
-      const note = await sourceService.notesRead({ schemaVersion: 1, topicId: reference.topicId, referenceId: reference.referenceId, path: selection.path, observedRevision: reference.observedRevision, sourceKind: 'document' });
-      const content = Buffer.isBuffer(note.bytes) ? note.bytes.toString('utf8') : note.text;
-      if (typeof content !== 'string' || typeof note.revision !== 'string' || note.revision.trim() === '') throw new SourceServiceError('source-recovery', 'The selected document did not return authoritative text and version evidence.');
+      let note; let readFailure;
+      try { note = await sourceService.notesRead({ schemaVersion: 1, topicId: reference.topicId, referenceId: reference.referenceId, path: selection.path, observedRevision: reference.observedRevision, sourceKind: 'document' }); }
+      catch (error) { readFailure = error; }
+      const content = Buffer.isBuffer(note?.bytes) ? note.bytes.toString('utf8') : note?.text;
+      if (!readFailure && (typeof content !== 'string' || typeof note.revision !== 'string' || note.revision.trim() === '')) throw new SourceServiceError('source-recovery', 'The selected document did not return authoritative text and version evidence.');
+      const unavailableReason = readFailure?.code === 'not-found' ? 'not-found' : readFailure?.code === 'unauthenticated' || readFailure?.code === 'forbidden' ? 'permission-revoked' : readFailure?.code === 'conflict' || readFailure?.code === 'source-recovery' ? 'version-replaced' : 'temporarily-unavailable';
       const request = {
         schemaVersion: 1,
         logicalOperationId: input.logicalOperationId,
         authorization,
         baselineThrough: input.baselineThrough,
         window: { cursor: `selected:${input.logicalOperationId}`, nextCursor: `complete:${input.logicalOperationId}`, hasMore: false },
-        selections: [{ version: note.revision, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'available', content, ...(selection.topicId ? { topicId: selection.topicId } : {}) }]
+        selections: [readFailure
+          ? { version: `unavailable:${reference.observedRevision ?? 'unknown'}:${unavailableReason}`, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'unavailable', unavailableReason, ...(selection.topicId ? { topicId: selection.topicId } : {}) }
+          : { version: note.revision, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'available', content, ...(selection.topicId ? { topicId: selection.topicId } : {}) }]
       };
       const result = metadataService.ingestSelectedSourceBatch(request);
       const publicResult = Object.freeze({

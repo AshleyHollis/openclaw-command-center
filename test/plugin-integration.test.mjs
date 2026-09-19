@@ -170,6 +170,12 @@ test('bounded document intake reads authoritative content and revision through t
     assert.equal(result.results[0].sourceVersion, 'authoritative-v7');
     assert.equal(result.results[0].loop.title, 'Pay final switchboard work from Fictional Electrician');
     await assert.rejects(() => service.openLoopsIngestSelected({ schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { scopeId: 'fictional-operator', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-invoice' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-document', path: 'selected-invoice.txt', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', content: 'caller supplied' }] }), /selected document/i);
+    service.sourceService.notesRead = async () => { throw Object.assign(new Error('fictional source missing'), { code: 'not-found' }); };
+    const unavailable = await service.openLoopsIngestSelected({ schemaVersion: 1, logicalOperationId: randomUUID(), authenticatedOperatorId: 'fictional-operator', authorization: { scopeId: 'fictional-operator', sourceSystem: 'fictional-documents', sourceKind: 'document', resourceId: 'document:selected-invoice' }, baselineThrough: '2026-09-01T00:00:00.000Z', selections: [{ topicId: 'topic-selected-document', path: 'selected-invoice.txt', occurredAt: '2026-09-21T00:00:00.000Z', observedAt: '2026-09-21T00:01:00.000Z' }] });
+    assert.equal(unavailable.freshness.status, 'unavailable');
+    assert.equal(unavailable.results[0].loop, undefined);
+    assert.match(unavailable.results[0].sourceVersion, /^unavailable:authoritative-v7:not-found$/u);
+    assert.equal(service.openLoopsGet({ loopId: result.results[0].loop.loopId }).loop.state, 'confirmed', 'a source outage must not resolve the existing obligation');
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
