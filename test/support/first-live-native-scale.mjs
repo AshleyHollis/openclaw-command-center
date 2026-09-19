@@ -200,9 +200,11 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(resolved.input.topicId, fixture.topicId);
   assert.equal(resolved.input.referenceId, receipt.result.referenceId);
   assert.deepEqual(Object.keys(resolved.value), ['sessionKey']);
-  const chat = page.locator('openclaw-chat-pane[aria-hidden="false"]');
-  await chat.waitFor();
-  await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, target.sessionKey);
+  const chat = page.locator('openclaw-chat-pane.chat-pane-cache__pane--visible');
+  await chat.waitFor({ timeout: 30_000 });
+  await page.waitForFunction(key => [...document.querySelectorAll('openclaw-chat-pane')].some(pane =>
+    pane.classList.contains('chat-pane-cache__pane--visible') && pane.sessionKey === key), target.sessionKey, { timeout: 30_000 });
+  onProgress('chat-pane-ready');
   observations.conversationCreateMs = now() - started;
   assert.notEqual(target.sessionId, fixture.sessionId);
   const catalog = await request(world, signal, 'sessions.browse', { topicId: fixture.topicId, includeClosed: false });
