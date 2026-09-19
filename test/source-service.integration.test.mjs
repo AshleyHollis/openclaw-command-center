@@ -212,6 +212,13 @@ test('public source service writes durable authoritative Markdown and keeps meta
     }, { topicId: 'topic-integration', referenceId: original.value.note.sourceReference.referenceId,
       path: 'Documents/return.pdf', observedRevision: originalRead.revision });
     assert.deepEqual(Buffer.from(await downloaded.bytes.arrayBuffer()), originalBytes);
+    const invoiceText = 'Invoice: INV-REAL-FICTIONAL-7\nPayee: Fictional Plumber\nPurpose: kitchen rough-in\nAmount due: AUD 725.00\nDue: 2026-10-08T03:00:00.000Z\nPlease pay after checking the work.';
+    const invoiceDocument = await service.notesCreate({ schemaVersion: 1, topicId: 'topic-integration', path: 'Documents/fictional-invoice.txt', content: Buffer.from(invoiceText, 'utf8'), sourceKind: 'document', logicalOperationId: randomUUID() });
+    const invoiceReference = invoiceDocument.value.note.sourceReference;
+    const authoritativeInvoice = await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', referenceId: invoiceReference.referenceId, path: 'Documents/fictional-invoice.txt', sourceKind: 'document' });
+    assert.equal(authoritativeInvoice.bytes.toString('utf8'), invoiceText);
+    const selected = metadata.ingestSelectedSourceBatch({ schemaVersion: 1, logicalOperationId: randomUUID(), authorization: { scopeId: 'fictional-operator', sourceSystem: invoiceReference.sourceSystem, sourceKind: 'document', resourceId: invoiceReference.referenceId }, baselineThrough: '2026-09-01T00:00:00.000Z', window: { cursor: 'selected-real-owner', nextCursor: 'selected-real-owner-complete', hasMore: false }, selections: [{ version: authoritativeInvoice.revision, occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', availability: 'available', content: authoritativeInvoice.bytes.toString('utf8'), topicId: 'topic-integration' }] });
+    assert.equal(selected.freshness.status, 'available'); assert.equal(selected.results[0].loop.title, 'Pay kitchen rough-in from Fictional Plumber'); assert.equal(selected.results[0].loop.amount, 72500); assert.equal(selected.results[0].loop.dueAt, '2026-10-08T03:00:00.000Z');
     assert.equal((await service.notesRead({ schemaVersion: 1, topicId: 'topic-integration', path: 'nested/note.md' })).text, 'authoritative text');
     assert.throws(() => service.analysisRead({ schemaVersion: 1, topicId: 'topic-integration' }), (error) => error.code === 'capability-unavailable');
   } finally {
