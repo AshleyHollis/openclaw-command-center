@@ -1310,8 +1310,11 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const authoritative = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 }, signal });
       const topics = authoritative?.result ?? authoritative;
-      for (const category of ['project', 'area', 'resource']) {
-        assert.ok(Array.isArray(topics?.activeGroups?.[category]));
+      const authoritativeCategories = Object.keys(topics?.activeGroups ?? {}).sort();
+      assert.ok(authoritativeCategories.includes(fixture.paraCategory));
+      assert.deepEqual(Object.keys(browserTopics.activeGroups).sort(), authoritativeCategories);
+      for (const category of authoritativeCategories) {
+        assert.ok(Array.isArray(topics.activeGroups[category]));
         assert.deepEqual(browserTopics.activeGroups[category], topics.activeGroups[category]);
       }
       await nativePage.getByRole('button', { name: 'Refresh Topics', exact: true }).waitFor();
@@ -1551,7 +1554,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const restartedTopicResponse = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
         method: 'command-center.v1.topics.list', params: { schemaVersion: 1 }, signal });
       const restartedTopics = restartedTopicResponse?.result ?? restartedTopicResponse;
-      for (const category of ['project', 'area', 'resource']) assert.deepEqual(browserTopics.activeGroups[category], restartedTopics.activeGroups[category]);
+      assert.deepEqual(Object.keys(browserTopics.activeGroups).sort(), Object.keys(restartedTopics.activeGroups).sort());
+      for (const category of Object.keys(restartedTopics.activeGroups)) assert.deepEqual(browserTopics.activeGroups[category], restartedTopics.activeGroups[category]);
       const restartedTopic = restartedTopics.activeGroups[fixture.paraCategory].filter((topic) => topic.topicId === fixture.topicId);
       assert.equal(restartedTopic.length, 1);
       assert.equal(restartedTopic[0].name, fixture.name);
