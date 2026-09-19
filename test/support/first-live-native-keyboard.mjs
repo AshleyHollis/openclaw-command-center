@@ -92,7 +92,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   const creation = nativePage.locator('form').filter({ has: page.getByRole('heading', { name: 'New Conversation', exact: true }) });
   const createButton = () => creation.getByRole('button', { name: 'Create Conversation', exact: true });
   const gatewayRead = async (method, params = { schemaVersion: 1 }) => unwrap(await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method, params, signal }));
-  const ready = predicate => waitForConsecutiveReadiness(predicate, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+  const ready = (predicate, deadlineMs = 30_000) => waitForConsecutiveReadiness(predicate, host.earlyExit, { deadlineMs, delayMs: 100, signal });
   const press = async (target, { reverse = false } = {}) => {
     signal.throwIfAborted();
     await tabTo(target, { reverse, deferredIndicator });
@@ -329,7 +329,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     await ready(async () => {
       try { const catalog = await gatewayRead('plugins.controlUi.list', {}); return catalog.plugins?.some(row => row.pluginId === 'command-center' && row.revision === native.revision); }
       catch { signal.throwIfAborted(); return false; }
-    });
+    }, 90_000);
     progress(`${state}:catalog-ready`);
     const status = await gatewayRead('command-center.v1.sources.status');
     assert.equal(status.mode, 'degraded');

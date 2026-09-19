@@ -28,7 +28,13 @@ export async function createRequestScopedConversationRuntime({ getRequestScope, 
     || (typeof resolver !== 'function' && !directContext) || role !== 'operator' || !Array.isArray(granted)
     || !granted.every(value => typeof value === 'string') || !granted.some(value => value === 'operator.write' || value === 'operator.admin')) return refuse();
   const scopes = JSON.stringify([...granted].sort());
-  const context = typeof resolver === 'function' ? resolver() : directContext;
+  const resolvedContext = typeof resolver === 'function' ? resolver() : undefined;
+  // Current Gateway requests publish their admitted context directly. A
+  // resolver can be present but intentionally closed when only the active
+  // request frame may dispatch; in that case the exact scope-owned context is
+  // the authority and must remain attached to this same frame.
+  const context = resolvedContext ?? directContext;
+  const usesDirectContext = resolvedContext === undefined && directContext !== undefined;
   if (!context) return refuse();
   const assertCurrent = () => {
     const currentPrincipal = client?.authenticatedUserProfile?.profileId ?? client?.authenticatedUserId ?? client?.authenticatedOperatorId;
@@ -37,7 +43,9 @@ export async function createRequestScopedConversationRuntime({ getRequestScope, 
       || !(scope.gatewayMethodDispatchAllowed === true || (requiredGatewayMethods.length > 0 && requiredGatewayMethods.every(method => scope.gatewayMethodDispatchMethods?.includes(method))))
       || scope.resolveGatewayContext !== resolver
       || client.connect?.role !== role || !Array.isArray(client.connect?.scopes) || JSON.stringify([...client.connect.scopes].sort()) !== scopes
-      || (typeof resolver === 'function' ? resolver() !== context : scope.context !== context)) refuse();
+      || (usesDirectContext
+        ? scope.context !== context || (typeof resolver === 'function' && resolver() !== undefined)
+        : typeof resolver !== 'function' || resolver() !== context)) refuse();
   };
   assertCurrent();
   if (gatewayRequest !== undefined && typeof gatewayRequest !== 'function') throw new TypeError('gatewayRequest must be a function');

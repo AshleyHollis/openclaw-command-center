@@ -64,6 +64,11 @@ test('Conversation authority refuses missing identity or lifetime and detects ch
   assert.equal(directRuntime.creationAuthority.assertCurrent(), undefined);
   direct.context = {};
   assert.throws(() => directRuntime.creationAuthority.assertCurrent(), { code: 'unauthenticated' });
+  const currentOnly = makeScope(); currentOnly.context = context; currentOnly.resolveGatewayContext = () => undefined;
+  const currentOnlyRuntime = await requestRuntime.createRequestScopedConversationRuntime({ getRequestScope: () => currentOnly });
+  assert.equal(currentOnlyRuntime.creationAuthority.assertCurrent(), undefined);
+  currentOnly.resolveGatewayContext = () => context;
+  assert.throws(() => currentOnlyRuntime.creationAuthority.assertCurrent(), { code: 'unauthenticated' });
 });
 
 test('native Topic grouping accepts only its host-declared Gateway method allowlist', async () => {
