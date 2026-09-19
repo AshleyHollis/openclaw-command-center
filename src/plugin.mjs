@@ -118,6 +118,13 @@ export default definePluginEntry({
         if (property === 'openLoopsIngestSelected') return (input) => service.openLoopsIngestSelected(input);
         if (property === 'openLoopsDecide') return (input) => service.openLoopsDecide(input);
         if (property === 'openLoopsPaymentStatus') return (input) => service.openLoopsPaymentStatus(input);
+        if (property === 'openLoopsRenovationRequirement') return (input) => service.openLoopsRenovationRequirement(input);
+        if (property === 'openLoopsRenovationPurchase') return (input) => service.openLoopsRenovationPurchase(input);
+        if (property === 'openLoopsRenovationReplacement') return (input) => service.openLoopsRenovationReplacement(input);
+        if (property === 'openLoopsRenovationFulfilment') return (input) => service.openLoopsRenovationFulfilment(input);
+        if (property === 'openLoopsRenovationStage') return (input) => service.openLoopsRenovationStage(input);
+        if (property === 'openLoopsRenovationStagePrerequisites') return (input) => service.openLoopsRenovationStagePrerequisites(input);
+        if (property === 'openLoopsRenovationDecisionConflict') return (input) => service.openLoopsRenovationDecisionConflict(input);
         if (property === 'dashboardUpdateSettings') return (input) => service.dashboardUpdateSettings(input);
         if (property === 'notificationReconcile') return (runtime) => service.notificationReconcile(runtime);
         if (property === 'notificationCaptureBinding') return () => service.notificationCaptureBinding();

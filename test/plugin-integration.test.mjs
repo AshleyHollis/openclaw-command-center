@@ -93,7 +93,7 @@ test('native registration exposes authenticated Topic methods without an iframe 
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
-test('registered open-loop bridge remains unavailable before host-pair qualification', async () => {
+test('registered open-loop bridge applies authenticated lifecycle changes and replays them safely', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-open-loop-bridge-'));
   let service;
   try {
@@ -131,8 +131,33 @@ test('registered open-loop bridge remains unavailable before host-pair qualifica
     assert.equal(applied.disposition, 'applied');
     assert.equal(replayed.disposition, 'duplicate');
     assert.equal(replayed.loop.revision, applied.loop.revision);
-    await assert.rejects(host.authenticatedGatewayRequest('command-center.v1.open-loops.list', { schemaVersion: 1, offset: 0, limit: 20 }), error => error.code === 'feature-unavailable');
-    await assert.rejects(host.authenticatedGatewayRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, paymentState: 'paid', rationale: 'A fictional settlement was verified.' }), error => error.code === 'feature-unavailable');
+    const page = await host.authenticatedGatewayRequest('command-center.v1.open-loops.list', { schemaVersion: 1, offset: 0, limit: 20 });
+    assert.equal(page.result.loops[0].paymentState, 'payment-pending');
+    const settled = await host.authenticatedGatewayRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, paymentState: 'paid', rationale: 'A fictional settlement was verified.' });
+    assert.equal(settled.result.loop.paymentState, 'paid');
+    assert.equal(settled.result.loop.state, 'resolved');
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('registered renovation bridge preserves exact purchase relationships and separate replacement obligations', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-renovation-bridge-'));
+  let service;
+  const at = '2026-09-20T02:00:00.000Z';
+  const source = (externalId) => ({ system: 'fictional-renovation-source', kind: 'operator-evidence', externalId, version: 'v1' });
+  const ref = (kind, id) => ({ kind, namespace: 'fictional-home-project', id });
+  try {
+    const host = fakePublishedApi(stateDir);
+    plugin.register(host.api);
+    service = host.services[0];
+    await service.start();
+    const requirement = await host.authenticatedGatewayRequest('command-center.v1.open-loops.renovation-requirement', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 0, requirement: { schemaVersion: 1, source: source('required-mixer'), requirement: ref('purchase', 'buy-mixer'), occurredAt: at, observedAt: at, historicalBaseline: false, title: 'Buy fictional sink mixer' } });
+    assert.equal(requirement.result.loop.state, 'waiting');
+    const purchased = await host.authenticatedGatewayRequest('command-center.v1.open-loops.renovation-purchase', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 1, reconciliation: { schemaVersion: 1, source: source('receipt-mixer'), requirement: ref('purchase', 'buy-mixer'), purchase: ref('purchase', 'purchased-mixer-001'), occurredAt: at, observedAt: at, historicalBaseline: false } });
+    assert.equal(purchased.result.loop.state, 'resolved');
+    const replacement = await host.authenticatedGatewayRequest('command-center.v1.open-loops.renovation-replacement', { schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: 0, replacement: { schemaVersion: 1, source: source('replacement-mixer'), replacementPurchase: ref('purchase', 'replacement-mixer-002'), replacedItem: ref('renovation-item', 'faulty-mixer-001'), obligation: ref('return', 'return-faulty-mixer-001'), occurredAt: at, observedAt: at, historicalBaseline: false, title: 'Return fictional faulty mixer', dueAt: '2026-09-27T00:00:00.000Z' } });
+    assert.equal(replacement.result.loop.state, 'confirmed');
+    assert.equal(replacement.result.loop.expectedEvent, 'return completion');
+    assert.notEqual(replacement.result.loop.loopId, purchased.result.loop.loopId);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

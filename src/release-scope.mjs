@@ -36,7 +36,17 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.schedules.set-enabled', 'command-center.v1.schedules.run',
     'command-center.v1.attention.list', 'command-center.v1.attention.get',
     'command-center.v1.attention.act', 'command-center.v1.activity.list',
-    'command-center.v1.activity.get', 'command-center.v1.dashboard.get'
+    'command-center.v1.activity.get', 'command-center.v1.dashboard.get',
+    'command-center.v1.open-loops.list', 'command-center.v1.open-loops.get',
+    'command-center.v1.open-loops.intake-selected', 'command-center.v1.open-loops.decide',
+    'command-center.v1.open-loops.payment-status',
+    'command-center.v1.open-loops.renovation-requirement',
+    'command-center.v1.open-loops.renovation-purchase',
+    'command-center.v1.open-loops.renovation-replacement',
+    'command-center.v1.open-loops.renovation-fulfilment',
+    'command-center.v1.open-loops.renovation-stage',
+    'command-center.v1.open-loops.renovation-stage-prerequisites',
+    'command-center.v1.open-loops.renovation-decision-conflict'
   ]),
   topicAction: Object.freeze(['conversations.create', 'conversations.creation.inspect', 'conversations.creation.reconcile', 'conversations.creation.acknowledge'])
 });

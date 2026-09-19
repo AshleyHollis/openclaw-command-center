@@ -38,8 +38,8 @@ function normalizedTiming(loop, acceptedTiming) {
     if (acceptedTiming.kind === 'unknown' && keys.length === 1) return { kind: 'unknown' };
     throw sourceError('invalid-request', 'acceptedTiming is unsupported.');
   }
-  if (loop.dueAt) return { kind: 'instant', at: loop.dueAt, basis: 'due-at' };
   if (loop.reviewAt) return { kind: 'instant', at: loop.reviewAt, basis: 'review-at' };
+  if (loop.dueAt) return { kind: 'instant', at: loop.dueAt, basis: 'due-at' };
   return { kind: 'unknown' };
 }
 

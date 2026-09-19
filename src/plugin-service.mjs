@@ -8,6 +8,7 @@ import { createAuthoritativeSourceService } from './sources/service.mjs';
 import { createTopicService } from './topics/service.mjs';
 import { SourceServiceError } from './sources/errors.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
+import { createOpenLoopReminderCoordinator } from './open-loops/reminder-coordinator.mjs';
 
 function unavailable(feature) {
   const reason = FIRST_LIVE_FEATURES[feature] === false
@@ -28,7 +29,13 @@ function publicOpenLoopEvidence(observation) {
     observedAt: observation.observedAt,
     historicalBaseline: observation.historicalBaseline,
     ...Object.fromEntries(publicEvidenceFields.filter(key => observation.facts[key] !== undefined).map(key => [key, observation.facts[key]])),
-    ...(typeof observation.facts.sourceAvailable === 'boolean' ? { sourceAvailable: observation.facts.sourceAvailable } : {})
+    ...(typeof observation.facts.sourceAvailable === 'boolean'
+      ? { sourceAvailable: observation.facts.sourceAvailable }
+      : observation.facts.availability === 'available'
+        ? { sourceAvailable: true }
+        : observation.facts.availability === 'unavailable'
+          ? { sourceAvailable: false }
+          : {})
   });
 }
 
@@ -52,6 +59,7 @@ export function createMetadataService(api) {
   let sourceService;
   let attentionService;
   let dashboardService;
+  let openLoopReminders;
   let topicService;
   let stopPromise;
   let releaseDurableFolderStager;
@@ -60,6 +68,37 @@ export function createMetadataService(api) {
   const refuseRecovery = () => { throw new SourceServiceError('recovery-only', 'Command Center is recovery-only; authoritative data and mutations remain unavailable.'); };
   const requireOperational = () => { if (recoveryOnly) refuseRecovery(); };
   const refuseDeferred = feature => { requireOperational(); return unavailable(feature); };
+  const requireOperator = (input, action) => {
+    const operatorId = typeof input?.authenticatedOperatorId === 'string' ? input.authenticatedOperatorId.trim() : '';
+    if (!operatorId) throw new SourceServiceError('unauthenticated', `Authenticated operator identity is required for ${action}.`);
+    return operatorId;
+  };
+  const reminderOperationId = parentId => {
+    const bytes = createHash('sha256').update(`${parentId}\u0000open-loop-reminder`).digest();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = bytes.subarray(0, 16).toString('hex');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
+  const reminderSummary = (status, plan) => Object.freeze({ status, action: plan.action, referenceId: plan.referenceId, ...(plan.reason ? { reason: plan.reason } : {}) });
+  function reconcileOpenLoopReminder(result, parentOperationId) {
+    if (!openLoopReminders) return result;
+    const plan = openLoopReminders.plan({ loop: result.loop });
+    if (['none', 'blocked'].includes(plan.action)) return Object.freeze({ ...result, reminder: reminderSummary(plan.action, plan) });
+    const logicalOperationId = reminderOperationId(parentOperationId);
+    const prior = metadataService.getOperation(logicalOperationId);
+    if (prior) {
+      if (prior.state === 'unknown') throw new SourceServiceError('unknown', 'The native Reminder outcome is unknown. Retry the unchanged open-loop action to reconcile it.');
+      return Object.freeze({ ...result, reminder: reminderSummary(prior.state, plan) });
+    }
+    const binding = metadataService.getSourceReference(plan.referenceId);
+    const expectedConfigRevision = binding?.observedRevision;
+    return openLoopReminders.reconcile({
+      loop: result.loop,
+      logicalOperationId,
+      ...(expectedConfigRevision === undefined ? {} : { expectedConfigRevision })
+    }).then(receipt => Object.freeze({ ...result, reminder: reminderSummary(receipt.status, receipt.plan) }));
+  }
   return {
     id: 'command-center-metadata',
     async start() {
@@ -142,6 +181,7 @@ export function createMetadataService(api) {
         return reader;
       };
       sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, transcriptReader: readVisibleTranscript, historyReader, noteRecoveryEffects: false });
+      if (capabilities.scheduler) openLoopReminders = createOpenLoopReminderCoordinator({ api, gateway: api.runtime.gateway, metadata: metadataService });
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot });
       const migrationResult = await migrationService.start();
       if (FIRST_LIVE_FEATURES.dashboard) {
@@ -190,6 +230,7 @@ export function createMetadataService(api) {
         sourceService = undefined;
         attentionService = undefined;
         dashboardService = undefined;
+        openLoopReminders = undefined;
         topicService = undefined;
       });
       return stopPromise;
@@ -247,7 +288,7 @@ export function createMetadataService(api) {
       if (!input.authorization || input.authorization.scopeId !== operatorId) throw new SourceServiceError('unauthenticated', 'Selected-source authorization must belong to the authenticated operator.');
       const { authenticatedOperatorId: _operator, ...request } = input;
       const result = metadataService.ingestSelectedSourceBatch(request);
-      return Object.freeze({
+      const publicResult = Object.freeze({
         schemaVersion: 1,
         disposition: result.disposition,
         checkpoint: result.checkpoint,
@@ -261,16 +302,55 @@ export function createMetadataService(api) {
           ...(item.loop ? { loop: item.loop } : {})
         })))
       });
+      const scheduled = publicResult.results.map((item, index) => item.loop ? reconcileOpenLoopReminder({ schemaVersion: 1, disposition: item.disposition, loop: item.loop }, `${input.logicalOperationId}:${index}`) : null);
+      if (!scheduled.some(value => value && typeof value.then === 'function')) return publicResult;
+      return Promise.all(scheduled.map(value => Promise.resolve(value))).then(() => publicResult);
     },
     openLoopsDecide(input = {}) {
       requireOperational();
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for open-loop decisions.');
-      return metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
+      const result = metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
+      return reconcileOpenLoopReminder(result, input.logicalOperationId);
     },
     openLoopsPaymentStatus(input = {}) {
       requireOperational();
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for payment status records.');
-      return metadataService.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, paymentState: input.paymentState, ...(input.paidAmount === undefined ? {} : { paidAmount: input.paidAmount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
+      const result = metadataService.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, paymentState: input.paymentState, ...(input.paidAmount === undefined ? {} : { paidAmount: input.paidAmount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
+      return reconcileOpenLoopReminder(result, input.logicalOperationId);
+    },
+    openLoopsRenovationRequirement(input = {}) {
+      requireOperational(); requireOperator(input, 'renovation requirement records');
+      const result = metadataService.recordRenovationRequirement({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, requirement: input.requirement });
+      return reconcileOpenLoopReminder(result, input.logicalOperationId);
+    },
+    openLoopsRenovationPurchase(input = {}) {
+      requireOperational(); requireOperator(input, 'renovation purchase reconciliation');
+      const result = metadataService.reconcileRenovationPurchase({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, reconciliation: input.reconciliation });
+      return reconcileOpenLoopReminder(result, input.logicalOperationId);
+    },
+    openLoopsRenovationReplacement(input = {}) {
+      requireOperational(); requireOperator(input, 'renovation replacement records');
+      const result = metadataService.recordRenovationReplacement({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, replacement: input.replacement });
+      return reconcileOpenLoopReminder(result, input.logicalOperationId);
+    },
+    openLoopsRenovationFulfilment(input = {}) {
+      requireOperational(); requireOperator(input, 'renovation fulfilment records');
+      const result = metadataService.recordRenovationFulfilment({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, fulfilment: input.fulfilment });
+      return reconcileOpenLoopReminder(result, input.logicalOperationId);
+    },
+    openLoopsRenovationStage(input = {}) {
+      requireOperational(); requireOperator(input, 'renovation stage activation');
+      const result = metadataService.recordRenovationStageActivation({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, activation: input.activation });
+      return Object.freeze({ schemaVersion: 1, disposition: result.disposition, observationId: result.observation.observationId });
+    },
+    openLoopsRenovationStagePrerequisites(input = {}) {
+      requireOperational();
+      return metadataService.projectRenovationStagePrerequisites({ stage: input.stage, ...(input.topicId ? { topicId: input.topicId } : {}) });
+    },
+    openLoopsRenovationDecisionConflict(input = {}) {
+      requireOperational(); requireOperator(input, 'renovation decision review');
+      const result = metadataService.recordRenovationDecisionConflict({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: input.expectedRevision, conflict: input.conflict });
+      return result.decision;
     },
     dashboardUpdateSettings() { return refuseDeferred('dashboard'); },
     notificationReconcile() { return refuseDeferred('notifications'); },

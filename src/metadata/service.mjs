@@ -60,6 +60,7 @@ import { installTransactionIntake } from './transaction-intake.mjs';
 import { installDecisionMemory } from './decision-memory.mjs';
 import { installEntityCorrections } from './entity-corrections.mjs';
 import { installSelectedSourceIntake } from './selected-source-intake.mjs';
+import { createRenovationFollowThrough } from './renovation-follow-through.mjs';
 
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii');
 const diagnosticLimit = 300;
@@ -2169,6 +2170,14 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   installDecisionMemory(service, { ErrorType: CommandCenterMetadataError });
   installEntityCorrections(service, { ErrorType: CommandCenterMetadataError });
   installSelectedSourceIntake(service, { ErrorType: CommandCenterMetadataError });
+  const renovation = createRenovationFollowThrough(service);
+  service.recordRenovationRequirement = renovation.recordRequirement;
+  service.reconcileRenovationPurchase = renovation.reconcilePurchasedItem;
+  service.recordRenovationReplacement = renovation.recordReplacementDisposition;
+  service.recordRenovationFulfilment = renovation.recordFulfilment;
+  service.recordRenovationStageActivation = renovation.recordStageActivation;
+  service.projectRenovationStagePrerequisites = renovation.projectStagePrerequisites;
+  service.recordRenovationDecisionConflict = renovation.recordDecisionConflict;
   return Object.freeze(service);
 }
 

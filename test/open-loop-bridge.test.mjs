@@ -19,9 +19,9 @@ const loop = {
   revision: 1
 };
 
-test('open-loop bridge contracts use read and operator-write scopes with closed lifecycle inputs', () => {
+test('open-loop bridge contracts use read and native-Reminder admin scopes with closed lifecycle inputs', () => {
   assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.list'].scope, 'operator.read');
-  assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.payment-status'].scope, 'operator.write');
+  assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.payment-status'].scope, 'operator.admin');
   const decisionId = randomUUID();
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: decisionId, loopId: loop.loopId, expectedRevision: 1, decision: 'defer', reviewAt: '2026-09-30T00:00:00.000Z', rationale: 'Wait for the fictional corrected invoice.' }));
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: decisionId, loopId: loop.loopId, expectedRevision: 1, decision: 'defer', rationale: 'Missing review time.' }), /reviewAt/);
@@ -41,7 +41,7 @@ test('selected-source intake bridge accepts only the bounded raw-source envelope
     window: { cursor: 'cursor-0', nextCursor: 'cursor-1', hasMore: false },
     selections: [{ version: 'v1', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', availability: 'available', content: 'Invoice: INV-FICTIONAL\nAmount due: AUD 48.00' }]
   };
-  assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.intake-selected'].scope, 'operator.write');
+  assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.intake-selected'].scope, 'operator.admin');
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.intake-selected', params));
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.intake-selected', { ...params, interpretation: { type: 'bill' } }), /Unsupported bridge request field/);
   const result = await invokeBridgeMethod({
@@ -65,7 +65,7 @@ test('open-loop detail sanitization withholds raw source fields and attachment i
   assert.equal(result.evidence[0].invoiceId, 'INVOICE-FICTIONAL');
 });
 
-test('registered open-loop mutations remain gated until the qualified host pair activates them', async () => {
+test('registered open-loop mutations require an authenticated operator and reach the qualified service', async () => {
   const methods = new Map();
   let received;
   registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, {
@@ -75,10 +75,10 @@ test('registered open-loop mutations remain gated until the qualified host pair 
   let unauthenticated;
   await methods.get('command-center.v1.open-loops.payment-status')({ req: { id: 'request-unauthenticated' }, params, context: { authenticated: true }, respond: (ok, result, error) => { unauthenticated = { ok, result, error }; } });
   assert.equal(unauthenticated.ok, false);
-  assert.equal(unauthenticated.error.code, 'feature-unavailable');
+  assert.equal(unauthenticated.error.code, 'unauthenticated');
   let authenticated;
   await methods.get('command-center.v1.open-loops.payment-status')({ req: { id: 'request-authenticated' }, params, client: { authenticatedUserProfile: { profileId: 'fictional-operator' } }, context: { authenticated: true }, respond: (ok, result, error) => { authenticated = { ok, result, error }; } });
-  assert.equal(authenticated.ok, false);
-  assert.equal(authenticated.error.code, 'feature-unavailable');
-  assert.equal(received, undefined);
+  assert.equal(authenticated.ok, true);
+  assert.equal(authenticated.result.result.loop.paymentState, 'payment-pending');
+  assert.equal(received.authenticatedOperatorId, 'fictional-operator');
 });

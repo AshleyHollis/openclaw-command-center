@@ -218,6 +218,13 @@ const handlerMap = Object.freeze({
   'command-center.v1.open-loops.intake-selected': (service, params) => service.openLoopsIngestSelected(params),
   'command-center.v1.open-loops.decide': (service, params) => service.openLoopsDecide(params),
   'command-center.v1.open-loops.payment-status': (service, params) => service.openLoopsPaymentStatus(params),
+  'command-center.v1.open-loops.renovation-requirement': (service, params) => service.openLoopsRenovationRequirement(params),
+  'command-center.v1.open-loops.renovation-purchase': (service, params) => service.openLoopsRenovationPurchase(params),
+  'command-center.v1.open-loops.renovation-replacement': (service, params) => service.openLoopsRenovationReplacement(params),
+  'command-center.v1.open-loops.renovation-fulfilment': (service, params) => service.openLoopsRenovationFulfilment(params),
+  'command-center.v1.open-loops.renovation-stage': (service, params) => service.openLoopsRenovationStage(params),
+  'command-center.v1.open-loops.renovation-stage-prerequisites': (service, params) => service.openLoopsRenovationStagePrerequisites(params),
+  'command-center.v1.open-loops.renovation-decision-conflict': (service, params) => service.openLoopsRenovationDecisionConflict(params),
   'command-center.v1.search.query': (service, params) => service.searchQuery(params),
   'command-center.v1.search.prepare-rebuild': (service, params) => service.searchPrepareRebuild(params)
 });
@@ -252,7 +259,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
           ? client.authenticatedUserProfile?.profileId
           : client?.authenticatedOperatorId ?? client?.authenticatedUserId;
         const authenticatedOperatorId = typeof principal === 'string' && principal.trim() !== '' ? principal : null;
-        const operatorMutation = method === 'command-center.v1.attention.act' || method === 'command-center.v1.open-loops.intake-selected' || method === 'command-center.v1.open-loops.decide' || method === 'command-center.v1.open-loops.payment-status';
+        const operatorMutation = method === 'command-center.v1.attention.act' || method.startsWith('command-center.v1.open-loops.') && WRITE_METHODS.includes(method);
         if (operatorMutation && authenticatedOperatorId === null) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for this action.');
         const operatorId = method.startsWith('command-center.v1.attention.') || method.startsWith('command-center.v1.open-loops.') ? authenticatedOperatorId : null;
         let runtime = {};

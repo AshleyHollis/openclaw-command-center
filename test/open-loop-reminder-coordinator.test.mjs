@@ -91,6 +91,9 @@ test('planning preserves unknown and date-only timing and requires an existing T
   assert.equal(dateOnly.timing.date, '2026-10-04');
   assert.equal(planOpenLoopReminder({ loop: loop({ topicId: undefined }) }).reason, 'topic-required');
   assert.equal(planOpenLoopReminder({ loop: loop({ state: 'suggested' }) }).reason, 'confirmation-required');
+  const deferred = planOpenLoopReminder({ loop: loop({ state: 'waiting', reviewAt: correctedAt }) });
+  assert.equal(deferred.timing.at, correctedAt);
+  assert.equal(deferred.timing.basis, 'review-at');
 });
 
 test('a Topic-bound open loop creates, corrects, and cancels one native Reminder through durable owner receipts', async () => {
