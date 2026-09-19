@@ -23,6 +23,7 @@ jobs:
       IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:f20b645907bdfb4bedcc14a3af3e2a7ea060c507635a9eca071fd3592a618d9d
       OPENCLAW_COMMIT: 8490d8016bdd46c8e29301efbc91f99eaab7de8d
       OPENCLAW_VERSION: 2026.9.5
+      COMMAND_CENTER_CONTROLLER_SOURCE_ROOT: ${{ github.workspace }}/_openclaw-source
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:

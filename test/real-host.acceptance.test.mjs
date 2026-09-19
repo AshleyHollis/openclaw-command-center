@@ -120,8 +120,14 @@ async function scanSealedCandidateSafety(buildReceipt) {
     assert.ok(buildReceipt.files.some((entry) => entry.path === relative), `Sealed candidate is missing vetted native vendor asset: ${relative}`);
   }
   const dist = path.join(process.cwd(), 'dist');
+  const controllerSourceRoot = process.env.COMMAND_CENTER_CONTROLLER_SOURCE_ROOT;
+  if (controllerSourceRoot) {
+    assert.equal(path.resolve(controllerSourceRoot), path.join(process.cwd(), '_openclaw-source'),
+      'The release controller source boundary must name the workflow-owned OpenClaw checkout');
+  }
   return scanRepositorySafety(process.cwd(), {
     generated: [dist],
+    controllerRoots: controllerSourceRoot ? [controllerSourceRoot] : [],
     trustedContent: nativeVendorModules.map((relative) => path.join(dist, relative))
   });
 }

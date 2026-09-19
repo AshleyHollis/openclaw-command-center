@@ -42,7 +42,7 @@ test('scope-v2 acceptance requires report version 4, a separate budget and nativ
 
 test('real-host release dispatches native producers and preserves the controller receipt boundary', async () => {
   // Static wiring checks complement the real coordinator tests; not runtime qualification.
-  const source = await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8');
+  const source = (await readFile(new URL('./real-host.acceptance.test.mjs', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
   const start = source.indexOf("if (['release', 'prerequisites'].includes(acceptancePlan.kind)) {\n    assert.ok(descriptor");
   const end = source.indexOf('const isolatedEvidence = new Map()', start);
   assert.ok(start > 0 && end > start);
