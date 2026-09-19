@@ -61,7 +61,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     }
   }
 
-  function renderOpenLoops(openLoops) {
+  function renderOpenLoops(openLoops, pending) {
     if (!openLoops || typeof openLoops !== 'object' || !Number.isSafeInteger(openLoops.total)) return;
     content.append(element('h2', 'Open loops'));
     content.append(element('p', `${openLoops.attentionTotal} need attention · ${openLoops.comingUpTotal} coming up · ${openLoops.waitingTotal} waiting · ${openLoops.suggestedTotal} suggestions · ${openLoops.deferredTotal} deferred`));
@@ -78,6 +78,62 @@ export function mountAttentionPage(container, context, operations = new Map()) {
         if (nonBlank(card.whyNow)) row.append(element('p', card.whyNow));
         if (Array.isArray(card.actions) && card.actions.length) row.append(element('p', `Available actions: ${card.actions.join(', ')}.`));
         row.append(element('p', `${Number.isSafeInteger(card.evidenceCount) ? card.evidenceCount : 0} linked source ${card.evidenceCount === 1 ? 'item' : 'items'}.`));
+        const evidence = element('button', 'Review evidence'); evidence.type = 'button';
+        evidence.addEventListener('click', async () => {
+          if (!current(pending) || evidence.disabled) return;
+          evidence.disabled = true;
+          try {
+            const detail = unwrap(await host.request('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: card.loopId }));
+            if (!current(pending) || detail?.loop?.loopId !== card.loopId) return;
+            let disclosure = row.querySelector('details');
+            if (!disclosure) { disclosure = element('details'); disclosure.append(element('summary', 'Source evidence')); row.append(disclosure); }
+            disclosure.replaceChildren(element('summary', 'Source evidence'), element('pre', text(detail.evidence)));
+            disclosure.open = true;
+          } catch (error) { if (current(pending)) report(error?.message || 'Open-loop evidence is unavailable.'); }
+          finally { if (current(pending)) evidence.disabled = false; }
+        }, { signal });
+        row.append(evidence);
+        if (writable() && card.kind === 'payment' && !['paid', 'cancelled'].includes(card.paymentState)) {
+          const form = element('form');
+          form.append(element('h5', 'Record payment status'), element('p', 'This records your status assertion. It does not pay the bill or contact the sender.'));
+          const statusLabel = element('label', 'Status '); const choice = element('select'); choice.name = 'paymentState';
+          for (const [value, label] of [['payment-pending', 'Payment initiated; settlement pending'], ['paid', 'Paid and verified by me'], ['disputed', 'Disputed'], ['uncertain', 'Needs reconciliation']]) { const option = element('option', label); option.value = value; choice.append(option); }
+          statusLabel.append(choice);
+          const rationaleLabel = element('label', ' Evidence or rationale '); const rationale = element('textarea'); rationale.name = 'rationale'; rationale.required = true; rationale.maxLength = 1000; rationaleLabel.append(rationale);
+          const save = element('button', 'Save payment status'); save.type = 'submit';
+          form.append(statusLabel, rationaleLabel, save);
+          form.addEventListener('submit', async event => {
+            event.preventDefault();
+            if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
+            save.disabled = true;
+            try {
+              const response = unwrap(await host.request('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, paymentState: choice.value, rationale: rationale.value.trim() }));
+              if (!current(pending) || response?.loop?.loopId !== card.loopId) return;
+              await load();
+              if (!signal.aborted && presented && readable()) report('Payment status recorded. No payment was submitted.');
+            } catch (error) { if (current(pending)) report(error?.message || 'Payment status was not recorded.'); }
+            finally { if (current(pending)) save.disabled = false; }
+          }, { signal });
+          row.append(form);
+        } else if (writable() && card.kind === 'response' && !['resolved', 'cancelled'].includes(card.state)) {
+          const form = element('form');
+          form.append(element('h5', 'Record response outcome'), element('p', 'This records that the request was addressed. It does not send a message.'));
+          const rationaleLabel = element('label', ' Evidence or rationale '); const rationale = element('textarea'); rationale.required = true; rationale.maxLength = 1000; rationaleLabel.append(rationale);
+          const save = element('button', 'Mark response addressed'); save.type = 'submit'; form.append(rationaleLabel, save);
+          form.addEventListener('submit', async event => {
+            event.preventDefault();
+            if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
+            save.disabled = true;
+            try {
+              const response = unwrap(await host.request('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), loopId: card.loopId, expectedRevision: card.revision, decision: 'resolve', rationale: rationale.value.trim() }));
+              if (!current(pending) || response?.loop?.loopId !== card.loopId) return;
+              await load();
+              if (!signal.aborted && presented && readable()) report('Response outcome recorded. No message was sent.');
+            } catch (error) { if (current(pending)) report(error?.message || 'Response outcome was not recorded.'); }
+            finally { if (current(pending)) save.disabled = false; }
+          }, { signal });
+          row.append(form);
+        }
         content.append(row);
       }
     }
@@ -195,7 +251,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { notificationRecord: card.notificationRecordId } }); }, { signal }); content.append(button);
         }
-        renderOpenLoops(dashboard.openLoops);
+        renderOpenLoops(dashboard.openLoops, pending);
         renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending);
         report(cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : 'No current Attention items.'); return;
       }

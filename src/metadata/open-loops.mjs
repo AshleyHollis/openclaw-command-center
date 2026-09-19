@@ -148,6 +148,14 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
   service.getOpenLoop = loopId => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(text(loopId, 'loopId'))));
   service.findOpenLoopBySubject = (kind, stableSubjectId) => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(text(kind, 'kind', 80), text(stableSubjectId, 'stableSubjectId', 500))));
   service.listOpenLoops = () => inspect(db => db.prepare('SELECT * FROM open_loops ORDER BY updated_at, loop_id').all().map(row => mapLoop(db, row)));
+  service.listOpenLoopsPage = ({ offset = 0, limit = 50 } = {}) => {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail('open-loop-intent-invalid');
+    return inspect(db => {
+      const total = db.prepare('SELECT COUNT(*) AS total FROM open_loops').get().total;
+      const loops = db.prepare('SELECT * FROM open_loops ORDER BY updated_at, loop_id LIMIT ? OFFSET ?').all(limit, offset).map(row => mapLoop(db, row));
+      return freeze({ schemaVersion: 1, loops, total, offset, nextOffset: offset + loops.length < total ? offset + loops.length : null, hasMore: offset + loops.length < total });
+    });
+  };
   service.getQuietAttentionInbox = options => projectQuietInbox(service.listOpenLoops(), options);
 }
 

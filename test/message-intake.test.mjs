@@ -159,3 +159,13 @@ test('partial and pending payment assertions remain open while paid resolves wit
     assert.equal(service.listOpenLoopObservations().length, observationCount);
   });
 });
+
+test('dismissing a confirmed bill cannot be mistaken for cancellation or payment', async () => {
+  await withService(service => {
+    const created = service.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'confirmed-bill-not-dismissible', message: message() });
+    const before = service.listOpenLoopObservations().length;
+    assert.throws(() => service.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'dismiss-confirmed-bill', loopId: created.loop.loopId, expectedRevision: 1, decision: 'dismiss', actorId: 'operator-fictional', rationale: 'Hide this notification without claiming the obligation ended.', updatedAt: '2026-09-20T04:00:00.000Z' }), error => error.code === 'open-loop-payment-status-required');
+    assert.equal(service.getOpenLoop(created.loop.loopId).paymentState, 'unpaid');
+    assert.equal(service.listOpenLoopObservations().length, before);
+  });
+});

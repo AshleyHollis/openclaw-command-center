@@ -70,7 +70,10 @@ export function installOpenLoopActions(service, { ErrorType }) {
         if (['resolved', 'cancelled'].includes(loop.state) && value.decision !== 'resolve') fail('open-loop-terminal');
         if (value.decision === 'confirm') return { ...loop, state: 'confirmed', ...(loop.kind === 'payment' && loop.paymentState === 'potential' ? { paymentState: 'unpaid' } : {}) };
         if (value.decision === 'defer') return { ...loop, state: 'waiting', reviewAt, attention: { ...(loop.attention ?? {}), activated: false, currentEvidence: false } };
-        if (value.decision === 'dismiss') return { ...loop, state: 'cancelled', ...(loop.kind === 'payment' ? { paymentState: 'cancelled' } : {}), attention: { actions: [], activated: false, currentEvidence: true } };
+        if (value.decision === 'dismiss') {
+          if (loop.kind === 'payment' && loop.state !== 'suggested') fail('open-loop-payment-status-required');
+          return { ...loop, state: 'cancelled', ...(loop.kind === 'payment' ? { paymentState: 'cancelled' } : {}), attention: { actions: [], activated: false, currentEvidence: true } };
+        }
         if (loop.kind === 'payment') fail('open-loop-payment-status-required');
         return { ...loop, state: 'resolved', attention: { actions: [], activated: false, currentEvidence: true } };
       }

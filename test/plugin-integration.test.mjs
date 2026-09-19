@@ -76,7 +76,9 @@ test('native registration exposes authenticated Topic methods without an iframe 
       'command-center.v1.sessions.browse', 'command-center.v1.sessions.history',
       'command-center.v1.sessions.navigate', 'command-center.v1.sessions.resolve-native',
       'command-center.v1.notes.browse', 'command-center.v1.notes.read',
-      'command-center.v1.search.query'
+      'command-center.v1.search.query', 'command-center.v1.open-loops.list',
+      'command-center.v1.open-loops.get', 'command-center.v1.open-loops.decide',
+      'command-center.v1.open-loops.payment-status'
     ]) assert.equal(host.methods.has(method), true, `${method} remains registered without the iframe API`);
     assert.equal(host.methods.has('chat.send'), false, 'native Chat owns message sending');
     assert.equal(host.methods.has('sessions.create'), false, 'host Session creation must not be shadowed');
@@ -88,6 +90,50 @@ test('native registration exposes authenticated Topic methods without an iframe 
     };
     const resolved = await host.authenticatedGatewayRequest('command-center.v1.sessions.resolve-native', { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'fictional-reference', expectedSessionId: 'fictional-session' });
     assert.deepEqual(resolved, { sessionKey: 'agent:main:fictional' });
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('registered open-loop bridge reads evidence and records payment status without making a payment', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-open-loop-bridge-'));
+  let service;
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir });
+    const created = seed.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'seed-fictional-bill', message: {
+      schemaVersion: 1,
+      channel: 'email',
+      source: { system: 'fictional-mail', externalId: 'bill-source-private', version: 'v1' },
+      occurredAt: '2026-09-20T00:55:00.000Z',
+      observedAt: '2026-09-20T01:00:00.000Z',
+      historicalBaseline: false,
+      disposition: 'confirmed-obligation',
+      requestKind: 'payment',
+      explicitRequest: true,
+      summary: 'A fictional renovation invoice is ready.',
+      payee: 'Example Renovations',
+      purpose: 'fictional kitchen progress invoice',
+      amount: 245000,
+      currency: 'AUD',
+      dueAt: '2026-09-28T13:59:59.000Z',
+      invoiceId: 'INVOICE-FICTIONAL-48',
+      attachmentIds: ['private-attachment-id'],
+      evidenceSelectors: ['attachment:1:invoice-number']
+    } });
+    seed.close();
+    const host = fakePublishedApi(stateDir);
+    plugin.register(host.api);
+    service = host.services[0];
+    await service.start();
+    const listed = await host.authenticatedGatewayRequest('command-center.v1.open-loops.list', { schemaVersion: 1, offset: 0, limit: 20 });
+    assert.equal(listed.result.total, 1);
+    assert.equal(listed.result.loops[0].loopId, created.loop.loopId);
+    const detail = await host.authenticatedGatewayRequest('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: created.loop.loopId });
+    assert.equal(detail.result.evidence[0].invoiceId, 'INVOICE-FICTIONAL-48');
+    assert.equal(JSON.stringify(detail).includes('private-attachment-id'), false);
+    const pending = await host.authenticatedGatewayRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 1, paymentState: 'payment-pending', rationale: 'A fictional transfer was initiated; settlement is not yet verified.' });
+    assert.equal(pending.result.loop.paymentState, 'payment-pending');
+    assert.equal(pending.result.loop.state, 'monitoring');
+    const after = await host.authenticatedGatewayRequest('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: created.loop.loopId });
+    assert.equal(after.result.evidence.some(item => item.sourceKind === 'user-decision'), true);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

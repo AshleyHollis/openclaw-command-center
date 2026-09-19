@@ -35,6 +35,20 @@ async function fixture(run) {
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
           if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('open-loops.get')) {
+            const card = [...window.openLoops.highlighted, ...window.openLoops.comingUp].find(item => item.loopId === params.loopId);
+            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence: [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title }] } };
+          }
+          if (method.endsWith('open-loops.payment-status')) {
+            const card = [...window.openLoops.highlighted, ...window.openLoops.comingUp].find(item => item.loopId === params.loopId);
+            Object.assign(card, { paymentState: params.paymentState, state: params.paymentState === 'paid' ? 'resolved' : params.paymentState === 'payment-pending' ? 'monitoring' : card.state, revision: card.revision + 1 });
+            return { result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
+          if (method.endsWith('open-loops.decide')) {
+            const card = [...window.openLoops.highlighted, ...window.openLoops.comingUp].find(item => item.loopId === params.loopId);
+            Object.assign(card, { state: 'resolved', revision: card.revision + 1 });
+            return { result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
           if (method.endsWith('attention.get')) {
             const episode = structuredClone(window.cards.find((card) => card.episodeId === params.episodeId));
             if (window.delayGet) { window.delayGet = false; await new Promise((resolve) => { window.finishGet = resolve; }); }
@@ -157,7 +171,7 @@ test('native Attention inbox exposes verified non-Session Activity through its e
   assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'fictional-topic' } });
 }));
 
-test('native Attention presents bill and reply open loops as evidence-backed read-only cards', () => fixture(async (page) => {
+test('native Attention reviews evidence and records status without paying or sending', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];
     window.openLoops = {
@@ -177,7 +191,16 @@ test('native Attention presents bill and reply open loops as evidence-backed rea
   await page.getByRole('heading', { name: 'Confirm the fictional cabinet delivery access window.' }).waitFor();
   await page.getByText('AUD 2450.00', { exact: false }).waitFor();
   await page.getByText('Available actions: Open bill, Record payment status, Remind me.', { exact: true }).waitFor();
-  assert.equal(await page.getByRole('button', { name: /pay|send|draft reply|record payment/i }).count(), 0);
+  const bill = page.locator('article[data-open-loop-id="bill-loop"]');
+  await bill.getByRole('button', { name: 'Review evidence' }).click();
+  await bill.getByText('Source evidence', { exact: true }).waitFor();
+  await bill.getByLabel('Evidence or rationale').fill('The fictional bank transfer was initiated; settlement remains pending.');
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  await page.getByRole('status').filter({ hasText: 'No payment was submitted.' }).waitFor();
+  const payment = await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.payment-status')).params);
+  assert.equal(payment.paymentState, 'payment-pending');
+  assert.equal(payment.paidAmount, undefined);
+  assert.equal(await page.getByRole('button', { name: /^Pay|^Send$/i }).count(), 0);
   assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('attention.act')).length), 0);
 }));
 
