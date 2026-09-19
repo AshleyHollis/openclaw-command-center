@@ -133,12 +133,13 @@ test('Dashboard transport identity stays outside the closed read projection', as
   assert.equal(response.result.requestId, 'fictional-dashboard-transport');
 });
 
-test('Reminder mutations return their native result without acquiring deferred notification authority', async () => {
+test('Reminder and Attention mutations return their native result without acquiring deferred notification authority', async () => {
   const methods = new Map();
   let notificationAcquisitions = 0;
   const owner = {
     remindersSnooze: async input => ({ schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, value: { job: { id: 'fictional-job', enabled: true, configRevision: 'revision-2' } } }),
     remindersComplete: async input => ({ schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, value: { job: { id: 'fictional-job', enabled: false, configRevision: 'revision-3' } } }),
+    attentionAct: async input => ({ schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, episode: { episodeId: input.episodeId, state: 'Resolved' } }),
     notificationReconcile() { notificationAcquisitions += 1; throw new Error('Deferred notification owner was acquired.'); }
   };
   registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, owner);
@@ -151,6 +152,10 @@ test('Reminder mutations return their native result without acquiring deferred n
     await methods.get(method)({ req: { id: randomUUID() }, params, context: { authenticated: true }, respond: (ok, result, error) => { response = { ok, result, error }; } });
     assert.equal(response.ok, true, method);
   }
+  const attentionParams = { schemaVersion: 1, topicId: 'fictional-topic', sourceReferenceId: 'fictional-reference', sourceCapabilityId: 'reminders', stableSubjectId: 'fictional-job', episodeId: 'fictional-episode', expectedEpisodeRevision: 1, expectedSourceRevision: 'revision-1', actionId: 'reminder.complete', input: { expectedConfigRevision: 'revision-1' }, logicalOperationId: randomUUID() };
+  let attentionResponse;
+  await methods.get('command-center.v1.attention.act')({ req: { id: randomUUID() }, params: attentionParams, client: { authenticatedUserProfile: { profileId: 'fictional-operator' } }, context: { authenticated: true }, respond: (ok, result, error) => { attentionResponse = { ok, result, error }; } });
+  assert.equal(attentionResponse.ok, true, JSON.stringify(attentionResponse));
   assert.equal(notificationAcquisitions, 0);
 });
 

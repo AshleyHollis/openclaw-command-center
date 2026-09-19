@@ -207,7 +207,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.metadata.write': (service, params) => service.metadataWrite(params),
   'command-center.v1.analysis.read': (service, params) => service.analysisRead(params),
   'command-center.v1.analysis.run': (service, params) => service.analysisRun(params),
-  'command-center.v1.attention.act': async (service, params, runtime) => { const result = await service.attentionAct(params, runtime); await service.notificationReconcile?.(runtime); return result; },
+  'command-center.v1.attention.act': async (service, params, runtime) => { const result = await service.attentionAct(params, runtime); if (FIRST_LIVE_FEATURES.notifications) await service.notificationReconcile?.(runtime); return result; },
   'command-center.v1.attention.list': (service, params) => service.attentionList(params),
   'command-center.v1.attention.get': (service, params) => service.attentionGet(params),
   'command-center.v1.activity.list': (service, params) => service.activityList(params),
