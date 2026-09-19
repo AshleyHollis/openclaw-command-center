@@ -140,6 +140,11 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
 
   service.getOpenLoopObservation = observationId => inspect(db => mapObservation(db.prepare('SELECT * FROM source_observations WHERE observation_id = ?').get(text(observationId, 'observationId'))));
   service.listOpenLoopObservations = () => inspect(db => db.prepare('SELECT * FROM source_observations ORDER BY observed_at, observation_id').all().map(mapObservation));
+  service.listEntityCorrections = targetObservationId => inspect(db => {
+    const rows = db.prepare("SELECT * FROM source_observations WHERE source_system = 'command-center' AND source_kind = 'entity-correction' AND json_extract(facts_json, '$.targetObservationId') = ? ORDER BY occurred_at, observation_id LIMIT 101").all(text(targetObservationId, 'targetObservationId'));
+    if (rows.length > 100) fail('entity-correction-limit', 'The correction history exceeds the bounded review limit.');
+    return rows.map(mapObservation);
+  });
   service.getOpenLoop = loopId => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(text(loopId, 'loopId'))));
   service.findOpenLoopBySubject = (kind, stableSubjectId) => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(text(kind, 'kind', 80), text(stableSubjectId, 'stableSubjectId', 500))));
   service.listOpenLoops = () => inspect(db => db.prepare('SELECT * FROM open_loops ORDER BY updated_at, loop_id').all().map(row => mapLoop(db, row)));
