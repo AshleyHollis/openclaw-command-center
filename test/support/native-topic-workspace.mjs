@@ -34,7 +34,6 @@ export async function selectNativeCategoryGrouping(page) {
       await expand.click({ timeout: 10_000 });
     }
     const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)').first();
-    await trigger.waitFor({ state: 'visible', timeout: 10_000 });
     await trigger.scrollIntoViewIfNeeded({ timeout: 10_000 });
     await trigger.click({ timeout: 10_000 });
   }

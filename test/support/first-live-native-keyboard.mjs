@@ -256,6 +256,13 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   await returnFromChat();
   await announced(creation, first.input.logicalOperationId);
   assert.equal(await createButton().isDisabled(), true);
+  // Creation is authoritative before the host roster necessarily finishes
+  // reconciling its new native row. Wait for that exact row so a sidebar
+  // replacement cannot discard focus during the composed Tab traversal.
+  await ready(() => page.locator('openclaw-app-sidebar [data-session-key]').evaluateAll(
+    (rows, sessionKey) => rows.some(row => row.getAttribute('data-session-key') === sessionKey),
+    created.sessionKey
+  ));
   await tabTo(creation.getByRole('button', { name: 'Open created Conversation', exact: true }));
   await complete('conversation-create');
   // Release only the exact owned applied receipt before a second deliberate ID.
