@@ -17,6 +17,7 @@ export async function createRequestScopedConversationRuntime({ getRequestScope, 
   const profile = client?.authenticatedUserProfile;
   const principalId = profile?.profileId ?? client?.authenticatedUserId ?? client?.authenticatedOperatorId;
   const resolver = scope?.resolveGatewayContext;
+  const directContext = scope?.context;
   const role = client?.connect?.role;
   const granted = client?.connect?.scopes;
   if (!Array.isArray(requiredGatewayMethods) || requiredGatewayMethods.some(method => typeof method !== 'string' || !method.trim())) throw new TypeError('requiredGatewayMethods must be an array of non-empty method names');
@@ -24,10 +25,10 @@ export async function createRequestScopedConversationRuntime({ getRequestScope, 
   const dispatchPermitted = scope?.gatewayMethodDispatchAllowed === true
     || (requiredGatewayMethods.length > 0 && requiredGatewayMethods.every(method => dispatchAllowlist.includes(method)));
   if (scope?.pluginId !== 'command-center' || !dispatchPermitted || typeof principalId !== 'string' || !principalId.trim()
-    || typeof resolver !== 'function' || role !== 'operator' || !Array.isArray(granted)
+    || (typeof resolver !== 'function' && !directContext) || role !== 'operator' || !Array.isArray(granted)
     || !granted.every(value => typeof value === 'string') || !granted.some(value => value === 'operator.write' || value === 'operator.admin')) return refuse();
   const scopes = JSON.stringify([...granted].sort());
-  const context = resolver();
+  const context = typeof resolver === 'function' ? resolver() : directContext;
   if (!context) return refuse();
   const assertCurrent = () => {
     const currentPrincipal = client?.authenticatedUserProfile?.profileId ?? client?.authenticatedUserId ?? client?.authenticatedOperatorId;
@@ -36,7 +37,7 @@ export async function createRequestScopedConversationRuntime({ getRequestScope, 
       || !(scope.gatewayMethodDispatchAllowed === true || (requiredGatewayMethods.length > 0 && requiredGatewayMethods.every(method => scope.gatewayMethodDispatchMethods?.includes(method))))
       || scope.resolveGatewayContext !== resolver
       || client.connect?.role !== role || !Array.isArray(client.connect?.scopes) || JSON.stringify([...client.connect.scopes].sort()) !== scopes
-      || resolver() !== context) refuse();
+      || (typeof resolver === 'function' ? resolver() !== context : scope.context !== context)) refuse();
   };
   assertCurrent();
   if (gatewayRequest !== undefined && typeof gatewayRequest !== 'function') throw new TypeError('gatewayRequest must be a function');

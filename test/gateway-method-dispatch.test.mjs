@@ -41,7 +41,7 @@ test('Conversation authority refuses missing identity or lifetime and detects ch
   const makeScope = () => ({ pluginId: 'command-center', gatewayMethodDispatchAllowed: true,
     client: { authenticatedUserProfile: { profileId: 'fictional-operator' }, connect: { role: 'operator', scopes: ['operator.write'] } },
     resolveGatewayContext: () => context });
-  for (const change of [scope => { delete scope.client.authenticatedUserProfile; }, scope => { delete scope.resolveGatewayContext; scope.context = context; },
+  for (const change of [scope => { delete scope.client.authenticatedUserProfile; }, scope => { delete scope.resolveGatewayContext; },
     scope => { scope.client.connect.scopes = ['operator.read']; }, scope => { scope.gatewayMethodDispatchAllowed = false; }, scope => { scope.pluginId = 'unrelated-plugin'; }]) {
     const scope = makeScope(); change(scope);
     await assert.rejects(() => requestRuntime.createRequestScopedConversationRuntime({ getRequestScope: () => scope }), { code: 'unauthenticated' });
@@ -59,6 +59,11 @@ test('Conversation authority refuses missing identity or lifetime and detects ch
   const admin = makeScope(); admin.client.connect.scopes = ['operator.admin'];
   const runtime = await requestRuntime.createRequestScopedConversationRuntime({ getRequestScope: () => admin });
   assert.equal(runtime.creationAuthority.assertCurrent(), undefined);
+  const direct = makeScope(); direct.context = context; delete direct.resolveGatewayContext;
+  const directRuntime = await requestRuntime.createRequestScopedConversationRuntime({ getRequestScope: () => direct });
+  assert.equal(directRuntime.creationAuthority.assertCurrent(), undefined);
+  direct.context = {};
+  assert.throws(() => directRuntime.creationAuthority.assertCurrent(), { code: 'unauthenticated' });
 });
 
 test('native Topic grouping accepts only its host-declared Gateway method allowlist', async () => {
