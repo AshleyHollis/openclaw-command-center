@@ -28,6 +28,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install the supported Node runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.20.0
+          cache: npm
+
       - name: Configure browser cache
         run: printf 'PLAYWRIGHT_BROWSERS_PATH=%s/ms-playwright\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
