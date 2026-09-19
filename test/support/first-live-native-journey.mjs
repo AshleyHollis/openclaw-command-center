@@ -1426,6 +1426,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(createdConversation.status, 'open');
       assert.equal(createdConversation.isPrimary, false);
       assert.notEqual(createdConversation.sessionId, fixture.sessionId);
+      await nativePage.getByRole('button', { name: 'Open created Conversation', exact: true }).press('Enter');
       await waitForConsecutiveReadiness(async () => browserNavigation?.value.sourceReference?.referenceId === newReferenceId,
         host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const createdTarget = browserNavigation.value;

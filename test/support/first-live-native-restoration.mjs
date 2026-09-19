@@ -296,6 +296,7 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       assert.equal(created[0].isPrimary, false);
       assert.equal(created[0].status, 'open');
       assert.notEqual(created[0].sessionId, fixture.sessionId);
+      await nativePage.getByRole('button', { name: 'Open created Conversation', exact: true }).press('Enter');
       const navigationResponse = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId: fixture.topicId, referenceId: receipt.result.referenceId, nativeChat: true }, signal });
       const navigation = navigationResponse?.result ?? navigationResponse;
       assert.equal(navigation.sourceReference.referenceId, receipt.result.referenceId);

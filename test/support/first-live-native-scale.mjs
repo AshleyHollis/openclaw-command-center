@@ -174,6 +174,8 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(receipt.logicalOperationId, input.logicalOperationId);
   assert.equal(receipt.result.topicId, fixture.topicId);
   assert.equal(receipt.result.action, 'conversations.create');
+  onProgress('conversation-open');
+  await nativePage.getByRole('button', { name: 'Open created Conversation', exact: true }).click();
   await ready(async () => observed().navigation?.value?.sourceReference?.referenceId === receipt.result.referenceId);
   const target = observed().navigation.value;
   const chat = page.locator('openclaw-chat-pane[aria-hidden="false"]');
