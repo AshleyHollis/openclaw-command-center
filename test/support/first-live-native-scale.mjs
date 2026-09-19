@@ -201,9 +201,21 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(resolved.input.referenceId, receipt.result.referenceId);
   assert.deepEqual(Object.keys(resolved.value), ['sessionKey']);
   const chat = page.locator('openclaw-chat-pane.chat-pane-cache__pane--visible');
-  await chat.waitFor({ timeout: 30_000 });
-  await page.waitForFunction(key => [...document.querySelectorAll('openclaw-chat-pane')].some(pane =>
-    pane.classList.contains('chat-pane-cache__pane--visible') && pane.sessionKey === key), target.sessionKey, { timeout: 30_000 });
+  try {
+    await waitForConsecutiveReadiness(async () => await page.locator('openclaw-chat-pane').evaluateAll((panes, key) => panes.some(pane =>
+      pane.classList.contains('chat-pane-cache__pane--visible') && pane.sessionKey === key), target.sessionKey),
+    host.earlyExit, { deadlineMs: 10_000, delayMs: 100, signal });
+  } catch (error) {
+    const state = await page.evaluate(key => ({
+      chatRoute: location.pathname.includes('/chat/'), filesRequest: new URLSearchParams(location.search).has('__openclawFilesPanel'),
+      panes: [...document.querySelectorAll('openclaw-chat-pane')].map(pane => ({ selected: pane.classList.contains('chat-pane-cache__pane--visible'),
+        active: pane.classList.contains('chat-pane-cache__pane--active'), presented: pane.getAttribute('aria-hidden') === 'false',
+        inert: pane.hasAttribute('inert'), target: pane.sessionKey === key }))
+    }), target.sessionKey);
+    onProgress(`chat-pane-unavailable:${JSON.stringify(state)}`);
+    throw error;
+  }
+  await chat.waitFor({ state: 'visible', timeout: 5_000 });
   onProgress('chat-pane-ready');
   observations.conversationCreateMs = now() - started;
   assert.notEqual(target.sessionId, fixture.sessionId);
