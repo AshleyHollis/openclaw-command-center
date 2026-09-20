@@ -554,8 +554,9 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       chat.disabled = topic.usable !== true || topic.lifecycle !== 'active';
       if (!panel) creation = createNativeCreationForm({ host, state, document, signal, presented: () => presented, getTopic: () => topic,
         beginNavigation: () => { reading.abort(); navigation.cancel(); const selection = ++generation; return () => current(selection); },
+        captureNavigation: () => { const selection = generation; return () => current(selection); },
         onCreated: async (result, input) => {
-          const selection = generation;
+          reading.abort(); navigation.cancel(); const selection = ++generation;
           const response = await host.request('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: input.topicId, includeClosed: false });
           if (!current(selection)) return;
           const catalog = response?.result ?? response;

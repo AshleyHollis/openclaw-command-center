@@ -331,7 +331,7 @@ for (const mismatch of ['Id', 'Reference']) test(`an acknowledgement with the wr
 
 test('default native activation exposes existing Topics and quiet Attention without Topic provisioning', { timeout: 30000 }, () => fixture(async page => {
   await page.getByRole('button', { name: 'View Notes for Fictional project' }).waitFor();
-  assert.deepEqual(await page.evaluate(() => window.registeredPages), ['topics', 'topic', 'histories', 'attention']);
+  assert.deepEqual(await page.evaluate(() => window.registeredPages), ['topics', 'topic', 'histories', 'attention', 'planner']);
   assert.equal(await page.locator('form').count(), 0);
   assert.equal(await page.getByRole('button', { name: 'Create Topic', exact: true }).count(), 0);
   await page.getByRole('button', { name: 'Refresh Topics' }).focus(); await page.keyboard.press('Enter');

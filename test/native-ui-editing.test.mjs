@@ -36,7 +36,7 @@ async function fixture(run) {
       const host = {
         signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: true }, redact: (text) => text,
         subscribe: (fn) => { subscribers.add(fn); return () => subscribers.delete(fn); },
-        sessions: { open: (value) => window.opened.push(value) },
+        sessions: { openChat: (value) => window.opened.push(value) },
         navigation: { openPage: (target) => {
           scope?.abort(); view?.dispose(); scope = new AbortController();
           // The real host creates a distinct authority object for each mounted view.
@@ -61,7 +61,7 @@ async function fixture(run) {
             if (window.notesUnavailable) throw new Error('Notes capability is unavailable.');
             const notes = structuredClone(window.notes);
             if (window.delayBrowse) { window.delayBrowse = false; await new Promise((resolve) => { window.finishBrowse = resolve; (window.finishBrowses ??= []).push(resolve); }); }
-            return { result: { notes, total: notes.length, offset: 0, hasMore: false, nextOffset: null } };
+            return { result: { notes, total: notes.length, offset: 0, hasMore: false, nextOffset: null, cursor: 'fictional-note-cursor' } };
           }
           if (method.endsWith('notes.read')) {
             const note = window.notes.find((note) => note.sourceReference.referenceId === params.referenceId);
@@ -69,9 +69,9 @@ async function fixture(run) {
             return { result: { ...note, contentEncoding: 'identity', contentBase64: btoa(String.fromCharCode(...bytes)), byteOffset: 0, nextOffset: bytes.length, totalBytes: bytes.length, complete: true } };
           }
           if (method.endsWith('sessions.browse')) return { result: { topicId: topic.topicId, conversations: [{ referenceId: 'session:primary', sessionId: 'primary-session', status: 'open', isPrimary: true }, { referenceId: 'session:new', sessionId: 'new-session', status: 'open', isPrimary: false }] } };
-          if (method.endsWith('sessions.navigate')) {
+          if (method.endsWith('sessions.resolve-native')) {
             if (window.navigationFailure) throw new Error('Native Chat is temporarily unavailable.');
-            return { result: { sessionKey: params.referenceId === 'session:primary' ? 'agent:fictional:primary' : 'agent:fictional:new', sessionId: params.referenceId === 'session:primary' ? 'primary-session' : 'new-session', sourceReference: { topicId: topic.topicId, referenceId: params.referenceId } } };
+            return { result: { sessionKey: params.referenceId === 'session:primary' ? 'agent:fictional:primary' : 'agent:fictional:new' } };
           }
           throw new Error(`Unexpected method: ${method}`);
         },
@@ -343,7 +343,7 @@ test('refused Conversation creation does not strand a pending Notes catalog', { 
   await page.getByRole('status').filter({ hasText: 'creation outcome is unknown' }).waitFor();
   await page.evaluate(() => window.finishBrowse());
   await page.getByRole('button', { name: 'Read brief.md' }).waitFor();
-  assert.match(await page.getByRole('status').first().innerText(), /^Notes 1–2 of 2/);
+  await page.getByRole('status').filter({ hasText: 'Notes 1–2 of 2.' }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Create Conversation' }).isDisabled(), true);
   assert.equal(await page.getByRole('button', { name: 'Check creation outcome' }).isEnabled(), true);
   assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('sessions.create')).length), 1);
