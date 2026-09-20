@@ -8,11 +8,12 @@ import { runRepositoryChecks } from './repository-checks.mjs';
 // rehearsal/qualification, never evidence that those later checks passed.
 try {
   const { values } = parseArgs({ options: { output: { type: 'string' } }, strict: true, allowPositionals: false });
-  if (!values.output || !path.isAbsolute(values.output)) throw Object.assign(new Error('artifact-arguments-invalid'), { code: 'artifact-arguments-invalid' });
+  const sourceCommit = process.env.COMMAND_CENTER_SOURCE_COMMIT;
+  if (!values.output || !path.isAbsolute(values.output) || !/^[a-f0-9]{40}$/.test(sourceCommit ?? '')) throw Object.assign(new Error('artifact-arguments-invalid'), { code: 'artifact-arguments-invalid' });
   const checks = await runRepositoryChecks({ purpose: 'capture-prerequisites' });
   const expectedBuildReceipt = await readBuiltReceipt();
   if (expectedBuildReceipt.digest !== checks.buildDigest) throw Object.assign(new Error('artifact-build-approval-mismatch'), { code: 'artifact-build-approval-mismatch' });
-  const { receipt } = await packagePluginArtifact({ expectedBuildReceipt, outputDirectory: values.output });
+  const { receipt } = await packagePluginArtifact({ expectedBuildReceipt, outputDirectory: values.output, sourceCommit });
   console.log(JSON.stringify({ status: 'candidate-packaged', releaseQualified: false,
     buildDigest: receipt.buildDigest, archiveSha256: receipt.archive.sha256, files: receipt.files.length }));
 } catch (error) {

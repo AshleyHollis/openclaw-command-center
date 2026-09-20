@@ -133,6 +133,7 @@ async function copyMembers(root, destination, files) {
 
 function assertReceipt(receipt) {
   if (receipt?.formatVersion !== 1 || receipt.kind !== 'command-center-plugin-artifact' || receipt.pluginId !== 'command-center' ||
+      (Object.hasOwn(receipt, 'sourceCommit') && !/^[a-f0-9]{40}$/.test(receipt.sourceCommit)) ||
       !/^[a-f0-9]{64}$/.test(receipt.buildDigest) || !/^[a-f0-9]{64}$/.test(receipt.archive?.sha256) ||
       !Number.isSafeInteger(receipt.archive.sizeBytes) || receipt.archive.sizeBytes < 1 || receipt.archive.sizeBytes > MAX_BYTES ||
       !Array.isArray(receipt.files) || !receipt.files.length || receipt.files.length > MAX_FILES) fail('artifact-receipt-invalid');
@@ -190,8 +191,9 @@ export async function verifyPluginArtifact({ archivePath, expectedReceipt, desti
 }
 
 /** Pack only a sealed build and its matching manifests; never execute lifecycle scripts. */
-export async function packagePluginArtifact({ expectedBuildReceipt, outputDirectory }) {
+export async function packagePluginArtifact({ expectedBuildReceipt, outputDirectory, sourceCommit }) {
   if (process.platform !== 'linux') fail('artifact-linux-required');
+  if (sourceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sourceCommit)) fail('artifact-source-commit-invalid');
   if (!path.isAbsolute(outputDirectory) || path.resolve(outputDirectory) !== outputDirectory ||
       ['dist', 'src'].some(name => outputDirectory === path.join(sourceRoot, name) || outputDirectory.startsWith(`${path.join(sourceRoot, name)}${path.sep}`))) fail('artifact-layout-invalid');
   const build = structuredClone(expectedBuildReceipt);
@@ -222,6 +224,7 @@ export async function packagePluginArtifact({ expectedBuildReceipt, outputDirect
     const archivePath = path.join(scratch, packed[0].filename);
     const archiveBytes = await readMember(archivePath);
     const receipt = { formatVersion: 1, kind: 'command-center-plugin-artifact', package: pkg, pluginId: 'command-center',
+      ...(sourceCommit === undefined ? {} : { sourceCommit }),
       buildDigest: build.digest, files, archive: { sha256: hash(archiveBytes), sizeBytes: archiveBytes.length } };
     await verifyPluginArtifact({ archivePath, expectedReceipt: receipt, destinationDirectory: path.join(scratch, 'verified') });
     await assertBuiltDigest(build);

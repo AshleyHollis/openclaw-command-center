@@ -199,9 +199,13 @@ test('packaging CLI requires an independently supplied receipt digest and report
     await cp(path.resolve(name), path.join(root, name), { recursive: true });
   }
   const candidate = [...runtimeArgs, '--import', loader, path.join(root, 'scripts/package-candidate.mjs'), '--output'];
-  const { stdout: candidateOutput } = await promisify(execFile)(process.execPath, [...candidate, path.join(root, 'candidate')], { cwd: path.resolve(), timeout: 60_000 });
+  const sourceCommit = 'a'.repeat(40);
+  const { stdout: candidateOutput } = await promisify(execFile)(process.execPath, [...candidate, path.join(root, 'candidate')], {
+    cwd: path.resolve(), timeout: 60_000, env: { ...process.env, COMMAND_CENTER_SOURCE_COMMIT: sourceCommit }
+  });
   const candidateReport = JSON.parse(candidateOutput);
   const candidateReceipt = JSON.parse(await readFile(path.join(root, 'candidate/receipt.json')));
+  assert.equal(candidateReceipt.sourceCommit, sourceCommit);
   assert.deepEqual(candidateReport, { status: 'candidate-packaged', releaseQualified: false,
     buildDigest: receipt.digest, archiveSha256: candidateReceipt.archive.sha256, files: candidateReceipt.files.length });
   const pkgPath = path.join(root, 'package.json');

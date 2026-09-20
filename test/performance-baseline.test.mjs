@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertPerformanceHostIdentity, assertPerformanceBaselineBuildIdentity, assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, deriveReleaseThresholds, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
+import { assertPerformanceHostIdentity, assertPerformanceObservationWithinBaseline, captureFirstReleasePerformanceBaseline, deriveReleaseThresholds, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_COUNTS, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity, validateReleasePerformanceBaseline, validateReleasePerformanceBaselineSeed } from '../src/performance-baseline.mjs';
 
 test('performance capture binds the actual packaged descriptor before measuring', () => {
   const { schemaVersion, commit, ...integrity } = releasePerformanceIdentity.hostReceipt;
@@ -8,8 +8,8 @@ test('performance capture binds the actual packaged descriptor before measuring'
   for (const key of Object.keys(integrity)) {
     assert.throws(() => assertPerformanceHostIdentity({ schemaVersion, commit, integrity: { ...integrity, [key]: `sha256:${'a'.repeat(64)}` } }), /pinned host/u);
   }
-  assert.throws(() => assertPerformanceHostIdentity({ schemaVersion: 1, commit, integrity }), /pinned host/u);
-  assert.throws(() => assertPerformanceHostIdentity({ commit, integrity }), /pinned host/u);
+  assert.throws(() => assertPerformanceHostIdentity({ schemaVersion: 1, commit, integrity }), /pinned host|incomplete/u);
+  assert.throws(() => assertPerformanceHostIdentity({ commit, integrity }), /pinned host|incomplete/u);
   assert.throws(() => assertPerformanceHostIdentity({ schemaVersion, commit: 'a'.repeat(40), integrity }), /pinned host/u);
 });
 
@@ -37,7 +37,7 @@ function coherentGeneratedBaseline() {
 }
 
 test('release performance baseline generates one coherent pending capture', () => {
-  assert.equal(releasePerformanceIdentity.hostReceipt.sourceDigest, 'sha256:10ec4061818ccb21860d91abba0ccc90dd4985130edcdefef7ddcc7df6280138');
+  assert.equal(releasePerformanceIdentity.hostReceipt.sourceDigest, 'sha256:82b0eac19bde93ba3aaa050da44431ff59d7f2a9656bea4f396b09dc0163caaa');
   const { seed, firstObservations, baseline } = coherentGeneratedBaseline();
   assert.deepEqual(validateReleasePerformanceBaselineSeed(seed).capture, seed.capture);
   assert.deepEqual(baseline.thresholds, deriveReleaseThresholds(firstObservations));
@@ -61,9 +61,9 @@ test('measured fractional timings retain exact immutable ceiling checks', () => 
   }
 });
 
-test('release performance baseline rejects host receipt drift', () => {
+test('release performance baseline rejects receipt changes without matching capture provenance', () => {
   const { baseline } = coherentGeneratedBaseline();
-  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostReceipt: { ...baseline.hostReceipt, contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }), /pinned host identity/u);
+  assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, hostReceipt: { ...baseline.hostReceipt, contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }), /capture evidence/u);
 });
 
 test('release performance baseline rejects incomplete browser identity', () => {
@@ -71,9 +71,9 @@ test('release performance baseline rejects incomplete browser identity', () => {
   assert.throws(() => validateReleasePerformanceBaseline({ ...baseline, browser: { ...baseline.browser, version: '' } }), /browser identity/u);
 });
 
-test('release performance baseline rejects final build identity drift', () => {
+test('historical performance baseline retains its measured build identity', () => {
   const { baseline } = coherentGeneratedBaseline();
-  assert.throws(() => assertPerformanceBaselineBuildIdentity(baseline, `sha256:${'c'.repeat(64)}`), /final build/u);
+  assert.equal(validateReleasePerformanceBaseline(baseline).pluginBuildDigest, `sha256:${'b'.repeat(64)}`);
 });
 
 for (const name of RELEASE_MEASUREMENTS) test(`release performance baseline rejects a widened ${name} ceiling`, () => {

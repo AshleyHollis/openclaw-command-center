@@ -142,6 +142,9 @@ const diagnosticSliceLanes = Object.freeze({
   // slice lane. Native UI/Session authority uses the exact native activation
   // producer above; scale and mobile remain opt-in diagnostics.
   'diagnostic-source-identity-import-recovery': Object.freeze(['host-tuple-refusal', 'build-variant', 'plugin-api-variant', 'bridge-protocol-variant', 'binding-mismatch', 'foreign-database-restoration', 'secure-origin', 'degraded-bridge-grants', 'degraded-source-availability', 'combined-degraded', 'recovery-only-compatibility', 'destructive-migration-restoration']),
+  'diagnostic-degraded-bridge': Object.freeze(['degraded-bridge-grants']),
+  'diagnostic-degraded-source': Object.freeze(['degraded-source-availability']),
+  'diagnostic-combined-degraded': Object.freeze(['combined-degraded']),
   'diagnostic-dashboard-payload': Object.freeze(['dashboard-mixed-payload']),
   'diagnostic-topic-review': Object.freeze(['fresh-review']),
   'diagnostic-reminder-lifecycle': Object.freeze(['reminder-runtime-lifecycle']),

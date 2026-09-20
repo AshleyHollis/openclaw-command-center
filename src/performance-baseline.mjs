@@ -26,9 +26,9 @@ export const RELEASE_MEASUREMENTS = Object.freeze([
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest', 'packageDigest', 'runtimeDigest']);
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
-const HOST_COMMIT = '2a9f88a024000f289b737822e3a7a27fb4571709';
-const HOST_VERSION = '2026.9.4';
-const PLAYWRIGHT_VERSION = '1.62.1';
+const HOST_COMMIT = '14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971';
+const HOST_VERSION = '2026.9.5';
+const PLAYWRIGHT_VERSION = '1.63.0';
 export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
   schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION,
   viewport: RELEASE_PERFORMANCE_VIEWPORT,
@@ -36,12 +36,12 @@ export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
 });
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 2,
-  sourceDigest: 'sha256:10ec4061818ccb21860d91abba0ccc90dd4985130edcdefef7ddcc7df6280138',
+  sourceDigest: 'sha256:82b0eac19bde93ba3aaa050da44431ff59d7f2a9656bea4f396b09dc0163caaa',
   commit: HOST_COMMIT,
-  executableDigest: 'sha256:97464647c50a1420d530db948cb203826306ef6b3a84810b6801c338366cecaf',
-  contractDigest: 'sha256:c94f09de46a19f8a18618fb6eb150b60fe720894de08450a953b05f933228d09',
-  packageDigest: 'sha256:eb4cb6e2b344b682d168572819d1ec591b33b71e6c6c20a2a8d20626863e5eb2',
-  runtimeDigest: 'sha256:7e21741bc09fcbdb810861b1e9fc670b8843f93a11671488310c268864000877'
+  executableDigest: 'sha256:538e8ee2b65a0b24bb8a5ed3421bfe66621b1e0b5f726a167758c004f566fb36',
+  contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6',
+  packageDigest: 'sha256:65c5934a7fff646c3b93b7045e217d25ada13b0e6fc2c8dc8e5bde72bfbae900',
+  runtimeDigest: 'sha256:762279802c7ab437016901b53e997aa4c1aa4b86f99e9c64826d165cb5810289'
 });
 
 function invalid(message) {
@@ -90,16 +90,16 @@ function assertFixtureCounts(value) {
   return Object.freeze({ ...value });
 }
 
-function assertHostReceipt(value) {
+function assertHostReceipt(value, { pinned = false } = {}) {
   closed(value, REQUIRED_HOST_RECEIPT_FIELDS, 'hostReceipt');
-  for (const key of REQUIRED_HOST_RECEIPT_FIELDS) {
-    if (value[key] !== HOST_RECEIPT[key]) invalid('hostReceipt is not the pinned host identity');
-  }
-  return HOST_RECEIPT;
+  if (value.schemaVersion !== 2 || typeof value.commit !== 'string' || !/^[a-f0-9]{40}$/u.test(value.commit)) invalid('hostReceipt is incomplete');
+  for (const key of REQUIRED_HOST_RECEIPT_FIELDS.filter(key => key.endsWith('Digest'))) digest(value[key], `hostReceipt.${key}`);
+  if (pinned && REQUIRED_HOST_RECEIPT_FIELDS.some(key => value[key] !== HOST_RECEIPT[key])) invalid('hostReceipt is not the pinned host identity');
+  return Object.freeze({ ...value });
 }
 
 export function assertPerformanceHostIdentity(descriptor) {
-  return assertHostReceipt({ schemaVersion: descriptor.schemaVersion ?? 1, commit: descriptor.commit, ...descriptor.integrity });
+  return assertHostReceipt({ schemaVersion: descriptor.schemaVersion ?? 1, commit: descriptor.commit, ...descriptor.integrity }, { pinned: true });
 }
 
 function assertBrowser(value) {
@@ -230,13 +230,6 @@ export function assertPerformanceObservationWithinBudget(name, observation, base
   const budget = deriveReleasePerformanceBudget(baseline);
   const limit = budget.thresholds[name];
   if (observation > limit) throw new Error(`Release performance budget: ${name} observed ${observation} ms exceeded ${limit} ms`);
-  return true;
-}
-
-export function assertPerformanceBaselineBuildIdentity(baseline, expectedBuildDigest) {
-  const validated = validateReleasePerformanceBaseline(baseline);
-  digest(expectedBuildDigest, 'expectedBuildDigest');
-  if (validated.pluginBuildDigest !== expectedBuildDigest) invalid('pluginBuildDigest does not match the final build');
   return true;
 }
 

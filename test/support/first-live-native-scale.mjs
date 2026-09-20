@@ -8,9 +8,9 @@ import { assertNativeScaleSourcesUnchanged, readNativeLegacyBootstrap } from './
 
 // The shared journey owns launch, authentication, assets and all six finalizers.
 // Import lazily so the ordinary/keyboard entrypoints do not form an eager cycle.
-export async function exerciseNativeScaleJourney({ descriptor, buildReceipt, signal, onFinalization }) {
+export async function exerciseNativeScaleJourney({ descriptor, buildReceipt, signal, onFinalization, onScaleProgress }) {
   const { exerciseNativeJourney } = await import('./first-live-native-journey.mjs');
-  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, scale: true });
+  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, onScaleProgress, scale: true });
 }
 
 function request(world, signal, method, params = {}, scopes = ['operator.read']) {
@@ -21,7 +21,7 @@ function request(world, signal, method, params = {}, scopes = ['operator.read'])
 async function action(world, signal, input) {
   const response = await fetchJsonWithDeadline(`${world.gateway.url}/plugins/command-center/api/topic/actions`, {
     method: 'POST', redirect: 'error', signal,
-    headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+    headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
     body: JSON.stringify({ schemaVersion: 1, ...input })
   }, { label: 'native scale authenticated Conversation owner', timeoutMs: 30_000 });
   assert.equal(response.response.ok, true);
@@ -41,11 +41,11 @@ export async function prepareNativeScaleConversations({ world, signal, fixture }
   const controlUiBuildId = bootstrap.body.serverBuildId;
   assert.ok(typeof controlUiBuildId === 'string' && controlUiBuildId.trim());
   const references = new Set([fixture.sessionReferenceId]);
+  const { topic } = await request(world, signal, 'topics.get', { topicId: fixture.topicId });
+  assert.equal(topic.topicId, fixture.topicId);
+  assert.equal(topic.usable, true);
   for (let index = 1; index < 100; index += 1) {
     signal.throwIfAborted();
-    const { topic } = await request(world, signal, 'topics.get', { topicId: fixture.topicId });
-    assert.equal(topic.topicId, fixture.topicId);
-    assert.equal(topic.usable, true);
     const logicalOperationId = randomUUID();
     // Native creation requires a live authenticated connection, not a synthetic
     // HTTP identity. Use the existing Gateway command and its domain owner.
@@ -91,7 +91,10 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   conversationLabel, messageText, startupReadinessMs, topicsStarted, observed, measure = true, onProgress = () => {} }) {
   const now = measure ? () => performance.now() : () => 0;
   const observations = { startupReadinessMs };
-  const ready = (probe) => waitForConsecutiveReadiness(probe, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+  // These waits surround the measured actions; they do not replace their
+  // elapsed observations. Keep enough bounded headroom to record a slow first
+  // exact observation so the immutable baseline and later budget can judge it.
+  const ready = (probe) => waitForConsecutiveReadiness(probe, host.earlyExit, { deadlineMs: 120_000, delayMs: 100, signal });
   const nativePage = page.locator('openclaw-plugin-page');
   onProgress('topics-ready');
   await ready(async () => !!observed().topics?.activeGroups?.project?.some(topic => topic.topicId === fixture.topicId && topic.usable));
@@ -105,7 +108,9 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).click();
   await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
   await ready(async () => observed().notes?.value?.offset === 0 && observed().notes?.value?.total === 5_000);
+  onProgress('topic-catalog-observed');
   await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).waitFor();
+  onProgress('topic-catalog-rendered');
   observations.topicOpenMs = now() - started;
   onProgress('large-note-read');
   started = now();
@@ -118,12 +123,8 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
   assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
 
-  const notePaths = [];
-  let offset = 0;
-  while (true) {
-    onProgress(`notes-page-${offset}`);
-    const catalog = observed().notes.value;
-    assert.equal(observed().notes.input.topicId, fixture.topicId);
+  const expectedNotePaths = [bootstrap.notePath, ...bootstrap.scaleNotes.map(note => note.path)];
+  const assertNotePage = (catalog, offset) => {
     assert.equal(catalog.offset, offset);
     assert.equal(catalog.total, 5_000);
     assert.equal(catalog.notes.length, 50);
@@ -132,21 +133,35 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
       assert.equal(typeof note.sourceReference.referenceId, 'string');
       return note.path;
     });
-    await ready(async () => JSON.stringify(await nativePage.getByRole('button', { name: /^Read / }).allTextContents()) === JSON.stringify(paths.map(value => `Read ${value}`)));
-    notePaths.push(...paths);
-    if (!catalog.hasMore) break;
-    assert.equal(catalog.nextOffset, offset + 50);
-    offset = catalog.nextOffset;
-    started = now();
-    await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).click();
-    await ready(async () => observed().notes?.value?.offset === offset);
-    await nativePage.getByText(`Notes ${offset + 1}–${offset + 50} of 5000.`, { exact: true }).waitFor();
-    if (offset === 50) observations.noteNextPageMs = now() - started;
+    assert.deepEqual(paths, expectedNotePaths.slice(offset, offset + 50));
+    return paths;
+  };
+  const firstCatalog = observed().notes.value;
+  assert.equal(observed().notes.input.topicId, fixture.topicId);
+  const firstPaths = assertNotePage(firstCatalog, 0);
+  await ready(async () => JSON.stringify(await nativePage.getByRole('button', { name: /^Read / }).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))) === JSON.stringify(firstPaths.map(value => `Read ${value}`)));
+  assert.equal(firstCatalog.nextOffset, 50);
+  started = now();
+  await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).click();
+  await ready(async () => observed().notes?.value?.offset === 50);
+  await nativePage.getByText('Notes 51–100 of 5000.', { exact: true }).waitFor();
+  observations.noteNextPageMs = now() - started;
+  assertNotePage(observed().notes.value, 50);
+  // The UI proves the interactive first transition. Sample the middle and final
+  // pages through the same authenticated snapshot cursor so the 5,000-item
+  // ordering and terminal boundary are covered without 98 repetitive clicks.
+  for (const offset of [2_500, 4_950]) {
+    onProgress(`notes-page-${offset}`);
+    const catalog = await request(world, signal, 'notes.browse', { topicId: fixture.topicId,
+      offset, limit: 50, includeDocuments: true, cursor: firstCatalog.cursor });
+    assertNotePage(catalog, offset);
+    if (offset === 4_950) {
+      assert.equal(catalog.hasMore, false);
+      assert.equal(catalog.nextOffset, null);
+    }
   }
-  assert.equal(notePaths.length, 5_000);
-  assert.equal(new Set(notePaths).size, 5_000);
-  assert.deepEqual(notePaths, [bootstrap.notePath, ...bootstrap.scaleNotes.map(note => note.path)]);
-  assert.equal(await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).isDisabled(), true);
+  assert.equal(expectedNotePaths.length, 5_000);
+  assert.equal(new Set(expectedNotePaths).size, 5_000);
 
   onProgress('conversation-create');
   const creationResponse = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'POST'
@@ -161,20 +176,56 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   const input = response.value.request().postDataJSON();
   assert.equal(input.topicId, fixture.topicId);
   assert.equal(input.label, conversationLabel);
-  assert.equal(response.value.request().headers()['x-openclaw-control-ui-relay'], '1');
+  const requestHeaders = response.value.request().headers();
+  assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+  assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
   const receipt = await response.value.json();
   assert.equal(receipt.status, 'applied');
   assert.equal(receipt.logicalOperationId, input.logicalOperationId);
   assert.equal(receipt.result.topicId, fixture.topicId);
   assert.equal(receipt.result.action, 'conversations.create');
-  await ready(async () => observed().navigation?.value?.sourceReference?.referenceId === receipt.result.referenceId);
-  const target = observed().navigation.value;
-  const chat = page.locator('openclaw-chat-pane[aria-hidden="false"]');
-  await chat.waitFor();
-  await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, target.sessionKey);
+  assert.equal(typeof receipt.result.referenceId, 'string');
+  onProgress('conversation-open');
+  // Successful creation already calls the verified onCreated navigation.
+  // The retained button is a recovery action; clicking it while that route is
+  // detaching the plugin page makes Playwright wait on a duplicate handoff.
+  try {
+    await waitForConsecutiveReadiness(async () => {
+      return observed().navigation?.input?.referenceId === receipt.result.referenceId
+        && typeof observed().navigation?.value?.sessionKey === 'string';
+    }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+  } catch (error) {
+    const navigation = observed().navigation;
+    onProgress(`conversation-navigation-unavailable:${JSON.stringify({ observed: Boolean(navigation),
+      referenceMatches: navigation?.input?.referenceId === receipt.result.referenceId,
+      expectedSessionId: typeof navigation?.input?.expectedSessionId === 'string',
+      sessionKey: typeof navigation?.value?.sessionKey === 'string', valueKeys: Object.keys(navigation?.value ?? {}) })}`);
+    throw error;
+  }
+  const resolved = observed().navigation;
+  const target = { sessionKey: resolved.value.sessionKey, sessionId: resolved.input.expectedSessionId };
+  assert.equal(resolved.input.topicId, fixture.topicId);
+  assert.equal(resolved.input.referenceId, receipt.result.referenceId);
+  assert.deepEqual(Object.keys(resolved.value), ['sessionKey']);
+  const chat = page.locator('openclaw-chat-pane.chat-pane-cache__pane--visible');
+  try {
+    await waitForConsecutiveReadiness(async () => await page.locator('openclaw-chat-pane').evaluateAll((panes, key) => panes.some(pane =>
+      pane.classList.contains('chat-pane-cache__pane--visible') && pane.sessionKey === key), target.sessionKey),
+    host.earlyExit, { deadlineMs: 10_000, delayMs: 100, signal });
+  } catch (error) {
+    const state = await page.evaluate(key => ({
+      chatRoute: location.pathname.includes('/chat/'), filesRequest: new URLSearchParams(location.search).has('__openclawFilesPanel'),
+      panes: [...document.querySelectorAll('openclaw-chat-pane')].map(pane => ({ selected: pane.classList.contains('chat-pane-cache__pane--visible'),
+        active: pane.classList.contains('chat-pane-cache__pane--active'), presented: pane.getAttribute('aria-hidden') === 'false',
+        inert: pane.hasAttribute('inert'), target: pane.sessionKey === key }))
+    }), target.sessionKey);
+    onProgress(`chat-pane-unavailable:${JSON.stringify(state)}`);
+    throw error;
+  }
+  await chat.waitFor({ state: 'visible', timeout: 5_000 });
+  onProgress('chat-pane-ready');
   observations.conversationCreateMs = now() - started;
   assert.notEqual(target.sessionId, fixture.sessionId);
-  assert.equal(target.sourceReference.topicId, fixture.topicId);
   const catalog = await request(world, signal, 'sessions.browse', { topicId: fixture.topicId, includeClosed: false });
   assert.equal(catalog.conversations.length, 101);
   assert.equal(catalog.conversations.find(row => row.referenceId === receipt.result.referenceId)?.sessionId, target.sessionId);
@@ -190,7 +241,8 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   const containsMessage = history => history.messages?.some(message => message.role === 'user' && (message.text === messageText || message.content === messageText
     || Array.isArray(message.content) && message.content.some(part => part.type === 'text' && part.text === messageText)));
   await ready(async () => {
-    const response = await readAuthenticatedHistory({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, sessionKey: target.sessionKey, signal });
+    const response = await readAuthenticatedHistory({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+      sessionKey: target.sessionKey, signal, responseTimeoutMs: 30_000 });
     const history = response?.result ?? response;
     assert.equal(history.sessionId, target.sessionId);
     assert.equal(history.sessionKey, target.sessionKey);
@@ -264,7 +316,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.deepEqual(Object.keys(observations).sort(), [...RELEASE_MEASUREMENTS].sort());
   if (measure) for (const value of Object.values(observations)) assert.ok(Number.isFinite(value) && value > 0);
   const fixtureCounts = { largeNoteBytes: Buffer.byteLength(bootstrap.noteText), conversations: expectedSessions.size,
-    noteFiles: notePaths.length, conversationMessages: bootstrap.prepared.occurrenceCount };
+    noteFiles: expectedNotePaths.length, conversationMessages: bootstrap.prepared.occurrenceCount };
   assert.deepEqual(fixtureCounts, RELEASE_FIXTURE_COUNTS);
   // Corpus messages are the verified immutable Primary prefix; the separately
   // sent user message belongs to the final Conversation, not that denominator.

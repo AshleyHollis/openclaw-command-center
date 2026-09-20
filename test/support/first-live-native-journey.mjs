@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { assertNativeFormattedNote, assertNativeNoteSource, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
+import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
@@ -86,6 +86,60 @@ async function retainNativeJourneyStage(stage) {
   await writeFile(path.join(directory, 'journey-stage.json'), `${JSON.stringify({ schemaVersion: 1, stage })}\n`);
 }
 
+function nativeCatalogPageText(page) {
+  const first = page.total === 0 ? 0 : page.offset + 1;
+  return page.total === 0 ? 'No Notes.' : `Notes ${first}–${page.offset + page.notes.length} of ${page.total}.`;
+}
+
+async function readNativeCatalogPagesToPath({ gatewayUrl, credential, topicId, path: targetPath, signal }) {
+  const pages = [];
+  let offset = 0;
+  let cursor;
+  let total;
+  for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
+    const response = await requestAuthenticatedGateway({ gatewayUrl, credential,
+      method: 'command-center.v1.notes.browse',
+      params: { schemaVersion: 1, topicId, offset, limit: 50, includeDocuments: true, ...(cursor ? { cursor } : {}) }, signal });
+    const page = response?.result ?? response;
+    if (!Array.isArray(page?.notes) || page.offset !== offset || !Number.isSafeInteger(page.total) || page.total < 0 ||
+        typeof page.hasMore !== 'boolean' || typeof page.cursor !== 'string' ||
+        (page.hasMore && (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset || page.nextOffset >= page.total)) ||
+        (!page.hasMore && page.nextOffset !== null) || page.notes.length > 50 || offset + page.notes.length > page.total) {
+      throw new Error(`The authoritative Note page is invalid: ${JSON.stringify({ pageIndex, offset, total: page?.total, count: page?.notes?.length, nextOffset: page?.nextOffset, hasMore: page?.hasMore }).slice(0, 500)}`);
+    }
+    if (total === undefined) { total = page.total; cursor = page.cursor; }
+    else if (page.total !== total || page.cursor !== cursor) throw new Error('The authoritative Note catalogue changed while locating the exact fixture file.');
+    const bounded = { notes: page.notes.map(note => ({ path: note.path })), total: page.total, offset: page.offset,
+      nextOffset: page.hasMore ? page.nextOffset : null };
+    pages.push(bounded);
+    if (page.notes.some(note => note.path === targetPath)) return Object.freeze(pages);
+    if (!page.hasMore) break;
+    offset = page.nextOffset;
+  }
+  throw new Error(`The exact fixture file was not found in the bounded authoritative Note pages: ${JSON.stringify({ targetPath, pages: pages.map(page => ({ offset: page.offset, count: page.notes.length, total: page.total })) }).slice(0, 800)}`);
+}
+
+async function openNativeCatalogPageForPath({ workspace, pages, path: targetPath }) {
+  try {
+    for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+      const page = pages[pageIndex];
+      await workspace.getByText(nativeCatalogPageText(page), { exact: true }).waitFor({ timeout: 30_000 });
+      await workspace.getByText(`${page.notes.length} Topic files available.`, { exact: true }).waitFor({ timeout: 30_000 });
+      if (page.notes.some(note => note.path === targetPath)) return page;
+      await workspace.getByRole('button', { name: 'Next Notes', exact: true }).click();
+    }
+  } catch (error) {
+    const diagnostics = await workspace.evaluate((element) => ({
+      text: element.innerText.slice(0, 2_000),
+      statuses: [...element.querySelectorAll('[role="status"]')].map(node => node.textContent?.trim()).filter(Boolean).slice(0, 12),
+      pageControls: [...element.querySelectorAll('button')].filter(node => /^(Previous|Next) Notes$/u.test(node.textContent?.trim() ?? ''))
+        .map(node => ({ label: node.textContent?.trim(), disabled: node.disabled, visible: node.checkVisibility?.() ?? null }))
+    })).catch(diagnosticError => ({ diagnosticError: String(diagnosticError?.message ?? diagnosticError).slice(0, 500) }));
+    throw new Error(`The native Note page did not reconcile with the authoritative cursor-pinned catalogue: ${JSON.stringify(diagnostics).slice(0, 2_500)}`, { cause: error });
+  }
+  throw new Error(`The exact fixture file was not present after ${pages.length} bounded native Note pages.`);
+}
+
 // The isolated history source is pinned by an inventory digest before the
 // plugin starts. Its fixture transcript never overlaps an active Chat and is
 // imported through the same durable, read-only owner used by production.
@@ -155,6 +209,7 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
   await waitForConsecutiveReadiness(async () => isCommandCenterMetadataReady(resolveCommandCenterDatabasePath(stateDir)), host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
   const topicId = '44444444-4444-4444-8444-444444444444';
   const name = 'Fictional Native Journey';
+  const paraCategory = 'area';
   const folderReferenceId = 'fictional-native-journey-folder';
   const sessionReferenceId = 'fictional-native-journey-primary';
   const notePath = 'Overview.md';
@@ -215,13 +270,13 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
   const identity = await readNoteFolderIdentity(folder);
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
   try {
-    metadata.createTopic({ topicId, name, paraCategory: 'area', lifecycle: 'active' });
+    metadata.createTopic({ topicId, name, paraCategory, lifecycle: 'active' });
     metadata.createSourceReference({ version: 1, referenceId: folderReferenceId, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: folder });
     metadata.setSourceLocator({ referenceId: folderReferenceId, locator: folder, ownership: 'external', observedRevision: identity });
     metadata.createSourceReference({ version: 1, referenceId: sessionReferenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey });
     metadata.setSessionState({ referenceId: sessionReferenceId, sessionId: created.sessionId, status: 'open', isPrimary: true, displayName: name });
   } finally { metadata.close(); }
-  return Object.freeze({ topicId, name, sessionReferenceId, sessionKey, sessionId: created.sessionId, notePath, noteText, folder,
+  return Object.freeze({ topicId, name, paraCategory, sessionReferenceId, sessionKey, sessionId: created.sessionId, notePath, noteText, folder,
     ...(catalog ? { catalog: true, catalogNotes: Object.freeze(catalogNotes), documents: Object.freeze({ pdfPath: 'Evidence/PDF/receipt-01.pdf', pngPath: 'Evidence/Images/photo-01.png', unsupportedPath: 'Evidence/unavailable.bin' }) } : {}) });
 }
 
@@ -311,13 +366,17 @@ async function waitForNativeControlUiReadiness({ world, host, signal, scale, obs
   await waitForConsecutiveReadiness(async (probeSignal) => {
     const observation = { stage: 'http', attempt: ++attempt, url: `${world.gateway.url}${runtimeCapability.bootstrap.path}`, status: null, error: null, bodyKeys: [] };
     try {
-      const { response, body, parseError } = await fetchJsonWithDeadline(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal: probeSignal }, { label: 'native Control UI readiness', timeoutMs: 30_000 });
+      const { response, body, parseError } = await fetchJsonWithDeadline(observation.url, { headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal: probeSignal }, { label: 'native Control UI readiness', timeoutMs: 10_000 });
       observation.status = response.status;
       observation.bodyKeys = body && typeof body === 'object' ? Object.keys(body).sort().slice(0, 24) : [];
       observation.error = parseError ? redactBrowserEvidence(parseError.message) : null;
       return response.ok && !parseError;
     } catch (error) {
       observation.error = redactBrowserEvidence(`${error?.category ?? error?.cause?.code ?? error?.code ?? 'transport'}: ${error?.message ?? 'readiness failed'}`);
+      // The Gateway can accept bootstrap HTTP before plugin startup releases
+      // the request. Treat only that bounded transport timeout as pending; the
+      // outer readiness deadline and early-exit owner remain authoritative.
+      if (error?.category === 'transport-timeout') return false;
       throw error;
     } finally {
       record(observation);
@@ -329,8 +388,8 @@ async function waitForNativeControlUiReadiness({ world, host, signal, scale, obs
     host.earlyExit, { required: 1, deadlineMs: 30_000, delayMs: 250, signal });
 }
 
-export async function exerciseNativeControlUiActivation({ descriptor, buildReceipt, signal, onFinalization }) {
-  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, keyboard: false });
+export async function exerciseNativeControlUiActivation({ descriptor, buildReceipt, signal, onFinalization, onScaleProgress }) {
+  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, onScaleProgress, keyboard: false });
 }
 
 // A bounded document-workspace fixture is separate from scale/performance
@@ -559,7 +618,7 @@ export async function exerciseNativeRetainedStartup(options, { scale = true, con
 export async function readRetainedNativeBootstrap(options, { waitForReady = waitForNativeControlUiReadiness, readBootstrap = readNativeLegacyBootstrap } = {}) {
   // A spawned successor is not yet an authenticated, listening Gateway.
   // This wait remains inside the caller's startup measurement and deadline.
-  await waitForReady({ ...options, scale: false });
+  await waitForReady({ ...options, scale: options.scale === true });
   return readBootstrap(options);
 }
 
@@ -588,7 +647,7 @@ async function exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinal
         removeAbortCleanup();
         removeAbortCleanup = stopHostOnAbort(signal, host);
         stages.push('successor-launched');
-        await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: conversations ? 100 : 1 });
+        await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: conversations ? 100 : 1, scale });
         stages.push('retained-readback-passed');
       }
       result = Object.freeze({ schemaVersion: 1, pluginId: 'command-center', revision: plugin.revision, fixtureCounts: Object.freeze({ noteBytes: Buffer.byteLength(bootstrap.noteText), noteFiles: (bootstrap.scaleNotes?.length ?? 0) + 1, conversationMessages: bootstrap.prepared.occurrenceCount, conversations: conversations ? 100 : 1 }), readinessAttempts: Object.freeze([...readinessAttempts]), migrationReady: Boolean(imported.completion), retainedRestartVerified: restart });
@@ -624,13 +683,14 @@ export async function exerciseNativeKeyboardJourney({ descriptor, buildReceipt, 
   return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, keyboard: true });
 }
 
-export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, scale = false, catalog = false, chatHandoffOnly = false, notesWorkspaceOnly = false, nativeFilesWorkspace = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
+export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, scale = false, catalog: catalogJourney = false, chatHandoffOnly = false, notesWorkspaceOnly = false, nativeFilesWorkspace = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
   if (scaleDiagnostic) assert.equal(process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE, undefined);
   const scaleNow = scaleDiagnostic ? () => 0 : () => performance.now();
-  const progress = stage => { if (scaleDiagnostic) onScaleProgress?.({ stage }); };
+  const progressStarted = performance.now();
+  const progress = stage => { onScaleProgress?.({ stage, elapsedMs: Math.round(performance.now() - progressStarted) }); };
   assert.equal(keyboard && scale, false, 'Performance qualification cannot share a keyboard diagnostic');
   return withIsolatedWorld(async (world) => {
-    const bootstrap = keyboard || nativeFilesWorkspace ? null : await prepareNativeLegacyBootstrap({ world, signal, scale, catalog });
+    const bootstrap = keyboard || nativeFilesWorkspace ? null : await prepareNativeLegacyBootstrap({ world, signal, scale, catalog: catalogJourney });
     const historySource = nativeFilesWorkspace ? await prepareNativeHistorySource({ world }) : null;
     let host = await withDeadline('native pinned host launch', (launchSignal) => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
     let removeAbortCleanup = stopHostOnAbort(signal, host);
@@ -657,17 +717,17 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       return host;
     };
     try {
-      let catalog;
+      let pluginCatalog;
       progress('initial-readiness');
       // Startup-only diagnosis and measured scale use this exact owner.
       await waitForNativeControlUiReadiness({ world, host, signal, scale });
       await waitForConsecutiveReadiness(async () => {
         try {
-          catalog = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'plugins.controlUi.list', signal });
-          return Array.isArray(catalog?.plugins) && catalog.plugins.some((plugin) => plugin.pluginId === 'command-center');
+          pluginCatalog = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'plugins.controlUi.list', signal });
+          return Array.isArray(pluginCatalog?.plugins) && pluginCatalog.plugins.some((plugin) => plugin.pluginId === 'command-center');
         } catch (error) { signal.throwIfAborted(); recordBounded(evidence.errors, redactBrowserEvidence(error.message)); return false; }
       }, host.earlyExit, { deadlineMs: 120_000, delayMs: 250, signal });
-      const matches = catalog.plugins.filter((plugin) => plugin.pluginId === 'command-center');
+      const matches = pluginCatalog.plugins.filter((plugin) => plugin.pluginId === 'command-center');
       assert.equal(matches.length, 1);
       const native = matches[0];
       assert.match(native.revision, /^[a-f0-9]{64}$/u);
@@ -696,7 +756,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         progress('retained-restart');
         const started = scaleNow();
         await restartHost();
-        bootstrapped = await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 100,
+        bootstrapped = await readRetainedNativeBootstrap({ world, host, signal, bootstrap, expectedConversationCount: 100, scale: true,
           onReady: () => { startupReadinessMs = scaleNow() - started; } });
       }
       const fixture = keyboard || nativeFilesWorkspace
@@ -739,7 +799,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         socket.onMessage((payload) => {
           server.send(payload);
           let message; try { message = JSON.parse(String(payload)); } catch { return; }
-          if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(scale ? ['command-center.v1.notes.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) requests.set(message.id, { method: message.method, params: message.params });
+          if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(scale ? ['command-center.v1.notes.browse', 'command-center.v1.sessions.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) {
+            requests.set(message.id, { method: message.method, params: message.params });
+            if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native'].includes(message.method)) progress(`browser-rpc-request:${message.method}`);
+          }
           if (message?.type === 'req' && message.method === 'chat.send' && [messageText, attachmentMessageText].includes(message.params?.message)) {
             browserChatSend = message;
           }
@@ -752,6 +815,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           const request = requests.get(message.id);
           requests.delete(message.id);
           if (!request || message.ok !== true) return;
+          if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native'].includes(request.method)) progress(`browser-rpc-response:${request.method}`);
           const value = message.payload?.result ?? message.payload;
           if (request.method === 'command-center.v1.topics.list') browserTopics = value;
           if (request.method === 'command-center.v1.notes.read') browserNote = { input: request.params, value };
@@ -1226,14 +1290,19 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       } else if (notesWorkspaceOnly) {
       await retainNativeJourneyStage('topics-loaded');
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const fixtureTopic = browserTopics.activeGroups.project.find((topic) => topic.topicId === fixture.topicId);
+      const fixtureTopic = browserTopics.activeGroups[fixture.paraCategory].find((topic) => topic.topicId === fixture.topicId);
       assert.ok(fixtureTopic?.usable, 'The Notes workspace must start from a usable existing Topic.');
+      const planned = { path: 'Z Projects/Alpha/Planning/Plan.md',
+        text: await readFile(path.join(fixture.folder, 'Z Projects', 'Alpha', 'Planning', 'Plan.md'), 'utf8') };
+      const catalogPages = await readNativeCatalogPagesToPath({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+        topicId: fixture.topicId, path: planned.path, signal });
       await retainNativeJourneyStage('open-topic-notes');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor({ timeout: 30_000 });
       const workspace = nativePage.locator('[data-topic-notes-workspace]');
       const filter = workspace.getByRole('searchbox', { name: 'Filter filenames', exact: true });
-      await workspace.getByText('120 Topic files available.', { exact: true }).waitFor({ timeout: 30_000 });
+      await workspace.getByText(nativeCatalogPageText(catalogPages[0]), { exact: true }).waitFor({ timeout: 30_000 });
+      await workspace.getByText(`${catalogPages[0].notes.length} Topic files available.`, { exact: true }).waitFor({ timeout: 30_000 });
       await retainNativeJourneyStage('read-overview');
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
       const noteContent = nativePage.getByRole('region', { name: 'Note content', exact: true });
@@ -1244,10 +1313,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(browserNote?.input.path, fixture.notePath);
       assert.equal(browserNote?.value.sourceReference?.topicId, fixture.topicId);
       await retainNativeJourneyStage('filename-filter');
+      const plannedPage = await openNativeCatalogPageForPath({ workspace, pages: catalogPages, path: planned.path });
       await filter.fill('Plan.md');
-      await workspace.getByText('3 of 120 Topic files match “Plan.md”.', { exact: true }).waitFor({ timeout: 30_000 });
-      const planned = fixture.catalogNotes.find((entry) => entry.path === 'Z Projects/Alpha/Planning/Plan.md');
-      assert.ok(planned, 'The bounded catalogue must contain an exact nested duplicate filename.');
+      const plannedMatches = plannedPage.notes.filter(note => note.path.toLocaleLowerCase().includes('plan.md')).length;
+      await workspace.getByText(`${plannedMatches} of ${plannedPage.notes.length} Topic files match “Plan.md”.`, { exact: true }).waitFor({ timeout: 30_000 });
       const plannedButton = workspace.getByRole('button', { name: `Read ${planned.path}`, exact: true });
       await tabTo(plannedButton);
       await plannedButton.press('Enter');
@@ -1271,7 +1340,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         nativeChatDraftRetained: true, exactNativeChatHandoff: true };
       } else if (chatHandoffOnly) {
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const fixtureTopic = browserTopics.activeGroups.project.find((topic) => topic.topicId === fixture.topicId);
+      const fixtureTopic = browserTopics.activeGroups[fixture.paraCategory].find((topic) => topic.topicId === fixture.topicId);
       assert.ok(fixtureTopic?.usable, 'The exact native Chat handoff must start from a usable existing Topic.');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor({ timeout: 30_000 });
@@ -1283,10 +1352,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 30_000 });
       assert.equal(browserNavigation?.input.topicId, fixture.topicId);
       assert.equal(browserNavigation?.input.referenceId, fixture.sessionReferenceId);
-      assert.equal(browserNavigation?.input.nativeChat, true);
+      assert.equal(browserNavigation?.input.expectedSessionId, fixture.sessionId);
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
-      assert.equal(browserNavigation?.value.sessionId, fixture.sessionId);
-      assert.equal(browserNavigation?.value.sourceReference?.referenceId, fixture.sessionReferenceId);
+      assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       result = { existingTopicVerified: true, authoritativeNoteRead: true, exactNativeChatHandoff: true,
         sessionKey: fixture.sessionKey, sessionId: fixture.sessionId, referenceId: fixture.sessionReferenceId };
       } else if (keyboard) {
@@ -1298,20 +1366,31 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         const playwrightPackage = JSON.parse(await readFile(new URL(import.meta.resolve('playwright-core/package.json')), 'utf8'));
         result = { ...result, browser: { engine: 'chromium', playwrightVersion: playwrightPackage.version, version: managedBrowser.browser.version() }, viewport: page.viewportSize() };
       } else {
+      progress('primary-topics-readback');
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const authoritative = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 }, signal });
       const topics = authoritative?.result ?? authoritative;
-      for (const category of ['project', 'area', 'resource']) {
-        assert.ok(Array.isArray(topics?.activeGroups?.[category]));
+      const authoritativeCategories = Object.keys(topics?.activeGroups ?? {}).sort();
+      assert.ok(authoritativeCategories.includes(fixture.paraCategory));
+      assert.deepEqual(Object.keys(browserTopics.activeGroups).sort(), authoritativeCategories);
+      for (const category of authoritativeCategories) {
+        assert.ok(Array.isArray(topics.activeGroups[category]));
         assert.deepEqual(browserTopics.activeGroups[category], topics.activeGroups[category]);
       }
       await nativePage.getByRole('button', { name: 'Refresh Topics', exact: true }).waitFor();
-      const fixtureTopic = topics.activeGroups.project.find((topic) => topic.name === 'Fictional Native Journey');
+      const fixtureTopic = topics.activeGroups[fixture.paraCategory].find((topic) => topic.name === fixture.name);
       assert.ok(fixtureTopic, 'The native journey must exercise an existing Topic, not an empty Topics diagnostic');
       assert.equal(fixtureTopic.usable, true, 'The existing Topic must have verified source bindings');
       assert.equal(fixtureTopic.topicId, fixture.topicId);
+      progress('primary-sidebar-grouping');
       await selectNativeCategoryGrouping(page);
+      progress('primary-sidebar-roster');
       await organizeNativeTopicConversations({ page, nativePage, fixture, observedRosters: () => scaleResponses.rosters });
+      const planned = catalogJourney ? { path: 'Z Projects/Alpha/Planning/Plan.md',
+        text: await readFile(path.join(fixture.folder, 'Z Projects', 'Alpha', 'Planning', 'Plan.md'), 'utf8') } : undefined;
+      const catalogPages = catalogJourney ? await readNativeCatalogPagesToPath({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+        topicId: fixture.topicId, path: planned.path, signal }) : undefined;
+      progress('primary-note-read');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
@@ -1324,14 +1403,15 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(browserNote?.value.sourceReference.referenceId, browserNote.input.referenceId);
       assert.equal(browserNote?.value.revision, `sha256:${createHash('sha256').update(fixture.noteText).digest('hex')}`);
       const originalNoteRead = structuredClone(browserNote);
-      if (catalog) {
+      if (catalogJourney) {
         const workspace = nativePage.locator('[data-topic-notes-workspace]');
         const filter = workspace.getByRole('searchbox', { name: 'Filter filenames', exact: true });
-        await workspace.getByText('120 Topic files available.', { exact: true }).waitFor();
+        await workspace.getByText(nativeCatalogPageText(catalogPages[0]), { exact: true }).waitFor();
+        await workspace.getByText(`${catalogPages[0].notes.length} Topic files available.`, { exact: true }).waitFor();
+        const plannedPage = await openNativeCatalogPageForPath({ workspace, pages: catalogPages, path: planned.path });
         await filter.fill('Plan.md');
-        await workspace.getByText('3 of 120 Topic files match “Plan.md”.', { exact: true }).waitFor();
-        const planned = fixture.catalogNotes.find((entry) => entry.path === 'Z Projects/Alpha/Planning/Plan.md');
-        assert.ok(planned, 'The bounded catalogue must contain an exact nested duplicate filename.');
+        const plannedMatches = plannedPage.notes.filter(note => note.path.toLocaleLowerCase().includes('plan.md')).length;
+        await workspace.getByText(`${plannedMatches} of ${plannedPage.notes.length} Topic files match “Plan.md”.`, { exact: true }).waitFor();
         const plannedButton = workspace.getByRole('button', { name: `Read ${planned.path}`, exact: true });
         await tabTo(plannedButton);
         await plannedButton.press('Enter');
@@ -1341,7 +1421,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         await nativePage.getByRole('region', { name: 'Note content', exact: true }).waitFor();
         await retainTopicNotesScreenshot(page, 'topic-notes-1366');
         await filter.fill('');
-        await workspace.getByText('120 Topic files available.', { exact: true }).waitFor();
+        await workspace.getByText(`${plannedPage.notes.length} Topic files available.`, { exact: true }).waitFor();
       }
       assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
       assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
@@ -1351,13 +1431,11 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 30_000 });
       assert.equal(browserNavigation?.input.topicId, fixture.topicId);
       assert.equal(browserNavigation?.input.referenceId, fixture.sessionReferenceId);
-      assert.equal(browserNavigation?.input.nativeChat, true);
+      assert.equal(browserNavigation?.input.expectedSessionId, fixture.sessionId);
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
-      assert.equal(browserNavigation?.value.sessionId, fixture.sessionId);
-      assert.equal(browserNavigation?.value.sourceReference.topicId, fixture.topicId);
-      assert.equal(browserNavigation?.value.sourceReference.referenceId, fixture.sessionReferenceId);
+      assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       if (!keyboard) await verifyNativeTopicNotesPane({ page, fixture,
-        onPromoted: catalog ? async () => {
+        onPromoted: catalogJourney ? async () => {
           await page.setViewportSize({ width: 1440, height: 900 });
           await retainTopicNotesScreenshot(page, 'topic-notes-pane-promoted-1440');
           await page.setViewportSize({ width: 1366, height: 768 });
@@ -1366,7 +1444,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       });
       // Return through the host's native navigation contribution, not a new
       // page.goto/document or a synthetic plugin activation.
-      await page.locator('openclaw-app-sidebar openclaw-plugin-contributions').getByRole('link', { name: 'Topics', exact: true }).press('Enter');
+      await page.locator('openclaw-app-sidebar [data-sidebar-entry="plugin:command-center/topics"]').getByRole('link', { name: 'Manage Topics', exact: true }).press('Enter');
+      progress('primary-native-return');
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
@@ -1378,6 +1457,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         && response.request().postDataJSON()?.action === 'conversations.create', { timeout: 30_000 }),
       (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       browserNavigation = undefined;
+      progress('primary-conversation-create');
       await nativePage.getByRole('textbox', { name: 'Conversation label', exact: true }).fill(conversationLabel);
       await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).press('Enter');
       const observedCreation = await creationResponse;
@@ -1398,10 +1478,12 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.notEqual(newReferenceId, fixture.sessionReferenceId, 'Creating a Conversation must not reuse the existing Primary');
       // Replay the exact captured intent through the same declared authenticated
       // HTTP boundary. In particular, do not refresh its original Topic revision.
-      assert.equal(observedCreation.value.request().headers()['x-openclaw-control-ui-relay'], '1');
+      const requestHeaders = observedCreation.value.request().headers();
+      assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+      assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
       const replay = await fetchJsonWithDeadline(`${world.gateway.url}/plugins/command-center/api/topic/actions`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
         body: JSON.stringify(creationInput)
       }, { label: 'native Conversation exact-intent replay', timeoutMs: 30_000 });
       assert.equal(replay.response.ok, true);
@@ -1419,12 +1501,14 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(createdConversation.status, 'open');
       assert.equal(createdConversation.isPrimary, false);
       assert.notEqual(createdConversation.sessionId, fixture.sessionId);
-      await waitForConsecutiveReadiness(async () => browserNavigation?.value.sourceReference?.referenceId === newReferenceId,
+      await openNativeTopicConversation({ page, fixture, referenceId: newReferenceId });
+      await waitForConsecutiveReadiness(async () => browserNavigation?.input?.referenceId === newReferenceId
+        && typeof browserNavigation?.value?.sessionKey === 'string',
         host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
-      const createdTarget = browserNavigation.value;
+      const createdTarget = { sessionKey: browserNavigation.value.sessionKey, sessionId: browserNavigation.input.expectedSessionId };
       assert.equal(browserNavigation.input.topicId, fixture.topicId);
       assert.equal(browserNavigation.input.referenceId, newReferenceId);
-      assert.equal(createdTarget.sourceReference.topicId, fixture.topicId);
+      assert.deepEqual(Object.keys(browserNavigation.value), ['sessionKey']);
       assert.equal(createdTarget.sessionId, createdConversation.sessionId);
       assert.notEqual(createdTarget.sessionKey, fixture.sessionKey);
       assert.match(createdTarget.sessionKey, /^agent:main:.+$/u);
@@ -1434,9 +1518,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
       await waitForConsecutiveReadiness(async () => !!browserChatAcknowledgement,
         host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+      progress('primary-chat-send');
       assert.equal(browserChatSend.params.sessionKey, createdTarget.sessionKey, 'The actual native composer must send to the newly linked Session');
       assert.equal(browserChatAcknowledgement.ok, true, 'The real host must acknowledge the native send');
-      if (catalog) {
+      if (catalogJourney) {
         const attached = Buffer.from('%PDF-1.4\n% Fictional attachment used only by the isolated acceptance journey.\n');
         await chatPane.locator('.agent-chat__file-input').setInputFiles({ name: 'fictional-topic-document.pdf', mimeType: 'application/pdf', buffer: attached });
         await chatPane.locator('.chat-attachment-thumb').waitFor({ timeout: 30_000 });
@@ -1463,7 +1548,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const primaryHistory = primaryHistoryResponse?.result ?? primaryHistoryResponse;
       assert.equal(primaryHistory.sessionId, fixture.sessionId);
       assert.equal(containsUserMessage(primaryHistory), false, 'New Conversation input must not leak into the existing Primary');
-      await page.locator('openclaw-app-sidebar openclaw-plugin-contributions').getByRole('link', { name: 'Topics', exact: true }).press('Enter');
+      await page.locator('openclaw-app-sidebar [data-sidebar-entry="plugin:command-center/topics"]').getByRole('link', { name: 'Manage Topics', exact: true }).press('Enter');
       await nativePage.getByRole('button', { name: 'Refresh Topics', exact: true }).press('Enter');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
@@ -1474,6 +1559,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       // descriptor, source rebinding or fixture reseeding is permitted here.
       await nativePage.getByRole('button', { name: 'All Topics', exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
+      progress('primary-retained-restart');
       const predecessor = host;
       await restartHost();
       assert.notEqual(host.child, predecessor.child);
@@ -1505,7 +1591,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const restartedReplay = await fetchJsonWithDeadline(`${world.gateway.url}/plugins/command-center/api/topic/actions`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
         body: JSON.stringify(creationInput)
       }, { label: 'native Conversation original-intent replay after restart', timeoutMs: 30_000 });
       assert.equal(restartedReplay.response.ok, true);
@@ -1534,14 +1620,16 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       browserTopics = undefined;
       browserNote = undefined;
       browserNavigation = undefined;
+      progress('primary-reload-after-restart');
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor({ timeout: 30_000 });
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const restartedTopicResponse = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
         method: 'command-center.v1.topics.list', params: { schemaVersion: 1 }, signal });
       const restartedTopics = restartedTopicResponse?.result ?? restartedTopicResponse;
-      for (const category of ['project', 'area', 'resource']) assert.deepEqual(browserTopics.activeGroups[category], restartedTopics.activeGroups[category]);
-      const restartedTopic = restartedTopics.activeGroups.project.filter((topic) => topic.topicId === fixture.topicId);
+      assert.deepEqual(Object.keys(browserTopics.activeGroups).sort(), Object.keys(restartedTopics.activeGroups).sort());
+      for (const category of Object.keys(restartedTopics.activeGroups)) assert.deepEqual(browserTopics.activeGroups[category], restartedTopics.activeGroups[category]);
+      const restartedTopic = restartedTopics.activeGroups[fixture.paraCategory].filter((topic) => topic.topicId === fixture.topicId);
       assert.equal(restartedTopic.length, 1);
       assert.equal(restartedTopic[0].name, fixture.name);
       assert.equal(restartedTopic[0].usable, true);
@@ -1564,11 +1652,11 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await page.waitForFunction((key) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey);
       assert.equal(browserNavigation?.input.topicId, fixture.topicId);
       assert.equal(browserNavigation?.input.referenceId, fixture.sessionReferenceId);
+      assert.equal(browserNavigation?.input.expectedSessionId, fixture.sessionId);
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
-      assert.equal(browserNavigation?.value.sessionId, fixture.sessionId);
-      assert.equal(browserNavigation?.value.sourceReference.referenceId, fixture.sessionReferenceId);
-      assert.equal(browserNavigation?.value.sourceReference.topicId, fixture.topicId);
+      assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       let activation;
+      progress('primary-activation-readback');
       await waitForConsecutiveReadiness(async () => {
         // Admin is restricted to this diagnostic read; no synthetic activation
         // report or browser authority is supplied by the harness.
@@ -1577,6 +1665,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         activation = activations.find((entry) => entry.pluginId === 'command-center' && entry.revision === native.revision && entry.status === 'activated');
         return !!activation;
       }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+      progress('primary-complete');
       result = { pluginId: 'command-center', revision: native.revision, entryPath: entryUrl.pathname, grantPrefix, activationStatus: activation.status, topicsResponseObserved: true, nativeTopicsRendered: true,
         existingTopicVerified: true, authoritativeNoteRead: true, exactNativeChatHandoff: true, nativeReturnNoteRead: true,
         conversationCreationExercised: true, conversationExactReplayExercised: true, nativeChatSendExercised: true, authoritativeNewConversationMessageRead: true,

@@ -42,23 +42,45 @@ test('Note browse resolves identities once and batches durable observations', as
     const folder = { version: 1, referenceId: 'folder:batch', topicId: 'topic-batch', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: root };
     const existing = { version: 1, referenceId: 'note:existing', topicId: 'topic-batch', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${root}/existing.md`, observedRevision: 'old' };
     let listCalls = 0;
-    let observed = null;
+    const observedBatches = [];
     const folderRevision = await enrollNoteFolderIdentity(root);
     const metadata = {
       listSourceReferences: () => { listCalls += 1; return [folder, existing]; },
       getSourceReference: (id) => id === folder.referenceId ? folder : null,
       getSourceLocator: (id) => id === folder.referenceId ? { locator: root, locatorVersion: 1, observedRevision: folderRevision } : null,
       setSourceLocator: () => {},
-      observeSourceReferences: (references) => { observed = references; return references; }
+      observeSourceReferences: (references) => { observedBatches.push(references); return references; }
     };
     const adapter = new NoteAdapter({ fsSafeRootFactory, metadata, topicId: folder.topicId, noteFolderReferenceId: folder.referenceId });
     const first = await adapter.browsePage({ limit: 1, offset: 0 });
     const second = await adapter.browsePage({ limit: 1, offset: 1, cursor: first.cursor });
     const notes = [...first.notes, ...second.notes];
     assert.equal(listCalls, 1);
-    assert.equal(observed.length, 2);
+    assert.deepEqual(observedBatches.map((batch) => batch.length), [1, 1]);
+    assert.equal(observedBatches.flat().length, 2);
     assert.deepEqual({ total: first.total, nextOffset: first.nextOffset, hasMore: first.hasMore }, { total: 2, nextOffset: 1, hasMore: true });
     assert.equal(notes.find(({ path: notePath }) => notePath === 'existing.md').sourceReference.referenceId, existing.referenceId);
+    adapter.close();
+  });
+});
+
+test('Note catalog pages materialize only requested files and reuse exact cursor rows', async () => {
+  await withRoot(async (root) => {
+    await Promise.all(Array.from({ length: 21 }, (_, index) => writeFile(path.join(root, `note-${String(index).padStart(2, '0')}.md`), `note ${index}`)));
+    const adapter = new NoteAdapter({ fsSafeRootFactory, topicId: 'topic-paged-notes', root });
+    const readState = adapter.readState.bind(adapter);
+    let materialized = 0;
+    adapter.readState = async (...args) => { materialized += 1; return readState(...args); };
+    const first = await adapter.browsePage({ limit: 10, observe: false });
+    assert.equal(first.total, 21);
+    assert.equal(first.notes.length, 10);
+    assert.equal(materialized, 10);
+    const second = await adapter.browsePage({ limit: 10, offset: first.nextOffset, cursor: first.cursor });
+    assert.equal(second.offset, 10);
+    assert.equal(materialized, 20);
+    const repeated = await adapter.browsePage({ limit: 10, offset: first.nextOffset, cursor: first.cursor });
+    assert.deepEqual(repeated.notes, second.notes);
+    assert.equal(materialized, 20);
     adapter.close();
   });
 });

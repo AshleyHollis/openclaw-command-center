@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 3,
+  "hostVersion": "2026.9.5",
+  "hostReceipt": {
+    "schemaVersion": 2,
+    "sourceDigest": "sha256:933b7338b348f71983c136c7647201e1b1af4d6d8d011b83bcc59a8975e13a60",
+    "commit": "8490d8016bdd46c8e29301efbc91f99eaab7de8d",
+    "executableDigest": "sha256:538e8ee2b65a0b24bb8a5ed3421bfe66621b1e0b5f726a167758c004f566fb36",
+    "contractDigest": "sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6",
+    "packageDigest": "sha256:482c026e9db7d7df380367e4bd53c36eabd82c1ee1c36fdfae4a2eb373b20aa1",
+    "runtimeDigest": "sha256:f1c051333889e0f2dbc37e140938067b1226195acd09a61cb4244c9b9d156d0e"
+  },
+  "pluginBuildDigest": "sha256:bcca4c879085bff26a5d128c0a354906c5579822b9028f29577bab802f68f88e",
+  "browser": {
+    "engine": "chromium",
+    "playwrightVersion": "1.63.0",
+    "version": "153.0.8010.12"
+  },
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "fixtureIdentity": "sha256:49dd0ae59f78d4a5c70af88da629b31237a0afe05043dd748f61d8bb3ab1b52b",
+  "fixtureCounts": {
+    "largeNoteBytes": 8388609,
+    "conversations": 101,
+    "noteFiles": 5000,
+    "conversationMessages": 5000
+  },
+  "observations": {
+    "startupReadinessMs": 61397.19814200001,
+    "topicsLoadMs": 1683.07617700001,
+    "topicOpenMs": 844.2047780000139,
+    "chatSendMs": 27428.119510999997,
+    "conversationCreateMs": 1120.2088579999981,
+    "largeNoteReadMs": 2526.090442000015,
+    "conversationNextPageMs": 198.81506199997966,
+    "noteNextPageMs": 350.36744400000316
+  },
+  "thresholds": {
+    "startupReadinessMs": 61398,
+    "topicsLoadMs": 1684,
+    "topicOpenMs": 845,
+    "chatSendMs": 27429,
+    "conversationCreateMs": 1121,
+    "largeNoteReadMs": 2527,
+    "conversationNextPageMs": 199,
+    "noteNextPageMs": 351
+  },
+  "capture": {
+    "policy": "first-successful-pinned-harness-observation",
+    "successfulRunOrdinal": 1,
+    "identityDigest": "sha256:07c3dd933b39d1a54bfebfee0c07098ea6db80f52d1933fa2bf52b8d067fd75b",
+    "observationsDigest": "sha256:408357172823acb391ce1f4888f8bd0762192b1bd2802f1115b20aed294abf83"
+  }
+}

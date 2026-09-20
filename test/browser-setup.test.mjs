@@ -24,6 +24,6 @@ test('browser setup fails closed when the evaluator-provided headless launch fai
 
 test('browser setup fails closed on version drift or a missing evaluator cache', async () => {
   const base = { environment: { PLAYWRIGHT_BROWSERS_PATH: '/fictional/prepared-cache' }, browserType: { async launch() { return {}; } } };
-  await assert.rejects(() => launchPinnedChromium({ ...base, version: '1.62.0' }), /requires Playwright 1\.62\.1/u);
+  await assert.rejects(() => launchPinnedChromium({ ...base, version: '1.62.0' }), /requires Playwright 1\.63\.0/u);
   await assert.rejects(() => launchPinnedChromium({ ...base, version: PLAYWRIGHT_VERSION, environment: {} }), /requires the evaluator-provided PLAYWRIGHT_BROWSERS_PATH/u);
 });

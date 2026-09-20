@@ -209,7 +209,12 @@ export async function requestAuthenticatedGateway({ gatewayUrl, credential, meth
         const reason = String(socket.reason ?? '').slice(0, 120);
         return Number.isInteger(code) && code > 0 ? ` (code ${code}${reason ? `: ${reason}` : ''})` : '';
       };
-      const timer = setTimeout(() => { cleanup(); reject(new Error('Authenticated Gateway connection timed out.')); }, 10_000);
+      const timer = setTimeout(() => {
+        cleanup();
+        const error = new Error('Authenticated Gateway connection timed out.', { cause: requestSite });
+        error.category = 'transport-timeout';
+        reject(error);
+      }, 10_000);
       socket.addEventListener('open', onOpen, { once: true });
       socket.addEventListener('error', onError, { once: true });
       socket.addEventListener('close', onClose, { once: true });
@@ -235,6 +240,6 @@ export async function requestAuthenticatedGateway({ gatewayUrl, credential, meth
   } finally { signal?.removeEventListener('abort', abortSocket); socket.close(); }
 }
 
-export async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey, signal }) {
-  return requestAuthenticatedGateway({ gatewayUrl, credential, method: 'chat.history', params: { sessionKey }, signal });
+export async function readAuthenticatedHistory({ gatewayUrl, credential, sessionKey, signal, responseTimeoutMs }) {
+  return requestAuthenticatedGateway({ gatewayUrl, credential, method: 'chat.history', params: { sessionKey }, signal, responseTimeoutMs });
 }

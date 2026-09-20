@@ -2,7 +2,11 @@
 export function createGatewayFrameWaiter(socket, { method, signal, requestSite }) {
   const frames = [];
   return (predicate, timeoutMs = 10_000, phase = 'connect-response') => new Promise((resolve, reject) => {
-    const failure = (detail) => new Error(`Authenticated Gateway ${phase} ${detail} for ${method}.`, { cause: requestSite });
+    const failure = (detail, category) => {
+      const error = new Error(`Authenticated Gateway ${phase} ${detail} for ${method}.`, { cause: requestSite });
+      if (category) error.category = category;
+      return error;
+    };
     const cleanup = () => {
       clearTimeout(timer);
       socket.removeEventListener('message', onMessage);
@@ -16,7 +20,7 @@ export function createGatewayFrameWaiter(socket, { method, signal, requestSite }
     const onClose = (event) => fail(failure(`closed (code=${Number.isInteger(event.code) ? event.code : 'unknown'}, clean=${event.wasClean === true})`));
     const onError = () => fail(failure('socket failed'));
     const onAbort = () => fail(signal.reason ?? failure('aborted'));
-    const timer = setTimeout(() => fail(failure(`timed out after ${timeoutMs} ms`)), timeoutMs);
+    const timer = setTimeout(() => fail(failure(`timed out after ${timeoutMs} ms`, 'transport-timeout')), timeoutMs);
     if (signal?.aborted) { onAbort(); return; }
     if (socket.readyState >= 2) { fail(failure('socket was already closed')); return; }
     for (const frame of frames) if (inspect(frame)) return;

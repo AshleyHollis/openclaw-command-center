@@ -1,24 +1,33 @@
 /** Process preload used only by the isolated acceptance child. */
 import dns from 'node:dns';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
 import http from 'node:http';
 import http2 from 'node:http2';
 import https from 'node:https';
 import { syncBuiltinESMExports } from 'node:module';
 import net from 'node:net';
+import path from 'node:path';
 import tls from 'node:tls';
 import { destinationFromConnectionArguments } from './child-traffic.mjs';
 import { fixtureEnvironment } from './fixtures.mjs';
 import { createHostedCatalogIsolationFetch } from './host-catalog-isolation.mjs';
-import { isLoopbackDestination } from './isolation.mjs';
+import { isContainedIpcDestination, isLoopbackDestination } from './isolation.mjs';
 
 const manifest = JSON.parse(readFileSync(process.env[fixtureEnvironment], 'utf8'));
+const isolatedIpcRoot = realpathSync(manifest.tempRoot);
 function record(entry) {
   appendFileSync(manifest.trafficLog, `${JSON.stringify(entry)}\n`);
 }
 function guard(value, source) {
   const target = destinationFromConnectionArguments(value);
-  const permitted = isLoopbackDestination(target);
+  let containedIpc = false;
+  if (isContainedIpcDestination(target, manifest.tempRoot)) {
+    try {
+      const parent = realpathSync(path.dirname(target));
+      containedIpc = parent === isolatedIpcRoot || isContainedIpcDestination(parent, isolatedIpcRoot);
+    } catch { /* missing or inaccessible parents remain prohibited */ }
+  }
+  const permitted = isLoopbackDestination(target) || containedIpc;
   record({ destination: target, source, permitted });
   if (!permitted) throw new Error(`Prohibited isolated child ${source} destination`);
 }

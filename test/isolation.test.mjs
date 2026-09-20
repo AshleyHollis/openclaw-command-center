@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
-import { assertWebSocketDestination, boundedTrafficEvidence, isLoopbackDestination, TrafficGuard } from '../src/isolation.mjs';
+import { assertWebSocketDestination, boundedTrafficEvidence, isContainedIpcDestination, isLoopbackDestination, TrafficGuard } from '../src/isolation.mjs';
 
 test('allows only concrete IPv4 and IPv6 loopback destinations', () => {
   assert.equal(isLoopbackDestination('127.0.0.1'), true);
@@ -8,6 +9,14 @@ test('allows only concrete IPv4 and IPv6 loopback destinations', () => {
   assert.equal(isLoopbackDestination('::1'), true);
   assert.equal(isLoopbackDestination('[::1]'), true);
   for (const target of ['0.0.0.0', 'localhost', '192.0.2.1', 'example.invalid']) assert.equal(isLoopbackDestination(target), false);
+});
+
+test('allows IPC endpoints only below the isolated owner root', () => {
+  const root = path.resolve('fictional-fixture', 'tmp');
+  assert.equal(isContainedIpcDestination(path.join(root, 'oc-spawn-fixture', 'out'), root), true);
+  assert.equal(isContainedIpcDestination(root, root), false);
+  assert.equal(isContainedIpcDestination(path.resolve(root, '..', 'outside.sock'), root), false);
+  assert.equal(isContainedIpcDestination(path.join('relative', 'out'), root), false);
 });
 
 test('records and rejects prohibited child and browser traffic', () => {

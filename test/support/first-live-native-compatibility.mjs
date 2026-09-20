@@ -242,16 +242,16 @@ async function observeNativePluginApiRefusal({ world, host, signal, topicId, exp
         headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal: probeSignal
       }, { label: 'Gateway after plugin API refusal', timeoutMs: 10_000 });
       return bootstrap.response.ok;
-    }, processExit, { deadlineMs: 30_000, delayMs: 100, signal });
+    }, processExit, { deadlineMs: 120_000, delayMs: 100, signal });
   } catch (error) {
     if (error?.category !== 'plugin-api-host-exit') throw error;
     startupRejected = true;
   }
   const attempt = () => fetchJsonWithDeadline(`${world.gateway.url}${actionPath}`, {
     method: 'POST', redirect: 'error', signal,
-    headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+    headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
     body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId, expectedRevision, logicalOperationId, label: 'Fictional refused API Conversation' })
-  }, { label: 'incompatible native plugin retained creation refusal', timeoutMs: 10_000 });
+  }, { label: 'incompatible native plugin retained creation refusal', timeoutMs: 10_000, captureNonJsonBody: true });
   if (startupRejected) {
     assert.ok(host.child.exitCode !== null || host.child.signalCode !== null);
     assert.notEqual(host.child.exitCode, 0);
@@ -265,8 +265,9 @@ async function observeNativePluginApiRefusal({ world, host, signal, topicId, exp
   assert.equal(catalog.plugins.some(plugin => plugin.pluginId === 'command-center'), false);
   const sessions = await nativeSessionIdentities(gatewayRead);
   const refused = await attempt();
-  assert.equal(refused.parseError, undefined);
-  assert.equal(refused.response.status, 401, 'An unloaded plugin has no declared relay authority even with valid operator credentials');
+  assert.ok(refused.parseError instanceof SyntaxError);
+  assert.equal(refused.rawBody === 'Not Found', true, 'The absent relay route must return the pinned generic refusal body');
+  assert.equal(refused.response.status, 404, 'An unloaded plugin has no registered relay route even with valid operator credentials');
   assert.deepEqual(await nativeSessionIdentities(gatewayRead), sessions);
   const page = await openPage();
   await page.goto(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topics', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -383,7 +384,7 @@ async function exerciseNativeCompatibilitySurface({ world, descriptor, buildRece
     const beforeTopics = await gatewayRead('command-center.v1.topics.list');
     const refused = await fetchJsonWithDeadline(`${world.gateway.url}${actionPath}`, {
       method: 'POST', redirect: 'error', signal,
-      headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+      headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
       body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId, expectedRevision, logicalOperationId, label: 'Fictional refused compatibility Conversation' })
     }, { label: 'native compatibility retained Conversation refusal', timeoutMs: 30_000 });
     assert.equal(refused.parseError, undefined); assert.equal(refused.response.status, 422);

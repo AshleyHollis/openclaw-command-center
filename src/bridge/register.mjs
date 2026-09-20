@@ -2,7 +2,7 @@ import { BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, sanitizeBridgeResult, va
 import { assertNoUnexpectedKeys, errorResult, nonBlank, SourceServiceError } from '../sources/errors.mjs';
 import { assertFirstLiveCommand, FIRST_LIVE_COMMANDS, FIRST_LIVE_FEATURES } from '../release-scope.mjs';
 import { captureHistoryReadAuthority } from './read-authority.mjs';
-import { createRequestScopedConversationRuntime, createRequestScopedGatewayRequest } from './gateway-method-dispatch.mjs';
+import { createRequestScopedConversationRuntime } from './gateway-method-dispatch.mjs';
 
 const schedulerRuntimeMethods = new Set([
   'command-center.v1.reminders.list',
@@ -26,18 +26,6 @@ const schedulerRuntimeMethods = new Set([
   'command-center.v1.open-loops.renovation-replacement',
   'command-center.v1.open-loops.renovation-fulfilment'
 ]);
-
-const openLoopSchedulerRuntimeMethods = new Set([
-  'command-center.v1.open-loops.decide',
-  'command-center.v1.open-loops.payment-status',
-  'command-center.v1.open-loops.organize',
-  'command-center.v1.open-loops.renovation-requirement',
-  'command-center.v1.open-loops.renovation-purchase',
-  'command-center.v1.open-loops.renovation-purchase-correction',
-  'command-center.v1.open-loops.renovation-replacement',
-  'command-center.v1.open-loops.renovation-fulfilment'
-]);
-const openLoopSchedulerDispatchMethods = Object.freeze(['cron.add', 'cron.get', 'cron.list', 'cron.update']);
 
 function gatewayError(error, method) {
   const rawCode = String(error?.code ?? '').toUpperCase();
@@ -300,33 +288,31 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
           }
         }
         if (method === 'command-center.v1.sessions.group' || method === 'command-center.v1.sessions.assign-topic') {
-          const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
+          // A nested host dispatch consumes the outer mutation grant. Check it
+          // before grouping, then retain the authenticated connection and the
+          // host-published request scope as the ongoing authority fences.
+          if (method === 'command-center.v1.sessions.group') sessionMutationAuthorization?.assertCurrent?.();
+          const authority = captureAuthenticatedConversationAuthority({ client, context, signal,
+            ...(method === 'command-center.v1.sessions.assign-topic' ? { sessionMutationAuthorization } : {}) });
           if (method === 'command-center.v1.sessions.assign-topic') {
             runtime = { creationAuthority: authority };
           } else {
-          // Use the host's published request-scoped dispatcher. Calling a raw
-          // registry handler re-enters the Gateway without its completion
-          // protocol and can leave an otherwise valid native group request
-          // unresolved. The catalogue wrapper below remains method-closed.
-          const dispatched = await createRequestScopedConversationRuntime({
-            requiredGatewayMethods: ['sessions.groups.list', 'sessions.groups.put']
-          });
-          if (dispatched.creationAuthority.principalId !== authority.principalId) throw new SourceServiceError('unauthenticated', 'The authenticated native group dispatcher changed operator identity.');
-          runtime = {
-            creationAuthority: authority,
-            nativeGroupCatalog: createAuthenticatedNativeGroupCatalog({ authority, gatewayRequest: dispatched.gatewayRequest, assertDispatchCurrent: dispatched.creationAuthority.assertCurrent })
-          };
+            // Retain the exact authenticated handler inputs supplied by the
+            // host. The method-closed catalogue below can invoke only the two
+            // native group methods and awaits their response acknowledgement.
+            const gateway = createAuthenticatedCoreGateway({
+              req, client, context, isWebchatConnect, signal,
+              sessionMutationCommitGuard: authority.assertCurrent
+            });
+            runtime = {
+              creationAuthority: authority,
+              nativeGroupCatalog: createAuthenticatedNativeGroupCatalog({ authority, gatewayRequest: gateway.request, assertDispatchCurrent: authority.assertCurrent })
+            };
           }
         }
         const assertHistoryRead = method.startsWith('command-center.v1.histories.') || ['command-center.v1.sessions.topic-context', 'command-center.v1.sessions.group-preview'].includes(method) ? captureHistoryReadAuthority({ client, context, signal }) : null;
         if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
-        if (openLoopSchedulerRuntimeMethods.has(method) && client?.connect?.role === 'operator' && Array.isArray(client.connect.scopes)) {
-          // The host SDK itself binds dispatch to this registered method's
-          // exact allowlist and current authenticated client. Unlike Session
-          // creation, Cron does not need a separately captured context
-          // resolver or caller-selected durable identity.
-          runtime = { gateway: Object.freeze({ request: createRequestScopedGatewayRequest() }) };
-        } else if (schedulerRuntimeMethods.has(method) && client && !openLoopSchedulerRuntimeMethods.has(method)) {
+        if (schedulerRuntimeMethods.has(method) && client) {
           runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
         }
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;
@@ -366,14 +352,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
       } catch (error) {
         respond(false, null, errorResult(error, { requestId, logicalOperationId: params?.logicalOperationId ?? null }));
       }
-    }, {
-      scope: contract.scope,
-      ...(method === 'command-center.v1.sessions.group'
-        ? { gatewayMethodDispatchMethods: ['sessions.groups.list', 'sessions.groups.put'] }
-        : openLoopSchedulerRuntimeMethods.has(method)
-          ? { gatewayMethodDispatchMethods: openLoopSchedulerDispatchMethods }
-          : {})
-    });
+    }, { scope: contract.scope });
     registered.push(method);
   }
   return Object.freeze(registered);

@@ -11,23 +11,48 @@
       "version": "0.3.0",
       "build": "0.3.0"
     },
-    "host": { "range": "=2026.8.1-beta.3", "commit": "30f2924e437857935f034ac349bae8cc22ef9fb0" },
-    "pluginApi": { "package": "openclaw", "range": "=2026.8.1-beta.3" },
-    "commandCenterSchema": { "readable": { "min": 1, "max": 5 }, "migratable": { "min": 1, "max": 4 }, "writable": { "min": 5, "max": 5 } },
-    "capabilityBridgeProtocol": { "min": 1, "max": 1 }
+    "host": {
+      "range": "=2026.8.1-beta.3",
+      "commit": "30f2924e437857935f034ac349bae8cc22ef9fb0"
+    },
+    "pluginApi": {
+      "package": "openclaw",
+      "range": "=2026.8.1-beta.3"
+    },
+    "commandCenterSchema": {
+      "readable": {
+        "min": 1,
+        "max": 5
+      },
+      "migratable": {
+        "min": 1,
+        "max": 4
+      },
+      "writable": {
+        "min": 5,
+        "max": 5
+      }
+    },
+    "capabilityBridgeProtocol": {
+      "min": 1,
+      "max": 1
+    }
   },
   "host": {
-    "range": "=2026.9.4",
-    "commit": "9eb16e01c14dd7eaf654aa2d2a9121b9e9f74b84"
+    "range": "=2026.9.5",
+    "commit": "14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971"
   },
   "pluginApi": {
     "package": "openclaw",
-    "range": "=2026.9.4"
+    "range": "=2026.9.5"
   },
   "commandCenterSchema": {
     "readable": { "min": 1, "max": 9 },
     "migratable": { "min": 1, "max": 8 },
     "writable": { "min": 9, "max": 9 }
   },
-  "capabilityBridgeProtocol": { "min": 1, "max": 1 }
+  "capabilityBridgeProtocol": {
+    "min": 1,
+    "max": 1
+  }
 }

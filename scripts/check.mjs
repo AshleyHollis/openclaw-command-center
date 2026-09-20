@@ -1,7 +1,6 @@
 import { runRepositoryChecks } from './repository-checks.mjs';
 
-// The exact native-workspace performance baseline is intentionally pending
-// the first successful packaged-browser capture. Repository safety checks must
-// validate the capture prerequisites without claiming release qualification.
-await runRepositoryChecks({ purpose: 'capture-prerequisites' });
+// The first successful packaged-browser capture is frozen in the repository.
+// Ordinary checks must now bind the build to that exact baseline identity.
+await runRepositoryChecks({ purpose: 'qualification' });
 process.stdout.write('Command Center checks passed\n');

@@ -39,7 +39,7 @@ function fixtures() {
       fixtureCounts: { largeNoteBytes: 8388609, conversations: 101, noteFiles: 5000, conversationMessages: 5000 },
       conversationPage: { firstPageCount: 50, secondPageCount: 50, thirdPageCount: 1, unique: true, orderPreserved: true },
       notes: { largeNoteBytes: 8388609, readOnly: true, paginationVerified: true },
-      browser: { engine: 'chromium', playwrightVersion: '1.62.1', version: 'fictional-browser-1' }, viewport: { width: 1440, height: 900 } }
+      browser: { engine: 'chromium', playwrightVersion: '1.63.0', version: 'fictional-browser-1' }, viewport: { width: 1440, height: 900 } }
   };
 }
 

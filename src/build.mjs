@@ -45,6 +45,21 @@ async function rejectSymlinks(root, relative = '') {
   }
 }
 
+const TEXT_ASSET_EXTENSIONS = new Set(['.css', '.html', '.js', '.json', '.mjs', '.txt']);
+
+async function normalizeTextAssets(root, relative = '') {
+  for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
+    const next = path.join(relative, entry.name);
+    if (entry.isDirectory()) await normalizeTextAssets(root, next);
+    else if (entry.isFile() && TEXT_ASSET_EXTENSIONS.has(path.extname(entry.name))) {
+      const file = path.join(root, next);
+      const source = await readFile(file, 'utf8');
+      const normalized = source.replace(/\r\n?/gu, '\n');
+      if (normalized !== source) await writeFile(file, normalized);
+    }
+  }
+}
+
 async function digestTree(root) {
   await rejectSymlinks(root);
   const entries = [];
@@ -67,7 +82,9 @@ async function digestTree(root) {
 async function writePdfResourceBundle(pdfjs, destination) {
   const resources = {};
   for (const directory of ['cmaps', 'standard_fonts']) {
-    for (const entry of await readdir(path.join(pdfjs, directory), { withFileTypes: true })) {
+    const entries = await readdir(path.join(pdfjs, directory), { withFileTypes: true });
+    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    for (const entry of entries) {
       if (!entry.isFile()) continue;
       resources[`${directory}/${entry.name}`] = (await readFile(path.join(pdfjs, directory, entry.name))).toString('base64');
     }
@@ -130,6 +147,10 @@ async function buildUnlocked() {
     await writePdfResourceBundle(pdfjs, path.join(distRoot, 'native-ui', 'vendor', 'pdf-resources.mjs'));
     await cp(path.join(pdfjs, 'LICENSE'), path.join(distRoot, 'native-ui', 'vendor', 'pdfjs-LICENSE.txt'));
   await cp(path.join(sourceRoot, 'src', 'ui'), path.join(distRoot, 'ui'), { recursive: true, verbatimSymlinks: true });
+  // Git may materialize authored text with platform-native line endings. Seal
+  // one byte-identical plugin on Windows and Linux so the release baseline,
+  // package receipt and deployment evidence all name the same build digest.
+  await normalizeTextAssets(distRoot);
   const receipt = freezeReceipt(await digestTree(distRoot));
   await writeFile(path.join(distRoot, digestFileName), `${JSON.stringify(receipt, null, 2)}\n`);
   latestBuildReceipt = receipt;

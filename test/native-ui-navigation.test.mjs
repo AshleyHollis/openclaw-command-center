@@ -34,25 +34,23 @@ test('leaving the native view prevents a delayed resolution from opening Chat', 
   assert.deepEqual(f.opened, []);
 });
 
-test('Topic conversation navigation opens the exact native Chat with Topic Files when supported', async () => {
+test('Topic conversation navigation uses Chat even when the host also supports Files', async () => {
   const f = fixture();
   const files = [];
   f.host.sessions.openFiles = value => files.push(value);
   await f.navigation.open(input);
-  assert.deepEqual(files, [{ sessionKey: 'agent:fictional-agent:fictional-chat', agentId: 'fictional-agent' }]);
-  assert.deepEqual(f.opened, [], 'do not replace the Files workspace with a second Chat-only navigation');
+  assert.deepEqual(f.opened, [{ sessionKey: 'agent:fictional-agent:fictional-chat', agentId: 'fictional-agent' }]);
+  assert.deepEqual(files, [], 'reserve the one-shot Files request for the explicit Files action');
 });
 
-test('late Topic resolution cannot open Files after a newer conversation was selected', async () => {
+test('late Topic resolution cannot open Chat after a newer conversation was selected', async () => {
   const pending = Promise.withResolvers();
   const f = fixture(() => pending.promise);
-  const files = [];
-  f.host.sessions.openFiles = value => files.push(value);
   const opening = f.navigation.open(input);
   f.navigation.cancel();
   pending.resolve({ result: resolverTarget() });
   await assert.rejects(opening, { name: 'AbortError' });
-  assert.deepEqual(files, []);
+  assert.deepEqual(f.opened, []);
 });
 
 test('a Topic opens its verified Primary without a custom Session roster', async () => {
