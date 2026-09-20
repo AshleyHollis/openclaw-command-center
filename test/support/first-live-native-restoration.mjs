@@ -281,7 +281,9 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).press('Enter');
       const observed = await creationResponse;
       assert.equal(hasSuccessfulBrowserResponse(observed), true);
-      assert.equal(observed.value.request().headers()['x-openclaw-control-ui-relay'], '1');
+      const creationUrl = new URL(observed.value.url());
+      assert.equal(creationUrl.origin, new URL(world.gateway.url).origin);
+      assert.equal(observed.value.request().headers()['sec-fetch-site'], 'same-origin', 'The native loader must use its authenticated same-origin route');
       const input = observed.value.request().postDataJSON();
       assert.deepEqual(Object.keys(input).sort(), ['action', 'expectedRevision', 'label', 'logicalOperationId', 'schemaVersion', 'topicId']);
       assert.equal(input.topicId, fixture.topicId);
