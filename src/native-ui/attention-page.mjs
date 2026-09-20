@@ -469,7 +469,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
       for (const card of todayPlanned) renderPlanningCard(content, card, 'Optional planned work');
       const sections = [
         ['Planned / Upcoming', workspace.upcoming, card => formatDue(card) ? `Deadline ${formatDue(card)}` : card.planning?.plannedAt ? `Planned ${formatInstant(card.planning.plannedAt)}` : `Review ${formatInstant(card.reviewAt)}`],
-        [`When I have capacity (${workspace.capacityTotal ?? workspace.capacity?.length ?? 0}; showing ${workspace.capacity?.length ?? 0})`, workspace.capacity, card => card.planning?.effortMinutes ? `Fits ${card.planning.effortMinutes} minutes` : 'Ready when capacity allows'],
+        [`When I have capacity (${workspace.capacityTotal ?? workspace.capacity?.length ?? 0} total)`, workspace.capacity, card => card.planning?.effortMinutes ? `Fits ${card.planning.effortMinutes} minutes` : 'Ready when capacity allows'],
         ['Waiting', workspace.waiting, () => 'Waiting or blocked'],
         [`Review (${workspace.review?.eligibleTotal ?? 0}; ${workspace.review?.remaining ?? 0} after this batch)`, workspace.review?.batch, () => 'Backlog review'],
         ['Someday', workspace.someday, () => 'Parked without urgency']
