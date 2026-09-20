@@ -105,6 +105,21 @@ test('pure orchestration: a resource-bounded release runs every native pair sequ
   assert.deepEqual(state.events.filter(event => event?.status === 'passed').map(event => event.id).sort(), [...names].sort());
 });
 
+test('pure orchestration: exclusive scale may use its own bounded deadline after ordinary participants pass', async () => {
+  const state = setup();
+  state.options.runners.scale = async ({ signal, onFinalization }) => {
+    assert.equal(signal.aborted, false);
+    state.events.push('start:scale');
+    await new Promise(resolve => setTimeout(resolve, 35));
+    finalize(onFinalization);
+    state.events.push('stop:scale');
+    return state.evidence.scale;
+  };
+  const { report } = await runNativeReleaseCapture({ ...state.options, timeoutMs: 20, scaleTimeoutMs: 100, cleanupTimeoutMs: 20, maxConcurrency: 1 });
+  assert.equal(report.outcome, 'passed');
+  assert.equal(state.events.includes('stop:scale'), true);
+});
+
 function prerequisiteOptions(state) {
   const { scale: _scale, ...runners } = state.options.runners;
   const { capturePerformanceBaseline: _capture, ...options } = state.options;
