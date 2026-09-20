@@ -26,7 +26,7 @@ export const RELEASE_MEASUREMENTS = Object.freeze([
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest', 'packageDigest', 'runtimeDigest']);
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
-const HOST_COMMIT = 'db18951ddcd90fbe04f83c9709a95d9797a723b2';
+const HOST_COMMIT = '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee';
 const HOST_VERSION = '2026.9.5';
 const PLAYWRIGHT_VERSION = '1.63.0';
 export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
@@ -40,7 +40,7 @@ const HOST_RECEIPT = Object.freeze({
   commit: HOST_COMMIT,
   executableDigest: 'sha256:538e8ee2b65a0b24bb8a5ed3421bfe66621b1e0b5f726a167758c004f566fb36',
   contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6',
-  packageDigest: 'sha256:36656252e71d7de38702d3ba18f69f164ac561e4f0792dab628bc70cbce1f5ac',
+  packageDigest: 'sha256:58293f3ec4c1e996893184c6a4c2e544a3dcfaf43e701db60108446371134741',
   runtimeDigest: 'sha256:8be1b905edb3a2f9b55152bb580cc34620c40d718f30a1d9d392d5ef8ab82b0b'
 });
 

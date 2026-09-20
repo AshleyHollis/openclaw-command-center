@@ -30,7 +30,7 @@ jobs:
     steps:
       - name: Validate immutable selection
         env:
-          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:a404310cbd7a347b299efe0dc097ddba5861da1a1c14455f58d5c803b1ee5ce4' }}
+          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:588687ab18dacc606fa3d06c35301f85e435d088d8793f8d636e5bdb88d32564' }}
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: AshleyHollis/openclaw
-          ref: db18951ddcd90fbe04f83c9709a95d9797a723b2
+          ref: 8e58ed3d14ac21b9046bf19c96c7eb86d858cdee
           fetch-depth: 1
           persist-credentials: false
           path: _openclaw-source
@@ -53,9 +53,9 @@ jobs:
 
       - name: Materialize and verify packaged host
         env:
-          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:a404310cbd7a347b299efe0dc097ddba5861da1a1c14455f58d5c803b1ee5ce4' }}
+          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:588687ab18dacc606fa3d06c35301f85e435d088d8793f8d636e5bdb88d32564' }}
           IMAGE_REPOSITORY: ghcr.io/ashleyhollis/openclaw
-          OPENCLAW_COMMIT: db18951ddcd90fbe04f83c9709a95d9797a723b2
+          OPENCLAW_COMMIT: 8e58ed3d14ac21b9046bf19c96c7eb86d858cdee
           OPENCLAW_VERSION: 2026.9.5
         run: |
           set -euo pipefail
