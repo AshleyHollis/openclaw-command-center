@@ -184,7 +184,12 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
   let failure;
   let result;
   try {
-    host = await withDeadline('native restoration host launch', launchSignal => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
+    // The schema-restoration fixture verifies the complete packaged host tree
+    // before launch. On the supported WSL evaluator that immutable verification
+    // can take slightly over two minutes from a cold filesystem cache, so keep
+    // this bounded within the owning 240-second slice without misclassifying
+    // pre-launch integrity work as a restoration failure.
+    host = await withDeadline('native restoration host launch', launchSignal => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 180_000, signal);
     removeAbortCleanup = stopHostOnAbort(signal, host);
     let catalog;
     await waitForConsecutiveReadiness(async () => {
