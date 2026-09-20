@@ -30,7 +30,7 @@ jobs:
     steps:
       - name: Validate immutable selection
         env:
-          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:a217410e380a26e77c9e9df8de2cc1f1db0f055126ba7227bfcf2ed79270fb45' }}
+          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:a404310cbd7a347b299efe0dc097ddba5861da1a1c14455f58d5c803b1ee5ce4' }}
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
@@ -53,7 +53,7 @@ jobs:
 
       - name: Materialize and verify packaged host
         env:
-          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:a217410e380a26e77c9e9df8de2cc1f1db0f055126ba7227bfcf2ed79270fb45' }}
+          IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:a404310cbd7a347b299efe0dc097ddba5861da1a1c14455f58d5c803b1ee5ce4' }}
           IMAGE_REPOSITORY: ghcr.io/ashleyhollis/openclaw
           OPENCLAW_COMMIT: 14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971
           OPENCLAW_VERSION: 2026.9.5

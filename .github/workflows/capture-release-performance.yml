@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:a217410e380a26e77c9e9df8de2cc1f1db0f055126ba7227bfcf2ed79270fb45
+      IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:a404310cbd7a347b299efe0dc097ddba5861da1a1c14455f58d5c803b1ee5ce4
       OPENCLAW_COMMIT: 14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971
       OPENCLAW_VERSION: 2026.9.5
       COMMAND_CENTER_CONTROLLER_SOURCE_ROOT: ${{ github.workspace }}/_openclaw-source
