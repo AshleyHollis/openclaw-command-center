@@ -1371,6 +1371,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const authoritative = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 }, signal });
       const topics = authoritative?.result ?? authoritative;
       const authoritativeCategories = Object.keys(topics?.activeGroups ?? {}).sort();
+      const visibleTopicCount = Object.values(topics?.activeGroups ?? {}).flat().length + (topics?.archived?.length ?? 0);
+      assert.ok(visibleTopicCount > 0 || (topics?.recovery?.length ?? 0) === 0, 'Post-startup Topic discoverability failed: every existing Topic requires Source Recovery');
       assert.ok(authoritativeCategories.includes(fixture.paraCategory));
       assert.deepEqual(Object.keys(browserTopics.activeGroups).sort(), authoritativeCategories);
       for (const category of authoritativeCategories) {

@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { isNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
   SCHEMA_SEVEN_COMMAND_CENTER_VERSION,
@@ -934,7 +935,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     if (topic.lifecycle !== 'provisioning' || reference.topicId !== topic.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder') throw new CommandCenterMetadataError('invalid-value', 'Migration Topic bootstrap requires its exact provisioning Note Folder binding.');
     const locator = objectValue(locatorInput, 'Migration Note Folder locator');
     allowedKeys(locator, ['locator', 'ownership', 'observedRevision'], 'Migration Note Folder locator');
-    if (locator.locator !== reference.externalSourceId || locator.ownership !== 'external' || !/^note-folder:1:[0-9a-f-]{36}:[0-9a-f]{64}$/u.test(locator.observedRevision ?? '')) throw new CommandCenterMetadataError('invalid-value', 'Migration Note Folder requires its exact enrolled identity.');
+    if (locator.locator !== reference.externalSourceId || locator.ownership !== 'external' || !isNoteFolderIdentity(locator.observedRevision)) throw new CommandCenterMetadataError('invalid-value', 'Migration Note Folder requires its exact enrolled identity.');
     return mutate('notes', (db) => {
       const owner = db.prepare("SELECT reference.reference_id FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id WHERE reference.source_system = 'obsidian' AND reference.source_kind = 'note_folder' AND (reference.external_source_id = ? OR locator.locator = ?)").get(locator.locator, locator.locator);
       if (owner) throw new CommandCenterMetadataError('conflict', 'The mapped Note Folder already belongs to another binding.');
@@ -1334,7 +1335,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
 
   function assertMigrationFolderBinding(db, referenceId, expected) {
     const current = mapLocator(db.prepare('SELECT * FROM source_locators WHERE reference_id = ?').get(referenceId));
-    if (!current || !expected || expected.referenceId !== referenceId || ['locator', 'locatorVersion', 'ownership', 'observedRevision'].some(field => current[field] !== expected[field]) || current.ownership !== 'external' || !current.observedRevision?.startsWith('note-folder:1:')) throw new CommandCenterMetadataError('source-recovery', 'Migration completion requires its unchanged verified Note Folder binding.');
+    if (!current || !expected || expected.referenceId !== referenceId || ['locator', 'locatorVersion', 'ownership', 'observedRevision'].some(field => current[field] !== expected[field]) || current.ownership !== 'external' || !isNoteFolderIdentity(current.observedRevision)) throw new CommandCenterMetadataError('source-recovery', 'Migration completion requires its unchanged verified Note Folder binding.');
   }
 
   service.completeLegacyDiscordMigrationChannel = (sourceChannelId, verifiedAt, folderBinding) => {
@@ -1656,7 +1657,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     if (!topic || topic.lifecycle !== 'provisioning' || topic.activated_at !== null || topic.revision !== input.expectedRevision || topic.name !== input.name || topic.para_category !== input.paraCategory) throw new CommandCenterMetadataError('conflict', 'The original provisioning Topic basis changed.');
     const locator = requiredString(input.locator, 'locator');
     const observedRevision = requiredString(input.observedRevision, 'observedRevision');
-    if (!path.isAbsolute(locator) || path.resolve(locator) !== locator || !/^note-folder:1:[0-9a-f-]{36}:[0-9a-f]{64}$/u.test(observedRevision)) throw new CommandCenterMetadataError('invalid-value', 'Folder binding requires a verified canonical marker-backed locator.');
+    if (!path.isAbsolute(locator) || path.resolve(locator) !== locator || !isNoteFolderIdentity(observedRevision)) throw new CommandCenterMetadataError('invalid-value', 'Folder binding requires a verified canonical marker-backed locator.');
     const conditional = db.prepare("SELECT logical_operation_id,intent_json FROM topic_operations WHERE topic_id=? AND operation_kind='topics.create'").all(topicId)
       .map(row => ({ id: row.logical_operation_id, intent: JSON.parse(row.intent_json) })).filter(row => row.intent.primaryMode === CONDITIONAL_PRIMARY_MODE);
     if (conditional.length) {
@@ -2054,7 +2055,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     const unbound = reference.last_observed_revision ?? `unbound:${referenceId}`;
     const expected = current?.observed_revision ?? unbound;
     if (expected !== expectedSourceRevision && !(current?.observed_revision === null && recovery?.last_identity === expectedSourceRevision)) throw new CommandCenterMetadataError('conflict', 'Source locator revision is stale.');
-    if (!path.isAbsolute(locator) || path.resolve(locator) !== locator || !/^note-folder:1:[0-9a-f-]{36}:[0-9a-f]{64}$/u.test(observedRevision)) throw new CommandCenterMetadataError('invalid-value', 'Folder recovery requires a verified canonical marker-backed locator.');
+    if (!path.isAbsolute(locator) || path.resolve(locator) !== locator || !isNoteFolderIdentity(observedRevision)) throw new CommandCenterMetadataError('invalid-value', 'Folder recovery requires a verified canonical marker-backed locator.');
     const owner = db.prepare(`SELECT reference.reference_id FROM source_references AS reference LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
       WHERE reference.source_system = 'obsidian' AND reference.source_kind = 'note_folder' AND reference.reference_id <> ? AND COALESCE(locator.locator, reference.external_source_id) = ? LIMIT 1`).get(referenceId, locator);
     if (owner) throw new CommandCenterMetadataError('conflict', 'Note Folder authority is already owned by another Source Reference.');

@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { assertSafeDirectory } from './note-path.mjs';
 import { sourceError } from './errors.mjs';
+import { createNoteFolderIdentityV2, readStableMountIdentity } from './note-folder-identity-format.mjs';
 
 export const NOTE_FOLDER_IDENTITY_FILE = '.command-center-folder-identity';
 let hostDurableStager;
@@ -19,7 +20,8 @@ export function setHostDurableFolderStager(stager) {
 }
 const physicalIdentity = (stat) => `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
 const sameIdentity = (left, right) => left && right && physicalIdentity(left) === physicalIdentity(right);
-const directoryIdentity = stat => createHash('sha256').update(physicalIdentity(stat)).digest('hex');
+const stableObjectIdentity = stat => `${stat.ino}:${stat.birthtimeNs}`;
+const directoryIdentity = (stat, mountIdentity) => createHash('sha256').update(`${mountIdentity}:${stableObjectIdentity(stat)}`).digest('hex');
 
 // The marker is a logical identity, not an uncopyable credential. Its physical
 // identity and the directory identity are also bound in metadata; Note recovery
@@ -32,7 +34,8 @@ async function folderIdentity(root, enroll, bootstrap) {
     directory = await open(canonical, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     const held = await directory.stat({ bigint: true });
     if (!sameIdentity(before, held)) throw sourceError('source-recovery', 'The Note Folder identity changed while opening it.');
-    if (bootstrap && directoryIdentity(held) !== bootstrap.expectedDirectoryIdentity) throw sourceError('source-recovery', 'The approved Note Folder was replaced before enrollment.');
+    const mountIdentity = await readStableMountIdentity(canonical).catch(error => { throw sourceError(error.code ?? 'capability-unavailable', error.message); });
+    if (bootstrap && directoryIdentity(held, mountIdentity) !== bootstrap.expectedDirectoryIdentity) throw sourceError('source-recovery', 'The approved Note Folder was replaced before enrollment.');
     const descriptorRoot = process.platform === 'linux' ? '/proc/self/fd' : process.platform === 'darwin' ? '/dev/fd' : null;
     if (!descriptorRoot) throw sourceError('capability-unavailable', 'Descriptor-anchored Note Folder identity is unavailable.');
     const target = path.join(descriptorRoot, String(directory.fd), NOTE_FOLDER_IDENTITY_FILE);
@@ -78,8 +81,7 @@ async function folderIdentity(root, enroll, bootstrap) {
     if (value?.version !== 1 || Object.keys(value).sort().join(',') !== 'id,version' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value.id)) throw sourceError('source-recovery', 'The reserved Note Folder identity marker is invalid.');
     if (bootstrap && bootstrap.expectedIdentity === null && value.id !== bootstrap.markerId) throw sourceError('source-recovery', 'Another operation owns this folder enrollment marker.');
     if (!sameIdentity(held, await lstat(canonical, { bigint: true }))) throw sourceError('source-recovery', 'The Note Folder identity changed during verification.');
-    const physical = createHash('sha256').update(`${physicalIdentity(held)}:${physicalIdentity(last)}`).digest('hex');
-    const identity = `note-folder:1:${value.id}:${physical}`;
+    const identity = createNoteFolderIdentityV2({ markerId: value.id, mountIdentity, directory: held, marker: last });
     if (bootstrap && bootstrap.expectedIdentity !== null && identity !== bootstrap.expectedIdentity) throw sourceError('source-recovery', 'The bound Note Folder identity changed.');
     const assertCurrent = () => {
       bootstrap?.assertCurrent();
@@ -117,7 +119,8 @@ export async function inspectNoteFolderCandidate(root) {
   const named = await lstat(path.join(canonical, NOTE_FOLDER_IDENTITY_FILE)).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
   const markerIdentity = named ? await readNoteFolderIdentity(canonical) : null;
   if (!sameIdentity(before, await lstat(canonical, { bigint: true }))) throw sourceError('source-recovery', 'The Note Folder changed during adoption preflight.');
-  return Object.freeze({ path: canonical, directoryIdentity: directoryIdentity(before), markerIdentity });
+  const mountIdentity = await readStableMountIdentity(canonical).catch(error => { throw sourceError(error.code ?? 'capability-unavailable', error.message); });
+  return Object.freeze({ path: canonical, directoryIdentity: directoryIdentity(before, mountIdentity), markerIdentity });
 }
 
 export function withBootstrapNoteFolder(root, options, run) {

@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { inspectNoteFolderCandidate } from '../sources/note-folder-identity.mjs';
+import { parseNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 import { adoptExistingTopic } from '../topics/bootstrap.mjs';
 import { prepareDiscordPreservation, importDiscordPreservation, prepareNativePreservation, importNativePreservation } from './preserved-history-batch.mjs';
 import { IMPORTED_HISTORY_OPERATION, NATIVE_HISTORY_OPERATION } from '../metadata/imported-history.mjs';
@@ -67,7 +68,7 @@ export async function reconcilePreservedWorkspace(options) {
     const folder = await inspectNoteFolderCandidate(intent.folder.path);
     checkSources();
     const expectedMarker = receipt?.phase === 'applied' ? receipt.folderIdentity : intent.folder.markerIdentity;
-    const pendingOwnMarker = receipt && expectedMarker === null && folder.markerIdentity?.startsWith(`note-folder:1:${input.logicalOperationId}:`);
+    const pendingOwnMarker = receipt && expectedMarker === null && parseNoteFolderIdentity(folder.markerIdentity)?.markerId === input.logicalOperationId;
     if (folder.path !== intent.folder.path || folder.directoryIdentity !== intent.folder.directoryIdentity ||
       folder.markerIdentity !== expectedMarker && !pendingOwnMarker) fail('reconciliation-folder-changed');
     const entry = nativeEntry(intent.primary);

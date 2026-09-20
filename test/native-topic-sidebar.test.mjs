@@ -32,7 +32,7 @@ test('native Topic sidebar projects exact links, General and the loaded unassign
         navigation: { openPage: value => window.calls.push(['page', value]) },
         request: async (method, params) => {
           window.calls.push([method, params]);
-          if (method.endsWith('topics.list')) return { result: { activeGroups: { project: [{ topicId: 'topic-project', name: 'Fictional Project', paraCategory: 'project', lifecycle: 'active', usable: true, revision: 4 }], area: [], resource: [] } } };
+          if (method.endsWith('topics.list')) { const topic = { topicId: 'topic-project', name: 'Fictional Project', paraCategory: 'project', lifecycle: 'active', usable: !window.topicRecovery, health: window.topicRecovery ? 'source-recovery' : 'ready', revision: 4 }; return { result: { activeGroups: { project: window.topicRecovery ? [] : [topic], area: [], resource: [] }, recovery: window.topicRecovery ? [topic] : [], archived: [] } }; }
           if (method.endsWith('sessions.browse')) return { result: { topicId: 'topic-project', conversations: [{ referenceId: 'primary-ref', sessionId: 'primary-id', isPrimary: true, status: 'open', displayName: 'Primary Conversation' }, { referenceId: 'linked-ref', sessionId: 'linked-id', isPrimary: false, status: 'open', displayName: 'Linked Conversation' }] } };
           if (method.endsWith('histories.list')) {
             if (window.historyUnavailable) throw new Error('The requested authoritative source capability is unavailable.');
@@ -187,6 +187,14 @@ test('native Topic sidebar projects exact links, General and the loaded unassign
     await page.evaluate(() => window.reactivateSidebar());
     assert.equal(await projects.getAttribute('aria-expanded'), 'false', 'a new plugin activation starts from the collapsed PARA defaults');
     assert.equal(await primary.isVisible(), false);
+    await page.evaluate(() => { window.topicRecovery = true; });
+    await page.getByRole('button', { name: 'Refresh Topic workspace' }).click();
+    await page.getByText('Fictional Project · Notes unavailable', { exact: true }).waitFor({ state: 'attached' });
+    await page.getByRole('button', { name: 'Projects', exact: true }).click();
+    await page.getByRole('button', { name: 'Fictional Project · Notes unavailable', exact: true }).waitFor();
+    await page.locator('[data-topic-control-key="toggle:topic-project"]').click();
+    await page.getByText('Notes require Source Recovery. Verified Conversations remain available.', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Primary Conversation', exact: true }).isVisible(), true);
     await page.evaluate(() => window.closeSidebar());
   } finally {
     await browser?.close();
