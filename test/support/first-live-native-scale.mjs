@@ -73,6 +73,12 @@ export async function prepareNativeScaleConversations({ world, signal, fixture }
   assert.deepEqual(new Set(catalog.conversations.map(row => row.referenceId)), references);
 }
 
+export function rememberNativeScaleNotePage(pages, input, value) {
+  if (!(pages instanceof Map) || !Number.isSafeInteger(input?.offset) || input.offset < 0) return false;
+  pages.set(input.offset, { input, value });
+  return true;
+}
+
 export async function openNativeSessionRoster(page) {
   const sidebar = page.locator('openclaw-app-sidebar');
   const sessions = sidebar.getByRole('link', { name: 'Sessions', exact: true });
@@ -107,7 +113,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   let started = now();
   await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).click();
   await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
-  await ready(async () => observed().notes?.value?.offset === 0 && observed().notes?.value?.total === 5_000);
+  await ready(async () => observed().notePages?.get(0)?.value?.total === 5_000);
   onProgress('topic-catalog-observed');
   await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).waitFor();
   onProgress('topic-catalog-rendered');
@@ -136,17 +142,18 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     assert.deepEqual(paths, expectedNotePaths.slice(offset, offset + 50));
     return paths;
   };
-  const firstCatalog = observed().notes.value;
-  assert.equal(observed().notes.input.topicId, fixture.topicId);
+  const firstPage = observed().notePages.get(0);
+  const firstCatalog = firstPage.value;
+  assert.equal(firstPage.input.topicId, fixture.topicId);
   const firstPaths = assertNotePage(firstCatalog, 0);
   await ready(async () => JSON.stringify(await nativePage.getByRole('button', { name: /^Read / }).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))) === JSON.stringify(firstPaths.map(value => `Read ${value}`)));
   assert.equal(firstCatalog.nextOffset, 50);
   started = now();
   await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).click();
-  await ready(async () => observed().notes?.value?.offset === 50);
+  await ready(async () => observed().notePages?.get(50)?.value?.offset === 50);
   await nativePage.getByText('Notes 51–100 of 5000.', { exact: true }).waitFor();
   observations.noteNextPageMs = now() - started;
-  assertNotePage(observed().notes.value, 50);
+  assertNotePage(observed().notePages.get(50).value, 50);
   // The UI proves the interactive first transition. Sample the middle and final
   // pages through the same authenticated snapshot cursor so the 5,000-item
   // ordering and terminal boundary are covered without 98 repetitive clicks.

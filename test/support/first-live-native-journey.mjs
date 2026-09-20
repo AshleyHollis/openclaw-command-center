@@ -23,7 +23,7 @@ import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowse
 import { exerciseNativeKeyboardStates } from './first-live-native-keyboard.mjs';
 import { tabTo } from './keyboard-navigation.mjs';
 import { prepareNativeLegacyBootstrap, readNativeLegacyBootstrap } from './first-live-native-bootstrap.mjs';
-import { prepareNativeScaleConversations, exerciseNativeScaleStates, openNativeSessionRoster } from './first-live-native-scale.mjs';
+import { prepareNativeScaleConversations, exerciseNativeScaleStates, openNativeSessionRoster, rememberNativeScaleNotePage } from './first-live-native-scale.mjs';
 import { startFictionalOpenAiModel } from './fictional-openai-model.mjs';
 import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
 
@@ -789,7 +789,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       let browserNote;
       let browserChatSend;
       let browserChatAcknowledgement;
-      const scaleResponses = { notes: undefined, rosters: [], rosterOverflow: false };
+      const scaleResponses = { notePages: new Map(), rosters: [], rosterOverflow: false };
       const conversationLabel = scale ? 'Fictional Native Scale 100' : 'Fictional Native Follow-up';
       const messageText = 'Fictional native Conversation message for exact Session readback.';
       const attachmentMessageText = 'File this fictional native attachment into the exact Topic Documents folder.';
@@ -824,7 +824,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           if (request.method === 'command-center.v1.topics.list') browserTopics = value;
           if (request.method === 'command-center.v1.notes.read') browserNote = { input: request.params, value };
           if (request.method === 'command-center.v1.sessions.resolve-native') browserNavigation = { input: request.params, value };
-          if (scale && request.method === 'command-center.v1.notes.browse') scaleResponses.notes = { input: request.params, value };
+          if (scale && request.method === 'command-center.v1.notes.browse') rememberNativeScaleNotePage(scaleResponses.notePages, request.params, value);
           if (request.method === 'sessions.list') {
             if (scaleResponses.rosters.length < 256) scaleResponses.rosters.push({ input: request.params, value });
             else scaleResponses.rosterOverflow = true;

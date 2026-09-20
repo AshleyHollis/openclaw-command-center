@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { openNativeSessionRoster } from './support/first-live-native-scale.mjs';
+import { openNativeSessionRoster, rememberNativeScaleNotePage } from './support/first-live-native-scale.mjs';
 
 // Locator orchestration only; the real-host roster-only diagnostic exercises
 // the same helper against the actual native sidebar and authenticated host.
@@ -45,6 +45,15 @@ test('unavailable native menu fails without a route or permission bypass', async
   const state = navigation({ failure });
   await assert.rejects(openNativeSessionRoster(state.page), error => error === failure);
   assert.deepEqual(state.events, ['menu']);
+});
+
+test('retains every observed scale Note page when responses race ahead of UI assertions', () => {
+  const pages = new Map();
+  assert.equal(rememberNativeScaleNotePage(pages, { topicId: 'fictional-topic', offset: 0 }, { offset: 0, total: 5_000 }), true);
+  assert.equal(rememberNativeScaleNotePage(pages, { topicId: 'fictional-topic', offset: 50 }, { offset: 50, total: 5_000 }), true);
+  assert.equal(pages.get(0).value.offset, 0);
+  assert.equal(pages.get(50).value.offset, 50);
+  assert.equal(rememberNativeScaleNotePage(pages, { topicId: 'fictional-topic', offset: -1 }, {}), false);
 });
 
 for (const refusal of ['capture', 'unsealed']) {
