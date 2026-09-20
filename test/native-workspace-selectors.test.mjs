@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { organizeNativeTopicConversations, selectNativeCategoryGrouping } from './support/native-topic-workspace.mjs';
+import { organizeNativeTopicConversations, selectNativeCategoryGrouping, selectNativeSidePanelType } from './support/native-topic-workspace.mjs';
 
 test('native grouping journey selects a Topic row relative to its shadow-root page', { timeout: 10_000 }, async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
@@ -106,5 +106,33 @@ test('native grouping journey reports a missing visible control within its local
     const page = await browser.newPage();
     await page.setContent('<openclaw-app-sidebar><div class="topic-sidebar"><details aria-label="All native conversations"><summary>All conversations</summary><button hidden class="sidebar-session-sort">Retired sort</button></details></div></openclaw-app-sidebar>');
     await assert.rejects(selectNativeCategoryGrouping(page), /Native session grouping control is unavailable/u);
+  } finally { await browser.close(); }
+});
+
+test('native side panel selection ignores a hidden populated predecessor', { timeout: 10_000 }, async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<div hidden class="sidebar-region__right-runtime"><div class="side-panel"><div class="side-panel__header-tabs"><button aria-label="Add side panel tab">Hidden add</button></div></div></div><div class="sidebar-region__right-runtime"><div class="side-panel"><div class="side-panel-empty--selector"><div class="side-panel-empty__types"><button class="side-panel-empty__type">Topic Notes</button></div></div></div></div>');
+    await page.evaluate(() => {
+      document.querySelector('.sidebar-region__right-runtime:not([hidden]) .side-panel-empty__type').addEventListener('click', () => { document.body.dataset.selectedPanel = 'visible-empty'; });
+    });
+    await selectNativeSidePanelType({ page, label: 'Topic Notes' });
+    assert.equal(await page.locator('body').getAttribute('data-selected-panel'), 'visible-empty');
+  } finally { await browser.close(); }
+});
+
+test('native side panel selection uses the visible populated panel menu', { timeout: 10_000 }, async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<div hidden class="sidebar-region__right-runtime"><div class="side-panel"><div class="side-panel-empty--selector"><div class="side-panel-empty__types"><button class="side-panel-empty__type">Topic Notes</button></div></div></div></div><div class="sidebar-region__right-runtime"><div class="side-panel"><div data-region-header="side"><div class="side-panel__header-tabs"><button aria-label="Add side panel tab">Add</button><wa-dropdown-item hidden>Topic Notes</wa-dropdown-item></div></div></div></div>');
+    await page.evaluate(() => {
+      const region = document.querySelector('.sidebar-region__right-runtime:not([hidden])');
+      region.querySelector('[aria-label="Add side panel tab"]').addEventListener('click', () => { region.querySelector('wa-dropdown-item').hidden = false; });
+      region.querySelector('wa-dropdown-item').addEventListener('click', () => { document.body.dataset.selectedPanel = 'visible-menu'; });
+    });
+    await selectNativeSidePanelType({ page, label: 'Topic Notes' });
+    assert.equal(await page.locator('body').getAttribute('data-selected-panel'), 'visible-menu');
   } finally { await browser.close(); }
 });

@@ -139,28 +139,41 @@ export async function organizeNativeTopicConversations({ page, nativePage, fixtu
   await group.locator(`[data-session-key="${fixture.sessionKey}"]`).waitFor({ state: 'visible' });
 }
 
-export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, onStage } = {}) {
+export async function selectNativeSidePanelType({ page, label, onStage } = {}) {
   await onStage?.('inspect-side-panel');
-  const sidebar = page.locator('.sidebar-region__right-runtime .side-panel');
-  // Keep this in lockstep with the native host's panel helper. A union followed
-  // by .first() can select a not-yet-rendered alternative and spend the full
-  // inherited acceptance timeout waiting for it, even though the other native
-  // panel surface is already available.
+  const sidebar = page.locator('.sidebar-region__right-runtime:visible .side-panel:visible').first();
   const hasHeader = await sidebar.locator('[data-region-header="side"]').isVisible({ timeout: 10_000 });
   const hasSelector = await sidebar.locator('.side-panel-empty--selector').isVisible({ timeout: 10_000 });
   if (!hasHeader && !hasSelector) {
     await onStage?.('open-side-panel');
-    await page.locator('.chat-side-panel-toggle').click();
+    await page.locator('.chat-side-panel-toggle:visible').first().click({ timeout: 30_000 });
   }
   await onStage?.('select-topic-notes-tab');
-  await sidebar.locator('.side-panel-empty__types, .side-panel__header-tabs').first().waitFor({ timeout: 10_000 });
-  const emptyChoice = sidebar.locator('.side-panel-empty__type').filter({ hasText: 'Topic Notes' });
-  if (await emptyChoice.count()) {
-    await emptyChoice.click();
-  } else {
-    await sidebar.getByRole('button', { name: 'Add side panel tab', exact: true }).click();
-    await sidebar.locator('wa-dropdown-item').filter({ hasText: 'Topic Notes' }).click();
+  try {
+    await sidebar.locator('.side-panel-empty__types:visible, .side-panel__header-tabs:visible').first().waitFor({ timeout: 30_000 });
+    const emptyChoice = sidebar.locator('.side-panel-empty__type:visible').filter({ hasText: label });
+    if (await emptyChoice.isVisible()) {
+      await emptyChoice.click({ timeout: 30_000 });
+    } else {
+      const add = sidebar.getByRole('button', { name: 'Add side panel tab', exact: true });
+      await add.click({ timeout: 30_000 });
+      await sidebar.locator('wa-dropdown-item:visible').filter({ hasText: label }).click({ timeout: 30_000 });
+    }
+    return sidebar;
+  } catch (error) {
+    const diagnostics = await page.locator('.sidebar-region__right-runtime .side-panel').evaluateAll((panels) => panels.slice(0, 8).map((panel) => ({
+      visible: panel.checkVisibility?.() ?? null,
+      text: panel.textContent?.trim().slice(0, 1_000) ?? '',
+      selectorVisible: panel.querySelector('.side-panel-empty--selector')?.checkVisibility?.() ?? false,
+      headerVisible: panel.querySelector('[data-region-header="side"]')?.checkVisibility?.() ?? false,
+      addVisible: panel.querySelector('[aria-label="Add side panel tab"]')?.checkVisibility?.() ?? false
+    })));
+    throw new Error(`Native side panel type is unavailable: ${JSON.stringify({ label, diagnostics }).slice(0, 3_000)}`, { cause: error });
   }
+}
+
+export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, onStage } = {}) {
+  const sidebar = await selectNativeSidePanelType({ page, label: 'Topic Notes', onStage });
   await onStage?.('select-overview-note');
   // The preceding reader journey deliberately leaves a filename filter and
   // selected nested Note in place.  Reusing that mounted native panel is the
