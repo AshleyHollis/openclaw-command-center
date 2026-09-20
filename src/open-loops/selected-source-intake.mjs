@@ -266,7 +266,17 @@ export function planSelectedSourceSelection(selectionInput, { authorization: aut
     return freeze({ schemaVersion: 1, selection, interpretation: null, observation, loop: null, freshness: { status: 'unavailable', observedAt: selection.observedAt } });
   }
 
-  const interpretation = interpretAvailableContent(selection.content);
+  const extractedInterpretation = interpretAvailableContent(selection.content);
+  // A selected PDF is only admitted as a payment suggestion when its text
+  // identifies who owns the bill.  The document reference is evidence
+  // provenance, not a billing identity, and must not silently become one.
+  const interpretation = selection.reviewRequired === true
+    && extractedInterpretation.kind === 'payment-request'
+    && !extractedInterpretation.accountId
+    && !extractedInterpretation.authorityId
+    && !extractedInterpretation.payee
+    ? freeze({ kind: 'informational', clarification: 'missing-billing-identity' })
+    : extractedInterpretation;
   const contentDigest = digest(selection.content);
   const facts = { ...provenance, contentDigest, interpretation };
   const entityRefs = interpretation.kind === 'payment-request'
