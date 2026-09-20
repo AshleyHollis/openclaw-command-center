@@ -36,6 +36,19 @@ test('schedule reconciliation creates one owned declaration and reuses it after 
   assert.deepEqual(methods, ['cron.list', 'cron.add', 'cron.list']);
 });
 
+test('schedule reconciliation uses the plugin service Cron owner without privileged Gateway RPC', async () => {
+  const jobs = []; const methods = [];
+  const scheduler = {
+    async list(options) { methods.push(['list', options]); return structuredClone(jobs); },
+    async add(input) { methods.push(['add', input.declarationKey]); const job = { ...structuredClone(input), id: 'service-owned-capacity-review', configRevision: 'r1' }; jobs.push(job); return job; },
+    async update() { throw new Error('An unchanged owned schedule must not be updated.'); }
+  };
+  const service = createCapacityReviewService({ metadata: {}, scheduler, config, captureService: {} });
+  assert.equal((await service.reconcileSchedule()).job.id, 'service-owned-capacity-review');
+  assert.equal((await service.reconcileSchedule()).job.id, 'service-owned-capacity-review');
+  assert.deepEqual(methods.map(([method]) => method), ['list', 'add', 'list']);
+});
+
 test('repeat wakes in one local week retain one operation and one outstanding review', async () => {
   const captures = new Map(); const calls = [];
   const captureService = { async capture(input) {

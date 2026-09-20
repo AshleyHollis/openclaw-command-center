@@ -112,7 +112,7 @@ export function createMetadataService(api) {
   }
   return {
     id: 'command-center-metadata',
-    async start() {
+    async start(context = {}) {
       stopPromise = undefined;
       const { setHostDurableFolderStager } = await import('./sources/note-folder-identity.mjs');
       const { setHostNoteFilesystemCoordinator } = await import('./sources/note-filesystem-owner.mjs');
@@ -120,6 +120,7 @@ export function createMetadataService(api) {
       releaseNoteFilesystemCoordinator = setHostNoteFilesystemCoordinator(api.runtime?.fileAccess?.tryAcquireExclusiveSqliteCoordinator);
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
+      const serviceCronAvailable = typeof context.getCron === 'function';
       const sessionCatalogAvailable = typeof api.runtime?.agent?.session?.listSessionEntries === 'function';
       const configured = api.pluginConfig?.sourceCapabilities ?? {};
       const capabilities = {
@@ -128,7 +129,7 @@ export function createMetadataService(api) {
         // Lightweight operation receipts remain core metadata. This does not
         // instantiate the rich Activity/Dashboard presentation or event owners.
         activity: configured.activity !== false,
-        scheduler: FIRST_LIVE_FEATURES.scheduler && gatewayAvailable && configured.scheduler !== false,
+        scheduler: FIRST_LIVE_FEATURES.scheduler && (serviceCronAvailable || gatewayAvailable) && configured.scheduler !== false,
         search: false, analysis: false, attention: FIRST_LIVE_FEATURES.dashboard
       };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
@@ -149,6 +150,7 @@ export function createMetadataService(api) {
         topicService = closedPresentation({ listDestination: destination, listDestinationVerified: destination });
         return sourceService.status();
       }
+      const serviceCron = context.getCron?.();
       const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: api.pluginConfig?.legacyDiscordMigration, logger: api.logger });
       const activatedMetadata = metadataService;
       if (FIRST_LIVE_FEATURES.dashboard) {
@@ -194,7 +196,7 @@ export function createMetadataService(api) {
       sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, transcriptReader: readVisibleTranscript, historyReader, noteRecoveryEffects: false });
       if (capabilities.scheduler) openLoopReminders = createOpenLoopReminderCoordinator({ api, gateway: api.runtime.gateway, metadata: metadataService });
       if (capabilities.scheduler && api.pluginConfig?.capacityReview) {
-        capacityReview = createCapacityReviewService({ metadata: metadataService, sourceService, gateway: api.runtime.gateway, config: api.pluginConfig.capacityReview });
+        capacityReview = createCapacityReviewService({ metadata: metadataService, sourceService, scheduler: serviceCron, gateway: serviceCron ? undefined : api.runtime.gateway, config: api.pluginConfig.capacityReview });
         await capacityReview.reconcileSchedule();
       }
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot });

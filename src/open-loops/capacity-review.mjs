@@ -62,23 +62,34 @@ function localWeekKey(now, timeZone) {
   return local.toISOString().slice(0, 10);
 }
 
-export function createCapacityReviewService({ metadata, sourceService, gateway, config, now = () => new Date().toISOString(), captureService } = {}) {
-  if (!metadata || !gateway?.request) throw new TypeError('Capacity review requires metadata and native Scheduler ownership.');
+function schedulerOwner({ scheduler, gateway }) {
+  if (scheduler?.list && scheduler?.add && scheduler?.update) return scheduler;
+  if (gateway?.request) return Object.freeze({
+    list: (options) => gateway.request('cron.list', options),
+    add: (input) => gateway.request('cron.add', input, { requestId: stableUuid(`${CAPACITY_REVIEW_SCHEDULE_KEY}:create`) }),
+    update: (id, patch, expectedConfigRevision) => gateway.request('cron.update', { id, expectedConfigRevision, patch }, { requestId: stableUuid(`${CAPACITY_REVIEW_SCHEDULE_KEY}:update:${expectedConfigRevision}`) })
+  });
+  throw new TypeError('Capacity review requires metadata and native Scheduler ownership.');
+}
+
+export function createCapacityReviewService({ metadata, sourceService, scheduler, gateway, config, now = () => new Date().toISOString(), captureService } = {}) {
+  if (!metadata) throw new TypeError('Capacity review requires metadata and native Scheduler ownership.');
+  const cron = schedulerOwner({ scheduler, gateway });
   const settings = normalizeCapacityReviewConfig(config);
   const capture = captureService ?? createCommitmentCaptureService({ metadata, sourceService });
 
   async function reconcileSchedule() {
     const declaration = capacityReviewCronDeclaration(settings);
-    const listed = jobsFrom(await gateway.request('cron.list', { includeDisabled: true }));
+    const listed = jobsFrom(await cron.list({ includeDisabled: true }));
     const owned = Array.isArray(listed) ? listed.filter(job => job?.declarationKey === CAPACITY_REVIEW_SCHEDULE_KEY) : [];
     if (owned.length > 1) throw sourceError('conflict', 'Duplicate Command Center capacity review schedules were found.');
     let job = owned[0];
-    if (!job) job = jobFrom(await gateway.request('cron.add', declaration, { requestId: stableUuid(`${CAPACITY_REVIEW_SCHEDULE_KEY}:create`) }));
+    if (!job) job = jobFrom(await cron.add(declaration));
     if (!job?.id || job.declarationKey !== CAPACITY_REVIEW_SCHEDULE_KEY || typeof job.configRevision !== 'string' || !job.configRevision.trim()) throw sourceError('source-recovery', 'Capacity review schedule identity was not verified.');
     const expected = { name: declaration.name, description: declaration.description, enabled: declaration.enabled, schedule: declaration.schedule, sessionTarget: declaration.sessionTarget, wakeMode: declaration.wakeMode, payload: declaration.payload, delivery: declaration.delivery };
     const actual = Object.fromEntries(Object.keys(expected).map(key => [key, job[key]]));
     if (canonical(expected) !== canonical(actual)) {
-      job = jobFrom(await gateway.request('cron.update', { id: job.id, expectedConfigRevision: job.configRevision, patch: expected }, { requestId: stableUuid(`${CAPACITY_REVIEW_SCHEDULE_KEY}:update:${job.configRevision}`) }));
+      job = jobFrom(await cron.update(job.id, expected, job.configRevision));
     }
     const observed = Object.fromEntries(Object.keys(expected).map(key => [key, job?.[key]]));
     if (!job?.id || job.declarationKey !== CAPACITY_REVIEW_SCHEDULE_KEY || canonical(expected) !== canonical(observed)) throw sourceError('source-recovery', 'Capacity review schedule was not fully verified after reconciliation.');
