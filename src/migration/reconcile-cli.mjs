@@ -124,8 +124,8 @@ export async function runConfiguredNoteFolderRecovery({ mode, planPath, expected
   const env = { ...process.env };
   const plan = await readPinnedReconciliationPlan(planPath, expectedDigest);
   assertNoteFolderRecoveryPlan(plan, expectedDigest);
-  const [{ resolveStateDir }, sdkFileAccess, { openCommandCenterMetadataService }, identity] = await Promise.all([
-    import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/file-access-runtime'), import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs')
+  const [{ resolveStateDir }, sdkFileAccess, { openCommandCenterMetadataService }, identity, filesystemOwner] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/file-access-runtime'), import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs'), import('../sources/note-filesystem-owner.mjs')
   ]);
   const fileAccess = hostFileAccess ?? sdkFileAccess;
   const stateDir = resolveStateDir(env);
@@ -136,6 +136,7 @@ export async function runConfiguredNoteFolderRecovery({ mode, planPath, expected
   signal?.throwIfAborted();
   const releaseStager = identity.setHostDurableFolderStager(fileAccess.stageDurableFileInDirectory);
   const releaseIdentityReader = identity.setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
+  const releaseCoordinator = filesystemOwner.setHostNoteFilesystemCoordinator(fileAccess.tryAcquireExclusiveSqliteCoordinator);
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true }, readOnly: mode !== 'execute' });
   try {
     const topics = createTopicService({ metadata, noteVaultRoot: noteRoot });
@@ -154,7 +155,7 @@ export async function runConfiguredNoteFolderRecovery({ mode, planPath, expected
     const result = await topics.recoverNoteFoldersBatch({ bindings: plan.bindings, assertCurrent: () => signal?.throwIfAborted() });
     if (result.status !== 'completed') recoveryFailure(publicReceipts(result.receipts));
     return { phase: result.status, planDigest: expectedDigest, accounting: { recovered: result.receipts.filter(item => item.status === 'recovered').length, replayed: result.receipts.filter(item => item.status === 'replayed').length, alreadyHealthy: result.receipts.filter(item => item.status === 'already-healthy').length, blocked: result.receipts.filter(item => item.status === 'blocked').length }, receipts: publicReceipts(result.receipts) };
-  } finally { metadata.close(); releaseIdentityReader(); releaseStager(); }
+  } finally { metadata.close(); releaseCoordinator(); releaseIdentityReader(); releaseStager(); }
 }
 
 export async function runConfiguredDiscoverabilityCheck({ config, signal }) {
