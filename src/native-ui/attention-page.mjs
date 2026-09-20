@@ -10,8 +10,22 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   const signal = AbortSignal.any([context.signal, host.signal, lifetime.signal]);
   let presented = context.presented;
   let recordId = context.props.notificationRecord;
+  let topicFilter = context.props.topicId;
   let generation = 0;
   let selected;
+  let quickCaptureDraft = { kind: 'task', topicId: '', title: '' };
+  let quickCaptureOperation;
+  const preferenceKey = 'command-center.dashboard.preferences.v1';
+  const defaultSectionOrder = ['topic', 'coverage', 'upcoming', 'waiting', 'review', 'someday', 'activity'];
+  const readDashboardPreferences = () => {
+    try {
+      const value = JSON.parse(localStorage.getItem(preferenceKey) ?? 'null');
+      const rightOrder = Array.isArray(value?.rightOrder) ? [...new Set(value.rightOrder.filter(key => defaultSectionOrder.includes(key))), ...defaultSectionOrder.filter(key => !value.rightOrder.includes(key))] : defaultSectionOrder;
+      return { rightOrder, hidden: Array.isArray(value?.hidden) ? value.hidden.filter(key => defaultSectionOrder.includes(key)) : [], pinnedTopicId: nonBlank(value?.pinnedTopicId) ? value.pinnedTopicId : null };
+    } catch { return { rightOrder: defaultSectionOrder, hidden: [], pinnedTopicId: null }; }
+  };
+  let dashboardPreferences = readDashboardPreferences();
+  const saveDashboardPreferences = () => { try { localStorage.setItem(preferenceKey, JSON.stringify(dashboardPreferences)); } catch { /* browser storage may be unavailable */ } };
   const element = (tag, value) => { const node = document.createElement(tag); if (value) node.textContent = value; return node; };
   const heading = element('h1', pageMode === 'planner' ? 'Planner' : 'Command Center');
   const status = element('p'); status.setAttribute('role', 'status'); status.tabIndex = -1;
@@ -118,6 +132,50 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     await load();
     if (!signal.aborted && presented && readable()) report(success);
     return true;
+  }
+
+  function renderQuickCapture(parent, dashboard, pending) {
+    const module = element('section'); module.className = 'cc-module'; module.dataset.quickCapture = 'true';
+    module.append(element('h3', 'Quick capture'), element('p', 'Capture an explicit task or park an idea in one Topic. Notes stay quiet and require the Topic Notes authoring path.'));
+    const form = element('form');
+    const kindLabel = element('label', 'Type '); const kind = element('select');
+    for (const [value, label] of [['task', 'Task'], ['idea', 'Idea'], ['note', 'Note']]) { const option = element('option', label); option.value = value; kind.append(option); }
+    kind.value = quickCaptureDraft.kind; kindLabel.append(kind);
+    const topicLabel = element('label', ' Topic '); const topic = element('select');
+    for (const item of dashboard.topics ?? []) { const option = element('option', item.name ?? item.topicId); option.value = item.topicId; topic.append(option); }
+    if (!quickCaptureDraft.topicId && topic.options.length) quickCaptureDraft.topicId = topic.options[0].value;
+    topic.value = quickCaptureDraft.topicId; topicLabel.append(topic);
+    const titleLabel = element('label', ' What should be remembered? '); const title = element('input'); title.type = 'text'; title.required = true; title.maxLength = 300; title.value = quickCaptureDraft.title; titleLabel.append(title);
+    const save = element('button', kind.value === 'note' ? 'Open Topic Notes' : 'Capture'); save.type = 'submit';
+    const update = () => {
+      quickCaptureDraft = { kind: kind.value, topicId: topic.value, title: title.value };
+      save.textContent = kind.value === 'note' ? 'Open Topic Notes' : 'Capture';
+    };
+    kind.addEventListener('change', update, { signal }); topic.addEventListener('change', update, { signal }); title.addEventListener('input', update, { signal });
+    form.append(kindLabel, topicLabel, titleLabel, save);
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); update();
+      if (!current(pending) || !writable() || save.disabled || !quickCaptureDraft.topicId || !quickCaptureDraft.title.trim()) return;
+      if (quickCaptureDraft.kind === 'note') {
+        report('Note authoring is not admitted in this release. The draft remains here; open the Topic to use its available Notes reader.');
+        host.navigation.openPage({ id: 'topic', params: { topicId: quickCaptureDraft.topicId } });
+        return;
+      }
+      save.disabled = true;
+      const draftKey = JSON.stringify(quickCaptureDraft);
+      if (!quickCaptureOperation || quickCaptureOperation.draftKey !== draftKey) {
+        quickCaptureOperation = { draftKey, params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), captureId: crypto.randomUUID(), capturedAt: new Date().toISOString(), topicId: quickCaptureDraft.topicId, captureKind: quickCaptureDraft.kind, title: quickCaptureDraft.title.trim() } };
+      }
+      try {
+        const response = await host.request('command-center.v1.open-loops.capture', quickCaptureOperation.params);
+        const result = unwrap(response);
+        if (!result?.loop?.loopId || result.loop.topicId !== quickCaptureOperation.params.topicId || !['confirmed', 'suggested'].includes(result.loop.state)) throw new Error('The quick-capture acknowledgement was incomplete. Retry the unchanged capture.');
+        quickCaptureOperation = undefined; quickCaptureDraft = { kind: quickCaptureDraft.kind, topicId: quickCaptureDraft.topicId, title: '' };
+        await load(quickCaptureDraft.kind === 'idea' ? 'Idea captured for bounded suggestion review.' : 'Task captured and acknowledged.');
+      } catch (error) { if (current(pending)) report(error?.message || 'The capture outcome is unknown. Retry the unchanged capture.'); }
+      finally { if (current(pending)) save.disabled = false; }
+    }, { signal });
+    module.append(form); parent.append(module);
   }
 
   function configureSelectedDocumentIntake() {
@@ -258,7 +316,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
 
   function renderActivity(records, pending, parent = content) {
     if (!records.length) return;
-    parent.append(element('h2', 'Recent Activity'));
+    const activity = element('section'); activity.className = 'cc-module'; activity.dataset.dashboardSection = 'activity'; activity.append(element('h2', 'Recent Activity'));
     for (const record of records) {
       const row = element('article');
       const operation = nonBlank(record.operationKind) ? record.operationKind : nonBlank(record.actionId) ? record.actionId : 'Activity';
@@ -288,7 +346,35 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         }, { signal });
         row.append(open);
       }
-      parent.append(row);
+      activity.append(row);
+    }
+    parent.append(activity);
+  }
+
+  function renderDashboardPreferences(parent, dashboard, pending) {
+    const disclosure = element('details'); disclosure.className = 'cc-module'; disclosure.dataset.dashboardCustomize = 'true'; disclosure.append(element('summary', 'Customize dashboards'));
+    const pinLabel = element('label', 'Pinned Topic '); const pin = element('select');
+    const automatic = element('option', 'Automatic'); automatic.value = ''; pin.append(automatic);
+    for (const topic of dashboard.topics ?? []) { const option = element('option', topic.name ?? topic.topicId); option.value = topic.topicId; pin.append(option); }
+    pin.value = dashboardPreferences.pinnedTopicId ?? ''; pinLabel.append(pin); disclosure.append(pinLabel);
+    pin.addEventListener('change', () => { dashboardPreferences = { ...dashboardPreferences, pinnedTopicId: pin.value || null }; saveDashboardPreferences(); void load('Dashboard preferences saved.'); }, { signal });
+    const labels = { topic: 'Pinned Topic', coverage: 'Intake coverage', upcoming: 'Upcoming', waiting: 'Waiting', review: 'Review', someday: 'Someday', activity: 'Recent activity' };
+    for (const key of dashboardPreferences.rightOrder) {
+      const row = element('div'); row.dataset.preferenceSection = key;
+      const visibleLabel = element('label'); const visible = element('input'); visible.type = 'checkbox'; visible.checked = !dashboardPreferences.hidden.includes(key); visibleLabel.append(visible, ` ${labels[key]}`);
+      const up = element('button', 'Move up'); up.type = 'button'; up.setAttribute('aria-label', `Move ${labels[key]} up`);
+      const down = element('button', 'Move down'); down.type = 'button'; down.setAttribute('aria-label', `Move ${labels[key]} down`);
+      visible.addEventListener('change', () => { dashboardPreferences = { ...dashboardPreferences, hidden: visible.checked ? dashboardPreferences.hidden.filter(item => item !== key) : [...new Set([...dashboardPreferences.hidden, key])] }; saveDashboardPreferences(); void load('Dashboard preferences saved.'); }, { signal });
+      const move = delta => { const order = [...dashboardPreferences.rightOrder]; const index = order.indexOf(key); const destination = index + delta; if (destination < 0 || destination >= order.length) return; [order[index], order[destination]] = [order[destination], order[index]]; dashboardPreferences = { ...dashboardPreferences, rightOrder: order }; saveDashboardPreferences(); void load('Dashboard preferences saved.'); };
+      up.addEventListener('click', () => move(-1), { signal }); down.addEventListener('click', () => move(1), { signal }); row.append(visibleLabel, up, down); disclosure.append(row);
+    }
+    parent.append(disclosure);
+  }
+
+  function applyDashboardPreferences(parent) {
+    const sections = new Map([...parent.querySelectorAll('[data-dashboard-section]')].map(node => [node.dataset.dashboardSection, node]));
+    for (const key of dashboardPreferences.rightOrder) {
+      const node = sections.get(key); if (!node) continue; node.hidden = dashboardPreferences.hidden.includes(key); parent.append(node);
     }
   }
 
@@ -450,6 +536,15 @@ export function mountAttentionPage(container, context, operations = new Map(), p
 
   function renderOpenLoops(openLoops, pending, targets = {}) {
     if (!openLoops || typeof openLoops !== 'object' || !Number.isSafeInteger(openLoops.total)) return;
+    if (nonBlank(targets.topicId)) {
+      const onlyTopic = cards => openLoopsArray(cards).filter(card => card.topicId === targets.topicId);
+      const original = openLoops; const source = original.workspace ?? {};
+      const highlighted = onlyTopic(original.highlighted); const stageReviews = openLoopsArray(original.stageReviews).map(group => ({ ...group, items: onlyTopic(group.items) })).filter(group => group.items.length);
+      const comingUp = onlyTopic(original.comingUp); const waiting = onlyTopic(original.waiting); const suggested = onlyTopic(original.suggested); const deferred = onlyTopic(original.deferred); const reconciliation = onlyTopic(original.reconciliation);
+      const groups = Object.fromEntries(Object.entries(source.today?.groups ?? {}).map(([key, cards]) => [key, onlyTopic(cards)]));
+      const workspace = { ...source, today: { ...(source.today ?? {}), mandatory: onlyTopic(source.today?.mandatory), planned: onlyTopic(source.today?.planned), groups }, upcoming: onlyTopic(source.upcoming), capacity: onlyTopic(source.capacity), capacityTotal: onlyTopic(source.capacity).length, waiting: onlyTopic(source.waiting), someday: onlyTopic(source.someday), review: { ...(source.review ?? {}), batch: onlyTopic(source.review?.batch), eligibleTotal: onlyTopic(source.review?.batch).length, remaining: 0 }, board: Object.fromEntries(Object.entries(source.board ?? {}).map(([key, cards]) => [key, onlyTopic(cards)])), agenda: openLoopsArray(source.agenda).filter(entry => entry.item?.topicId === targets.topicId) };
+      openLoops = { ...original, total: new Set([...highlighted, ...comingUp, ...waiting, ...suggested, ...deferred, ...reconciliation, ...workspace.today.mandatory, ...workspace.today.planned, ...workspace.upcoming, ...workspace.capacity, ...workspace.waiting, ...workspace.someday].map(card => card.loopId)).size, attentionTotal: highlighted.length + stageReviews.length, highlighted, stageReviews, stageReviewTotal: stageReviews.length, comingUp, comingUpTotal: comingUp.length, waiting, waitingTotal: waiting.length, suggested, suggestedTotal: suggested.length, deferred, deferredTotal: deferred.length, reconciliation, reconciliationTotal: reconciliation.length, workspace };
+    }
     const primary = targets.primary ?? content;
     const secondary = targets.secondary ?? primary;
     const planner = targets.planner === true;
@@ -486,17 +581,31 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       const todayMandatory = Array.isArray(workspace.today?.mandatory) ? workspace.today.mandatory : [];
       const todayPlanned = Array.isArray(workspace.today?.planned) ? workspace.today.planned : [];
       if (!todayMandatory.length && !todayPlanned.length) primary.append(element('p', 'Nothing needs you today. Choose optional work from When I have capacity.'));
-      for (const card of todayMandatory) renderPlanningCard(primary, card, card.reason ? `Required: ${card.reason}` : 'Required today');
+      const grouped = workspace.today?.groups ?? {};
+      const renderedMandatory = new Set();
+      for (const [key, label, reason] of [
+        ['overdue', 'Overdue', card => `Overdue since ${formatDue(card) ?? 'an earlier accepted date'}`],
+        ['dueToday', 'Due today', card => formatDue(card) ? `Due today · ${formatDue(card)}` : 'Due today'],
+        ['decisions', 'Decisions and changes', card => card.whyNow ?? (card.reason ? `Needs consideration: ${card.reason}` : 'Needs a decision without an invented deadline')],
+        ['reviews', 'Accepted reviews', card => card.reviewAt ? `Review due ${formatInstant(card.reviewAt)}` : 'Accepted review is due']
+      ]) {
+        const cards = openLoopsArray(grouped[key]); if (!cards.length) continue;
+        primary.append(element('h3', `${label} (${cards.length})`));
+        for (const card of cards) { renderedMandatory.add(card.loopId); renderPlanningCard(primary, card, reason(card)); }
+      }
+      for (const card of todayMandatory) if (!renderedMandatory.has(card.loopId)) renderPlanningCard(primary, card, card.reason ? `Required: ${card.reason}` : 'Required today');
       for (const card of todayPlanned) renderPlanningCard(primary, card, 'Optional planned work');
       const sections = [
         ['Planned / Upcoming', workspace.upcoming, card => formatDue(card) ? `Deadline ${formatDue(card)}` : card.planning?.plannedAt ? `Planned ${formatInstant(card.planning.plannedAt)}` : `Review ${formatInstant(card.reviewAt)}`],
-        [`When I have capacity (${workspace.capacityTotal ?? workspace.capacity?.length ?? 0} total)`, workspace.capacity, card => card.planning?.effortMinutes ? `Fits ${card.planning.effortMinutes} minutes` : 'Ready when capacity allows'],
+        [`When I have capacity (${workspace.capacityTotal ?? workspace.capacity?.length ?? 0} total)`, workspace.capacity, () => 'Ready when capacity allows'],
         ['Waiting', workspace.waiting, () => 'Waiting or blocked'],
         [`Review (${workspace.review?.eligibleTotal ?? 0}; ${workspace.review?.remaining ?? 0} after this batch)`, workspace.review?.batch, () => 'Backlog review'],
         ['Someday', workspace.someday, () => 'Parked without urgency']
       ];
       for (const [label, cards, reason] of sections) {
         const disclosure = element('details'); disclosure.dataset.workspaceSection = label; disclosure.append(element('summary', `${label} (${Array.isArray(cards) ? cards.length : 0} shown)`));
+        const dashboardSection = label.startsWith('Planned / Upcoming') ? 'upcoming' : label.startsWith('Waiting') ? 'waiting' : label.startsWith('Review') ? 'review' : label.startsWith('Someday') ? 'someday' : null;
+        if (dashboardSection) disclosure.dataset.dashboardSection = dashboardSection;
         for (const card of Array.isArray(cards) ? cards : []) renderPlanningCard(disclosure, card, reason(card));
         const destination = planner || label.startsWith('When I have capacity') ? primary : secondary;
         destination.append(disclosure);
@@ -771,9 +880,11 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           focusTitle.append(element('h2', 'What needs you now'));
           const jump = element('a', 'Jump to dashboards'); jump.href = '#command-center-dashboards'; jump.className = 'cc-dashboard-jump'; focusTitle.append(jump); focus.append(focusTitle);
           const dashboardsTitle = element('div'); dashboardsTitle.className = 'cc-module'; dashboardsTitle.append(element('p', 'Dashboards')); dashboardsTitle.firstChild.className = 'cc-kicker'; dashboardsTitle.append(element('h2', 'Context at a glance')); dashboards.append(dashboardsTitle);
-          const topic = dashboard.topics?.find(item => /renovat/i.test(item.name)) ?? dashboard.topics?.[0];
+          renderQuickCapture(focus, dashboard, pending);
+          renderDashboardPreferences(dashboards, dashboard, pending);
+          const topic = dashboard.topics?.find(item => item.topicId === dashboardPreferences.pinnedTopicId) ?? dashboard.topics?.find(item => /renovat/i.test(item.name)) ?? dashboard.topics?.[0];
           if (topic) {
-            const topicCard = element('section'); topicCard.className = 'cc-module'; topicCard.append(element('h3', topic.name));
+            const topicCard = element('section'); topicCard.className = 'cc-module'; topicCard.dataset.dashboardSection = 'topic'; topicCard.append(element('h3', topic.name));
             const openLoops = dashboard.openLoops ?? {};
             const projected = openLoops.workspace ?? {};
             const topicLoops = [
@@ -782,9 +893,14 @@ export function mountAttentionPage(container, context, operations = new Map(), p
             ].filter(item => item.topicId === topic.topicId);
             const topicTotal = new Set(topicLoops.map(item => item.loopId)).size;
             topicCard.append(element('p', `${topicTotal} current item${topicTotal === 1 ? '' : 's'} across Focus, Upcoming and Waiting.`));
+            const openTopicWork = element('button', `View ${topicTotal} matching item${topicTotal === 1 ? '' : 's'} in Planner`); openTopicWork.type = 'button'; openTopicWork.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'planner', params: { topicId: topic.topicId } }); }, { signal }); topicCard.append(openTopicWork);
             const openTopic = element('button', `Open ${topic.name}`); openTopic.type = 'button'; openTopic.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'topic', params: { topicId: topic.topicId } }); }, { signal }); topicCard.append(openTopic); dashboards.append(topicCard);
           }
-          const coverage = element('section'); coverage.className = 'cc-module'; coverage.append(element('h3', 'Intake coverage'), element('p', 'No maintained email-intake receipt is available in this dashboard response. Gateway availability is not treated as proof that email was processed.')); dashboards.append(coverage);
+          const coverage = element('section'); coverage.className = 'cc-module'; coverage.dataset.dashboardSection = 'coverage'; coverage.append(element('h3', 'Intake coverage'), element('p', 'No maintained email-intake receipt is available in this dashboard response. Gateway availability is not treated as proof that email was processed.')); dashboards.append(coverage);
+        } else if (nonBlank(topicFilter)) {
+          const filteredTopic = dashboard.topics?.find(item => item.topicId === topicFilter);
+          const filter = element('section'); filter.className = 'cc-module'; filter.append(element('h2', `Planner for ${filteredTopic?.name ?? topicFilter}`), element('p', 'Showing this Topic across the complete board, agenda and open-loop views.'));
+          const clear = element('button', 'Show all Topics'); clear.type = 'button'; clear.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'planner' }); }, { signal }); filter.append(clear); focus.append(filter);
         }
         workspace.append(focus, dashboards); content.append(workspace);
         if (cards.length) focus.append(element('h2', 'Needs Attention'));
@@ -793,9 +909,9 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { notificationRecord: card.notificationRecordId } }); }, { signal }); focus.append(button);
         }
-        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner' });
-        if (pageMode === 'dashboard') renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending, dashboards);
-        report(cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : 'No current Attention items.'); return;
+        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined });
+        if (pageMode === 'dashboard') { renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending, dashboards); applyDashboardPreferences(dashboards); }
+        report(message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : 'No current Attention items.')); return;
       }
       const matches = cards.filter((card) => card.notificationRecordId === recordId);
       if (matches.length !== 1) { report(`${message ? `${message} ` : ''}The exact Attention item is no longer available in the current inbox. Refresh to check again.`); return; }
@@ -818,7 +934,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   void load();
   if (signal.aborted) cleanup();
   return {
-    update(next) { if (recordId === next.props.notificationRecord && presented === next.presented) return; recordId = next.props.notificationRecord; presented = next.presented; void load(); },
+    update(next) { if (recordId === next.props.notificationRecord && topicFilter === next.props.topicId && presented === next.presented) return; recordId = next.props.notificationRecord; topicFilter = next.props.topicId; presented = next.presented; void load(); },
     focus() { refresh.focus(); },
     dispose() { lifetime.abort(); cleanup(); }
   };

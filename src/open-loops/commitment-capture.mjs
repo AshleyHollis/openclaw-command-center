@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { normalizeLoop, normalizeObservation } from './contracts.mjs';
 
-const sourceKinds = new Set(['chat', 'note', 'email']);
+const sourceKinds = new Set(['chat', 'note', 'email', 'manual']);
 const provenanceKinds = new Set(['explicit', 'inferred', 'idea', 'quoted']);
 const importanceKinds = new Set(['critical', 'high', 'normal', 'low']);
 

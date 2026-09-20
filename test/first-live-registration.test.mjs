@@ -164,6 +164,7 @@ test('first-live admission names the exact source-backed Attention surface', () 
   assert.deepEqual(admitted, [
     'command-center.v1.open-loops.list',
     'command-center.v1.open-loops.get',
+    'command-center.v1.open-loops.capture',
     'command-center.v1.open-loops.intake-selected',
     'command-center.v1.open-loops.decide',
     'command-center.v1.open-loops.payment-status',

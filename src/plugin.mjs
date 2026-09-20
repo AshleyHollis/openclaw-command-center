@@ -116,6 +116,7 @@ export default definePluginEntry({
         if (property === 'dashboardGet') return (input, runtime) => service.dashboardGet(input, runtime);
         if (property === 'openLoopsList') return (input) => service.openLoopsList(input);
         if (property === 'openLoopsGet') return (input) => service.openLoopsGet(input);
+        if (property === 'openLoopsCapture') return (input) => service.openLoopsCapture(input);
         if (property === 'openLoopsIngestSelected') return (input) => service.openLoopsIngestSelected(input);
         if (property === 'openLoopsDecide') return (input, runtime) => service.openLoopsDecide(input, runtime);
         if (property === 'openLoopsPaymentStatus') return (input, runtime) => service.openLoopsPaymentStatus(input, runtime);

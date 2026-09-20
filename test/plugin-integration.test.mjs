@@ -220,6 +220,28 @@ test('bounded document intake reads authoritative content and revision through t
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('authenticated quick capture uses the durable shared owner and survives restart', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-quick-capture-'));
+  let service;
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir });
+    seed.createTopic({ topicId: 'topic-quick-capture', name: 'Fictional home', paraCategory: 'area', lifecycle: 'active' });
+    seed.close();
+    let host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
+    const params = { schemaVersion: 1, logicalOperationId: randomUUID(), captureId: randomUUID(), capturedAt: '2026-09-20T01:00:00.000Z', topicId: 'topic-quick-capture', captureKind: 'task', title: 'Book the fictional electrician' };
+    const first = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.capture', params);
+    const replay = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.capture', params);
+    assert.equal(first.loop.loopId, replay.loop.loopId);
+    assert.equal(first.loop.state, 'confirmed');
+    assert.equal(service.openLoopsList({ limit: 20 }).total, 1);
+    await service.stop(); service = undefined;
+
+    host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
+    assert.equal(service.openLoopsGet({ loopId: first.loop.loopId }).loop.title, 'Book the fictional electrician');
+    assert.equal(service.openLoopsList({ limit: 20 }).total, 1);
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('registered selected PDF intake stays suggested until an operator confirms corrected bill facts', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-selected-pdf-'));
   const gateway = fictionalSchedulerGateway();

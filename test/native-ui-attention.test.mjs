@@ -47,6 +47,7 @@ async function fixture(run) {
             return { result: { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'invoices/fictional-progress-invoice.txt', revision: 'authoritative-v1', sourceKind: 'document', sourceReference: { referenceId: 'document-fictional-progress-invoice', topicId: params.topicId, sourceSystem: 'fictional-documents', sourceKind: 'document' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-document-page' } };
           }
           if (method.endsWith('open-loops.intake-selected')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: window.intakeResult ?? { schemaVersion: 1, disposition: 'applied', checkpoint: { schemaVersion: 1 }, freshness: { status: 'available', lastObservedAt: params.selections[0].observedAt }, hasMore: false, results: [{ disposition: 'applied', observationId: 'selected-observation', sourceVersion: 'authoritative-v1', historicalBaseline: false, loop: { loopId: 'selected-loop', kind: 'payment', state: 'confirmed', revision: 1 } }] } };
+          if (method.endsWith('open-loops.capture')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: { schemaVersion: 1, loopId: `captured-${params.captureId}`, kind: 'general', stableSubjectId: `manual-${params.captureId}`, title: params.title, topicId: params.topicId, state: params.captureKind === 'idea' ? 'suggested' : 'confirmed', evidenceObservationIds: ['manual-evidence'], revision: 1 } } };
           if (method.endsWith('open-loops.get')) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             const evidence = [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }];
@@ -127,9 +128,9 @@ async function fixture(run) {
         view = mountAttentionPage(document.querySelector('#mount'), context, operations);
       };
       window.mountInbox = () => window.mountRecord(null);
-      window.mountPlanner = () => {
+      window.mountPlanner = (topicId) => {
         scope?.abort(); view?.dispose(); scope = new AbortController();
-        context = { host, props: {}, signal: scope.signal, presented: true };
+        context = { host, props: topicId ? { topicId } : {}, signal: scope.signal, presented: true };
         view = pages.get('planner').mount(document.querySelector('#mount'), context);
       };
       window.selectRecord = (record) => { context = { ...context, props: { notificationRecord: record } }; view.update(context); };
@@ -346,6 +347,12 @@ test('combined Dashboard uses wide Focus and dashboard regions and keeps the Kan
   await page.getByRole('heading', { name: 'What needs you now' }).waitFor();
   await page.getByRole('heading', { name: 'Context at a glance' }).waitFor();
   await page.getByRole('heading', { name: 'Fictional renovation' }).waitFor();
+  await page.getByRole('button', { name: 'View 1 matching item in Planner' }).click();
+  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'planner', params: { topicId: 'topic-fictional-renovation' } });
+  await page.evaluate(() => window.mountPlanner('topic-fictional-renovation'));
+  await page.getByRole('heading', { name: 'Planner for Fictional renovation' }).waitFor();
+  assert.equal(await page.locator('article[data-workspace-loop-id="dashboard-work"]').count() > 0, true);
+  await page.evaluate(() => window.mountInbox());
   assert.equal(await page.locator('details[data-topic-board]').count(), 0);
   await page.getByRole('button', { name: 'Open Planner' }).click();
   assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'planner' });
@@ -353,6 +360,48 @@ test('combined Dashboard uses wide Focus and dashboard regions and keeps the Kan
   await page.getByRole('heading', { name: 'Planner' }).waitFor();
   await page.getByText('Kanban board', { exact: true }).waitFor();
   assert.equal(await page.getByText('Intake coverage', { exact: true }).count(), 0);
+}));
+
+test('Dashboard quick capture acknowledges tasks and does not turn notes into obligations', () => fixture(async (page) => {
+  await page.evaluate(() => { window.cards = []; window.mountInbox(); });
+  const quick = page.locator('section[data-quick-capture]');
+  await quick.getByLabel('What should be remembered?').fill('Call the fictional cabinet maker');
+  await quick.getByRole('button', { name: 'Capture', exact: true }).click();
+  await page.getByText('Task captured and acknowledged.', { exact: true }).waitFor();
+  const captured = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('open-loops.capture')));
+  assert.equal(captured.params.captureKind, 'task');
+  assert.equal(captured.params.topicId, 'topic-fictional-renovation');
+  assert.equal(captured.params.title, 'Call the fictional cabinet maker');
+  assert.match(captured.params.captureId, /^[0-9a-f-]{36}$/u);
+
+  const nextQuick = page.locator('section[data-quick-capture]');
+  await nextQuick.getByLabel('Type').selectOption('note');
+  await nextQuick.getByLabel('What should be remembered?').fill('Fictional splashback colour reference');
+  const countBefore = await page.evaluate(() => window.requests.filter(entry => entry.method.endsWith('open-loops.capture')).length);
+  await nextQuick.getByRole('button', { name: 'Open Topic Notes' }).click();
+  assert.equal(await page.evaluate(() => window.requests.filter(entry => entry.method.endsWith('open-loops.capture')).length), countBefore);
+  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'topic-fictional-renovation' } });
+}));
+
+test('Dashboard preferences persist section visibility across a remount', () => fixture(async (page) => {
+  await page.evaluate(() => { window.cards = []; window.mountInbox(); });
+  await page.getByText('Customize dashboards', { exact: true }).click();
+  await page.getByLabel('Intake coverage', { exact: true }).uncheck();
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('command-center.dashboard.preferences.v1')).hidden.includes('coverage'));
+  await page.evaluate(() => window.mountInbox());
+  await page.getByRole('heading', { name: 'Context at a glance' }).waitFor();
+  assert.equal(await page.getByRole('heading', { name: 'Intake coverage' }).isHidden(), true);
+}));
+
+test('Dashboard states the accepted past deadline instead of fabricating a new date', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const overdue = { loopId: 'overdue-fictional', kind: 'general', topicId: 'topic-fictional-renovation', title: 'Pay fictional council fee', state: 'confirmed', dueDate: '2026-09-10', dueTimeZone: 'Australia/Brisbane', evidenceCount: 1, revision: 1, planning: { importance: 'high', contexts: [], dependencies: [], someday: false } };
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [], workspace: { today: { mandatory: [overdue], groups: { overdue: [overdue], dueToday: [], decisions: [], reviews: [] }, planned: [] }, upcoming: [], capacity: [], capacityTotal: 0, waiting: [], someday: [], review: { batch: [], remaining: 0, eligibleTotal: 0 }, board: { ready: [overdue], doing: [], waiting: [], done: [], suggestions: [] }, agenda: [] } };
+    window.mountInbox();
+  });
+  await page.getByText(/Overdue since 2026-09-10 \(Australia\/Brisbane, calendar date\)/u).waitFor();
+  assert.equal(await page.getByText(/Due today/u).count(), 0);
 }));
 
 test('native Attention confirms or dismisses suggestions and defers quiet items with exact review times', () => fixture(async (page) => {

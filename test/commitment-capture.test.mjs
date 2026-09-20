@@ -19,6 +19,14 @@ test('explicit capture becomes one quiet confirmed commitment and an idea stays 
   assert.equal(idea.loop.attention.provenance, 'idea');
 });
 
+test('manual quick capture shares the commitment identity and keeps ideas in review', () => {
+  const task = planCommitmentCapture(base({ sourceKind: 'manual', sourceExternalId: 'operator:fictional', sourceVersion: 'quick-capture:task-1', obligationId: 'task-1' }));
+  const idea = planCommitmentCapture(base({ sourceKind: 'manual', sourceExternalId: 'operator:fictional', sourceVersion: 'quick-capture:idea-1', obligationId: 'idea-1', provenance: 'idea' }));
+  assert.equal(task.loop.state, 'confirmed');
+  assert.equal(idea.loop.state, 'suggested');
+  assert.notEqual(task.loop.loopId, idea.loop.loopId);
+});
+
 test('reprocessing appends evidence while user planning and importance win', () => {
   const first = planCommitmentCapture(base({ importance: 'low', importanceOrigin: 'processing' })).loop;
   const existing = { ...first, revision: 2, attention: { ...first.attention, importance: 'high', importanceOrigin: 'user', plannedAt: '2026-09-21T03:00:00Z', lastConsideredAt: '2026-09-20T02:00:00Z' } };

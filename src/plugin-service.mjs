@@ -11,6 +11,7 @@ import { SourceServiceError } from './sources/errors.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { createOpenLoopReminderCoordinator } from './open-loops/reminder-coordinator.mjs';
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
+import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
 
 function unavailable(feature) {
   const reason = FIRST_LIVE_FEATURES[feature] === false
@@ -288,6 +289,35 @@ export function createMetadataService(api) {
       const loop = metadataService.getOpenLoop(input.loopId);
       if (!loop) throw new SourceServiceError('not-found', 'The exact open loop is unavailable.');
       return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id)))) });
+    },
+    async openLoopsCapture(input = {}) {
+      requireOperational();
+      const operatorId = requireOperator(input, 'quick capture');
+      const topic = metadataService.getTopic(input.topicId);
+      if (!topic || topic.lifecycle !== 'active') throw new SourceServiceError('not-found', 'Quick capture requires one exact active Topic.');
+      const now = input.capturedAt;
+      const capture = createCommitmentCaptureService({ metadata: metadataService, sourceService });
+      let result;
+      try {
+        result = await capture.capture({
+          schemaVersion: 1,
+          logicalOperationId: input.logicalOperationId,
+          sourceKind: 'manual',
+          sourceExternalId: `operator:${operatorId}`,
+          sourceVersion: `quick-capture:${input.captureId}`,
+          topicId: input.topicId,
+          title: input.title,
+          obligationId: input.captureId,
+          provenance: input.captureKind === 'idea' ? 'idea' : 'explicit',
+          occurredAt: now,
+          observedAt: now,
+          historicalBaseline: false
+        });
+      } catch (error) {
+        if (error instanceof SourceServiceError) throw error;
+        throw new SourceServiceError('invalid-request', error?.message ?? 'Quick capture is invalid.');
+      }
+      return Object.freeze({ schemaVersion: 1, disposition: result.disposition === 'duplicate' ? 'duplicate' : 'applied', loop: result.loop });
     },
     async openLoopsIngestSelected(input = {}) {
       requireOperational();

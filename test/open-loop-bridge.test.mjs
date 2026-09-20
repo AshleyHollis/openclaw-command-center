@@ -21,6 +21,7 @@ const loop = {
 
 test('open-loop bridge contracts use read and native-Reminder admin scopes with closed lifecycle inputs', () => {
   assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.list'].scope, 'operator.read');
+  assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.capture'].scope, 'operator.write');
   assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.payment-status'].scope, 'operator.admin');
   const decisionId = randomUUID();
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: decisionId, loopId: loop.loopId, expectedRevision: 1, decision: 'defer', reviewAt: '2026-09-30T00:00:00.000Z', rationale: 'Wait for the fictional corrected invoice.' }));
@@ -31,6 +32,20 @@ test('open-loop bridge contracts use read and native-Reminder admin scopes with 
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, decision: 'correct-date', rationale: 'Missing corrected date.' }), /corrected timing/);
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, decision: 'correct-date', dueDate: '2026-10-04', rationale: 'Missing timezone.' }), /calendar date with timezone/);
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, paymentState: 'paid', paidAmount: 12300, rationale: 'Missing currency.' }), /currency/);
+});
+
+test('quick capture accepts only one explicit task or idea for one exact Topic', async () => {
+  const params = { schemaVersion: 1, logicalOperationId: randomUUID(), captureId: randomUUID(), capturedAt: '2026-09-20T01:00:00.000Z', topicId: 'fictional-topic', captureKind: 'task', title: 'Call the fictional cabinet maker' };
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.capture', params));
+  assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.capture', { ...params, captureKind: 'note' }), /task, idea/);
+  assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.capture', { ...params, dueAt: '2026-09-30T00:00:00Z' }), /Unsupported bridge request field/);
+  const result = await invokeBridgeMethod({
+    openLoopsCapture(input) {
+      assert.equal(input.authenticatedOperatorId, 'fictional-operator');
+      return { schemaVersion: 1, disposition: 'applied', loop: { ...loop, loopId: 'manual-fictional', topicId: input.topicId, kind: 'general', state: 'confirmed', title: input.title } };
+    }
+  }, 'command-center.v1.open-loops.capture', params, null, 'fictional-operator');
+  assert.equal(result.loop.loopId, 'manual-fictional');
 });
 
 test('selected-source intake bridge accepts one persisted document selection without caller-supplied content or versions', async () => {

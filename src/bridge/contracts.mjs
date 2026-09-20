@@ -84,6 +84,7 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.analysis.run',
   'command-center.v1.search.prepare-rebuild',
   'command-center.v1.open-loops.intake-selected',
+  'command-center.v1.open-loops.capture',
   'command-center.v1.open-loops.decide',
   'command-center.v1.open-loops.payment-status',
   'command-center.v1.open-loops.organize',
@@ -120,7 +121,7 @@ export const ADMIN_METHODS = Object.freeze([
 ]);
 
 const common = ['schemaVersion'];
-const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'plannedAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption']);
+const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'plannedAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption', 'captureId', 'capturedAt', 'title']);
 const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession', 'authorization', 'checkpoint', 'window', 'requirement', 'reconciliation', 'correction', 'replacement', 'fulfilment', 'activation', 'stage', 'conflict']);
 const arrayFields = new Set(['expectedRevisions', 'selections', 'contexts', 'dependencies']);
 
@@ -135,6 +136,7 @@ function parameterSchema(field, method) {
   if (field === 'sourceKind' && method === 'command-center.v1.notes.read') return Object.freeze({ type: 'string', enum: ['note', 'document'] });
   if (field === 'expectedRevision') return Object.freeze({ type: method.includes('.topics.') || method.includes('.open-loops.') || method === 'command-center.v1.sessions.create' ? 'integer' : 'string' });
   if (field === 'decision') return Object.freeze({ type: 'string', enum: ['confirm', 'defer', 'dismiss', 'resolve', 'correct-date'] });
+  if (field === 'captureKind') return Object.freeze({ type: 'string', enum: ['task', 'idea'] });
   if (field === 'paymentState') return Object.freeze({ type: 'string', enum: ['partially-paid', 'payment-pending', 'paid', 'disputed', 'cancelled', 'uncertain'] });
   if (field === 'action' && method.endsWith('.open-loops.organize')) return Object.freeze({ type: 'string', enum: ['plan', 'keep', 'review-later', 'someday', 'drop', 'start', 'wait', 'reopen', 'complete', 'set-priority'] });
   if (field === 'importance') return Object.freeze({ type: 'string', enum: ['critical', 'high', 'normal', 'low'] });
@@ -447,6 +449,7 @@ const required = Object.freeze({
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit'],
   'command-center.v1.open-loops.list': [],
   'command-center.v1.open-loops.get': ['loopId'],
+  'command-center.v1.open-loops.capture': ['topicId', 'captureId', 'captureKind', 'capturedAt', 'title', 'logicalOperationId'],
   'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'selections'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'rationale'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'rationale'],
@@ -537,6 +540,7 @@ const fields = Object.freeze({
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit'],
   'command-center.v1.open-loops.list': ['offset', 'limit', 'cursor'],
   'command-center.v1.open-loops.get': ['loopId'],
+  'command-center.v1.open-loops.capture': ['topicId', 'captureId', 'captureKind', 'capturedAt', 'title'],
   'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'selections', 'logicalOperationId'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'amount', 'currency', 'rationale', 'logicalOperationId'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'paidAmount', 'currency', 'rationale', 'logicalOperationId'],
