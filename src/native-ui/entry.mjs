@@ -8,6 +8,7 @@ import { createNativeCreationForm } from './creation-form.mjs';
 import { createNativeState } from './mutations.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { mountTopicSidebar, createTopicSidebarState } from './topic-sidebar.mjs';
+import { topicSourceAvailable } from './topic-source-availability.mjs';
 
 /** Native Control UI contribution. OpenClaw owns Chat, its roster and its drafts. */
 export function mountTopics(container, context, state = createNativeState()) {
@@ -74,7 +75,7 @@ export function mountTopics(container, context, state = createNativeState()) {
           const button = document.createElement('button');
           button.type = 'button';
           button.textContent = `Open ${topic.name} in Chat`;
-          button.disabled = topic.usable !== true || mode === 'recovery-only';
+          button.disabled = !topicSourceAvailable(topic, 'session') || mode === 'recovery-only';
           button.addEventListener('click', () => {
             if (!presented) return;
             status.textContent = 'Opening native Chat…';
@@ -91,7 +92,7 @@ export function mountTopics(container, context, state = createNativeState()) {
             host.navigation.openPage({ id: 'topic', params: { topicId: topic.topicId } });
           }, { signal });
           row.append(notes);
-          if (topic.usable === true && mode !== 'recovery-only') {
+          if (topicSourceAvailable(topic, 'session') && mode !== 'recovery-only') {
             const setup = createTopicGroupSetup({ host, document, topicId: topic.topicId, signal, presented: () => presented && pending === generation });
             groupSetups.push(setup); row.append(setup.container);
           }

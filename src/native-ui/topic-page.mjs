@@ -5,6 +5,7 @@ import { createNativeCreationForm, createNativeNoteCreationForm } from './creati
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { readerStyles } from './reader-layout.mjs';
 import { loadTopicCatalog, topicCatalogPageSize } from './topic-catalog.mjs';
+import { topicSourceAvailable } from './topic-source-availability.mjs';
 
 /** Topic policy stays in the backend; OpenClaw owns routing and Chat. */
 export function mountTopicPage(container, context, state = createNativeState(), { panel = false, verifyContext } = {}) {
@@ -415,7 +416,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     editing.hidden = !draft;
     if (!draft) return;
     editor.value = draft.text;
-    editor.readOnly = topic?.lifecycle !== 'active' || topic?.usable !== true || !readable();
+    editor.readOnly = topic?.lifecycle !== 'active' || !topicSourceAvailable(topic, 'note_folder') || !readable();
     save.disabled = editor.readOnly || !host.connection.canWrite || typeof host.httpRequest !== 'function' || !!draft.operation;
     reconcile.hidden = !draft.operation?.unknown;
     reconcile.disabled = !readable() || !host.connection.canWrite || typeof host.httpRequest !== 'function' || !!draft.operation?.attempt;
@@ -543,7 +544,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       viewState.browserPath ??= '';
       filter.value = viewState.filter;
       heading.textContent = topic.name;
-      chat.disabled = topic.usable !== true || topic.lifecycle !== 'active';
+      chat.disabled = !topicSourceAvailable(topic, 'session') || topic.lifecycle !== 'active';
       if (!panel) creation = createNativeCreationForm({ host, state, document, signal, presented: () => presented, getTopic: () => topic,
         beginNavigation: () => { reading.abort(); navigation.cancel(); const selection = ++generation; return () => current(selection); },
         onCreated: async (result, input) => {
@@ -608,7 +609,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   }
   async function saveNote({ reconcileOnly = false } = {}) {
     if (!FIRST_LIVE_FEATURES.noteWrite) return;
-    if (!selected || !presented || !readable() || !host.connection.canWrite || (!reconcileOnly && (topic?.lifecycle !== 'active' || topic?.usable !== true))) return;
+    if (!selected || !presented || !readable() || !host.connection.canWrite || (!reconcileOnly && (topic?.lifecycle !== 'active' || !topicSourceAvailable(topic, 'note_folder')))) return;
     const descriptor = { ...selected }; const key = draftKey(descriptor); const draft = drafts.get(key);
     if (!draft || (reconcileOnly ? !draft.operation?.unknown || draft.operation.attempt : draft.operation)) return;
     if (draft.path !== descriptor.path) { noteState.textContent = 'The Note moved while this draft was open. Source Recovery is required before saving.'; return; }

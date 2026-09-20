@@ -16,7 +16,7 @@ import { resolveCommandCenterDatabasePath } from '../../src/metadata/path.mjs';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { readNativeHistoryInventory } from '../../src/migration/native-history-source.mjs';
 import { runPreservedHistoryImport } from '../../src/migration/preserved-history-import.mjs';
-import { NOTE_FOLDER_IDENTITY_FILE, readNoteFolderIdentity } from '../../src/sources/note-folder-identity.mjs';
+import { NOTE_FOLDER_IDENTITY_FILE, readNoteFolderIdentity, setHostFilesystemIdentityReader } from '../../src/sources/note-folder-identity.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isCommandCenterMigrationReady, readCommandCenterMigrationProgress, recordStartupObservation } from '../../src/acceptance-readiness.mjs';
 import { scanPublicEvidence } from '../../src/safety.mjs';
 import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory, isGatewayStartupPending } from './real-host-runtime.mjs';
@@ -267,7 +267,14 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
   // fixture marker is safely created before binding; actual enrollment is
   // exercised by the host-owned recovery path.
   await writeFile(path.join(folder, NOTE_FOLDER_IDENTITY_FILE), `${JSON.stringify({ version: 1, id: randomUUID() })}\n`, { flag: 'wx', mode: 0o600 });
-  const identity = await readNoteFolderIdentity(folder);
+  // The external acceptance owner reads the witness through the exact pinned
+  // host runtime helper. This preserves parity with the Gateway process while
+  // keeping fixture setup outside the plugin's activation-scoped setters.
+  const fileAccess = await import('openclaw/plugin-sdk/file-access-runtime');
+  const releaseIdentityReader = setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
+  let identity;
+  try { identity = await readNoteFolderIdentity(folder); }
+  finally { releaseIdentityReader(); }
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
   try {
     metadata.createTopic({ topicId, name, paraCategory, lifecycle: 'active' });

@@ -111,7 +111,8 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
   const button = (label, action) => { const value = document.createElement('button'); value.type = 'button'; value.textContent = label; value.addEventListener('click', action, { signal }); return value; };
   const unwrap = value => value?.result ?? value;
   const selectedSessionId = () => activeContext.props.sessions?.find(row => row.key === activeContext.props.sessionKey)?.sessionId;
-  const allTopics = () => Object.values(destination?.activeGroups ?? {}).flat().filter(topic => topic?.usable === true && topic?.lifecycle === 'active');
+  const allTopics = () => [...Object.values(destination?.activeGroups ?? {}).flat(), ...(destination?.recovery ?? [])]
+    .filter((topic, index, rows) => topic?.lifecycle === 'active' && topicSourceAvailable(topic, 'session') && rows.findIndex(candidate => candidate.topicId === topic.topicId) === index);
   const visibleTopics = () => [...allTopics(), ...(destination?.recovery ?? []).filter(topic => topic?.lifecycle === 'active'), ...(destination?.archived ?? []).filter(topic => topic?.usable === true && topic?.lifecycle === 'archived')]
     .filter((topic, index, rows) => rows.findIndex(candidate => candidate.topicId === topic.topicId) === index);
   const eligibleSessions = () => (activeContext.props.sessions ?? []).filter(row => {
@@ -330,3 +331,4 @@ export function mountTopicSidebar(container, context, viewState = createTopicSid
   void load();
   return { update(next) { const changed = contextRevision(activeContext) !== contextRevision(next); activeContext = next; presented = next.presented; loadMore.hidden = !next.props.nativeSessionsHaveMore || typeof next.props.loadMoreNativeSessions !== 'function'; if (changed) void load(); }, focus() { refresh.focus(); }, dispose() { lifetime.abort(); navigation.cancel(); defaultView?.(); container.replaceChildren(); } };
 }
+import { topicSourceAvailable } from './topic-source-availability.mjs';
