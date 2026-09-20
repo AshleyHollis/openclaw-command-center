@@ -141,8 +141,9 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     // writes a Note. Keep that distinction explicit in the test-only model;
     // production tool selection remains entirely host/model owned.
     const noNoteFixtureTurn = JSON.stringify(latestUserMessage(messages)?.content ?? '').includes('[fixture:no-note]');
-    const captureFixtureTurn = JSON.stringify(latestUserMessage(messages)?.content ?? '').includes('[fixture:capture-laundry]');
-    const vagueFixtureTurn = JSON.stringify(latestUserMessage(messages)?.content ?? '').includes('[fixture:capture-vague]');
+    const serializedMessages = JSON.stringify(messages);
+    const captureFixtureTurn = serializedMessages.includes('[fixture:capture-laundry]');
+    const vagueFixtureTurn = serializedMessages.includes('[fixture:capture-vague]');
     let frames;
     let action = 'final';
     if (completedCurrentTool) {
