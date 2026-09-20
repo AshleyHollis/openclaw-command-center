@@ -199,12 +199,12 @@ test('deferred HTTP actions are non-retryable and cannot reach services before s
   }
 });
 
-test('the milestone manifest admits only scoped commitment capture and keeps filing/maintenance triggers unavailable', async () => {
+test('the milestone manifest admits scoped capture and capacity review while keeping filing/maintenance triggers unavailable', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
-  assert.deepEqual(manifest.contracts.tools, ['command_center_capture_commitment']);
+  assert.deepEqual(manifest.contracts.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review']);
   assert.deepEqual(manifest.contracts.workspaceSessionTurnScheduling, []);
   const h = host(); plugin.register(h.api);
-  assert.deepEqual(h.tools, ['command_center_capture_commitment']);
+  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review']);
   assert.equal(h.agentEventSubscriptions.length, 0);
   for (const suffix of ['', '/app.js', '/styles.css', '/markdown.js']) {
     const route = h.routes.find(value => value.path === `/plugins/command-center${suffix}`);
@@ -228,12 +228,12 @@ test('the reader MVP leaves the flat host maintenance subscription unavailable',
   assert.equal(h.agentEventSubscriptions.length, 0);
 });
 
-test('host workflow primitives admit capture without activating deferred maintenance or analysis products', () => {
+test('host workflow primitives admit capture and configured review without activating maintenance or analysis products', () => {
   const h = host({ nativeWorkflow: true });
   plugin.register(h.api);
   assert.equal(FIRST_LIVE_FEATURES.noteMaintenance, false);
   assert.equal(FIRST_LIVE_FEATURES.analysis, false);
-  assert.deepEqual(h.tools, ['command_center_capture_commitment']);
+  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review']);
   assert.equal(h.agentEventSubscriptions.length, 0);
 });
 

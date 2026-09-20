@@ -12,6 +12,7 @@ import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { createOpenLoopReminderCoordinator } from './open-loops/reminder-coordinator.mjs';
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
+import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 
 function unavailable(feature) {
   const reason = FIRST_LIVE_FEATURES[feature] === false
@@ -68,6 +69,7 @@ export function createMetadataService(api) {
   let attentionService;
   let dashboardService;
   let openLoopReminders;
+  let capacityReview;
   let topicService;
   let stopPromise;
   let releaseDurableFolderStager;
@@ -191,6 +193,10 @@ export function createMetadataService(api) {
       };
       sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, transcriptReader: readVisibleTranscript, historyReader, noteRecoveryEffects: false });
       if (capabilities.scheduler) openLoopReminders = createOpenLoopReminderCoordinator({ api, gateway: api.runtime.gateway, metadata: metadataService });
+      if (capabilities.scheduler && api.pluginConfig?.capacityReview) {
+        capacityReview = createCapacityReviewService({ metadata: metadataService, sourceService, gateway: api.runtime.gateway, config: api.pluginConfig.capacityReview });
+        await capacityReview.reconcileSchedule();
+      }
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot });
       const migrationResult = await migrationService.start();
       if (FIRST_LIVE_FEATURES.dashboard) {
@@ -240,6 +246,7 @@ export function createMetadataService(api) {
         attentionService = undefined;
         dashboardService = undefined;
         openLoopReminders = undefined;
+        capacityReview = undefined;
         topicService = undefined;
       });
       return stopPromise;
@@ -253,6 +260,7 @@ export function createMetadataService(api) {
     getTopicMaintenanceOwners() {
       return { sourceService, metadata: metadataService };
     },
+    get capacityReview() { return capacityReview; },
     get attentionService() { return attentionService; },
     get maintenanceService() { return undefined; },
     get searchService() { return undefined; },

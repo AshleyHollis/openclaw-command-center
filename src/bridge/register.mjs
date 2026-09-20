@@ -312,7 +312,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         }
         const assertHistoryRead = method.startsWith('command-center.v1.histories.') || ['command-center.v1.sessions.topic-context', 'command-center.v1.sessions.group-preview'].includes(method) ? captureHistoryReadAuthority({ client, context, signal }) : null;
         if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
-        if (schedulerRuntimeMethods.has(method) && client) {
+        if (schedulerRuntimeMethods.has(method) && client?.connect) {
           runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
         }
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;
