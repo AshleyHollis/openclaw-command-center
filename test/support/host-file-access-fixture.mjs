@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { link, unlink, writeFile } from 'node:fs/promises';
+import { link, open, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setHostDurableFolderStager } from '../../src/sources/note-folder-identity.mjs';
 import { setHostNoteFilesystemCoordinator } from '../../src/sources/note-filesystem-owner.mjs';
@@ -16,6 +16,8 @@ export function createHostFileAccessFixture() {
       async publish(name, { overwrite = false } = {}) {
         if (overwrite) throw new Error('The fixture does not permit overwrite publication.');
         await link(staged, path.join(directory.realPath, name));
+        const heldDirectory = await open(directory.realPath, 'r');
+        try { await heldDirectory.sync(); } finally { await heldDirectory.close(); }
       },
       async cleanup() {
         await unlink(staged).catch(error => { if (error?.code !== 'ENOENT') throw error; });
