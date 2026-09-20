@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { RELEASE_FIXTURE_COUNTS, RELEASE_MEASUREMENTS } from '../../src/performance-baseline.mjs';
 import { fetchJsonWithDeadline, waitForConsecutiveReadiness } from '../../src/host-harness.mjs';
 import { observeBrowserResponse, hasSuccessfulBrowserResponse } from '../../src/browser-evidence.mjs';
@@ -123,11 +123,15 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).click();
   onProgress('large-note-clicked');
   const content = nativePage.getByRole('region', { name: 'Note content', exact: true });
-  await ready(async () => (await content.textContent())?.length === 8_388_609);
+  await ready(async () => await content.evaluate(node => node.textContent?.length) === 8_388_609);
   onProgress('large-note-rendered');
-  assert.equal(await content.textContent(), bootstrap.noteText);
+  const renderedNote = await content.evaluate(async node => {
+    const bytes = new TextEncoder().encode(node.textContent ?? '');
+    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    return { byteLength: bytes.byteLength, digest };
+  });
   observations.largeNoteReadMs = now() - started;
-  assert.equal(Buffer.byteLength(await content.textContent(), 'utf8'), 8_388_609);
+  assert.deepEqual(renderedNote, { byteLength: 8_388_609, digest: createHash('sha256').update(bootstrap.noteText).digest('hex') });
   assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
   assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
 
