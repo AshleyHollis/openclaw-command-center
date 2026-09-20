@@ -34,14 +34,16 @@ test('formatted Reading preserves useful Markdown while blocking active content'
       const root = document.querySelector('main');
       const text = 'L'.repeat(largeNoteRenderThreshold + largeNoteChunkSize + 1);
       renderReadOnlyMarkdown(root, text);
+      const firstChunk = root.querySelector('[data-large-note-chunk]');
       const reading = { mode: root.dataset.largeNote, chunks: root.querySelectorAll('[data-large-note-chunk]').length,
-        exact: root.textContent === text, markup: root.querySelector('p') === null };
+        exact: root.textContent === text, markup: root.querySelector('p') === null,
+        deferred: firstChunk.style.contentVisibility === 'auto' && firstChunk.style.containIntrinsicBlockSize === '20rem' };
       renderReadOnlySource(root, text);
       return { reading, source: { mode: root.dataset.largeNote, chunks: root.querySelectorAll('[data-large-note-chunk]').length,
         exact: root.textContent === text } };
     });
     assert.deepEqual(large, {
-      reading: { mode: 'chunked', chunks: 6, exact: true, markup: true },
+      reading: { mode: 'chunked', chunks: 6, exact: true, markup: true, deferred: true },
       source: { mode: 'chunked', chunks: 6, exact: true },
     });
   } finally {

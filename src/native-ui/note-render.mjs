@@ -23,6 +23,11 @@ export function renderReadOnlySource(container, text) {
   for (let offset = 0; offset < text.length; offset += largeNoteChunkSize) {
     const chunk = container.ownerDocument.createElement('span');
     chunk.dataset.largeNoteChunk = '';
+    chunk.style.display = 'block';
+    chunk.style.whiteSpace = 'pre-wrap';
+    chunk.style.overflowWrap = 'anywhere';
+    chunk.style.contentVisibility = 'auto';
+    chunk.style.containIntrinsicBlockSize = '20rem';
     chunk.textContent = text.slice(offset, offset + largeNoteChunkSize);
     fragment.append(chunk);
   }
