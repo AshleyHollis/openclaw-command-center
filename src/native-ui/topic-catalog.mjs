@@ -5,7 +5,7 @@ const MAX_CATALOG_ENTRIES = 10_000;
  * Load one immutable Topic-file snapshot through its cursor contract.
  * Presentation adapters receive the same complete, bounded snapshot.
  */
-export async function loadTopicCatalog({ request, topicId, current, validate, onFirstPage, pageSize = PAGE_SIZE, maxEntries = MAX_CATALOG_ENTRIES }) {
+export async function loadTopicCatalog({ request, topicId, current, validate, onFirstPage, onPage, pageSize = PAGE_SIZE, maxEntries = MAX_CATALOG_ENTRIES }) {
   const notes = [];
   const identities = new Set();
   const paths = new Set();
@@ -35,7 +35,9 @@ export async function loadTopicCatalog({ request, topicId, current, validate, on
       if (identities.has(identity) || paths.has(note.path)) throw new Error('The exact Note catalogue is unavailable.');
       identities.add(identity); paths.add(note.path); notes.push(note);
     }
-    if (offset === 0) onFirstPage?.({ notes: [...notes], total, cursor, complete: !page.hasMore });
+    const observed = { notes: [...notes], offset, pageNotes: [...page.notes], total, cursor, complete: !page.hasMore };
+    onPage?.(observed);
+    if (offset === 0) onFirstPage?.(observed);
     if (!page.hasMore) {
       if (offset + page.notes.length !== total || notes.length !== total) throw new Error('The exact Note catalogue is unavailable.');
       return { notes, total, cursor };

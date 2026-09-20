@@ -411,10 +411,10 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     }
     return values.sort((left, right) => left.title.localeCompare(right.title) || left.historyId.localeCompare(right.historyId));
   }
-  async function loadCatalog(pending, onFirstPage) {
+  async function loadCatalog(pending, onFirstPage, onPage) {
     return loadTopicCatalog({
       request: (method, params) => host.request(method, params), topicId,
-      current: () => currentCatalog(pending), validate: validateCatalogNote, onFirstPage
+      current: () => currentCatalog(pending), validate: validateCatalogNote, onFirstPage, onPage
     });
   }
   function presentCatalogPage(offset = 0) {
@@ -616,6 +616,14 @@ export function mountTopicPage(container, context, state = createNativeState(), 
         catalogTotal = firstPage.total;
         presentCatalogPage(0);
         status.textContent = firstPage.complete ? '' : 'Loading remaining Topic files…';
+      }, page => {
+        if (!currentCatalog(pending) || page.offset === 0) return;
+        catalogAllNotes = page.notes;
+        if (pendingCatalogOffset !== null && pendingCatalogOffset < catalogAllNotes.length) {
+          const requestedOffset = pendingCatalogOffset;
+          pendingCatalogOffset = null;
+          presentCatalogPage(requestedOffset);
+        }
       });
       if (!currentCatalog(pending)) return;
       if (!catalog) return;
@@ -623,7 +631,8 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       catalogTotal = catalog.total;
       const requestedOffset = pendingCatalogOffset;
       pendingCatalogOffset = null;
-      presentCatalogPage(Number.isSafeInteger(requestedOffset) && requestedOffset >= 0 && requestedOffset < catalogTotal ? requestedOffset : 0);
+      const retainedOffset = Number.isSafeInteger(requestedOffset) ? requestedOffset : catalogOffset;
+      presentCatalogPage(retainedOffset >= 0 && retainedOffset < catalogTotal ? retainedOffset : 0);
       // The folder tree begins collapsed. Direct selection and filtering may
       // temporarily reveal only the ancestors needed for that exact result.
       status.textContent = catalogTotal ? '' : 'No Notes or filed attachments in this Topic.';
