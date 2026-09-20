@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
-import { FIRST_LIVE_FEATURES } from '../src/release-scope.mjs';
+import { FIRST_LIVE_COMMANDS, FIRST_LIVE_FEATURES } from '../src/release-scope.mjs';
 import { READ_METHODS, WRITE_METHODS } from '../src/bridge/contracts.mjs';
 import { registerBridgeMethods } from '../src/bridge/register.mjs';
 import { Readable } from 'node:stream';
@@ -56,9 +56,9 @@ test('first-live registration needs no notification authority and preserves core
   assert.ok(!h.tools.includes('command_center_topic_analysis'));
 });
 
-test('registered deferred bridge commands are refused before a service or optional binding is acquired', async () => {
+test('registered commands outside the build-owned admission set are refused before a service or optional binding is acquired', async () => {
   const h = host(); plugin.register(h.api);
-  const retained = new Set(['sources.status', 'migration.status', 'migration.review-failures', 'topics.list', 'topics.get', 'topics.recovery.status', 'topics.recovery.verify', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.topic-context', 'sessions.group-preview', 'sessions.group', 'sessions.assign-topic', 'sessions.create', 'histories.list', 'histories.read', 'histories.attachment-read', 'reminders.list', 'reminders.create', 'reminders.snooze', 'reminders.complete', 'schedules.list', 'schedules.get', 'schedules.create', 'schedules.update', 'schedules.set-enabled', 'schedules.run', 'attention.list', 'attention.get', 'attention.act', 'activity.list', 'activity.get', 'dashboard.get'].map(name => `command-center.v1.${name}`));
+  const retained = new Set(FIRST_LIVE_COMMANDS.bridge);
   for (const method of [...READ_METHODS, ...WRITE_METHODS].filter(name => !retained.has(name))) {
     let response;
     await h.methods.get(method)({ req: { id: 'fixture-request' }, params: {}, context: { authenticated: true },
@@ -133,12 +133,13 @@ test('Dashboard transport identity stays outside the closed read projection', as
   assert.equal(response.result.requestId, 'fictional-dashboard-transport');
 });
 
-test('Reminder mutations return their native result without acquiring deferred notification authority', async () => {
+test('Reminder and Attention mutations return their native result without acquiring deferred notification authority', async () => {
   const methods = new Map();
   let notificationAcquisitions = 0;
   const owner = {
     remindersSnooze: async input => ({ schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, value: { job: { id: 'fictional-job', enabled: true, configRevision: 'revision-2' } } }),
     remindersComplete: async input => ({ schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, value: { job: { id: 'fictional-job', enabled: false, configRevision: 'revision-3' } } }),
+    attentionAct: async input => ({ schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, episode: { episodeId: input.episodeId, state: 'Resolved' } }),
     notificationReconcile() { notificationAcquisitions += 1; throw new Error('Deferred notification owner was acquired.'); }
   };
   registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, owner);
@@ -151,7 +152,36 @@ test('Reminder mutations return their native result without acquiring deferred n
     await methods.get(method)({ req: { id: randomUUID() }, params, context: { authenticated: true }, respond: (ok, result, error) => { response = { ok, result, error }; } });
     assert.equal(response.ok, true, method);
   }
+  const attentionParams = { schemaVersion: 1, topicId: 'fictional-topic', sourceReferenceId: 'fictional-reference', sourceCapabilityId: 'reminders', stableSubjectId: 'fictional-job', episodeId: 'fictional-episode', expectedEpisodeRevision: 1, expectedSourceRevision: 'revision-1', actionId: 'reminder.complete', input: { expectedConfigRevision: 'revision-1' }, logicalOperationId: randomUUID() };
+  let attentionResponse;
+  await methods.get('command-center.v1.attention.act')({ req: { id: randomUUID() }, params: attentionParams, client: { authenticatedUserProfile: { profileId: 'fictional-operator' } }, context: { authenticated: true }, respond: (ok, result, error) => { attentionResponse = { ok, result, error }; } });
+  assert.equal(attentionResponse.ok, true, JSON.stringify(attentionResponse));
   assert.equal(notificationAcquisitions, 0);
+});
+
+test('first-live admission names the exact source-backed Attention surface', () => {
+  const admitted = FIRST_LIVE_COMMANDS.bridge.filter(method => method.startsWith('command-center.v1.open-loops.'));
+  assert.deepEqual(admitted, [
+    'command-center.v1.open-loops.list',
+    'command-center.v1.open-loops.get',
+    'command-center.v1.open-loops.capture',
+    'command-center.v1.open-loops.intake-selected',
+    'command-center.v1.open-loops.decide',
+    'command-center.v1.open-loops.payment-status',
+    'command-center.v1.open-loops.organize',
+    'command-center.v1.open-loops.renovation-requirement',
+    'command-center.v1.open-loops.renovation-purchase',
+    'command-center.v1.open-loops.renovation-purchase-correction',
+    'command-center.v1.open-loops.renovation-replacement',
+    'command-center.v1.open-loops.renovation-fulfilment',
+    'command-center.v1.open-loops.renovation-stage',
+    'command-center.v1.open-loops.renovation-stage-prerequisites',
+    'command-center.v1.open-loops.renovation-decision-conflict',
+    'command-center.v1.open-loops.renovation-decision-revise'
+  ]);
+  assert.equal(FIRST_LIVE_FEATURES.notifications, false);
+  assert.equal(FIRST_LIVE_FEATURES.analysis, false);
+  assert.equal(FIRST_LIVE_FEATURES.noteMaintenance, false);
 });
 
 test('deferred HTTP actions are non-retryable and cannot reach services before startup', async () => {
@@ -169,12 +199,12 @@ test('deferred HTTP actions are non-retryable and cannot reach services before s
   }
 });
 
-test('the reader MVP manifest keeps filing and maintenance tools/triggers unavailable', async () => {
+test('the milestone manifest admits scoped capture and capacity review while keeping filing/maintenance triggers unavailable', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
-  assert.deepEqual(manifest.contracts.tools, []);
+  assert.deepEqual(manifest.contracts.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
   assert.deepEqual(manifest.contracts.workspaceSessionTurnScheduling, []);
   const h = host(); plugin.register(h.api);
-  assert.deepEqual(h.tools, []);
+  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
   assert.equal(h.agentEventSubscriptions.length, 0);
   for (const suffix of ['', '/app.js', '/styles.css', '/markdown.js']) {
     const route = h.routes.find(value => value.path === `/plugins/command-center${suffix}`);
@@ -187,18 +217,23 @@ test('the reader MVP manifest keeps filing and maintenance tools/triggers unavai
   }
 });
 
+test('installed plugin forwards the admitted capacity organization owner', async () => {
+  const source = await readFile(new URL('../src/plugin.mjs', import.meta.url), 'utf8');
+  assert.match(source, /property === 'openLoopsOrganize'.*service\.openLoopsOrganize/u);
+});
+
 test('the reader MVP leaves the flat host maintenance subscription unavailable', () => {
   const h = host({ flatAgentEvents: true });
   plugin.register(h.api);
   assert.equal(h.agentEventSubscriptions.length, 0);
 });
 
-test('Batch 8 host workflow primitives do not activate deferred maintenance or analysis products', () => {
+test('host workflow primitives admit capture and configured review without activating maintenance or analysis products', () => {
   const h = host({ nativeWorkflow: true });
   plugin.register(h.api);
   assert.equal(FIRST_LIVE_FEATURES.noteMaintenance, false);
   assert.equal(FIRST_LIVE_FEATURES.analysis, false);
-  assert.deepEqual(h.tools, []);
+  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
   assert.equal(h.agentEventSubscriptions.length, 0);
 });
 

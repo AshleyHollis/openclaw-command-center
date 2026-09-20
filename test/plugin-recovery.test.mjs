@@ -34,10 +34,10 @@ test('recovery-only startup preserves refused storage and serves safe status wit
     assert.equal((await invoke('command-center.v1.sources.status', { schemaVersion: 1 }))[1].result.mode, 'recovery-only');
     const dashboard = await invoke('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 50 });
     assert.equal(dashboard[0], false, JSON.stringify(dashboard));
-    assert.equal(dashboard[2].code, 'feature-unavailable');
+    assert.equal(dashboard[2].code, 'recovery-only');
     const blocked = await invoke('command-center.v1.attention.act', { schemaVersion: 1, logicalOperationId: '11111111-1111-4111-8111-111111111111', episodeId: 'fictional-episode', expectedEpisodeRevision: 1, expectedSourceRevision: '1', topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', actionId: 'reminder.complete', input: { expectedConfigRevision: '1' } });
     assert.equal(blocked[0], false);
-    assert.equal(blocked[2].code, 'feature-unavailable');
+    assert.equal(blocked[2].code, 'recovery-only');
     for (const operation of [() => service.topicService.create({}), () => service.sourceService.notesCreate({}), () => service.dashboardUpdateSettings({}), () => service.topicAnalysisRun({})]) assert.throws(operation, (error) => error.code === 'recovery-only');
     await assert.rejects(service.searchRebuild({}), (error) => error.code === 'recovery-only');
     assert.equal(gatewayCalls, 0);

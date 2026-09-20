@@ -32,6 +32,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   let renderGeneration = 0;
   const documentUrls = new Set();
   let preview;
+  let handledSourceRequest;
   const drafts = state.drafts;
   const views = state.readerViews ??= new Map();
   let viewState;
@@ -47,6 +48,13 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     request: (method, params) => host.request(method, params), sessions: host.sessions });
   const document = container.ownerDocument;
   const element = (tag, text) => { const node = document.createElement(tag); if (text) node.textContent = text; if (tag === 'button') node.className = 'btn btn--sm'; return node; };
+  const sourceRequest = props => {
+    if (props?.sourceReferenceId === undefined && props?.sourcePath === undefined && props?.evidenceSourceVersion === undefined) return null;
+    const values = [props?.sourceReferenceId, props?.sourcePath, props?.evidenceSourceVersion];
+    if (values.some(value => typeof value !== 'string' || !value.trim()) || props.sourceReferenceId.length > 500 || props.sourcePath.length > 1000 || props.evidenceSourceVersion.length > 500) return Object.freeze({ invalid: true });
+    return Object.freeze({ referenceId: props.sourceReferenceId, path: props.sourcePath, evidenceSourceVersion: props.evidenceSourceVersion });
+  };
+  const sourceRequestKey = props => JSON.stringify([props?.sourceReferenceId ?? null, props?.sourcePath ?? null, props?.evidenceSourceVersion ?? null]);
   const heading = element('h1', 'Topic');
   const status = element('p'); status.setAttribute('role', 'status');
   const announcement = element('p'); announcement.className = 'reader-announcement'; announcement.setAttribute('role', 'status');
@@ -546,8 +554,9 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       chat.disabled = topic.usable !== true || topic.lifecycle !== 'active';
       if (!panel) creation = createNativeCreationForm({ host, state, document, signal, presented: () => presented, getTopic: () => topic,
         beginNavigation: () => { reading.abort(); navigation.cancel(); const selection = ++generation; return () => current(selection); },
+        captureNavigation: () => { const selection = generation; return () => current(selection); },
         onCreated: async (result, input) => {
-          const selection = generation;
+          reading.abort(); navigation.cancel(); const selection = ++generation;
           const response = await host.request('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: input.topicId, includeClosed: false });
           if (!current(selection)) return;
           const catalog = response?.result ?? response;
@@ -593,6 +602,27 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       // The folder tree begins collapsed. Direct selection and filtering may
       // temporarily reveal only the ancestors needed for that exact result.
       status.textContent = catalogTotal ? '' : 'No Notes or filed attachments in this Topic.';
+      const requested = sourceRequest(activeContext.props);
+      const requestedKey = sourceRequestKey(activeContext.props);
+      if (requested && requestedKey !== handledSourceRequest) {
+        handledSourceRequest = requestedKey;
+        if (requested.invalid) {
+          status.textContent = 'The requested evidence source is invalid. Select a file from the authorized catalog.';
+          return;
+        }
+        const matches = catalogAllNotes.filter(note => sourceKindFor(note) === 'document' && note.path === requested.path && note.sourceReference?.referenceId === requested.referenceId);
+        if (matches.length !== 1) {
+          status.textContent = 'The exact evidence source is no longer available in this Topic. Select the current original from Files if appropriate.';
+          return;
+        }
+        if (matches[0].revision !== requested.evidenceSourceVersion) {
+          viewState.selected = undefined;
+          status.textContent = `The evidence used source version ${requested.evidenceSourceVersion}; the current original is ${matches[0].revision}. It was not opened as the earlier evidence.`;
+          return;
+        }
+        await openDocument(matches[0]);
+        return;
+      }
       const prior = viewState.selected;
       const restore = prior && catalogAllNotes.find(note => note.path === prior.path && note.sourceReference.referenceId === prior.referenceId);
       if (restore) {
@@ -710,8 +740,9 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   void load();
   return {
     update(next) {
+      const sourceChanged = sourceRequestKey(activeContext.props) !== sourceRequestKey(next.props);
       activeContext = next;
-      if (topicId === next.props.topicId && presented === next.presented) return;
+      if (topicId === next.props.topicId && presented === next.presented && !sourceChanged) return;
       topicId = next.props.topicId; presented = next.presented; void load();
     },
     focus() {

@@ -1210,19 +1210,19 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       const authoritativeConversations = (authoritativeSessions?.result ?? authoritativeSessions)?.conversations ?? authoritativeSessions?.conversations ?? [];
       assert.ok(authoritativeConversations.some((item) => item.isPrimary) && authoritativeConversations.some((item) => item.displayName === journey.conversationName));
       if (kind === 'dashboard-payload') {
-        await prepareExactActivityFixture({ stateDir: path.join(scenarioWorld.root, '.openclaw'), gatewayUrl: scenarioWorld.gateway.url, topicId: journey.topicId });
+        await prepareExactActivityFixture({ stateDir: path.join(scenarioWorld.root, '.openclaw'), gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: journey.topicId });
         const referenceIds = [];
         for (let index = 0; index < 5; index += 1) {
           const created = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'command-center.v1.reminders.create', params: { schemaVersion: 1, topicId: journey.topicId, logicalOperationId: randomUUID(), declaration: { name: `Fictional mixed Dashboard Reminder ${index}`, enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000 - index).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional mixed Dashboard diagnostic' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } }, signal });
           referenceIds.push((created.result ?? created).value.sourceReference.referenceId);
         }
-        const dashboard = await readDashboard(scenarioWorld.gateway.url);
+        const dashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
         assert.equal(dashboard.activity.records.length, 50);
         for (const referenceId of referenceIds) assert.equal(dashboard.attention.filter((episode) => episode.sourceReferenceId === referenceId).length, 1);
         const responseBytes = Buffer.byteLength(JSON.stringify({ schemaVersion: 1, status: 'applied', result: dashboard }));
         assert.ok(responseBytes > 32_768, 'real-host mixed fixture must cross the former response limit');
         assert.equal(dashboard.activity.hasMore, true);
-        const second = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 50 });
+        const second = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential, activityOffset: 50 });
         assert.equal(second.activity.records.length, 50);
         assert.equal(new Set([...dashboard.activity.records, ...second.activity.records].map((row) => row.activityId)).size, 100);
         return Object.freeze({ kind, assertionsCompleted: true, responseBytes, activityPageCount: 50, dueReminders: referenceIds.length });
@@ -1232,7 +1232,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const created = await rpc('command-center.v1.reminders.create', { schemaVersion: 1, topicId: journey.topicId, logicalOperationId: randomUUID(), declaration: { name: 'Fictional lifecycle diagnostic Reminder', enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional lifecycle diagnostic' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } });
         const value = (created.result ?? created).value;
         assert.ok(value?.job?.id && value?.sourceReference?.referenceId);
-        const before = await readDashboard(scenarioWorld.gateway.url);
+        const before = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
         const exact = (episode) => episode.sourceReferenceId === value.sourceReference.referenceId;
         assert.equal(before.attention.filter(exact).length, 1, 'fresh due Reminder must first be actionable');
         await rpc('cron.run', { id: value.job.id, mode: 'force' });
@@ -1247,10 +1247,10 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           }, scenarioHost.earlyExit, { required: 1, deadlineMs: 15_000, delayMs: 100, signal });
         } catch (error) { throw new Error(`Reminder runtime did not settle: ${JSON.stringify(observed)}`, { cause: error }); }
         finally { scheduler.close(); }
-        const afterRun = await readDashboard(scenarioWorld.gateway.url);
+        const afterRun = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
         assert.equal(afterRun.attention.filter(exact).length, 1, `Untouched Reminder disappeared after native execution: ${JSON.stringify(observed)}`);
         ({ frame } = await runUiJourney(frame, { page, width, name: 'Fictional Reminder Lifecycle Second Topic', category: 'area', keyboard: true }));
-        const after = await readDashboard(scenarioWorld.gateway.url);
+        const after = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
         const readback = new DatabaseSync(path.join(scenarioWorld.root, '.openclaw', 'state', 'openclaw.sqlite'), { readOnly: true });
         let afterJourney;
         try {
@@ -1283,10 +1283,10 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.equal(freshScaleAuthoritativeCount, RELEASE_FIXTURE_COUNTS.conversations);
         const largeNote = await exerciseLargeNoteFixture(frame, { gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: scaleTopicId });
 
-        await prepareExactActivityFixture({ stateDir: path.join(scenarioWorld.root, '.openclaw'), gatewayUrl: scenarioWorld.gateway.url, topicId: 'fictional-fresh-scale-activity' });
-        const firstActivity = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 0, activityLimit: 50 });
-        const secondActivity = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 50, activityLimit: 50 });
-        const thirdActivity = await readDashboard(scenarioWorld.gateway.url, { activityOffset: 100, activityLimit: 50 });
+        await prepareExactActivityFixture({ stateDir: path.join(scenarioWorld.root, '.openclaw'), gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: 'fictional-fresh-scale-activity' });
+        const firstActivity = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential, activityOffset: 0, activityLimit: 50 });
+        const secondActivity = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential, activityOffset: 50, activityLimit: 50 });
+        const thirdActivity = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential, activityOffset: 100, activityLimit: 50 });
         assert.deepEqual([firstActivity.activity.records.length, secondActivity.activity.records.length, thirdActivity.activity.records.length], [50, 50, 1]);
         assert.equal(new Set([...firstActivity.activity.records, ...secondActivity.activity.records, ...thirdActivity.activity.records].map((record) => record.activityId)).size, RELEASE_FIXTURE_COUNTS.activityRecords);
 
@@ -1325,13 +1325,13 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       } else if (kind === 'scale-analysis') {
         await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], method: 'command-center.v1.reminders.create', params: { schemaVersion: 1, topicId: journey.topicId, logicalOperationId: randomUUID(), declaration: { name: 'Fictional fresh scale analysis reminder', enabled: true, deleteAfterRun: false, schedule: { kind: 'at', at: new Date(Date.now() - 30_000).toISOString() }, payload: { kind: 'systemEvent', text: 'Fictional fresh scale analysis reminder' }, sessionTarget: 'main', wakeMode: 'next-heartbeat' } } });
         await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: journey.topicId, input: {}, logicalOperationId: randomUUID() } });
-        let cards = (await readDashboard(scenarioWorld.gateway.url, { activityOffset: 0, activityLimit: 50 })).attention;
+        let cards = (await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential, activityOffset: 0, activityLimit: 50 })).attention;
         if (!cards.some((card) => card.sourceCapabilityId === 'topic-review')) {
           const topicResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: journey.topicId } });
           const topic = (topicResponse?.result ?? topicResponse)?.topic;
           await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.rename', params: { schemaVersion: 1, topicId: journey.topicId, name: 'Area: Fictional Fresh Scale Analysis Topic Revised', expectedRevision: topic.revision, logicalOperationId: randomUUID() } });
           await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: journey.topicId, input: {}, logicalOperationId: randomUUID() } });
-          cards = (await readDashboard(scenarioWorld.gateway.url, { activityOffset: 0, activityLimit: 50 })).attention;
+          cards = (await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential, activityOffset: 0, activityLimit: 50 })).attention;
         }
         assert.equal(cards.filter((card) => card.sourceCapabilityId === 'reminders').length, 1);
         assert.equal(cards.filter((card) => card.sourceCapabilityId === 'topic-review').length, 1);
@@ -1502,8 +1502,9 @@ function reminderActionRequest(episode) {
   };
 }
 
-async function readDashboard(gatewayUrl, { activityOffset = 0, activityLimit = 50 } = {}) {
-  const response = await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/dashboard?activityOffset=${activityOffset}&activityLimit=${activityLimit}`, { headers: { accept: 'application/json' } }, 'dashboard read');
+async function readDashboard(gatewayUrl, { credential, activityOffset = 0, activityLimit = 50 } = {}) {
+  if (typeof credential !== 'string' || credential.length === 0) throw new Error('dashboard read requires an explicit isolated-host credential');
+  const response = await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/dashboard?activityOffset=${activityOffset}&activityLimit=${activityLimit}`, { headers: { accept: 'application/json', authorization: `Bearer ${credential}` } }, 'dashboard read');
   assert.equal(response.status, 200);
   return (await response.json()).result;
 }
@@ -1538,11 +1539,11 @@ function readMigrationProgress(stateDir) {
   finally { db?.close(); }
 }
 
-async function prepareExactActivityFixture({ stateDir, gatewayUrl, topicId }) {
+async function prepareExactActivityFixture({ stateDir, gatewayUrl, credential, topicId }) {
   const readIds = async () => {
     const ids = [];
     for (let offset = 0; offset <= RELEASE_FIXTURE_COUNTS.activityRecords; offset += 50) {
-      const page = (await readDashboard(gatewayUrl, { activityOffset: offset, activityLimit: 50 })).activity;
+      const page = (await readDashboard(gatewayUrl, { credential, activityOffset: offset, activityLimit: 50 })).activity;
       ids.push(...page.records.map((record) => record.activityId));
       assert.ok(ids.length <= RELEASE_FIXTURE_COUNTS.activityRecords, 'genuine Activity exceeds the exact release fixture; never delete or hide it');
       if (!page.hasMore) return ids;
@@ -2160,7 +2161,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const releaseLane = await acquireIsolatedLane();
     reportProgress(testContext, `isolated:${id}:started`);
     try {
-      const evidence = await runBoundedAcceptanceSlice(id, run, { timeoutMs: 240_000, cleanupTimeoutMs: 15_000 });
+      const timeoutMs = id === 'destructive-migration-restoration' ? 284_000 : 240_000;
+      const evidence = await runBoundedAcceptanceSlice(id, run, { timeoutMs, cleanupTimeoutMs: 15_000 });
       isolatedEvidence.set(id, evidence);
       reportProgress(testContext, `isolated:${id}:passed`);
     } catch (error) {
@@ -2858,7 +2860,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         signal,
         deviceIdentity
       });
-      const dashboard = await readDashboard(gatewayUrl);
+      const dashboard = await readDashboard(gatewayUrl, { credential: world.gatewayCredential });
       const reminder = dashboard.attention.find((episode) => episode.sourceCapabilityId === 'reminders' && episode.actions.some((action) => action.actionId === 'reminder.complete'));
       assert.ok(reminder?.episodeId && reminder?.sourceReferenceId);
       await page.close();
@@ -2879,7 +2881,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: RELEASE_ALPHA_TOPIC_ID, input: {}, logicalOperationId: randomUUID() }, signal });
       const analysisResponse = await fetchWithDeadline(`${gatewayUrl}/plugins/command-center/api/topic-analysis`, {}, 'focused Topic Review readback');
       const analysis = await analysisResponse.json();
-      const dashboard = await readDashboard(gatewayUrl);
+      const dashboard = await readDashboard(gatewayUrl, { credential: world.gatewayCredential });
       const cards = dashboard.attention.filter((episode) => episode.sourceCapabilityId === 'topic-review');
       if (cards.length !== 1) throw new Error(`Focused Topic Review projection mismatch: ${JSON.stringify({ analysisStatus: analysisResponse.status, reviewState: analysis.review?.state, proposalCount: analysis.review?.proposals?.length ?? null, runOutcomes: analysis.runs?.slice(-2).map((run) => ({ outcome: run.outcome, proposalCount: run.proposalCount, baseline: run.baseline, error: run.error })) ?? [], dashboardSources: dashboard.attention.map((episode) => episode.sourceCapabilityId) })}`);
       return { projected: true, proposalCount: analysis.review.proposals.length, cardCount: cards.length };
@@ -3209,13 +3211,13 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         });
       }
       await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: scaleJourney.topicId, input: {}, logicalOperationId: randomUUID() } });
-      let seededDashboard = await readDashboard(gatewayUrl);
+      let seededDashboard = await readDashboard(gatewayUrl, { credential: world.gatewayCredential });
       if (!seededDashboard.attention.some((episode) => episode.sourceCapabilityId === 'topic-review')) {
         const topicResponse = await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, method: 'command-center.v1.topics.get', params: { schemaVersion: 1, topicId: scaleJourney.topicId } });
         const topic = (topicResponse?.result ?? topicResponse)?.topic;
         await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.rename', params: { schemaVersion: 1, topicId: scaleJourney.topicId, name: 'Area: Fictional Scale Journey Topic Revised', expectedRevision: topic.revision, logicalOperationId: randomUUID() } });
         await requestAuthenticatedGateway({ gatewayUrl, credential: world.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.analysis.run', params: { schemaVersion: 1, topicId: scaleJourney.topicId, input: {}, logicalOperationId: randomUUID() } });
-        seededDashboard = await readDashboard(gatewayUrl);
+        seededDashboard = await readDashboard(gatewayUrl, { credential: world.gatewayCredential });
       }
       const seededReminders = seededDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'reminders' && episode.actions.some((action) => action.actionId === 'reminder.complete'));
       const seededTopicReviews = seededDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'topic-review');
@@ -3226,7 +3228,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       evidence.globalTabClosed = true;
       const closedTabEmission = await waitForNotificationEmission(databasePath, { status: 'sent' });
       evidence.closedTabNotificationStatus = closedTabEmission.status;
-      const closedDashboard = await readDashboard(gatewayUrl);
+      const closedDashboard = await readDashboard(gatewayUrl, { credential: world.gatewayCredential });
       const closedEpisode = closedDashboard.attention.find((episode) => episode.sourceCapabilityId === 'reminders' && episode.actions.some((action) => action.actionId === 'reminder.complete'));
       assert.ok(closedEpisode?.episodeId && closedEpisode?.sourceReferenceId);
       await completeReminder(gatewayUrl, closedEpisode, { credential: world.gatewayCredential, signal, deviceIdentity: notificationDeviceIdentity });
@@ -3330,7 +3332,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await snoozeTopicReview(frame, page);
       evidence.performanceMeasurements = { desktop: { ...scaleJourney.measurement, sourceActionMs: Date.now() - actionStarted } };
       assert.ok(await frame.locator('#in-progress').count() === 1);
-      await prepareExactActivityFixture({ stateDir: resolvedStateDir, gatewayUrl, topicId: RELEASE_ACTIVITY_TOPIC_ID });
+      await prepareExactActivityFixture({ stateDir: resolvedStateDir, gatewayUrl, credential: world.gatewayCredential, topicId: RELEASE_ACTIVITY_TOPIC_ID });
       pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.reload({ waitUntil: 'domcontentloaded' });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
@@ -3338,15 +3340,15 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       const activityStarted = Date.now();
       const loadMoreActivity = frame.locator('#activity-load-more');
       await loadMoreActivity.waitFor({ state: 'visible' });
-      const firstActivityPage = await readDashboard(gatewayUrl, { activityOffset: 0, activityLimit: 50 });
+      const firstActivityPage = await readDashboard(gatewayUrl, { credential: world.gatewayCredential, activityOffset: 0, activityLimit: 50 });
       const firstActivityIds = firstActivityPage.activity.records.map((record) => record.activityId);
       await activate(loadMoreActivity, true);
       await frame.waitForFunction(() => document.querySelectorAll('#activity .activity-row').length >= 100, undefined, { timeout: 10_000 });
-      const secondActivityPage = await readDashboard(gatewayUrl, { activityOffset: 50, activityLimit: 50 });
+      const secondActivityPage = await readDashboard(gatewayUrl, { credential: world.gatewayCredential, activityOffset: 50, activityLimit: 50 });
       const secondActivityIds = secondActivityPage.activity.records.map((record) => record.activityId);
       await activate(loadMoreActivity, true);
       await frame.waitForFunction(() => document.querySelectorAll('#activity .activity-row').length >= 101, undefined, { timeout: 10_000 });
-      const thirdActivityPage = await readDashboard(gatewayUrl, { activityOffset: 100, activityLimit: 50 });
+      const thirdActivityPage = await readDashboard(gatewayUrl, { credential: world.gatewayCredential, activityOffset: 100, activityLimit: 50 });
       const thirdActivityIds = thirdActivityPage.activity.records.map((record) => record.activityId);
       assert.deepEqual([firstActivityIds.length, secondActivityIds.length, thirdActivityIds.length], [50, 50, 1]);
       realizedActivityRecords = firstActivityIds.length + secondActivityIds.length + thirdActivityIds.length;
@@ -3399,7 +3401,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       await page.reload({ waitUntil: 'domcontentloaded' });
       ({ iframe, frame } = await mountedPluginFrame(page, await pluginDocument, evidence));
       await waitForDashboard(frame);
-      const mobileDashboard = await readDashboard(gatewayUrl);
+      const mobileDashboard = await readDashboard(gatewayUrl, { credential: world.gatewayCredential });
       const mobileAuditEpisodes = mobileDashboard.attention.filter((episode) => episode.sourceCapabilityId === 'reminders' && episode.topicId === keyboardJourney.topicId && episode.sourceReferenceId === mobileAuditReminderReferenceId);
       assert.equal(mobileAuditEpisodes.length, 1, 'final keyboard audit owns a separate live Reminder, not a previously completed/snoozed card');
       const mobileAuditEpisodeId = mobileAuditEpisodes[0].episodeId;

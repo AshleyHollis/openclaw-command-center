@@ -8,13 +8,18 @@ test('the built first-live plugin can register without optional services or miss
   const receipt = await build();
   const { default: plugin } = await import(pathToFileURL(path.join(distRoot, 'plugin.mjs')).href);
   let services = 0;
+  const tools = [];
   plugin.register({ pluginConfig: {},
     get notifications() { assert.fail('The built plugin must not acquire optional notification authority.'); },
     registerGatewayMethod() {}, registerHttpRoute() {},
-    registerTool() { assert.fail('Deferred filing and maintenance tools must not register in the reader MVP.'); },
+    registerTool(tool, options) {
+      tools.push(options?.name);
+      assert.equal(typeof tool, 'function');
+    },
     registerService() { services += 1; }
   });
   assert.equal(services, 1);
+  assert.deepEqual(tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
   assert.ok(receipt.files.some(file => file.path === 'native-ui/entry.mjs'));
   for (const path of ['native-ui/note-render.mjs', 'native-ui/vendor/markdown-it.mjs', 'native-ui/vendor/purify.es.mjs', 'native-ui/vendor/markdown-it-LICENSE.txt', 'native-ui/vendor/dompurify-LICENSE.txt']) {
     assert.ok(receipt.files.some(file => file.path === path), `sealed native asset is missing: ${path}`);

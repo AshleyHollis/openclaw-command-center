@@ -43,3 +43,85 @@ test('a full Activity page remains readable alongside multiple due Reminders', a
     assert.equal(response.body.result.activity.hasMore, true);
   } finally { attention.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
+
+test('Dashboard keeps future bills quiet and highlights current reply requests with bounded evidence', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-dashboard-open-loops-'));
+  const metadata = openCommandCenterMetadataService({ stateDir });
+  const now = '2026-09-20T01:00:00.000Z';
+  try {
+    metadata.ingestIncomingMessage({
+      schemaVersion: 1,
+      logicalOperationId: 'dashboard-fictional-bill',
+      message: {
+        schemaVersion: 1,
+        channel: 'email',
+        source: { system: 'fictional-mail', externalId: 'bill-message', version: 'v1' },
+        occurredAt: now,
+        observedAt: now,
+        historicalBaseline: false,
+        disposition: 'confirmed-obligation',
+        requestKind: 'payment',
+        explicitRequest: true,
+        summary: 'A fictional renovation progress invoice is ready.',
+        payee: 'Example Renovations',
+        purpose: 'kitchen progress invoice',
+        amount: 245000,
+        currency: 'AUD',
+        dueAt: '2026-10-04T13:59:59.000Z',
+        invoiceId: 'RENOVATION-FICTIONAL-3',
+        attachmentIds: ['fictional-invoice-pdf'],
+        evidenceSelectors: ['subject', 'attachment:1:invoice-number']
+      }
+    });
+    metadata.ingestIncomingMessage({
+      schemaVersion: 1,
+      logicalOperationId: 'dashboard-fictional-reply',
+      message: {
+        schemaVersion: 1,
+        channel: 'sms',
+        source: { system: 'fictional-sms', externalId: 'reply-message', version: 'v1' },
+        occurredAt: now,
+        observedAt: now,
+        historicalBaseline: false,
+        disposition: 'explicit-request',
+        requestKind: 'reply',
+        explicitRequest: true,
+        summary: 'Confirm the fictional cabinet delivery access window.',
+        conversationId: 'fictional-renovation-conversation',
+        evidenceSelectors: ['body:request']
+      }
+    });
+    const result = await createDashboardService({ metadata, now: () => now }).get({ schemaVersion: 1 });
+    assert.equal(result.openLoops.total, 2);
+    assert.equal(result.openLoops.attentionTotal, 1);
+    assert.equal(result.openLoops.comingUpTotal, 1);
+    assert.equal(result.attentionBadgeCount, 1);
+    assert.deepEqual(result.openLoops.highlighted.map(item => item.title), ['Confirm the fictional cabinet delivery access window.']);
+    assert.deepEqual(result.openLoops.highlighted[0].actions, ['Open original', 'Draft reply', 'Remind me']);
+    assert.equal(result.openLoops.comingUp[0].paymentState, 'unpaid');
+    assert.equal(result.openLoops.comingUp[0].amount, 245000);
+    assert.equal(result.openLoops.comingUp[0].evidenceCount, 1);
+    assert.equal(JSON.stringify(result.openLoops).includes('fictional-invoice-pdf'), false);
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('Dashboard groups blockers only for an explicitly active renovation stage and removes their quiet duplicates', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-dashboard-stage-'));
+  const metadata = openCommandCenterMetadataService({ stateDir });
+  const now = '2026-09-20T01:00:00.000Z';
+  const stage = { kind: 'renovation-stage', namespace: 'fictional-home-project', id: 'cabinet-installation' };
+  const source = (externalId) => ({ system: 'fictional-renovation-source', kind: 'operator-evidence', externalId, version: 'v1' });
+  try {
+    metadata.recordRenovationRequirement({ schemaVersion: 1, logicalOperationId: 'dashboard-stage-prerequisite', expectedRevision: 0, actorId: 'fictional-operator', requirement: { schemaVersion: 1, source: source('clear-area'), requirement: { kind: 'prerequisite', namespace: 'fictional-home-project', id: 'clear-work-area' }, stage, occurredAt: now, observedAt: now, historicalBaseline: false, title: 'Clear the fictional cabinet work area' } });
+    let result = await createDashboardService({ metadata, now: () => now }).get({ schemaVersion: 1 });
+    assert.equal(result.openLoops.attentionTotal, 0);
+    assert.equal(result.openLoops.waitingTotal, 1);
+    assert.equal(result.openLoops.stageReviewTotal, 0);
+    metadata.recordRenovationStageActivation({ schemaVersion: 1, logicalOperationId: 'dashboard-activate-stage', expectedRevision: 0, actorId: 'fictional-operator', activation: { schemaVersion: 1, source: source('stage-state'), stage, active: true, occurredAt: now, observedAt: now } });
+    result = await createDashboardService({ metadata, now: () => now }).get({ schemaVersion: 1 });
+    assert.equal(result.openLoops.attentionTotal, 1);
+    assert.equal(result.openLoops.waitingTotal, 0);
+    assert.equal(result.openLoops.stageReviewTotal, 1);
+    assert.equal(result.openLoops.stageReviews[0].items[0].title, 'Clear the fictional cabinet work area');
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});

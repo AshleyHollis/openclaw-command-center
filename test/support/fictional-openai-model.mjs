@@ -141,6 +141,9 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     // writes a Note. Keep that distinction explicit in the test-only model;
     // production tool selection remains entirely host/model owned.
     const noNoteFixtureTurn = JSON.stringify(latestUserMessage(messages)?.content ?? '').includes('[fixture:no-note]');
+    const serializedMessages = JSON.stringify(messages);
+    const captureFixtureTurn = serializedMessages.includes('[fixture:capture-laundry]');
+    const vagueFixtureTurn = serializedMessages.includes('[fixture:capture-vague]');
     let frames;
     let action = 'final';
     if (completedCurrentTool) {
@@ -155,6 +158,11 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
       frames = textCompletion({ id, model, text: 'Fictional native Chat reply without a Note change.' });
     } else if (mediaRef && tools.has('command_center_file_topic_attachment')) {
       action = 'file'; frames = toolCall({ id, model, name: 'command_center_file_topic_attachment', arguments: { mediaRef } });
+    } else if ((captureFixtureTurn || vagueFixtureTurn) && tools.has('command_center_capture_commitment')) {
+      action = 'capture';
+      frames = toolCall({ id, model, name: 'command_center_capture_commitment', arguments: vagueFixtureTurn
+        ? { title: 'Maybe explore utility-room ideas', obligationId: 'utility-room-ideas', provenance: 'idea', confidence: 0.55 }
+        : { title: 'Research laundry storage', obligationId: 'laundry-storage-research', provenance: 'explicit', importance: 'normal', importanceOrigin: 'processing', effortMinutes: 30, contexts: ['home'] } });
     } else if (tools.has('command_center_update_working_note')) {
       action = 'maintain';
       frames = toolCall({ id, model, name: 'command_center_update_working_note', arguments: { path: 'Overview.md', text: '# Fictional Native Journey\n- Native working Note update from an isolated fictional model.\n' } });

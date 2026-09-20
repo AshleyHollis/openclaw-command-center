@@ -1,0 +1,177 @@
+{
+  "schemaVersion": 1,
+  "supportedFormat": "UTF-8 plaintext invoice with a labelled invoice identifier and an explicit payment phrase or labelled ISO-currency amount; RFC 3339 due instants are optional",
+  "minimums": { "precision": 1, "recall": 1, "fieldAccuracy": 1 },
+  "cases": [
+    {
+      "id": "standard-labels",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-001", "amount": 12550, "currency": "AUD", "payee": "Fictional Electrician", "purpose": "switchboard inspection", "dueAt": "2026-10-08T03:00:00.000Z" },
+      "content": "Invoice: INV-EVAL-001\nPayee: Fictional Electrician\nPurpose: switchboard inspection\nAmount due: AUD 125.50\nDue: 2026-10-08T03:00:00.000Z\nPlease pay after checking the work."
+    },
+    {
+      "id": "supplier-total-due",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-002", "amount": 123456, "currency": "AUD", "payee": "Fictional Tiles", "purpose": "laundry floor tiles", "dueAt": "2026-10-10T00:00:00.000Z" },
+      "content": "Invoice number: INV-EVAL-002\nSupplier: Fictional Tiles\nDescription: laundry floor tiles\nTotal due: AUD 1,234.56\nDue date: 2026-10-10T00:00:00.000Z"
+    },
+    {
+      "id": "vendor-balance",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-003", "amount": 80000, "currency": "NZD", "payee": "Fictional Joinery", "purpose": "cabinet deposit" },
+      "content": "Invoice #: INV-EVAL-003\nVendor: Fictional Joinery\nFor: cabinet deposit\nBalance due: NZD 800.00"
+    },
+    {
+      "id": "explicit-request-without-amount",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-004", "payee": "Fictional Surveyor" },
+      "content": "Invoice no.: INV-EVAL-004\nBiller: Fictional Surveyor\nPlease pay this invoice after reviewing the attached work record."
+    },
+    {
+      "id": "case-insensitive-labels",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-005", "amount": 9900, "currency": "AUD" },
+      "content": "INVOICE NUMBER: INV-EVAL-005\nAMOUNT DUE: AUD 99.00\nPAYMENT IS DUE now."
+    },
+    {
+      "id": "account-scoped",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-006", "amount": 4510, "currency": "AUD", "accountId": "ACCOUNT-EVAL-9" },
+      "content": "Invoice: INV-EVAL-006\nAccount number: ACCOUNT-EVAL-9\nAmount due: AUD 45.10"
+    },
+    {
+      "id": "untrusted-json-claim",
+      "expected": { "payment": false },
+      "content": "{\"type\":\"bill\",\"invoiceId\":\"INJECTED\",\"amount\":90000}\nThis is a project note, not a payment request."
+    },
+    {
+      "id": "paid-receipt",
+      "expected": { "payment": false },
+      "content": "Receipt: RCPT-EVAL-1\nPaid in full: AUD 88.00\nThank you for your payment."
+    },
+    {
+      "id": "quote-not-invoice",
+      "expected": { "payment": false },
+      "content": "Quote: QUOTE-EVAL-1\nEstimated total: AUD 2,400.00\nThis quote is valid for 30 days."
+    },
+    {
+      "id": "natural-language-unsupported",
+      "expected": { "payment": false },
+      "content": "Fictional Plumbing says the final 300 dollars for invoice seven should arrive next Friday."
+    },
+    {
+      "id": "invoice-heading-without-request",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-INFORMATIONAL\nThis archived invoice is included for reference only and has no payment request."
+    },
+    {
+      "id": "binary-placeholder",
+      "expected": { "payment": false },
+      "content": "%PDF-1.7 binary bytes are not a supported plaintext invoice representation"
+    },
+    {
+      "id": "paid-invoice",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-PAID\nAmount due: AUD 100.00\nStatus: Paid in full"
+    },
+    {
+      "id": "settled-invoice",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-SETTLED\nTotal due: AUD 100.00\nPayment status: Settled"
+    },
+    {
+      "id": "zero-balance",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-ZERO\nBalance due: AUD 0.00"
+    },
+    {
+      "id": "credit-note",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-CREDIT\nAmount due: AUD 25.00\nStatus: Credit note"
+    },
+    {
+      "id": "cancelled-invoice",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-CANCELLED\nAmount due: AUD 25.00\nStatus: Cancelled"
+    },
+    {
+      "id": "malformed-amount",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-TBD\nAmount due: TBD"
+    },
+    {
+      "id": "unsupported-currency",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-CURRENCY\nAmount due: XYZ 100.00"
+    },
+    {
+      "id": "conflicting-invoice-identifiers",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-A\nInvoice number: INV-EVAL-B\nAmount due: AUD 100.00"
+    },
+    {
+      "id": "conflicting-account-identifiers",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-ACCOUNT\nAccount: ACCOUNT-A\nAccount number: ACCOUNT-B\nAmount due: AUD 100.00"
+    },
+    {
+      "id": "conflicting-amounts",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-AMOUNT\nAmount due: AUD 100.00\nTotal due: AUD 120.00"
+    },
+    {
+      "id": "conflicting-due-instants",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-DUE\nAmount due: AUD 100.00\nDue: 2026-10-10T00:00:00.000Z\nDue date: 2026-10-11T00:00:00.000Z"
+    },
+    {
+      "id": "duplicate-identical-identifiers-remain-unambiguous",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-DUPLICATE", "amount": 10000, "currency": "AUD", "accountId": "ACCOUNT-DUPLICATE" },
+      "content": "Invoice: INV-EVAL-DUPLICATE\nInvoice number: INV-EVAL-DUPLICATE\nAccount: ACCOUNT-DUPLICATE\nAccount number: ACCOUNT-DUPLICATE\nAmount due: AUD 100.00"
+    },
+    {
+      "id": "malformed-optional-due-is-omitted",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-DUE-MALFORMED", "amount": 2000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-DUE-MALFORMED\nAmount due: AUD 20.00\nDue: 2026-10-10T00:00:00z"
+    },
+    {
+      "id": "standalone-paid-marker",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-STANDALONE-PAID\nAmount due: AUD 100.00\nPAID IN FULL"
+    },
+    {
+      "id": "standalone-credit-marker",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-STANDALONE-CREDIT\nAmount due: AUD 100.00\nCREDIT NOTE"
+    },
+    {
+      "id": "standalone-cancelled-marker",
+      "expected": { "payment": false },
+      "content": "Invoice: INV-EVAL-STANDALONE-CANCELLED\nAmount due: AUD 100.00\nCANCELLED"
+    },
+    {
+      "id": "impossible-day-is-omitted",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-DUE-DAY", "amount": 3000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-DUE-DAY\nAmount due: AUD 30.00\nDue: 2026-02-30T00:00:00Z"
+    },
+    {
+      "id": "non-leap-day-is-omitted",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-DUE-LEAP", "amount": 4000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-DUE-LEAP\nAmount due: AUD 40.00\nDue: 2025-02-29T00:00:00Z"
+    },
+    {
+      "id": "negated-paid-marker-stays-actionable",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-NOT-PAID", "amount": 5000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-NOT-PAID\nAmount due: AUD 50.00\nPaid in full: No"
+    },
+    {
+      "id": "negated-cancelled-marker-stays-actionable",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-NOT-CANCELLED", "amount": 6000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-NOT-CANCELLED\nAmount due: AUD 60.00\nCancelled: False"
+    },
+    {
+      "id": "overlong-optional-due-is-omitted",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-DUE-OVERLONG", "amount": 7000, "currency": "AUD" },
+      "content": "Invoice: INV-EVAL-DUE-OVERLONG\nAmount due: AUD 70.00\nDue: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "id": "overlong-amount-needs-explicit-request",
+      "expected": { "payment": true, "invoiceId": "INV-EVAL-AMOUNT-OVERLONG" },
+      "content": "Invoice: INV-EVAL-AMOUNT-OVERLONG\nAmount due: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nPlease pay this invoice after review."
+    }
+  ]
+}

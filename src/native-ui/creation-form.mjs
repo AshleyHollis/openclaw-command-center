@@ -64,7 +64,7 @@ export function createNativeNoteCreationForm({ host, state, document, signal, pr
 }
 
 /** Domain creation stays behind authenticated HTTP; only the host owns Chat. */
-export function createNativeCreationForm({ host, state, document, signal, presented, getTopic, onCreated, beginNavigation = () => () => true }) {
+export function createNativeCreationForm({ host, state, document, signal, presented, getTopic, onCreated, beginNavigation = () => () => true, captureNavigation = beginNavigation }) {
   const conversation = typeof getTopic === 'function';
   if (!conversation && !FIRST_LIVE_FEATURES.topicProvisioning) return unavailableCreation(document, 'New Topic creation is not available in this release.');
   if (conversation && !FIRST_LIVE_FEATURES.conversations) return unavailableCreation(document, 'Conversation creation is not available in this release.');
@@ -210,7 +210,7 @@ export function createNativeCreationForm({ host, state, document, signal, presen
     const operation = { input: Object.freeze(input), attempt }; operations.set(key, operation); recoveryError = ''; sync();
     if (restoreSubmitFocus) status.focus();
     const submissionSignal = AbortSignal.any([signal, writeAuthority.signal, ...(host.signal ? [host.signal] : [])]);
-    const navigationCurrent = beginNavigation();
+    const navigationCurrent = captureNavigation();
     const owns = () => state.active && operations.get(key) === operation && operation.attempt === attempt;
     const interrupted = () => {
       if (!owns()) return;

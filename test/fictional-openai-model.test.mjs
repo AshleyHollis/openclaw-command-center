@@ -78,3 +78,16 @@ test('fictional model finds the newest unconsumed native attachment before its n
     await model.close();
   }
 });
+
+test('fictional model exercises explicit and vague natural-language capture through the real tool contract', async () => {
+  const model = await startFictionalOpenAiModel();
+  try {
+    const capture = { type: 'function', function: { name: 'command_center_capture_commitment' } };
+    const explicit = await completion(model, [{ role: 'user', content: '[fixture:capture-laundry] Add researching laundry storage to my list.' }], [capture]);
+    assert.equal(model.requests.at(-1).action, 'capture');
+    assert.match(explicit, /command_center_capture_commitment/);
+    const vague = await completion(model, [{ role: 'user', content: '[fixture:capture-vague] Maybe utility-room storage could be interesting.' }], [capture]);
+    assert.equal(model.requests.at(-1).action, 'capture');
+    assert.match(vague, /provenance\\\":\\\"idea/);
+  } finally { await model.close(); }
+});

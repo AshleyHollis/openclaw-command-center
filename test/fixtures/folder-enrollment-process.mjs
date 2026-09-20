@@ -4,8 +4,11 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { createTopicService } from '../../src/topics/service.mjs';
+import { setHostDurableFolderStager } from '../../src/sources/note-folder-identity.mjs';
+import { createHostFileAccessFixture } from '../support/host-file-access-fixture.mjs';
 
 const [stateDir, role] = process.argv.slice(2);
+const releaseDurableFolderStager = setHostDurableFolderStager(createHostFileAccessFixture().stageDurableFileInDirectory);
 // Resolve the actual SDK before announcing ready; this does not replace its lock.
 await import('openclaw/plugin-sdk/sqlite-runtime');
 const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
@@ -56,4 +59,4 @@ try {
     : await topics.create({ topicId: `fictional-${role}`, name: 'Shared Folder', paraCategory: 'project', logicalOperationId: randomUUID() });
   process.send({ type: 'outcome', status: 'applied', result });
 } catch (error) { process.send({ type: 'outcome', status: 'error', code: error.code, message: error.message }); }
-finally { metadata.close(); process.disconnect(); }
+finally { releaseDurableFolderStager(); metadata.close(); process.disconnect(); }

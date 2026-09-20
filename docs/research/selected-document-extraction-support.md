@@ -1,0 +1,7 @@
+# Selected-document extraction support
+
+The bounded pilot supports UTF-8 plaintext invoices with a labelled invoice identifier and either an explicit payment phrase or a labelled amount using an ISO 4217 currency code. Supported identifier labels are `Invoice`, `Invoice number`, `Invoice no.`, and `Invoice #`. Supported amount labels are `Amount due`, `Total due`, and `Balance due`. Optional aliases cover account, supplier/payee, purpose/description, and an RFC 3339 due instant.
+
+The pilot does not claim PDF OCR, arbitrary prose extraction, attachment parsing, model-based interpretation, quote classification, or general invoice understanding. Unsupported, malformed, settled, zero-balance, or ambiguous documents remain evidence only and the UI explicitly reports that no supported obligation was recognized. A labelled amount is a payment signal only when it parses to a positive value with an ISO 4217 currency; otherwise an explicit payment phrase is required.
+
+The fictional evaluation corpus in `test/fixtures/selected-document-extraction-evaluation.json` contains fourteen positive layouts and twenty negative/adversarial documents. Every case and expected field must match its declaration; aggregate precision, recall, and expected-field accuracy must each equal 1.0. This is bounded local quality evidence for the declared plaintext format, not production evidence for mailboxes or arbitrary documents.

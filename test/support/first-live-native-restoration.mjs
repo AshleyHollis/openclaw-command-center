@@ -185,7 +185,12 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
   let failure;
   let result;
   try {
-    host = await withDeadline('native restoration host launch', launchSignal => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
+    // The schema-restoration fixture verifies the complete packaged host tree
+    // before launch. On the supported WSL evaluator that immutable verification
+    // can take slightly over two minutes from a cold filesystem cache, so keep
+    // this bounded within the owning 240-second slice without misclassifying
+    // pre-launch integrity work as a restoration failure.
+    host = await withDeadline('native restoration host launch', launchSignal => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 180_000, signal);
     removeAbortCleanup = stopHostOnAbort(signal, host);
     let catalog;
     await waitForConsecutiveReadiness(async () => {
@@ -282,6 +287,11 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).click({ timeout: 30_000 });
       const observed = await creationResponse;
       assert.equal(hasSuccessfulBrowserResponse(observed), true);
+      const creationUrl = new URL(observed.value.url());
+      assert.equal(creationUrl.origin, new URL(world.gateway.url).origin);
+      const creationHeaders = await observed.value.request().allHeaders();
+      assert.equal(observed.value.request().resourceType(), 'fetch');
+      assert.equal(creationHeaders['x-openclaw-control-ui-relay'], undefined, 'The native loader must not impersonate the retired opaque-frame relay');
       const requestHeaders = observed.value.request().headers();
       assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
       assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);

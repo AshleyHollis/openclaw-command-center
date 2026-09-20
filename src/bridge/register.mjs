@@ -16,7 +16,15 @@ const schedulerRuntimeMethods = new Set([
   'command-center.v1.schedules.set-enabled',
   'command-center.v1.schedules.run',
   'command-center.v1.attention.act',
-  'command-center.v1.dashboard.get'
+  'command-center.v1.dashboard.get',
+  'command-center.v1.open-loops.decide',
+  'command-center.v1.open-loops.payment-status',
+  'command-center.v1.open-loops.organize',
+  'command-center.v1.open-loops.renovation-requirement',
+  'command-center.v1.open-loops.renovation-purchase',
+  'command-center.v1.open-loops.renovation-purchase-correction',
+  'command-center.v1.open-loops.renovation-replacement',
+  'command-center.v1.open-loops.renovation-fulfilment'
 ]);
 
 function gatewayError(error, method) {
@@ -207,12 +215,28 @@ const handlerMap = Object.freeze({
   'command-center.v1.metadata.write': (service, params) => service.metadataWrite(params),
   'command-center.v1.analysis.read': (service, params) => service.analysisRead(params),
   'command-center.v1.analysis.run': (service, params) => service.analysisRun(params),
-  'command-center.v1.attention.act': async (service, params, runtime) => { const result = await service.attentionAct(params, runtime); await service.notificationReconcile?.(runtime); return result; },
+  'command-center.v1.attention.act': async (service, params, runtime) => { const result = await service.attentionAct(params, runtime); if (FIRST_LIVE_FEATURES.notifications) await service.notificationReconcile?.(runtime); return result; },
   'command-center.v1.attention.list': (service, params) => service.attentionList(params),
   'command-center.v1.attention.get': (service, params) => service.attentionGet(params),
   'command-center.v1.activity.list': (service, params) => service.activityList(params),
   'command-center.v1.activity.get': (service, params) => service.activityGet(params),
   'command-center.v1.dashboard.get': (service, params, runtime) => service.dashboardGet(params, runtime),
+  'command-center.v1.open-loops.list': (service, params) => service.openLoopsList(params),
+  'command-center.v1.open-loops.get': (service, params) => service.openLoopsGet(params),
+  'command-center.v1.open-loops.capture': (service, params) => service.openLoopsCapture(params),
+  'command-center.v1.open-loops.intake-selected': (service, params) => service.openLoopsIngestSelected(params),
+  'command-center.v1.open-loops.decide': (service, params, runtime) => service.openLoopsDecide(params, runtime),
+  'command-center.v1.open-loops.payment-status': (service, params, runtime) => service.openLoopsPaymentStatus(params, runtime),
+  'command-center.v1.open-loops.organize': (service, params, runtime) => service.openLoopsOrganize(params, runtime),
+  'command-center.v1.open-loops.renovation-requirement': (service, params, runtime) => service.openLoopsRenovationRequirement(params, runtime),
+  'command-center.v1.open-loops.renovation-purchase': (service, params, runtime) => service.openLoopsRenovationPurchase(params, runtime),
+  'command-center.v1.open-loops.renovation-purchase-correction': (service, params, runtime) => service.openLoopsRenovationPurchaseCorrection(params, runtime),
+  'command-center.v1.open-loops.renovation-replacement': (service, params, runtime) => service.openLoopsRenovationReplacement(params, runtime),
+  'command-center.v1.open-loops.renovation-fulfilment': (service, params, runtime) => service.openLoopsRenovationFulfilment(params, runtime),
+  'command-center.v1.open-loops.renovation-stage': (service, params) => service.openLoopsRenovationStage(params),
+  'command-center.v1.open-loops.renovation-stage-prerequisites': (service, params) => service.openLoopsRenovationStagePrerequisites(params),
+  'command-center.v1.open-loops.renovation-decision-conflict': (service, params) => service.openLoopsRenovationDecisionConflict(params),
+  'command-center.v1.open-loops.renovation-decision-revise': (service, params) => service.openLoopsRenovationDecisionRevise(params),
   'command-center.v1.search.query': (service, params) => service.searchQuery(params),
   'command-center.v1.search.prepare-rebuild': (service, params) => service.searchPrepareRebuild(params)
 });
@@ -247,8 +271,9 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
           ? client.authenticatedUserProfile?.profileId
           : client?.authenticatedOperatorId ?? client?.authenticatedUserId;
         const authenticatedOperatorId = typeof principal === 'string' && principal.trim() !== '' ? principal : null;
-        if (method === 'command-center.v1.attention.act' && authenticatedOperatorId === null) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for Attention actions.');
-        const operatorId = method.startsWith('command-center.v1.attention.') ? authenticatedOperatorId : null;
+        const operatorMutation = method === 'command-center.v1.attention.act' || method.startsWith('command-center.v1.open-loops.') && WRITE_METHODS.includes(method);
+        if (operatorMutation && authenticatedOperatorId === null) throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for this action.');
+        const operatorId = method.startsWith('command-center.v1.attention.') || method.startsWith('command-center.v1.open-loops.') ? authenticatedOperatorId : null;
         let runtime = {};
         if (method === 'command-center.v1.sessions.create') {
           if (client && context) {
@@ -287,7 +312,9 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         }
         const assertHistoryRead = method.startsWith('command-center.v1.histories.') || ['command-center.v1.sessions.topic-context', 'command-center.v1.sessions.group-preview'].includes(method) ? captureHistoryReadAuthority({ client, context, signal }) : null;
         if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
-        if (schedulerRuntimeMethods.has(method) && client) runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
+        if (schedulerRuntimeMethods.has(method) && client?.connect) {
+          runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
+        }
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;
         if (method === 'command-center.v1.sessions.send' && client && typeof coreSessionSend === 'function') {
           runtime = {
