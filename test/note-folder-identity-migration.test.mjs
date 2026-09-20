@@ -45,7 +45,7 @@ test('pinned Source Recovery migrates a v1 Folder identity to v2 and resumes an 
   const binding = { topicId, referenceId, mode: 'rebind', expectedRevision: topic.revision, expectedSourceRevision: v1, expectedLocatorVersion: locator.locatorVersion,
     logicalOperationId, replacementLocator: folder, expectedReplacementIdentity: v2 };
   metadata.recordTopicOperation({ logicalOperationId, topicId, operationKind: 'topics.recovery.verify', state: 'pending', currentStep: 'verify-exact-source', intent: {
-    topicId, referenceId, expectedRevision: topic.revision, expectedSourceRevision: v1, expectedLocatorVersion: locator.locatorVersion, replacementLocator: folder, expectedReplacementIdentity: v2
+    topicId, referenceId, expectedRevision: topic.revision, expectedSourceRevision: v1, replacementLocator: folder, expectedReplacementIdentity: v2, expectedLocatorVersion: locator.locatorVersion
   }, updatedAt: new Date().toISOString() });
   metadata.close();
 
