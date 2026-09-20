@@ -7,7 +7,6 @@ import createDOMPurify from './vendor/purify.es.mjs';
 const markdown = new MarkdownIt({ html: false, linkify: false, typographer: false });
 
 export const largeNoteRenderThreshold = 256 * 1024;
-export const largeNoteChunkSize = 64 * 1024;
 
 function sanitiser(document) {
   return createDOMPurify(document.defaultView);
@@ -18,20 +17,20 @@ export function renderReadOnlySource(container, text) {
   delete container.dataset.largeNote;
   if (text.length <= largeNoteRenderThreshold) { container.textContent = text; return; }
   container.replaceChildren();
-  container.dataset.largeNote = 'chunked';
-  const fragment = container.ownerDocument.createDocumentFragment();
-  for (let offset = 0; offset < text.length; offset += largeNoteChunkSize) {
-    const chunk = container.ownerDocument.createElement('span');
-    chunk.dataset.largeNoteChunk = '';
-    chunk.style.display = 'block';
-    chunk.style.whiteSpace = 'pre-wrap';
-    chunk.style.overflowWrap = 'anywhere';
-    chunk.style.contentVisibility = 'auto';
-    chunk.style.containIntrinsicBlockSize = '20rem';
-    chunk.textContent = text.slice(offset, offset + largeNoteChunkSize);
-    fragment.append(chunk);
-  }
-  container.append(fragment);
+  container.dataset.largeNote = 'bounded';
+  const viewer = container.ownerDocument.createElement('textarea');
+  viewer.dataset.largeNoteViewer = '';
+  viewer.setAttribute('aria-label', 'Large Note content');
+  viewer.readOnly = true;
+  viewer.wrap = 'off';
+  viewer.spellcheck = false;
+  viewer.style.boxSizing = 'border-box';
+  viewer.style.inlineSize = '100%';
+  viewer.style.blockSize = '50vh';
+  viewer.style.resize = 'vertical';
+  viewer.textContent = text;
+  viewer.value = text;
+  container.append(viewer);
 }
 
 /** Render a conservative, read-only Note without enabling network-active media. */

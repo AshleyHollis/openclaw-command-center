@@ -30,21 +30,22 @@ test('formatted Reading preserves useful Markdown while blocking active content'
     assert.deepEqual(result, { heading: 'Fictional heading', table: true, images: 0, scripts: 0, compromised: false, links: [] });
 
     const large = await page.evaluate(async () => {
-      const { largeNoteChunkSize, largeNoteRenderThreshold, renderReadOnlyMarkdown, renderReadOnlySource } = await import('/note-render.mjs');
+      const { largeNoteRenderThreshold, renderReadOnlyMarkdown, renderReadOnlySource } = await import('/note-render.mjs');
       const root = document.querySelector('main');
-      const text = 'L'.repeat(largeNoteRenderThreshold + largeNoteChunkSize + 1);
+      const text = 'L'.repeat(largeNoteRenderThreshold + 1);
       renderReadOnlyMarkdown(root, text);
-      const firstChunk = root.querySelector('[data-large-note-chunk]');
-      const reading = { mode: root.dataset.largeNote, chunks: root.querySelectorAll('[data-large-note-chunk]').length,
-        exact: root.textContent === text, markup: root.querySelector('p') === null,
-        deferred: firstChunk.style.contentVisibility === 'auto' && firstChunk.style.containIntrinsicBlockSize === '20rem' };
+      const readingViewer = root.querySelector('[data-large-note-viewer]');
+      const reading = { mode: root.dataset.largeNote, viewers: root.querySelectorAll('[data-large-note-viewer]').length,
+        exact: readingViewer.value === text && root.textContent === text, markup: root.querySelector('p') === null,
+        readOnly: readingViewer.readOnly, bounded: readingViewer.style.blockSize === '50vh' };
       renderReadOnlySource(root, text);
-      return { reading, source: { mode: root.dataset.largeNote, chunks: root.querySelectorAll('[data-large-note-chunk]').length,
-        exact: root.textContent === text } };
+      const sourceViewer = root.querySelector('[data-large-note-viewer]');
+      return { reading, source: { mode: root.dataset.largeNote, viewers: root.querySelectorAll('[data-large-note-viewer]').length,
+        exact: sourceViewer.value === text && root.textContent === text, readOnly: sourceViewer.readOnly } };
     });
     assert.deepEqual(large, {
-      reading: { mode: 'chunked', chunks: 6, exact: true, markup: true, deferred: true },
-      source: { mode: 'chunked', chunks: 6, exact: true },
+      reading: { mode: 'bounded', viewers: 1, exact: true, markup: true, readOnly: true, bounded: true },
+      source: { mode: 'bounded', viewers: 1, exact: true, readOnly: true },
     });
   } finally {
     await browser?.close();

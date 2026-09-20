@@ -53,7 +53,6 @@ export function readerStyles(document) {
     [data-topic-reader-page] .reader-body { min-block-size:0; overflow:auto; overscroll-behavior:contain; flex:1; padding:.5rem; }
     [data-topic-reader-page] .reader-body article { margin:0; }
     [data-topic-reader-page] .reader-body :is(pre,table) { max-inline-size:100%; overflow:auto; }
-    [data-topic-reader-page] [data-large-note-chunk] { display:block; white-space:pre-wrap; overflow-wrap:anywhere; content-visibility:auto; contain-intrinsic-block-size:20rem; }
     [data-topic-reader-page] .reader-footer { font-size:.75rem; margin:.4rem 0 0; flex:none; }
     [data-topic-reader-page] .reader-pane-help { font-size:.75rem; color:var(--muted,inherit); margin:.25rem 0 .4rem; flex:none; }
     [data-topic-reader-page] .reader-pane-help summary { cursor:pointer; inline-size:fit-content; }
