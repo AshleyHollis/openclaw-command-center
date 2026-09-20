@@ -78,12 +78,19 @@ test('sealed plugin packs deterministically and round trips through the native a
     assert.ok(first.receipt.files.some(file => file.path === member), `the archive is missing ${member}`);
   }
   const extractorUrl = pathToFileURL(path.join(verified, 'dist/open-loops/selected-document-text.mjs')).href;
+  const sentinelDirectory = path.join(root, 'node_modules', '@napi-rs', 'canvas');
+  const sentinelPath = path.join(root, 'ambient-canvas-loaded');
+  await mkdir(sentinelDirectory, { recursive: true });
+  await writeFile(path.join(sentinelDirectory, 'package.json'), JSON.stringify({ name: '@napi-rs/canvas', version: '0.0.0-fictional', main: 'index.cjs' }));
+  await writeFile(path.join(sentinelDirectory, 'index.cjs'),
+    "require('node:fs').writeFileSync(process.env.CANVAS_SENTINEL, 'loaded'); module.exports = {};\n");
   const runtimeProbe = `const { extractSelectedDocumentText } = await import(${JSON.stringify(extractorUrl)});\n` +
     "const result = await extractSelectedDocumentText({ path: 'fictional.pdf', bytes: Buffer.from(process.env.PDF_FIXTURE, 'base64') });\n" +
     "if (result.extractionStatus !== 'pdf-text-extracted' || result.content !== 'Fictional sealed invoice' || JSON.stringify(result.pageEvidence) !== '[1]') process.exit(71);\n";
   await promisify(execFile)(process.execPath, ['--input-type=module', '--eval', runtimeProbe], {
-    cwd: verified, env: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, PDF_FIXTURE: fictionalTextPdf().toString('base64') }, timeout: 30_000
+    cwd: verified, env: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, CANVAS_SENTINEL: sentinelPath, PDF_FIXTURE: fictionalTextPdf().toString('base64') }, timeout: 30_000
   });
+  await assert.rejects(lstat(sentinelPath), { code: 'ENOENT' });
   assert.deepEqual(JSON.parse(await readFile(first.receiptPath, 'utf8')), first.receipt);
 });
 
