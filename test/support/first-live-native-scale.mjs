@@ -149,7 +149,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(firstPage.input.topicId, fixture.topicId);
   const firstPaths = assertNotePage(firstCatalog, 0);
   onProgress('first-note-page-dom');
-  const readButtons = nativePage.getByRole('button', { name: /^Read / });
+  const readButtons = nativePage.locator('button.note-tree-item');
   await ready(async () => await readButtons.count() === 50);
   assert.deepEqual(await readButtons.evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))),
     firstPaths.map(value => `Read ${value}`));
