@@ -161,10 +161,20 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(firstPage.input.topicId, fixture.topicId);
   assertNotePage(firstCatalog, 0);
   assert.equal(firstCatalog.nextOffset, 50);
+  onProgress('notes-next-click');
   started = now();
-  await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).click();
+  await content.evaluate(node => {
+    const next = [...node.getRootNode().querySelectorAll('nav[aria-label="Note pages"] button')]
+      .find(button => button.textContent === 'Next Notes');
+    if (!next) throw new Error('Next Notes is unavailable');
+    next.click();
+  });
   await ready(async () => observed().notePages?.get(50)?.value?.offset === 50);
-  await nativePage.getByText('Notes 51–100 of 5000.', { exact: true }).waitFor();
+  await ready(async () => await content.evaluate(node => {
+    const pages = node.getRootNode().querySelector('nav[aria-label="Note pages"]');
+    return pages?.previousElementSibling?.textContent === 'Notes 51–100 of 5000.';
+  }));
+  onProgress('notes-next-rendered');
   observations.noteNextPageMs = now() - started;
   assertNotePage(observed().notePages.get(50).value, 50);
   // The UI proves the interactive first transition. Sample the middle and final
@@ -188,9 +198,22 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     && new URL(response.url()).origin === new URL(world.gateway.url).origin
     && new URL(response.url()).pathname === '/plugins/command-center/api/topic/actions'
     && response.request().postDataJSON()?.action === 'conversations.create', { timeout: 30_000 }), () => {});
-  await nativePage.getByRole('textbox', { name: 'Conversation label', exact: true }).fill(conversationLabel);
+  await content.evaluate((node, value) => {
+    const form = [...node.getRootNode().querySelectorAll('form')]
+      .find(candidate => candidate.querySelector('h2')?.textContent === 'New Conversation');
+    const input = form?.querySelector('label input[type="text"]');
+    if (!input) throw new Error('Conversation label is unavailable');
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, conversationLabel);
   started = now();
-  await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).click();
+  await content.evaluate(node => {
+    const form = [...node.getRootNode().querySelectorAll('form')]
+      .find(candidate => candidate.querySelector('h2')?.textContent === 'New Conversation');
+    const submit = form?.querySelector('button[type="submit"]');
+    if (!submit || submit.textContent !== 'Create Conversation') throw new Error('Create Conversation is unavailable');
+    submit.click();
+  });
   const response = await creationResponse;
   assert.equal(hasSuccessfulBrowserResponse(response), true);
   const input = response.value.request().postDataJSON();
