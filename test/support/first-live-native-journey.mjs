@@ -633,7 +633,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
   if (scaleDiagnostic) assert.equal(process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE, undefined);
   const scaleNow = scaleDiagnostic ? () => 0 : () => performance.now();
   const progressStarted = performance.now();
-  const progress = stage => { if (scale) onScaleProgress?.({ stage, elapsedMs: Math.round(performance.now() - progressStarted) }); };
+  const progress = stage => { onScaleProgress?.({ stage, elapsedMs: Math.round(performance.now() - progressStarted) }); };
   assert.equal(keyboard && scale, false, 'Performance qualification cannot share a keyboard diagnostic');
   return withIsolatedWorld(async (world) => {
     const bootstrap = keyboard || nativeFilesWorkspace ? null : await prepareNativeLegacyBootstrap({ world, signal, scale, catalog });
@@ -1307,6 +1307,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         const playwrightPackage = JSON.parse(await readFile(new URL(import.meta.resolve('playwright-core/package.json')), 'utf8'));
         result = { ...result, browser: { engine: 'chromium', playwrightVersion: playwrightPackage.version, version: managedBrowser.browser.version() }, viewport: page.viewportSize() };
       } else {
+      progress('primary-topics-readback');
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const authoritative = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 }, signal });
       const topics = authoritative?.result ?? authoritative;
@@ -1322,8 +1323,11 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.ok(fixtureTopic, 'The native journey must exercise an existing Topic, not an empty Topics diagnostic');
       assert.equal(fixtureTopic.usable, true, 'The existing Topic must have verified source bindings');
       assert.equal(fixtureTopic.topicId, fixture.topicId);
+      progress('primary-sidebar-grouping');
       await selectNativeCategoryGrouping(page);
+      progress('primary-sidebar-roster');
       await organizeNativeTopicConversations({ page, nativePage, fixture, observedRosters: () => scaleResponses.rosters });
+      progress('primary-note-read');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
@@ -1377,6 +1381,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       // Return through the host's native navigation contribution, not a new
       // page.goto/document or a synthetic plugin activation.
       await page.locator('openclaw-app-sidebar [data-sidebar-entry="plugin:command-center/topics"]').getByRole('link', { name: 'Manage Topics', exact: true }).press('Enter');
+      progress('primary-native-return');
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
@@ -1388,6 +1393,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         && response.request().postDataJSON()?.action === 'conversations.create', { timeout: 30_000 }),
       (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       browserNavigation = undefined;
+      progress('primary-conversation-create');
       await nativePage.getByRole('textbox', { name: 'Conversation label', exact: true }).fill(conversationLabel);
       await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).press('Enter');
       const observedCreation = await creationResponse;
@@ -1448,6 +1454,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
       await waitForConsecutiveReadiness(async () => !!browserChatAcknowledgement,
         host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+      progress('primary-chat-send');
       assert.equal(browserChatSend.params.sessionKey, createdTarget.sessionKey, 'The actual native composer must send to the newly linked Session');
       assert.equal(browserChatAcknowledgement.ok, true, 'The real host must acknowledge the native send');
       if (catalog) {
@@ -1488,6 +1495,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       // descriptor, source rebinding or fixture reseeding is permitted here.
       await nativePage.getByRole('button', { name: 'All Topics', exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
+      progress('primary-retained-restart');
       const predecessor = host;
       await restartHost();
       assert.notEqual(host.child, predecessor.child);
@@ -1548,6 +1556,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       browserTopics = undefined;
       browserNote = undefined;
       browserNavigation = undefined;
+      progress('primary-reload-after-restart');
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor({ timeout: 30_000 });
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
@@ -1583,6 +1592,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
       assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       let activation;
+      progress('primary-activation-readback');
       await waitForConsecutiveReadiness(async () => {
         // Admin is restricted to this diagnostic read; no synthetic activation
         // report or browser authority is supplied by the harness.
@@ -1591,6 +1601,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         activation = activations.find((entry) => entry.pluginId === 'command-center' && entry.revision === native.revision && entry.status === 'activated');
         return !!activation;
       }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+      progress('primary-complete');
       result = { pluginId: 'command-center', revision: native.revision, entryPath: entryUrl.pathname, grantPrefix, activationStatus: activation.status, topicsResponseObserved: true, nativeTopicsRendered: true,
         existingTopicVerified: true, authoritativeNoteRead: true, exactNativeChatHandoff: true, nativeReturnNoteRead: true,
         conversationCreationExercised: true, conversationExactReplayExercised: true, nativeChatSendExercised: true, authoritativeNewConversationMessageRead: true,
