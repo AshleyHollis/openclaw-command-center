@@ -57,12 +57,17 @@ export function installOpenLoopActions(service, { ErrorType }) {
   }
 
   service.recordOpenLoopDecision = input => {
-    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'actorId', 'rationale', 'updatedAt']);
+    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'amount', 'currency', 'actorId', 'rationale', 'updatedAt']);
     if (value.schemaVersion !== 1 || !decisions.has(value.decision)) fail('open-loop-action-invalid');
     if ((value.decision === 'defer') !== (value.reviewAt !== undefined)) fail('open-loop-action-invalid', 'Only defer requires reviewAt.');
     const dateOnly = value.dueDate !== undefined || value.dueTimeZone !== undefined;
     if ((value.dueDate === undefined) !== (value.dueTimeZone === undefined) || value.dueAt !== undefined && dateOnly) fail('open-loop-action-invalid', 'Corrected timing must be one instant or one calendar date with timezone.');
-    if ((value.decision === 'correct-date') !== (value.dueAt !== undefined || dateOnly)) fail('open-loop-action-invalid', 'Only correct-date requires corrected timing.');
+    const correctedTiming = value.dueAt !== undefined || dateOnly;
+    if (correctedTiming && !['correct-date', 'confirm'].includes(value.decision) || value.decision === 'correct-date' && !correctedTiming) fail('open-loop-action-invalid', 'Corrected timing is required for correct-date and optional while confirming a suggestion.');
+    const amount = value.amount === undefined ? undefined : Number(value.amount);
+    if (amount !== undefined && (!Number.isSafeInteger(amount) || amount <= 0)) fail('open-loop-action-invalid', 'amount must be a positive integer in minor currency units');
+    const currency = value.currency === undefined ? undefined : text(value.currency, 'currency', 3).toUpperCase();
+    if ((amount === undefined) !== (currency === undefined) || currency !== undefined && !/^[A-Z]{3}$/u.test(currency) || amount !== undefined && value.decision !== 'confirm') fail('open-loop-action-invalid', 'Corrected amount and currency are only accepted together while confirming a suggestion.');
     const reviewAt = value.reviewAt === undefined ? undefined : instant(value.reviewAt, 'reviewAt');
     const dueAt = value.dueAt === undefined ? undefined : instant(value.dueAt, 'dueAt');
     const dueDate = value.dueDate === undefined ? undefined : text(value.dueDate, 'dueDate', 10);
@@ -72,11 +77,19 @@ export function installOpenLoopActions(service, { ErrorType }) {
     return record({
       input: value,
       operationKind: `decision-${value.decision}`,
-      facts: { decision: value.decision, ...(reviewAt === undefined ? {} : { reviewAt }), ...(dueAt === undefined ? {} : { dueAt }), ...(dueDate === undefined ? {} : { dueDate, dueTimeZone }) },
+      facts: { decision: value.decision, ...(reviewAt === undefined ? {} : { reviewAt }), ...(dueAt === undefined ? {} : { dueAt }), ...(dueDate === undefined ? {} : { dueDate, dueTimeZone }), ...(amount === undefined ? {} : { amount, currency }) },
       transition(loop) {
         if (['resolved', 'cancelled'].includes(loop.state) && value.decision !== 'resolve') fail('open-loop-terminal');
-        if (value.decision === 'confirm') return { ...loop, state: 'confirmed', ...(loop.kind === 'payment' && loop.paymentState === 'potential' ? { paymentState: 'unpaid' } : {}) };
-        if (value.decision === 'defer') return { ...loop, state: 'waiting', reviewAt, attention: { ...(loop.attention ?? {}), activated: false, currentEvidence: false } };
+        if (value.decision === 'confirm') {
+          if (loop.state !== 'suggested') fail('open-loop-action-invalid', 'Only a suggestion can be confirmed.');
+          if (amount !== undefined && loop.kind !== 'payment') fail('open-loop-not-payment');
+          const { dueAt: _oldAt, dueDate: _oldDate, dueTimeZone: _oldZone, ...withoutTiming } = loop;
+          const timing = correctedTiming ? (dueAt === undefined ? { dueDate, dueTimeZone } : { dueAt }) : Object.fromEntries(Object.entries({ dueAt: loop.dueAt, dueDate: loop.dueDate, dueTimeZone: loop.dueTimeZone }).filter(([, item]) => item !== undefined));
+          const accepted = { ...withoutTiming, ...timing, ...(amount === undefined ? {} : { amount, currency }), state: 'confirmed', ...(loop.kind === 'payment' && loop.paymentState === 'potential' ? { paymentState: 'unpaid' } : {}) };
+          const hasDue = accepted.dueAt !== undefined || accepted.dueDate !== undefined;
+          return { ...accepted, attention: { ...(loop.attention ?? {}), activated: !hasDue, currentEvidence: true } };
+        }
+        if (value.decision === 'defer') return { ...loop, state: 'waiting', reviewAt, attention: { ...(loop.attention ?? {}), reason: 'review-time', whyNow: `${loop.title} reached its accepted review time.`, actions: loop.attention?.actions?.length ? loop.attention.actions : ['Open evidence', 'Choose next review', 'Mark resolved'], activated: false, currentEvidence: true } };
         if (value.decision === 'correct-date') {
           const { dueAt: _oldAt, dueDate: _oldDate, dueTimeZone: _oldZone, ...withoutTiming } = loop;
           return { ...withoutTiming, ...(dueAt === undefined ? { dueDate, dueTimeZone } : { dueAt }), reviewAt: undefined, attention: { ...(loop.attention ?? {}), activated: false, currentEvidence: true } };

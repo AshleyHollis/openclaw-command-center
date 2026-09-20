@@ -171,13 +171,20 @@ export function normalizeSelectedSourceCheckpoint(input, authorization) {
 }
 
 function normalizeSelection(input, authorization) {
-  const value = closed(input, ['version', 'occurredAt', 'observedAt', 'availability', 'unavailableReason', 'content', 'correctsVersion', 'topicId'], 'selection');
+  const value = closed(input, ['version', 'occurredAt', 'observedAt', 'availability', 'unavailableReason', 'content', 'correctsVersion', 'topicId', 'sourcePath', 'extractionStatus', 'reviewRequired', 'pageCount', 'pageEvidence'], 'selection');
   const availability = enumValue(value.availability, AVAILABILITY, 'selection.availability');
   if (availability === 'available' && (value.content === undefined || value.unavailableReason !== undefined)) fail('available selections require content and cannot include unavailableReason');
   if (availability === 'unavailable' && (value.content !== undefined || value.unavailableReason === undefined)) fail('unavailable selections require unavailableReason and cannot include content');
   const version = text(value.version, 'selection.version', 300);
   const correctsVersion = value.correctsVersion === undefined ? undefined : text(value.correctsVersion, 'selection.correctsVersion', 300);
   if (correctsVersion === version) fail('a source version cannot correct itself');
+  const extractionStatus = value.extractionStatus === undefined ? undefined : text(value.extractionStatus, 'selection.extractionStatus', 80);
+  if (value.reviewRequired !== undefined && typeof value.reviewRequired !== 'boolean') fail('selection.reviewRequired must be boolean');
+  const pageCount = value.pageCount === undefined ? undefined : Number(value.pageCount);
+  if (pageCount !== undefined && (!Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 20)) fail('selection.pageCount must be between 1 and 20');
+  const pageEvidence = value.pageEvidence === undefined ? [] : value.pageEvidence;
+  if (!Array.isArray(pageEvidence) || pageEvidence.length > 20 || pageEvidence.some(page => !Number.isSafeInteger(page) || page < 1 || pageCount === undefined || page > pageCount) || new Set(pageEvidence).size !== pageEvidence.length) fail('selection.pageEvidence must contain unique pages within pageCount');
+  if (value.reviewRequired === true && extractionStatus !== 'pdf-text-extracted') fail('only extracted PDF text may require review');
   return freeze({
     version,
     occurredAt: instant(value.occurredAt, 'selection.occurredAt'),
@@ -186,6 +193,11 @@ function normalizeSelection(input, authorization) {
     ...(availability === 'available' ? { content: boundedContent(value.content) } : { unavailableReason: enumValue(value.unavailableReason, UNAVAILABLE_REASONS, 'selection.unavailableReason') }),
     ...(correctsVersion ? { correctsVersion } : {}),
     ...(value.topicId === undefined ? {} : { topicId: text(value.topicId, 'selection.topicId', 300) }),
+    ...(value.sourcePath === undefined ? {} : { sourcePath: text(value.sourcePath, 'selection.sourcePath', 1000) }),
+    ...(extractionStatus === undefined ? {} : { extractionStatus }),
+    ...(value.reviewRequired === undefined ? {} : { reviewRequired: value.reviewRequired }),
+    ...(pageCount === undefined ? {} : { pageCount }),
+    ...(pageEvidence.length ? { pageEvidence: freeze([...pageEvidence]) } : {}),
     source: freeze({ system: authorization.sourceSystem, kind: authorization.sourceKind, externalId: authorization.resourceId, version })
   });
 }
@@ -231,6 +243,10 @@ export function planSelectedSourceSelection(selectionInput, { authorization: aut
       sourceKind: authorization.sourceKind,
       resourceId: authorization.resourceId
     },
+    ...(selection.sourcePath ? { sourceReferenceId: authorization.resourceId, sourcePath: selection.sourcePath } : {}),
+    ...(selection.extractionStatus ? { extractionStatus: selection.extractionStatus } : {}),
+    ...(selection.pageCount === undefined ? {} : { pageCount: selection.pageCount }),
+    ...(selection.pageEvidence ? { pageEvidence: selection.pageEvidence } : {}),
     availability: selection.availability,
     ...(selection.correctsVersion ? { correctsVersion: selection.correctsVersion } : {})
   };
@@ -273,9 +289,12 @@ export function planSelectedSourceSelection(selectionInput, { authorization: aut
   const authority = interpretation.authorityId ?? authorization.sourceSystem;
   const account = interpretation.accountId ?? 'unscoped';
   const stableSubjectId = `invoice:${stableId([authority, account, interpretation.invoiceId])}`;
-  const actions = ['Open original', 'Record payment', 'Remind me', 'Review or query'];
+  const reviewRequired = selection.reviewRequired === true;
+  const actions = reviewRequired
+    ? ['Open original', 'Confirm obligation', 'Dismiss suggestion']
+    : ['Open original', 'Record payment', 'Remind me', 'Review or query'];
   const currentEvidence = !historicalBaseline;
-  const title = ['Pay', interpretation.purpose ?? 'invoice', interpretation.payee ? `from ${interpretation.payee}` : ''].filter(Boolean).join(' ');
+  const title = [reviewRequired ? 'Review' : 'Pay', interpretation.purpose ?? 'invoice', interpretation.payee ? `from ${interpretation.payee}` : ''].filter(Boolean).join(' ');
   const loop = normalizeLoop({
     schemaVersion: 1,
     loopId: `open-loop:${stableId(['payment', stableSubjectId])}`,
@@ -283,11 +302,13 @@ export function planSelectedSourceSelection(selectionInput, { authorization: aut
     stableSubjectId,
     title,
     ...(selection.topicId ? { topicId: selection.topicId } : {}),
-    state: 'confirmed',
-    paymentState: 'unpaid',
+    state: reviewRequired ? 'suggested' : 'confirmed',
+    paymentState: reviewRequired ? 'potential' : 'unpaid',
     ...(interpretation.amount === undefined ? {} : { amount: interpretation.amount, currency: interpretation.currency }),
     ...(interpretation.dueAt === undefined ? {} : { dueAt: interpretation.dueAt }),
-    attention: interpretation.dueAt === undefined && currentEvidence
+    attention: reviewRequired
+      ? { reason: 'material-change', whyNow: 'Text was extracted from a selected PDF. Verify the original, then confirm, correct, or dismiss this suggestion.', actions, activated: currentEvidence, currentEvidence }
+      : interpretation.dueAt === undefined && currentEvidence
       ? { reason: 'material-change', whyNow: 'The selected source explicitly requests payment and has no accepted due date.', actions, activated: true, currentEvidence: true }
       : { actions, activated: true, currentEvidence },
     evidenceObservationIds: [observation.observationId],

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { extractSelectedDocumentText } from './open-loops/selected-document-text.mjs';
 import { createAttentionService } from './attention/service.mjs';
 import { createDashboardService } from './dashboard/service.mjs';
 import { openCommandCenterMetadataService } from './metadata/service.mjs';
@@ -17,7 +18,7 @@ function unavailable(feature) {
   throw new SourceServiceError('capability-unavailable', `Command Center ${feature} ${reason}.`);
 }
 
-const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'purchaseNamespace', 'purchaseId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId']);
+const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'purchaseNamespace', 'purchaseId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'fulfilledItemIds', 'outstandingItemIds', 'expectedAt', 'note', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId', 'sourceReferenceId', 'sourcePath', 'extractionStatus', 'pageCount', 'pageEvidence']);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)]))
   : value;
@@ -32,6 +33,7 @@ function publicOpenLoopEvidence(observation) {
     occurredAt: observation.occurredAt,
     observedAt: observation.observedAt,
     historicalBaseline: observation.historicalBaseline,
+    ...(observation.topicId ? { topicId: observation.topicId } : {}),
     ...Object.fromEntries(publicEvidenceFields.filter(key => observation.facts[key] !== undefined).map(key => [key, observation.facts[key]])),
     ...(typeof observation.facts.sourceAvailable === 'boolean'
       ? { sourceAvailable: observation.facts.sourceAvailable }
@@ -337,10 +339,10 @@ export function createMetadataService(api) {
       if (!prepared) {
         const expectedSourceRevision = pending.observedRevision === 'unknown' ? undefined : pending.observedRevision;
         let note; let readFailure;
-        try { note = await sourceService.notesRead({ schemaVersion: 1, topicId: reference.topicId, referenceId: reference.referenceId, path: selection.path, ...(expectedSourceRevision === undefined ? {} : { observedRevision: expectedSourceRevision }), sourceKind: 'document' }); }
+        try { note = await sourceService.notesRead({ schemaVersion: 1, topicId: reference.topicId, referenceId: reference.referenceId, path: selection.path, ...(expectedSourceRevision === undefined ? {} : { observedRevision: expectedSourceRevision }), sourceKind: 'document', returnBytes: true }); }
         catch (error) { readFailure = error; }
-        const content = Buffer.isBuffer(note?.bytes) ? note.bytes.toString('utf8') : note?.text;
-        if (!readFailure && (typeof content !== 'string' || typeof note.revision !== 'string' || note.revision.trim() === '')) throw new SourceServiceError('source-recovery', 'The selected document did not return authoritative text and version evidence.');
+        const extraction = !readFailure && Buffer.isBuffer(note?.bytes) ? await extractSelectedDocumentText({ bytes: note.bytes, path: selection.path }) : null;
+        if (!readFailure && (!extraction || typeof note.revision !== 'string' || note.revision.trim() === '')) throw new SourceServiceError('source-recovery', 'The selected document did not return authoritative bytes and version evidence.');
         const unavailableReason = readFailure?.code === 'not-found' ? 'not-found' : readFailure?.code === 'unauthenticated' || readFailure?.code === 'forbidden' ? 'permission-revoked' : readFailure?.code === 'conflict' || readFailure?.code === 'source-recovery' ? 'version-replaced' : 'temporarily-unavailable';
         prepared = metadataService.prepareSelectedSourceBatch({
           schemaVersion: 1,
@@ -349,8 +351,8 @@ export function createMetadataService(api) {
           baselineThrough: input.baselineThrough,
           window: { cursor: `selected:${input.logicalOperationId}`, nextCursor: `complete:${input.logicalOperationId}`, hasMore: false },
           selections: [readFailure
-            ? { version: `unavailable:${expectedSourceRevision ?? 'unknown'}:${unavailableReason}`, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'unavailable', unavailableReason, ...(selection.topicId ? { topicId: selection.topicId } : {}) }
-            : { version: note.revision, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'available', content, ...(selection.topicId ? { topicId: selection.topicId } : {}) }]
+            ? { version: `unavailable:${expectedSourceRevision ?? 'unknown'}:${unavailableReason}`, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'unavailable', unavailableReason, sourcePath: selection.path, ...(selection.topicId ? { topicId: selection.topicId } : {}) }
+            : { version: note.revision, occurredAt: selection.occurredAt, observedAt: selection.observedAt, availability: 'available', content: extraction.content, sourcePath: selection.path, extractionStatus: extraction.extractionStatus, reviewRequired: extraction.reviewRequired, ...(extraction.pageCount === undefined ? {} : { pageCount: extraction.pageCount }), pageEvidence: extraction.pageEvidence, ...(selection.topicId ? { topicId: selection.topicId } : {}) }]
         });
         pending = metadataService.recordOperation({ ...pending, resultIdentity: JSON.stringify({ schemaVersion: 1, status: 'prepared', prepared }), updatedAt: selection.observedAt });
       }
@@ -361,7 +363,7 @@ export function createMetadataService(api) {
     openLoopsDecide(input = {}) {
       requireOperational();
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for open-loop decisions.');
-      const result = metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
+      const result = metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }), ...(input.amount === undefined ? {} : { amount: input.amount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
       return reconcileOpenLoopReminder(result, input.logicalOperationId);
     },
     openLoopsPaymentStatus(input = {}) {
