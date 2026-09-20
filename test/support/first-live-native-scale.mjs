@@ -120,12 +120,14 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   observations.topicOpenMs = now() - started;
   onProgress('large-note-read');
   started = now();
+  const content = nativePage.getByRole('region', { name: 'Note content', exact: true });
+  const contentHandle = await content.elementHandle();
+  assert.ok(contentHandle, 'Note content must be mounted before reading');
   await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).click();
   onProgress('large-note-clicked');
-  const content = nativePage.getByRole('region', { name: 'Note content', exact: true });
   let renderedNote;
   await ready(async () => {
-    renderedNote = await content.evaluate(node => {
+    renderedNote = await contentHandle.evaluate(node => {
       const root = node.getRootNode();
       return {
         textLength: node.textContent?.length,
@@ -163,14 +165,14 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(firstCatalog.nextOffset, 50);
   onProgress('notes-next-click');
   started = now();
-  await content.evaluate(node => {
+  await contentHandle.evaluate(node => {
     const next = [...node.getRootNode().querySelectorAll('nav[aria-label="Note pages"] button')]
       .find(button => button.textContent === 'Next Notes');
     if (!next) throw new Error('Next Notes is unavailable');
     next.click();
   });
   await ready(async () => observed().notePages?.get(50)?.value?.offset === 50);
-  await ready(async () => await content.evaluate(node => {
+  await ready(async () => await contentHandle.evaluate(node => {
     const pages = node.getRootNode().querySelector('nav[aria-label="Note pages"]');
     return pages?.previousElementSibling?.textContent === 'Notes 51–100 of 5000.';
   }));
@@ -198,7 +200,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     && new URL(response.url()).origin === new URL(world.gateway.url).origin
     && new URL(response.url()).pathname === '/plugins/command-center/api/topic/actions'
     && response.request().postDataJSON()?.action === 'conversations.create', { timeout: 30_000 }), () => {});
-  await content.evaluate((node, value) => {
+  await contentHandle.evaluate((node, value) => {
     const form = [...node.getRootNode().querySelectorAll('form')]
       .find(candidate => candidate.querySelector('h2')?.textContent === 'New Conversation');
     const input = form?.querySelector('label input[type="text"]');
@@ -207,7 +209,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }, conversationLabel);
   started = now();
-  await content.evaluate(node => {
+  await contentHandle.evaluate(node => {
     const form = [...node.getRootNode().querySelectorAll('form')]
       .find(candidate => candidate.querySelector('h2')?.textContent === 'New Conversation');
     const submit = form?.querySelector('button[type="submit"]');
