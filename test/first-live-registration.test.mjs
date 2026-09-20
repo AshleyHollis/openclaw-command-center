@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
-import { FIRST_LIVE_FEATURES } from '../src/release-scope.mjs';
+import { FIRST_LIVE_COMMANDS, FIRST_LIVE_FEATURES } from '../src/release-scope.mjs';
 import { READ_METHODS, WRITE_METHODS } from '../src/bridge/contracts.mjs';
 import { registerBridgeMethods } from '../src/bridge/register.mjs';
 import { Readable } from 'node:stream';
@@ -56,9 +56,9 @@ test('first-live registration needs no notification authority and preserves core
   assert.ok(!h.tools.includes('command_center_topic_analysis'));
 });
 
-test('registered deferred bridge commands are refused before a service or optional binding is acquired', async () => {
+test('registered commands outside the build-owned admission set are refused before a service or optional binding is acquired', async () => {
   const h = host(); plugin.register(h.api);
-  const retained = new Set(['sources.status', 'migration.status', 'migration.review-failures', 'topics.list', 'topics.get', 'topics.recovery.status', 'topics.recovery.verify', 'notes.browse', 'notes.read', 'sessions.browse', 'sessions.navigate', 'sessions.topic-context', 'sessions.group-preview', 'sessions.group', 'sessions.assign-topic', 'sessions.create', 'histories.list', 'histories.read', 'histories.attachment-read', 'reminders.list', 'reminders.create', 'reminders.snooze', 'reminders.complete', 'schedules.list', 'schedules.get', 'schedules.create', 'schedules.update', 'schedules.set-enabled', 'schedules.run', 'attention.list', 'attention.get', 'attention.act', 'activity.list', 'activity.get', 'dashboard.get'].map(name => `command-center.v1.${name}`));
+  const retained = new Set(FIRST_LIVE_COMMANDS.bridge);
   for (const method of [...READ_METHODS, ...WRITE_METHODS].filter(name => !retained.has(name))) {
     let response;
     await h.methods.get(method)({ req: { id: 'fixture-request' }, params: {}, context: { authenticated: true },
@@ -157,6 +157,29 @@ test('Reminder and Attention mutations return their native result without acquir
   await methods.get('command-center.v1.attention.act')({ req: { id: randomUUID() }, params: attentionParams, client: { authenticatedUserProfile: { profileId: 'fictional-operator' } }, context: { authenticated: true }, respond: (ok, result, error) => { attentionResponse = { ok, result, error }; } });
   assert.equal(attentionResponse.ok, true, JSON.stringify(attentionResponse));
   assert.equal(notificationAcquisitions, 0);
+});
+
+test('first-live admission names the exact source-backed Attention surface', () => {
+  const admitted = FIRST_LIVE_COMMANDS.bridge.filter(method => method.startsWith('command-center.v1.open-loops.'));
+  assert.deepEqual(admitted, [
+    'command-center.v1.open-loops.list',
+    'command-center.v1.open-loops.get',
+    'command-center.v1.open-loops.intake-selected',
+    'command-center.v1.open-loops.decide',
+    'command-center.v1.open-loops.payment-status',
+    'command-center.v1.open-loops.renovation-requirement',
+    'command-center.v1.open-loops.renovation-purchase',
+    'command-center.v1.open-loops.renovation-purchase-correction',
+    'command-center.v1.open-loops.renovation-replacement',
+    'command-center.v1.open-loops.renovation-fulfilment',
+    'command-center.v1.open-loops.renovation-stage',
+    'command-center.v1.open-loops.renovation-stage-prerequisites',
+    'command-center.v1.open-loops.renovation-decision-conflict',
+    'command-center.v1.open-loops.renovation-decision-revise'
+  ]);
+  assert.equal(FIRST_LIVE_FEATURES.notifications, false);
+  assert.equal(FIRST_LIVE_FEATURES.analysis, false);
+  assert.equal(FIRST_LIVE_FEATURES.noteMaintenance, false);
 });
 
 test('deferred HTTP actions are non-retryable and cannot reach services before startup', async () => {

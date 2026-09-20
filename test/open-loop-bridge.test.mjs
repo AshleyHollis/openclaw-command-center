@@ -68,7 +68,7 @@ test('open-loop detail sanitization withholds raw source fields and attachment i
   assert.equal(result.evidence[0].invoiceId, 'INVOICE-FICTIONAL');
 });
 
-test('release-gated open-loop mutations are refused before acquiring operator or service authority', async () => {
+test('admitted open-loop mutations require an authenticated operator before acquiring service authority', async () => {
   const methods = new Map();
   let received;
   registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, {
@@ -78,10 +78,11 @@ test('release-gated open-loop mutations are refused before acquiring operator or
   let unauthenticated;
   await methods.get('command-center.v1.open-loops.payment-status')({ req: { id: 'request-unauthenticated' }, params, context: { authenticated: true }, respond: (ok, result, error) => { unauthenticated = { ok, result, error }; } });
   assert.equal(unauthenticated.ok, false);
-  assert.equal(unauthenticated.error.code, 'feature-unavailable');
+  assert.equal(unauthenticated.error.code, 'unauthenticated');
+  assert.equal(received, undefined);
   let authenticated;
   await methods.get('command-center.v1.open-loops.payment-status')({ req: { id: 'request-authenticated' }, params, client: { authenticatedUserProfile: { profileId: 'fictional-operator' } }, context: { authenticated: true }, respond: (ok, result, error) => { authenticated = { ok, result, error }; } });
-  assert.equal(authenticated.ok, false);
-  assert.equal(authenticated.error.code, 'feature-unavailable');
-  assert.equal(received, undefined);
+  assert.equal(authenticated.ok, true);
+  assert.equal(authenticated.result.result.loop.paymentState, 'payment-pending');
+  assert.equal(received.authenticatedOperatorId, 'fictional-operator');
 });
