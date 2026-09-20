@@ -13,8 +13,26 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let topicFilter = context.props.topicId;
   let generation = 0;
   let selected;
-  let quickCaptureDraft = { kind: 'task', topicId: '', title: '' };
-  let quickCaptureOperation;
+  const quickCaptureKey = 'command-center.quick-capture.v1';
+  const emptyQuickCaptureDraft = () => ({ kind: 'task', topicId: '', title: '' });
+  const readQuickCaptureState = () => {
+    try {
+      const value = JSON.parse(localStorage.getItem(quickCaptureKey) ?? 'null');
+      const draft = value?.draft;
+      const operation = value?.operation;
+      const validDraft = draft && ['task', 'idea', 'note'].includes(draft.kind) && typeof draft.topicId === 'string' && typeof draft.title === 'string' && draft.title.length <= 300;
+      const params = operation?.params;
+      const validOperation = operation && typeof operation.draftKey === 'string' && params?.schemaVersion === 1 && typeof params.logicalOperationId === 'string' && typeof params.captureId === 'string' && typeof params.capturedAt === 'string' && ['task', 'idea'].includes(params.captureKind) && typeof params.topicId === 'string' && typeof params.title === 'string';
+      return { draft: validDraft ? draft : emptyQuickCaptureDraft(), operation: validOperation ? operation : undefined };
+    } catch { return { draft: emptyQuickCaptureDraft(), operation: undefined }; }
+  };
+  const initialQuickCapture = readQuickCaptureState();
+  let quickCaptureDraft = initialQuickCapture.draft;
+  let quickCaptureOperation = initialQuickCapture.operation;
+  const saveQuickCaptureState = () => {
+    try { localStorage.setItem(quickCaptureKey, JSON.stringify({ draft: quickCaptureDraft, ...(quickCaptureOperation ? { operation: quickCaptureOperation } : {}) })); }
+    catch { /* retry identity remains available for this mounted plugin lifetime */ }
+  };
   const preferenceKey = 'command-center.dashboard.preferences.v1';
   const defaultSectionOrder = ['topic', 'coverage', 'upcoming', 'waiting', 'review', 'someday', 'activity'];
   const readDashboardPreferences = () => {
@@ -151,10 +169,12 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     if (!quickCaptureDraft.topicId && topic.options.length) quickCaptureDraft.topicId = topic.options[0].value;
     topic.value = quickCaptureDraft.topicId; topicLabel.append(topic);
     const titleLabel = element('label', ' What should be remembered? '); const title = element('input'); title.type = 'text'; title.required = true; title.maxLength = 300; title.value = quickCaptureDraft.title; titleLabel.append(title);
-    const save = element('button', kind.value === 'note' ? 'Open Topic Notes' : 'Capture'); save.type = 'submit';
+    const unchangedPending = () => quickCaptureOperation?.draftKey === JSON.stringify(quickCaptureDraft);
+    const save = element('button', kind.value === 'note' ? 'Open Topic Notes' : unchangedPending() ? 'Retry capture' : 'Capture'); save.type = 'submit';
     const update = () => {
       quickCaptureDraft = { kind: kind.value, topicId: topic.value, title: title.value };
-      save.textContent = kind.value === 'note' ? 'Open Topic Notes' : 'Capture';
+      save.textContent = kind.value === 'note' ? 'Open Topic Notes' : unchangedPending() ? 'Retry capture' : 'Capture';
+      saveQuickCaptureState();
     };
     kind.addEventListener('change', update, { signal }); topic.addEventListener('change', update, { signal }); title.addEventListener('input', update, { signal });
     form.append(kindLabel, topicLabel, titleLabel, save);
@@ -170,12 +190,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       const draftKey = JSON.stringify(quickCaptureDraft);
       if (!quickCaptureOperation || quickCaptureOperation.draftKey !== draftKey) {
         quickCaptureOperation = { draftKey, params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), captureId: crypto.randomUUID(), capturedAt: new Date().toISOString(), topicId: quickCaptureDraft.topicId, captureKind: quickCaptureDraft.kind, title: quickCaptureDraft.title.trim() } };
+        saveQuickCaptureState();
       }
       try {
         const response = await host.request('command-center.v1.open-loops.capture', quickCaptureOperation.params);
         const result = unwrap(response);
         if (!result?.loop?.loopId || result.loop.topicId !== quickCaptureOperation.params.topicId || !['confirmed', 'suggested'].includes(result.loop.state)) throw new Error('The quick-capture acknowledgement was incomplete. Retry the unchanged capture.');
-        quickCaptureOperation = undefined; quickCaptureDraft = { kind: quickCaptureDraft.kind, topicId: quickCaptureDraft.topicId, title: '' };
+        quickCaptureOperation = undefined; quickCaptureDraft = { kind: quickCaptureDraft.kind, topicId: quickCaptureDraft.topicId, title: '' }; saveQuickCaptureState();
         await load(quickCaptureDraft.kind === 'idea' ? 'Idea captured for bounded suggestion review.' : 'Task captured and acknowledged.');
       } catch (error) { if (current(pending)) report(error?.message || 'The capture outcome is unknown. Retry the unchanged capture.'); }
       finally { if (current(pending)) save.disabled = false; }

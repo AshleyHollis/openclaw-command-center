@@ -23,7 +23,7 @@ async function fixture(run) {
       const { mountAttentionPage } = await import('/attention-page.mjs');
       const operations = new Map();
       const lifetime = new AbortController(); const pages = new Map(); const subscribers = new Set();
-      window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.activity = []; window.allOpenLoops = []; window.intakeResult = null; window.intakeCoverage = [];
+      window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.quickCaptureMode = 'success'; window.activity = []; window.allOpenLoops = []; window.intakeResult = null; window.intakeCoverage = [];
       window.openLoops = { total: 0, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 };
       const action = { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', target: { topicId: 'fictional-topic', sourceReferenceId: 'fictional-source' }, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string' } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact reminder.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true } };
       window.cards = ['one', 'two'].map((id) => ({ notificationRecordId: `record-${id}`, episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
@@ -47,7 +47,10 @@ async function fixture(run) {
             return { result: { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'invoices/fictional-progress-invoice.txt', revision: 'authoritative-v1', sourceKind: 'document', sourceReference: { referenceId: 'document-fictional-progress-invoice', topicId: params.topicId, sourceSystem: 'fictional-documents', sourceKind: 'document' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-document-page' } };
           }
           if (method.endsWith('open-loops.intake-selected')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: window.intakeResult ?? { schemaVersion: 1, disposition: 'applied', checkpoint: { schemaVersion: 1 }, freshness: { status: 'available', lastObservedAt: params.selections[0].observedAt }, hasMore: false, results: [{ disposition: 'applied', observationId: 'selected-observation', sourceVersion: 'authoritative-v1', historicalBaseline: false, loop: { loopId: 'selected-loop', kind: 'payment', state: 'confirmed', revision: 1 } }] } };
-          if (method.endsWith('open-loops.capture')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: { schemaVersion: 1, loopId: `captured-${params.captureId}`, kind: 'general', stableSubjectId: `manual-${params.captureId}`, title: params.title, topicId: params.topicId, state: params.captureKind === 'idea' ? 'suggested' : 'confirmed', evidenceObservationIds: ['manual-evidence'], revision: 1 } } };
+          if (method.endsWith('open-loops.capture')) {
+            if (window.quickCaptureMode === 'unknown') throw new Error('The transport outcome is unknown.');
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: { schemaVersion: 1, loopId: `captured-${params.captureId}`, kind: 'general', stableSubjectId: `manual-${params.captureId}`, title: params.title, topicId: params.topicId, state: params.captureKind === 'idea' ? 'suggested' : 'confirmed', evidenceObservationIds: ['manual-evidence'], revision: 1 } } };
+          }
           if (method.endsWith('open-loops.get')) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             const evidence = [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }];
@@ -397,6 +400,25 @@ test('Dashboard quick capture acknowledges tasks and does not turn notes into ob
   await nextQuick.getByRole('button', { name: 'Open Topic Notes' }).click();
   assert.equal(await page.evaluate(() => window.requests.filter(entry => entry.method.endsWith('open-loops.capture')).length), countBefore);
   assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'topic-fictional-renovation' } });
+}));
+
+test('Dashboard quick capture preserves one retry identity across an ambiguous remount', () => fixture(async (page) => {
+  await page.evaluate(() => { window.cards = []; window.quickCaptureMode = 'unknown'; window.mountInbox(); });
+  const quick = page.locator('section[data-quick-capture]');
+  await quick.getByLabel('What should be remembered?').fill('Confirm the fictional site measure');
+  await quick.getByRole('button', { name: 'Capture', exact: true }).click();
+  await page.getByText('The transport outcome is unknown.', { exact: true }).waitFor();
+  const first = await page.evaluate(() => window.requests.filter(entry => entry.method.endsWith('open-loops.capture')).at(-1).params);
+  await page.evaluate(() => { window.quickCaptureMode = 'success'; window.mountInbox(); });
+  const remounted = page.locator('section[data-quick-capture]');
+  assert.equal(await remounted.getByLabel('What should be remembered?').inputValue(), 'Confirm the fictional site measure');
+  await remounted.getByRole('button', { name: 'Retry capture', exact: true }).click();
+  await page.getByText('Task captured and acknowledged.', { exact: true }).waitFor();
+  const second = await page.evaluate(() => window.requests.filter(entry => entry.method.endsWith('open-loops.capture')).at(-1).params);
+  assert.equal(second.logicalOperationId, first.logicalOperationId);
+  assert.equal(second.captureId, first.captureId);
+  assert.equal(second.capturedAt, first.capturedAt);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('command-center.quick-capture.v1')).operation), undefined);
 }));
 
 test('Dashboard preferences persist section visibility across a remount', () => fixture(async (page) => {
