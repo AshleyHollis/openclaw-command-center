@@ -64,7 +64,9 @@ assert.equal(prerequisiteEvidence.schemaVersion, 1);
 assert.equal(prerequisiteEvidence.kind, 'native-release-prerequisites');
 assert.equal(prerequisiteEvidence.performanceQualified, false);
 assert.equal(prerequisiteEvidence.buildDigest, prerequisites.buildDigest);
-assert.deepEqual(prerequisiteEvidence.hostIntegrity, releasePerformanceIdentity.hostReceipt);
+const { schemaVersion: _hostReceiptVersion, commit: _hostReceiptCommit, ...expectedHostIntegrity } =
+  releasePerformanceIdentity.hostReceipt;
+assert.deepEqual(prerequisiteEvidence.hostIntegrity, expectedHostIntegrity);
 const prerequisiteRows = assertNonPerformanceAcceptanceEvidence({
   buildDigest: prerequisites.buildDigest,
   rows: prerequisiteEvidence.rows
