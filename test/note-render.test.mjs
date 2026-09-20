@@ -28,6 +28,22 @@ test('formatted Reading preserves useful Markdown while blocking active content'
       return { heading: root.querySelector('h1')?.textContent, table: !!root.querySelector('table'), images: root.querySelectorAll('img').length, scripts: root.querySelectorAll('script').length, compromised: window.compromised === true, links: [...root.querySelectorAll('a')].map(link => link.getAttribute('href')) };
     });
     assert.deepEqual(result, { heading: 'Fictional heading', table: true, images: 0, scripts: 0, compromised: false, links: [] });
+
+    const large = await page.evaluate(async () => {
+      const { largeNoteChunkSize, largeNoteRenderThreshold, renderReadOnlyMarkdown, renderReadOnlySource } = await import('/note-render.mjs');
+      const root = document.querySelector('main');
+      const text = 'L'.repeat(largeNoteRenderThreshold + largeNoteChunkSize + 1);
+      renderReadOnlyMarkdown(root, text);
+      const reading = { mode: root.dataset.largeNote, chunks: root.querySelectorAll('[data-large-note-chunk]').length,
+        exact: root.textContent === text, markup: root.querySelector('p') === null };
+      renderReadOnlySource(root, text);
+      return { reading, source: { mode: root.dataset.largeNote, chunks: root.querySelectorAll('[data-large-note-chunk]').length,
+        exact: root.textContent === text } };
+    });
+    assert.deepEqual(large, {
+      reading: { mode: 'chunked', chunks: 6, exact: true, markup: true },
+      source: { mode: 'chunked', chunks: 6, exact: true },
+    });
   } finally {
     await browser?.close();
     await new Promise(resolve => server.close(resolve));

@@ -196,7 +196,12 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     readingMode.setAttribute('aria-pressed', String(reading)); sourceMode.setAttribute('aria-pressed', String(!reading));
     content.hidden = !reading; source.hidden = reading;
     if (!noteText) { content.replaceChildren(); source.textContent = ''; return; }
-    if (!reading) { source.textContent = noteText; return; }
+    if (!reading) {
+      const { renderReadOnlySource } = await import('./note-render.mjs');
+      if (signal.aborted || !presented || noteView !== 'source' || pending !== renderGeneration) return;
+      renderReadOnlySource(source, noteText);
+      return;
+    }
     content.textContent = 'Rendering Note…';
     try {
       const { renderReadOnlyMarkdown } = await import('./note-render.mjs');
