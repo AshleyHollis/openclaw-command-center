@@ -86,6 +86,60 @@ async function retainNativeJourneyStage(stage) {
   await writeFile(path.join(directory, 'journey-stage.json'), `${JSON.stringify({ schemaVersion: 1, stage })}\n`);
 }
 
+function nativeCatalogPageText(page) {
+  const first = page.total === 0 ? 0 : page.offset + 1;
+  return page.total === 0 ? 'No Notes.' : `Notes ${first}–${page.offset + page.notes.length} of ${page.total}.`;
+}
+
+async function readNativeCatalogPagesToPath({ gatewayUrl, credential, topicId, path: targetPath, signal }) {
+  const pages = [];
+  let offset = 0;
+  let cursor;
+  let total;
+  for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
+    const response = await requestAuthenticatedGateway({ gatewayUrl, credential,
+      method: 'command-center.v1.notes.browse',
+      params: { schemaVersion: 1, topicId, offset, limit: 50, includeDocuments: true, ...(cursor ? { cursor } : {}) }, signal });
+    const page = response?.result ?? response;
+    if (!Array.isArray(page?.notes) || page.offset !== offset || !Number.isSafeInteger(page.total) || page.total < 0 ||
+        typeof page.hasMore !== 'boolean' || typeof page.cursor !== 'string' ||
+        (page.hasMore && (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset || page.nextOffset >= page.total)) ||
+        (!page.hasMore && page.nextOffset !== null) || page.notes.length > 50 || offset + page.notes.length > page.total) {
+      throw new Error(`The authoritative Note page is invalid: ${JSON.stringify({ pageIndex, offset, total: page?.total, count: page?.notes?.length, nextOffset: page?.nextOffset, hasMore: page?.hasMore }).slice(0, 500)}`);
+    }
+    if (total === undefined) { total = page.total; cursor = page.cursor; }
+    else if (page.total !== total || page.cursor !== cursor) throw new Error('The authoritative Note catalogue changed while locating the exact fixture file.');
+    const bounded = { notes: page.notes.map(note => ({ path: note.path })), total: page.total, offset: page.offset,
+      nextOffset: page.hasMore ? page.nextOffset : null };
+    pages.push(bounded);
+    if (page.notes.some(note => note.path === targetPath)) return Object.freeze(pages);
+    if (!page.hasMore) break;
+    offset = page.nextOffset;
+  }
+  throw new Error(`The exact fixture file was not found in the bounded authoritative Note pages: ${JSON.stringify({ targetPath, pages: pages.map(page => ({ offset: page.offset, count: page.notes.length, total: page.total })) }).slice(0, 800)}`);
+}
+
+async function openNativeCatalogPageForPath({ workspace, pages, path: targetPath }) {
+  try {
+    for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+      const page = pages[pageIndex];
+      await workspace.getByText(nativeCatalogPageText(page), { exact: true }).waitFor({ timeout: 30_000 });
+      await workspace.getByText(`${page.notes.length} Topic files available.`, { exact: true }).waitFor({ timeout: 30_000 });
+      if (page.notes.some(note => note.path === targetPath)) return page;
+      await workspace.getByRole('button', { name: 'Next Notes', exact: true }).click();
+    }
+  } catch (error) {
+    const diagnostics = await workspace.evaluate((element) => ({
+      text: element.innerText.slice(0, 2_000),
+      statuses: [...element.querySelectorAll('[role="status"]')].map(node => node.textContent?.trim()).filter(Boolean).slice(0, 12),
+      pageControls: [...element.querySelectorAll('button')].filter(node => /^(Previous|Next) Notes$/u.test(node.textContent?.trim() ?? ''))
+        .map(node => ({ label: node.textContent?.trim(), disabled: node.disabled, visible: node.checkVisibility?.() ?? null }))
+    })).catch(diagnosticError => ({ diagnosticError: String(diagnosticError?.message ?? diagnosticError).slice(0, 500) }));
+    throw new Error(`The native Note page did not reconcile with the authoritative cursor-pinned catalogue: ${JSON.stringify(diagnostics).slice(0, 2_500)}`, { cause: error });
+  }
+  throw new Error(`The exact fixture file was not present after ${pages.length} bounded native Note pages.`);
+}
+
 // The isolated history source is pinned by an inventory digest before the
 // plugin starts. Its fixture transcript never overlaps an active Chat and is
 // imported through the same durable, read-only owner used by production.
@@ -1238,13 +1292,17 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const fixtureTopic = browserTopics.activeGroups[fixture.paraCategory].find((topic) => topic.topicId === fixture.topicId);
       assert.ok(fixtureTopic?.usable, 'The Notes workspace must start from a usable existing Topic.');
+      const planned = fixture.catalogNotes.find((entry) => entry.path === 'Z Projects/Alpha/Planning/Plan.md');
+      assert.ok(planned, 'The bounded catalogue must contain an exact nested duplicate filename.');
+      const catalogPages = await readNativeCatalogPagesToPath({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+        topicId: fixture.topicId, path: planned.path, signal });
       await retainNativeJourneyStage('open-topic-notes');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor({ timeout: 30_000 });
       const workspace = nativePage.locator('[data-topic-notes-workspace]');
       const filter = workspace.getByRole('searchbox', { name: 'Filter filenames', exact: true });
-      await workspace.getByText('Notes 1–50 of 120.', { exact: true }).waitFor({ timeout: 30_000 });
-      await workspace.getByText('50 Topic files available.', { exact: true }).waitFor({ timeout: 30_000 });
+      await workspace.getByText(nativeCatalogPageText(catalogPages[0]), { exact: true }).waitFor({ timeout: 30_000 });
+      await workspace.getByText(`${catalogPages[0].notes.length} Topic files available.`, { exact: true }).waitFor({ timeout: 30_000 });
       await retainNativeJourneyStage('read-overview');
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
       const noteContent = nativePage.getByRole('region', { name: 'Note content', exact: true });
@@ -1255,10 +1313,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(browserNote?.input.path, fixture.notePath);
       assert.equal(browserNote?.value.sourceReference?.topicId, fixture.topicId);
       await retainNativeJourneyStage('filename-filter');
+      const plannedPage = await openNativeCatalogPageForPath({ workspace, pages: catalogPages, path: planned.path });
       await filter.fill('Plan.md');
-      await workspace.getByText('1 of 50 Topic files match “Plan.md”.', { exact: true }).waitFor({ timeout: 30_000 });
-      const planned = fixture.catalogNotes.find((entry) => entry.path === 'Z Projects/Alpha/Planning/Plan.md');
-      assert.ok(planned, 'The bounded catalogue must contain an exact nested duplicate filename.');
+      const plannedMatches = plannedPage.notes.filter(note => note.path.toLocaleLowerCase().includes('plan.md')).length;
+      await workspace.getByText(`${plannedMatches} of ${plannedPage.notes.length} Topic files match “Plan.md”.`, { exact: true }).waitFor({ timeout: 30_000 });
       const plannedButton = workspace.getByRole('button', { name: `Read ${planned.path}`, exact: true });
       await tabTo(plannedButton);
       await plannedButton.press('Enter');
@@ -1328,6 +1386,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await selectNativeCategoryGrouping(page);
       progress('primary-sidebar-roster');
       await organizeNativeTopicConversations({ page, nativePage, fixture, observedRosters: () => scaleResponses.rosters });
+      const planned = catalog ? fixture.catalogNotes.find((entry) => entry.path === 'Z Projects/Alpha/Planning/Plan.md') : undefined;
+      if (catalog) assert.ok(planned, 'The bounded catalogue must contain an exact nested duplicate filename.');
+      const catalogPages = catalog ? await readNativeCatalogPagesToPath({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+        topicId: fixture.topicId, path: planned.path, signal }) : undefined;
       progress('primary-note-read');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
@@ -1344,12 +1406,12 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       if (catalog) {
         const workspace = nativePage.locator('[data-topic-notes-workspace]');
         const filter = workspace.getByRole('searchbox', { name: 'Filter filenames', exact: true });
-        await workspace.getByText('Notes 1–50 of 120.', { exact: true }).waitFor();
-        await workspace.getByText('50 Topic files available.', { exact: true }).waitFor();
+        await workspace.getByText(nativeCatalogPageText(catalogPages[0]), { exact: true }).waitFor();
+        await workspace.getByText(`${catalogPages[0].notes.length} Topic files available.`, { exact: true }).waitFor();
+        const plannedPage = await openNativeCatalogPageForPath({ workspace, pages: catalogPages, path: planned.path });
         await filter.fill('Plan.md');
-        await workspace.getByText('1 of 50 Topic files match “Plan.md”.', { exact: true }).waitFor();
-        const planned = fixture.catalogNotes.find((entry) => entry.path === 'Z Projects/Alpha/Planning/Plan.md');
-        assert.ok(planned, 'The bounded catalogue must contain an exact nested duplicate filename.');
+        const plannedMatches = plannedPage.notes.filter(note => note.path.toLocaleLowerCase().includes('plan.md')).length;
+        await workspace.getByText(`${plannedMatches} of ${plannedPage.notes.length} Topic files match “Plan.md”.`, { exact: true }).waitFor();
         const plannedButton = workspace.getByRole('button', { name: `Read ${planned.path}`, exact: true });
         await tabTo(plannedButton);
         await plannedButton.press('Enter');
@@ -1359,7 +1421,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         await nativePage.getByRole('region', { name: 'Note content', exact: true }).waitFor();
         await retainTopicNotesScreenshot(page, 'topic-notes-1366');
         await filter.fill('');
-        await workspace.getByText('50 Topic files available.', { exact: true }).waitFor();
+        await workspace.getByText(`${plannedPage.notes.length} Topic files available.`, { exact: true }).waitFor();
       }
       assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
       assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
