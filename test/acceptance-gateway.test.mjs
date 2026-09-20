@@ -24,6 +24,7 @@ for (const kind of ['close', 'error', 'timeout', 'abort', 'already-closed']) tes
     assert.equal(error.cause, requestSite);
     assert.match(error.message, /method-response.*fictional\.read/);
     assert.doesNotMatch(error.message, /PRIVATE_REASON/);
+    assert.equal(error.category, kind === 'timeout' ? 'transport-timeout' : undefined);
     return true;
   });
   assert.equal(socket.listeners.size, 0);
