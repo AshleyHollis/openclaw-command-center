@@ -382,6 +382,17 @@ test('Planner uses the full workspace and exposes every card in real Kanban lane
   await page.getByRole('heading', { name: 'Ready item 25', exact: true }).waitFor();
 }));
 
+test('Topic mini dashboard counts the complete board rather than its capacity preview', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const ready = Array.from({ length: 25 }, (_, index) => ({ loopId: `topic-count-${index + 1}`, kind: 'general', topicId: 'topic-fictional-renovation', title: `Topic item ${index + 1}`, state: 'confirmed', evidenceCount: 1, revision: 1, planning: { importance: 'low', importanceOrigin: 'processing', contexts: [], dependencies: [], someday: false } }));
+    window.openLoops = { total: ready.length, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [], workspace: { today: { mandatory: [], planned: [] }, upcoming: [], capacity: ready.slice(0, 20), capacityTotal: ready.length, waiting: [], someday: [], review: { batch: [], remaining: 0, eligibleTotal: 0 }, board: { ready, doing: [], waiting: [], done: [], suggestions: [] }, agenda: [] } };
+    window.mountInbox();
+  });
+  await page.getByText('25 current items across the complete workspace board.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'View 25 matching items in Planner', exact: true }).waitFor();
+}));
+
 test('Dashboard quick capture saves notes quietly without turning them into obligations', () => fixture(async (page) => {
   await page.evaluate(() => { window.cards = []; window.mountInbox(); });
   const quick = page.locator('section[data-quick-capture]');

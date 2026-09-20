@@ -930,12 +930,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
             const topicCard = element('section'); topicCard.className = 'cc-module'; topicCard.dataset.dashboardSection = 'topic'; topicCard.append(element('h3', topic.name));
             const openLoops = dashboard.openLoops ?? {};
             const projected = openLoops.workspace ?? {};
-            const topicLoops = [
+            const completeBoard = Object.values(projected.board ?? {}).flatMap(openLoopsArray);
+            const topicLoops = (completeBoard.length ? completeBoard : [
               ...openLoopsArray(projected.today?.mandatory), ...openLoopsArray(projected.today?.planned), ...openLoopsArray(projected.upcoming), ...openLoopsArray(projected.capacity), ...openLoopsArray(projected.waiting),
               ...openLoopsArray(openLoops.highlighted), ...openLoopsArray(openLoops.comingUp), ...openLoopsArray(openLoops.waiting), ...openLoopsArray(openLoops.suggested), ...openLoopsArray(openLoops.reconciliation)
-            ].filter(item => item.topicId === topic.topicId);
+            ]).filter(item => item.topicId === topic.topicId);
             const topicTotal = new Set(topicLoops.map(item => item.loopId)).size;
-            topicCard.append(element('p', `${topicTotal} current item${topicTotal === 1 ? '' : 's'} across Focus, Upcoming and Waiting.`));
+            topicCard.append(element('p', `${topicTotal} current item${topicTotal === 1 ? '' : 's'} across the complete workspace board.`));
             const openTopicWork = element('button', `View ${topicTotal} matching item${topicTotal === 1 ? '' : 's'} in Planner`); openTopicWork.type = 'button'; openTopicWork.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'planner', params: { topicId: topic.topicId } }); }, { signal }); topicCard.append(openTopicWork);
             const openTopic = element('button', `Open ${topic.name}`); openTopic.type = 'button'; openTopic.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'topic', params: { topicId: topic.topicId } }); }, { signal }); topicCard.append(openTopic); dashboards.append(topicCard);
           }
