@@ -15,7 +15,6 @@
     "dompurify": "3.4.15",
     "markdown-it": "15.0.2",
     "openclaw": "2026.9.4",
-    "pdfjs-dist": "6.3.289",
     "playwright": "1.62.1",
     "playwright-core": "1.62.1"
   },
@@ -102,5 +101,8 @@
     "compat": {
       "pluginApi": "=2026.9.4"
     }
+  },
+  "dependencies": {
+    "pdfjs-dist": "6.3.289"
   }
 }
