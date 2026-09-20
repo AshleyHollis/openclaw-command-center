@@ -121,8 +121,10 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   onProgress('large-note-read');
   started = now();
   await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).click();
+  onProgress('large-note-clicked');
   const content = nativePage.getByRole('region', { name: 'Note content', exact: true });
   await ready(async () => (await content.textContent())?.length === 8_388_609);
+  onProgress('large-note-rendered');
   assert.equal(await content.textContent(), bootstrap.noteText);
   observations.largeNoteReadMs = now() - started;
   assert.equal(Buffer.byteLength(await content.textContent(), 'utf8'), 8_388_609);
