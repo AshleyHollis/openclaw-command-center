@@ -113,7 +113,9 @@ test('native side panel selection ignores a hidden populated predecessor', { tim
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
     const page = await browser.newPage();
-    await page.setContent('<div hidden class="sidebar-region__right-runtime"><div class="side-panel"><div class="side-panel__header-tabs"><button aria-label="Add side panel tab">Hidden add</button></div></div></div><div class="sidebar-region__right-runtime"><div class="side-panel"><div class="side-panel-empty--selector"><div class="side-panel-empty__types"><button class="side-panel-empty__type">Topic Notes</button></div></div></div></div>');
+    await page.setContent('<div hidden class="sidebar-region__right-runtime"><div class="side-panel"><div class="side-panel__header-tabs"><button aria-label="Add side panel tab">Hidden add</button></div></div></div><div class="sidebar-region__right-runtime" style="width:400px;height:200px"><div class="side-panel" style="position:relative;width:0;height:0;overflow:visible"><div class="side-panel-empty--selector" style="position:absolute;width:300px;height:100px"><div class="side-panel-empty__types"><button class="side-panel-empty__type">Topic Notes</button></div></div></div></div>');
+    assert.equal(await page.locator('.sidebar-region__right-runtime:not([hidden]) .side-panel').isVisible(), false);
+    assert.equal(await page.locator('.sidebar-region__right-runtime:not([hidden]) .side-panel-empty--selector').isVisible(), true);
     await page.evaluate(() => {
       document.querySelector('.sidebar-region__right-runtime:not([hidden]) .side-panel-empty__type').addEventListener('click', () => { document.body.dataset.selectedPanel = 'visible-empty'; });
     });
@@ -126,7 +128,9 @@ test('native side panel selection uses the visible populated panel menu', { time
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
     const page = await browser.newPage();
-    await page.setContent('<div hidden class="sidebar-region__right-runtime"><div class="side-panel"><div class="side-panel-empty--selector"><div class="side-panel-empty__types"><button class="side-panel-empty__type">Topic Notes</button></div></div></div></div><div class="sidebar-region__right-runtime"><div class="side-panel"><div data-region-header="side"><div class="side-panel__header-tabs"><button aria-label="Add side panel tab">Add</button><wa-dropdown-item hidden>Topic Notes</wa-dropdown-item></div></div></div></div>');
+    await page.setContent('<div hidden class="sidebar-region__right-runtime"><div class="side-panel"><div class="side-panel-empty--selector"><div class="side-panel-empty__types"><button class="side-panel-empty__type">Topic Notes</button></div></div></div></div><div class="sidebar-region__right-runtime" style="width:400px;height:200px"><div class="side-panel" style="position:relative;width:0;height:0;overflow:visible"><div data-region-header="side" style="position:absolute;width:300px;height:100px"><div class="side-panel__header-tabs"><button aria-label="Add side panel tab">Add</button><wa-dropdown-item hidden>Topic Notes</wa-dropdown-item></div></div></div></div>');
+    assert.equal(await page.locator('.sidebar-region__right-runtime:not([hidden]) .side-panel').isVisible(), false);
+    assert.equal(await page.locator('.sidebar-region__right-runtime:not([hidden]) [data-region-header="side"]').isVisible(), true);
     await page.evaluate(() => {
       const region = document.querySelector('.sidebar-region__right-runtime:not([hidden])');
       region.querySelector('[aria-label="Add side panel tab"]').addEventListener('click', () => { region.querySelector('wa-dropdown-item').hidden = false; });

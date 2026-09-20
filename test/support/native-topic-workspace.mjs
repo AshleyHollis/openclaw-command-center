@@ -141,16 +141,16 @@ export async function organizeNativeTopicConversations({ page, nativePage, fixtu
 
 export async function selectNativeSidePanelType({ page, label, onStage } = {}) {
   await onStage?.('inspect-side-panel');
-  const sidebar = page.locator('.sidebar-region__right-runtime:visible .side-panel:visible').first();
-  const hasHeader = await sidebar.locator('[data-region-header="side"]').isVisible({ timeout: 10_000 });
-  const hasSelector = await sidebar.locator('.side-panel-empty--selector').isVisible({ timeout: 10_000 });
-  if (!hasHeader && !hasSelector) {
+  const rightRuntime = page.locator('.sidebar-region__right-runtime:visible').first();
+  const surface = rightRuntime.locator('.side-panel-empty--selector:visible, [data-region-header="side"]:visible').first();
+  if (!await surface.isVisible({ timeout: 10_000 })) {
     await onStage?.('open-side-panel');
     await page.locator('.chat-side-panel-toggle:visible').first().click({ timeout: 30_000 });
   }
   await onStage?.('select-topic-notes-tab');
   try {
-    await sidebar.locator('.side-panel-empty__types:visible, .side-panel__header-tabs:visible').first().waitFor({ timeout: 30_000 });
+    await surface.waitFor({ state: 'visible', timeout: 30_000 });
+    const sidebar = surface.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " side-panel ")][1]');
     const emptyChoice = sidebar.locator('.side-panel-empty__type:visible').filter({ hasText: label });
     if (await emptyChoice.isVisible()) {
       await emptyChoice.click({ timeout: 30_000 });
