@@ -21,12 +21,16 @@ jobs:
   qualify:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(inputs.scenario == '' && '["native-release-prerequisites","scale-performance"]' || format('[{0}]', toJSON(inputs.scenario))) }}
     env:
       IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:588687ab18dacc606fa3d06c35301f85e435d088d8793f8d636e5bdb88d32564
       OPENCLAW_COMMIT: 8e58ed3d14ac21b9046bf19c96c7eb86d858cdee
       OPENCLAW_VERSION: 2026.9.5
       COMMAND_CENTER_CONTROLLER_SOURCE_ROOT: ${{ github.workspace }}/_openclaw-source
-      COMMAND_CENTER_ACCEPTANCE_SCENARIO: ${{ inputs.scenario }}
+      COMMAND_CENTER_ACCEPTANCE_SCENARIO: ${{ matrix.scenario }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -146,7 +150,7 @@ jobs:
           mountpoint="$RUNNER_TEMP/command-center-acceptance"
           if mountpoint -q "$mountpoint"; then sudo umount "$mountpoint"; fi
 
-      - name: Seal qualification receipt
+      - name: Seal qualification slice
         if: inputs.scenario == ''
         run: |
           set -euo pipefail
@@ -157,29 +161,76 @@ jobs:
           import { readBuiltReceipt } from './src/build.mjs';
           import { scanPublicEvidence } from './src/safety.mjs';
 
-          const marker = 'acceptance-result=';
+          const scenario = process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO;
+          const marker = scenario === 'native-release-prerequisites' ? 'acceptance-prerequisites=' : 'acceptance-scenario-result=';
           const log = await readFile(path.join(process.env.RUNNER_TEMP, 'qualification.log'), 'utf8');
           const lines = log.split(/\r?\n/u).filter(line => line.includes(marker));
-          assert.equal(lines.length, 1, 'qualification must emit one canonical completion receipt');
-          const acceptance = JSON.parse(lines[0].slice(lines[0].indexOf(marker) + marker.length));
+          assert.equal(lines.length, 1, 'qualification slice must emit one canonical completion receipt');
+          const evidence = JSON.parse(lines[0].slice(lines[0].indexOf(marker) + marker.length));
           const build = await readBuiltReceipt();
-          assert.equal(acceptance.outcome, 'passed');
-          assert.equal(acceptance.buildDigest, build.digest);
+          assert.equal(evidence.buildDigest, build.digest);
+          if (scenario === 'native-release-prerequisites') {
+            assert.equal(evidence.kind, 'native-release-prerequisites');
+            assert.equal(evidence.performanceQualified, false);
+          } else {
+            assert.equal(evidence.outcome, 'passed');
+            assert.equal(evidence.scenario, 'scale-performance');
+            assert.deepEqual(evidence.scenarioIds, ['scale-performance']);
+            assert.equal(evidence.performanceQualified, false);
+          }
+          const finalizationMarker = 'acceptance-finalization=';
+          const finalization = scenario === 'scale-performance' ? log.split(/\r?\n/u)
+            .filter(line => line.includes(finalizationMarker))
+            .map(line => JSON.parse(line.slice(line.indexOf(finalizationMarker) + finalizationMarker.length))) : undefined;
           const receipt = {
             schemaVersion: 1,
+            kind: 'command-center-release-qualification-slice',
+            scenario,
             sourceCommit: process.env.GITHUB_SHA,
             workflowRun: process.env.GITHUB_RUN_ID,
             hostImage: process.env.IMAGE,
-            acceptance
+            buildDigest: build.digest,
+            evidence,
+            ...(finalization ? { finalization } : {})
           };
-          scanPublicEvidence([JSON.stringify(receipt)], { label: 'qualification-receipt' });
-          const output = path.join(process.env.RUNNER_TEMP, 'qualification');
+          scanPublicEvidence([JSON.stringify(receipt)], { label: 'qualification-slice-receipt' });
+          const output = path.join(process.env.RUNNER_TEMP, 'qualification-slice');
           await mkdir(output, { recursive: true });
-          await writeFile(path.join(output, 'receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });
+          await writeFile(path.join(output, `${scenario}.json`), `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });
           NODE
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: inputs.scenario == ''
+        with:
+          name: command-center-release-slice-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/qualification-slice/${{ matrix.scenario }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  seal:
+    if: inputs.scenario == ''
+    needs: qualify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427
+        with:
+          pattern: command-center-release-slice-*-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/qualification-slices
+          merge-multiple: true
+
+      - name: Seal coherent qualification receipt
+        env:
+          IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:588687ab18dacc606fa3d06c35301f85e435d088d8793f8d636e5bdb88d32564
+          QUALIFICATION_SLICE_DIRECTORY: ${{ runner.temp }}/qualification-slices
+          QUALIFICATION_OUTPUT_DIRECTORY: ${{ runner.temp }}/qualification
+        run: node scripts/seal-release-qualification.mjs
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: command-center-release-qualification-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/qualification/receipt.json
@@ -187,6 +238,5 @@ jobs:
           retention-days: 14
 
       - name: Record qualification boundary
-        if: inputs.scenario == ''
         run: |
-          printf '%s\n' 'Coherent native release qualification passed for the exact source, plugin build, host receipt, image digest, browser and frozen performance baseline.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Coherent native release qualification passed on fresh prerequisite and performance workers for the exact source, plugin build, host receipt, image digest, browser and frozen performance baseline.' >> "$GITHUB_STEP_SUMMARY"
