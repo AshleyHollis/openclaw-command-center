@@ -16,6 +16,9 @@ const physical = stat => `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
 test('pinned Source Recovery migrates a v1 Folder identity to v2 and resumes an interrupted operation', { skip: !linux }, async t => {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), 'folder-identity-migration-'));
   t.after(() => rm(stateDirectory, { recursive: true, force: true }));
+  const previousStateDirectory = process.env.OPENCLAW_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = stateDirectory;
+  t.after(() => { if (previousStateDirectory === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = previousStateDirectory; });
   const noteRoot = path.join(stateDirectory, 'Notes');
   const folder = path.join(noteRoot, 'Projects', 'Fictional Migration');
   await mkdir(folder, { recursive: true });
