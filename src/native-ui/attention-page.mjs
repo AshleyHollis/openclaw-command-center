@@ -38,6 +38,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   style.textContent = `
     .cc-toolbar{display:flex;gap:.65rem;flex-wrap:wrap;align-items:center;margin-block:.5rem 1rem}
     .cc-workspace{display:grid;grid-template-columns:minmax(0,3fr) minmax(18rem,2fr);gap:1rem;align-items:start}
+    .cc-workspace[data-page-mode="planner"]{grid-template-columns:minmax(0,1fr)}
     .cc-focus,.cc-dashboards{min-width:0;display:grid;gap:1rem}
     .cc-module,.cc-dashboards>details{border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:.8rem;padding:1rem;background:color-mix(in srgb,Canvas 96%,currentColor 4%);box-shadow:0 1px 2px color-mix(in srgb,currentColor 8%,transparent)}
     .cc-module>h2,.cc-module>h3{margin-block-start:0}
@@ -45,6 +46,9 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     .cc-mini-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}
     .cc-focus>details,.cc-focus>article{border:1px solid color-mix(in srgb,currentColor 14%,transparent);border-radius:.65rem;padding:.85rem}
     .cc-toolbar button,.cc-module button{min-height:2.25rem;padding-inline:.85rem}
+    .cc-planner-board{display:grid;grid-template-columns:repeat(5,minmax(16rem,1fr));gap:1rem;overflow-x:auto;padding-block:.75rem;scrollbar-gutter:stable}
+    .cc-planner-lane{min-width:0;border:1px solid color-mix(in srgb,currentColor 14%,transparent);border-radius:.65rem;padding:.75rem;background:color-mix(in srgb,Canvas 98%,currentColor 2%)}
+    .cc-planner-lane>h3{margin-block-start:0;position:sticky;top:0;background:Canvas;padding-block:.25rem;z-index:1}
     article{border-block-start:1px solid color-mix(in srgb,currentColor 14%,transparent);padding-block:.8rem}
     @media(max-width:850px){.cc-command-center-page{box-sizing:border-box;padding-inline-start:3rem}.cc-workspace{grid-template-columns:1fr}.cc-mini-grid{grid-template-columns:1fr}.cc-dashboard-jump{display:inline-block}}
     @media(min-width:851px){.cc-dashboard-jump{display:none}}
@@ -613,9 +617,15 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       }
       if (planner) {
         const board = element('details'); board.open = true; board.dataset.topicBoard = 'true'; board.append(element('summary', 'Kanban board'));
+        const lanes = element('div'); lanes.className = 'cc-planner-board'; lanes.setAttribute('aria-label', 'Kanban lanes');
         for (const [key, label] of [['ready', 'Ready'], ['doing', 'Doing'], ['waiting', 'Waiting'], ['done', 'Done'], ['suggestions', 'Suggestions']]) {
-          const cards = workspace.board?.[key] ?? []; board.append(element('h3', `${label} (${cards.length})`)); for (const card of cards.slice(0, 20)) renderPlanningCard(board, card, label);
+          const cards = workspace.board?.[key] ?? [];
+          const lane = element('section'); lane.className = 'cc-planner-lane'; lane.dataset.boardLane = key; lane.append(element('h3', `${label} (${cards.length})`));
+          if (!cards.length) lane.append(element('p', `No ${label.toLowerCase()} items.`));
+          for (const card of cards) renderPlanningCard(lane, card, label);
+          lanes.append(lane);
         }
+        board.append(lanes);
         primary.append(board);
         const agenda = element('details'); agenda.dataset.agenda = 'true'; agenda.append(element('summary', `Agenda (${workspace.agenda?.length ?? 0})`));
         for (const entry of workspace.agenda ?? []) agenda.append(element('p', `${formatInstant(entry.at)} · ${entry.kind} · ${entry.item?.title ?? 'Item'}`));
@@ -873,7 +883,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       if (!Array.isArray(dashboard?.attention) || !Array.isArray(dashboard?.inProgress)) throw new Error('The Attention destination is unavailable.');
       const cards = [...dashboard.attention, ...dashboard.inProgress];
       if (!recordId) {
-        const workspace = element('div'); workspace.className = 'cc-workspace';
+        const workspace = element('div'); workspace.className = 'cc-workspace'; workspace.dataset.pageMode = pageMode;
         const focus = element('section'); focus.className = 'cc-focus'; focus.setAttribute('aria-label', pageMode === 'planner' ? 'Planner workspace' : 'Focus');
         const dashboards = element('aside'); dashboards.className = 'cc-dashboards'; dashboards.id = 'command-center-dashboards'; dashboards.setAttribute('aria-label', 'Dashboards');
         if (pageMode === 'dashboard') {
@@ -910,7 +920,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const filter = element('section'); filter.className = 'cc-module'; filter.append(element('h2', `Planner for ${filteredTopic?.name ?? topicFilter}`), element('p', 'Showing this Topic across the complete board, agenda and open-loop views.'));
           const clear = element('button', 'Show all Topics'); clear.type = 'button'; clear.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'planner' }); }, { signal }); filter.append(clear); focus.append(filter);
         }
-        workspace.append(focus, dashboards); content.append(workspace);
+        workspace.append(focus); if (pageMode === 'dashboard') workspace.append(dashboards); content.append(workspace);
         if (cards.length) focus.append(element('h2', 'Needs Attention'));
         for (const card of cards) {
           if (!nonBlank(card.notificationRecordId)) continue;

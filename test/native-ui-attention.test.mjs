@@ -362,6 +362,22 @@ test('combined Dashboard uses wide Focus and dashboard regions and keeps the Kan
   assert.equal(await page.getByText('Intake coverage', { exact: true }).count(), 0);
 }));
 
+test('Planner uses the full workspace and exposes every card in real Kanban lanes', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const ready = Array.from({ length: 25 }, (_, index) => ({ loopId: `planner-ready-${index + 1}`, kind: 'general', topicId: 'topic-fictional-renovation', title: `Ready item ${index + 1}`, state: 'confirmed', evidenceCount: 1, revision: 1, planning: { importance: 'normal', importanceOrigin: 'processing', contexts: [], dependencies: [], someday: false } }));
+    window.openLoops = { total: ready.length, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [], workspace: { today: { mandatory: [], planned: [] }, upcoming: [], capacity: ready.slice(0, 20), capacityTotal: ready.length, waiting: [], someday: [], review: { batch: [], remaining: 0, eligibleTotal: 0 }, board: { ready, doing: [], waiting: [], done: [], suggestions: [] }, agenda: [] } };
+    window.mountPlanner();
+  });
+  const workspace = page.locator('.cc-workspace');
+  await page.getByText('Kanban board', { exact: true }).waitFor();
+  assert.equal(await workspace.getAttribute('data-page-mode'), 'planner');
+  assert.equal(await workspace.locator('.cc-dashboards').count(), 0);
+  assert.equal(await page.locator('.cc-planner-board').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length), 5);
+  assert.equal(await page.locator('[data-board-lane="ready"] article[data-workspace-loop-id]').count(), 25);
+  await page.getByRole('heading', { name: 'Ready item 25', exact: true }).waitFor();
+}));
+
 test('Dashboard quick capture acknowledges tasks and does not turn notes into obligations', () => fixture(async (page) => {
   await page.evaluate(() => { window.cards = []; window.mountInbox(); });
   const quick = page.locator('section[data-quick-capture]');
