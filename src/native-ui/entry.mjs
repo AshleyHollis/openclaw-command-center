@@ -165,6 +165,9 @@ export default {
       host.ui.selectReplacement('session-files', 'topic-files');
       host.ui.selectReplacement('session-list', 'topic-sidebar');
     }
+    const topicPanel = typeof host.ui.registerPanel === 'function'
+      ? host.ui.registerPanel({ id: 'topic-notes', label: 'Topic Notes', mount: (container, context) => mountTopicNotesPanel(container, context, state) })
+      : () => {};
     // Topic browsing now lives beside native Chat. Keep this page as the
     // explicit administrative/recovery destination rather than presenting a
     // second competing workspace in the primary navigation.
@@ -175,6 +178,6 @@ export default {
     const navigation = host.ui.registerNavigation({ id: 'topics', label: 'Manage Topics', page: { id: 'topics' }, order: 10 });
     const attention = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerPage({ id: 'attention', label: 'Attention', mount: mountAttentionPage }) : () => {};
     const attentionNavigation = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerNavigation({ id: 'attention', label: 'Attention', page: { id: 'attention' }, order: 9 }) : () => {};
-    return () => { state.retire(); sidebarState.retire(); if (replacements) { host.ui.selectReplacement('session-files', null); host.ui.selectReplacement('session-list', null); } attentionNavigation(); attention(); topicSidebar(); topicFiles(); historyNavigation(); histories(); navigation(); topic(); page(); };
+    return () => { state.retire(); sidebarState.retire(); if (replacements) { host.ui.selectReplacement('session-files', null); host.ui.selectReplacement('session-list', null); } attentionNavigation(); attention(); topicPanel(); topicSidebar(); topicFiles(); historyNavigation(); histories(); navigation(); topic(); page(); };
   }
 };

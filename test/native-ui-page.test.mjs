@@ -132,6 +132,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
         ui: {
           registerReplacement: (value) => { registrations.set(`replacement:${value.id}`, value); return () => registrations.delete(`replacement:${value.id}`); },
           selectReplacement: () => {},
+          registerPanel: (value) => { registrations.set(`panel:${value.id}`, value); return () => registrations.delete(`panel:${value.id}`); },
           registerPage: (value) => { registrations.set(`page:${value.id}`, value); return () => registrations.delete(`page:${value.id}`); },
           registerNavigation: (value) => { registrations.set(`navigation:${value.id}`, value); return () => registrations.delete(`navigation:${value.id}`); }
         }
@@ -139,9 +140,10 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       window.deactivate = plugin.activate(host);
       window.registrationCount = () => registrations.size;
       const panel = scenario.includes('panel');
+      const registeredPanel = scenario === 'Notes panel';
       context = { host, signal: lifetime.signal, props: panel ? { sessionKey: 'agent:fictional:chat', agentId: 'fictional' } : {}, presented: true,
         ...(scenario === 'Missing panel promotion' ? {} : { panel: { showInMain: () => window.promoted++ } }) };
-      view = registrations.get(panel ? 'replacement:topic-files' : 'page:topics').mount(document.querySelector('#mount'), context);
+      view = registrations.get(registeredPanel ? 'panel:topic-notes' : panel ? 'replacement:topic-files' : 'page:topics').mount(document.querySelector('#mount'), context);
       window.selectUnbound = () => { context = { ...context, props: { sessionKey: 'agent:fictional:unbound', agentId: 'fictional' } }; view.update(context); };
       window.setPresented = (presented) => view.update?.({ ...context, presented });
       window.setConnected = (connected) => { host.connection = { ...host.connection, connected }; for (const listener of subscribers) listener(); };
@@ -398,7 +400,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     await page.waitForFunction(() => window.opened.length === 1, null, { timeout: 2000 });
     assert.deepEqual(await page.evaluate(() => window.opened), [{ sessionKey: 'agent:fictional:chat', agentId: 'fictional' }]);
     assert.equal(await page.locator('textarea,[contenteditable=true],iframe').count(), 0);
-    assert.equal(await page.evaluate(() => window.registrationCount()), 9);
+    assert.equal(await page.evaluate(() => window.registrationCount()), 10);
     await page.evaluate(() => window.disposeNative());
     assert.equal(await page.evaluate(() => window.registrationCount()), 0);
     assert.equal(await page.locator('#mount').innerText(), '');
