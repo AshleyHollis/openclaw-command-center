@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: AshleyHollis/openclaw
-          ref: 14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971
+          ref: db18951ddcd90fbe04f83c9709a95d9797a723b2
           fetch-depth: 1
           persist-credentials: false
           path: _openclaw-source
@@ -55,7 +55,7 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ inputs.image_digest || 'sha256:a404310cbd7a347b299efe0dc097ddba5861da1a1c14455f58d5c803b1ee5ce4' }}
           IMAGE_REPOSITORY: ghcr.io/ashleyhollis/openclaw
-          OPENCLAW_COMMIT: 14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971
+          OPENCLAW_COMMIT: db18951ddcd90fbe04f83c9709a95d9797a723b2
           OPENCLAW_VERSION: 2026.9.5
         run: |
           set -euo pipefail
