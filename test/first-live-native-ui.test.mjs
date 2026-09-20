@@ -329,9 +329,9 @@ for (const mismatch of ['Id', 'Reference']) test(`an acknowledgement with the wr
   assert.deepEqual(await page.evaluate(() => window.posts.map(row => row.body.action)), ['conversations.creation.inspect', 'conversations.creation.acknowledge']);
 }, { start: 'topic', recovery: recoveredCreation('applied') }));
 
-test('default native activation exposes existing Topics without Attention or Topic provisioning', { timeout: 30000 }, () => fixture(async page => {
+test('default native activation exposes existing Topics and quiet Attention without Topic provisioning', { timeout: 30000 }, () => fixture(async page => {
   await page.getByRole('button', { name: 'View Notes for Fictional project' }).waitFor();
-  assert.deepEqual(await page.evaluate(() => window.registeredPages), ['topics', 'topic', 'histories']);
+  assert.deepEqual(await page.evaluate(() => window.registeredPages), ['topics', 'topic', 'histories', 'attention']);
   assert.equal(await page.locator('form').count(), 0);
   assert.equal(await page.getByRole('button', { name: 'Create Topic', exact: true }).count(), 0);
   await page.getByRole('button', { name: 'Refresh Topics' }).focus(); await page.keyboard.press('Enter');

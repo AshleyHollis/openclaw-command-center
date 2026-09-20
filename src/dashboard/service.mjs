@@ -1,6 +1,7 @@
 import { sourceError } from '../sources/errors.mjs';
 import { opaqueNotificationId } from '../notifications/preview.mjs';
 import { openLoopReminderReferenceId, zonedDateAtNine } from '../open-loops/reminder-coordinator.mjs';
+import { projectCapacityWorkspace } from '../open-loops/capacity-workspace.mjs';
 
 const DEFAULT_ACTIVITY_LIMIT = 50;
 const MAX_ACTIVITY_LIMIT = 50;
@@ -85,6 +86,18 @@ function compactOpenLoop(projected) {
     ...(loop.dueDate === undefined ? {} : { dueDate: loop.dueDate, dueTimeZone: loop.dueTimeZone }),
     ...(projected.reason === undefined ? {} : { reason: projected.reason }),
     ...(projected.whyNow === undefined ? {} : { whyNow: projected.whyNow.slice(0, 500) }),
+    ...(loop.attention === undefined ? {} : { planning: Object.freeze({
+      importance: loop.attention.importance ?? 'normal',
+      importanceOrigin: loop.attention.importanceOrigin ?? 'processing',
+      ...(loop.attention.plannedAt ? { plannedAt: loop.attention.plannedAt } : {}),
+      ...(loop.attention.effortMinutes ? { effortMinutes: loop.attention.effortMinutes } : {}),
+      contexts: Object.freeze(asArray(loop.attention.contexts)),
+      dependencies: Object.freeze(asArray(loop.attention.dependencies)),
+      ...(loop.attention.provenance ? { provenance: loop.attention.provenance } : {}),
+      ...(loop.attention.confidence === undefined ? {} : { confidence: loop.attention.confidence }),
+      ...(loop.attention.lastConsideredAt ? { lastConsideredAt: loop.attention.lastConsideredAt } : {}),
+      someday: loop.attention.someday === true
+    }) }),
     actions: Object.freeze(asArray(projected.actions).slice(0, 4)),
     evidenceCount: loop.evidenceObservationIds.length,
     revision: loop.revision
@@ -102,6 +115,15 @@ function openLoopProjection(metadata, serverTime) {
   const ordinary = attention.filter(item => item.reason !== 'evidence-conflict').slice(0, HIGHLIGHTED_OPEN_LOOP_LIMIT);
   const highlighted = [...conflicts, ...ordinary].filter((item, index, values) => values.findIndex(candidate => candidate.loop.loopId === item.loop.loopId) === index).map(compactOpenLoop);
   const total = Object.values(inbox).reduce((sum, values) => sum + values.length, 0);
+  const workspace = projectCapacityWorkspace(metadata.listOpenLoops(), { now: serverTime });
+  const compactList = values => Object.freeze(values.map(loop => compactOpenLoop({ loop })));
+  const capacityWorkspace = Object.freeze({
+    today: Object.freeze({ mandatory: compactList(workspace.today.mandatory), planned: compactList(workspace.today.planned) }),
+    upcoming: compactList(workspace.upcoming), capacity: compactList(workspace.capacity), waiting: compactList(workspace.waiting), someday: compactList(workspace.someday),
+    review: Object.freeze({ batch: compactList(workspace.review.batch), remaining: workspace.review.remaining, eligibleTotal: workspace.review.eligibleTotal }),
+    board: Object.freeze({ ready: compactList(workspace.board.ready), doing: compactList(workspace.board.doing), waiting: compactList(workspace.board.waiting), done: compactList(workspace.board.done), suggestions: compactList(workspace.board.suggestions) }),
+    agenda: Object.freeze(workspace.agenda.map(entry => Object.freeze({ kind: entry.kind, at: entry.at, item: compactOpenLoop({ loop: entry.loop }) })))
+  });
   return Object.freeze({
     total,
     attentionTotal: attention.length + activeStageIds.size,
@@ -117,7 +139,8 @@ function openLoopProjection(metadata, serverTime) {
     deferredTotal: inbox.deferred.length,
     deferred: Object.freeze(inbox.deferred.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
     reconciliationTotal: inbox.reconciliation.length,
-    reconciliation: Object.freeze(inbox.reconciliation.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop))
+    reconciliation: Object.freeze(inbox.reconciliation.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    workspace: capacityWorkspace
   });
 }
 

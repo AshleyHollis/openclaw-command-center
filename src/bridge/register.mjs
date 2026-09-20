@@ -19,6 +19,7 @@ const schedulerRuntimeMethods = new Set([
   'command-center.v1.dashboard.get',
   'command-center.v1.open-loops.decide',
   'command-center.v1.open-loops.payment-status',
+  'command-center.v1.open-loops.organize',
   'command-center.v1.open-loops.renovation-requirement',
   'command-center.v1.open-loops.renovation-purchase',
   'command-center.v1.open-loops.renovation-purchase-correction',
@@ -29,6 +30,7 @@ const schedulerRuntimeMethods = new Set([
 const openLoopSchedulerRuntimeMethods = new Set([
   'command-center.v1.open-loops.decide',
   'command-center.v1.open-loops.payment-status',
+  'command-center.v1.open-loops.organize',
   'command-center.v1.open-loops.renovation-requirement',
   'command-center.v1.open-loops.renovation-purchase',
   'command-center.v1.open-loops.renovation-purchase-correction',
@@ -236,6 +238,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.open-loops.intake-selected': (service, params) => service.openLoopsIngestSelected(params),
   'command-center.v1.open-loops.decide': (service, params, runtime) => service.openLoopsDecide(params, runtime),
   'command-center.v1.open-loops.payment-status': (service, params, runtime) => service.openLoopsPaymentStatus(params, runtime),
+  'command-center.v1.open-loops.organize': (service, params, runtime) => service.openLoopsOrganize(params, runtime),
   'command-center.v1.open-loops.renovation-requirement': (service, params, runtime) => service.openLoopsRenovationRequirement(params, runtime),
   'command-center.v1.open-loops.renovation-purchase': (service, params, runtime) => service.openLoopsRenovationPurchase(params, runtime),
   'command-center.v1.open-loops.renovation-purchase-correction': (service, params, runtime) => service.openLoopsRenovationPurchaseCorrection(params, runtime),

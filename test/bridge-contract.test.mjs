@@ -18,7 +18,9 @@ test('registers the complete closed versioned bridge inventory with least-privil
   const topicGroupingRegistration = registrations.find(([method]) => method === 'command-center.v1.sessions.group');
   assert.deepEqual(topicGroupingRegistration[2].gatewayMethodDispatchMethods, ['sessions.groups.list', 'sessions.groups.put']);
   for (const [method, , options] of registrations) {
-    if (method !== 'command-center.v1.sessions.group') assert.equal(options.gatewayMethodDispatchMethods, undefined);
+    if (method === 'command-center.v1.sessions.group') continue;
+    if (['command-center.v1.open-loops.decide', 'command-center.v1.open-loops.payment-status', 'command-center.v1.open-loops.organize', 'command-center.v1.open-loops.renovation-requirement', 'command-center.v1.open-loops.renovation-purchase', 'command-center.v1.open-loops.renovation-purchase-correction', 'command-center.v1.open-loops.renovation-replacement', 'command-center.v1.open-loops.renovation-fulfilment'].includes(method)) assert.deepEqual(options.gatewayMethodDispatchMethods, ['cron.add', 'cron.get', 'cron.list', 'cron.update']);
+    else assert.equal(options.gatewayMethodDispatchMethods, undefined);
   }
   for (const method of registered) {
     assert.equal(BRIDGE_CONTRACTS[method].closed, true);

@@ -59,6 +59,12 @@ async function fixture(run) {
             const nextOffset = params.offset + loops.length < window.allOpenLoops.length ? params.offset + loops.length : null;
             return { result: { schemaVersion: 1, loops: structuredClone(loops), total: window.allOpenLoops.length, offset: params.offset, nextOffset, nextCursor: nextOffset === null ? null : loops.at(-1).loopId, hasMore: nextOffset !== null } };
           }
+          if (method.endsWith('open-loops.organize')) {
+            const collections = [window.openLoops.workspace?.today?.mandatory, window.openLoops.workspace?.today?.planned, window.openLoops.workspace?.capacity, window.openLoops.workspace?.review?.batch, ...Object.values(window.openLoops.workspace?.board ?? {})].filter(Array.isArray);
+            const card = collections.flat().find(item => item.loopId === params.loopId);
+            Object.assign(card, { revision: card.revision + 1, ...(params.action === 'plan' ? { planning: { ...(card.planning ?? {}), plannedAt: params.plannedAt } } : {}), ...(params.action === 'set-priority' ? { planning: { ...(card.planning ?? {}), importance: params.importance, importanceOrigin: 'user' } } : {}) });
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'updated', loop: structuredClone(card) } };
+          }
           if (method.endsWith('open-loops.payment-status')) {
             if (window.openLoopActionMode === 'unknown') throw new Error('The transport outcome is unknown.');
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
@@ -294,6 +300,33 @@ test('native Attention reviews evidence and records status without paying or sen
   assert.equal(payment.paidAmount, undefined);
   assert.equal(await page.getByRole('button', { name: /^Pay|^Send$/i }).count(), 0);
   assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('attention.act')).length), 0);
+}));
+
+test('native capacity workspace plans the same item without inventing a deadline', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const card = { loopId: 'capacity-laundry', kind: 'general', title: 'Research laundry storage', state: 'confirmed', evidenceCount: 1, revision: 1, planning: { importance: 'normal', importanceOrigin: 'processing', effortMinutes: 30, contexts: ['home'], dependencies: [], someday: false } };
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [], workspace: { today: { mandatory: [], planned: [] }, upcoming: [], capacity: [card], waiting: [], someday: [], review: { batch: [card], remaining: 0, eligibleTotal: 1 }, board: { ready: [card], doing: [], waiting: [], done: [], suggestions: [] }, agenda: [] } };
+    window.mountInbox();
+  });
+  await page.getByText('When I have capacity (1 shown)', { exact: true }).click();
+  if (process.env.COMMAND_CENTER_CAPACITY_DESKTOP_SCREENSHOT) {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.screenshot({ path: process.env.COMMAND_CENTER_CAPACITY_DESKTOP_SCREENSHOT, fullPage: true });
+  }
+  if (process.env.COMMAND_CENTER_CAPACITY_PHONE_SCREENSHOT) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: process.env.COMMAND_CENTER_CAPACITY_PHONE_SCREENSHOT, fullPage: true });
+  }
+  const card = page.locator('article[data-workspace-loop-id="capacity-laundry"]').first();
+  await card.getByLabel('Action').selectOption('plan');
+  await card.getByLabel('Date and time').fill('2026-09-21T10:30');
+  await card.getByRole('button', { name: 'Save', exact: true }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('open-loops.organize')));
+  assert.equal(request.params.loopId, 'capacity-laundry');
+  assert.equal(request.params.action, 'plan');
+  assert.equal(request.params.plannedAt, new Date('2026-09-21T10:30').toISOString());
+  assert.equal(request.params.dueAt, undefined);
 }));
 
 test('native Attention confirms or dismisses suggestions and defers quiet items with exact review times', () => fixture(async (page) => {

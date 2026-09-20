@@ -432,6 +432,62 @@ export function mountAttentionPage(container, context, operations = new Map()) {
 
   function renderOpenLoops(openLoops, pending) {
     if (!openLoops || typeof openLoops !== 'object' || !Number.isSafeInteger(openLoops.total)) return;
+    const workspace = openLoops.workspace;
+    if (workspace && typeof workspace === 'object') {
+      content.append(element('h2', 'Today / Needs you'));
+      const renderPlanningCard = (parent, card, reason) => {
+        if (!nonBlank(card?.loopId) || !nonBlank(card?.title)) return;
+        const row = element('article'); row.dataset.workspaceLoopId = card.loopId;
+        row.append(element('h3', card.title));
+        const planning = card.planning ?? {};
+        row.append(element('p', [reason, planning.importance ? `${planning.importance} importance` : null, planning.effortMinutes ? `${planning.effortMinutes} min` : null, planning.contexts?.length ? planning.contexts.join(', ') : null].filter(Boolean).join(' · ')));
+        if (!writable() || ['resolved', 'cancelled'].includes(card.state)) { parent.append(row); return; }
+        const form = element('form'); const actionLabel = element('label', 'Action '); const action = element('select');
+        const choices = [['plan', 'Plan time'], ['set-priority', 'Set priority'], ['start', 'Start'], ['wait', 'Waiting / blocked'], ['review-later', 'Review later'], ['someday', 'Move to Someday'], ['keep', 'Keep available'], ['drop', 'Drop']];
+        if (card.kind === 'general') choices.splice(3, 0, ['complete', 'Complete']);
+        for (const [value, label] of choices) { const option = element('option', label); option.value = value; action.append(option); }
+        actionLabel.append(action);
+        const timeLabel = element('label', ' Date and time '); const when = element('input'); when.type = 'datetime-local'; timeLabel.append(when);
+        const priorityLabel = element('label', ' Priority '); const priority = element('select'); for (const value of ['critical', 'high', 'normal', 'low']) { const option = element('option', value[0].toUpperCase() + value.slice(1)); option.value = value; priority.append(option); } priority.value = planning.importance ?? 'normal'; priorityLabel.append(priority);
+        const update = () => { timeLabel.hidden = !['plan', 'review-later'].includes(action.value); when.required = !timeLabel.hidden; priorityLabel.hidden = action.value !== 'set-priority'; };
+        action.addEventListener('change', update, { signal }); update();
+        const save = element('button', 'Save'); save.type = 'submit'; form.append(actionLabel, timeLabel, priorityLabel, save);
+        form.addEventListener('submit', async event => {
+          event.preventDefault(); if (!current(pending) || save.disabled) return; save.disabled = true;
+          try {
+            const params = { action: action.value, ...(action.value === 'plan' ? { plannedAt: new Date(when.value).toISOString() } : {}), ...(action.value === 'review-later' ? { reviewAt: new Date(when.value).toISOString() } : {}), ...(action.value === 'set-priority' ? { importance: priority.value } : {}) };
+            await submitOpenLoopOperation({ key: `organize:${card.loopId}:${action.value}`, method: 'command-center.v1.open-loops.organize', params, card, pending, success: 'The item was updated across Today, board and agenda.' });
+          } catch (error) { if (current(pending)) report(error?.message || 'The planning outcome is unknown. Retry the same action.'); }
+          finally { if (current(pending)) save.disabled = false; }
+        }, { signal });
+        row.append(form); parent.append(row);
+      };
+      const todayMandatory = Array.isArray(workspace.today?.mandatory) ? workspace.today.mandatory : [];
+      const todayPlanned = Array.isArray(workspace.today?.planned) ? workspace.today.planned : [];
+      if (!todayMandatory.length && !todayPlanned.length) content.append(element('p', 'Nothing needs you today. Choose optional work from When I have capacity.'));
+      for (const card of todayMandatory) renderPlanningCard(content, card, card.reason ? `Required: ${card.reason}` : 'Required today');
+      for (const card of todayPlanned) renderPlanningCard(content, card, 'Optional planned work');
+      const sections = [
+        ['Planned / Upcoming', workspace.upcoming, card => formatDue(card) ? `Deadline ${formatDue(card)}` : card.planning?.plannedAt ? `Planned ${formatInstant(card.planning.plannedAt)}` : `Review ${formatInstant(card.reviewAt)}`],
+        ['When I have capacity', workspace.capacity, card => card.planning?.effortMinutes ? `Fits ${card.planning.effortMinutes} minutes` : 'Ready when capacity allows'],
+        ['Waiting', workspace.waiting, () => 'Waiting or blocked'],
+        [`Review (${workspace.review?.eligibleTotal ?? 0}; ${workspace.review?.remaining ?? 0} after this batch)`, workspace.review?.batch, () => 'Backlog review'],
+        ['Someday', workspace.someday, () => 'Parked without urgency']
+      ];
+      for (const [label, cards, reason] of sections) {
+        const disclosure = element('details'); disclosure.dataset.workspaceSection = label; disclosure.append(element('summary', `${label} (${Array.isArray(cards) ? cards.length : 0} shown)`));
+        for (const card of Array.isArray(cards) ? cards : []) renderPlanningCard(disclosure, card, reason(card));
+        content.append(disclosure);
+      }
+      const board = element('details'); board.dataset.topicBoard = 'true'; board.append(element('summary', 'Topic board'));
+      for (const [key, label] of [['ready', 'Ready'], ['doing', 'Doing'], ['waiting', 'Waiting'], ['done', 'Done'], ['suggestions', 'Suggestions']]) {
+        const cards = workspace.board?.[key] ?? []; board.append(element('h3', `${label} (${cards.length})`)); for (const card of cards.slice(0, 20)) renderPlanningCard(board, card, label);
+      }
+      content.append(board);
+      const agenda = element('details'); agenda.dataset.agenda = 'true'; agenda.append(element('summary', `Agenda (${workspace.agenda?.length ?? 0})`));
+      for (const entry of workspace.agenda ?? []) agenda.append(element('p', `${formatInstant(entry.at)} · ${entry.kind} · ${entry.item?.title ?? 'Item'}`));
+      content.append(agenda);
+    }
     content.append(element('h2', 'Open loops'));
     content.append(element('p', `${openLoops.attentionTotal} need attention · ${openLoops.comingUpTotal} coming up · ${openLoops.waitingTotal} waiting · ${openLoops.suggestedTotal} suggestions · ${openLoops.deferredTotal} deferred`));
     const stageGroups = Array.isArray(openLoops.stageReviews) ? openLoops.stageReviews.map(group => [`Active renovation stage: ${group.stage?.id ?? 'stage'}`, group.items]) : [];

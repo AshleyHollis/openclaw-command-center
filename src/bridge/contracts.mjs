@@ -86,6 +86,7 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.open-loops.intake-selected',
   'command-center.v1.open-loops.decide',
   'command-center.v1.open-loops.payment-status',
+  'command-center.v1.open-loops.organize',
   'command-center.v1.open-loops.renovation-requirement',
   'command-center.v1.open-loops.renovation-purchase',
   'command-center.v1.open-loops.renovation-purchase-correction',
@@ -110,6 +111,7 @@ export const ADMIN_METHODS = Object.freeze([
   'command-center.v1.open-loops.intake-selected',
   'command-center.v1.open-loops.decide',
   'command-center.v1.open-loops.payment-status',
+  'command-center.v1.open-loops.organize',
   'command-center.v1.open-loops.renovation-requirement',
   'command-center.v1.open-loops.renovation-purchase',
   'command-center.v1.open-loops.renovation-purchase-correction',
@@ -118,9 +120,9 @@ export const ADMIN_METHODS = Object.freeze([
 ]);
 
 const common = ['schemaVersion'];
-const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption']);
+const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'plannedAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption']);
 const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession', 'authorization', 'checkpoint', 'window', 'requirement', 'reconciliation', 'correction', 'replacement', 'fulfilment', 'activation', 'stage', 'conflict']);
-const arrayFields = new Set(['expectedRevisions', 'selections']);
+const arrayFields = new Set(['expectedRevisions', 'selections', 'contexts', 'dependencies']);
 
 function parameterSchema(field, method) {
   if (field === 'expectedTopicRevision') return Object.freeze({ type: 'integer', minimum: 0 });
@@ -134,6 +136,9 @@ function parameterSchema(field, method) {
   if (field === 'expectedRevision') return Object.freeze({ type: method.includes('.topics.') || method.includes('.open-loops.') || method === 'command-center.v1.sessions.create' ? 'integer' : 'string' });
   if (field === 'decision') return Object.freeze({ type: 'string', enum: ['confirm', 'defer', 'dismiss', 'resolve', 'correct-date'] });
   if (field === 'paymentState') return Object.freeze({ type: 'string', enum: ['partially-paid', 'payment-pending', 'paid', 'disputed', 'cancelled', 'uncertain'] });
+  if (field === 'action' && method.endsWith('.open-loops.organize')) return Object.freeze({ type: 'string', enum: ['plan', 'keep', 'review-later', 'someday', 'drop', 'start', 'wait', 'reopen', 'complete', 'set-priority'] });
+  if (field === 'importance') return Object.freeze({ type: 'string', enum: ['critical', 'high', 'normal', 'low'] });
+  if (field === 'effortMinutes') return Object.freeze({ type: 'integer', minimum: 1, maximum: 10080 });
   if (field === 'paidAmount' || field === 'amount') return Object.freeze({ type: 'integer', minimum: 0 });
   if (arrayFields.has(field)) return Object.freeze({ type: 'array' });
   if (stringFields.has(field)) return Object.freeze({ type: 'string', minLength: 1 });
@@ -149,7 +154,7 @@ function parameterSchema(field, method) {
 
 function actionResultSchema(method) {
   if (method.startsWith('command-center.v1.open-loops.')) {
-    const attention = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ reason: { type: 'string' }, whyNow: { type: 'string' }, actions: { type: 'array', items: { type: 'string' } }, materialRevision: { type: 'string' }, activated: { type: 'boolean' }, currentEvidence: { type: 'boolean' } }) });
+    const attention = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ reason: { type: 'string' }, whyNow: { type: 'string' }, actions: { type: 'array', items: { type: 'string' } }, materialRevision: { type: 'string' }, activated: { type: 'boolean' }, currentEvidence: { type: 'boolean' }, importance: { type: 'string' }, importanceOrigin: { type: 'string' }, plannedAt: { type: 'string' }, effortMinutes: { type: 'integer' }, contexts: { type: 'array', items: { type: 'string' } }, dependencies: { type: 'array', items: { type: 'string' } }, provenance: { type: 'string' }, confidence: { type: 'number' }, lastConsideredAt: { type: 'string' }, someday: { type: 'boolean' } }) });
     const loop = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loopId: { type: 'string' }, kind: { type: 'string' }, stableSubjectId: { type: 'string' }, title: { type: 'string' }, topicId: { type: 'string' }, state: { type: 'string' }, paymentState: { type: 'string' }, amount: { type: 'integer' }, currency: { type: 'string' }, dueAt: { type: 'string' }, dueDate: { type: 'string' }, dueTimeZone: { type: 'string' }, reviewAt: { type: 'string' }, expectedEvent: { type: 'string' }, attention, evidenceObservationIds: { type: 'array', items: { type: 'string' } }, revision: { type: 'integer' } }), required: ['schemaVersion', 'loopId', 'kind', 'stableSubjectId', 'title', 'state', 'evidenceObservationIds', 'revision'] });
     if (method.endsWith('.renovation-stage')) return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, disposition: { enum: ['applied', 'duplicate'] }, observationId: { type: 'string' } }), required: ['schemaVersion', 'disposition', 'observationId'] });
     if (method.endsWith('.renovation-stage-prerequisites')) {
@@ -445,6 +450,7 @@ const required = Object.freeze({
   'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'selections'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'rationale'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'rationale'],
+  'command-center.v1.open-loops.organize': ['loopId', 'expectedRevision', 'action'],
   'command-center.v1.open-loops.renovation-requirement': ['expectedRevision', 'requirement'],
   'command-center.v1.open-loops.renovation-purchase': ['expectedRevision', 'reconciliation'],
   'command-center.v1.open-loops.renovation-purchase-correction': ['expectedRevision', 'correction'],
@@ -534,6 +540,7 @@ const fields = Object.freeze({
   'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'selections', 'logicalOperationId'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'amount', 'currency', 'rationale', 'logicalOperationId'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'paidAmount', 'currency', 'rationale', 'logicalOperationId'],
+  'command-center.v1.open-loops.organize': ['loopId', 'expectedRevision', 'action', 'importance', 'plannedAt', 'reviewAt', 'effortMinutes', 'contexts', 'dependencies', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-requirement': ['expectedRevision', 'requirement', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-purchase': ['expectedRevision', 'reconciliation', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-purchase-correction': ['expectedRevision', 'correction', 'logicalOperationId'],
@@ -635,6 +642,11 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
     if ((params.amount === undefined) !== (params.currency === undefined) || params.amount !== undefined && params.decision !== 'confirm') throw sourceError('invalid-request', 'Corrected amount and currency are only accepted together while confirming a suggestion.');
   }
   if (method.endsWith('.open-loops.payment-status') && ((params.paidAmount === undefined) !== (params.currency === undefined))) throw sourceError('invalid-request', 'paidAmount and currency must be provided together.');
+  if (method.endsWith('.open-loops.organize')) {
+    if ((params.action === 'plan') !== (params.plannedAt !== undefined)) throw sourceError('invalid-request', 'Only plan requires plannedAt.');
+    if ((params.action === 'review-later') !== (params.reviewAt !== undefined)) throw sourceError('invalid-request', 'Only review-later requires reviewAt.');
+    if ((params.action === 'set-priority') !== (params.importance !== undefined)) throw sourceError('invalid-request', 'Only set-priority requires importance.');
+  }
   if (mutation && !isCanonicalUuid(params.logicalOperationId)) throw sourceError('invalid-request', 'Mutations require a canonical logicalOperationId.');
   return contract;
 }

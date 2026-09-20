@@ -110,7 +110,7 @@
     "additionalProperties": false
   },
   "contracts": {
-    "tools": [],
+    "tools": ["command_center_capture_commitment"],
     "gatewayMethodDispatch": ["authenticated-request"],
     "workspaceSessionTurnScheduling": []
   },

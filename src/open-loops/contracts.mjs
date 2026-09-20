@@ -31,8 +31,13 @@ const loopKeys = Object.freeze([
   'attention', 'evidenceObservationIds', 'revision'
 ]);
 const attentionKeys = Object.freeze([
-  'reason', 'whyNow', 'actions', 'materialRevision', 'activated', 'currentEvidence'
+  'reason', 'whyNow', 'actions', 'materialRevision', 'activated', 'currentEvidence',
+  'importance', 'importanceOrigin', 'plannedAt', 'effortMinutes', 'contexts',
+  'dependencies', 'provenance', 'confidence', 'lastConsideredAt', 'someday'
 ]);
+const importanceValues = Object.freeze(['critical', 'high', 'normal', 'low']);
+const importanceOrigins = Object.freeze(['user', 'source', 'processing']);
+const provenanceValues = Object.freeze(['explicit', 'inferred', 'idea', 'quoted']);
 
 function fail(message) { throw new TypeError(message); }
 function object(value, label) {
@@ -157,13 +162,30 @@ export function normalizeLoop(input) {
     const candidate = object(value.attention, 'attention');
     closed(candidate, attentionKeys, 'attention');
     if (candidate.reason !== undefined && !ATTENTION_REASONS.includes(candidate.reason)) fail('attention reason is unsupported');
+    if (candidate.importance !== undefined && !importanceValues.includes(candidate.importance)) fail('attention importance is unsupported');
+    if (candidate.importanceOrigin !== undefined && !importanceOrigins.includes(candidate.importanceOrigin)) fail('attention importance origin is unsupported');
+    if ((candidate.importance === undefined) !== (candidate.importanceOrigin === undefined)) fail('attention importance and origin must be provided together');
+    if (candidate.provenance !== undefined && !provenanceValues.includes(candidate.provenance)) fail('attention provenance is unsupported');
+    const confidence = candidate.confidence === undefined ? undefined : Number(candidate.confidence);
+    if (confidence !== undefined && (!Number.isFinite(confidence) || confidence < 0 || confidence > 1)) fail('attention confidence must be between 0 and 1');
+    const effortMinutes = candidate.effortMinutes === undefined ? undefined : Number(candidate.effortMinutes);
+    if (effortMinutes !== undefined && (!Number.isSafeInteger(effortMinutes) || effortMinutes < 1 || effortMinutes > 10080)) fail('attention effortMinutes must be between 1 and 10080');
     return Object.freeze({
       ...(candidate.reason === undefined ? {} : { reason: candidate.reason }),
       ...(candidate.whyNow === undefined ? {} : { whyNow: text(candidate.whyNow, 'attention.whyNow', 500) }),
       actions: Object.freeze(uniqueStrings(candidate.actions ?? [], 'attention.actions', 8)),
       ...(candidate.materialRevision === undefined ? {} : { materialRevision: text(candidate.materialRevision, 'attention.materialRevision', 300) }),
       activated: boolean(candidate.activated, 'attention.activated'),
-      currentEvidence: boolean(candidate.currentEvidence, 'attention.currentEvidence')
+      currentEvidence: boolean(candidate.currentEvidence, 'attention.currentEvidence'),
+      ...(candidate.importance === undefined ? {} : { importance: candidate.importance, importanceOrigin: candidate.importanceOrigin }),
+      ...(candidate.plannedAt === undefined ? {} : { plannedAt: timestamp(candidate.plannedAt, 'attention.plannedAt') }),
+      ...(effortMinutes === undefined ? {} : { effortMinutes }),
+      contexts: Object.freeze(uniqueStrings(candidate.contexts ?? [], 'attention.contexts', 8)),
+      dependencies: Object.freeze(uniqueStrings(candidate.dependencies ?? [], 'attention.dependencies', 16)),
+      ...(candidate.provenance === undefined ? {} : { provenance: candidate.provenance }),
+      ...(confidence === undefined ? {} : { confidence }),
+      ...(candidate.lastConsideredAt === undefined ? {} : { lastConsideredAt: timestamp(candidate.lastConsideredAt, 'attention.lastConsideredAt') }),
+      someday: boolean(candidate.someday, 'attention.someday')
     });
   })();
   const revision = Number(value.revision ?? 1);

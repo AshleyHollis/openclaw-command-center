@@ -10,6 +10,7 @@ import { createTopicService } from './topics/service.mjs';
 import { SourceServiceError } from './sources/errors.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { createOpenLoopReminderCoordinator } from './open-loops/reminder-coordinator.mjs';
+import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 
 function unavailable(feature) {
   const reason = FIRST_LIVE_FEATURES[feature] === false
@@ -373,6 +374,19 @@ export function createMetadataService(api) {
       requireOperational();
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for payment status records.');
       const result = metadataService.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, paymentState: input.paymentState, ...(input.paidAmount === undefined ? {} : { paidAmount: input.paidAmount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
+      return reconcileOpenLoopReminder(result, input.logicalOperationId, runtime);
+    },
+    openLoopsOrganize(input = {}, runtime = {}) {
+      requireOperational();
+      requireOperator(input, 'open-loop organization');
+      const loop = metadataService.getOpenLoop(input.loopId);
+      if (!loop) throw new SourceServiceError('not-found', 'The exact open loop is unavailable.');
+      if (loop.revision !== input.expectedRevision) throw new SourceServiceError('conflict', 'The open loop changed. Refresh before organizing it.');
+      const updatedAt = new Date().toISOString();
+      let next;
+      try { next = planOrganizationChange(loop, { schemaVersion: 1, action: input.action, ...(input.importance === undefined ? {} : { importance: input.importance }), ...(input.plannedAt === undefined ? {} : { plannedAt: input.plannedAt }), ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.effortMinutes === undefined ? {} : { effortMinutes: input.effortMinutes }), ...(input.contexts === undefined ? {} : { contexts: input.contexts }), ...(input.dependencies === undefined ? {} : { dependencies: input.dependencies }), updatedAt }); }
+      catch (error) { throw new SourceServiceError('invalid-request', error.message); }
+      const result = metadataService.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, expectedRevision: loop.revision, loop: next, evidenceRoles: {}, updatedAt });
       return reconcileOpenLoopReminder(result, input.logicalOperationId, runtime);
     },
     openLoopsRenovationRequirement(input = {}, runtime = {}) {

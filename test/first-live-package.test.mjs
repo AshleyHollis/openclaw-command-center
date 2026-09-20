@@ -11,7 +11,10 @@ test('the built first-live plugin can register without optional services or miss
   plugin.register({ pluginConfig: {},
     get notifications() { assert.fail('The built plugin must not acquire optional notification authority.'); },
     registerGatewayMethod() {}, registerHttpRoute() {},
-    registerTool() { assert.fail('Deferred filing and maintenance tools must not register in the reader MVP.'); },
+    registerTool(tool, options) {
+      assert.equal(options?.name, 'command_center_capture_commitment');
+      assert.equal(typeof tool, 'function');
+    },
     registerService() { services += 1; }
   });
   assert.equal(services, 1);

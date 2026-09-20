@@ -40,6 +40,7 @@ export const FIRST_LIVE_COMMANDS = Object.freeze({
     'command-center.v1.open-loops.list', 'command-center.v1.open-loops.get',
     'command-center.v1.open-loops.intake-selected', 'command-center.v1.open-loops.decide',
     'command-center.v1.open-loops.payment-status',
+    'command-center.v1.open-loops.organize',
     'command-center.v1.open-loops.renovation-requirement',
     'command-center.v1.open-loops.renovation-purchase',
     'command-center.v1.open-loops.renovation-purchase-correction',
