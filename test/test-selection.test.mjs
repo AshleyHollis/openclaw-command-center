@@ -295,7 +295,7 @@ test('Topic Page browser runner is mandatory, pinned, and included in the ordina
   const setup = await readFile(new URL('../src/browser-setup.mjs', import.meta.url), 'utf8');
   assert.match(script, /selectTopicPageTicketTestFiles/u);
   assert.doesNotMatch(script, /skip|PLAYWRIGHT_BROWSERS_PATH\s*=|npm\s+(?:install|ci)/u);
-  assert.match(setup, /PLAYWRIGHT_VERSION = '1\.62\.1'/u);
+  assert.match(setup, /PLAYWRIGHT_VERSION = '1\.63\.0'/u);
   assert.match(setup, /evaluator-provided PLAYWRIGHT_BROWSERS_PATH/u);
 });
 test('native Chat diagnostic requires the real authenticated mount and native round trip', () => {

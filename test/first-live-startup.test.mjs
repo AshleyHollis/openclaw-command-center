@@ -70,7 +70,9 @@ test('first-live startup serves core data and enables request-scoped native sche
     await withNoteFilesystemOwner(service.sourceService.metadata, async () => {});
     assert.equal(coordinatorLeases, 1, 'The activation must install the host-owned Note filesystem coordinator.');
     assert.equal(sdkRequests, 0, 'core startup must not load the history/index transcript runtime');
-    for (const name of ['attentionService', 'maintenanceService', 'searchService', 'searchRebuildService', 'dashboardService', 'notificationService', 'topicAnalysisRunner', 'topicAnalysisSchedule', 'topicReview']) assert.equal(service[name], undefined, name);
+    assert.ok(service.attentionService, 'Dashboard startup must retain its internal Attention projection owner.');
+    assert.ok(service.dashboardService, 'Dashboard startup must retain its internal read projection owner.');
+    for (const name of ['maintenanceService', 'searchService', 'searchRebuildService', 'notificationService', 'topicAnalysisRunner', 'topicAnalysisSchedule', 'topicReview']) assert.equal(service[name], undefined, name);
     assert.equal(service.topicService.listDestination().activeGroups.project[0].topicId, topicId);
     const note = await service.sourceService.notesRead({ schemaVersion: 1, topicId, path: 'Overview.md' });
     assert.equal(note.text, '# Fictional Topic\nExisting readable content.\n');
@@ -79,10 +81,13 @@ test('first-live startup serves core data and enables request-scoped native sche
     await assert.rejects(service.sourceService.sessionsHistory({ schemaVersion: 1, topicId, referenceId: sessionReferenceId, limit: 10 }), /native transcript SDK is deliberately unavailable/);
     assert.equal(sdkRequests, 1, 'a requested history read must load its real runtime or report failure, never fake empty history');
     assert.equal(service.sourceService.capabilities.scheduler.available, true);
-    for (const name of ['search', 'analysis', 'attention']) assert.equal(service.sourceService.capabilities[name].available, false);
+    assert.equal(service.sourceService.capabilities.attention.available, true);
+    for (const name of ['search', 'analysis']) assert.equal(service.sourceService.capabilities[name].available, false);
     assert.deepEqual(nativeJobs, originalJobs);
     for (const invoke of [() => service.topicAnalysisRun({}), () => service.topicContextRetrieve({}), () => service.notificationReconcile({}), () => runNoteMaintenance({})]) assert.throws(invoke, error => error.code === 'capability-unavailable');
-    await assert.rejects(service.dashboardGet({}), error => error.code === 'capability-unavailable');
+    const dashboard = await service.dashboardGet({ schemaVersion: 1 });
+    assert.deepEqual(dashboard.attention, []);
+    assert.deepEqual(dashboard.inProgress, []);
     await assert.rejects(service.searchRebuild({}), error => error.code === 'capability-unavailable');
     const reopened = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
     try { assert.equal(reopened.getTopicAnalysisSettings(), null); assert.equal(reopened.getTopic(topicId).revision, 0); } finally { reopened.close(); }

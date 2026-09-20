@@ -31,9 +31,16 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.evaluate(async () => {
       const { mountTopicPage } = await import('/topic-page.mjs');
+      const { createNativeState } = await import('/mutations.mjs');
       const signal = new AbortController().signal;
+      window.readerState = createNativeState(signal);
       window.promoted = 0;
-      const paths = Array.from({ length: 8 }, (_, i) => `projects/renovation/invoices/invoice-${i}.md`);
+      const paths = [
+        ...Array.from({ length: 8 }, (_, i) => `projects/renovation/invoices/invoice-${i}.md`),
+        ...Array.from({ length: 110 }, (_, i) => `archive/receipts/receipt-${i}.md`),
+        'projects/renovation/duplicate.md',
+        'archive/duplicate.md'
+      ];
       const subscribers = new Set(); window.duplicateCatalog = false;
       const catalogRows = (topicId) => {
         const rows = paths.map(path => ({ path, revision: 'r1', sourceReference: { topicId, referenceId: path } }));
@@ -44,7 +51,11 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
         subscribe: (callback) => { subscribers.add(callback); return () => subscribers.delete(callback); }, redact: text => text, sessions: {},
         request: async (method, params) => {
           if (method.endsWith('topics.get')) return { topic: { topicId: params.topicId, name: 'Sample Records', noteFolderReferenceId: window.folderId ?? 'folder-one', usable: true, lifecycle: 'active' } };
-          if (method.endsWith('notes.browse')) { const notes = catalogRows(params.topicId); return { notes, total: notes.length, offset: 0, hasMore: false }; }
+          if (method.endsWith('notes.browse')) {
+            const notes = catalogRows(params.topicId); const offset = params.offset ?? 0; const limit = params.limit ?? 50;
+            const page = notes.slice(offset, offset + limit); const nextOffset = offset + page.length; const hasMore = nextOffset < notes.length;
+            return { notes: page, total: notes.length, offset, hasMore, ...(hasMore ? { nextOffset } : {}), cursor: 'fixture-catalog' };
+          }
           if (method.endsWith('notes.read')) {
             const text = `---\r\ntitle: Sample invoice\r\ntags: [example]\r\n---\r\n# ${params.path}\r\n\r\n${'Long fictional paragraph.\r\n\r\n'.repeat(100)}`;
             return { path: params.path, revision: 'r1', sourceReference: { topicId: params.topicId, referenceId: params.path }, contentEncoding: 'identity', contentBase64: btoa(text), byteOffset: 0, nextOffset: text.length, totalBytes: text.length, complete: true };
@@ -52,7 +63,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
           throw new Error(`Unexpected method: ${method}`);
         }
       };
-      window.view = mountTopicPage(document.querySelector('#mount'), { host, signal, props: { topicId: 'fixture' }, presented: true, panel: { showInMain: () => window.promoted++ } }, undefined, { panel: true });
+      window.view = mountTopicPage(document.querySelector('#mount'), { host, signal, props: { topicId: 'fixture' }, presented: true, panel: { showInMain: () => window.promoted++ } }, window.readerState, { panel: true });
       window.setReaderAccess = (canRead) => { host.connection.canRead = canRead; host.connection.connected = canRead; for (const callback of subscribers) callback(); };
       window.mountNativeExplorer = () => {
         window.view.dispose();
@@ -79,7 +90,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
             }
           }
         };
-        window.view = mountTopicPage(document.querySelector('#mount'), { host: nativeHost, signal, props: { topicId: 'fixture' }, presented: true, panel: { showInMain: () => window.promoted++ } }, undefined, { panel: true });
+        window.view = mountTopicPage(document.querySelector('#mount'), { host: nativeHost, signal, props: { topicId: 'fixture' }, presented: true, panel: { showInMain: () => window.promoted++ } }, window.readerState, { panel: true });
       };
     });
     const filter = page.getByRole('searchbox', { name: /Filter/ });
@@ -103,7 +114,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
       assert.ok(filesBox.x + filesBox.width <= readerBox.x, 'Files must remain BESIDE the reader, not above it');
       assert.ok(filesBox.y >= 0 && filesBox.y < 780, 'Files filter remains onscreen');
       assert.equal(await row.getAttribute('aria-current'), 'true');
-      assert.equal(await row.evaluate(el => el === document.activeElement), true, 'preview must not steal file focus');
+      assert.equal(await reader.evaluate(el => el === document.activeElement), true, 'an explicit file selection moves focus to the opened reader');
     }
     assert.equal(await page.evaluate(() => window.promoted), 1, 'later selections preserve an explicit native pane swap instead of promoting Files again');
     const metadata = page.getByText('title: Sample invoice', { exact: false });
@@ -164,6 +175,19 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     assert.equal(await nativeExplorer.isVisible(), true, 'native Files remains visible after selecting a Note');
     await page.locator('#mount').evaluate(el => el.style.width = '400px');
     assert.equal(await nativeExplorer.isVisible(), true, 'native Files does not collapse at its retained rail width');
+    await nativeFilter.fill('receipt-109');
+    const laterPageFile = nativeExplorer.getByRole('button', { name: 'receipt-109.md', exact: true });
+    await laterPageFile.waitFor({ state: 'visible' });
+    await laterPageFile.click();
+    await page.getByRole('heading', { name: 'receipt-109.md', exact: true }).waitFor();
+    await nativeFilter.fill('');
+    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120);
+    assert.equal(await page.evaluate(() => window.nativeExplorerProps.entries.length), 120, 'native Files receives the complete bounded cursor catalog');
+    const promotionsBeforeRestore = await page.evaluate(() => window.promoted);
+    await page.evaluate(() => window.mountNativeExplorer());
+    await page.getByRole('heading', { name: 'receipt-109.md', exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.promoted), promotionsBeforeRestore, 'passive restoration must not request another panel promotion');
+    assert.notEqual(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Note content', 'passive restoration must not steal focus');
     await page.evaluate(() => { window.folderId = 'replaced-folder'; });
     assert.equal(await page.getByRole('button', { name: 'Refresh Notes', exact: true }).count(), 0, 'native Files owns the single refresh control');
     await page.evaluate(() => window.nativeExplorerProps.onRefresh());
@@ -174,7 +198,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 0);
     assert.equal(await nativeExplorer.getByRole('button').count(), 0, 'disconnect must clear the prior native Files catalog');
     await page.evaluate(() => window.setReaderAccess(true));
-    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 8);
+    await page.waitForFunction(() => window.nativeExplorerProps.entries.length === 120);
     await page.evaluate(() => { window.duplicateCatalog = true; });
     await page.evaluate(() => window.nativeExplorerProps.onRefresh());
     await page.getByText('The exact Note catalogue is unavailable.', { exact: true }).waitFor();

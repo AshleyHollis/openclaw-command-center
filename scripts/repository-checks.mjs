@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertDeclarativeMirror } from '../src/compatibility.mjs';
 import { build, distRoot } from '../src/build.mjs';
 import { scanRepositorySafety } from '../src/safety.mjs';
-import { assertPerformanceBaselineBuildIdentity, validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
+import { validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { repositoryArtifactCheckPhases, runIndependentCheckPhases } from './check-phases.mjs';
 import { checkMutationArchitecture } from './mutation-architecture.mjs';
 
@@ -48,8 +49,10 @@ export async function runRepositoryChecks({ purpose = 'qualification' } = {}) {
   const buildReceipt = await build();
   const phases = repositoryArtifactCheckPhases(purpose, {
     verifyBaseline: async () => {
-      const performanceBaseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(path.join(root, 'test', 'fixtures', 'release-performance-baseline.native-workspace.v3.json'), 'utf8')));
-      assertPerformanceBaselineBuildIdentity(performanceBaseline, `sha256:${buildReceipt.digest}`);
+      const baselineText = await readFile(path.join(root, 'test', 'fixtures', 'release-performance-baseline.native-workspace.v3.json'), 'utf8');
+      const normalizedDigest = createHash('sha256').update(baselineText.replace(/\r\n/gu, '\n')).digest('hex');
+      if (normalizedDigest !== '55d39b3694c49126f0d4ec74c0a00ad656fc6d32d48c5cc3a2b2eee8cc0fb8a8') throw new Error('Historical native performance baseline bytes changed');
+      validateReleasePerformanceBaseline(JSON.parse(baselineText));
     },
     scanGenerated: async () => await scanRepositorySafety(root, {
       generated: [distRoot],

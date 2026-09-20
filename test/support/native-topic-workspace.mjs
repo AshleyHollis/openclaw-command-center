@@ -139,58 +139,65 @@ export async function organizeNativeTopicConversations({ page, nativePage, fixtu
   await group.locator(`[data-session-key="${fixture.sessionKey}"]`).waitFor({ state: 'visible' });
 }
 
-export async function selectNativeSidePanelType({ page, label, onStage } = {}) {
-  await onStage?.('inspect-side-panel');
-  const rightRuntime = page.locator('.sidebar-region__right-runtime:visible').first();
-  const surface = rightRuntime.locator('.side-panel-empty--selector:visible, [data-region-header="side"]:visible').first();
-  if (!await surface.isVisible({ timeout: 10_000 })) {
-    await onStage?.('open-side-panel');
-    await page.locator('.chat-side-panel-toggle:visible').first().click({ timeout: 30_000 });
+export async function openNativeTopicFiles({ page, fixture, onStage } = {}) {
+  await onStage?.('verify-active-native-chat');
+  const activeChat = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+  await activeChat.waitFor({ state: 'visible', timeout: 30_000 });
+  await page.waitForFunction((sessionKey) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === sessionKey, fixture.sessionKey, { timeout: 30_000 });
+
+  await onStage?.('open-topic-files');
+  const topic = page.locator(`.topic-sidebar [data-topic-id="${fixture.topicId}"]`);
+  await topic.waitFor({ state: 'visible', timeout: 30_000 });
+  if (await topic.getAttribute('data-expanded') !== 'true') {
+    await topic.locator(`[data-topic-control-key="toggle:${fixture.topicId}"]`).click({ timeout: 30_000 });
+    await topic.locator(`[data-topic-control-key="files:${fixture.topicId}"]`).waitFor({ state: 'visible', timeout: 30_000 });
   }
-  await onStage?.('select-topic-notes-tab');
+  await topic.locator(`[data-topic-control-key="files:${fixture.topicId}"]`).click({ timeout: 30_000 });
+
+  await onStage?.('resolve-topic-files-slot');
+  const workspace = page.locator('[data-panel-slot="workspace"]:visible').filter({ has: page.locator('openclaw-plugin-view') });
+  const reader = workspace.locator('[data-topic-reader-page="panel"]');
   try {
-    await surface.waitFor({ state: 'visible', timeout: 30_000 });
-    const sidebar = surface.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " side-panel ")][1]');
-    const emptyChoice = sidebar.locator('.side-panel-empty__type:visible').filter({ hasText: label });
-    if (await emptyChoice.isVisible()) {
-      await emptyChoice.click({ timeout: 30_000 });
-    } else {
-      const add = sidebar.getByRole('button', { name: 'Add side panel tab', exact: true });
-      await add.click({ timeout: 30_000 });
-      await sidebar.locator('wa-dropdown-item:visible').filter({ hasText: label }).click({ timeout: 30_000 });
+    await reader.waitFor({ state: 'visible', timeout: 30_000 });
+    const identity = await workspace.locator('openclaw-plugin-view').evaluate((view) => ({
+      kind: Reflect.get(view, 'kind'), contributionKey: Reflect.get(view, 'contributionKey'),
+      presented: Reflect.get(view, 'presented'), props: Reflect.get(view, 'props')
+    }));
+    if (identity.presented !== true || identity.props?.sessionKey !== fixture.sessionKey) {
+      throw new Error(`Resolved native Files slot has the wrong identity: ${JSON.stringify(identity)}`);
     }
-    return sidebar;
+    return workspace;
   } catch (error) {
-    const diagnostics = await page.locator('.sidebar-region__right-runtime .side-panel').evaluateAll((panels) => panels.slice(0, 8).map((panel) => ({
-      visible: panel.checkVisibility?.() ?? null,
-      text: panel.textContent?.trim().slice(0, 1_000) ?? '',
-      selectorVisible: panel.querySelector('.side-panel-empty--selector')?.checkVisibility?.() ?? false,
-      headerVisible: panel.querySelector('[data-region-header="side"]')?.checkVisibility?.() ?? false,
-      addVisible: panel.querySelector('[aria-label="Add side panel tab"]')?.checkVisibility?.() ?? false
+    const diagnostics = await page.locator('[data-panel-slot="workspace"]').evaluateAll((slots) => slots.slice(0, 8).map((slot) => ({
+      hidden: slot.hidden, region: slot.getAttribute('data-region'), text: slot.textContent?.trim().slice(0, 1_000) ?? '',
+      views: Array.from(slot.querySelectorAll('openclaw-plugin-view'), (view) => ({
+        kind: Reflect.get(view, 'kind'), contributionKey: Reflect.get(view, 'contributionKey'),
+        presented: Reflect.get(view, 'presented'), props: Reflect.get(view, 'props')
+      }))
     })));
-    throw new Error(`Native side panel type is unavailable: ${JSON.stringify({ label, diagnostics }).slice(0, 3_000)}`, { cause: error });
+    throw new Error(`Native Topic Files workspace is unavailable: ${JSON.stringify(diagnostics).slice(0, 4_000)}`, { cause: error });
   }
 }
 
 export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, onStage } = {}) {
-  const sidebar = await selectNativeSidePanelType({ page, label: 'Topic Notes', onStage });
+  const workspace = await openNativeTopicFiles({ page, fixture, onStage });
   await onStage?.('select-overview-note');
   // The preceding reader journey deliberately leaves a filename filter and
   // selected nested Note in place.  Reusing that mounted native panel is the
   // contract we need to prove; reset only its visible filter before choosing
   // the fixture Overview.  The former assertion assumed a fresh panel and
   // therefore mistook preserved reader state for missing Conversation context.
-  const reader = sidebar.locator('[data-topic-reader-page="panel"]');
-  const filter = reader.getByRole('searchbox', { name: 'Filter filenames', exact: true });
+  const reader = workspace.locator('[data-topic-reader-page="panel"]');
+  const filter = reader.getByRole('searchbox', { name: 'Filter files by name or path', exact: true });
   try {
     await filter.waitFor({ state: 'visible', timeout: 30_000 });
   } catch (error) {
-    const diagnostic = await sidebar.evaluate((panel) => ({
+    const diagnostic = await workspace.evaluate((panel) => ({
       text: panel.innerText.slice(0, 2_000),
       statuses: Array.from(panel.querySelectorAll('[role="status"], [role="alert"]'), (status) => status.textContent?.trim().slice(0, 500) ?? ''),
       pluginViews: Array.from(panel.querySelectorAll('openclaw-plugin-view'), (view) => ({
-        kind: view.getAttribute('kind'),
-        contributionKey: view.getAttribute('contributionkey'),
+        kind: Reflect.get(view, 'kind'),
+        contributionKey: Reflect.get(view, 'contributionKey'),
         presented: Reflect.get(view, 'presented'),
         props: Reflect.get(view, 'props'),
         text: (view.textContent ?? '').slice(0, 500)
@@ -200,15 +207,16 @@ export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, on
     throw new Error(`Topic Notes panel did not mount its native reader: ${JSON.stringify(diagnostic).slice(0, 3_000)}`, { cause: error });
   }
   await filter.fill('');
-  const overview = reader.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true });
+  await filter.fill(fixture.notePath);
+  const overview = reader.getByRole('button', { name: fixture.notePath.split('/').at(-1), exact: true });
   try {
     await overview.waitFor({ state: 'visible', timeout: 30_000 });
   } catch (error) {
-    const diagnostic = await sidebar.evaluate((panel) => ({
+    const diagnostic = await workspace.evaluate((panel) => ({
       text: panel.innerText.slice(0, 2_000),
       pluginViews: Array.from(panel.querySelectorAll('openclaw-plugin-view'), (view) => ({
-        kind: view.getAttribute('kind'),
-        contributionKey: view.getAttribute('contributionkey'),
+        kind: Reflect.get(view, 'kind'),
+        contributionKey: Reflect.get(view, 'contributionKey'),
         text: (view.textContent ?? '').slice(0, 500)
       })),
       tabs: Array.from(panel.querySelectorAll('[role="tab"]'), (tab) => ({ name: tab.getAttribute('aria-label') ?? tab.textContent?.trim(), selected: tab.getAttribute('aria-selected') }))
@@ -218,7 +226,7 @@ export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, on
   await overview.click({ timeout: 30_000 });
   // Native Chat retains its historical "primary" class when moved aside.
   // Region assignment, visible geometry and content prove actual promotion.
-  const mainPanel = page.locator('.side-panel__panel[data-region="main"]');
+  const mainPanel = page.locator('[data-panel-slot="workspace"][data-region="main"]:visible');
   const promoted = mainPanel.getByRole('region', { name: 'Note content', exact: true });
   try {
     await assertNativeFormattedNote(promoted, fixture);
@@ -255,7 +263,7 @@ export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, on
   await swap.click();
   await onStage?.('verify-swapped-pane');
   await page.locator('.sidebar-region__primary[data-region="main"]').waitFor({ state: 'visible', timeout: 10_000 });
-  await assertNativeFormattedNote(page.locator('.side-panel__panel[data-region="side"]').getByRole('region', { name: 'Note content', exact: true }), fixture);
+  await assertNativeFormattedNote(page.locator('[data-panel-slot="workspace"][data-region="side"]:visible').getByRole('region', { name: 'Note content', exact: true }), fixture);
   await nativeChat.waitFor({ state: 'visible', timeout: 10_000 });
   assert.equal(await nativeChat.evaluate((pane) => pane.sessionKey), fixture.sessionKey, 'Pane swap must retain the exact linked native Conversation.');
   assert.equal(await composer.inputValue(), unsentDraft, 'Pane swap must retain the unsent native Chat draft.');

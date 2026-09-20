@@ -1,5 +1,20 @@
 # Release performance budget policy
 
+## Provenance correction (2026-09-20)
+
+The native-workspace baseline is a historical measurement artifact, not a
+template for the next candidate. Its host receipt, plugin build digest,
+observations and capture digests identify the run that actually produced those
+observations. They remain independent of the candidate build and pinned runtime
+named by a later acceptance report.
+
+Repository checks therefore verify the normalized original artifact bytes at
+SHA-256 `55d39b3694c49126f0d4ec74c0a00ad656fc6d32d48c5cc3a2b2eee8cc0fb8a8`.
+The release report binds the current candidate through its own build digest,
+pinned-host startup row and measured scale row, while deriving the predeclared
+budget from the unchanged historical observations. Updating the historical
+identity fields to make a new build pass is invalid evidence.
+
 ## Native workspace update measurement (2026-09-10)
 
 The native workspace update uses a separately named

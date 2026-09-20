@@ -90,16 +90,16 @@ function assertFixtureCounts(value) {
   return Object.freeze({ ...value });
 }
 
-function assertHostReceipt(value) {
+function assertHostReceipt(value, { pinned = false } = {}) {
   closed(value, REQUIRED_HOST_RECEIPT_FIELDS, 'hostReceipt');
-  for (const key of REQUIRED_HOST_RECEIPT_FIELDS) {
-    if (value[key] !== HOST_RECEIPT[key]) invalid('hostReceipt is not the pinned host identity');
-  }
-  return HOST_RECEIPT;
+  if (value.schemaVersion !== 2 || typeof value.commit !== 'string' || !/^[a-f0-9]{40}$/u.test(value.commit)) invalid('hostReceipt is incomplete');
+  for (const key of REQUIRED_HOST_RECEIPT_FIELDS.filter(key => key.endsWith('Digest'))) digest(value[key], `hostReceipt.${key}`);
+  if (pinned && REQUIRED_HOST_RECEIPT_FIELDS.some(key => value[key] !== HOST_RECEIPT[key])) invalid('hostReceipt is not the pinned host identity');
+  return Object.freeze({ ...value });
 }
 
 export function assertPerformanceHostIdentity(descriptor) {
-  return assertHostReceipt({ schemaVersion: descriptor.schemaVersion ?? 1, commit: descriptor.commit, ...descriptor.integrity });
+  return assertHostReceipt({ schemaVersion: descriptor.schemaVersion ?? 1, commit: descriptor.commit, ...descriptor.integrity }, { pinned: true });
 }
 
 function assertBrowser(value) {
@@ -230,13 +230,6 @@ export function assertPerformanceObservationWithinBudget(name, observation, base
   const budget = deriveReleasePerformanceBudget(baseline);
   const limit = budget.thresholds[name];
   if (observation > limit) throw new Error(`Release performance budget: ${name} observed ${observation} ms exceeded ${limit} ms`);
-  return true;
-}
-
-export function assertPerformanceBaselineBuildIdentity(baseline, expectedBuildDigest) {
-  const validated = validateReleasePerformanceBaseline(baseline);
-  digest(expectedBuildDigest, 'expectedBuildDigest');
-  if (validated.pluginBuildDigest !== expectedBuildDigest) invalid('pluginBuildDigest does not match the final build');
   return true;
 }
 

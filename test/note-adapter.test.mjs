@@ -42,21 +42,22 @@ test('Note browse resolves identities once and batches durable observations', as
     const folder = { version: 1, referenceId: 'folder:batch', topicId: 'topic-batch', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: root };
     const existing = { version: 1, referenceId: 'note:existing', topicId: 'topic-batch', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${root}/existing.md`, observedRevision: 'old' };
     let listCalls = 0;
-    let observed = null;
+    const observedBatches = [];
     const folderRevision = await enrollNoteFolderIdentity(root);
     const metadata = {
       listSourceReferences: () => { listCalls += 1; return [folder, existing]; },
       getSourceReference: (id) => id === folder.referenceId ? folder : null,
       getSourceLocator: (id) => id === folder.referenceId ? { locator: root, locatorVersion: 1, observedRevision: folderRevision } : null,
       setSourceLocator: () => {},
-      observeSourceReferences: (references) => { observed = references; return references; }
+      observeSourceReferences: (references) => { observedBatches.push(references); return references; }
     };
     const adapter = new NoteAdapter({ fsSafeRootFactory, metadata, topicId: folder.topicId, noteFolderReferenceId: folder.referenceId });
     const first = await adapter.browsePage({ limit: 1, offset: 0 });
     const second = await adapter.browsePage({ limit: 1, offset: 1, cursor: first.cursor });
     const notes = [...first.notes, ...second.notes];
     assert.equal(listCalls, 1);
-    assert.equal(observed.length, 2);
+    assert.deepEqual(observedBatches.map((batch) => batch.length), [1, 1]);
+    assert.equal(observedBatches.flat().length, 2);
     assert.deepEqual({ total: first.total, nextOffset: first.nextOffset, hasMore: first.hasMore }, { total: 2, nextOffset: 1, hasMore: true });
     assert.equal(notes.find(({ path: notePath }) => notePath === 'existing.md').sourceReference.referenceId, existing.referenceId);
     adapter.close();

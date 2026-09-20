@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { organizeNativeTopicConversations, selectNativeCategoryGrouping, selectNativeSidePanelType } from './support/native-topic-workspace.mjs';
+import { openNativeTopicFiles, organizeNativeTopicConversations, selectNativeCategoryGrouping } from './support/native-topic-workspace.mjs';
 
 test('native grouping journey selects a Topic row relative to its shadow-root page', { timeout: 10_000 }, async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
@@ -109,34 +109,43 @@ test('native grouping journey reports a missing visible control within its local
   } finally { await browser.close(); }
 });
 
-test('native side panel selection ignores a hidden populated predecessor', { timeout: 10_000 }, async () => {
+test('native Files resolution ignores a hidden predecessor and follows slot reconciliation', { timeout: 10_000 }, async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
     const page = await browser.newPage();
-    await page.setContent('<div hidden class="sidebar-region__right-runtime"><div class="side-panel"><div class="side-panel__header-tabs"><button aria-label="Add side panel tab">Hidden add</button></div></div></div><div class="sidebar-region__right-runtime" style="width:400px;height:200px"><div class="side-panel" style="position:relative;width:0;height:0;overflow:visible"><div class="side-panel-empty--selector" style="position:absolute;width:300px;height:100px"><div class="side-panel-empty__types"><button class="side-panel-empty__type">Topic Notes</button></div></div></div></div>');
-    assert.equal(await page.locator('.sidebar-region__right-runtime:not([hidden]) .side-panel').isVisible(), false);
-    assert.equal(await page.locator('.sidebar-region__right-runtime:not([hidden]) .side-panel-empty--selector').isVisible(), true);
+    await page.setContent('<openclaw-chat-pane aria-hidden="false" style="display:block;width:200px;height:100px">Chat</openclaw-chat-pane><div class="topic-sidebar"><section data-topic-id="topic-one" data-expanded="true"><button data-topic-control-key="files:topic-one">Files</button></section></div><section hidden data-panel-slot="workspace"><openclaw-plugin-view><div data-topic-reader-page="panel">Hidden predecessor</div></openclaw-plugin-view></section><main id="slots"></main>');
     await page.evaluate(() => {
-      document.querySelector('.sidebar-region__right-runtime:not([hidden]) .side-panel-empty__type').addEventListener('click', () => { document.body.dataset.selectedPanel = 'visible-empty'; });
+      document.querySelector('openclaw-chat-pane').sessionKey = 'agent:fictional:topic-one';
+      document.querySelector('[data-topic-control-key="files:topic-one"]').addEventListener('click', () => {
+        const slot = document.createElement('section'); slot.dataset.panelSlot = 'workspace'; slot.dataset.region = 'side';
+        const view = document.createElement('openclaw-plugin-view'); view.kind = 'replacement'; view.contributionKey = 'topic-files'; view.presented = true; view.props = { sessionKey: 'agent:fictional:topic-one' };
+        view.innerHTML = '<div data-topic-reader-page="panel">Current workspace</div>'; slot.append(view); document.querySelector('#slots').replaceChildren(slot);
+      });
     });
-    await selectNativeSidePanelType({ page, label: 'Topic Notes' });
-    assert.equal(await page.locator('body').getAttribute('data-selected-panel'), 'visible-empty');
+    const workspace = await openNativeTopicFiles({ page, fixture: { topicId: 'topic-one', sessionKey: 'agent:fictional:topic-one' } });
+    assert.equal(await workspace.innerText(), 'Current workspace');
+    await page.evaluate(() => {
+      const replacement = document.querySelector('[data-panel-slot="workspace"]:not([hidden])').cloneNode(true);
+      replacement.dataset.region = 'main'; replacement.querySelector('openclaw-plugin-view').presented = true;
+      replacement.querySelector('openclaw-plugin-view').props = { sessionKey: 'agent:fictional:topic-one' };
+      replacement.querySelector('[data-topic-reader-page]').textContent = 'Reconciled workspace'; document.querySelector('#slots').replaceChildren(replacement);
+    });
+    assert.equal(await workspace.innerText(), 'Reconciled workspace');
   } finally { await browser.close(); }
 });
 
-test('native side panel selection uses the visible populated panel menu', { timeout: 10_000 }, async () => {
+test('native Files resolution reuses an already-open exact workspace', { timeout: 10_000 }, async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
     const page = await browser.newPage();
-    await page.setContent('<div hidden class="sidebar-region__right-runtime"><div class="side-panel"><div class="side-panel-empty--selector"><div class="side-panel-empty__types"><button class="side-panel-empty__type">Topic Notes</button></div></div></div></div><div class="sidebar-region__right-runtime" style="width:400px;height:200px"><div class="side-panel" style="position:relative;width:0;height:0;overflow:visible"><div data-region-header="side" style="position:absolute;width:300px;height:100px"><div class="side-panel__header-tabs"><button aria-label="Add side panel tab">Add</button><wa-dropdown-item hidden>Topic Notes</wa-dropdown-item></div></div></div></div>');
-    assert.equal(await page.locator('.sidebar-region__right-runtime:not([hidden]) .side-panel').isVisible(), false);
-    assert.equal(await page.locator('.sidebar-region__right-runtime:not([hidden]) [data-region-header="side"]').isVisible(), true);
+    await page.setContent('<openclaw-chat-pane aria-hidden="false" style="display:block;width:200px;height:100px">Chat</openclaw-chat-pane><div class="topic-sidebar"><section data-topic-id="topic-one" data-expanded="true"><button data-topic-control-key="files:topic-one">Files</button></section></div><section data-panel-slot="workspace" data-region="side"><openclaw-plugin-view><div data-topic-reader-page="panel">Already open</div></openclaw-plugin-view></section>');
     await page.evaluate(() => {
-      const region = document.querySelector('.sidebar-region__right-runtime:not([hidden])');
-      region.querySelector('[aria-label="Add side panel tab"]').addEventListener('click', () => { region.querySelector('wa-dropdown-item').hidden = false; });
-      region.querySelector('wa-dropdown-item').addEventListener('click', () => { document.body.dataset.selectedPanel = 'visible-menu'; });
+      document.querySelector('openclaw-chat-pane').sessionKey = 'agent:fictional:topic-one';
+      const view = document.querySelector('openclaw-plugin-view'); view.kind = 'replacement'; view.contributionKey = 'topic-files'; view.presented = true; view.props = { sessionKey: 'agent:fictional:topic-one' };
+      document.querySelector('[data-topic-control-key="files:topic-one"]').addEventListener('click', () => { document.body.dataset.reused = 'true'; });
     });
-    await selectNativeSidePanelType({ page, label: 'Topic Notes' });
-    assert.equal(await page.locator('body').getAttribute('data-selected-panel'), 'visible-menu');
+    const workspace = await openNativeTopicFiles({ page, fixture: { topicId: 'topic-one', sessionKey: 'agent:fictional:topic-one' } });
+    assert.equal(await workspace.innerText(), 'Already open');
+    assert.equal(await page.locator('body').getAttribute('data-reused'), 'true');
   } finally { await browser.close(); }
 });

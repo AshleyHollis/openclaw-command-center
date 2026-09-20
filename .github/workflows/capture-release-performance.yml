@@ -141,7 +141,6 @@ jobs:
           const build = await readBuiltReceipt();
           assert.equal(acceptance.outcome, 'passed');
           assert.equal(acceptance.buildDigest, build.digest);
-          assert.equal(acceptance.performanceBaseline?.pluginBuildDigest, `sha256:${build.digest}`);
           const receipt = {
             schemaVersion: 1,
             sourceCommit: process.env.GITHUB_SHA,

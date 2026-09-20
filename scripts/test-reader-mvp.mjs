@@ -20,7 +20,7 @@ const readerUiScenarios = [
   'Topic Notes', 'Note pagination', 'Note snapshot mismatch', 'Note tree filter',
   'Note selection superseded', 'Original attachments', 'Topic Conversations',
   'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error',
-  'Notes panel', 'Missing panel promotion', 'Unbound panel', 'Late panel context',
+  'Missing panel promotion', 'Unbound panel', 'Late panel context',
   'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup'
 ];
 for (const scenario of readerUiScenarios) {

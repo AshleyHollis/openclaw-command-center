@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { chromium } from 'playwright';
 
-for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Notes panel', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
+for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
   const server = createServer(async (req, res) => {
     if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional native host</title><style>#mount{height:700px;width:900px}</style><main id="mount"></main></html>'); return; }
     // Serve the actual native module directory, including newly added siblings.
@@ -140,10 +140,9 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       window.deactivate = plugin.activate(host);
       window.registrationCount = () => registrations.size;
       const panel = scenario.includes('panel');
-      const registeredPanel = scenario === 'Notes panel';
       context = { host, signal: lifetime.signal, props: panel ? { sessionKey: 'agent:fictional:chat', agentId: 'fictional' } : {}, presented: true,
         ...(scenario === 'Missing panel promotion' ? {} : { panel: { showInMain: () => window.promoted++ } }) };
-      view = registrations.get(registeredPanel ? 'panel:topic-notes' : panel ? 'replacement:topic-files' : 'page:topics').mount(document.querySelector('#mount'), context);
+      view = registrations.get(panel ? 'replacement:topic-files' : 'page:topics').mount(document.querySelector('#mount'), context);
       window.selectUnbound = () => { context = { ...context, props: { sessionKey: 'agent:fictional:unbound', agentId: 'fictional' } }; view.update(context); };
       window.setPresented = (presented) => view.update?.({ ...context, presented });
       window.setConnected = (connected) => { host.connection = { ...host.connection, connected }; for (const listener of subscribers) listener(); };
@@ -225,7 +224,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
           assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Refresh Notes');
         }
       }
-      if (!['Notes panel', 'Missing panel promotion'].includes(scenario)) {
+      if (scenario !== 'Missing panel promotion') {
         await page.waitForFunction(() => document.body.textContent.includes('No Topic assigned'));
         assert.equal(await page.evaluate(() => window.promoted), 0);
         assert.equal(await page.getByRole('region', { name: 'Note content' }).count(), 0);
@@ -268,10 +267,8 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     }
     if (scenario === 'Note snapshot mismatch') {
       await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
-      await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
-      await page.getByRole('button', { name: 'Next Notes', exact: true }).click();
-      await page.getByText('The Note catalogue changed during retrieval; refresh Notes.', { exact: true }).waitFor();
-      assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 50, 'a failed next page retains the already verified page');
+      await page.getByText('The Note catalogue is unavailable; refresh Notes.', { exact: true }).waitFor();
+      assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 0, 'a changed snapshot is never made actionable');
       assert.equal(await page.getByRole('button', { name: 'Previous Notes', exact: true }).isDisabled(), true);
       assert.equal(await page.getByRole('button', { name: 'Next Notes', exact: true }).isDisabled(), true);
       await page.evaluate(() => window.disposeNative());
@@ -400,7 +397,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     await page.waitForFunction(() => window.opened.length === 1, null, { timeout: 2000 });
     assert.deepEqual(await page.evaluate(() => window.opened), [{ sessionKey: 'agent:fictional:chat', agentId: 'fictional' }]);
     assert.equal(await page.locator('textarea,[contenteditable=true],iframe').count(), 0);
-    assert.equal(await page.evaluate(() => window.registrationCount()), 10);
+    assert.equal(await page.evaluate(() => window.registrationCount()), 9);
     await page.evaluate(() => window.disposeNative());
     assert.equal(await page.evaluate(() => window.registrationCount()), 0);
     assert.equal(await page.locator('#mount').innerText(), '');

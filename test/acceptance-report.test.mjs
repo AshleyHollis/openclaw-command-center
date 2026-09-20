@@ -149,7 +149,7 @@ test('release report binds closed evidence and finalization to one build digest'
   assert.throws(() => assertAcceptanceReportPassed(widened), /frozen identity/u);
   const staleBuild = JSON.parse(JSON.stringify(report));
   staleBuild.buildDigest = 'b'.repeat(64);
-  assert.throws(() => assertAcceptanceReportPassed(staleBuild), /exact build digest/u);
+  assert.throws(() => assertAcceptanceReportPassed(staleBuild), /buildDigest is stale/u);
   const forgedOutcome = JSON.parse(JSON.stringify(report));
   forgedOutcome.rows[0] = { id: RELEASE_ROW_IDS[0], outcome: 'failed', error: 'fictional failure' };
   assert.throws(() => assertAcceptanceReportPassed(forgedOutcome), /does not match its evidence/u);
