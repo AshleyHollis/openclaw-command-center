@@ -33,6 +33,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   let catalogOffset = 0;
   let catalogTotal = 0;
   let catalogNextOffset = null;
+  let pendingCatalogOffset = null;
   let catalogConversations = [];
   let catalogHistories = [];
   let noteText = '';
@@ -428,6 +429,14 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   }
   async function loadCatalogPage(offset) {
     if (!presented || !readable() || offset < 0 || offset >= catalogTotal) return;
+    if (offset >= catalogAllNotes.length && catalogAllNotes.length < catalogTotal) {
+      pendingCatalogOffset = offset;
+      notePageStatus.textContent = `Loading Notes ${offset + 1}–${Math.min(offset + topicCatalogPageSize, catalogTotal)} of ${catalogTotal}…`;
+      previousNotes.disabled = true;
+      nextNotes.disabled = true;
+      return;
+    }
+    pendingCatalogOffset = null;
     presentCatalogPage(offset);
   }
   function showDraft() {
@@ -542,6 +551,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   }
   async function load() {
     cancel(); const pending = catalogGeneration;
+    pendingCatalogOffset = null;
     showReaderPath(); status.title = '';
     creation?.dispose(); creation?.form.remove(); creation = undefined;
     noteCreation?.dispose(); noteCreation?.form.remove(); noteCreation = undefined;
@@ -611,7 +621,9 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       if (!catalog) return;
       catalogAllNotes = catalog.notes;
       catalogTotal = catalog.total;
-      presentCatalogPage(0);
+      const requestedOffset = pendingCatalogOffset;
+      pendingCatalogOffset = null;
+      presentCatalogPage(Number.isSafeInteger(requestedOffset) && requestedOffset >= 0 && requestedOffset < catalogTotal ? requestedOffset : 0);
       // The folder tree begins collapsed. Direct selection and filtering may
       // temporarily reveal only the ancestors needed for that exact result.
       status.textContent = catalogTotal ? '' : 'No Notes or filed attachments in this Topic.';
