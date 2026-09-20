@@ -63,8 +63,9 @@ function localWeekKey(now, timeZone) {
 }
 
 function schedulerOwner({ scheduler, gateway }) {
-  if (scheduler?.list && scheduler?.add && scheduler?.update) return scheduler;
+  if (scheduler?.list && scheduler?.add && scheduler?.update) return Object.freeze({ requiresRevision: false, list: scheduler.list.bind(scheduler), add: scheduler.add.bind(scheduler), update: scheduler.update.bind(scheduler) });
   if (gateway?.request) return Object.freeze({
+    requiresRevision: true,
     list: (options) => gateway.request('cron.list', options),
     add: (input) => gateway.request('cron.add', input, { requestId: stableUuid(`${CAPACITY_REVIEW_SCHEDULE_KEY}:create`) }),
     update: (id, patch, expectedConfigRevision) => gateway.request('cron.update', { id, expectedConfigRevision, patch }, { requestId: stableUuid(`${CAPACITY_REVIEW_SCHEDULE_KEY}:update:${expectedConfigRevision}`) })
@@ -89,7 +90,7 @@ export function createCapacityReviewService({ metadata, sourceService, scheduler
       const verified = jobsFrom(await cron.list({ includeDisabled: true }));
       job = Array.isArray(verified) ? verified.find(candidate => candidate?.declarationKey === CAPACITY_REVIEW_SCHEDULE_KEY || created?.id && candidate?.id === created.id) : undefined;
     }
-    if (!job?.id || job.declarationKey !== CAPACITY_REVIEW_SCHEDULE_KEY || typeof job.configRevision !== 'string' || !job.configRevision.trim()) throw sourceError('source-recovery', 'Capacity review schedule identity was not verified.');
+    if (!job?.id || job.declarationKey !== CAPACITY_REVIEW_SCHEDULE_KEY || cron.requiresRevision && (typeof job.configRevision !== 'string' || !job.configRevision.trim())) throw sourceError('source-recovery', 'Capacity review schedule identity was not verified.');
     const expected = { name: declaration.name, description: declaration.description, enabled: declaration.enabled, schedule: declaration.schedule, sessionTarget: declaration.sessionTarget, wakeMode: declaration.wakeMode, payload: declaration.payload, delivery: declaration.delivery };
     const actual = Object.fromEntries(Object.keys(expected).map(key => [key, job[key]]));
     if (canonical(expected) !== canonical(actual)) {

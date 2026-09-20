@@ -49,6 +49,12 @@ test('schedule reconciliation uses the plugin service Cron owner without privile
   assert.deepEqual(methods.map(([method]) => method), ['list', 'add', 'list', 'list']);
 });
 
+test('plugin service Cron reconciliation does not invent an unpublished config revision', async () => {
+  const job = { ...structuredClone(capacityReviewCronDeclaration(config)), id: 'service-owned-capacity-review' };
+  const scheduler = { list: async () => [job], add: async () => assert.fail('Existing schedule was recreated.'), update: async () => assert.fail('Unchanged schedule was updated.') };
+  assert.equal((await createCapacityReviewService({ metadata: {}, scheduler, config, captureService: {} }).reconcileSchedule()).job.id, job.id);
+});
+
 test('repeat wakes in one local week retain one operation and one outstanding review', async () => {
   const captures = new Map(); const calls = [];
   const captureService = { async capture(input) {
