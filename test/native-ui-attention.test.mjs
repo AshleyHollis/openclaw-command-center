@@ -36,7 +36,16 @@ async function fixture(run) {
           window.requests.push({ method, params: structuredClone(params) });
           if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('topics.list')) return { result: { schemaVersion: 1, activeGroups: { project: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }], area: [], resource: [] } } };
-          if (method.endsWith('notes.browse')) return { result: { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'invoices/fictional-progress-invoice.txt', revision: 'authoritative-v1', sourceKind: 'document', sourceReference: { referenceId: 'document-fictional-progress-invoice', topicId: params.topicId, sourceSystem: 'fictional-documents', sourceKind: 'document' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-document-page' } };
+          if (method.endsWith('notes.browse')) {
+            if (window.paginatedDocuments) {
+              const final = params.offset === 100;
+              const notes = final
+                ? [{ schemaVersion: 1, path: 'invoices/page-two.pdf', revision: 'authoritative-page-two', sourceKind: 'document', sourceReference: { referenceId: 'document-page-two', topicId: params.topicId, sourceSystem: 'fictional-documents', sourceKind: 'document' } }]
+                : Array.from({ length: 100 }, (_, index) => ({ schemaVersion: 1, path: `archive/document-${index}.pdf`, revision: `authoritative-${index}`, sourceKind: 'document', sourceReference: { referenceId: `document-${index}`, topicId: params.topicId, sourceSystem: 'fictional-documents', sourceKind: 'document' } }));
+              return { result: { schemaVersion: 1, notes, total: 101, offset: params.offset, nextOffset: final ? null : 100, hasMore: !final, cursor: 'fictional-document-snapshot' } };
+            }
+            return { result: { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'invoices/fictional-progress-invoice.txt', revision: 'authoritative-v1', sourceKind: 'document', sourceReference: { referenceId: 'document-fictional-progress-invoice', topicId: params.topicId, sourceSystem: 'fictional-documents', sourceKind: 'document' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-document-page' } };
+          }
           if (method.endsWith('open-loops.intake-selected')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: window.intakeResult ?? { schemaVersion: 1, disposition: 'applied', checkpoint: { schemaVersion: 1 }, freshness: { status: 'available', lastObservedAt: params.selections[0].observedAt }, hasMore: false, results: [{ disposition: 'applied', observationId: 'selected-observation', sourceVersion: 'authoritative-v1', historicalBaseline: false, loop: { loopId: 'selected-loop', kind: 'payment', state: 'confirmed', revision: 1 } }] } };
           if (method.endsWith('open-loops.get')) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
@@ -273,7 +282,7 @@ test('native Attention reviews evidence and records status without paying or sen
   await bill.getByRole('button', { name: 'Review evidence' }).click();
   await bill.getByText('Source evidence', { exact: true }).waitFor();
   await bill.getByText('Source: fictional-source · email · v1', { exact: true }).waitFor();
-  await bill.getByText('Exact original-source navigation is not available from this item yet.', { exact: false }).waitFor();
+  await bill.getByText('This evidence has no currently authorized exact reader destination.', { exact: false }).waitFor();
   assert.equal(await bill.locator('details[data-open-loop-evidence] pre').count(), 0);
   await bill.getByText('Record payment status', { exact: true }).click();
   await bill.getByLabel('Evidence or rationale').fill('The fictional bank transfer was initiated; settlement remains pending.');
@@ -349,6 +358,32 @@ test('native Attention browses one authorized document and submits only its exac
   assert.equal(request.params.selections[0].path, 'invoices/fictional-progress-invoice.txt');
   assert.equal(request.params.selections[0].content, undefined);
   assert.equal(request.params.selections[0].version, undefined);
+}));
+
+test('native Attention opens exact authorized document evidence and carries its evidence version', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'document-bill', kind: 'payment', topicId: 'topic-fictional-renovation', title: 'Fictional document bill', state: 'confirmed', paymentState: 'unpaid', actions: ['Open original'], evidenceCount: 1, revision: 1, evidence: { sourceKind: 'document', sourceAvailable: true, topicId: 'topic-fictional-renovation', sourceReferenceId: 'document-fictional-progress-invoice', sourcePath: 'invoices/fictional-progress-invoice.pdf', sourceVersion: 'sha256:evidence-version' } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  const bill = page.locator('article[data-open-loop-id="document-bill"]');
+  await bill.getByRole('button', { name: 'Review evidence' }).click();
+  await bill.getByRole('button', { name: 'Open original' }).click();
+  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'topic-fictional-renovation', sourceReferenceId: 'document-fictional-progress-invoice', sourcePath: 'invoices/fictional-progress-invoice.pdf', evidenceSourceVersion: 'sha256:evidence-version' } });
+}));
+
+test('native Attention retrieves the complete authorized document catalog before selection', () => fixture(async (page) => {
+  await page.evaluate(() => { window.paginatedDocuments = true; window.mountInbox(); });
+  await page.getByText('Import one selected document', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load authorized documents' }).click();
+  await page.locator('details').filter({ hasText: 'Import one selected document' }).locator('select').nth(1).selectOption({ label: 'invoices/page-two.pdf' });
+  await page.getByLabel('Document date').fill('2026-09-20T09:00');
+  await page.getByLabel('Historical baseline through').fill('2026-09-01T00:00');
+  await page.getByRole('button', { name: 'Import selected document' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('open-loops.intake-selected')));
+  assert.equal(request.params.authorization.resourceId, 'document-page-two');
+  const pages = await page.evaluate(() => window.requests.filter(entry => entry.method.endsWith('notes.browse')).map(entry => entry.params.offset));
+  assert.deepEqual(pages, [0, 100]);
 }));
 
 test('native Attention reports when a selected document matches no supported obligation', () => fixture(async (page) => {
@@ -492,6 +527,19 @@ test('native Attention records delivery separately from required installation', 
   await row.getByLabel('Outcome').selectOption('delivered'); await row.getByLabel('Installation still required').check(); await row.getByRole('button', { name: 'Record fulfilment' }).click();
   const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-fulfilment')));
   assert.equal(request.params.fulfilment.requirement.id, 'install-oven'); assert.equal(request.params.fulfilment.fulfilmentKind, 'delivered'); assert.equal(request.params.fulfilment.installationRequired, true);
+}));
+
+test('native Attention records a partial renovation delivery with exact outstanding items', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 1, waiting: [{ loopId: 'tap-order-loop', kind: 'general', title: 'Await fictional tap order', state: 'waiting', evidenceCount: 1, revision: 1, evidence: { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: 'tap-order-17' } }], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  await page.getByText('Waiting (1 shown)', { exact: true }).click();
+  const row = page.locator('article[data-open-loop-id="tap-order-loop"]'); await row.getByRole('button', { name: 'Review evidence' }).click(); await row.getByText('Record delivery or installation', { exact: true }).click();
+  await row.getByLabel('Delivered item IDs').fill('tap-body, tap-hose'); await row.getByLabel('Outstanding item IDs').fill('tap-handle'); await row.getByLabel('Corrected expected time').fill('2026-09-25T09:00'); await row.getByLabel('Update note').fill('Two fictional items were checked against the packing slip.'); await row.getByRole('button', { name: 'Record fulfilment' }).click();
+  const request = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('renovation-fulfilment')));
+  assert.deepEqual(request.params.fulfilment.fulfilledItemIds, ['tap-body', 'tap-hose']); assert.deepEqual(request.params.fulfilment.outstandingItemIds, ['tap-handle']); assert.equal(request.params.fulfilment.expectedAt, new Date('2026-09-25T09:00').toISOString());
 }));
 
 test('native Attention creates a separate replacement disposition obligation', () => fixture(async (page) => {

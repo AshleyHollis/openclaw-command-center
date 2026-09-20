@@ -16,7 +16,7 @@ export const PAYMENT_STATES = Object.freeze([
 ]);
 export const ATTENTION_REASONS = Object.freeze([
   'response-requested', 'decision-requested', 'due-window', 'overdue',
-  'material-change', 'activated-blocker', 'evidence-conflict'
+  'material-change', 'activated-blocker', 'evidence-conflict', 'review-time'
 ]);
 
 const observationKeys = Object.freeze([

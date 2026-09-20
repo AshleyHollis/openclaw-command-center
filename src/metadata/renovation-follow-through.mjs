@@ -61,7 +61,7 @@ export function createRenovationFollowThrough(service) {
     recordFulfilment(raw) {
       const value = command(raw, 'fulfilment');
       const plan = planRenovationFulfilment(value.fulfilment);
-      return updateExisting(service, value, plan, 'renovation-fulfilment', existing => ({ ...existing, state: plan.resolves ? 'resolved' : 'monitoring', ...(plan.expectedEvent ? { expectedEvent: plan.expectedEvent } : { expectedEvent: undefined }), attention: { actions: [], activated: false, currentEvidence: plan.observation.historicalBaseline !== true } }));
+      return updateExisting(service, value, plan, 'renovation-fulfilment', existing => ({ ...existing, state: plan.resolves ? 'resolved' : 'monitoring', ...(plan.expectedEvent ? { expectedEvent: plan.expectedEvent } : { expectedEvent: undefined }), ...(plan.expectedAt ? { dueAt: plan.expectedAt } : {}), attention: { actions: [], activated: false, currentEvidence: plan.observation.historicalBaseline !== true } }));
     },
     recordStageActivation(raw) {
       const value = command(raw, 'activation');
@@ -100,7 +100,10 @@ export function createRenovationFollowThrough(service) {
     },
     recordDecisionConflict(raw) {
       const value = command(raw, 'conflict');
-      const challenge = { ...planRenovationDecisionConflict(value.conflict), actorId: value.actorId.trim() };
+      const planned = planRenovationDecisionConflict(value.conflict);
+      const memory = service.getDecisionMemory(planned.decisionId);
+      const alreadyReviewed = memory?.evidence?.some(item => item?.facts?.assumption === planned.assumption && item?.facts?.assessment === planned.assessment);
+      const challenge = { ...planned, ...(alreadyReviewed ? { assessment: 'unchanged', material: false } : {}), actorId: value.actorId.trim() };
       return service.challengeDecisionMemory({ schemaVersion: 1, logicalOperationId: value.logicalOperationId.trim(), expectedRevision: value.expectedRevision, challenge });
     },
     reviseDecision(raw) {

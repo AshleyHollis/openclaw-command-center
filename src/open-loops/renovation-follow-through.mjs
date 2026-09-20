@@ -27,6 +27,13 @@ function identity(value) { return `${value.kind}:${hash(JSON.stringify([value.na
 function observationId(prefix, value) { return `${prefix}:${hash(`${value.system}\u0000${value.kind}\u0000${value.externalId}\u0000${value.version}`).slice(0, 40)}`; }
 function entity(value, evidence) { return Object.freeze({ kind: value.kind, id: `${value.namespace}:${value.id}`, ...(value.label ? { label: value.label } : {}), evidence: Object.freeze(evidence) }); }
 function quietAttention(currentEvidence = true) { return Object.freeze({ actions: Object.freeze([]), activated: false, currentEvidence }); }
+function identifiers(value, label) {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value) || value.length > 50) fail(`${label} must be a bounded array`);
+  const items = value.map((item, index) => text(item, `${label}[${index}]`, 200));
+  if (new Set(items).size !== items.length) fail(`${label} must not contain duplicates`);
+  return Object.freeze(items);
+}
 
 export function stableRenovationRequirementId(requirement) {
   return `renovation-requirement:${identity(reference(requirement, 'requirement', requirementKinds))}`;
@@ -101,11 +108,17 @@ export function planReplacementDisposition(input) {
 
 export function planRenovationFulfilment(input) {
   const value = object(input, 'renovation fulfilment');
-  closed(value, ['schemaVersion', 'source', 'requirement', 'fulfilmentKind', 'installationRequired', 'occurredAt', 'observedAt', 'historicalBaseline', 'topicId'], 'renovation fulfilment');
+  closed(value, ['schemaVersion', 'source', 'requirement', 'fulfilmentKind', 'installationRequired', 'fulfilledItemIds', 'outstandingItemIds', 'expectedAt', 'note', 'occurredAt', 'observedAt', 'historicalBaseline', 'topicId'], 'renovation fulfilment');
   if (value.schemaVersion !== 1 || !fulfilmentKinds.has(value.fulfilmentKind) || typeof value.installationRequired !== 'boolean') fail('renovation fulfilment is unsupported');
   const requirement = reference(value.requirement, 'requirement', new Set(['purchase', 'installation']));
   const sourceValue = source(value.source);
-  return Object.freeze({ requirementStableSubjectId: stableRenovationRequirementId(requirement), resolves: value.fulfilmentKind === 'installed' || value.fulfilmentKind === 'delivered' && !value.installationRequired, expectedEvent: value.fulfilmentKind === 'delivered' && value.installationRequired ? 'installation' : undefined, observation: Object.freeze({ schemaVersion: 1, observationId: observationId(`renovation-${value.fulfilmentKind}`, sourceValue), source: sourceValue, type: 'delivery', occurredAt: instant(value.occurredAt, 'occurredAt'), observedAt: instant(value.observedAt, 'observedAt'), historicalBaseline: value.historicalBaseline === true, ...(value.topicId === undefined ? {} : { topicId: text(value.topicId, 'topicId') }), entityRefs: Object.freeze([entity(requirement, ['exact-requirement-id'])]), facts: Object.freeze({ eventKind: value.fulfilmentKind, requirementNamespace: requirement.namespace, requirementId: requirement.id, installationRequired: value.installationRequired }) }) });
+  const fulfilledItemIds = identifiers(value.fulfilledItemIds, 'fulfilledItemIds');
+  const outstandingItemIds = identifiers(value.outstandingItemIds, 'outstandingItemIds');
+  if (fulfilledItemIds.some(id => outstandingItemIds.includes(id))) fail('fulfilled and outstanding item identities must be disjoint');
+  const expectedAt = optionalInstant(value.expectedAt, 'expectedAt');
+  const resolves = outstandingItemIds.length === 0 && (value.fulfilmentKind === 'installed' || value.fulfilmentKind === 'delivered' && !value.installationRequired);
+  const expectedEvent = outstandingItemIds.length ? `delivery of ${outstandingItemIds.join(', ')}` : value.fulfilmentKind === 'delivered' && value.installationRequired ? 'installation' : undefined;
+  return Object.freeze({ requirementStableSubjectId: stableRenovationRequirementId(requirement), resolves, expectedEvent, expectedAt, observation: Object.freeze({ schemaVersion: 1, observationId: observationId(`renovation-${value.fulfilmentKind}`, sourceValue), source: sourceValue, type: 'delivery', occurredAt: instant(value.occurredAt, 'occurredAt'), observedAt: instant(value.observedAt, 'observedAt'), historicalBaseline: value.historicalBaseline === true, ...(value.topicId === undefined ? {} : { topicId: text(value.topicId, 'topicId') }), entityRefs: Object.freeze([entity(requirement, ['exact-requirement-id'])]), facts: Object.freeze({ eventKind: value.fulfilmentKind, requirementNamespace: requirement.namespace, requirementId: requirement.id, installationRequired: value.installationRequired, ...(fulfilledItemIds.length ? { fulfilledItemIds } : {}), ...(outstandingItemIds.length ? { outstandingItemIds } : {}), ...(expectedAt ? { expectedAt } : {}), ...(value.note === undefined ? {} : { note: text(value.note, 'note', 1000) }) }) }) });
 }
 
 export function planStageActivation(input) {
@@ -119,11 +132,15 @@ export function planStageActivation(input) {
 
 export function planRenovationDecisionConflict(input) {
   const value = object(input, 'renovation decision conflict');
-  closed(value, ['schemaVersion', 'decisionId', 'source', 'conflictKind', 'occurredAt', 'observedAt', 'historicalBaseline', 'summary', 'recordedChoice', 'observedChoice', 'evidenceSelectors'], 'renovation decision conflict');
+  closed(value, ['schemaVersion', 'decisionId', 'source', 'conflictKind', 'occurredAt', 'observedAt', 'historicalBaseline', 'summary', 'recordedChoice', 'observedChoice', 'scopeComparison', 'evidenceSelectors'], 'renovation decision conflict');
   if (value.schemaVersion !== 1 || !new Set(['revised-quote', 'purchase-vs-choice']).has(value.conflictKind)) fail('renovation decision conflict is unsupported');
   const recordedChoice = text(value.recordedChoice, 'recordedChoice', 500);
   const observedChoice = text(value.observedChoice, 'observedChoice', 500);
+  const scopeComparison = value.scopeComparison ?? 'like-for-like';
+  if (!new Set(['like-for-like', 'different-scope', 'unknown']).has(scopeComparison)) fail('scopeComparison is unsupported');
   const evidenceSelectors = value.evidenceSelectors ?? [];
   if (!Array.isArray(evidenceSelectors) || evidenceSelectors.length > 16) fail('evidenceSelectors is unsupported');
-  return Object.freeze({ schemaVersion: 1, decisionId: text(value.decisionId, 'decisionId'), source: source(value.source), occurredAt: instant(value.occurredAt, 'occurredAt'), observedAt: instant(value.observedAt, 'observedAt'), historicalBaseline: value.historicalBaseline === true, summary: text(value.summary, 'summary', 1000), assumption: `Recorded choice: ${recordedChoice}; observed ${value.conflictKind === 'revised-quote' ? 'quote choice' : 'purchase choice'}: ${observedChoice}.`, assessment: recordedChoice === observedChoice ? 'unchanged' : 'contradicted', material: recordedChoice !== observedChoice, evidenceSelectors: Object.freeze(evidenceSelectors.map((item, index) => text(item, `evidenceSelectors[${index}]`))) });
+  const same = recordedChoice === observedChoice;
+  const comparable = scopeComparison === 'like-for-like';
+  return Object.freeze({ schemaVersion: 1, decisionId: text(value.decisionId, 'decisionId'), source: source(value.source), occurredAt: instant(value.occurredAt, 'occurredAt'), observedAt: instant(value.observedAt, 'observedAt'), historicalBaseline: value.historicalBaseline === true, summary: text(value.summary, 'summary', 1000), assumption: `Recorded choice: ${recordedChoice}; observed ${value.conflictKind === 'revised-quote' ? 'quote choice' : 'purchase choice'}: ${observedChoice}; scope comparison: ${scopeComparison}.`, assessment: same ? 'unchanged' : comparable ? 'contradicted' : 'ambiguous', material: !same && comparable, evidenceSelectors: Object.freeze(evidenceSelectors.map((item, index) => text(item, `evidenceSelectors[${index}]`))) });
 }

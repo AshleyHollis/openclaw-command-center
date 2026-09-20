@@ -73,6 +73,35 @@ test('delivery waits for installation when installation is required', async () =
   });
 });
 
+test('a partial order update keeps one exact follow-up with item detail and an accepted review time', async () => {
+  await withApi((api, service) => {
+    api.recordRequirement(owned({ schemaVersion: 1, logicalOperationId: 'record-tap-order', expectedRevision: 0, requirement: requirement('tap-order-17', 'purchase', { title: 'Await fictional tap order' }) }));
+    const partial = api.recordFulfilment(owned({ schemaVersion: 1, logicalOperationId: 'tap-order-partial', expectedRevision: 1, fulfilment: { schemaVersion: 1, source: source('tap-order-delivery', 'v1', 'explicit-fulfilment'), requirement: ref('purchase', 'tap-order-17'), fulfilmentKind: 'delivered', installationRequired: false, fulfilledItemIds: ['tap-body', 'tap-hose'], outstandingItemIds: ['tap-handle'], expectedAt: '2026-09-25T00:00:00.000Z', note: 'Two of three fictional items were checked against the packing slip.', occurredAt: later, observedAt: later, historicalBaseline: false } }));
+    assert.equal(partial.loop.state, 'monitoring');
+    assert.equal(partial.loop.expectedEvent, 'delivery of tap-handle');
+    assert.equal(partial.loop.dueAt, '2026-09-25T00:00:00.000Z');
+    assert.deepEqual(partial.observation.facts.fulfilledItemIds, ['tap-body', 'tap-hose']);
+    assert.deepEqual(partial.observation.facts.outstandingItemIds, ['tap-handle']);
+    assert.equal(service.listOpenLoops().length, 1);
+    const deferred = service.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'review-tap-order-friday', loopId: partial.loop.loopId, expectedRevision: 2, decision: 'defer', reviewAt: '2026-09-25T09:00:00.000Z', actorId: 'fictional-operator', rationale: 'Review Friday if the outstanding handle has not arrived.', updatedAt: '2026-09-22T03:00:00.000Z' });
+    assert.equal(deferred.loop.state, 'waiting');
+    assert.equal(projectQuietAttention(deferred.loop, { now: '2026-09-25T08:59:00.000Z' }).group, 'deferred');
+    assert.equal(projectQuietAttention(deferred.loop, { now: '2026-09-25T09:00:00.000Z' }).group, 'attention');
+  });
+});
+
+test('return completion leaves an exact refund obligation open', async () => {
+  await withApi((api, service) => {
+    const common = { replacementPurchase: ref('purchase', 'replacement-mixer-001'), replacedItem: ref('renovation-item', 'faulty-mixer-001'), occurredAt: at, observedAt: at, historicalBaseline: false };
+    const returned = api.recordReplacementDisposition(owned({ schemaVersion: 1, logicalOperationId: 'record-return-obligation', expectedRevision: 0, replacement: { schemaVersion: 1, source: source('replacement-return'), ...common, obligation: ref('return', 'return-faulty-mixer-001'), title: 'Return fictional faulty mixer', dueAt: '2026-09-25T00:00:00.000Z' } }));
+    const refund = api.recordReplacementDisposition(owned({ schemaVersion: 1, logicalOperationId: 'record-refund-obligation', expectedRevision: 0, replacement: { schemaVersion: 1, source: source('replacement-refund'), ...common, obligation: ref('refund', 'refund-faulty-mixer-001'), title: 'Await fictional mixer refund', dueAt: '2026-10-02T00:00:00.000Z' } }));
+    const completedReturn = service.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'complete-return', loopId: returned.loop.loopId, expectedRevision: 1, decision: 'resolve', actorId: 'fictional-operator', rationale: 'The fictional carrier receipt confirms the old item was returned.', updatedAt: later });
+    assert.equal(completedReturn.loop.state, 'resolved');
+    assert.equal(service.getOpenLoop(refund.loop.loopId).state, 'confirmed');
+    assert.equal(service.listOpenLoops().length, 2);
+  });
+});
+
 test('prerequisites surface as individually addressable items only for an explicitly activated exact stage', async () => {
   await withApi((api) => {
     const stage = ref('renovation-stage', 'cabinet-installation');
@@ -119,5 +148,22 @@ test('a revised quote conflict uses the same explicit-review boundary', async ()
     assert.equal(challenged.decision.loop.state, 'decision-needed');
     assert.equal(service.getDecisionMemory('cabinet-finish-choice').currentRecord.facts.chosenOption, 'warm white');
     assert.match(challenged.decision.loop.attention.whyNow, /remains unchanged/i);
+  });
+});
+
+test('a reviewed quote fact does not reopen for a source-only revision and different scopes are not compared as savings', async () => {
+  await withApi((api, service) => {
+    service.recordDecisionMemory({ schemaVersion: 1, logicalOperationId: 'record-cost-choice', expectedRevision: 0, decision: { schemaVersion: 1, decisionId: 'cabinet-cost-choice', status: 'confirmed', decidedAt: at, actorId: 'fictional-operator', subject: { kind: 'quote-choice', id: 'cabinet-cost', label: 'Fictional cabinet quote' }, chosenOption: 'AUD 12000 same scope', alternatives: [], rationale: 'Accepted against the recorded scope.', assumptions: ['Same cabinet and installation scope.'], sourceObservationIds: [] } });
+    const first = api.recordDecisionConflict(owned({ schemaVersion: 1, logicalOperationId: 'cost-change-v2', expectedRevision: 1, conflict: { schemaVersion: 1, decisionId: 'cabinet-cost-choice', source: source('cabinet-quote', 'v2', 'quote'), conflictKind: 'revised-quote', occurredAt: later, observedAt: later, historicalBaseline: false, summary: 'The same fictional scope is now AUD 14500.', recordedChoice: 'AUD 12000 same scope', observedChoice: 'AUD 14500 same scope', scopeComparison: 'like-for-like', evidenceSelectors: ['quote:total', 'quote:scope'] } }));
+    assert.equal(first.decision.loop.state, 'decision-needed');
+    const dismissed = service.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'dismiss-reviewed-cost-change', loopId: first.decision.loop.loopId, expectedRevision: 2, decision: 'resolve', actorId: 'fictional-operator', rationale: 'Reviewed and retained the current decision for now.', updatedAt: '2026-09-22T03:00:00.000Z' });
+    assert.equal(dismissed.loop.state, 'resolved');
+    const sameFacts = api.recordDecisionConflict(owned({ schemaVersion: 1, logicalOperationId: 'cost-change-format-only-v3', expectedRevision: 3, conflict: { schemaVersion: 1, decisionId: 'cabinet-cost-choice', source: source('cabinet-quote', 'v3', 'quote'), conflictKind: 'revised-quote', occurredAt: '2026-09-23T00:00:00.000Z', observedAt: '2026-09-23T00:00:00.000Z', historicalBaseline: false, summary: 'Formatting changed; supported cost and scope facts did not.', recordedChoice: 'AUD 12000 same scope', observedChoice: 'AUD 14500 same scope', scopeComparison: 'like-for-like', evidenceSelectors: ['quote:total', 'quote:scope'] } }));
+    assert.equal(sameFacts.decision.loop.state, 'resolved');
+    assert.equal(sameFacts.decision.loop.attention.activated, false);
+    const differentScope = planRenovationDecisionConflict({ schemaVersion: 1, decisionId: 'cabinet-cost-choice', source: source('cabinet-quote-other-scope', 'v1', 'quote'), conflictKind: 'revised-quote', occurredAt: later, observedAt: later, historicalBaseline: false, summary: 'A cheaper quote excludes installation.', recordedChoice: 'AUD 12000 including installation', observedChoice: 'AUD 10000 supply only', scopeComparison: 'different-scope', evidenceSelectors: ['quote:scope'] });
+    assert.equal(differentScope.assessment, 'ambiguous');
+    assert.equal(differentScope.material, false);
+    assert.match(differentScope.assumption, /different-scope/u);
   });
 });

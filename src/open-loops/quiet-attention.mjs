@@ -17,6 +17,7 @@ function explain(loop, reason) {
   if (reason === 'decision-requested') return `${loop.title} needs a decision.`;
   if (reason === 'material-change') return `${loop.title} has materially changed evidence to review.`;
   if (reason === 'activated-blocker') return `${loop.title} blocks an active stage.`;
+  if (reason === 'review-time') return `${loop.title} reached its accepted review time.`;
   return `${loop.title} has conflicting evidence to reconcile.`;
 }
 
@@ -35,7 +36,7 @@ export function projectQuietAttention(input, { now = new Date().toISOString(), l
   if (reviewMs !== undefined && reviewMs > nowMs && explicitReason !== 'evidence-conflict') return Object.freeze({ group: 'deferred', reviewAt: loop.reviewAt, loop });
   const historicalOnly = loop.attention && loop.attention.currentEvidence !== true;
   let reason;
-  if (explicitReason && ['response-requested', 'decision-requested', 'material-change', 'activated-blocker', 'evidence-conflict'].includes(explicitReason)) reason = explicitReason;
+  if (explicitReason && ['response-requested', 'decision-requested', 'material-change', 'activated-blocker', 'evidence-conflict', 'review-time'].includes(explicitReason)) reason = explicitReason;
   else if (dueMs !== undefined && dueMs < nowMs) reason = 'overdue';
   else if (dueMs !== undefined && dueMs - nowMs <= leadTimeMs) reason = 'due-window';
 

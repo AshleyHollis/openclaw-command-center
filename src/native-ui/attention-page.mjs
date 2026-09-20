@@ -54,21 +54,39 @@ export function mountAttentionPage(container, context, operations = new Map()) {
       const facts = [
         ['Payee', item.payee], ['Purpose', item.purpose], ['Invoice', item.invoiceId], ['Account', item.accountId],
         ['Amount', Number.isSafeInteger(item.amount) && nonBlank(item.currency) ? `${item.currency} ${(item.amount / 100).toFixed(2)}` : null],
-        ['Due', formatDue(item)], ['Event', item.eventKind],
+        ['Due', formatDue(item)], ['Extraction', item.extractionStatus], ['Pages', Array.isArray(item.pageEvidence) && item.pageEvidence.length ? item.pageEvidence.join(', ') : null], ['Event', item.eventKind],
         ['Requirement', nonBlank(item.requirementKind) && nonBlank(item.requirementId) ? `${item.requirementKind}: ${item.requirementId}` : null],
         ['Stage', nonBlank(item.stageId) ? item.stageId : null], ['Choice', item.chosenOption],
         ['Recorded choice', item.recordedChoice], ['Observed choice', item.observedChoice], ['Rationale', item.rationale], ['Assumption', item.assumption],
-        ['Assessment', item.assessment], ['Status', item.status]
+        ['Assessment', item.assessment], ['Delivered items', Array.isArray(item.fulfilledItemIds) ? item.fulfilledItemIds.join(', ') : null], ['Outstanding items', Array.isArray(item.outstandingItemIds) ? item.outstandingItemIds.join(', ') : null], ['Expected update', item.expectedAt ? formatInstant(item.expectedAt) : null], ['Operator note', item.note], ['Status', item.status]
       ].filter(([, value]) => value !== undefined && value !== null && value !== '');
       if (facts.length) {
         const list = element('dl');
         for (const [label, value] of facts) list.append(element('dt', label), element('dd', String(value)));
         article.append(list);
       }
+      if (item.extractionStatus === 'pdf-text-extracted') article.append(element('p', 'PDF text extraction is a suggestion. Verify the original before confirming or correcting the obligation.'));
       if (item.sourceAvailable === false) article.append(element('p', 'The original source is currently unavailable. This does not mean the open loop is complete.'));
+      const navigableDocument = item.sourceKind === 'document' && item.sourceAvailable !== false && nonBlank(item.topicId) && item.topicId === loop?.topicId && nonBlank(item.sourceReferenceId) && nonBlank(item.sourcePath) && nonBlank(item.sourceVersion);
+      if (navigableDocument) {
+        const open = element('button', 'Open original'); open.type = 'button';
+        open.addEventListener('click', async () => {
+          if (!readable() || open.disabled) return;
+          open.disabled = true;
+          try {
+            const response = await host.request('command-center.v1.topics.get', { schemaVersion: 1, topicId: item.topicId });
+            if (!readable() || unwrap(response)?.topic?.topicId !== item.topicId) throw new Error('The exact source Topic is unavailable.');
+            host.navigation.openPage({ id: 'topic', params: { topicId: item.topicId, sourceReferenceId: item.sourceReferenceId, sourcePath: item.sourcePath, evidenceSourceVersion: item.sourceVersion } });
+          } catch (error) { report(error?.message || 'The original source is unavailable.'); }
+          finally { open.disabled = false; }
+        }, { signal });
+        article.append(open);
+      }
       disclosure.append(article);
     }
-    disclosure.append(element('p', 'Exact original-source navigation is not available from this item yet. Use the displayed source system, kind, and version to verify it in its authorized reader.'));
+    if (!evidence.some(item => item.sourceKind === 'document' && item.sourceAvailable !== false && item.topicId === loop?.topicId && nonBlank(item.sourceReferenceId) && nonBlank(item.sourcePath) && nonBlank(item.sourceVersion))) {
+      disclosure.append(element('p', 'This evidence has no currently authorized exact reader destination. Use the displayed source system, kind, and version to verify it in its source.'));
+    }
   }
 
   async function submitOpenLoopOperation({ key, method, params, card, pending, success, includeLoopId = true }) {
@@ -95,7 +113,7 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     form.append(topicLabel, loadDocuments, documentLabel, occurredLabel, baselineLabel, submit); intake.append(form);
     let initialized = false; let documents = [];
     const setDocuments = notes => {
-      documents = notes.filter(note => note?.sourceKind === 'document' && nonBlank(note.path) && nonBlank(note.sourceReference?.referenceId) && nonBlank(note.sourceReference?.sourceSystem) && note.sourceReference?.sourceKind === 'document').slice(0, 100);
+      documents = notes.filter(note => note?.sourceKind === 'document' && nonBlank(note.path) && nonBlank(note.sourceReference?.referenceId) && nonBlank(note.sourceReference?.sourceSystem) && note.sourceReference?.sourceKind === 'document');
       documentChoice.replaceChildren();
       for (const [index, note] of documents.entries()) { const option = element('option', note.path); option.value = String(index); documentChoice.append(option); }
       submit.disabled = documents.length === 0;
@@ -115,9 +133,21 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     loadDocuments.addEventListener('click', async () => {
       if (!readable() || !nonBlank(topicChoice.value) || loadDocuments.disabled) return; loadDocuments.disabled = true;
       try {
-        const result = unwrap(await host.request('command-center.v1.notes.browse', { schemaVersion: 1, topicId: topicChoice.value, offset: 0, limit: 100, includeDocuments: true }));
-        setDocuments(Array.isArray(result?.notes) ? result.notes : []);
-        if (result?.hasMore === true) report('Showing the first 100 authorized documents. Narrow the Topic before importing another document.');
+        const notes = []; let offset = 0; let cursor; let total; let snapshot;
+        for (;;) {
+          const result = unwrap(await host.request('command-center.v1.notes.browse', { schemaVersion: 1, topicId: topicChoice.value, offset, limit: 100, includeDocuments: true, ...(cursor ? { cursor } : {}) }));
+          if (!Array.isArray(result?.notes) || result.offset !== offset || !Number.isSafeInteger(result.total) || result.total < 0 || typeof result.hasMore !== 'boolean') throw new Error('The authorized document catalog is unavailable.');
+          if (total === undefined) { total = result.total; snapshot = result.cursor; }
+          else if (result.total !== total || result.cursor !== snapshot) throw new Error('The authorized document catalog changed during retrieval. Retry.');
+          notes.push(...result.notes);
+          if (!result.hasMore) {
+            if (notes.length !== total) throw new Error('The authorized document catalog is incomplete.');
+            break;
+          }
+          if (!Number.isSafeInteger(result.nextOffset) || result.nextOffset <= offset || result.nextOffset >= total || !nonBlank(result.cursor)) throw new Error('The authorized document catalog is incomplete.');
+          offset = result.nextOffset; cursor = result.cursor;
+        }
+        setDocuments(notes);
       } catch (error) { setDocuments([]); report(error?.message || 'Authorized documents are unavailable.'); }
       finally { loadDocuments.disabled = false; }
     }, { signal });
@@ -160,33 +190,45 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     if (!choices.length) return;
     decisionLabel.append(decision);
     const reviewLabel = element('label', ' Review time '); const reviewAt = element('input'); reviewAt.type = 'datetime-local'; reviewLabel.append(reviewAt);
+    const correctionLabel = element('label', ' Correct extracted fields '); const applyCorrections = element('input'); applyCorrections.type = 'checkbox'; correctionLabel.prepend(applyCorrections);
+    const amountLabel = element('label', ' Corrected amount '); const amount = element('input'); amount.type = 'number'; amount.min = '0.01'; amount.step = '0.01'; if (Number.isSafeInteger(card.amount)) amount.value = (card.amount / 100).toFixed(2); amountLabel.append(amount);
+    const currencyLabel = element('label', ' Corrected ISO code '); const currency = element('input'); currency.maxLength = 3; currency.value = nonBlank(card.currency) ? card.currency : 'AUD'; currencyLabel.append(currency);
+    const correctDueLabel = element('label', ' Correct due date '); const correctDue = element('input'); correctDue.type = 'checkbox'; correctDueLabel.prepend(correctDue);
     const dateOnlyLabel = element('label', ' Calendar date only '); const dateOnly = element('input'); dateOnly.type = 'checkbox'; dateOnlyLabel.prepend(dateOnly);
     const dueLabel = element('label', ' Corrected due date and time '); const dueAt = element('input'); dueAt.type = 'datetime-local'; dueLabel.append(dueAt);
     const dueDateLabel = element('label', ' Corrected calendar date '); const dueDate = element('input'); dueDate.type = 'date'; dueDateLabel.append(dueDate);
     const rationaleLabel = element('label', ' Rationale '); const rationale = element('textarea'); rationale.required = true; rationale.maxLength = 1000; rationaleLabel.append(rationale);
     const update = () => {
-      const deferred = decision.value === 'defer'; const correcting = decision.value === 'correct-date';
+      const deferred = decision.value === 'defer'; const suggestionCorrection = decision.value === 'confirm' && applyCorrections.checked; const correcting = decision.value === 'correct-date' || suggestionCorrection && correctDue.checked;
       reviewLabel.hidden = !deferred; reviewAt.required = deferred;
+      correctionLabel.hidden = decision.value !== 'confirm';
+      amountLabel.hidden = !suggestionCorrection; currencyLabel.hidden = !suggestionCorrection;
+      correctDueLabel.hidden = !suggestionCorrection;
+      amount.required = suggestionCorrection; currency.required = suggestionCorrection;
       dateOnlyLabel.hidden = !correcting;
       dueLabel.hidden = !correcting || dateOnly.checked; dueAt.required = correcting && !dateOnly.checked;
       dueDateLabel.hidden = !correcting || !dateOnly.checked; dueDate.required = correcting && dateOnly.checked;
     };
-    decision.addEventListener('change', update, { signal }); dateOnly.addEventListener('change', update, { signal }); update();
+    decision.addEventListener('change', update, { signal }); applyCorrections.addEventListener('change', update, { signal }); correctDue.addEventListener('change', update, { signal }); dateOnly.addEventListener('change', update, { signal }); update();
     const save = element('button', 'Save action'); save.type = 'submit';
-    form.append(decisionLabel, reviewLabel, dateOnlyLabel, dueLabel, dueDateLabel, rationaleLabel, save);
+    form.append(decisionLabel, reviewLabel, correctionLabel, amountLabel, currencyLabel, correctDueLabel, dateOnlyLabel, dueLabel, dueDateLabel, rationaleLabel, save);
     form.addEventListener('submit', async event => {
       event.preventDefault();
       if (!current(pending) || !writable() || save.disabled || !rationale.value.trim()) return;
       save.disabled = true;
       try {
         const review = decision.value === 'defer' ? new Date(reviewAt.value).toISOString() : undefined;
-        const due = decision.value === 'correct-date' && !dateOnly.checked ? new Date(dueAt.value).toISOString() : undefined;
-        const calendarDue = decision.value === 'correct-date' && dateOnly.checked ? dueDate.value : undefined;
+        const correcting = decision.value === 'correct-date' || decision.value === 'confirm' && applyCorrections.checked && correctDue.checked;
+        const due = correcting && !dateOnly.checked ? new Date(dueAt.value).toISOString() : undefined;
+        const calendarDue = correcting && dateOnly.checked ? dueDate.value : undefined;
         const dueTimeZone = calendarDue === undefined ? undefined : Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const correctedAmount = decision.value === 'confirm' && applyCorrections.checked ? Math.round(Number(amount.value) * 100) : undefined;
+        const correctedCurrency = correctedAmount === undefined ? undefined : currency.value.trim().toUpperCase();
+        if (correctedAmount !== undefined && (!Number.isSafeInteger(correctedAmount) || correctedAmount <= 0 || !/^[A-Z]{3}$/u.test(correctedCurrency))) throw new Error('Enter a positive corrected amount and three-letter currency.');
         await submitOpenLoopOperation({
           key: `open-loop-decision:${card.loopId}:${decision.value}`,
           method: 'command-center.v1.open-loops.decide',
-          params: { decision: decision.value, ...(review === undefined ? {} : { reviewAt: review }), ...(due === undefined ? {} : { dueAt: due }), ...(calendarDue === undefined ? {} : { dueDate: calendarDue, dueTimeZone }), rationale: rationale.value.trim() },
+          params: { decision: decision.value, ...(review === undefined ? {} : { reviewAt: review }), ...(due === undefined ? {} : { dueAt: due }), ...(calendarDue === undefined ? {} : { dueDate: calendarDue, dueTimeZone }), ...(correctedAmount === undefined ? {} : { amount: correctedAmount, currency: correctedCurrency }), rationale: rationale.value.trim() },
           card, pending,
           success: decision.value === 'defer' ? 'The item was deferred to the selected review time.' : decision.value === 'correct-date' ? 'The accepted due date was corrected.' : decision.value === 'confirm' ? 'The suggestion was confirmed.' : decision.value === 'dismiss' ? 'The suggestion was dismissed.' : 'The outcome was recorded.'
         });
@@ -299,12 +341,22 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     const kindLabel = element('label', 'Outcome '); const kind = element('select');
     for (const [value, label] of [['delivered', 'Delivered'], ['installed', 'Installed']]) { const option = element('option', label); option.value = value; kind.append(option); } kindLabel.append(kind);
     const installationLabel = element('label', ' Installation still required '); const installationRequired = element('input'); installationRequired.type = 'checkbox'; installationRequired.checked = requirement.requirementKind === 'installation'; installationLabel.append(installationRequired);
-    const save = element('button', 'Record fulfilment'); save.type = 'submit'; form.append(kindLabel, installationLabel, save);
+    const fulfilledLabel = element('label', ' Delivered item IDs '); const fulfilled = element('input'); fulfilled.placeholder = 'tap-body, tap-hose'; fulfilledLabel.append(fulfilled);
+    const outstandingLabel = element('label', ' Outstanding item IDs '); const outstanding = element('input'); outstanding.placeholder = 'tap-handle'; outstandingLabel.append(outstanding);
+    const expectedLabel = element('label', ' Corrected expected time '); const expectedAt = element('input'); expectedAt.type = 'datetime-local'; expectedLabel.append(expectedAt);
+    const noteLabel = element('label', ' Update note '); const note = element('textarea'); note.maxLength = 1000; noteLabel.append(note);
+    const update = () => { const delivered = kind.value === 'delivered'; for (const field of [fulfilledLabel, outstandingLabel, expectedLabel, noteLabel]) field.hidden = !delivered; };
+    kind.addEventListener('change', update, { signal }); update();
+    const save = element('button', 'Record fulfilment'); save.type = 'submit'; form.append(kindLabel, installationLabel, fulfilledLabel, outstandingLabel, expectedLabel, noteLabel, save);
     form.addEventListener('submit', async event => {
       event.preventDefault(); if (!current(pending) || !writable() || save.disabled) return; save.disabled = true;
       try {
         const now = new Date().toISOString();
-        await submitOpenLoopOperation({ key: `renovation-fulfilment:${card.loopId}`, method: 'command-center.v1.open-loops.renovation-fulfilment', params: { fulfilment: { schemaVersion: 1, source: { system: 'command-center', kind: 'explicit-fulfilment', externalId: crypto.randomUUID(), version: 'operator-v1' }, requirement: { kind: requirement.requirementKind, namespace: requirement.requirementNamespace, id: requirement.requirementId }, fulfilmentKind: kind.value, installationRequired: kind.value === 'installed' ? false : installationRequired.checked, occurredAt: now, observedAt: now, historicalBaseline: false, ...(card.topicId ? { topicId: card.topicId } : {}) } }, card, pending, includeLoopId: false, success: kind.value === 'installed' ? 'Installation recorded.' : 'Delivery recorded; any required installation remains open.' });
+        const itemIds = value => [...new Set(value.split(',').map(item => item.trim()).filter(Boolean))];
+        const fulfilledItemIds = kind.value === 'delivered' ? itemIds(fulfilled.value) : [];
+        const outstandingItemIds = kind.value === 'delivered' ? itemIds(outstanding.value) : [];
+        if (fulfilledItemIds.some(id => outstandingItemIds.includes(id))) throw new Error('An item cannot be both delivered and outstanding.');
+        await submitOpenLoopOperation({ key: `renovation-fulfilment:${card.loopId}`, method: 'command-center.v1.open-loops.renovation-fulfilment', params: { fulfilment: { schemaVersion: 1, source: { system: 'command-center', kind: 'explicit-fulfilment', externalId: crypto.randomUUID(), version: 'operator-v1' }, requirement: { kind: requirement.requirementKind, namespace: requirement.requirementNamespace, id: requirement.requirementId }, fulfilmentKind: kind.value, installationRequired: kind.value === 'installed' ? false : installationRequired.checked, ...(fulfilledItemIds.length ? { fulfilledItemIds } : {}), ...(outstandingItemIds.length ? { outstandingItemIds } : {}), ...(expectedAt.value ? { expectedAt: new Date(expectedAt.value).toISOString() } : {}), ...(note.value.trim() ? { note: note.value.trim() } : {}), occurredAt: now, observedAt: now, historicalBaseline: false, ...(card.topicId ? { topicId: card.topicId } : {}) } }, card, pending, includeLoopId: false, success: kind.value === 'installed' ? 'Installation recorded.' : outstandingItemIds.length ? 'Partial delivery recorded; outstanding items remain open.' : 'Delivery recorded; any required installation remains open.' });
       } catch (error) { if (current(pending)) report(error?.message || 'The fulfilment outcome is unknown. Retry the same operation.'); }
       finally { if (current(pending)) save.disabled = false; }
     }, { signal });
@@ -368,10 +420,11 @@ export function mountAttentionPage(container, context, operations = new Map()) {
     const form = element('form'); form.append(element('p', `The recorded choice remains ${decision.chosenOption} until you explicitly revise it.`));
     const kindLabel = element('label', 'Evidence kind '); const kind = element('select'); for (const [value, label] of [['revised-quote', 'Revised quote'], ['purchase-vs-choice', 'Purchase differs from choice']]) { const option = element('option', label); option.value = value; kind.append(option); } kindLabel.append(kind);
     const choiceLabel = element('label', 'Observed choice '); const observedChoice = element('input'); observedChoice.required = true; observedChoice.maxLength = 500; choiceLabel.append(observedChoice);
-    const summaryLabel = element('label', 'Summary '); const summary = element('textarea'); summary.required = true; summary.maxLength = 1000; summaryLabel.append(summary); const save = element('button', 'Record evidence for review'); save.type = 'submit'; form.append(kindLabel, choiceLabel, summaryLabel, save);
+    const scopeLabel = element('label', ' Quote scope comparison '); const scopeComparison = element('select'); for (const [value, label] of [['like-for-like', 'Same scope'], ['different-scope', 'Different scope'], ['unknown', 'Not yet verified']]) { const option = element('option', label); option.value = value; scopeComparison.append(option); } scopeLabel.append(scopeComparison);
+    const summaryLabel = element('label', 'Summary '); const summary = element('textarea'); summary.required = true; summary.maxLength = 1000; summaryLabel.append(summary); const save = element('button', 'Record evidence for review'); save.type = 'submit'; form.append(kindLabel, choiceLabel, scopeLabel, summaryLabel, save);
     form.addEventListener('submit', async event => {
       event.preventDefault(); if (!current(pending) || !writable() || save.disabled || !observedChoice.value.trim() || !summary.value.trim()) return; save.disabled = true;
-      try { const now = new Date().toISOString(); await submitOpenLoopOperation({ key: `renovation-conflict:${card.loopId}`, method: 'command-center.v1.open-loops.renovation-decision-conflict', params: { conflict: { schemaVersion: 1, decisionId: decision.decisionId, source: { system: 'command-center', kind: kind.value, externalId: crypto.randomUUID(), version: 'operator-v1' }, conflictKind: kind.value, occurredAt: now, observedAt: now, historicalBaseline: false, summary: summary.value.trim(), recordedChoice: decision.chosenOption, observedChoice: observedChoice.value.trim(), evidenceSelectors: ['explicit-operator-evidence'] } }, card, pending, includeLoopId: false, success: observedChoice.value.trim() === decision.chosenOption ? 'Matching evidence recorded without changing Attention.' : 'Changed evidence recorded for explicit decision review.' }); }
+      try { const now = new Date().toISOString(); await submitOpenLoopOperation({ key: `renovation-conflict:${card.loopId}`, method: 'command-center.v1.open-loops.renovation-decision-conflict', params: { conflict: { schemaVersion: 1, decisionId: decision.decisionId, source: { system: 'command-center', kind: kind.value, externalId: crypto.randomUUID(), version: 'operator-v1' }, conflictKind: kind.value, occurredAt: now, observedAt: now, historicalBaseline: false, summary: summary.value.trim(), recordedChoice: decision.chosenOption, observedChoice: observedChoice.value.trim(), scopeComparison: scopeComparison.value, evidenceSelectors: ['explicit-operator-evidence'] } }, card, pending, includeLoopId: false, success: observedChoice.value.trim() === decision.chosenOption ? 'Matching evidence recorded without changing Attention.' : scopeComparison.value === 'like-for-like' ? 'Changed evidence recorded for explicit decision review.' : 'Changed evidence recorded without claiming a like-for-like comparison.' }); }
       catch (error) { if (current(pending)) report(error?.message || 'The changed evidence outcome is unknown. Retry the same operation.'); }
       finally { if (current(pending)) save.disabled = false; }
     }, { signal }); disclosure.append(form); row.append(disclosure);
