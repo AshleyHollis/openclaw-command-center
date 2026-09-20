@@ -35,6 +35,22 @@ async function fixture(t) {
   return { root, receipt, ...artifact };
 }
 
+function fictionalTextPdf() {
+  const content = 'BT\n/F1 11 Tf\n50 740 Td\n(Fictional sealed invoice) Tj\nET';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+  ];
+  let pdf = '%PDF-1.4\n'; const offsets = [0];
+  objects.forEach((object, index) => { offsets.push(Buffer.byteLength(pdf)); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return Buffer.from(pdf, 'ascii');
+}
+
 test('sealed plugin packs deterministically and round trips through the native archive verifier', async t => {
   const { root, receipt, packagePluginArtifact, verifyPluginArtifact } = await fixture(t);
   const first = await packagePluginArtifact({ expectedBuildReceipt: receipt, outputDirectory: path.join(root, 'output-a') });
@@ -61,11 +77,12 @@ test('sealed plugin packs deterministically and round trips through the native a
   for (const member of ['dist/vendor/pdf.mjs', 'dist/vendor/pdf.worker.mjs', 'dist/vendor/pdfjs-LICENSE.txt']) {
     assert.ok(first.receipt.files.some(file => file.path === member), `the archive is missing ${member}`);
   }
-  const runtimeUrl = pathToFileURL(path.join(verified, 'dist/open-loops/pdf-runtime.mjs')).href;
-  const runtimeProbe = `const { loadPdfRuntime } = await import(${JSON.stringify(runtimeUrl)});\n` +
-    "const pdfjs = await loadPdfRuntime();\nif (typeof pdfjs.getDocument !== 'function') process.exit(71);\n";
+  const extractorUrl = pathToFileURL(path.join(verified, 'dist/open-loops/selected-document-text.mjs')).href;
+  const runtimeProbe = `const { extractSelectedDocumentText } = await import(${JSON.stringify(extractorUrl)});\n` +
+    "const result = await extractSelectedDocumentText({ path: 'fictional.pdf', bytes: Buffer.from(process.env.PDF_FIXTURE, 'base64') });\n" +
+    "if (result.extractionStatus !== 'pdf-text-extracted' || result.content !== 'Fictional sealed invoice' || JSON.stringify(result.pageEvidence) !== '[1]') process.exit(71);\n";
   await promisify(execFile)(process.execPath, ['--input-type=module', '--eval', runtimeProbe], {
-    cwd: verified, env: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH }, timeout: 30_000
+    cwd: verified, env: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, PDF_FIXTURE: fictionalTextPdf().toString('base64') }, timeout: 30_000
   });
   assert.deepEqual(JSON.parse(await readFile(first.receiptPath, 'utf8')), first.receipt);
 });
