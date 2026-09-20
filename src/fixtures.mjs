@@ -163,7 +163,12 @@ export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot
           enabled: true,
           allow: [candidate.id],
           load: { paths: [candidate.root] },
-          entries: { [candidate.id]: { enabled: true, config: { topics: { noteRoot: paths.vault } } } }
+          entries: {
+            // Keep the built-in memory owner available while suppressing its
+            // unrelated scheduled dreaming setup in this disposable release test.
+            'memory-core': { enabled: true, config: { dreaming: { enabled: false } } },
+            [candidate.id]: { enabled: true, config: { topics: { noteRoot: paths.vault } } }
+          }
         }
       })}\n`);
     }

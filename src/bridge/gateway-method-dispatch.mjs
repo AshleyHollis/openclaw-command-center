@@ -10,33 +10,47 @@ const DISPATCH_TIMEOUT_MS = 45_000;
 // native readback. It is not an independent credential reauthentication service.
 export async function createRequestScopedConversationRuntime({ getRequestScope, dispatchGatewayMethod, gatewayRequest, requiredGatewayMethods = [] } = {}) {
   const readScope = getRequestScope ?? (await import('openclaw/plugin-sdk/plugin-runtime')).getPluginRuntimeGatewayRequestScope;
-  const refuse = () => { throw sourceError('unauthenticated', 'The original authenticated Conversation request is no longer available.'); };
+  const refuse = (reason = 'authority-changed') => { throw sourceError('unauthenticated', `The original authenticated Conversation request is no longer available (${reason}).`); };
   if (typeof readScope !== 'function') return refuse();
   const scope = readScope();
   const client = scope?.client;
   const profile = client?.authenticatedUserProfile;
   const principalId = profile?.profileId ?? client?.authenticatedUserId ?? client?.authenticatedOperatorId;
   const resolver = scope?.resolveGatewayContext;
+  const directContext = scope?.context;
   const role = client?.connect?.role;
   const granted = client?.connect?.scopes;
   if (!Array.isArray(requiredGatewayMethods) || requiredGatewayMethods.some(method => typeof method !== 'string' || !method.trim())) throw new TypeError('requiredGatewayMethods must be an array of non-empty method names');
   const dispatchAllowlist = Array.isArray(scope?.gatewayMethodDispatchMethods) ? scope.gatewayMethodDispatchMethods : [];
   const dispatchPermitted = scope?.gatewayMethodDispatchAllowed === true
     || (requiredGatewayMethods.length > 0 && requiredGatewayMethods.every(method => dispatchAllowlist.includes(method)));
-  if (scope?.pluginId !== 'command-center' || !dispatchPermitted || typeof principalId !== 'string' || !principalId.trim()
-    || typeof resolver !== 'function' || role !== 'operator' || !Array.isArray(granted)
-    || !granted.every(value => typeof value === 'string') || !granted.some(value => value === 'operator.write' || value === 'operator.admin')) return refuse();
+  if (scope?.pluginId !== 'command-center') return refuse('plugin-owner');
+  if (!dispatchPermitted) return refuse('dispatch-contract');
+  if (typeof principalId !== 'string' || !principalId.trim()) return refuse('principal');
+  if (typeof resolver !== 'function' && !directContext) return refuse('gateway-context');
+  if (role !== 'operator') return refuse('role');
+  if (!Array.isArray(granted) || !granted.every(value => typeof value === 'string')
+    || !granted.some(value => value === 'operator.write' || value === 'operator.admin')) return refuse('scope-grant');
   const scopes = JSON.stringify([...granted].sort());
-  const context = resolver();
-  if (!context) return refuse();
+  const resolvedContext = typeof resolver === 'function' ? resolver() : undefined;
+  // Current Gateway requests publish their admitted context directly. A
+  // resolver can be present but intentionally closed when only the active
+  // request frame may dispatch; in that case the exact scope-owned context is
+  // the authority and must remain attached to this same frame.
+  const context = resolvedContext ?? directContext;
+  const usesDirectContext = resolvedContext === undefined && directContext !== undefined;
+  if (!context) return refuse('gateway-context');
   const assertCurrent = () => {
     const currentPrincipal = client?.authenticatedUserProfile?.profileId ?? client?.authenticatedUserId ?? client?.authenticatedOperatorId;
-    if (readScope() !== scope || scope.client !== client || client.authenticatedUserProfile !== profile || currentPrincipal !== principalId
-      || scope.pluginId !== 'command-center'
-      || !(scope.gatewayMethodDispatchAllowed === true || (requiredGatewayMethods.length > 0 && requiredGatewayMethods.every(method => scope.gatewayMethodDispatchMethods?.includes(method))))
-      || scope.resolveGatewayContext !== resolver
-      || client.connect?.role !== role || !Array.isArray(client.connect?.scopes) || JSON.stringify([...client.connect.scopes].sort()) !== scopes
-      || resolver() !== context) refuse();
+    if (readScope() !== scope) return refuse('request-frame');
+    if (scope.client !== client || client.authenticatedUserProfile !== profile || currentPrincipal !== principalId) return refuse('principal');
+    if (scope.pluginId !== 'command-center') return refuse('plugin-owner');
+    if (!(scope.gatewayMethodDispatchAllowed === true || (requiredGatewayMethods.length > 0 && requiredGatewayMethods.every(method => scope.gatewayMethodDispatchMethods?.includes(method))))) return refuse('dispatch-contract');
+    if (scope.resolveGatewayContext !== resolver) return refuse('gateway-resolver');
+    if (client.connect?.role !== role || !Array.isArray(client.connect?.scopes) || JSON.stringify([...client.connect.scopes].sort()) !== scopes) return refuse('scope-grant');
+    if (usesDirectContext
+      ? scope.context !== context || (typeof resolver === 'function' && resolver() !== undefined)
+      : typeof resolver !== 'function' || resolver() !== context) return refuse('gateway-context');
   };
   assertCurrent();
   if (gatewayRequest !== undefined && typeof gatewayRequest !== 'function') throw new TypeError('gatewayRequest must be a function');

@@ -15,11 +15,7 @@ test('registers the complete closed versioned bridge inventory with least-privil
     ...READ_METHODS.map((method) => [method, 'operator.read']),
     ...WRITE_METHODS.map((method) => [method, ADMIN_METHODS.includes(method) ? 'operator.admin' : 'operator.write'])
   ]);
-  const topicGroupingRegistration = registrations.find(([method]) => method === 'command-center.v1.sessions.group');
-  assert.deepEqual(topicGroupingRegistration[2].gatewayMethodDispatchMethods, ['sessions.groups.list', 'sessions.groups.put']);
-  for (const [method, , options] of registrations) {
-    if (method !== 'command-center.v1.sessions.group') assert.equal(options.gatewayMethodDispatchMethods, undefined);
-  }
+  for (const [, , options] of registrations) assert.equal(options.gatewayMethodDispatchMethods, undefined);
   for (const method of registered) {
     assert.equal(BRIDGE_CONTRACTS[method].closed, true);
     assert.equal(BRIDGE_CONTRACTS[method].paramsSchema.additionalProperties, false);
@@ -271,6 +267,53 @@ test('native Topic grouping catalogue exposes only an idempotent exact-name oper
   assert.deepEqual(dispatched.map(item => item.method), ['sessions.groups.list']);
   current = false;
   await assert.rejects(catalogue.ensureGroup('Blocked'), /retired/);
+});
+
+test('registered native Topic grouping retains the authenticated handler inputs for acknowledged core dispatch', async () => {
+  const registrations = [];
+  const calls = [];
+  const logicalOperationId = randomUUID();
+  let groups = [];
+  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {
+    sessionGroup: async (input, runtime) => {
+      const group = await runtime.nativeGroupCatalog.ensureGroup(input.name);
+      return { schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, value: { schemaVersion: 1, status: 'applied', logicalOperationId: input.logicalOperationId, name: group.name } };
+    }
+  });
+  const handler = registrations.find(([method]) => method === 'command-center.v1.sessions.group')[1];
+  const client = {
+    connId: 'fictional-connection',
+    authenticatedUserId: 'fictional-operator',
+    connect: { role: 'operator', scopes: ['operator.write'] }
+  };
+  const context = {
+    authenticated: true,
+    getClientConnIds: (predicate) => new Set(predicate(client) ? [client.connId] : []),
+    getGatewayMethodRegistry: () => ({
+      getHandler: (method) => async (request) => {
+        calls.push({ method, request });
+        if (method === 'sessions.groups.list') return request.respond(true, { groups });
+        if (method === 'sessions.groups.put') {
+          groups = request.params.names.map(name => ({ name }));
+          return request.respond(true, { groups });
+        }
+        return request.respond(false, null, { code: 'INVALID_REQUEST', message: 'unexpected method' });
+      }
+    })
+  };
+  let response;
+  await handler({
+    req: { id: 'gateway-group-1' },
+    params: { schemaVersion: 1, topicId: 'fictional-topic', referenceId: 'session:fictional', expectedSessionId: 'fictional-session', expectedLifecycleRevision: '1', expectedTopicRevision: 1, name: 'Finance', logicalOperationId },
+    client,
+    context,
+    isWebchatConnect: () => false,
+    respond: (...args) => { response = args; }
+  });
+  assert.equal(response[0], true, JSON.stringify(response));
+  assert.deepEqual(calls.map(({ method }) => method), ['sessions.groups.list', 'sessions.groups.put', 'sessions.groups.list']);
+  assert.equal(calls.every(({ request }) => request.client === client && request.context === context), true);
+  assert.deepEqual(groups, [{ name: 'Finance' }]);
 });
 
 test('Direct Topic mutation contracts await the public service and return sanitized durable results', async () => {

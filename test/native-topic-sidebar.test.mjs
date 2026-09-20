@@ -132,7 +132,7 @@ test('native Topic sidebar projects exact links, General and the loaded unassign
     await page.getByRole('button', { name: 'Primary Conversation' }).click();
     await page.waitForFunction(() => window.opened.length === 1);
     assert.deepEqual(await page.evaluate(() => window.opened), [{ sessionKey: 'agent:main:primary', agentId: 'main' }]);
-    assert.deepEqual(await page.evaluate(() => window.filesOpened), { sessionKey: 'agent:main:primary', agentId: 'main' });
+    assert.equal(await page.evaluate(() => window.filesOpened), undefined, 'Conversation controls open Chat without requesting Files');
     assert.equal(await inbox.getAttribute('aria-expanded'), 'true', 'inbox disclosure state survives a refresh');
     await page.getByRole('button', { name: 'Open General' }).click();
     await page.waitForFunction(() => window.opened.length === 2);

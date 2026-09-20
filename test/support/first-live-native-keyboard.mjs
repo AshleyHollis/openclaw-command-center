@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { fetchJsonWithDeadline, waitForConsecutiveReadiness } from '../../src/host-harness.mjs';
 import { hasSuccessfulBrowserResponse, observeBrowserResponse } from '../../src/browser-evidence.mjs';
 import { assertKeyboardFocus, tabTo } from './keyboard-navigation.mjs';
+import { assertNativeFormattedNote } from './native-topic-workspace.mjs';
 import { requestAuthenticatedGateway } from './real-host-runtime.mjs';
 
 const actionPath = '/plugins/command-center/api/topic/actions';
@@ -13,7 +14,10 @@ const unwrap = response => response?.result ?? response;
 // This only reads DOM/CSS: it does not add names, focus styles or host authority.
 async function auditNativeState(page, surface, label) {
   await assertKeyboardFocus(page);
-  const audit = await surface.evaluate(root => {
+  let audit;
+  const deadline = Date.now() + 2_000;
+  do {
+    audit = await surface.evaluate(root => {
     const parent = node => node.assignedSlot ?? node.parentElement ?? node.getRootNode()?.host ?? null;
     const visible = node => {
       if (!node.getClientRects().length) return false;
@@ -38,20 +42,29 @@ async function auditNativeState(page, surface, label) {
     const durations = value => value.split(',').every(part => parseFloat(part) <= 0.001);
     const layouts = [document.documentElement, document.body, ...shown.filter(node => node === root || node.matches('main, [role="main"], pre[role="region"]'))].filter(node => node.clientWidth > 0);
     const stateful = shown.filter(node => node.matches('[aria-selected], [aria-current], [aria-checked], [data-status], [role="status"], [role="alert"], :disabled'));
+    const motion = shown.map(node => {
+      const style = getComputedStyle(node);
+      return { node, animationDuration: style.animationDuration, transitionDuration: style.transitionDuration, scrollBehavior: style.scrollBehavior };
+    }).filter(item => !durations(item.animationDuration) || !durations(item.transitionDuration) || item.scrollBehavior === 'smooth');
     return {
       forcedColors: matchMedia('(forced-colors: active)').matches,
       reducedMotionPreference: matchMedia('(prefers-reduced-motion: reduce)').matches,
-      reducedMotion: shown.every(node => { const style = getComputedStyle(node); return durations(style.animationDuration) && durations(style.transitionDuration) && style.scrollBehavior !== 'smooth'; }),
+      reducedMotion: motion.length === 0,
+      motion: motion.slice(0, 10).map(item => ({ tag: item.node.tagName, className: item.node.className,
+        animationDuration: item.animationDuration, transitionDuration: item.transitionDuration, scrollBehavior: item.scrollBehavior })),
       unnamed: shown.filter(node => node.matches('button, input, textarea, select, a[href]') && !name(node)).map(node => node.tagName),
       colorIndependent: stateful.every(node => !node.textContent?.trim() && node.matches('[role="status"], [role="alert"]') || Boolean(name(node))),
       overflow: layouts.filter(node => node.scrollWidth > node.clientWidth).map(node => ({ name: node.tagName, width: node.clientWidth, content: node.scrollWidth })),
       checked: shown.length
     };
-  });
+    });
+    if (audit.reducedMotion) break;
+    await page.waitForTimeout(50);
+  } while (Date.now() < deadline);
   assert.ok(audit.checked > 0, `${label}: no visible native content audited`);
   assert.equal(audit.forcedColors, true, `${label}: forced colors must remain enabled`);
   assert.equal(audit.reducedMotionPreference, true);
-  assert.equal(audit.reducedMotion, true, `${label}: native content retains motion under reduced-motion preference`);
+  assert.deepEqual(audit.motion, [], `${label}: native content retains motion under reduced-motion preference`);
   assert.deepEqual(audit.unnamed, [], `${label}: native controls need accessible names`);
   assert.equal(audit.colorIndependent, true, `${label}: state must have a non-color label`);
   assert.deepEqual(audit.overflow, [], `${label}: native page/Note content has horizontal overflow`);
@@ -91,7 +104,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   const creation = nativePage.locator('form').filter({ has: page.getByRole('heading', { name: 'New Conversation', exact: true }) });
   const createButton = () => creation.getByRole('button', { name: 'Create Conversation', exact: true });
   const gatewayRead = async (method, params = { schemaVersion: 1 }) => unwrap(await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method, params, signal }));
-  const ready = predicate => waitForConsecutiveReadiness(predicate, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+  const ready = (predicate, deadlineMs = 30_000) => waitForConsecutiveReadiness(predicate, host.earlyExit, { deadlineMs, delayMs: 100, signal });
   const press = async (target, { reverse = false } = {}) => {
     signal.throwIfAborted();
     await tabTo(target, { reverse, deferredIndicator });
@@ -146,7 +159,9 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     await button(`Read ${fixture.notePath}`).waitFor();
   };
   const returnFromChat = async () => {
-    const returnLink = page.locator('openclaw-app-sidebar openclaw-plugin-contributions').getByRole('link', { name: 'Topics', exact: true });
+    const returnLink = page
+      .locator('openclaw-app-sidebar [data-sidebar-entry="plugin:command-center/topics"]')
+      .getByRole('link', { name: 'Manage Topics', exact: true });
     await press(returnLink);
     await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
     // Native sidebar navigation retains its invoker; it does not call the
@@ -159,8 +174,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   };
   const readNote = async () => {
     await press(button(`Read ${fixture.notePath}`));
-    await note.filter({ hasText: fixture.noteText.trim() }).waitFor();
-    assert.equal(await note.textContent(), fixture.noteText);
+    await assertNativeFormattedNote(note, fixture);
     await requireExactFocus(page, note, 'Opening a Note must restore focus to its exact content, including inside native shadow DOM');
     await announced(nativePage, /Note opened · sha256:/u);
     assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
@@ -170,7 +184,9 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     && new URL(response.url()).pathname === actionPath && response.request().postDataJSON()?.action === action, { timeout: 30_000 }));
   const appliedReceipt = async (observed, action, original) => {
     assert.equal(hasSuccessfulBrowserResponse(observed), true, `Actual native HTTP ${action} must succeed`);
-    assert.equal(observed.value.request().headers()['x-openclaw-control-ui-relay'], '1');
+    const requestHeaders = observed.value.request().headers();
+    assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+    assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
     const input = observed.value.request().postDataJSON();
     assert.equal(input.action, action); assert.equal(input.topicId, fixture.topicId);
     const receipt = await observed.value.json();
@@ -183,6 +199,9 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   };
   const acknowledge = async receipt => {
     const pending = actionResponse('conversations.creation.acknowledge');
+    // The preceding assertion leaves focus on the adjacent plugin-owned Open
+    // control. Advance once through the real sequential order and activate
+    // the acknowledgment with the keyboard.
     await press(creation.getByRole('button', { name: 'Acknowledge created Conversation', exact: true }));
     const observed = await pending;
     assert.equal(hasSuccessfulBrowserResponse(observed), true);
@@ -195,7 +214,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
 
   assert.deepEqual(page.viewportSize(), { width: 1440, height: 900 });
   const topics = await gatewayRead('command-center.v1.topics.list');
-  assert.equal(topics.activeGroups.project.find(row => row.topicId === fixture.topicId)?.usable, true);
+  assert.equal(topics.activeGroups[fixture.paraCategory].find(row => row.topicId === fixture.topicId)?.usable, true);
   await press(button('Refresh Topics'));
   await announced(nativePage, '1 Topics. Conversations open in native Chat.');
   await requireExactFocus(page, button('Refresh Topics'), 'Refreshing Topics must preserve the exact keyboard invoker');
@@ -237,6 +256,13 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   await returnFromChat();
   await announced(creation, first.input.logicalOperationId);
   assert.equal(await createButton().isDisabled(), true);
+  // Creation is authoritative before the host roster necessarily finishes
+  // reconciling its new native row. Wait for that exact row so a sidebar
+  // replacement cannot discard focus during the composed Tab traversal.
+  await ready(() => page.locator('openclaw-app-sidebar [data-session-key]').evaluateAll(
+    (rows, sessionKey) => rows.some(row => row.getAttribute('data-session-key') === sessionKey),
+    created.sessionKey
+  ));
   await tabTo(creation.getByRole('button', { name: 'Open created Conversation', exact: true }));
   await complete('conversation-create');
   // Release only the exact owned applied receipt before a second deliberate ID.
@@ -256,7 +282,9 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
       assert.equal(intercepted, 1, 'An uncertain operation must never automatically redispatch creation');
       assert.equal(new URL(request.url()).origin, new URL(world.gateway.url).origin);
       browserGuard.assert(new URL(request.url()).hostname, 'browser-native-lost-reply');
-      assert.equal(request.headers()['x-openclaw-control-ui-relay'], '1');
+      const requestHeaders = request.headers();
+      assert.equal(requestHeaders.authorization === `Bearer ${world.gatewayCredential}`, true);
+      assert.equal(requestHeaders['x-openclaw-control-ui-relay'], undefined);
       response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: 30_000 });
       assert.equal(response.ok(), true);
       lost = { input: request.postDataJSON(), receipt: await response.json() };
@@ -323,7 +351,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     await ready(async () => {
       try { const catalog = await gatewayRead('plugins.controlUi.list', {}); return catalog.plugins?.some(row => row.pluginId === 'command-center' && row.revision === native.revision); }
       catch { signal.throwIfAborted(); return false; }
-    });
+    }, 90_000);
     progress(`${state}:catalog-ready`);
     const status = await gatewayRead('command-center.v1.sources.status');
     assert.equal(status.mode, 'degraded');
@@ -343,7 +371,11 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     assert.equal(await createButton().isDisabled(), true);
     if (state === 'source-unavailable') {
       await press(button('Open Topic in Chat'));
-      await announced(nativePage, /capability.*unavailable/iu);
+      const navigationStatus = nativePage.locator('.reader-status').filter({ hasText: /capability.*unavailable/iu });
+      await navigationStatus.waitFor();
+      const value = await navigationStatus.textContent();
+      assert.ok(value?.trim(), 'A failed Chat handoff must expose an exact readable status');
+      announcements.push(value);
       assert.equal(await chatPane.count(), 0);
     } else {
       const inspection = actionResponse('conversations.creation.inspect');
@@ -364,7 +396,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     assert.deepEqual(withoutObservationTimes(beforeRefusal.topic), withoutObservationTimes(retainedTopic.topic), 'Capability changes must preserve the existing Topic identity and revision');
     const refusal = await fetchJsonWithDeadline(`${world.gateway.url}${actionPath}`, {
       method: 'POST', redirect: 'error', signal,
-      headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+      headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
       body: JSON.stringify({ schemaVersion: 1, action: 'conversations.create', topicId: fixture.topicId, expectedRevision: retainedTopic.topic.revision, logicalOperationId: randomUUID(), label: 'Fictional refused keyboard creation' })
     }, { label: `native keyboard ${state} authenticated refusal`, timeoutMs: 30_000 });
     assert.equal(refusal.parseError, undefined); assert.equal(refusal.response.status, 422);
@@ -374,7 +406,11 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     // Source observation timestamps may advance on the earlier real Note read;
     // the refused command itself must leave the complete current projection alone.
     assert.deepEqual(await gatewayRead('command-center.v1.topics.get', { schemaVersion: 1, topicId: fixture.topicId }), beforeRefusal);
-    assert.equal(await note.textContent(), fixture.noteText);
+    await press(button('Source'));
+    const authoritativeSource = nativePage.getByRole('region', { name: 'Note source', exact: true });
+    await authoritativeSource.filter({ hasText: fixture.noteText.trim() }).waitFor();
+    assert.equal(await authoritativeSource.textContent(), fixture.noteText);
+    await press(button('Reading'));
     await complete(state);
   }
   assert.equal(states.length, 8); assert.equal(new Set(states).size, 8);

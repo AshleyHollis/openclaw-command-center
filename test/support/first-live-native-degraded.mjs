@@ -12,6 +12,7 @@ import { TrafficGuard } from '../../src/isolation.mjs';
 import { runtimeCapability } from '../../src/runtime-capability.mjs';
 import { scanPublicEvidence } from '../../src/safety.mjs';
 import { seedNativeExistingTopic } from './first-live-native-journey.mjs';
+import { assertNativeFormattedNote } from './native-topic-workspace.mjs';
 import { boundedHostEvidence, closeManagedBrowser, configureEvidencePage, launchManagedBrowser, redactBrowserEvidence, requestAuthenticatedGateway, stopHostOnAbort, withDeadline } from './real-host-runtime.mjs';
 
 const actionPath = '/plugins/command-center/api/topic/actions';
@@ -45,13 +46,17 @@ async function sessionIdentities(world, fixture, signal) {
 
 async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavailable, writeGrantDenied, signal = new AbortController().signal, onFinalization }) {
   return withIsolatedWorld(async world => {
+    const variant = sessionsUnavailable ? writeGrantDenied ? 'combined' : 'source' : 'bridge';
+    const progress = phase => console.log(`native-degraded-progress=${JSON.stringify({ variant, phase })}`);
     const config = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
     const pluginConfig = config.plugins.entries['command-center'].config;
     // Preserve the fixture's exact Note root, auth and native-plugin allowlist.
     if (sessionsUnavailable) pluginConfig.sourceCapabilities = { ...pluginConfig.sourceCapabilities, sessions: false };
     if (writeGrantDenied) pluginConfig.controlUiGrant = false;
     await writeFile(world.manifest.configPath, `${JSON.stringify(config)}\n`);
+    progress('configured');
     const host = await withDeadline('native degraded host launch', launchSignal => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
+    progress('host-launched');
     const removeAbortCleanup = stopHostOnAbort(signal, host);
     const browserGuard = new TrafficGuard();
     const evidence = { requests: [], responses: [], console: [], errors: [] };
@@ -71,6 +76,7 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
           return Array.isArray(catalog?.plugins) && catalog.plugins.some(plugin => plugin.pluginId === 'command-center');
         } catch (error) { signal.throwIfAborted(); recordBounded(evidence.errors, redactBrowserEvidence(error.message)); return false; }
       }, host.earlyExit, { deadlineMs: 120_000, delayMs: 250, signal });
+      progress('plugin-ready');
       const matchingPlugins = catalog.plugins.filter(plugin => plugin.pluginId === 'command-center');
       assert.equal(matchingPlugins.length, 1);
       const native = matchingPlugins[0];
@@ -91,18 +97,22 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       assert.equal(JSON.stringify(bootstrap.body).includes(world.gatewayCredential), false);
 
       const fixture = await seedNativeExistingTopic({ world, host, signal });
+      progress('fixture-seeded');
       const status = await gatewayRead('command-center.v1.sources.status');
       assert.equal(status.mode, 'degraded');
       assert.equal(status.unavailableCapabilities.includes('sessions'), sessionsUnavailable);
       assert.equal(status.unavailableCapabilities.includes('control-ui-grant'), writeGrantDenied);
       const topics = await gatewayRead('command-center.v1.topics.list');
-      const destination = topics.activeGroups.project.find(topic => topic.topicId === fixture.topicId);
+      const destination = topics.activeGroups[fixture.paraCategory].find(topic => topic.topicId === fixture.topicId);
       assert.equal(destination?.usable, true, 'Exact source identity remains readable despite the configured operation capability refusal');
       assert.equal(destination.name, fixture.name);
+      progress('source-status-read');
 
       managedBrowser = await withDeadline('native degraded browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }), 60_000, signal);
+      progress('browser-launched');
       const page = await managedBrowser.browser.newPage({ viewport: { width: 1440, height: 900 } });
       await configureEvidencePage(page, browserGuard, evidence);
+      page.setDefaultTimeout(30_000);
       const entryResponse = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'GET' && response.url() === entryUrl.href, { timeout: 60_000 }),
         error => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       await page.goto(controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topics',
@@ -112,13 +122,16 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       assert.deepEqual(await entry.value.body(), await readFile(path.join(process.cwd(), 'dist/native-ui/entry.mjs')));
       const nativePage = page.locator('openclaw-plugin-page');
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
+      progress('page-mounted');
       assert.equal(await nativePage.locator('iframe').count(), 0);
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
+      progress('notes-opened');
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
+      progress('note-opened');
       const note = nativePage.getByRole('region', { name: 'Note content', exact: true });
-      await note.filter({ hasText: fixture.noteText.trim() }).waitFor();
-      assert.equal(await note.textContent(), fixture.noteText);
+      await assertNativeFormattedNote(note, fixture);
+      progress('note-visible');
       assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
       assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
       const notes = await gatewayRead('command-center.v1.notes.browse', { schemaVersion: 1, topicId: fixture.topicId, offset: 0, limit: 50 });
@@ -129,10 +142,12 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       assert.equal(exactNote.revision, `sha256:${createHash('sha256').update(fixture.noteText).digest('hex')}`);
       if (sessionsUnavailable) {
         await nativePage.getByRole('button', { name: 'Open Topic in Chat', exact: true }).press('Enter');
-        await nativePage.getByRole('status').filter({ hasText: /capability.*unavailable/iu }).waitFor();
+        progress('chat-refusal-requested');
+        await nativePage.getByRole('status').filter({ hasText: /capability.*unavailable/iu }).first().waitFor();
         assert.equal(await page.locator('openclaw-chat-pane[aria-hidden="false"]').count(), 0, 'Unavailable Sessions must not open an unverified native Chat');
-        assert.equal(await note.textContent(), fixture.noteText);
+        await assertNativeFormattedNote(note, fixture);
       }
+      progress('safe-read-passed');
 
       // Admission may correctly disable the native form before any submission.
       // Prove the server gate independently through its authenticated relay;
@@ -143,7 +158,7 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
         expectedRevision: beforeTopic.topic.revision, label: 'Fictional refused native Conversation', logicalOperationId: randomUUID() };
       const rejected = await fetchJsonWithDeadline(`${world.gateway.url}${actionPath}`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json', 'x-openclaw-control-ui-relay': '1' },
+        headers: { authorization: `Bearer ${world.gatewayCredential}`, 'content-type': 'application/json' },
         body: JSON.stringify(input)
       }, { label: 'native degraded authenticated Conversation refusal', timeoutMs: 30_000 });
       assert.equal(rejected.parseError, undefined);
@@ -161,16 +176,17 @@ async function exerciseNativeDegraded({ descriptor, buildReceipt, sessionsUnavai
       const afterTopic = await gatewayRead('command-center.v1.topics.get', { schemaVersion: 1, topicId: fixture.topicId });
       assert.deepEqual(afterTopic, beforeTopic, 'Rejected creation must not change Topic revision, Primary identity or local source membership');
       assert.equal(await readFile(path.join(fixture.folder, fixture.notePath), 'utf8'), fixture.noteText);
+      progress('rejection-passed');
       await nativePage.getByRole('button', { name: 'Refresh Notes', exact: true }).press('Enter');
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
-      await note.filter({ hasText: fixture.noteText.trim() }).waitFor();
-      assert.equal(await note.textContent(), fixture.noteText, 'Safe authoritative Note reading survives the refused write');
+      await assertNativeFormattedNote(note, fixture);
 
       await waitForConsecutiveReadiness(async () => {
         const activation = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
           method: 'plugins.controlUi.status', params: { pluginId: 'command-center' }, scopes: ['operator.admin'], signal });
         return activation?.clients?.some(client => client.activations?.some(value => value.pluginId === 'command-center' && value.revision === native.revision && value.status === 'activated')) === true;
       }, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
+      progress('activation-observed');
       const source = Object.freeze({ capability: 'sessions', available: false, bindingObserved: true });
       const bridge = Object.freeze({ protocolVersion: runtimeCapability.schemaVersion, writeGrant: false, observedFromAuthenticatedAction: true,
         action: input.action, httpStatus: rejected.response.status, errorCode: refused.code });

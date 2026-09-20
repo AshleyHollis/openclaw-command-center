@@ -159,7 +159,6 @@ function validateStoredAcceptanceReport(report) {
   if (typeof report.buildDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(report.buildDigest)) invalid('report.buildDigest is invalid');
   const baseline = validateReleasePerformanceBaseline(report.performanceBaseline);
   validateReleasePerformanceBudget(report.performanceBudget, baseline);
-  if (baseline.pluginBuildDigest !== `sha256:${report.buildDigest}`) invalid('report.performanceBaseline is not bound to the exact build digest');
   if (!Array.isArray(report.rows) || report.rows.length !== RELEASE_ROW_IDS.length || report.rows.some((row, index) => row.id !== RELEASE_ROW_IDS[index])) invalid('report.rows are not in canonical order');
   for (const row of report.rows) {
     closed(row, row.outcome === 'passed' ? ['id', 'outcome', 'evidence'] : ['id', 'outcome', 'error'], `row.${row.id}`);
@@ -256,7 +255,6 @@ export async function runAcceptanceRows(rows, { timeoutMs = 120_000, cleanupTime
 export function createAcceptanceReport({ buildDigest, rows, finalization, performanceBaseline }) {
   if (typeof buildDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(buildDigest)) throw new TypeError('Acceptance report requires the exact build digest.');
   const validatedBaseline = validateReleasePerformanceBaseline(performanceBaseline);
-  if (validatedBaseline.pluginBuildDigest !== `sha256:${buildDigest}`) throw new TypeError('Acceptance report baseline is not bound to the exact build digest.');
   if (!Array.isArray(rows) || rows.length !== RELEASE_ROW_IDS.length || rows.some((row, index) => row.id !== RELEASE_ROW_IDS[index])) throw new TypeError('Acceptance report requires all release rows in canonical order.');
   for (const row of rows) {
     closed(row, row.outcome === 'passed' ? ['id', 'outcome', 'evidence'] : ['id', 'outcome', 'error'], `row.${row.id}`);

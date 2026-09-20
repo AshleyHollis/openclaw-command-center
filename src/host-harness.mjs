@@ -11,9 +11,9 @@ import { packagedHostDigest } from './packaged-host-integrity.mjs';
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 export const pinnedHost = Object.freeze({
   // The evaluator checkout is the exact authenticated first-live host receipt.
-  packageVersion: '2026.9.4',
-  commit: '9eb16e01c14dd7eaf654aa2d2a9121b9e9f74b84',
-  packageDigest: 'sha256:b20ed186caa3bc2f5fa0ce70edd39d9224b17632c9171f722332e2796c6aec15',
+  packageVersion: '2026.9.5',
+  commit: '14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971',
+  packageDigest: 'sha256:65c5934a7fff646c3b93b7045e217d25ada13b0e6fc2c8dc8e5bde72bfbae900',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
@@ -443,6 +443,10 @@ export async function waitForConsecutiveReadiness(observe, earlyExit, { required
         // are transport-level non-readiness; authenticated response failures
         // still propagate immediately.
         if (['ECONNREFUSED', 'ECONNRESET'].includes(error?.cause?.code ?? error?.code)) { refusedConnections += 1; return false; }
+        // A listener can accept the bootstrap request before startup releases
+        // the route. The request keeps its own short transport deadline while
+        // this owner retains the authoritative, longer startup deadline.
+        if (error?.category === 'transport-timeout') return false;
         throw error;
       });
       result = await withAbort(Promise.race([observation, earlyExit.then((error) => { throw error; })]), probeSignal);
@@ -465,7 +469,7 @@ export async function waitForConsecutiveReadiness(observe, earlyExit, { required
   throw failure;
 }
 
-export async function fetchJsonWithDeadline(url, options = {}, { label = 'HTTP operation', timeoutMs = 10_000, fetchImpl = fetchWithRuntimeDispatcher } = {}) {
+export async function fetchJsonWithDeadline(url, options = {}, { label = 'HTTP operation', timeoutMs = 10_000, fetchImpl = fetchWithRuntimeDispatcher, captureNonJsonBody = false } = {}) {
   const controller = new AbortController();
   const parentSignal = options.signal;
   let timedOut = false;
@@ -478,12 +482,23 @@ export async function fetchJsonWithDeadline(url, options = {}, { label = 'HTTP o
     controller.signal.throwIfAborted();
     let body;
     let parseError;
-    try { body = await response.json(); }
-    catch (error) {
-      if (controller.signal.aborted) throw error;
-      parseError = error;
+    let rawBody;
+    if (typeof response.text === 'function') {
+      const text = await response.text();
+      try { body = JSON.parse(text); }
+      catch (error) {
+        if (controller.signal.aborted) throw error;
+        parseError = error;
+        if (captureNonJsonBody) rawBody = text;
+      }
+    } else {
+      try { body = await response.json(); }
+      catch (error) {
+        if (controller.signal.aborted) throw error;
+        parseError = error;
+      }
     }
-    return { response, body, parseError };
+    return { response, body, parseError, ...(captureNonJsonBody ? { rawBody } : {}) };
   } catch (error) {
     if (parentSignal?.aborted) throw parentSignal.reason ?? error;
     if (timedOut) throw new HarnessFailure('transport-timeout', `${label} exceeded its ${timeoutMs} ms deadline`);

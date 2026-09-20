@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { chromium } from 'playwright';
 
-for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Notes panel', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
+for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
   const server = createServer(async (req, res) => {
     if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional native host</title><style>#mount{height:700px;width:900px}</style><main id="mount"></main></html>'); return; }
     // Serve the actual native module directory, including newly added siblings.
@@ -132,6 +132,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
         ui: {
           registerReplacement: (value) => { registrations.set(`replacement:${value.id}`, value); return () => registrations.delete(`replacement:${value.id}`); },
           selectReplacement: () => {},
+          registerPanel: (value) => { registrations.set(`panel:${value.id}`, value); return () => registrations.delete(`panel:${value.id}`); },
           registerPage: (value) => { registrations.set(`page:${value.id}`, value); return () => registrations.delete(`page:${value.id}`); },
           registerNavigation: (value) => { registrations.set(`navigation:${value.id}`, value); return () => registrations.delete(`navigation:${value.id}`); }
         }
@@ -223,7 +224,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
           assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Refresh Notes');
         }
       }
-      if (!['Notes panel', 'Missing panel promotion'].includes(scenario)) {
+      if (scenario !== 'Missing panel promotion') {
         await page.waitForFunction(() => document.body.textContent.includes('No Topic assigned'));
         assert.equal(await page.evaluate(() => window.promoted), 0);
         assert.equal(await page.getByRole('region', { name: 'Note content' }).count(), 0);
@@ -255,16 +256,21 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     if (scenario === 'Note pagination') {
       await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
       await page.getByRole('button', { name: 'Read note-0.md' }).waitFor();
+      await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Next Notes', exact: true }).click();
+      await page.getByText('Notes 51–51 of 51.', { exact: true }).waitFor();
       await page.getByRole('button', { name: 'Read last.md' }).waitFor({ timeout: 2000 });
-      assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 51);
-      assert.equal(await page.getByRole('button', { name: 'Next Notes' }).count(), 0);
+      assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 1);
+      assert.equal(await page.getByRole('button', { name: /Previous Notes|Next Notes/ }).count(), 2);
       await page.evaluate(() => window.disposeNative());
       return;
     }
     if (scenario === 'Note snapshot mismatch') {
       await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
-      await page.getByText('The Note catalogue changed during retrieval; refresh Notes.', { exact: true }).waitFor();
-      assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 0);
+      await page.getByText('The Note catalogue is unavailable; refresh Notes.', { exact: true }).waitFor();
+      assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 0, 'a changed snapshot is never made actionable');
+      assert.equal(await page.getByRole('button', { name: 'Previous Notes', exact: true }).isDisabled(), true);
+      assert.equal(await page.getByRole('button', { name: 'Next Notes', exact: true }).isDisabled(), true);
       await page.evaluate(() => window.disposeNative());
       return;
     }
@@ -352,7 +358,9 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       assert.equal(await page.evaluate(() => window.methods.some((method) => method.endsWith('metadata.read'))), false);
       await page.getByRole('button', { name: 'Read brief.md' }).click({ timeout: 2000 });
       await page.waitForFunction(() => document.querySelector('[aria-label="Note content"]')?.textContent.includes('Fictional Note'));
-      assert.equal(await page.getByRole('region', { name: 'Note content' }).innerText(), '<img src=x onerror=alert(1)>Fictional Note');
+      const noteContent = page.getByRole('region', { name: 'Note content' });
+      assert.equal(await noteContent.innerText(), '<img src=x onerror=alert(1)>Fictional Note');
+      assert.equal(await noteContent.evaluate(node => document.activeElement === node), true);
       assert.equal(await page.locator('img').count(), 0);
       await page.getByRole('button', { name: 'Open Topic in Chat' }).click();
       await page.waitForFunction(() => window.opened.length === 1);
@@ -389,7 +397,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     await page.waitForFunction(() => window.opened.length === 1, null, { timeout: 2000 });
     assert.deepEqual(await page.evaluate(() => window.opened), [{ sessionKey: 'agent:fictional:chat', agentId: 'fictional' }]);
     assert.equal(await page.locator('textarea,[contenteditable=true],iframe').count(), 0);
-    assert.equal(await page.evaluate(() => window.registrationCount()), 7);
+    assert.equal(await page.evaluate(() => window.registrationCount()), 9);
     await page.evaluate(() => window.disposeNative());
     assert.equal(await page.evaluate(() => window.registrationCount()), 0);
     assert.equal(await page.locator('#mount').innerText(), '');

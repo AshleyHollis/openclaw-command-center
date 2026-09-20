@@ -12,10 +12,11 @@ import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputCl
 import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
 import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 
-test('current reader preview refuses the retained performance-capture host identity', () => {
+test('current reader accepts the authenticated performance-capture host identity', () => {
   const { schemaVersion, commit, ...integrity } = releasePerformanceIdentity.hostReceipt;
-  assert.throws(() => parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
-    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args })), error => error.category === 'invalid-commit');
+  const descriptor = parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
+    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args }));
+  assert.equal(descriptor.commit, pinnedHost.commit);
 });
 
 const sourceDigest = `sha256:${'a'.repeat(64)}`;
@@ -100,7 +101,7 @@ test('categorizes absent and malformed host descriptors', () => {
 });
 
 test('runtime checkout identity remains distinct from the compatibility and performance receipt identities', () => {
-  assert.equal(pinnedHost.commit, '9eb16e01c14dd7eaf654aa2d2a9121b9e9f74b84');
+  assert.equal(pinnedHost.commit, '14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971');
   assert.doesNotThrow(() => parseHostDescriptor(hostDescriptor()));
   assert.throws(() => parseHostDescriptor(hostDescriptor({ commit: '19686a23834910173df0fd1f77bd762ffcda2afd' })), (error) => error.category === 'invalid-commit');
 });
@@ -146,6 +147,40 @@ test('elapsed readiness deadlines allow late success and reject flapping without
   );
   assert.deepEqual(observations, [true, false, true]);
   assert.equal(clock, 250);
+});
+
+test('elapsed readiness retries bounded transport timeouts inside the startup deadline', async () => {
+  let clock = 0;
+  const observations = [new HarnessFailure('transport-timeout', 'startup route remained pending'), true, true];
+  await waitForConsecutiveReadiness(() => {
+    const value = observations.shift();
+    if (value instanceof Error) throw value;
+    return value;
+  }, new Promise(() => {}), {
+    deadlineMs: 1_000,
+    delayMs: 100,
+    now: () => clock,
+    wait: async (delayMs) => { clock += delayMs; }
+  });
+  assert.equal(clock, 200);
+  assert.deepEqual(observations, []);
+});
+
+test('JSON fetch retains an exact non-JSON refusal body', async () => {
+  const ordinary = await fetchJsonWithDeadline('http://127.0.0.1/refusal', {}, {
+    fetchImpl: async () => new Response('Not Found', { status: 404 }),
+    timeoutMs: 1_000
+  });
+  assert.equal(Object.hasOwn(ordinary, 'rawBody'), false, 'Non-JSON bodies remain private unless the caller explicitly owns their validation');
+  const result = await fetchJsonWithDeadline('http://127.0.0.1/refusal', {}, {
+    fetchImpl: async () => new Response('Not Found', { status: 404 }),
+    timeoutMs: 1_000,
+    captureNonJsonBody: true
+  });
+  assert.equal(result.response.status, 404);
+  assert.equal(result.body, undefined);
+  assert.ok(result.parseError instanceof SyntaxError);
+  assert.equal(result.rawBody, 'Not Found');
 });
 
 test('readiness cancellation settles during a pending probe and between attempts', async () => {

@@ -1,0 +1,168 @@
+name: Qualify Command Center release
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Optional focused acceptance scenario; blank runs the complete release qualification
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: qualify-command-center-release-${{ github.ref }}-${{ inputs.scenario || 'release' }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:a217410e380a26e77c9e9df8de2cc1f1db0f055126ba7227bfcf2ed79270fb45
+      OPENCLAW_COMMIT: 14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971
+      OPENCLAW_VERSION: 2026.9.5
+      COMMAND_CENTER_CONTROLLER_SOURCE_ROOT: ${{ github.workspace }}/_openclaw-source
+      COMMAND_CENTER_ACCEPTANCE_SCENARIO: ${{ inputs.scenario }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Install the supported Node runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.20.0
+          cache: npm
+
+      - name: Configure browser cache
+        run: printf 'PLAYWRIGHT_BROWSERS_PATH=%s/ms-playwright\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Checkout exact OpenClaw source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: AshleyHollis/openclaw
+          ref: 14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971
+          fetch-depth: 1
+          persist-credentials: false
+          path: _openclaw-source
+
+      - name: Install sealed candidate and browser dependencies
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          npm run build
+
+      - name: Materialize authenticated host descriptor
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE")" = "$OPENCLAW_COMMIT"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE")" = "$OPENCLAW_VERSION"
+
+          host="$RUNNER_TEMP/command-center-host"
+          mkdir -p "$host/checkout" "$host/runtime"
+          tar --exclude=.git -C _openclaw-source -cf - . | tar --no-same-owner -C "$host/checkout" -xf -
+          cp -a _openclaw-source/.git "$host/checkout/.git"
+          git -C "$host/checkout" rev-parse HEAD | grep -Fx "$OPENCLAW_COMMIT"
+          test -z "$(git -C "$host/checkout" status --porcelain --untracked-files=no)"
+          git -C _openclaw-source archive --format=tar "$OPENCLAW_COMMIT" > "$RUNNER_TEMP/openclaw-source.tar"
+          printf 'sha256:%s\n' "$(sha256sum "$RUNNER_TEMP/openclaw-source.tar" | cut -d ' ' -f 1)" > "$RUNNER_TEMP/source-digest.txt"
+
+          container="$(docker create "$IMAGE")"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:/app/." "$host/runtime"
+          docker rm "$container" >/dev/null
+          trap - EXIT
+          sudo chown -R "$(id -u):$(id -g)" "$host"
+
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFile, writeFile, appendFile } from 'node:fs/promises';
+          import path from 'node:path';
+          import { parseHostDescriptor, pinnedHost, verifyHost } from './src/host-harness.mjs';
+          import { packagedHostDigest } from './src/packaged-host-integrity.mjs';
+          import { releasePerformanceIdentity } from './src/performance-baseline.mjs';
+
+          const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+          const host = path.join(process.env.RUNNER_TEMP, 'command-center-host');
+          const checkout = path.join(host, 'checkout');
+          const runtimeRoot = path.join(host, 'runtime');
+          const receipt = {
+            schemaVersion: 2,
+            sourceDigest: (await readFile(path.join(process.env.RUNNER_TEMP, 'source-digest.txt'), 'utf8')).trim(),
+            commit: pinnedHost.commit,
+            executableDigest: digest(await readFile(path.join(runtimeRoot, 'node_modules/openclaw/openclaw.mjs'))),
+            contractDigest: digest(Buffer.from(JSON.stringify(JSON.parse(await readFile('src/runtime-capability.json', 'utf8'))))),
+            packageDigest: pinnedHost.packageDigest,
+            runtimeDigest: await packagedHostDigest(runtimeRoot)
+          };
+          if (JSON.stringify(receipt) !== JSON.stringify(releasePerformanceIdentity.hostReceipt)) throw new Error('Prepared host receipt differs from the frozen performance identity');
+          await writeFile(path.join(host, 'receipt.json'), `${JSON.stringify(receipt)}\n`, { mode: 0o400 });
+          const descriptor = {
+            schemaVersion: 2,
+            checkout,
+            runtimeRoot,
+            commit: pinnedHost.commit,
+            command: { executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args },
+            integrity: receipt
+          };
+          await verifyHost(parseHostDescriptor(JSON.stringify(descriptor)));
+          await appendFile(process.env.GITHUB_ENV, `COMMAND_CENTER_ISOLATED_HOST=${JSON.stringify(descriptor)}\n`);
+          NODE
+
+      - name: Run coherent native release qualification
+        env:
+          COMMAND_CENTER_SEALED_CANDIDATE: "1"
+        run: |
+          set -euo pipefail
+          node --test --test-isolation=none test/real-host.acceptance.test.mjs 2>&1 | tee "$RUNNER_TEMP/qualification.log"
+
+      - name: Seal qualification receipt
+        if: inputs.scenario == ''
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { mkdir, readFile, writeFile } from 'node:fs/promises';
+          import path from 'node:path';
+          import { readBuiltReceipt } from './src/build.mjs';
+          import { scanPublicEvidence } from './src/safety.mjs';
+
+          const marker = 'acceptance-result=';
+          const log = await readFile(path.join(process.env.RUNNER_TEMP, 'qualification.log'), 'utf8');
+          const lines = log.split(/\r?\n/u).filter(line => line.includes(marker));
+          assert.equal(lines.length, 1, 'qualification must emit one canonical completion receipt');
+          const acceptance = JSON.parse(lines[0].slice(lines[0].indexOf(marker) + marker.length));
+          const build = await readBuiltReceipt();
+          assert.equal(acceptance.outcome, 'passed');
+          assert.equal(acceptance.buildDigest, build.digest);
+          const receipt = {
+            schemaVersion: 1,
+            sourceCommit: process.env.GITHUB_SHA,
+            workflowRun: process.env.GITHUB_RUN_ID,
+            hostImage: process.env.IMAGE,
+            acceptance
+          };
+          scanPublicEvidence([JSON.stringify(receipt)], { label: 'qualification-receipt' });
+          const output = path.join(process.env.RUNNER_TEMP, 'qualification');
+          await mkdir(output, { recursive: true });
+          await writeFile(path.join(output, 'receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });
+          NODE
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: inputs.scenario == ''
+        with:
+          name: command-center-release-qualification-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/qualification/receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Record qualification boundary
+        if: inputs.scenario == ''
+        run: |
+          printf '%s\n' 'Coherent native release qualification passed for the exact source, plugin build, host receipt, image digest, browser and frozen performance baseline.' >> "$GITHUB_STEP_SUMMARY"

@@ -263,22 +263,26 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
           }
         }
         if (method === 'command-center.v1.sessions.group' || method === 'command-center.v1.sessions.assign-topic') {
-          const authority = captureAuthenticatedConversationAuthority({ client, context, signal, sessionMutationAuthorization });
+          // A nested host dispatch consumes the outer mutation grant. Check it
+          // before grouping, then retain the authenticated connection and the
+          // host-published request scope as the ongoing authority fences.
+          if (method === 'command-center.v1.sessions.group') sessionMutationAuthorization?.assertCurrent?.();
+          const authority = captureAuthenticatedConversationAuthority({ client, context, signal,
+            ...(method === 'command-center.v1.sessions.assign-topic' ? { sessionMutationAuthorization } : {}) });
           if (method === 'command-center.v1.sessions.assign-topic') {
             runtime = { creationAuthority: authority };
           } else {
-          // Use the host's published request-scoped dispatcher. Calling a raw
-          // registry handler re-enters the Gateway without its completion
-          // protocol and can leave an otherwise valid native group request
-          // unresolved. The catalogue wrapper below remains method-closed.
-          const dispatched = await createRequestScopedConversationRuntime({
-            requiredGatewayMethods: ['sessions.groups.list', 'sessions.groups.put']
-          });
-          if (dispatched.creationAuthority.principalId !== authority.principalId) throw new SourceServiceError('unauthenticated', 'The authenticated native group dispatcher changed operator identity.');
-          runtime = {
-            creationAuthority: authority,
-            nativeGroupCatalog: createAuthenticatedNativeGroupCatalog({ authority, gatewayRequest: dispatched.gatewayRequest, assertDispatchCurrent: dispatched.creationAuthority.assertCurrent })
-          };
+            // Retain the exact authenticated handler inputs supplied by the
+            // host. The method-closed catalogue below can invoke only the two
+            // native group methods and awaits their response acknowledgement.
+            const gateway = createAuthenticatedCoreGateway({
+              req, client, context, isWebchatConnect, signal,
+              sessionMutationCommitGuard: authority.assertCurrent
+            });
+            runtime = {
+              creationAuthority: authority,
+              nativeGroupCatalog: createAuthenticatedNativeGroupCatalog({ authority, gatewayRequest: gateway.request, assertDispatchCurrent: authority.assertCurrent })
+            };
           }
         }
         const assertHistoryRead = method.startsWith('command-center.v1.histories.') || ['command-center.v1.sessions.topic-context', 'command-center.v1.sessions.group-preview'].includes(method) ? captureHistoryReadAuthority({ client, context, signal }) : null;
@@ -321,12 +325,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
       } catch (error) {
         respond(false, null, errorResult(error, { requestId, logicalOperationId: params?.logicalOperationId ?? null }));
       }
-    }, {
-      scope: contract.scope,
-      ...(method === 'command-center.v1.sessions.group'
-        ? { gatewayMethodDispatchMethods: ['sessions.groups.list', 'sessions.groups.put'] }
-        : {})
-    });
+    }, { scope: contract.scope });
     registered.push(method);
   }
   return Object.freeze(registered);
