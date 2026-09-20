@@ -141,7 +141,7 @@ export function createMetadataService(api) {
         // Lightweight operation receipts remain core metadata. This does not
         // instantiate the rich Activity/Dashboard presentation or event owners.
         activity: configured.activity !== false,
-        scheduler: FIRST_LIVE_FEATURES.scheduler && (serviceCronAvailable || gatewayAvailable) && configured.scheduler !== false,
+        scheduler: FIRST_LIVE_FEATURES.scheduler && gatewayAvailable && configured.scheduler !== false,
         search: false, analysis: false, attention: FIRST_LIVE_FEATURES.dashboard
       };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
@@ -162,7 +162,6 @@ export function createMetadataService(api) {
         topicService = closedPresentation({ listDestination: destination, listDestinationVerified: destination });
         return sourceService.status();
       }
-      const serviceCron = context.getCron?.();
       const migrationService = createLegacyDiscordMigrationService({ metadata: metadataService, api, gateway: api.runtime?.gateway, config: api.pluginConfig?.legacyDiscordMigration, logger: api.logger });
       const activatedMetadata = metadataService;
       if (FIRST_LIVE_FEATURES.dashboard) {
@@ -207,7 +206,8 @@ export function createMetadataService(api) {
       };
       sourceService = createAuthoritativeSourceService({ metadata: metadataService, api, capabilities, attentionService, migration: migrationService, transcriptReader: readVisibleTranscript, historyReader, noteRecoveryEffects: false });
       if (capabilities.scheduler) openLoopReminders = createOpenLoopReminderCoordinator({ api, gateway: api.runtime.gateway, metadata: metadataService });
-      if (capabilities.scheduler && api.pluginConfig?.capacityReview) {
+      if ((serviceCronAvailable || gatewayAvailable) && api.pluginConfig?.capacityReview) {
+        const serviceCron = context.getCron?.();
         capacityReview = createCapacityReviewService({ metadata: metadataService, sourceService, scheduler: serviceCron, gateway: serviceCron ? undefined : api.runtime.gateway, config: api.pluginConfig.capacityReview });
         await capacityReview.reconcileSchedule();
       }

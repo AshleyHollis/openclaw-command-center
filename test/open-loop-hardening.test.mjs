@@ -85,6 +85,7 @@ test('a large historical baseline stays quiet while current requests retain hone
   const metadata = {
     listUsableTopics: () => [],
     getQuietAttentionInbox: () => inbox,
+    listOpenLoops: () => [...historical, ...current],
     listActivity: () => []
   };
   const dashboard = await createDashboardService({ metadata, now: () => now }).get({ schemaVersion: 1 });

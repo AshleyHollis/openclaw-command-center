@@ -92,3 +92,22 @@ test('guarded child records and blocks network egress before dispatch', async ()
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('guarded child does not require an IPC root for network-only isolation', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-child-guard-no-ipc-'));
+  const trafficLog = path.join(root, 'traffic.jsonl');
+  const manifestPath = path.join(root, 'fixture-manifest.json');
+  try {
+    await writeFile(manifestPath, `${JSON.stringify({ trafficLog })}\n`);
+    const result = await runGuardedChild(manifestPath, `
+      try { await fetch('https://example.invalid/'); } catch {}
+      process.stdout.write('blocked');
+    `);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'blocked');
+    const entries = (await readFile(trafficLog, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(entries.some((entry) => entry.source === 'fetch' && entry.permitted === false), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
