@@ -148,7 +148,11 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   const firstCatalog = firstPage.value;
   assert.equal(firstPage.input.topicId, fixture.topicId);
   const firstPaths = assertNotePage(firstCatalog, 0);
-  await ready(async () => JSON.stringify(await nativePage.getByRole('button', { name: /^Read / }).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))) === JSON.stringify(firstPaths.map(value => `Read ${value}`)));
+  onProgress('first-note-page-dom');
+  const readButtons = nativePage.getByRole('button', { name: /^Read / });
+  await ready(async () => await readButtons.count() === 50);
+  assert.deepEqual(await readButtons.evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))),
+    firstPaths.map(value => `Read ${value}`));
   assert.equal(firstCatalog.nextOffset, 50);
   started = now();
   await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).click();
