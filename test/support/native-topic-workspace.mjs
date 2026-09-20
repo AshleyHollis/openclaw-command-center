@@ -146,13 +146,34 @@ export async function openNativeTopicFiles({ page, fixture, onStage } = {}) {
   await page.waitForFunction((sessionKey) => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === sessionKey, fixture.sessionKey, { timeout: 30_000 });
 
   await onStage?.('open-topic-files');
-  const topic = page.locator(`.topic-sidebar [data-topic-id="${fixture.topicId}"]`);
-  await topic.waitFor({ state: 'visible', timeout: 30_000 });
-  if (await topic.getAttribute('data-expanded') !== 'true') {
-    await topic.locator(`[data-topic-control-key="toggle:${fixture.topicId}"]`).click({ timeout: 30_000 });
-    await topic.locator(`[data-topic-control-key="files:${fixture.topicId}"]`).waitFor({ state: 'visible', timeout: 30_000 });
+  const sidebar = page.locator('openclaw-app-sidebar:visible').first();
+  const topicSidebar = sidebar.locator('.topic-sidebar:visible').first();
+  const topic = topicSidebar.locator(`[data-topic-id="${fixture.topicId}"]`);
+  try {
+    await topicSidebar.waitFor({ state: 'visible', timeout: 10_000 });
+    const category = topicSidebar.locator(`[data-topic-control-key="para:${fixture.paraCategory}"]`);
+    await category.waitFor({ state: 'visible', timeout: 10_000 });
+    if (await category.getAttribute('aria-expanded') !== 'true') {
+      await category.click({ timeout: 10_000 });
+      await page.waitForFunction((control) => control.getAttribute('aria-expanded') === 'true', await category.elementHandle(), { timeout: 10_000 });
+    }
+    await topic.waitFor({ state: 'visible', timeout: 10_000 });
+    if (await topic.getAttribute('data-expanded') !== 'true') {
+      await topic.locator(`[data-topic-control-key="toggle:${fixture.topicId}"]`).click({ timeout: 10_000 });
+      await topic.locator(`[data-topic-control-key="files:${fixture.topicId}"]`).waitFor({ state: 'visible', timeout: 10_000 });
+    }
+    await topic.locator(`[data-topic-control-key="files:${fixture.topicId}"]`).click({ timeout: 10_000 });
+  } catch (error) {
+    const diagnostics = await sidebar.evaluate((element, topicId) => ({
+      categories: Array.from(element.querySelectorAll('[data-topic-control-key^="para:"]'), (control) => ({
+        key: control.getAttribute('data-topic-control-key'), expanded: control.getAttribute('aria-expanded'), visible: control.checkVisibility()
+      })),
+      topics: Array.from(element.querySelectorAll('[data-topic-id]'), (entry) => ({
+        topicId: entry.getAttribute('data-topic-id'), expanded: entry.getAttribute('data-expanded'), visible: entry.checkVisibility(), exact: entry.getAttribute('data-topic-id') === topicId
+      }))
+    }), fixture.topicId).catch(() => null);
+    throw new Error(`Native Topic Files action is unavailable: ${JSON.stringify(diagnostics)}`, { cause: error });
   }
-  await topic.locator(`[data-topic-control-key="files:${fixture.topicId}"]`).click({ timeout: 30_000 });
 
   await onStage?.('resolve-topic-files-slot');
   const workspace = page.locator('[data-panel-slot="workspace"]:visible').filter({ has: page.locator('openclaw-plugin-view') });

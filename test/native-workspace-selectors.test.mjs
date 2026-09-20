@@ -113,16 +113,19 @@ test('native Files resolution ignores a hidden predecessor and follows slot reco
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
     const page = await browser.newPage();
-    await page.setContent('<openclaw-chat-pane aria-hidden="false" style="display:block;width:200px;height:100px">Chat</openclaw-chat-pane><div class="topic-sidebar"><section data-topic-id="topic-one" data-expanded="true"><button data-topic-control-key="files:topic-one">Files</button></section></div><section hidden data-panel-slot="workspace"><openclaw-plugin-view><div data-topic-reader-page="panel">Hidden predecessor</div></openclaw-plugin-view></section><main id="slots"></main>');
+    await page.setContent('<openclaw-chat-pane aria-hidden="false" style="display:block;width:200px;height:100px">Chat</openclaw-chat-pane><openclaw-app-sidebar hidden><div class="topic-sidebar"><section data-topic-id="topic-one" data-expanded="true"><button data-topic-control-key="files:topic-one">Hidden predecessor Files</button></section></div></openclaw-app-sidebar><openclaw-app-sidebar><div class="topic-sidebar"><button data-topic-control-key="para:project" aria-expanded="false" aria-controls="projects">Projects</button><div id="projects" hidden><section data-topic-id="topic-one" data-expanded="true"><button data-topic-control-key="files:topic-one">Files</button></section></div></div></openclaw-app-sidebar><section hidden data-panel-slot="workspace"><openclaw-plugin-view><div data-topic-reader-page="panel">Hidden predecessor</div></openclaw-plugin-view></section><main id="slots"></main>');
     await page.evaluate(() => {
       document.querySelector('openclaw-chat-pane').sessionKey = 'agent:fictional:topic-one';
-      document.querySelector('[data-topic-control-key="files:topic-one"]').addEventListener('click', () => {
+      const category = document.querySelector('openclaw-app-sidebar:not([hidden]) [data-topic-control-key="para:project"]');
+      category.addEventListener('click', () => { category.setAttribute('aria-expanded', 'true'); document.querySelector('#projects').hidden = false; });
+      document.querySelector('openclaw-app-sidebar:not([hidden]) [data-topic-control-key="files:topic-one"]').addEventListener('click', () => {
         const slot = document.createElement('section'); slot.dataset.panelSlot = 'workspace'; slot.dataset.region = 'side';
         const view = document.createElement('openclaw-plugin-view'); view.kind = 'replacement'; view.contributionKey = 'topic-files'; view.presented = true; view.props = { sessionKey: 'agent:fictional:topic-one' };
         view.innerHTML = '<div data-topic-reader-page="panel">Current workspace</div>'; slot.append(view); document.querySelector('#slots').replaceChildren(slot);
       });
     });
-    const workspace = await openNativeTopicFiles({ page, fixture: { topicId: 'topic-one', sessionKey: 'agent:fictional:topic-one' } });
+    const workspace = await openNativeTopicFiles({ page, fixture: { topicId: 'topic-one', paraCategory: 'project', sessionKey: 'agent:fictional:topic-one' } });
+    assert.equal(await page.locator('openclaw-app-sidebar:visible [data-topic-control-key="para:project"]').getAttribute('aria-expanded'), 'true');
     assert.equal(await workspace.innerText(), 'Current workspace');
     await page.evaluate(() => {
       const replacement = document.querySelector('[data-panel-slot="workspace"]:not([hidden])').cloneNode(true);
@@ -138,13 +141,13 @@ test('native Files resolution reuses an already-open exact workspace', { timeout
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
     const page = await browser.newPage();
-    await page.setContent('<openclaw-chat-pane aria-hidden="false" style="display:block;width:200px;height:100px">Chat</openclaw-chat-pane><div class="topic-sidebar"><section data-topic-id="topic-one" data-expanded="true"><button data-topic-control-key="files:topic-one">Files</button></section></div><section data-panel-slot="workspace" data-region="side"><openclaw-plugin-view><div data-topic-reader-page="panel">Already open</div></openclaw-plugin-view></section>');
+    await page.setContent('<openclaw-chat-pane aria-hidden="false" style="display:block;width:200px;height:100px">Chat</openclaw-chat-pane><openclaw-app-sidebar><div class="topic-sidebar"><button data-topic-control-key="para:project" aria-expanded="true">Projects</button><section data-topic-id="topic-one" data-expanded="true"><button data-topic-control-key="files:topic-one">Files</button></section></div></openclaw-app-sidebar><section data-panel-slot="workspace" data-region="side"><openclaw-plugin-view><div data-topic-reader-page="panel">Already open</div></openclaw-plugin-view></section>');
     await page.evaluate(() => {
       document.querySelector('openclaw-chat-pane').sessionKey = 'agent:fictional:topic-one';
       const view = document.querySelector('openclaw-plugin-view'); view.kind = 'replacement'; view.contributionKey = 'topic-files'; view.presented = true; view.props = { sessionKey: 'agent:fictional:topic-one' };
       document.querySelector('[data-topic-control-key="files:topic-one"]').addEventListener('click', () => { document.body.dataset.reused = 'true'; });
     });
-    const workspace = await openNativeTopicFiles({ page, fixture: { topicId: 'topic-one', sessionKey: 'agent:fictional:topic-one' } });
+    const workspace = await openNativeTopicFiles({ page, fixture: { topicId: 'topic-one', paraCategory: 'project', sessionKey: 'agent:fictional:topic-one' } });
     assert.equal(await workspace.innerText(), 'Already open');
     assert.equal(await page.locator('body').getAttribute('data-reused'), 'true');
   } finally { await browser.close(); }
