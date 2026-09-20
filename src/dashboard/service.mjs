@@ -167,10 +167,37 @@ async function activityPage({ sourceService, attentionService, metadata, offset,
   return Object.freeze({ schemaVersion: 1, records: Object.freeze(navigable), nextOffset: result?.nextOffset ?? null, hasMore: result?.hasMore === true });
 }
 
-function intakeCoverage(metadata) {
+function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
+  const operations = typeof metadata?.listOperations === 'function'
+    ? metadata.listOperations().filter(item => item.operationKind === `intake-receipt.${sourceKind}.v1`)
+    : [];
+  const latest = operations.at(-1);
+  if (!latest) return null;
+  let receipt;
+  try { receipt = JSON.parse(latest.resultIdentity ?? 'null'); } catch { receipt = null; }
+  if (!receipt || receipt.sourceKind !== sourceKind) return null;
+  const overdue = receipt.nextExpectedAt && Date.parse(receipt.nextExpectedAt) < Date.parse(serverTime);
+  const status = latest.state === 'pending' || receipt.status === 'pending' ? 'pending'
+    : latest.state !== 'applied' || receipt.status === 'failed' ? 'failed'
+      : receipt.status === 'never-connected' ? 'never-connected'
+        : overdue ? 'stale'
+          : receipt.status === 'healthy-empty' ? 'healthy-empty' : 'receipt-current';
+  const label = sourceKind === 'email' ? 'Email intake' : 'Note processing';
+  const explanations = {
+    pending: 'The maintained producer has started a run but has not recorded its final checkpoint.',
+    failed: 'The maintained producer recorded a failed checkpoint.',
+    'never-connected': 'The maintained producer reported that this source is not connected.',
+    stale: 'The maintained producer has not recorded the next expected checkpoint.',
+    'healthy-empty': 'The maintained producer completed successfully and found no new items.',
+    'receipt-current': 'The maintained producer completed successfully and recorded its checkpoint.'
+  };
+  return Object.freeze({ source: label, sourceKind, status, lastObservedAt: receipt.observedAt, ...(receipt.lastSuccessfulAt ? { lastSuccessfulAt: receipt.lastSuccessfulAt } : {}), ...(receipt.nextExpectedAt ? { nextExpectedAt: receipt.nextExpectedAt } : {}), counts: Object.freeze({ processed: receipt.processedCount, actionable: receipt.actionableCount, notes: receipt.noteCount }), explanation: explanations[status] });
+}
+
+function intakeCoverage(metadata, serverTime) {
   const rows = [
-    { source: 'Email intake', sourceKind: 'email', status: 'unknown', explanation: 'No maintained email-intake receipt is available.' },
-    { source: 'Note processing', sourceKind: 'note', status: 'unknown', explanation: 'No maintained Note-processing receipt is available.' }
+    intakeReceiptCoverage(metadata, 'email', serverTime) ?? { source: 'Email intake', sourceKind: 'email', status: 'unknown', explanation: 'No maintained email-intake receipt is available.' },
+    intakeReceiptCoverage(metadata, 'note', serverTime) ?? { source: 'Note processing', sourceKind: 'note', status: 'unknown', explanation: 'No maintained Note-processing receipt is available.' }
   ];
   const operations = typeof metadata?.listOperations === 'function' ? metadata.listOperations().filter(item => item.operationKind === 'selected-source-intake-root') : [];
   const selected = operations.at(-1);
@@ -254,7 +281,7 @@ export async function projectDashboard({ sourceService, attentionService, metada
     openLoops,
     topics: Object.freeze(topics.map((topic) => Object.freeze({ topicId: topic.topicId, name: topicName(topic), paraCategory: topic.paraCategory }))),
     activity,
-    intakeCoverage: intakeCoverage(metadata),
+    intakeCoverage: intakeCoverage(metadata, new Date(serverTimeMs).toISOString()),
     activityOffset,
     activityLimit,
     ...(settings ? { notificationSettings: Object.freeze({ ...settings }) } : {})

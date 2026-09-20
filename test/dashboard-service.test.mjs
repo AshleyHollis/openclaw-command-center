@@ -116,3 +116,23 @@ test('Dashboard coverage distinguishes maintained receipts from unknown email an
   assert.equal(result.intakeCoverage[2].lastSuccessfulAt, '2026-09-20T01:00:00.000Z');
   assert.match(result.intakeCoverage[2].explanation, /does not prove automatic email or Note coverage/u);
 });
+
+test('Dashboard coverage reports healthy, stale, pending, failed and never-connected producer receipts honestly', async () => {
+  const base = { listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
+  const operation = (sourceKind, state, receipt, createdAt) => ({ operationKind: `intake-receipt.${sourceKind}.v1`, state, createdAt, resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind, runId: `${sourceKind}-run`, checkpoint: 'complete', processedCount: 0, actionableCount: 0, noteCount: 0, ...receipt }) });
+  const metadata = { ...base, listOperations: () => [
+    operation('email', 'applied', { status: 'healthy-empty', observedAt: '2026-09-20T01:00:00.000Z', lastSuccessfulAt: '2026-09-20T01:00:00.000Z', nextExpectedAt: '2026-09-21T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z'),
+    operation('note', 'applied', { status: 'healthy-processed', observedAt: '2026-09-18T01:00:00.000Z', lastSuccessfulAt: '2026-09-18T01:00:00.000Z', nextExpectedAt: '2026-09-19T01:00:00.000Z' }, '2026-09-18T01:00:00.000Z')
+  ] };
+  let result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
+  assert.deepEqual(result.intakeCoverage.slice(0, 2).map(row => [row.sourceKind, row.status]), [['email', 'healthy-empty'], ['note', 'stale']]);
+  metadata.listOperations = () => [
+    operation('email', 'pending', { status: 'pending', observedAt: '2026-09-20T01:00:00.000Z', nextExpectedAt: '2026-09-21T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z'),
+    operation('note', 'applied', { status: 'never-connected', observedAt: '2026-09-20T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z')
+  ];
+  result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
+  assert.deepEqual(result.intakeCoverage.slice(0, 2).map(row => [row.sourceKind, row.status]), [['email', 'pending'], ['note', 'never-connected']]);
+  metadata.listOperations = () => [operation('email', 'not-applied', { status: 'failed', observedAt: '2026-09-20T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z')];
+  result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
+  assert.equal(result.intakeCoverage[0].status, 'failed');
+});

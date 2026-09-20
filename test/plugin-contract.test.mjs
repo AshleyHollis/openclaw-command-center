@@ -59,7 +59,7 @@ test('plugin keeps deferred tools, Search and maintenance out of first-live star
 test('manifest activates the route-registering plugin at Gateway startup', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
   assert.equal(manifest.activation?.onStartup, true);
-  assert.deepEqual(manifest.contracts?.tools, []);
+  assert.deepEqual(manifest.contracts?.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
 });
 
 test('Conversation ingestion uses the pinned host identity and history gateway methods', async () => {
