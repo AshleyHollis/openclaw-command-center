@@ -7,6 +7,7 @@ const DEFAULT_ACTIVITY_LIMIT = 50;
 const MAX_ACTIVITY_LIMIT = 50;
 const HIGHLIGHTED_OPEN_LOOP_LIMIT = 3;
 const OPEN_LOOP_GROUP_LIMIT = 20;
+const CAPACITY_PREVIEW_LIMIT = 20;
 
 function asArray(value) { return Array.isArray(value) ? value : []; }
 function dateMs(value) {
@@ -119,7 +120,7 @@ function openLoopProjection(metadata, serverTime) {
   const compactList = values => Object.freeze(values.map(loop => compactOpenLoop({ loop })));
   const capacityWorkspace = Object.freeze({
     today: Object.freeze({ mandatory: compactList(workspace.today.mandatory), planned: compactList(workspace.today.planned) }),
-    upcoming: compactList(workspace.upcoming), capacity: compactList(workspace.capacity), waiting: compactList(workspace.waiting), someday: compactList(workspace.someday),
+    upcoming: compactList(workspace.upcoming), capacity: compactList(workspace.capacity.slice(0, CAPACITY_PREVIEW_LIMIT)), capacityTotal: workspace.capacity.length, waiting: compactList(workspace.waiting), someday: compactList(workspace.someday),
     review: Object.freeze({ batch: compactList(workspace.review.batch), remaining: workspace.review.remaining, eligibleTotal: workspace.review.eligibleTotal }),
     board: Object.freeze({ ready: compactList(workspace.board.ready), doing: compactList(workspace.board.doing), waiting: compactList(workspace.board.waiting), done: compactList(workspace.board.done), suggestions: compactList(workspace.board.suggestions) }),
     agenda: Object.freeze(workspace.agenda.map(entry => Object.freeze({ kind: entry.kind, at: entry.at, item: compactOpenLoop({ loop: entry.loop }) })))

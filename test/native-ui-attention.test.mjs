@@ -309,7 +309,7 @@ test('native capacity workspace plans the same item without inventing a deadline
     window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [], workspace: { today: { mandatory: [], planned: [] }, upcoming: [], capacity: [card], waiting: [], someday: [], review: { batch: [card], remaining: 0, eligibleTotal: 1 }, board: { ready: [card], doing: [], waiting: [], done: [], suggestions: [] }, agenda: [] } };
     window.mountInbox();
   });
-  await page.getByText('When I have capacity (1 shown)', { exact: true }).click();
+  await page.getByText('When I have capacity (1; showing 1)', { exact: true }).click();
   if (process.env.COMMAND_CENTER_CAPACITY_DESKTOP_SCREENSHOT) {
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.screenshot({ path: process.env.COMMAND_CENTER_CAPACITY_DESKTOP_SCREENSHOT, fullPage: true });
