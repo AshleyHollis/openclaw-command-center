@@ -51,7 +51,7 @@ async function normalizeTextAssets(root, relative = '') {
   for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
     const next = path.join(relative, entry.name);
     if (entry.isDirectory()) await normalizeTextAssets(root, next);
-    else if (entry.isFile() && TEXT_ASSET_EXTENSIONS.has(path.extname(entry.name))) {
+    else if (entry.isFile() && next !== 'plugin-manifest.json' && TEXT_ASSET_EXTENSIONS.has(path.extname(entry.name))) {
       const file = path.join(root, next);
       const source = await readFile(file, 'utf8');
       const normalized = source.replace(/\r\n?/gu, '\n');

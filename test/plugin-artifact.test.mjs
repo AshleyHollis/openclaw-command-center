@@ -179,19 +179,23 @@ test('packaging CLI requires an independently supplied receipt digest and report
   const approval = path.join(root, 'approval.json'); const bytes = Buffer.from(JSON.stringify(receipt));
   await writeFile(approval, bytes);
   const loader = path.join(root, 'sdk-loader.mjs');
-  await writeFile(loader, `import { registerHooks } from 'node:module';\n` + `const urls = ${JSON.stringify(sdkRuntimeUrls)};\n` +
+  await writeFile(loader, `import { registerHooks } from 'node:module';\n` +
+    `const urls = JSON.parse(process.env.COMMAND_CENTER_TEST_SDK_RUNTIME_URLS ?? '{}');\n` +
     `registerHooks({ resolve(specifier, context, nextResolve) { return urls[specifier] ? { url: urls[specifier], shortCircuit: true } : nextResolve(specifier, context); } });\n`);
+  const childEnvironment = { ...process.env, COMMAND_CENTER_TEST_SDK_RUNTIME_URLS: JSON.stringify(sdkRuntimeUrls) };
+  const loaderSource = await readFile(loader, 'utf8');
+  for (const runtimeUrl of Object.values(sdkRuntimeUrls)) assert.equal(loaderSource.includes(runtimeUrl), false);
   const runtimeArgs = process.execArgv.flatMap((value, index, args) => {
     if (value !== '--import') return [];
     const module = args[index + 1];
     return [value, module.startsWith('.') || path.isAbsolute(module) ? path.resolve(module) : module];
   });
   const base = [...runtimeArgs, '--import', loader, path.join(root, 'scripts/package-plugin.mjs'), '--build-receipt', approval, '--output', path.join(root, 'output'), '--receipt-sha256'];
-  await assert.rejects(promisify(execFile)(process.execPath, [...base, '0'.repeat(64)], { cwd: root }), error => {
+  await assert.rejects(promisify(execFile)(process.execPath, [...base, '0'.repeat(64)], { cwd: root, env: childEnvironment }), error => {
     assert.match(error.stderr, /artifact-build-approval-mismatch/); return true;
   });
   await assert.rejects(lstat(path.join(root, 'output')), { code: 'ENOENT' });
-  const { stdout } = await promisify(execFile)(process.execPath, [...base, createHash('sha256').update(bytes).digest('hex')], { cwd: root, timeout: 60_000 });
+  const { stdout } = await promisify(execFile)(process.execPath, [...base, createHash('sha256').update(bytes).digest('hex')], { cwd: root, timeout: 60_000, env: childEnvironment });
   const report = JSON.parse(stdout);
   const published = JSON.parse(await readFile(path.join(root, 'output/receipt.json')));
   assert.deepEqual(report, { status: 'verified', buildDigest: receipt.digest, archiveSha256: published.archive.sha256, files: published.files.length });
@@ -201,7 +205,7 @@ test('packaging CLI requires an independently supplied receipt digest and report
   const candidate = [...runtimeArgs, '--import', loader, path.join(root, 'scripts/package-candidate.mjs'), '--output'];
   const sourceCommit = 'a'.repeat(40);
   const { stdout: candidateOutput } = await promisify(execFile)(process.execPath, [...candidate, path.join(root, 'candidate')], {
-    cwd: path.resolve(), timeout: 60_000, env: { ...process.env, COMMAND_CENTER_SOURCE_COMMIT: sourceCommit }
+    cwd: path.resolve(), timeout: 60_000, env: { ...childEnvironment, COMMAND_CENTER_SOURCE_COMMIT: sourceCommit }
   });
   const candidateReport = JSON.parse(candidateOutput);
   const candidateReceipt = JSON.parse(await readFile(path.join(root, 'candidate/receipt.json')));
@@ -211,6 +215,6 @@ test('packaging CLI requires an independently supplied receipt digest and report
   const pkgPath = path.join(root, 'package.json');
   const pkg = JSON.parse(await readFile(pkgPath)); pkg.commandCenter.runtimeCapability.id = 'invalid';
   await writeFile(pkgPath, JSON.stringify(pkg));
-  await assert.rejects(promisify(execFile)(process.execPath, [...candidate, path.join(root, 'rejected')], { cwd: root, timeout: 60_000 }));
+  await assert.rejects(promisify(execFile)(process.execPath, [...candidate, path.join(root, 'rejected')], { cwd: root, timeout: 60_000, env: childEnvironment }));
   await assert.rejects(lstat(path.join(root, 'rejected')), { code: 'ENOENT' });
 });
