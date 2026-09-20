@@ -122,3 +122,19 @@ test('registered open-loop scheduling uses the authenticated request-scoped Gate
   assert.equal(dispatched[0].request.req.id, logicalOperationId);
   assert.equal(response[1].result.reminder.status, 'applied');
 });
+
+test('open-loop Reminder routes declare the exact native Cron dispatch allowlist', () => {
+  const registrations = [];
+  registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {});
+  const expected = ['cron.add', 'cron.get', 'cron.list', 'cron.update'];
+  for (const method of [
+    'command-center.v1.open-loops.decide',
+    'command-center.v1.open-loops.payment-status',
+    'command-center.v1.open-loops.renovation-requirement',
+    'command-center.v1.open-loops.renovation-purchase',
+    'command-center.v1.open-loops.renovation-purchase-correction',
+    'command-center.v1.open-loops.renovation-replacement',
+    'command-center.v1.open-loops.renovation-fulfilment'
+  ]) assert.deepEqual(registrations.find(([name]) => name === method)[2].gatewayMethodDispatchMethods, expected);
+  assert.equal(registrations.find(([name]) => name === 'command-center.v1.open-loops.intake-selected')[2].gatewayMethodDispatchMethods, undefined);
+});

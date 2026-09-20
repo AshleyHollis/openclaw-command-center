@@ -26,6 +26,17 @@ const schedulerRuntimeMethods = new Set([
   'command-center.v1.open-loops.renovation-fulfilment'
 ]);
 
+const openLoopSchedulerRuntimeMethods = new Set([
+  'command-center.v1.open-loops.decide',
+  'command-center.v1.open-loops.payment-status',
+  'command-center.v1.open-loops.renovation-requirement',
+  'command-center.v1.open-loops.renovation-purchase',
+  'command-center.v1.open-loops.renovation-purchase-correction',
+  'command-center.v1.open-loops.renovation-replacement',
+  'command-center.v1.open-loops.renovation-fulfilment'
+]);
+const openLoopSchedulerDispatchMethods = Object.freeze(['cron.add', 'cron.get', 'cron.list', 'cron.update']);
+
 function gatewayError(error, method) {
   const rawCode = String(error?.code ?? '').toUpperCase();
   const code = rawCode === 'INVALID_REQUEST' ? 'invalid-request'
@@ -305,7 +316,13 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         }
         const assertHistoryRead = method.startsWith('command-center.v1.histories.') || ['command-center.v1.sessions.topic-context', 'command-center.v1.sessions.group-preview'].includes(method) ? captureHistoryReadAuthority({ client, context, signal }) : null;
         if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
-        if (schedulerRuntimeMethods.has(method) && client) runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
+        if (openLoopSchedulerRuntimeMethods.has(method) && client?.connect?.role === 'operator' && Array.isArray(client.connect.scopes) && typeof context?.getGatewayMethodRegistry === 'function') {
+          const dispatched = await createRequestScopedConversationRuntime({ requiredGatewayMethods: openLoopSchedulerDispatchMethods });
+          if (dispatched.creationAuthority.principalId !== authenticatedOperatorId) throw new SourceServiceError('unauthenticated', 'The authenticated native Reminder dispatcher changed operator identity.');
+          runtime = { gateway: Object.freeze({ request: dispatched.gatewayRequest }) };
+        } else if (schedulerRuntimeMethods.has(method) && client) {
+          runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
+        }
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;
         if (method === 'command-center.v1.sessions.send' && client && typeof coreSessionSend === 'function') {
           runtime = {
@@ -347,7 +364,9 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
       scope: contract.scope,
       ...(method === 'command-center.v1.sessions.group'
         ? { gatewayMethodDispatchMethods: ['sessions.groups.list', 'sessions.groups.put'] }
-        : {})
+        : openLoopSchedulerRuntimeMethods.has(method)
+          ? { gatewayMethodDispatchMethods: openLoopSchedulerDispatchMethods }
+          : {})
     });
     registered.push(method);
   }
