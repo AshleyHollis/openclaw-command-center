@@ -123,14 +123,25 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).click();
   onProgress('large-note-clicked');
   const content = nativePage.getByRole('region', { name: 'Note content', exact: true });
-  await ready(async () => await content.evaluate(node => node.textContent?.length) === 8_388_609);
+  let renderedNote;
+  await ready(async () => {
+    renderedNote = await content.evaluate(node => {
+      const root = node.getRootNode();
+      return {
+        textLength: node.textContent?.length,
+        draftCount: root.querySelectorAll('textarea').length,
+        footer: root.querySelector('.reader-footer')?.textContent ?? null,
+      };
+    });
+    return renderedNote.textLength === 8_388_609;
+  });
   onProgress('large-note-rendered');
   observations.largeNoteReadMs = now() - started;
-  // Direct selectors avoid rebuilding an accessibility tree that contains the
-  // rendered 8 MiB Note while still proving the read-only build omitted its
-  // authoring controls and rendered the read-only contract.
-  assert.equal(await nativePage.locator('textarea').count(), 0);
-  assert.equal(await nativePage.locator('.reader-footer').textContent(), 'Read-only · Edit Notes in your external Note application.');
+  assert.deepEqual(renderedNote, {
+    textLength: 8_388_609,
+    draftCount: 0,
+    footer: 'Read-only · Edit Notes in your external Note application.',
+  });
 
   const expectedNotePaths = [bootstrap.notePath, ...bootstrap.scaleNotes.map(note => note.path)];
   const assertNotePage = (catalog, offset) => {
