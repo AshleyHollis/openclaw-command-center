@@ -683,14 +683,14 @@ export async function exerciseNativeKeyboardJourney({ descriptor, buildReceipt, 
   return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, keyboard: true });
 }
 
-export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, scale = false, catalog = false, chatHandoffOnly = false, notesWorkspaceOnly = false, nativeFilesWorkspace = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
+export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, scale = false, catalog: catalogJourney = false, chatHandoffOnly = false, notesWorkspaceOnly = false, nativeFilesWorkspace = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
   if (scaleDiagnostic) assert.equal(process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE, undefined);
   const scaleNow = scaleDiagnostic ? () => 0 : () => performance.now();
   const progressStarted = performance.now();
   const progress = stage => { onScaleProgress?.({ stage, elapsedMs: Math.round(performance.now() - progressStarted) }); };
   assert.equal(keyboard && scale, false, 'Performance qualification cannot share a keyboard diagnostic');
   return withIsolatedWorld(async (world) => {
-    const bootstrap = keyboard || nativeFilesWorkspace ? null : await prepareNativeLegacyBootstrap({ world, signal, scale, catalog });
+    const bootstrap = keyboard || nativeFilesWorkspace ? null : await prepareNativeLegacyBootstrap({ world, signal, scale, catalog: catalogJourney });
     const historySource = nativeFilesWorkspace ? await prepareNativeHistorySource({ world }) : null;
     let host = await withDeadline('native pinned host launch', (launchSignal) => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
     let removeAbortCleanup = stopHostOnAbort(signal, host);
@@ -717,17 +717,17 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       return host;
     };
     try {
-      let catalog;
+      let pluginCatalog;
       progress('initial-readiness');
       // Startup-only diagnosis and measured scale use this exact owner.
       await waitForNativeControlUiReadiness({ world, host, signal, scale });
       await waitForConsecutiveReadiness(async () => {
         try {
-          catalog = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'plugins.controlUi.list', signal });
-          return Array.isArray(catalog?.plugins) && catalog.plugins.some((plugin) => plugin.pluginId === 'command-center');
+          pluginCatalog = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'plugins.controlUi.list', signal });
+          return Array.isArray(pluginCatalog?.plugins) && pluginCatalog.plugins.some((plugin) => plugin.pluginId === 'command-center');
         } catch (error) { signal.throwIfAborted(); recordBounded(evidence.errors, redactBrowserEvidence(error.message)); return false; }
       }, host.earlyExit, { deadlineMs: 120_000, delayMs: 250, signal });
-      const matches = catalog.plugins.filter((plugin) => plugin.pluginId === 'command-center');
+      const matches = pluginCatalog.plugins.filter((plugin) => plugin.pluginId === 'command-center');
       assert.equal(matches.length, 1);
       const native = matches[0];
       assert.match(native.revision, /^[a-f0-9]{64}$/u);
@@ -1386,9 +1386,9 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await selectNativeCategoryGrouping(page);
       progress('primary-sidebar-roster');
       await organizeNativeTopicConversations({ page, nativePage, fixture, observedRosters: () => scaleResponses.rosters });
-      const planned = catalog ? { path: 'Z Projects/Alpha/Planning/Plan.md',
+      const planned = catalogJourney ? { path: 'Z Projects/Alpha/Planning/Plan.md',
         text: await readFile(path.join(fixture.folder, 'Z Projects', 'Alpha', 'Planning', 'Plan.md'), 'utf8') } : undefined;
-      const catalogPages = catalog ? await readNativeCatalogPagesToPath({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+      const catalogPages = catalogJourney ? await readNativeCatalogPagesToPath({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
         topicId: fixture.topicId, path: planned.path, signal }) : undefined;
       progress('primary-note-read');
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
@@ -1403,7 +1403,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(browserNote?.value.sourceReference.referenceId, browserNote.input.referenceId);
       assert.equal(browserNote?.value.revision, `sha256:${createHash('sha256').update(fixture.noteText).digest('hex')}`);
       const originalNoteRead = structuredClone(browserNote);
-      if (catalog) {
+      if (catalogJourney) {
         const workspace = nativePage.locator('[data-topic-notes-workspace]');
         const filter = workspace.getByRole('searchbox', { name: 'Filter filenames', exact: true });
         await workspace.getByText(nativeCatalogPageText(catalogPages[0]), { exact: true }).waitFor();
@@ -1435,7 +1435,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(browserNavigation?.value.sessionKey, fixture.sessionKey);
       assert.deepEqual(Object.keys(browserNavigation?.value ?? {}), ['sessionKey']);
       if (!keyboard) await verifyNativeTopicNotesPane({ page, fixture,
-        onPromoted: catalog ? async () => {
+        onPromoted: catalogJourney ? async () => {
           await page.setViewportSize({ width: 1440, height: 900 });
           await retainTopicNotesScreenshot(page, 'topic-notes-pane-promoted-1440');
           await page.setViewportSize({ width: 1366, height: 768 });
@@ -1521,7 +1521,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       progress('primary-chat-send');
       assert.equal(browserChatSend.params.sessionKey, createdTarget.sessionKey, 'The actual native composer must send to the newly linked Session');
       assert.equal(browserChatAcknowledgement.ok, true, 'The real host must acknowledge the native send');
-      if (catalog) {
+      if (catalogJourney) {
         const attached = Buffer.from('%PDF-1.4\n% Fictional attachment used only by the isolated acceptance journey.\n');
         await chatPane.locator('.agent-chat__file-input').setInputFiles({ name: 'fictional-topic-document.pdf', mimeType: 'application/pdf', buffer: attached });
         await chatPane.locator('.chat-attachment-thumb').waitFor({ timeout: 30_000 });
