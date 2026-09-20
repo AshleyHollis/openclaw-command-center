@@ -204,7 +204,7 @@ export async function swapNativeTopicFilesWithChat({ page, nativeChat }) {
   const swap = nativeChat.locator('.chat-panel-swap:visible').first();
   try {
     await swap.waitFor({ state: 'visible', timeout: 10_000 });
-    assert.equal(await swap.getAttribute('aria-label'), 'Swap Topic Files and Chat');
+    assert.equal(await swap.getAttribute('aria-label'), 'Swap Files and Chat');
     await swap.click({ timeout: 10_000 });
   } catch (error) {
     const diagnostics = await page.locator('.chat-panel-swap').evaluateAll((controls) => controls.slice(0, 8).map((control) => ({

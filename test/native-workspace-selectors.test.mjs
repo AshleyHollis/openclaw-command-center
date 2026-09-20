@@ -157,7 +157,7 @@ test('native Files swap uses the active Chat pane control and current replacemen
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
     const page = await browser.newPage();
-    await page.setContent('<openclaw-chat-pane aria-hidden="true" hidden><button class="chat-panel-swap" aria-label="Swap Topic Notes and Chat">Hidden predecessor</button></openclaw-chat-pane><openclaw-chat-pane aria-hidden="false"><button class="chat-panel-swap" aria-label="Swap Topic Files and Chat">Swap</button></openclaw-chat-pane>');
+    await page.setContent('<openclaw-chat-pane aria-hidden="true" hidden><button class="chat-panel-swap" aria-label="Swap Topic Notes and Chat">Hidden predecessor</button></openclaw-chat-pane><openclaw-chat-pane aria-hidden="false"><button class="chat-panel-swap" aria-label="Swap Files and Chat">Swap</button></openclaw-chat-pane>');
     await page.evaluate(() => document.querySelector('openclaw-chat-pane[aria-hidden="false"] .chat-panel-swap').addEventListener('click', () => { document.body.dataset.swapped = 'true'; }));
     const nativeChat = page.locator('openclaw-chat-pane[aria-hidden="false"]');
     await swapNativeTopicFilesWithChat({ page, nativeChat });
