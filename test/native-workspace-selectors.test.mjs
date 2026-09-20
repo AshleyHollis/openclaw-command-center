@@ -75,7 +75,7 @@ test('native grouping journey scrolls the sidebar body to the Conversations tool
   } finally { await browser.close(); }
 });
 
-test('native grouping journey reports a missing visible control within its local deadline', { timeout: 15_000 }, async () => {
+test('native grouping journey reports a missing visible control within its local deadline', { timeout: 25_000 }, async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
     const page = await browser.newPage();

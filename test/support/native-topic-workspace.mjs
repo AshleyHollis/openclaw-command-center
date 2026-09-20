@@ -94,7 +94,7 @@ export async function selectNativeCategoryGrouping(page) {
         hitStack: document.elementsFromPoint(cx, cy).slice(0, 6).map(describe),
         scroller: scroller ? { scrollTop: scroller.scrollTop, scrollHeight: scroller.scrollHeight, clientHeight: scroller.clientHeight } : null
       };
-    }) : await sidebar.evaluate(element => ({
+    }) : await sidebar.count() ? await sidebar.evaluate(element => ({
       workspaceHeader: Boolean(element.querySelector('.sidebar-workspace-header')),
       agentCard: Boolean(element.querySelector('.sidebar-agent-card__main')),
       agentRoster: Boolean(element.querySelector('.sidebar-agent-roster')),
@@ -114,7 +114,7 @@ export async function selectNativeCategoryGrouping(page) {
         title: button.getAttribute('title'),
         hidden: button.hidden
       })).slice(0, 20)
-    }));
+    })) : null;
     const failure = { name: error?.name, tail: String(error?.message ?? error).split('\n').slice(-12) };
     throw new Error(`Native session grouping control is unavailable: ${JSON.stringify({ failure, state })}`, { cause: error });
   }
