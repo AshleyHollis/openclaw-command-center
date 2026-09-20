@@ -9,6 +9,10 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as folders from '../src/sources/note-folder-identity.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+
+const releaseHostFileAccess = installHostFileAccessFixture();
+test.after(() => releaseHostFileAccess());
 
 test('enrollment cannot accept changed marker bytes after its durability sync', { skip: process.platform !== 'linux' }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'bootstrap-marker-sync-'));

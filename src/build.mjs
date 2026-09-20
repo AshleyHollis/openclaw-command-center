@@ -51,7 +51,7 @@ async function normalizeTextAssets(root, relative = '') {
   for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
     const next = path.join(relative, entry.name);
     if (entry.isDirectory()) await normalizeTextAssets(root, next);
-    else if (entry.isFile() && TEXT_ASSET_EXTENSIONS.has(path.extname(entry.name))) {
+    else if (entry.isFile() && next !== 'plugin-manifest.json' && TEXT_ASSET_EXTENSIONS.has(path.extname(entry.name))) {
       const file = path.join(root, next);
       const source = await readFile(file, 'utf8');
       const normalized = source.replace(/\r\n?/gu, '\n');
@@ -123,7 +123,7 @@ async function buildUnlocked() {
   await cp(path.join(sourceRoot, 'src', 'compatibility.mjs'), path.join(distRoot, 'compatibility.mjs'));
   await cp(path.join(sourceRoot, 'src', 'asset-handler.mjs'), path.join(distRoot, 'asset-handler.mjs'));
   await cp(path.join(sourceRoot, 'src', 'metadata'), path.join(distRoot, 'metadata'), { recursive: true, verbatimSymlinks: true });
-  for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'search', 'topics', 'dashboard', 'notifications', 'http', 'native-ui', 'documents']) {
+  for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'open-loops', 'search', 'topics', 'dashboard', 'notifications', 'http', 'native-ui', 'documents']) {
     await cp(path.join(sourceRoot, 'src', directory), path.join(distRoot, directory), { recursive: true, verbatimSymlinks: true });
   }
   // Native Control UI assets are served from one declared directory. Project

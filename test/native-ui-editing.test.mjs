@@ -61,7 +61,7 @@ async function fixture(run) {
             if (window.notesUnavailable) throw new Error('Notes capability is unavailable.');
             const notes = structuredClone(window.notes);
             if (window.delayBrowse) { window.delayBrowse = false; await new Promise((resolve) => { window.finishBrowse = resolve; (window.finishBrowses ??= []).push(resolve); }); }
-            return { result: { notes, total: notes.length, offset: 0, hasMore: false, nextOffset: null, cursor: 'fictional-catalog' } };
+            return { result: { notes, total: notes.length, offset: 0, hasMore: false, nextOffset: null, cursor: 'fictional-note-cursor' } };
           }
           if (method.endsWith('notes.read')) {
             const note = window.notes.find((note) => note.sourceReference.referenceId === params.referenceId);

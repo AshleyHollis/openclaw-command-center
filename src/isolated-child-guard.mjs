@@ -14,14 +14,14 @@ import { createHostedCatalogIsolationFetch } from './host-catalog-isolation.mjs'
 import { isContainedIpcDestination, isLoopbackDestination } from './isolation.mjs';
 
 const manifest = JSON.parse(readFileSync(process.env[fixtureEnvironment], 'utf8'));
-const isolatedIpcRoot = realpathSync(manifest.tempRoot);
+const isolatedIpcRoot = typeof manifest.tempRoot === 'string' ? realpathSync(manifest.tempRoot) : null;
 function record(entry) {
   appendFileSync(manifest.trafficLog, `${JSON.stringify(entry)}\n`);
 }
 function guard(value, source) {
   const target = destinationFromConnectionArguments(value);
   let containedIpc = false;
-  if (isContainedIpcDestination(target, manifest.tempRoot)) {
+  if (isolatedIpcRoot && isContainedIpcDestination(target, manifest.tempRoot)) {
     try {
       const parent = realpathSync(path.dirname(target));
       containedIpc = parent === isolatedIpcRoot || isContainedIpcDestination(parent, isolatedIpcRoot);

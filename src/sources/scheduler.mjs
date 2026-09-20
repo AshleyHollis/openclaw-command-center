@@ -127,7 +127,8 @@ export class SchedulerAdapter {
   }
 
   async createReminder(input = {}) {
-    assertNoUnexpectedKeys(input, ['schemaVersion', 'requestId', 'logicalOperationId', 'declaration'], 'Reminder create request');
+    assertNoUnexpectedKeys(input, ['schemaVersion', 'requestId', 'referenceId', 'logicalOperationId', 'declaration'], 'Reminder create request');
+    if (input.referenceId !== undefined) return this.createDeclared(input, 'reminder_schedule', 'reminders.create');
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     validateScheduleDeclaration(input.declaration);
     const declarationKey = `command-center:reminder:${logicalOperationId}`;

@@ -202,14 +202,14 @@ test('schema-7 forward migration creates durable analysis tables and survives re
   legacy.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, revision, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run('topic-migrated', 'area', 'active', 0, 'topic-migrated', '2026-08-22T00:00:00.000Z', '2026-08-22T00:00:00.000Z');
   legacy.close();
   const metadata = openCommandCenterMetadataService({ stateDir: root, capabilities: { analysis: true, activity: true } });
-  assert.notEqual(metadata.getOperatingStatus().mode, 'recovery-only'); assert.equal(metadata.getOperatingStatus().schemaVersion, 8);
+  assert.notEqual(metadata.getOperatingStatus().mode, 'recovery-only'); assert.equal(metadata.getOperatingStatus().schemaVersion, 9);
   metadata.setTopicAnalysisSettings({ schemaVersion: 1, enabled: true, weekday: 1, localTime: '07:00', timeZone: 'UTC', revision: 1, initialized: true, nextDueAt: '2026-08-31T07:00:00.000Z', updatedAt: '2026-08-24T07:00:00.000Z' });
   metadata.setTopicAnalysisCursor({ nextTopicId: 'topic-migrated', nextSourceId: null, updatedAt: '2026-08-24T07:00:00.000Z' });
   metadata.close();
   const reopened = openCommandCenterMetadataService({ stateDir: root, capabilities: { analysis: true, activity: true } });
   assert.equal(reopened.getTopicAnalysisSettings().localTime, '07:00'); assert.equal(reopened.getTopicAnalysisCursor().nextTopicId, 'topic-migrated');
   const database = new DatabaseSync(reopened.databasePath, { readOnly: true });
-  assert.equal(database.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.equal(database.prepare('PRAGMA user_version').get().user_version, 9);
   assert.deepEqual(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'topic_analysis_%' ORDER BY name").all().map((row) => row.name), ['topic_analysis_cursors', 'topic_analysis_evidence', 'topic_analysis_runs', 'topic_analysis_settings', 'topic_analysis_watermarks']);
   database.close(); reopened.close(); await rm(root, { recursive: true, force: true });
 });

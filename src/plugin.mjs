@@ -11,6 +11,9 @@ import { createTopicAnalysisReadHttpHandler, createTopicAnalysisActionsHttpHandl
 import { topicAnalysisToolFactory } from './topics/analysis-tool.mjs';
 import { topicDocumentFileToolFactory } from './documents/tool.mjs';
 import { topicNoteMaintenanceToolFactory } from './maintenance/tool.mjs';
+import { commitmentCaptureToolFactory } from './open-loops/commitment-tool.mjs';
+import { capacityReviewToolFactory } from './open-loops/capacity-review-tool.mjs';
+import { sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory } from './open-loops/source-intake-tool.mjs';
 import { createTopicMaintenanceCompletionSubscription } from './maintenance/completion.mjs';
 import { createTopicPageActionsHandler } from './topics/page-http.mjs';
 import { createSearchRebuildHttpHandler, searchRebuildRoute } from './search/http-route.mjs';
@@ -113,6 +116,22 @@ export default definePluginEntry({
         if (property === 'topics') return service.topicService;
         if (property === 'dashboard') return { get: (input, runtime) => service.dashboardGet(input, runtime) };
         if (property === 'dashboardGet') return (input, runtime) => service.dashboardGet(input, runtime);
+        if (property === 'openLoopsList') return (input) => service.openLoopsList(input);
+        if (property === 'openLoopsGet') return (input) => service.openLoopsGet(input);
+        if (property === 'openLoopsCapture') return (input) => service.openLoopsCapture(input);
+        if (property === 'openLoopsIngestSelected') return (input) => service.openLoopsIngestSelected(input);
+        if (property === 'openLoopsDecide') return (input, runtime) => service.openLoopsDecide(input, runtime);
+        if (property === 'openLoopsPaymentStatus') return (input, runtime) => service.openLoopsPaymentStatus(input, runtime);
+        if (property === 'openLoopsOrganize') return (input, runtime) => service.openLoopsOrganize(input, runtime);
+        if (property === 'openLoopsRenovationRequirement') return (input, runtime) => service.openLoopsRenovationRequirement(input, runtime);
+        if (property === 'openLoopsRenovationPurchase') return (input, runtime) => service.openLoopsRenovationPurchase(input, runtime);
+        if (property === 'openLoopsRenovationPurchaseCorrection') return (input, runtime) => service.openLoopsRenovationPurchaseCorrection(input, runtime);
+        if (property === 'openLoopsRenovationReplacement') return (input, runtime) => service.openLoopsRenovationReplacement(input, runtime);
+        if (property === 'openLoopsRenovationFulfilment') return (input, runtime) => service.openLoopsRenovationFulfilment(input, runtime);
+        if (property === 'openLoopsRenovationStage') return (input) => service.openLoopsRenovationStage(input);
+        if (property === 'openLoopsRenovationStagePrerequisites') return (input) => service.openLoopsRenovationStagePrerequisites(input);
+        if (property === 'openLoopsRenovationDecisionConflict') return (input) => service.openLoopsRenovationDecisionConflict(input);
+        if (property === 'openLoopsRenovationDecisionRevise') return (input) => service.openLoopsRenovationDecisionRevise(input);
         if (property === 'dashboardUpdateSettings') return (input) => service.dashboardUpdateSettings(input);
         if (property === 'notificationReconcile') return (runtime) => service.notificationReconcile(runtime);
         if (property === 'notificationCaptureBinding') return () => service.notificationCaptureBinding();
@@ -196,6 +215,11 @@ export default definePluginEntry({
     if (FIRST_LIVE_FEATURES.analysis) api.registerTool(topicAnalysisToolFactory({ run: (input) => service.topicAnalysisRun(input) }), { name: 'command_center_topic_analysis', optional: true });
     if (FIRST_LIVE_FEATURES.topicDocuments) api.registerTool(topicDocumentFileToolFactory({ file: (input) => service.sourceService.documentsFileAttachment(input) }), { name: 'command_center_file_topic_attachment', optional: true });
     if (FIRST_LIVE_FEATURES.noteMaintenance) api.registerTool(topicNoteMaintenanceToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_update_working_note', optional: true });
+    api.registerTool(commitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_commitment', optional: true });
+    api.registerTool(capacityReviewToolFactory({ getOwner: () => service.capacityReview }), { name: 'command_center_open_capacity_review', optional: true });
+    api.registerTool(sourceNoteCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_save_source_note', optional: true });
+    api.registerTool(sourceCommitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_source_commitment', optional: true });
+    api.registerTool(intakeReceiptToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_receipt', optional: true });
     // The host exposes the same subscription contract in both its current
     // flat SDK form and its nested facade form. Prefer the facade where it is
     // present, but never silently drop automatic maintenance for a host that

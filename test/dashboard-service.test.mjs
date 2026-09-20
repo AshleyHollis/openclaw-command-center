@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { projectDashboard } from '../src/dashboard/service.mjs';
 import { createReminderAdapter } from '../src/sources/reminders.mjs';
+import { openLoopReminderReferenceId } from '../src/open-loops/reminder-coordinator.mjs';
 
 test('dashboard partitions current and future Reminder occurrences and pages Activity', async () => {
   const serverTime = '2026-08-27T12:00:00.000Z';
@@ -76,4 +77,62 @@ test('Dashboard Coming Up uses native recurring state through the Reminder adapt
   ]);
   assert.deepEqual(result.comingUp.map((item) => item.time), ['1:00 PM', '2:00 PM', '3:00 PM']);
   assert.equal(result.attentionBadgeCount, 0);
+});
+
+test('Dashboard presents an open-loop obligation once when its owned native Reminder also fires', async () => {
+  const now = '2026-09-20T01:00:00.000Z';
+  const loop = { schemaVersion: 1, loopId: 'loop-one-obligation', kind: 'payment', stableSubjectId: 'invoice:one', title: 'Pay fictional invoice', topicId: 'topic-one', state: 'confirmed', paymentState: 'unpaid', dueAt: now, attention: { reason: 'due-window', whyNow: 'The accepted payment date is due.', actions: ['Open bill'], activated: true, currentEvidence: true }, evidenceObservationIds: ['evidence-one'], revision: 1 };
+  const referenceId = openLoopReminderReferenceId(loop.loopId);
+  const sourceService = {
+    async attentionList() { return { episodes: [{ episodeId: 'native-reminder-episode', sourceCapabilityId: 'reminders', sourceKind: 'reminder', stableSubjectId: 'native-job', state: 'Active', severity: 'Reminder', topicId: 'topic-one', sourceReferenceId: referenceId, actions: [], evidenceFacts: { reminderDue: true, dueAt: now } }], inProgress: [] }; },
+    async listReminderOccurrences() { return [{ topicId: 'topic-one', sourceReference: { referenceId, sourceKind: 'reminder_schedule' }, job: { id: 'native-job', enabled: true, schedule: { kind: 'at', at: now } } }]; }
+  };
+  const metadata = { listUsableTopics: () => [{ topicId: 'topic-one', name: 'Fictional Topic', lifecycle: 'active' }], listOpenLoops: () => [loop], getQuietAttentionInbox: () => ({ attention: [{ loop, reason: 'due-window', whyNow: loop.attention.whyNow, actions: loop.attention.actions }], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
+  const result = await projectDashboard({ sourceService, metadata, now: () => now });
+  assert.equal(result.attention.length, 0, 'the scheduler-owned projection is suppressed');
+  assert.equal(result.comingUp.length, 0, 'the scheduler-owned future row is suppressed');
+  assert.equal(result.openLoops.attentionTotal, 1);
+  assert.equal(result.attentionBadgeCount, 1);
+});
+
+test('Dashboard does not hide an enabled Reminder that conflicts with a terminal open loop', async () => {
+  const now = '2026-09-20T01:00:00.000Z';
+  const loop = { schemaVersion: 1, loopId: 'loop-paid-obligation', kind: 'payment', stableSubjectId: 'invoice:paid', title: 'Paid fictional invoice', topicId: 'topic-one', state: 'resolved', paymentState: 'paid', dueAt: now, attention: { actions: [], activated: false, currentEvidence: true }, evidenceObservationIds: ['evidence-paid'], revision: 2 };
+  const referenceId = openLoopReminderReferenceId(loop.loopId);
+  const sourceService = { async attentionList() { return { episodes: [{ episodeId: 'conflicting-native-reminder', sourceCapabilityId: 'reminders', sourceKind: 'reminder', stableSubjectId: 'native-paid-job', state: 'Active', severity: 'Reminder', topicId: 'topic-one', sourceReferenceId: referenceId, actions: [], evidenceFacts: { reminderDue: true, dueAt: now } }], inProgress: [] }; }, async listReminderOccurrences() { return []; } };
+  const metadata = { listUsableTopics: () => [{ topicId: 'topic-one', name: 'Fictional Topic', lifecycle: 'active' }], listOpenLoops: () => [loop], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [{ loop }] }), projectActiveRenovationStagePrerequisites: () => [] };
+  const result = await projectDashboard({ sourceService, metadata, now: () => now });
+  assert.equal(result.attention.some(item => item.episodeId === 'conflicting-native-reminder'), true);
+  assert.equal(result.attentionBadgeCount, 1);
+});
+
+test('Dashboard coverage distinguishes maintained receipts from unknown email and Note intake', async () => {
+  const metadata = {
+    listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [],
+    listOperations: () => [{ operationKind: 'selected-source-intake-root', state: 'applied', resultIdentity: JSON.stringify({ freshness: { status: 'available', lastObservedAt: '2026-09-20T01:00:00.000Z', lastAvailableAt: '2026-09-20T01:00:00.000Z' } }) }]
+  };
+  const result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
+  assert.deepEqual(result.intakeCoverage.map(row => [row.sourceKind, row.status]), [['email', 'unknown'], ['note', 'unknown'], ['document', 'receipt-current']]);
+  assert.equal(result.intakeCoverage[2].lastSuccessfulAt, '2026-09-20T01:00:00.000Z');
+  assert.match(result.intakeCoverage[2].explanation, /does not prove automatic email or Note coverage/u);
+});
+
+test('Dashboard coverage reports healthy, stale, pending, failed and never-connected producer receipts honestly', async () => {
+  const base = { listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
+  const operation = (sourceKind, state, receipt, createdAt) => ({ operationKind: `intake-receipt.${sourceKind}.v1`, state, createdAt, resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind, runId: `${sourceKind}-run`, checkpoint: 'complete', processedCount: 0, actionableCount: 0, noteCount: 0, ...receipt }) });
+  const metadata = { ...base, listOperations: () => [
+    operation('email', 'applied', { status: 'healthy-empty', observedAt: '2026-09-20T01:00:00.000Z', lastSuccessfulAt: '2026-09-20T01:00:00.000Z', nextExpectedAt: '2026-09-21T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z'),
+    operation('note', 'applied', { status: 'healthy-processed', observedAt: '2026-09-18T01:00:00.000Z', lastSuccessfulAt: '2026-09-18T01:00:00.000Z', nextExpectedAt: '2026-09-19T01:00:00.000Z' }, '2026-09-18T01:00:00.000Z')
+  ] };
+  let result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
+  assert.deepEqual(result.intakeCoverage.slice(0, 2).map(row => [row.sourceKind, row.status]), [['email', 'healthy-empty'], ['note', 'stale']]);
+  metadata.listOperations = () => [
+    operation('email', 'pending', { status: 'pending', observedAt: '2026-09-20T01:00:00.000Z', nextExpectedAt: '2026-09-21T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z'),
+    operation('note', 'applied', { status: 'never-connected', observedAt: '2026-09-20T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z')
+  ];
+  result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
+  assert.deepEqual(result.intakeCoverage.slice(0, 2).map(row => [row.sourceKind, row.status]), [['email', 'pending'], ['note', 'never-connected']]);
+  metadata.listOperations = () => [operation('email', 'not-applied', { status: 'failed', observedAt: '2026-09-20T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z')];
+  result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
+  assert.equal(result.intakeCoverage[0].status, 'failed');
 });

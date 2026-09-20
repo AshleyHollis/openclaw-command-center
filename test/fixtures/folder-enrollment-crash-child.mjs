@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { withBootstrapNoteFolder } from '../../src/sources/note-folder-identity.mjs';
+import { installHostFileAccessFixture } from '../support/host-file-access-fixture.mjs';
 
 // Fault injection is confined to this disposable process's filesystem boundary.
 // The open and process death are real; no correctness owner is replaced.
@@ -23,6 +24,9 @@ fs.promises.open = async (...args) => {
 };
 fs.writeSync = (fd, data, ...args) => { interruptMarkerWrite(data); return writeSync(fd, data, ...args); };
 syncBuiltinESMExports();
-await withBootstrapNoteFolder(root, { ...options, assertCurrent: () => {} }, () => {
-  throw new Error('Fixture reached completion without exercising the interruption boundary');
-});
+const releaseHostFileAccess = installHostFileAccessFixture();
+try {
+  await withBootstrapNoteFolder(root, { ...options, assertCurrent: () => {} }, () => {
+    throw new Error('Fixture reached completion without exercising the interruption boundary');
+  });
+} finally { releaseHostFileAccess(); }

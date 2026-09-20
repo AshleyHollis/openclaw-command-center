@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { chromium } from 'playwright';
 
-for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
+for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Evidence deep link', 'Changed evidence deep link', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
   const server = createServer(async (req, res) => {
     if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional native host</title><style>#mount{height:700px;width:900px}</style><main id="mount"></main></html>'); return; }
     // Serve the actual native module directory, including newly added siblings.
@@ -87,11 +87,11 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
             }
             if (scenario === 'Note tree filter') return { result: { notes: ['root.md', 'planning/brief.md', 'planning/invoice.md'].map((path) => ({ path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: `fictional:${path}` } })), total: 3, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-cursor' } };
             if (scenario === 'Note selection superseded') return { result: { notes: ['first.md', 'nested/second.md'].map((path) => ({ path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: `fictional:${path}` } })), total: 2, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-cursor' } };
-            if (['Original attachments', 'Replaced panel document'].includes(scenario)) return { result: { notes: [{ path: 'Documents/ATO/return.pdf', revision: 'sha256:8c39a3fe40d6c8d46260914e943df7d2a921ab4c92b6f48803c867fb854bf1b2', sourceKind: 'document', sourceReference: { topicId: 'fictional-topic', referenceId: 'fictional-document', sourceKind: 'document' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-cursor' } };
+            if (['Original attachments', 'Replaced panel document', 'Evidence deep link', 'Changed evidence deep link'].includes(scenario)) return { result: { notes: [{ path: 'Documents/ATO/return.pdf', revision: scenario === 'Changed evidence deep link' ? 'sha256:current-version' : 'sha256:8c39a3fe40d6c8d46260914e943df7d2a921ab4c92b6f48803c867fb854bf1b2', sourceKind: 'document', sourceReference: { topicId: 'fictional-topic', referenceId: 'fictional-document', sourceKind: 'document' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-cursor' } };
             return { result: { notes: [{ path: 'brief.md', revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: 'fictional-note' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-cursor' } };
           }
           if (method.endsWith('notes.read')) {
-            if (['Original attachments', 'Replaced panel document'].includes(scenario)) {
+            if (['Original attachments', 'Replaced panel document', 'Evidence deep link'].includes(scenario)) {
               if (scenario === 'Replaced panel document') { const delayed = Promise.withResolvers(); window.resolveDocumentRead = delayed.resolve; await delayed.promise; }
               const bytes = 'fictional original bytes';
               return { result: { path: 'Documents/ATO/return.pdf', revision: 'sha256:8c39a3fe40d6c8d46260914e943df7d2a921ab4c92b6f48803c867fb854bf1b2', sourceReference: { topicId: 'fictional-topic', referenceId: 'fictional-document' }, contentEncoding: 'identity', contentBase64: btoa(bytes), byteOffset: 0, nextOffset: bytes.length, totalBytes: bytes.length, complete: true } };
@@ -140,9 +140,10 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       window.deactivate = plugin.activate(host);
       window.registrationCount = () => registrations.size;
       const panel = scenario.includes('panel');
-      context = { host, signal: lifetime.signal, props: panel ? { sessionKey: 'agent:fictional:chat', agentId: 'fictional' } : {}, presented: true,
+      const evidence = ['Evidence deep link', 'Changed evidence deep link'].includes(scenario);
+      context = { host, signal: lifetime.signal, props: panel ? { sessionKey: 'agent:fictional:chat', agentId: 'fictional' } : evidence ? { topicId: 'fictional-topic', sourceReferenceId: 'fictional-document', sourcePath: 'Documents/ATO/return.pdf', evidenceSourceVersion: 'sha256:8c39a3fe40d6c8d46260914e943df7d2a921ab4c92b6f48803c867fb854bf1b2' } : {}, presented: true,
         ...(scenario === 'Missing panel promotion' ? {} : { panel: { showInMain: () => window.promoted++ } }) };
-      view = registrations.get(panel ? 'replacement:topic-files' : 'page:topics').mount(document.querySelector('#mount'), context);
+      view = registrations.get(panel ? 'replacement:topic-files' : evidence ? 'page:topic' : 'page:topics').mount(document.querySelector('#mount'), context);
       window.selectUnbound = () => { context = { ...context, props: { sessionKey: 'agent:fictional:unbound', agentId: 'fictional' } }; view.update(context); };
       window.setPresented = (presented) => view.update?.({ ...context, presented });
       window.setConnected = (connected) => { host.connection = { ...host.connection, connected }; for (const listener of subscribers) listener(); };
@@ -159,6 +160,19 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       assert.equal(commands[0].referenceId, 'fixture-ref');
       assert.equal(commands[0].expectedLifecycleRevision, 'fixture-revision');
       assert.equal(commands[0].expectedTopicRevision, 1);
+      await page.evaluate(() => window.disposeNative());
+      return;
+    }
+    if (scenario === 'Evidence deep link') {
+      await page.getByRole('region', { name: 'Note content' }).filter({ hasText: 'invalid file signature' }).waitFor({ timeout: 5_000 });
+      assert.equal(await page.evaluate(() => window.methods.filter(method => method.endsWith('notes.read')).length), 1);
+      await page.evaluate(() => window.disposeNative());
+      return;
+    }
+    if (scenario === 'Changed evidence deep link') {
+      await page.getByText('The evidence used source version', { exact: false }).waitFor();
+      await page.getByText('It was not opened as the earlier evidence.', { exact: false }).waitFor();
+      assert.equal(await page.evaluate(() => window.methods.some(method => method.endsWith('notes.read'))), false);
       await page.evaluate(() => window.disposeNative());
       return;
     }
@@ -397,7 +411,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     await page.waitForFunction(() => window.opened.length === 1, null, { timeout: 2000 });
     assert.deepEqual(await page.evaluate(() => window.opened), [{ sessionKey: 'agent:fictional:chat', agentId: 'fictional' }]);
     assert.equal(await page.locator('textarea,[contenteditable=true],iframe').count(), 0);
-    assert.equal(await page.evaluate(() => window.registrationCount()), 9);
+    assert.equal(await page.evaluate(() => window.registrationCount()), 11);
     await page.evaluate(() => window.disposeNative());
     assert.equal(await page.evaluate(() => window.registrationCount()), 0);
     assert.equal(await page.locator('#mount').innerText(), '');

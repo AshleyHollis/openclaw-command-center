@@ -5,7 +5,8 @@ export const ATTENTION_METADATA_SCHEMA_VERSION = 4;
 export const PRIOR_COMMAND_CENTER_SCHEMA_VERSION = 5;
 export const SCHEMA_SIX_COMMAND_CENTER_VERSION = 6;
 export const SCHEMA_SEVEN_COMMAND_CENTER_VERSION = 7;
-export const COMMAND_CENTER_SCHEMA_VERSION = 8;
+export const SCHEMA_EIGHT_COMMAND_CENTER_VERSION = 8;
+export const COMMAND_CENTER_SCHEMA_VERSION = 9;
 
 export const metadataTableNames = Object.freeze([
   'topics', 'source_references', 'source_convention_state', 'presentation_preferences',
@@ -19,7 +20,8 @@ export const metadataTableNames = Object.freeze([
   'notification_emissions', 'notification_clear_operations'
   , 'topic_analysis_settings', 'topic_analysis_runs', 'topic_analysis_watermarks',
   'topic_analysis_cursors', 'topic_analysis_evidence', 'topic_proposals', 'topic_reviews',
-  'topic_application_plans', 'topic_application_steps'
+  'topic_application_plans', 'topic_application_steps',
+  'source_observations', 'open_loops', 'open_loop_evidence', 'open_loop_operations'
 ]);
 export const paraCategories = Object.freeze(['project', 'area', 'resource', 'archive']);
 export const topicLifecycles = Object.freeze(['provisioning', 'active', 'retired']);
@@ -553,7 +555,68 @@ CREATE TABLE topic_application_steps (
 `;
 
 export const metadataSchemaV7Sql = `${metadataSchemaV6Sql.replace('PRAGMA user_version = 6;', 'PRAGMA user_version = 7;').replaceAll("outcome IN ('applied', 'failed', 'not-applied', 'conflict', 'unknown')", "outcome IN ('applied', 'not-applied', 'conflict', 'unknown')")}${metadataSchemaV7NotificationTablesSql}\nPRAGMA user_version = 7;\n`;
-export const metadataSchemaSql = `${metadataSchemaV7Sql.replace("outcome IN ('applied', 'not-applied', 'conflict', 'unknown')", "outcome IN ('applied', 'failed', 'not-applied', 'conflict', 'unknown')").replace('PRAGMA user_version = 7;', 'PRAGMA user_version = 8;')}${metadataSchemaV8TopicAnalysisTablesSql}\nPRAGMA user_version = 8;\n`;
+export const metadataSchemaV8Sql = `${metadataSchemaV7Sql.replace("outcome IN ('applied', 'not-applied', 'conflict', 'unknown')", "outcome IN ('applied', 'failed', 'not-applied', 'conflict', 'unknown')").replace('PRAGMA user_version = 7;', 'PRAGMA user_version = 8;')}${metadataSchemaV8TopicAnalysisTablesSql}\nPRAGMA user_version = 8;\n`;
+
+const metadataSchemaV9OpenLoopTablesSql = `
+CREATE TABLE source_observations (
+  observation_id TEXT PRIMARY KEY,
+  source_system TEXT NOT NULL CHECK (length(trim(source_system)) > 0),
+  source_kind TEXT NOT NULL CHECK (length(trim(source_kind)) > 0),
+  external_source_id TEXT NOT NULL CHECK (length(trim(external_source_id)) > 0),
+  source_version TEXT NOT NULL CHECK (length(trim(source_version)) > 0),
+  observation_type TEXT NOT NULL CHECK (observation_type IN ('bill', 'payment-request', 'payment-evidence', 'reply-request', 'reply-evidence', 'quote', 'order', 'dispatch', 'delivery', 'appointment', 'decision-evidence', 'general')),
+  occurred_at TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  historical_baseline INTEGER NOT NULL CHECK (historical_baseline IN (0, 1)),
+  topic_id TEXT REFERENCES topics(topic_id) ON DELETE SET NULL,
+  entity_refs_json TEXT NOT NULL,
+  facts_json TEXT NOT NULL,
+  observation_digest TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (source_system, source_kind, external_source_id, source_version)
+) STRICT;
+
+CREATE TABLE open_loops (
+  loop_id TEXT PRIMARY KEY,
+  loop_kind TEXT NOT NULL CHECK (loop_kind IN ('payment', 'response', 'order', 'decision', 'general')),
+  stable_subject_id TEXT NOT NULL CHECK (length(trim(stable_subject_id)) > 0),
+  title TEXT NOT NULL CHECK (length(trim(title)) BETWEEN 1 AND 300),
+  topic_id TEXT REFERENCES topics(topic_id) ON DELETE SET NULL,
+  state TEXT NOT NULL CHECK (state IN ('suggested', 'confirmed', 'waiting', 'monitoring', 'decision-needed', 'action-running', 'resolved', 'cancelled', 'uncertain')),
+  payment_state TEXT CHECK (payment_state IS NULL OR payment_state IN ('potential', 'unpaid', 'partially-paid', 'payment-pending', 'paid', 'disputed', 'cancelled', 'uncertain')),
+  amount_minor INTEGER CHECK (amount_minor IS NULL OR amount_minor >= 0),
+  currency TEXT CHECK (currency IS NULL OR length(currency) = 3),
+  due_at TEXT,
+  review_at TEXT,
+  expected_event TEXT,
+  attention_json TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (loop_kind, stable_subject_id),
+  CHECK ((amount_minor IS NULL) = (currency IS NULL)),
+  CHECK ((loop_kind = 'payment') OR payment_state IS NULL)
+) STRICT;
+
+CREATE TABLE open_loop_evidence (
+  loop_id TEXT NOT NULL REFERENCES open_loops(loop_id) ON DELETE CASCADE,
+  observation_id TEXT NOT NULL REFERENCES source_observations(observation_id) ON DELETE RESTRICT,
+  evidence_role TEXT NOT NULL CHECK (evidence_role IN ('origin', 'update', 'resolution', 'conflict')),
+  linked_at TEXT NOT NULL,
+  PRIMARY KEY (loop_id, observation_id)
+) STRICT;
+
+CREATE TABLE open_loop_operations (
+  logical_operation_id TEXT PRIMARY KEY,
+  operation_kind TEXT NOT NULL CHECK (operation_kind IN ('open-loop.observe.v1', 'open-loop.reconcile.v1')),
+  intent_digest TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('applied', 'conflict', 'unknown')),
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+) STRICT;
+`;
+
+export const metadataSchemaSql = `${metadataSchemaV8Sql.replace('PRAGMA user_version = 8;', 'PRAGMA user_version = 9;')}${metadataSchemaV9OpenLoopTablesSql}\nPRAGMA user_version = 9;\n`;
 
 const baseColumns = Object.freeze({
   topics: [['topic_id', 'TEXT', 1, 1], ['para_category', 'TEXT', 1, 0], ['lifecycle', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0], ['revision', 'INTEGER', 1, 0], ['name', 'TEXT', 1, 0], ['activated_at', 'TEXT', 0, 0]],
@@ -592,7 +655,11 @@ const baseColumns = Object.freeze({
   notification_policy_epochs: [['epoch_id', 'TEXT', 1, 1], ['episode_id', 'TEXT', 1, 0], ['severity', 'TEXT', 1, 0], ['generation', 'INTEGER', 1, 0], ['activation_at_ms', 'INTEGER', 1, 0], ['active_accumulated_ms', 'INTEGER', 1, 0], ['state', 'TEXT', 1, 0], ['created_at_ms', 'INTEGER', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]],
   notification_slots: [['slot_id', 'TEXT', 1, 1], ['epoch_id', 'TEXT', 1, 0], ['episode_id', 'TEXT', 1, 0], ['slot_kind', 'TEXT', 1, 0], ['due_at_ms', 'INTEGER', 1, 0], ['status', 'TEXT', 1, 0], ['logical_operation_id', 'TEXT', 0, 0], ['emission_id', 'TEXT', 0, 0], ['queued_at_ms', 'INTEGER', 0, 0], ['emitted_at_ms', 'INTEGER', 0, 0], ['created_at_ms', 'INTEGER', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]],
   notification_emissions: [['emission_id', 'TEXT', 1, 1], ['epoch_id', 'TEXT', 1, 0], ['episode_id', 'TEXT', 1, 0], ['logical_operation_id', 'TEXT', 1, 0], ['emitted_at_ms', 'INTEGER', 1, 0], ['expires_at_ms', 'INTEGER', 1, 0], ['generic_preview', 'INTEGER', 1, 0], ['summary_count', 'INTEGER', 1, 0], ['status', 'TEXT', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]],
-  notification_clear_operations: [['logical_operation_id', 'TEXT', 1, 1], ['episode_id', 'TEXT', 1, 0], ['status', 'TEXT', 1, 0], ['attempt_count', 'INTEGER', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]]
+  notification_clear_operations: [['logical_operation_id', 'TEXT', 1, 1], ['episode_id', 'TEXT', 1, 0], ['status', 'TEXT', 1, 0], ['attempt_count', 'INTEGER', 1, 0], ['updated_at_ms', 'INTEGER', 1, 0]],
+  source_observations: [['observation_id', 'TEXT', 1, 1], ['source_system', 'TEXT', 1, 0], ['source_kind', 'TEXT', 1, 0], ['external_source_id', 'TEXT', 1, 0], ['source_version', 'TEXT', 1, 0], ['observation_type', 'TEXT', 1, 0], ['occurred_at', 'TEXT', 1, 0], ['observed_at', 'TEXT', 1, 0], ['historical_baseline', 'INTEGER', 1, 0], ['topic_id', 'TEXT', 0, 0], ['entity_refs_json', 'TEXT', 1, 0], ['facts_json', 'TEXT', 1, 0], ['observation_digest', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0]],
+  open_loops: [['loop_id', 'TEXT', 1, 1], ['loop_kind', 'TEXT', 1, 0], ['stable_subject_id', 'TEXT', 1, 0], ['title', 'TEXT', 1, 0], ['topic_id', 'TEXT', 0, 0], ['state', 'TEXT', 1, 0], ['payment_state', 'TEXT', 0, 0], ['amount_minor', 'INTEGER', 0, 0], ['currency', 'TEXT', 0, 0], ['due_at', 'TEXT', 0, 0], ['review_at', 'TEXT', 0, 0], ['expected_event', 'TEXT', 0, 0], ['attention_json', 'TEXT', 1, 0], ['revision', 'INTEGER', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0]],
+  open_loop_evidence: [['loop_id', 'TEXT', 1, 1], ['observation_id', 'TEXT', 1, 2], ['evidence_role', 'TEXT', 1, 0], ['linked_at', 'TEXT', 1, 0]],
+  open_loop_operations: [['logical_operation_id', 'TEXT', 1, 1], ['operation_kind', 'TEXT', 1, 0], ['intent_digest', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0], ['result_json', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0]]
 });
 
 const baseForeignKeys = Object.freeze({
@@ -615,6 +682,9 @@ const baseForeignKeys = Object.freeze({
   , topic_analysis_watermarks: ['topics|topic_id|topic_id|CASCADE']
   , topic_analysis_evidence: ['topic_proposals|proposal_id|proposal_id|CASCADE']
   , topic_application_steps: ['topic_application_plans|application_id|application_id|CASCADE', 'topic_proposals|proposal_id|proposal_id|RESTRICT']
+  , source_observations: ['topics|topic_id|topic_id|SET NULL']
+  , open_loops: ['topics|topic_id|topic_id|SET NULL']
+  , open_loop_evidence: ['open_loops|loop_id|loop_id|CASCADE', 'source_observations|observation_id|observation_id|RESTRICT']
 });
 const expectedLedgerColumns = Object.freeze([
   ['sequence', 'INTEGER', 0, 1], ['migration_id', 'TEXT', 1, 0], ['migration_digest', 'TEXT', 1, 0],
@@ -628,6 +698,7 @@ function definitions(sql) {
   ));
 }
 const expectedTableDefinitions = definitions(metadataSchemaSql);
+const expectedTableDefinitionsV8 = definitions(metadataSchemaV8Sql);
 const expectedTableDefinitionsV7 = definitions(metadataSchemaV7Sql);
 const expectedTableDefinitionsV6 = definitions(metadataSchemaV6Sql);
 const expectedTableDefinitionsV4 = definitions(metadataSchemaV4Sql);
@@ -732,6 +803,7 @@ DROP TABLE activity_records_legacy;
 ${metadataSchemaV8TopicAnalysisTablesSql}
 PRAGMA user_version = 8;
 `;
+export const metadataSchemaV8ToV9Sql = `${metadataSchemaV9OpenLoopTablesSql}\nPRAGMA user_version = 9;\n`;
 
 const attentionTables = Object.freeze(['attention_episodes', 'attention_occurrences', 'attention_attempts', 'attention_approvals', 'attention_activity_records']);
 const attentionActivityTriggers = Object.freeze(['attention_activity_records_no_delete', 'attention_activity_records_no_update']);
@@ -739,13 +811,15 @@ const migrationTables = Object.freeze(['migration_state', 'migration_channels', 
 const topicLifecycleTables = Object.freeze(['source_locators', 'topic_operations', 'source_recovery']);
 const notificationTables = Object.freeze(['notification_settings', 'notification_policy_epochs', 'notification_slots', 'notification_emissions', 'notification_clear_operations']);
 const topicAnalysisTables = Object.freeze(['topic_analysis_settings', 'topic_analysis_runs', 'topic_analysis_watermarks', 'topic_analysis_cursors', 'topic_analysis_evidence', 'topic_proposals', 'topic_reviews', 'topic_application_plans', 'topic_application_steps']);
-const v7Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !topicAnalysisTables.includes(table)));
-const v1Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !['operation_journal', 'session_state', 'activity_records', ...migrationTables, ...attentionTables, ...topicLifecycleTables, ...notificationTables, ...topicAnalysisTables].includes(table)));
-const v2Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...migrationTables, ...attentionTables, ...topicLifecycleTables, ...notificationTables, ...topicAnalysisTables].includes(table)));
-const v3Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...attentionTables, ...topicLifecycleTables, ...notificationTables, ...topicAnalysisTables].includes(table)));
+const openLoopTables = Object.freeze(['source_observations', 'open_loops', 'open_loop_evidence', 'open_loop_operations']);
+const v8Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !openLoopTables.includes(table)));
+const v7Tables = Object.freeze(v8Tables.filter((table) => !topicAnalysisTables.includes(table)));
+const v1Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !['operation_journal', 'session_state', 'activity_records', ...migrationTables, ...attentionTables, ...topicLifecycleTables, ...notificationTables, ...topicAnalysisTables, ...openLoopTables].includes(table)));
+const v2Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...migrationTables, ...attentionTables, ...topicLifecycleTables, ...notificationTables, ...topicAnalysisTables, ...openLoopTables].includes(table)));
+const v3Tables = Object.freeze(Object.keys(baseColumns).filter((table) => ![...attentionTables, ...topicLifecycleTables, ...notificationTables, ...topicAnalysisTables, ...openLoopTables].includes(table)));
 const columnsBeforeV5 = (table) => table === 'session_state' ? baseColumns[table].filter(([name]) => !['was_primary', 'display_name'].includes(name)) : baseColumns[table];
-const v5Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !topicLifecycleTables.includes(table) && !notificationTables.includes(table) && !topicAnalysisTables.includes(table)));
-const v6Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !notificationTables.includes(table) && !topicAnalysisTables.includes(table)));
+const v5Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !topicLifecycleTables.includes(table) && !notificationTables.includes(table) && !topicAnalysisTables.includes(table) && !openLoopTables.includes(table)));
+const v6Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !notificationTables.includes(table) && !topicAnalysisTables.includes(table) && !openLoopTables.includes(table)));
 const columnsForV5 = (table) => {
   if (table === 'topics') return baseColumns[table].filter(([name]) => !['revision', 'name', 'activated_at'].includes(name));
   if (table === 'source_convention_state') return baseColumns[table].filter(([name]) => name !== 'expected_value');
@@ -766,14 +840,15 @@ function sameArray(left, right) { return left.length === right.length && left.ev
 export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VERSION) {
   const problems = [];
   const current = schemaVersion === COMMAND_CENTER_SCHEMA_VERSION;
+  const schemaEight = schemaVersion === SCHEMA_EIGHT_COMMAND_CENTER_VERSION;
   const schemaSeven = schemaVersion === SCHEMA_SEVEN_COMMAND_CENTER_VERSION;
   const schemaSix = schemaVersion === SCHEMA_SIX_COMMAND_CENTER_VERSION;
   const prior = schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION;
   const schemaFour = schemaVersion === ATTENTION_METADATA_SCHEMA_VERSION;
-  const columnsForVersion = current ? baseColumns : schemaSeven ? Object.fromEntries(Object.entries(baseColumns).filter(([table]) => v7Tables.includes(table))) : schemaSix ? v6Columns : prior ? v5Columns : schemaFour ? v4Columns : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
-  const definitionsForVersion = current ? expectedTableDefinitions : schemaSeven ? expectedTableDefinitionsV7 : schemaSix ? expectedTableDefinitionsV6 : prior ? definitions(metadataSchemaV5Sql) : schemaFour ? expectedTableDefinitionsV4 : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
-  const foreignKeysForVersion = current ? baseForeignKeys : schemaSeven ? Object.fromEntries(v7Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaSix || prior || schemaFour ? Object.fromEntries(v6Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
-  const applicationTables = current ? metadataTableNames : schemaSeven ? v7Tables : schemaSix ? v6Tables : prior || schemaFour ? v5Tables : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
+  const columnsForVersion = current ? baseColumns : schemaEight ? Object.fromEntries(v8Tables.map((table) => [table, baseColumns[table]])) : schemaSeven ? Object.fromEntries(Object.entries(baseColumns).filter(([table]) => v7Tables.includes(table))) : schemaSix ? v6Columns : prior ? v5Columns : schemaFour ? v4Columns : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
+  const definitionsForVersion = current ? expectedTableDefinitions : schemaEight ? expectedTableDefinitionsV8 : schemaSeven ? expectedTableDefinitionsV7 : schemaSix ? expectedTableDefinitionsV6 : prior ? definitions(metadataSchemaV5Sql) : schemaFour ? expectedTableDefinitionsV4 : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
+  const foreignKeysForVersion = current ? baseForeignKeys : schemaEight ? Object.fromEntries(v8Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaSeven ? Object.fromEntries(v7Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaSix || prior || schemaFour ? Object.fromEntries(v6Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
+  const applicationTables = current ? metadataTableNames : schemaEight ? v8Tables : schemaSeven ? v7Tables : schemaSix ? v6Tables : prior || schemaFour ? v5Tables : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
   const expectedTables = schemaVersion >= LEGACY_METADATA_SCHEMA_VERSION ? [...applicationTables, 'schema_migrations'] : [...applicationTables];
   const objects = database.prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
   const tables = objects.filter((row) => row.type === 'table').map((row) => row.name);
@@ -788,7 +863,7 @@ export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VE
     const tableShape = database.prepare('SELECT strict FROM pragma_table_list WHERE name = ?').get(table);
     if (!tableShape || tableShape.strict !== 1) problems.push(`${table} is not STRICT`);
     const ddl = normalizedSql(database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.sql);
-    const alterCompatible = (current || schemaSeven || schemaSix) && (table === 'topics' || table === 'source_convention_state');
+    const alterCompatible = (current || schemaEight || schemaSeven || schemaSix) && (table === 'topics' || table === 'source_convention_state');
     if (!alterCompatible && ddl !== definitionsForVersion[table]) problems.push(`${table} definition differs`);
     if (current && table === 'topics') {
       for (const requiredConstraint of [
