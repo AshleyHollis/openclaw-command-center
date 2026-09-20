@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory } from '../src/open-loops/source-intake-tool.mjs';
+import { sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory } from '../src/open-loops/source-intake-tool.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 
 function metadataOwner() {
@@ -16,6 +16,28 @@ function metadataOwner() {
     listOperations() { return [...operations.values()]; }
   };
 }
+
+test('maintained producer saves one quiet Note with stable retry identity and exact evidence', async () => {
+  const calls = [];
+  const sourceService = { async notesCreate(input) {
+    calls.push(input);
+    return { status: calls.length === 1 ? 'applied' : 'replayed', value: { note: { schemaVersion: 1, path: input.path, revision: 'note-v1', sourceKind: 'note', sourceReference: { referenceId: 'note:fictional-source', topicId: input.topicId, sourceSystem: 'obsidian', sourceKind: 'note' } } } };
+  } };
+  const tool = sourceNoteCaptureToolFactory({ getOwners: () => ({ sourceService }) })();
+  const params = { topicId: 'topic-fictional-home', noteFolderReferenceId: 'folder:fictional-home', sourceKind: 'email', sourceExternalId: 'fictional-message-1', sourceVersion: 'message-v1', path: 'Inbox/fictional-council-invoice.md', markdown: '# Fictional council invoice\n' };
+  const first = await tool.execute(randomUUID(), params);
+  const replay = await tool.execute(randomUUID(), params);
+  assert.equal(first.details.sourceReference.referenceId, 'note:fictional-source');
+  assert.equal(replay.details.sourceReference.referenceId, 'note:fictional-source');
+  assert.equal(calls[0].logicalOperationId, calls[1].logicalOperationId);
+  assert.equal(calls[0].requestId, calls[0].logicalOperationId);
+  assert.deepEqual({ topicId: calls[0].topicId, referenceId: calls[0].referenceId, path: calls[0].path, text: calls[0].text, sourceKind: calls[0].sourceKind }, { topicId: params.topicId, referenceId: params.noteFolderReferenceId, path: params.path, text: params.markdown, sourceKind: 'note' });
+});
+
+test('source Note tool refuses a result without exact Topic-owned Note evidence', async () => {
+  const tool = sourceNoteCaptureToolFactory({ getOwners: () => ({ sourceService: { notesCreate: async () => ({ status: 'applied', value: { note: { path: 'wrong.md', revision: 'v1', sourceReference: { referenceId: 'foreign', topicId: 'topic-foreign', sourceKind: 'note' } } } }) } }) })();
+  await assert.rejects(() => tool.execute(randomUUID(), { topicId: 'topic-fictional-home', noteFolderReferenceId: 'folder:fictional-home', sourceKind: 'note', sourceExternalId: 'fictional-note-1', sourceVersion: 'note-v1', path: 'Inbox/source.md', markdown: '# Source\n' }), /exact Topic-owned Source Reference/u);
+});
 
 test('maintained email producer captures an obligation only through its exact saved Note evidence', async () => {
   const metadata = metadataOwner(); let read;
