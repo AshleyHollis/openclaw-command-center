@@ -2,7 +2,7 @@ import { BRIDGE_CONTRACTS, READ_METHODS, WRITE_METHODS, sanitizeBridgeResult, va
 import { assertNoUnexpectedKeys, errorResult, nonBlank, SourceServiceError } from '../sources/errors.mjs';
 import { assertFirstLiveCommand, FIRST_LIVE_COMMANDS, FIRST_LIVE_FEATURES } from '../release-scope.mjs';
 import { captureHistoryReadAuthority } from './read-authority.mjs';
-import { createRequestScopedConversationRuntime } from './gateway-method-dispatch.mjs';
+import { createRequestScopedConversationRuntime, createRequestScopedGatewayRequest } from './gateway-method-dispatch.mjs';
 
 const schedulerRuntimeMethods = new Set([
   'command-center.v1.reminders.list',
@@ -317,9 +317,11 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         const assertHistoryRead = method.startsWith('command-center.v1.histories.') || ['command-center.v1.sessions.topic-context', 'command-center.v1.sessions.group-preview'].includes(method) ? captureHistoryReadAuthority({ client, context, signal }) : null;
         if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
         if (openLoopSchedulerRuntimeMethods.has(method) && client?.connect?.role === 'operator' && Array.isArray(client.connect.scopes) && typeof context?.getGatewayMethodRegistry === 'function') {
-          const dispatched = await createRequestScopedConversationRuntime({ requiredGatewayMethods: openLoopSchedulerDispatchMethods });
-          if (dispatched.creationAuthority.principalId !== authenticatedOperatorId) throw new SourceServiceError('unauthenticated', 'The authenticated native Reminder dispatcher changed operator identity.');
-          runtime = { gateway: Object.freeze({ request: dispatched.gatewayRequest }) };
+          // The host SDK itself binds dispatch to this registered method's
+          // exact allowlist and current authenticated client. Unlike Session
+          // creation, Cron does not need a separately captured context
+          // resolver or caller-selected durable identity.
+          runtime = { gateway: Object.freeze({ request: createRequestScopedGatewayRequest() }) };
         } else if (schedulerRuntimeMethods.has(method) && client) {
           runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
         }
