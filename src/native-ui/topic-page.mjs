@@ -626,9 +626,13 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       }
       const prior = viewState.selected;
       const restore = prior && catalogAllNotes.find(note => note.path === prior.path && note.sourceReference.referenceId === prior.referenceId);
+      const alreadySelected = restore && selected?.path === restore.path && selected?.referenceId === restore.sourceReference.referenceId
+        && selected?.sourceKind === sourceKindFor(restore);
       if (restore) {
-        if (sourceKindFor(restore) === 'note') await openNote(restore);
-        else await openDocument(restore);
+        if (!alreadySelected) {
+          if (sourceKindFor(restore) === 'note') await openNote(restore);
+          else await openDocument(restore);
+        }
       } else if (prior) { viewState.selected = undefined; }
     } catch (error) {
       if (currentCatalog(pending)) {

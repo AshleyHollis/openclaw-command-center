@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { chromium } from 'playwright';
 
-for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Evidence deep link', 'Changed evidence deep link', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
+for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note selection during pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Evidence deep link', 'Changed evidence deep link', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
   const server = createServer(async (req, res) => {
     if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional native host</title><style>#mount{height:700px;width:900px}</style><main id="mount"></main></html>'); return; }
     // Serve the actual native module directory, including newly added siblings.
@@ -76,6 +76,11 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
           ] } };
           if (method.endsWith('notes.browse')) {
             window.noteBrowseInputs.push(params);
+            if (scenario === 'Note selection during pagination') {
+              const next = params.offset === 50;
+              if (next) { const delayed = Promise.withResolvers(); window.resolveRemainingNotes = delayed.resolve; await delayed.promise; }
+              return { result: { notes: (next ? ['last.md'] : Array.from({ length: 50 }, (_, index) => `note-${index}.md`)).map((path) => ({ path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: `fictional:${path}` } })), total: 51, offset: next ? 50 : 0, nextOffset: next ? null : 50, hasMore: !next, cursor: 'fictional-cursor' } };
+            }
             if (scenario === 'Note pagination') {
               const next = params.offset === 50;
               if (next && params.cursor !== 'fictional-cursor') throw new Error('Pagination lost the authoritative snapshot.');
@@ -98,8 +103,8 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
             }
             if (['Late panel Note', 'Replaced panel Session'].includes(scenario)) { const delayed = Promise.withResolvers(); window.resolveNote = delayed.resolve; await delayed.promise; }
             if (scenario === 'Note selection superseded' && params.path === 'first.md') { const delayed = Promise.withResolvers(); window.resolveFirstNote = delayed.resolve; await delayed.promise; }
-            const path = ['Note tree filter', 'Note selection superseded'].includes(scenario) ? params.path : 'brief.md';
-            const referenceId = ['Note tree filter', 'Note selection superseded'].includes(scenario) ? `fictional:${path}` : 'fictional-note';
+            const path = ['Note tree filter', 'Note selection superseded', 'Note selection during pagination'].includes(scenario) ? params.path : 'brief.md';
+            const referenceId = ['Note tree filter', 'Note selection superseded', 'Note selection during pagination'].includes(scenario) ? `fictional:${path}` : 'fictional-note';
             const text = path === 'brief.md' ? '<img src=x onerror=alert(1)>Fictional Note' : `Fictional Note ${path}`;
             return { result: { path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId }, contentEncoding: 'identity', contentBase64: btoa(text), byteOffset: 0, nextOffset: text.length, totalBytes: text.length, complete: true } };
           }
@@ -276,6 +281,19 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       await page.getByRole('button', { name: 'Read last.md' }).waitFor({ timeout: 2000 });
       assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 1);
       assert.equal(await page.getByRole('button', { name: /Previous Notes|Next Notes/ }).count(), 2);
+      await page.evaluate(() => window.disposeNative());
+      return;
+    }
+    if (scenario === 'Note selection during pagination') {
+      await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
+      await page.getByRole('button', { name: 'Read note-0.md' }).click();
+      await page.getByRole('region', { name: 'Note content' }).filter({ hasText: 'Fictional Note note-0.md' }).waitFor();
+      assert.equal(await page.evaluate(() => window.methods.filter(method => method.endsWith('notes.read')).length), 1);
+      await page.evaluate(() => window.resolveRemainingNotes());
+      await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
+      await page.waitForTimeout(50);
+      assert.equal(await page.evaluate(() => window.methods.filter(method => method.endsWith('notes.read')).length), 1,
+        'completing the catalog must not reopen an already selected Note');
       await page.evaluate(() => window.disposeNative());
       return;
     }
