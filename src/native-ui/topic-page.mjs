@@ -7,6 +7,13 @@ import { readerStyles } from './reader-layout.mjs';
 import { loadTopicCatalog, topicCatalogPageSize } from './topic-catalog.mjs';
 import { topicSourceAvailable } from './topic-source-availability.mjs';
 
+export const nativeExplorerCompleteCatalogLimit = 500;
+
+export function nativeExplorerCatalogEntries(allNotes, pageNotes, limit = nativeExplorerCompleteCatalogLimit) {
+  if (!Array.isArray(allNotes) || !Array.isArray(pageNotes) || !Number.isSafeInteger(limit) || limit < 1) throw new TypeError('Native explorer catalog selection is invalid');
+  return allNotes.length <= limit ? allNotes : pageNotes;
+}
+
 /** Topic policy stays in the backend; OpenClaw owns routing and Chat. */
 export function mountTopicPage(container, context, state = createNativeState(), { panel = false, verifyContext } = {}) {
   const host = context.host;
@@ -262,7 +269,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   }
   function nativeTreeEntries() {
     const query = filter.value.trim().toLocaleLowerCase();
-    return catalogAllNotes
+    return nativeExplorerCatalogEntries(catalogAllNotes, catalogNotes)
       .filter((note) => note.path.toLocaleLowerCase().includes(query))
       .map((note) => ({ path: note.path, name: fileName(note.path), kind: 'file' }));
   }
