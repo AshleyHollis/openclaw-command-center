@@ -8,10 +8,13 @@ test('native grouping journey selects a Topic row relative to its shadow-root pa
   try {
     const page = await browser.newPage();
     page.setDefaultTimeout(1000);
-    await page.setContent('<button id="expand" aria-label="Expand sidebar">Expand</button><openclaw-app-sidebar hidden><button class="sidebar-session-sort">Hidden sort</button><section data-session-section="category:Sample"><button aria-expanded="true">Sample</button></section></openclaw-app-sidebar><openclaw-app-sidebar id="sidebar" hidden><button hidden class="sidebar-session-sort">Retired sort</button><div class="sidebar-session-toolbar"><button id="visible-global-sort" class="sidebar-session-sort">Sort sessions</button></div><section data-session-section="category:Sample"><button aria-expanded="true">Sample</button><div data-session-key="agent:main:sample">Overview</div></section></openclaw-app-sidebar><button id="catalog-sort" class="sidebar-session-sort sidebar-session-catalog-grouping">Catalog view</button><div role="menu"><wa-dropdown-item value="grouping:category" role="menuitemradio">Category</wa-dropdown-item></div><openclaw-plugin-page></openclaw-plugin-page>');
+    await page.setContent('<button id="expand" aria-label="Expand sidebar">Expand</button><openclaw-app-sidebar hidden><div class="topic-sidebar"><details aria-label="All native conversations" open><summary>All conversations</summary><button class="sidebar-session-sort">Hidden predecessor sort</button></details></div><section data-session-section="category:Sample"><button aria-expanded="true">Sample</button></section></openclaw-app-sidebar><openclaw-app-sidebar id="sidebar" hidden><button hidden class="sidebar-session-sort">Retired sort</button><div class="topic-sidebar"><button id="collapse-topics">Collapse all Topics</button><details id="native-conversations" aria-label="All native conversations"><summary>All conversations</summary><div class="sidebar-session-toolbar"><button id="visible-global-sort" class="sidebar-session-sort">Sort sessions</button></div></details></div><section data-session-section="category:Sample"><button aria-expanded="true">Sample</button><div data-session-key="agent:main:sample">Overview</div></section></openclaw-app-sidebar><button id="catalog-sort" class="sidebar-session-sort sidebar-session-catalog-grouping">Catalog view</button><div role="menu"><wa-dropdown-item hidden value="grouping:category" role="menuitemradio">Category</wa-dropdown-item></div><openclaw-plugin-page></openclaw-plugin-page>');
     await page.evaluate(() => {
       for (const id of ['visible-global-sort', 'catalog-sort']) {
-        document.getElementById(id).addEventListener('click', () => document.body.dataset.clickedSort = id);
+        document.getElementById(id).addEventListener('click', () => {
+          document.body.dataset.clickedSort = id;
+          document.querySelector('wa-dropdown-item[value="grouping:category"]').hidden = false;
+        });
       }
       document.getElementById('expand').addEventListener('click', () => {
         document.getElementById('sidebar').hidden = false;
@@ -25,6 +28,7 @@ test('native grouping journey selects a Topic row relative to its shadow-root pa
     });
     await selectNativeCategoryGrouping(page);
     assert.equal(await page.locator('body').getAttribute('data-clicked-sort'), 'visible-global-sort');
+    assert.equal(await page.locator('#native-conversations').evaluate(element => element.open), true);
     await organizeNativeTopicConversations({ page, nativePage: page.locator('openclaw-plugin-page'), fixture: { name: 'Sample', sessionKey: 'agent:main:sample' } });
   } finally { await browser.close(); }
 });
@@ -43,7 +47,7 @@ test('native grouping journey leaves team mode through the workspace menu', { ti
       workspace.addEventListener('click', () => { agentMenu.hidden = false; });
       showOne.addEventListener('click', () => {
         workspace.remove();
-        sidebar.insertAdjacentHTML('afterbegin', '<button class="sidebar-agent-card__main">Agent</button><button id="collapse-topics">Collapse all Topics</button><div class="sidebar-session-toolbar"><button id="single-agent-sort" class="sidebar-session-sort">Sort sessions</button></div>');
+        sidebar.insertAdjacentHTML('afterbegin', '<button class="sidebar-agent-card__main">Agent</button><div class="topic-sidebar"><button id="collapse-topics">Collapse all Topics</button><details id="team-native-conversations" aria-label="All native conversations"><summary>All conversations</summary><div class="sidebar-session-toolbar"><button id="single-agent-sort" class="sidebar-session-sort">Sort sessions</button></div></details></div>');
         document.querySelector('#collapse-topics').addEventListener('click', () => { document.body.dataset.collapsedTopics = 'true'; });
         document.querySelector('#single-agent-sort').addEventListener('click', () => {
           document.querySelector('#menu').hidden = false;
@@ -54,15 +58,16 @@ test('native grouping journey leaves team mode through the workspace menu', { ti
     });
     await selectNativeCategoryGrouping(page);
     assert.equal(await page.locator('body').getAttribute('data-collapsed-topics'), 'true');
+    assert.equal(await page.locator('#team-native-conversations').evaluate(element => element.open), true);
     assert.equal(await page.locator('body').getAttribute('data-clicked-sort'), 'single-agent-sort');
   } finally { await browser.close(); }
 });
 
-test('native grouping journey scrolls the sidebar body to the Conversations toolbar', { timeout: 10_000 }, async () => {
+test('native grouping journey scrolls after opening the Conversations disclosure', { timeout: 10_000 }, async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
     const page = await browser.newPage({ viewport: { width: 800, height: 400 } });
-    await page.setContent('<openclaw-app-sidebar><div class="sidebar-shell__body" style="height: 200px; overflow-y: auto"><div style="height: 500px"></div><button id="scrolled-sort" class="sidebar-session-sort">Sort sessions</button></div></openclaw-app-sidebar><wa-dropdown-item hidden value="grouping:category">Category</wa-dropdown-item>');
+    await page.setContent('<openclaw-app-sidebar><div class="sidebar-shell__body" style="height: 200px; overflow-y: auto"><div class="topic-sidebar"><div style="height: 500px"></div><details id="scrolled-native-conversations" aria-label="All native conversations"><summary>All conversations</summary><button id="scrolled-sort" class="sidebar-session-sort">Sort sessions</button></details></div></div></openclaw-app-sidebar><wa-dropdown-item hidden value="grouping:category">Category</wa-dropdown-item>');
     await page.evaluate(() => {
       document.querySelector('#scrolled-sort').addEventListener('click', () => {
         document.querySelector('wa-dropdown-item[value="grouping:category"]').hidden = false;
@@ -71,7 +76,27 @@ test('native grouping journey scrolls the sidebar body to the Conversations tool
     });
     await selectNativeCategoryGrouping(page);
     assert.equal(await page.locator('body').getAttribute('data-clicked-sort'), 'scrolled-sort');
+    assert.equal(await page.locator('#scrolled-native-conversations').evaluate(element => element.open), true);
     assert.ok(await page.locator('.sidebar-shell__body').evaluate(element => element.scrollTop > 0));
+  } finally { await browser.close(); }
+});
+
+test('native grouping journey reuses an already-open Conversations disclosure', { timeout: 10_000 }, async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<openclaw-app-sidebar><div class="topic-sidebar"><details id="open-native-conversations" open aria-label="All native conversations"><summary>All conversations</summary><button id="open-sort" class="sidebar-session-sort">Sort sessions</button></details></div></openclaw-app-sidebar><wa-dropdown-item hidden value="grouping:category">Category</wa-dropdown-item>');
+    await page.evaluate(() => {
+      document.querySelector('#open-native-conversations > summary').addEventListener('click', () => { document.body.dataset.summaryClicked = 'true'; });
+      document.querySelector('#open-sort').addEventListener('click', () => {
+        document.querySelector('wa-dropdown-item[value="grouping:category"]').hidden = false;
+        document.body.dataset.clickedSort = 'open-sort';
+      });
+    });
+    await selectNativeCategoryGrouping(page);
+    assert.equal(await page.locator('body').getAttribute('data-summary-clicked'), null);
+    assert.equal(await page.locator('body').getAttribute('data-clicked-sort'), 'open-sort');
+    assert.equal(await page.locator('#open-native-conversations').evaluate(element => element.open), true);
   } finally { await browser.close(); }
 });
 
@@ -79,7 +104,7 @@ test('native grouping journey reports a missing visible control within its local
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
     const page = await browser.newPage();
-    await page.setContent('<openclaw-app-sidebar><button hidden class="sidebar-session-sort">Retired sort</button></openclaw-app-sidebar>');
+    await page.setContent('<openclaw-app-sidebar><div class="topic-sidebar"><details aria-label="All native conversations"><summary>All conversations</summary><button hidden class="sidebar-session-sort">Retired sort</button></details></div></openclaw-app-sidebar>');
     await assert.rejects(selectNativeCategoryGrouping(page), /Native session grouping control is unavailable/u);
   } finally { await browser.close(); }
 });

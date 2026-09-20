@@ -28,6 +28,8 @@ export async function assertNativeNoteSource(nativePage, fixture) {
 // that a verified Topic category is actually reachable in the sidebar.
 export async function selectNativeCategoryGrouping(page) {
   let sidebar = page.locator('openclaw-app-sidebar:visible').first();
+  let topicSidebar;
+  let nativeDisclosure;
   let groupingControl;
   try {
     if (!await sidebar.count()) {
@@ -53,82 +55,56 @@ export async function selectNativeCategoryGrouping(page) {
       await sidebar.locator('.sidebar-agent-card__main:visible').first().waitFor({ state: 'visible', timeout: 10_000 });
       await page.locator('wa-dropdown.sidebar-agent-menu').waitFor({ state: 'hidden', timeout: 10_000 });
     }
-    // Expanded plugin Topics can legitimately fill the sidebar and place the
-    // native Conversations toolbar just below a 720px browser viewport. Use
-    // the plugin's visible bulk control to make the native toolbar reachable.
+    // Keep the plugin projection compact before revealing its delegated native
+    // Conversations view. The native grouping control lives inside that closed
+    // disclosure and is not actionable until an operator opens it.
     const collapseTopics = sidebar.getByRole('button', { name: 'Collapse all Topics', exact: true }).first();
     if (await collapseTopics.isVisible()) await collapseTopics.click({ timeout: 10_000 });
-    const triggers = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)');
-    await triggers.last().waitFor({ state: 'attached', timeout: 10_000 });
-    for (const candidate of await triggers.all()) {
-      const rendered = await candidate.evaluate(element => {
-        const style = getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-      });
-      if (rendered) { groupingControl = candidate; break; }
+
+    topicSidebar = sidebar.locator('.topic-sidebar:visible').first();
+    await topicSidebar.waitFor({ state: 'visible', timeout: 10_000 });
+    nativeDisclosure = topicSidebar.locator(':scope > details[aria-label="All native conversations"]').first();
+    await nativeDisclosure.waitFor({ state: 'attached', timeout: 10_000 });
+    if (!await nativeDisclosure.evaluate(element => element.open)) {
+      await nativeDisclosure.locator(':scope > summary').click({ timeout: 10_000 });
     }
-    if (!groupingControl) throw new Error('No rendered native session grouping control is visible.');
-    const trigger = groupingControl;
-    const triggerInViewport = await trigger.evaluate(element => {
-      const rect = element.getBoundingClientRect();
-      return rect.top >= 0 && rect.left >= 0 && rect.bottom <= innerHeight && rect.right <= innerWidth;
-    });
-    if (!triggerInViewport) {
-      const scroller = sidebar.locator('.sidebar-shell__body').first();
-      await scroller.hover({ timeout: 10_000 });
-      const distance = await scroller.evaluate(element => element.scrollHeight);
-      await page.mouse.wheel(0, distance);
-      await trigger.waitFor({ state: 'visible', timeout: 10_000 });
-    }
-    await trigger.scrollIntoViewIfNeeded({ timeout: 10_000 });
-    // The team header control can sit beneath the sticky community invitation;
-    // after switching presentations this is the unobstructed session toolbar
-    // control, so exercise it with the same pointer action an operator uses.
-    await trigger.click({ timeout: 10_000 });
+    await topicSidebar.locator(':scope > details[aria-label="All native conversations"][open]').waitFor({ state: 'attached', timeout: 10_000 });
+
+    groupingControl = nativeDisclosure.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping):visible').first();
+    await groupingControl.waitFor({ state: 'visible', timeout: 10_000 });
+    await groupingControl.scrollIntoViewIfNeeded({ timeout: 10_000 });
+    await groupingControl.click({ timeout: 10_000 });
   }
   catch (error) {
-    const state = groupingControl && await groupingControl.count() ? await groupingControl.evaluate(element => {
-      const rect = element.getBoundingClientRect();
-      const cx = rect.x + rect.width / 2;
-      const cy = rect.y + rect.height / 2;
-      const describe = node => ({ tag: node.tagName.toLowerCase(), className: node.className,
-        ariaLabel: node.getAttribute('aria-label'), pointerEvents: getComputedStyle(node).pointerEvents });
-      const scroller = element.closest('.sidebar-shell__body');
+    const state = await sidebar.count() ? await sidebar.evaluate(element => {
+      const scroller = element.querySelector('.sidebar-shell__body');
+      const disclosures = Array.from(element.querySelectorAll('.topic-sidebar > details[aria-label="All native conversations"]'));
+      const controls = Array.from(element.querySelectorAll('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)'));
       return {
-        viewport: { width: innerWidth, height: innerHeight },
-        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-        disabled: element.disabled,
-        ariaExpanded: element.getAttribute('aria-expanded'),
-        hitStack: document.elementsFromPoint(cx, cy).slice(0, 6).map(describe),
+        workspaceHeader: Boolean(element.querySelector('.sidebar-workspace-header')),
+        agentCard: Boolean(element.querySelector('.sidebar-agent-card__main')),
+        agentRoster: Boolean(element.querySelector('.sidebar-agent-roster')),
+        disclosures: disclosures.slice(0, 4).map(disclosure => ({
+          open: disclosure.open,
+          visible: disclosure.checkVisibility(),
+          summaryVisible: disclosure.querySelector(':scope > summary')?.checkVisibility() ?? false,
+          nativeMountVisible: disclosure.querySelector(':scope > div')?.checkVisibility() ?? false
+        })),
+        sortControls: controls.slice(0, 8).map(control => ({
+          visible: control.checkVisibility(),
+          disabled: control.disabled,
+          ariaLabel: control.getAttribute('aria-label'),
+          nearestDisclosureOpen: control.closest('details')?.open ?? null
+        })),
         scroller: scroller ? { scrollTop: scroller.scrollTop, scrollHeight: scroller.scrollHeight, clientHeight: scroller.clientHeight } : null
       };
-    }) : await sidebar.count() ? await sidebar.evaluate(element => ({
-      workspaceHeader: Boolean(element.querySelector('.sidebar-workspace-header')),
-      agentCard: Boolean(element.querySelector('.sidebar-agent-card__main')),
-      agentRoster: Boolean(element.querySelector('.sidebar-agent-roster')),
-      sessionToolbar: Boolean(element.querySelector('.sidebar-session-toolbar')),
-      sortControls: Array.from(element.querySelectorAll('.sidebar-session-sort'), control => ({
-        tag: control.tagName.toLowerCase(),
-        className: control.className,
-        ariaLabel: control.getAttribute('aria-label'),
-        hidden: control.hidden,
-        display: getComputedStyle(control).display,
-        visibility: getComputedStyle(control).visibility,
-        rect: { width: control.getBoundingClientRect().width, height: control.getBoundingClientRect().height }
-      })).slice(0, 12),
-      buttons: Array.from(element.querySelectorAll('button'), button => ({
-        className: button.className,
-        ariaLabel: button.getAttribute('aria-label'),
-        title: button.getAttribute('title'),
-        hidden: button.hidden
-      })).slice(0, 20)
-    })) : null;
+    }) : null;
     const failure = { name: error?.name, tail: String(error?.message ?? error).split('\n').slice(-12) };
     throw new Error(`Native session grouping control is unavailable: ${JSON.stringify({ failure, state })}`, { cause: error });
   }
-  await page.locator('wa-dropdown-item[value="grouping:category"]').waitFor({ state: 'visible', timeout: 10_000 });
-  await page.locator('wa-dropdown-item[value="grouping:category"]').click({ timeout: 10_000 });
+  const category = page.locator('wa-dropdown-item[value="grouping:category"]:visible').first();
+  await category.waitFor({ state: 'visible', timeout: 10_000 });
+  await category.click({ timeout: 10_000 });
 }
 
 // Exercise only the visible native UI, using the authenticated journey's real
