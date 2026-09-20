@@ -94,7 +94,27 @@ export async function selectNativeCategoryGrouping(page) {
         hitStack: document.elementsFromPoint(cx, cy).slice(0, 6).map(describe),
         scroller: scroller ? { scrollTop: scroller.scrollTop, scrollHeight: scroller.scrollHeight, clientHeight: scroller.clientHeight } : null
       };
-    }) : null;
+    }) : await sidebar.evaluate(element => ({
+      workspaceHeader: Boolean(element.querySelector('.sidebar-workspace-header')),
+      agentCard: Boolean(element.querySelector('.sidebar-agent-card__main')),
+      agentRoster: Boolean(element.querySelector('.sidebar-agent-roster')),
+      sessionToolbar: Boolean(element.querySelector('.sidebar-session-toolbar')),
+      sortControls: Array.from(element.querySelectorAll('.sidebar-session-sort'), control => ({
+        tag: control.tagName.toLowerCase(),
+        className: control.className,
+        ariaLabel: control.getAttribute('aria-label'),
+        hidden: control.hidden,
+        display: getComputedStyle(control).display,
+        visibility: getComputedStyle(control).visibility,
+        rect: { width: control.getBoundingClientRect().width, height: control.getBoundingClientRect().height }
+      })).slice(0, 12),
+      buttons: Array.from(element.querySelectorAll('button'), button => ({
+        className: button.className,
+        ariaLabel: button.getAttribute('aria-label'),
+        title: button.getAttribute('title'),
+        hidden: button.hidden
+      })).slice(0, 20)
+    }));
     const failure = { name: error?.name, tail: String(error?.message ?? error).split('\n').slice(-12) };
     throw new Error(`Native session grouping control is unavailable: ${JSON.stringify({ failure, state })}`, { cause: error });
   }
