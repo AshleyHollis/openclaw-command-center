@@ -23,7 +23,7 @@ async function fixture(run) {
       const { mountAttentionPage } = await import('/attention-page.mjs');
       const operations = new Map();
       const lifetime = new AbortController(); const pages = new Map(); const subscribers = new Set();
-      window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.activity = []; window.allOpenLoops = []; window.intakeResult = null;
+      window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.activity = []; window.allOpenLoops = []; window.intakeResult = null; window.intakeCoverage = [];
       window.openLoops = { total: 0, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 };
       const action = { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', target: { topicId: 'fictional-topic', sourceReferenceId: 'fictional-source' }, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string' } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact reminder.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true } };
       window.cards = ['one', 'two'].map((id) => ({ notificationRecordId: `record-${id}`, episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
@@ -34,7 +34,7 @@ async function fixture(run) {
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
-          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }], activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }], intakeCoverage: structuredClone(window.intakeCoverage), activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('topics.list')) return { result: { schemaVersion: 1, activeGroups: { project: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }], area: [], resource: [] } } };
           if (method.endsWith('notes.browse')) {
             if (window.paginatedDocuments) {
@@ -391,6 +391,23 @@ test('Dashboard preferences persist section visibility across a remount', () => 
   await page.evaluate(() => window.mountInbox());
   await page.getByRole('heading', { name: 'Context at a glance' }).waitFor();
   assert.equal(await page.getByRole('heading', { name: 'Intake coverage' }).isHidden(), true);
+}));
+
+test('Dashboard shows receipt-backed document coverage separately from unknown email intake', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.intakeCoverage = [
+      { source: 'Email intake', sourceKind: 'email', status: 'unknown', explanation: 'No maintained email-intake receipt is available.' },
+      { source: 'Selected documents', sourceKind: 'document', status: 'receipt-current', lastSuccessfulAt: '2026-09-20T01:00:00.000Z', explanation: 'The selected read was acknowledged.' }
+    ];
+    window.mountInbox();
+  });
+  const coverage = page.locator('section[data-dashboard-section="coverage"]');
+  await coverage.getByRole('heading', { name: 'Email intake' }).waitFor();
+  await coverage.getByText('unknown', { exact: true }).waitFor();
+  await coverage.getByText(/receipt-current · Last successful/u).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.locator('#mount').evaluate(node => parseFloat(getComputedStyle(node).paddingInlineStart) >= 48), true);
 }));
 
 test('Dashboard states the accepted past deadline instead of fabricating a new date', () => fixture(async (page) => {

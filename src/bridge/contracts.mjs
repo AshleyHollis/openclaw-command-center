@@ -303,6 +303,7 @@ function actionResultSchema(method) {
     activityOffset: Object.freeze({ type: 'integer' }),
     activityLimit: Object.freeze({ type: 'integer' }),
     notificationSettings: Object.freeze({ type: 'object' }),
+    intakeCoverage: Object.freeze({ type: 'array' }),
     topicIds: Object.freeze({ type: 'array' })
   };
   if (method === 'command-center.v1.sessions.assign-topic') return Object.freeze({
@@ -361,7 +362,7 @@ function actionResultSchema(method) {
     : method.endsWith('activity.get')
     ? ['schemaVersion', 'record']
     : method.endsWith('dashboard.get')
-    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'openLoops', 'topics', 'activity', 'activityOffset', 'activityLimit', 'notificationSettings']
+    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'openLoops', 'topics', 'activity', 'activityOffset', 'activityLimit', 'intakeCoverage', 'notificationSettings']
     : method.endsWith('analysis.read')
     ? ['status', 'analysisId', 'observedRevision']
     : ['schemaVersion', 'status', 'requestId', 'logicalOperationId', 'value', 'note', 'sourceReference', 'job', 'results', 'activity', 'episode', 'attempt', 'navigation', 'approval'];

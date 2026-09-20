@@ -167,6 +167,25 @@ async function activityPage({ sourceService, attentionService, metadata, offset,
   return Object.freeze({ schemaVersion: 1, records: Object.freeze(navigable), nextOffset: result?.nextOffset ?? null, hasMore: result?.hasMore === true });
 }
 
+function intakeCoverage(metadata) {
+  const rows = [
+    { source: 'Email intake', sourceKind: 'email', status: 'unknown', explanation: 'No maintained email-intake receipt is available.' },
+    { source: 'Note processing', sourceKind: 'note', status: 'unknown', explanation: 'No maintained Note-processing receipt is available.' }
+  ];
+  const operations = typeof metadata?.listOperations === 'function' ? metadata.listOperations().filter(item => item.operationKind === 'selected-source-intake-root') : [];
+  const selected = operations.at(-1);
+  if (!selected) return Object.freeze(rows.map(Object.freeze));
+  let result;
+  try { result = JSON.parse(selected.resultIdentity ?? 'null'); } catch { result = null; }
+  const freshness = result?.freshness;
+  const status = selected.state === 'pending' ? 'pending'
+    : selected.state !== 'applied' ? 'failed'
+      : freshness?.status === 'available' ? 'receipt-current'
+        : freshness?.status === 'unavailable' ? 'failed' : 'unknown';
+  rows.push({ source: 'Selected documents', sourceKind: 'document', status, ...(freshness?.lastObservedAt ? { lastObservedAt: freshness.lastObservedAt } : {}), ...(freshness?.lastAvailableAt ? { lastSuccessfulAt: freshness.lastAvailableAt } : {}), explanation: status === 'receipt-current' ? 'The last bounded selected-document read was acknowledged. This does not prove automatic email or Note coverage.' : status === 'pending' ? 'A selected-document read has not reached a durable outcome.' : status === 'failed' ? 'The latest selected-document read was unavailable or did not complete.' : 'The selected-document receipt has no usable freshness result.' });
+  return Object.freeze(rows.map(row => Object.freeze(row)));
+}
+
 export async function projectDashboard({ sourceService, attentionService, metadata, now = () => new Date().toISOString(), timeZone = 'UTC', activityOffset = 0, activityLimit = DEFAULT_ACTIVITY_LIMIT, navigationResolver, notificationSettings } = {}) {
   if (!Number.isInteger(activityOffset) || activityOffset < 0) throw sourceError('invalid-request', 'activityOffset must be a non-negative integer.');
   if (!Number.isInteger(activityLimit) || activityLimit < 1 || activityLimit > MAX_ACTIVITY_LIMIT) throw sourceError('invalid-request', 'activityLimit must be between 1 and 50.');
@@ -235,6 +254,7 @@ export async function projectDashboard({ sourceService, attentionService, metada
     openLoops,
     topics: Object.freeze(topics.map((topic) => Object.freeze({ topicId: topic.topicId, name: topicName(topic), paraCategory: topic.paraCategory }))),
     activity,
+    intakeCoverage: intakeCoverage(metadata),
     activityOffset,
     activityLimit,
     ...(settings ? { notificationSettings: Object.freeze({ ...settings }) } : {})

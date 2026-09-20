@@ -105,3 +105,14 @@ test('Dashboard does not hide an enabled Reminder that conflicts with a terminal
   assert.equal(result.attention.some(item => item.episodeId === 'conflicting-native-reminder'), true);
   assert.equal(result.attentionBadgeCount, 1);
 });
+
+test('Dashboard coverage distinguishes maintained receipts from unknown email and Note intake', async () => {
+  const metadata = {
+    listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [],
+    listOperations: () => [{ operationKind: 'selected-source-intake-root', state: 'applied', resultIdentity: JSON.stringify({ freshness: { status: 'available', lastObservedAt: '2026-09-20T01:00:00.000Z', lastAvailableAt: '2026-09-20T01:00:00.000Z' } }) }]
+  };
+  const result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
+  assert.deepEqual(result.intakeCoverage.map(row => [row.sourceKind, row.status]), [['email', 'unknown'], ['note', 'unknown'], ['document', 'receipt-current']]);
+  assert.equal(result.intakeCoverage[2].lastSuccessfulAt, '2026-09-20T01:00:00.000Z');
+  assert.match(result.intakeCoverage[2].explanation, /does not prove automatic email or Note coverage/u);
+});

@@ -46,11 +46,12 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     .cc-focus>details,.cc-focus>article{border:1px solid color-mix(in srgb,currentColor 14%,transparent);border-radius:.65rem;padding:.85rem}
     .cc-toolbar button,.cc-module button{min-height:2.25rem;padding-inline:.85rem}
     article{border-block-start:1px solid color-mix(in srgb,currentColor 14%,transparent);padding-block:.8rem}
-    @media(max-width:850px){.cc-workspace{grid-template-columns:1fr}.cc-mini-grid{grid-template-columns:1fr}.cc-dashboard-jump{display:inline-block}}
+    @media(max-width:850px){.cc-command-center-page{box-sizing:border-box;padding-inline-start:3rem}.cc-workspace{grid-template-columns:1fr}.cc-mini-grid{grid-template-columns:1fr}.cc-dashboard-jump{display:inline-block}}
     @media(min-width:851px){.cc-dashboard-jump{display:none}}
     @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
   `;
   const toolbar = element('div'); toolbar.className = 'cc-toolbar'; toolbar.append(topics, switchView, refresh);
+  container.classList.add('cc-command-center-page');
   container.replaceChildren(style, heading, toolbar, status, intake, content);
   const readable = () => host.connection.connected && host.connection.canRead;
   const current = (pending) => !signal.aborted && presented && readable() && pending === generation;
@@ -896,7 +897,14 @@ export function mountAttentionPage(container, context, operations = new Map(), p
             const openTopicWork = element('button', `View ${topicTotal} matching item${topicTotal === 1 ? '' : 's'} in Planner`); openTopicWork.type = 'button'; openTopicWork.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'planner', params: { topicId: topic.topicId } }); }, { signal }); topicCard.append(openTopicWork);
             const openTopic = element('button', `Open ${topic.name}`); openTopic.type = 'button'; openTopic.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'topic', params: { topicId: topic.topicId } }); }, { signal }); topicCard.append(openTopic); dashboards.append(topicCard);
           }
-          const coverage = element('section'); coverage.className = 'cc-module'; coverage.dataset.dashboardSection = 'coverage'; coverage.append(element('h3', 'Intake coverage'), element('p', 'No maintained email-intake receipt is available in this dashboard response. Gateway availability is not treated as proof that email was processed.')); dashboards.append(coverage);
+          const coverage = element('section'); coverage.className = 'cc-module'; coverage.dataset.dashboardSection = 'coverage'; coverage.append(element('h3', 'Intake coverage'));
+          const coverageRows = Array.isArray(dashboard.intakeCoverage) ? dashboard.intakeCoverage : [];
+          if (!coverageRows.length) coverage.append(element('p', 'Coverage is unknown because this response contains no maintained processing receipts.'));
+          for (const row of coverageRows) {
+            const article = element('article'); article.append(element('h4', row.source ?? row.sourceKind ?? 'Source'), element('p', `${row.status ?? 'unknown'}${row.lastSuccessfulAt ? ` · Last successful ${formatInstant(row.lastSuccessfulAt)}` : row.lastObservedAt ? ` · Last observed ${formatInstant(row.lastObservedAt)}` : ''}`));
+            if (row.explanation) article.append(element('p', row.explanation)); coverage.append(article);
+          }
+          coverage.append(element('p', 'Gateway availability is not treated as proof that email or Notes were processed.')); dashboards.append(coverage);
         } else if (nonBlank(topicFilter)) {
           const filteredTopic = dashboard.topics?.find(item => item.topicId === topicFilter);
           const filter = element('section'); filter.className = 'cc-module'; filter.append(element('h2', `Planner for ${filteredTopic?.name ?? topicFilter}`), element('p', 'Showing this Topic across the complete board, agenda and open-loop views.'));
@@ -929,7 +937,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let access = `${readable()}:${host.connection.canWrite}`;
   const unsubscribe = host.subscribe(() => { const next = `${readable()}:${host.connection.canWrite}`; if (next !== access) { access = next; void load(); } });
   let disposed = false;
-  const cleanup = () => { if (disposed) return; disposed = true; generation++; unsubscribe(); container.inert = false; container.replaceChildren(); };
+  const cleanup = () => { if (disposed) return; disposed = true; generation++; unsubscribe(); container.inert = false; container.classList.remove('cc-command-center-page'); container.replaceChildren(); };
   signal.addEventListener('abort', cleanup, { once: true });
   void load();
   if (signal.aborted) cleanup();
