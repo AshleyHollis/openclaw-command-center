@@ -61,7 +61,12 @@ export async function selectNativeCategoryGrouping(page) {
     const triggers = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping)');
     await triggers.last().waitFor({ state: 'attached', timeout: 10_000 });
     for (const candidate of await triggers.all()) {
-      if (await candidate.isVisible()) { groupingControl = candidate; break; }
+      const rendered = await candidate.evaluate(element => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      });
+      if (rendered) { groupingControl = candidate; break; }
     }
     if (!groupingControl) throw new Error('No rendered native session grouping control is visible.');
     const trigger = groupingControl;
