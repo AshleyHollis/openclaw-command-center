@@ -284,7 +284,8 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       const creationUrl = new URL(observed.value.url());
       assert.equal(creationUrl.origin, new URL(world.gateway.url).origin);
       const creationHeaders = await observed.value.request().allHeaders();
-      assert.equal(creationHeaders['sec-fetch-site'], 'same-origin', 'The native loader must use its authenticated same-origin route');
+      assert.equal(observed.value.request().resourceType(), 'fetch');
+      assert.equal(creationHeaders['x-openclaw-control-ui-relay'], undefined, 'The native loader must not impersonate the retired opaque-frame relay');
       const input = observed.value.request().postDataJSON();
       assert.deepEqual(Object.keys(input).sort(), ['action', 'expectedRevision', 'label', 'logicalOperationId', 'schemaVersion', 'topicId']);
       assert.equal(input.topicId, fixture.topicId);
