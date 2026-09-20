@@ -16,7 +16,14 @@ const schedulerRuntimeMethods = new Set([
   'command-center.v1.schedules.set-enabled',
   'command-center.v1.schedules.run',
   'command-center.v1.attention.act',
-  'command-center.v1.dashboard.get'
+  'command-center.v1.dashboard.get',
+  'command-center.v1.open-loops.decide',
+  'command-center.v1.open-loops.payment-status',
+  'command-center.v1.open-loops.renovation-requirement',
+  'command-center.v1.open-loops.renovation-purchase',
+  'command-center.v1.open-loops.renovation-purchase-correction',
+  'command-center.v1.open-loops.renovation-replacement',
+  'command-center.v1.open-loops.renovation-fulfilment'
 ]);
 
 function gatewayError(error, method) {
@@ -216,13 +223,13 @@ const handlerMap = Object.freeze({
   'command-center.v1.open-loops.list': (service, params) => service.openLoopsList(params),
   'command-center.v1.open-loops.get': (service, params) => service.openLoopsGet(params),
   'command-center.v1.open-loops.intake-selected': (service, params) => service.openLoopsIngestSelected(params),
-  'command-center.v1.open-loops.decide': (service, params) => service.openLoopsDecide(params),
-  'command-center.v1.open-loops.payment-status': (service, params) => service.openLoopsPaymentStatus(params),
-  'command-center.v1.open-loops.renovation-requirement': (service, params) => service.openLoopsRenovationRequirement(params),
-  'command-center.v1.open-loops.renovation-purchase': (service, params) => service.openLoopsRenovationPurchase(params),
-  'command-center.v1.open-loops.renovation-purchase-correction': (service, params) => service.openLoopsRenovationPurchaseCorrection(params),
-  'command-center.v1.open-loops.renovation-replacement': (service, params) => service.openLoopsRenovationReplacement(params),
-  'command-center.v1.open-loops.renovation-fulfilment': (service, params) => service.openLoopsRenovationFulfilment(params),
+  'command-center.v1.open-loops.decide': (service, params, runtime) => service.openLoopsDecide(params, runtime),
+  'command-center.v1.open-loops.payment-status': (service, params, runtime) => service.openLoopsPaymentStatus(params, runtime),
+  'command-center.v1.open-loops.renovation-requirement': (service, params, runtime) => service.openLoopsRenovationRequirement(params, runtime),
+  'command-center.v1.open-loops.renovation-purchase': (service, params, runtime) => service.openLoopsRenovationPurchase(params, runtime),
+  'command-center.v1.open-loops.renovation-purchase-correction': (service, params, runtime) => service.openLoopsRenovationPurchaseCorrection(params, runtime),
+  'command-center.v1.open-loops.renovation-replacement': (service, params, runtime) => service.openLoopsRenovationReplacement(params, runtime),
+  'command-center.v1.open-loops.renovation-fulfilment': (service, params, runtime) => service.openLoopsRenovationFulfilment(params, runtime),
   'command-center.v1.open-loops.renovation-stage': (service, params) => service.openLoopsRenovationStage(params),
   'command-center.v1.open-loops.renovation-stage-prerequisites': (service, params) => service.openLoopsRenovationStagePrerequisites(params),
   'command-center.v1.open-loops.renovation-decision-conflict': (service, params) => service.openLoopsRenovationDecisionConflict(params),

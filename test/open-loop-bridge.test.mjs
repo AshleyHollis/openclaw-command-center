@@ -86,3 +86,39 @@ test('admitted open-loop mutations require an authenticated operator before acqu
   assert.equal(authenticated.result.result.loop.paymentState, 'payment-pending');
   assert.equal(received.authenticatedOperatorId, 'fictional-operator');
 });
+
+test('registered open-loop scheduling uses the authenticated request-scoped Gateway', async () => {
+  const methods = new Map();
+  const dispatched = [];
+  const logicalOperationId = randomUUID();
+  registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, {
+    async openLoopsDecide(input, runtime) {
+      const job = await runtime.gateway.request('cron.add', {
+        name: 'Fictional bill review',
+        schedule: { kind: 'at', at: input.reviewAt },
+        payload: { kind: 'systemEvent', text: 'Review fictional bill' }
+      }, { requestId: input.logicalOperationId });
+      return { schemaVersion: 1, disposition: 'updated', loop: { ...loop, state: 'waiting', reviewAt: input.reviewAt, revision: 2 }, reminder: { status: 'applied', action: 'create', referenceId: job.id } };
+    }
+  });
+  const client = { authenticatedUserProfile: { profileId: 'fictional-operator' } };
+  let response;
+  await methods.get('command-center.v1.open-loops.decide')({
+    req: { id: 'request-open-loop-defer' },
+    params: { schemaVersion: 1, logicalOperationId, loopId: loop.loopId, expectedRevision: 1, decision: 'defer', reviewAt: '2026-09-30T00:00:00.000Z', rationale: 'Review the fictional bill later.' },
+    client,
+    context: {
+      authenticated: true,
+      getGatewayMethodRegistry: () => ({ getHandler: method => async request => {
+        dispatched.push({ method, request });
+        request.respond(true, { id: 'fictional-native-reminder' });
+      } })
+    },
+    respond: (...args) => { response = args; }
+  });
+  assert.equal(response[0], true);
+  assert.equal(dispatched[0].method, 'cron.add');
+  assert.equal(dispatched[0].request.client, client);
+  assert.equal(dispatched[0].request.req.id, logicalOperationId);
+  assert.equal(response[1].result.reminder.status, 'applied');
+});
