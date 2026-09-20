@@ -19,7 +19,7 @@ export function projectCapacityWorkspace(input, { now = new Date().toISOString()
   }).sort(compare);
   const plannedToday = visible.filter(loop => day(loop.attention?.plannedAt) === today && !mandatory.some(item => item.loopId === loop.loopId)).sort(compare);
   const upcoming = visible.filter(loop => [dateOf(loop), loop.reviewAt, loop.attention?.plannedAt].some(value => value && day(value) > today)).sort(compare);
-  const capacity = visible.filter(loop => ready(loop) && !loop.attention?.someday && !mandatory.some(item => item.loopId === loop.loopId) && !plannedToday.some(item => item.loopId === loop.loopId) && !loop.reviewAt)
+  const capacity = visible.filter(loop => ready(loop) && !loop.attention?.someday && !mandatory.some(item => item.loopId === loop.loopId) && !loop.attention?.plannedAt && !loop.reviewAt)
     .filter(loop => topicId === undefined || loop.topicId === topicId)
     .filter(loop => importance === undefined || (loop.attention?.importance ?? 'normal') === importance)
     .filter(loop => maxEffortMinutes === undefined || loop.attention?.effortMinutes !== undefined && loop.attention.effortMinutes <= maxEffortMinutes)

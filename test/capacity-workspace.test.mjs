@@ -31,6 +31,14 @@ test('board, agenda and list retain the same identity and distinct date meanings
   assert.ok(result.agenda.every(entry => entry.loop.loopId === 'same-item'));
 });
 
+test('accepted future planning removes an item from capacity until its chosen time', () => {
+  const planned = loop('planned-future', { attention: { plannedAt: '2026-09-22T01:00:00Z' } });
+  const workspace = projectCapacityWorkspace([planned], { now: '2026-09-20T01:00:00Z' });
+  assert.equal(workspace.capacity.length, 0);
+  assert.equal(workspace.upcoming[0].loopId, planned.loopId);
+  assert.equal(workspace.agenda[0].kind, 'planned');
+});
+
 test('rich obligations cannot be silently completed from the board', () => {
   const bill = { ...loop('bill'), kind: 'payment', paymentState: 'unpaid' };
   assert.throws(() => planOrganizationChange(bill, { schemaVersion: 1, action: 'complete', updatedAt: '2026-09-20T09:00:00Z' }), /specific outcome flow/);
