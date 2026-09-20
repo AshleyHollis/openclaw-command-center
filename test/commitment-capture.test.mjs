@@ -46,7 +46,7 @@ test('capture owner atomically replays and verifies exact Note references', asyn
   };
   const sourceService = { notesRead: async input => ({ referenceId: input.referenceId }) };
   const service = createCommitmentCaptureService({ metadata, sourceService });
-  const input = base({ sourceKind: 'note', sourceReferenceId: 'ref-note', sourceExternalId: 'ref-note' });
+  const input = base({ sourceKind: 'note', sourceReferenceId: 'ref-note', sourcePath: 'Inbox/Fictional note.md', sourceExternalId: 'ref-note' });
   const first = await service.capture(input); const replay = await service.capture(input);
   assert.equal(first.loop.loopId, replay.loop.loopId);
   assert.equal(loops.size, 1);

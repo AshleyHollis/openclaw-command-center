@@ -43,11 +43,11 @@ test('maintained email producer captures an obligation only through its exact sa
   const metadata = metadataOwner(); let read;
   const sourceService = { async notesRead(input) { read = input; return { revision: 'note-v1' }; } };
   const tool = sourceCommitmentCaptureToolFactory({ getOwners: () => ({ metadata, sourceService }) })();
-  const result = await tool.execute(randomUUID(), { topicId: 'topic-fictional-home', sourceKind: 'email', sourceExternalId: 'fictional-message-1', sourceVersion: 'message-v1', sourceReferenceId: 'note:fictional-email', title: 'Pay fictional council invoice', obligationId: 'fictional-council-invoice-1', provenance: 'explicit', dueAt: '2026-10-01T00:00:00.000Z', importance: 'high', importanceOrigin: 'source' });
+  const result = await tool.execute(randomUUID(), { topicId: 'topic-fictional-home', sourceKind: 'email', sourceExternalId: 'fictional-message-1', sourceVersion: 'message-v1', sourceReferenceId: 'note:fictional-email', sourcePath: 'Inbox/Fictional council invoice.md', title: 'Pay fictional council invoice', obligationId: 'fictional-council-invoice-1', provenance: 'explicit', dueAt: '2026-10-01T00:00:00.000Z', importance: 'high', importanceOrigin: 'source' });
   assert.equal(result.details.loop.state, 'confirmed');
   assert.equal(result.details.loop.topicId, 'topic-fictional-home');
-  assert.deepEqual(read, { schemaVersion: 1, topicId: 'topic-fictional-home', referenceId: 'note:fictional-email' });
-  await assert.rejects(() => tool.execute(randomUUID(), { topicId: 'topic-other', sourceKind: 'email', sourceExternalId: 'fictional-message-1', sourceVersion: 'message-v1', sourceReferenceId: 'note:fictional-email', title: 'Wrong Topic', obligationId: 'wrong-topic', provenance: 'explicit' }), /exactly owned/u);
+  assert.deepEqual(read, { schemaVersion: 1, topicId: 'topic-fictional-home', referenceId: 'note:fictional-email', path: 'Inbox/Fictional council invoice.md' });
+  await assert.rejects(() => tool.execute(randomUUID(), { topicId: 'topic-other', sourceKind: 'email', sourceExternalId: 'fictional-message-1', sourceVersion: 'message-v1', sourceReferenceId: 'note:fictional-email', sourcePath: 'Inbox/Fictional council invoice.md', title: 'Wrong Topic', obligationId: 'wrong-topic', provenance: 'explicit' }), /exactly owned/u);
 });
 
 test('content-free intake receipts update one run checkpoint and reject identity drift', async () => {

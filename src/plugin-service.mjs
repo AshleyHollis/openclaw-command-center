@@ -213,7 +213,7 @@ export function createMetadataService(api) {
       }
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot });
       const migrationResult = await migrationService.start();
-      releaseTopicMaintenanceOwners = publishTopicMaintenanceOwners(Object.freeze({ sourceService, metadata: metadataService }));
+      releaseTopicMaintenanceOwners = publishTopicMaintenanceOwners(Object.freeze({ sourceService, metadata: metadataService, capacityReview }));
       if (FIRST_LIVE_FEATURES.dashboard) {
         try { await sourceService.refreshReminderAttention(); }
         catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
@@ -277,7 +277,7 @@ export function createMetadataService(api) {
     getTopicMaintenanceOwners() {
       return sourceService && metadataService ? { sourceService, metadata: metadataService } : readTopicMaintenanceOwners() ?? {};
     },
-    get capacityReview() { return capacityReview; },
+    get capacityReview() { return capacityReview ?? readTopicMaintenanceOwners()?.capacityReview; },
     get attentionService() { return attentionService; },
     get maintenanceService() { return undefined; },
     get searchService() { return undefined; },
