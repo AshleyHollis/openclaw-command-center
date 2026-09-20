@@ -85,7 +85,6 @@ test('pure orchestration: all fifteen unique participants yield exactly nine coh
   assert.deepEqual(report.rows.map(row => row.id), RELEASE_ROW_IDS);
   assert.equal(report.rows.length, 9);
   assert.equal(state.maximumActive(), 2);
-  assert.equal(state.events.find(event => event?.status === 'started')?.id, 'scale');
   assert.deepEqual(state.events.filter(event => event?.status === 'passed').map(event => event.id).sort(), [...names].sort());
   assert.equal(state.events.at(-1), 'scan');
   assert.equal(capturedBaseline.capture.successfulRunOrdinal, 1);
@@ -177,23 +176,22 @@ test('pure orchestration: prerequisite entry refuses scale, capture options and 
   assert.equal(state.events.includes('start:scale'), false);
 });
 
-test('pure orchestration: a compatibility producer from another native revision cannot qualify a cleanly captured scale result', async () => {
+test('pure orchestration: a compatibility producer from another native revision cannot qualify the sealed candidate', async () => {
   const state = setup();
   state.evidence.bindingMismatch.revision = 'another-fictional-candidate';
   await assert.rejects(runNativeReleaseCapture(state.options), /revision/u);
-  assert.equal(state.events.includes('stop:scale'), true);
+  assert.equal(state.events.includes('start:scale'), false);
   assert.equal(state.events.includes('scan'), false);
 });
 
-test('pure orchestration: incomplete desktop proof cannot promote the earlier isolated scale result', async () => {
+test('pure orchestration: incomplete desktop proof prevents expensive scale before report assembly', async () => {
   const state = setup();
   state.evidence.primary.primary.authoritativeReadback.chatSend = false;
   await assert.rejects(runNativeReleaseCapture(state.options), /authoritativeReadback/u);
-  assert.equal(state.events.includes('stop:scale'), true);
-  assert.equal(state.events.includes('scan'), false);
+  assert.equal(state.events.includes('start:scale'), false);
 });
 
-test('pure orchestration: safe ordinary failures collect independent diagnostics but never claim a release', async () => {
+test('pure orchestration: safe ordinary failures collect independent diagnostics but never run scale or claim a release', async () => {
   const state = setup();
   state.options.runners.primary = async ({ onFinalization }) => {
     finalize(onFinalization);
@@ -201,13 +199,13 @@ test('pure orchestration: safe ordinary failures collect independent diagnostics
   };
   await assert.rejects(runNativeReleaseCapture(state.options), error => {
     assert.equal(error.fatalAcceptanceCleanup, undefined);
-    assert.equal(error.outcomes.length, 15);
-    assert.equal(new Set(error.outcomes.map(entry => entry.id)).size, 15);
+    assert.equal(error.outcomes.length, 14);
+    assert.equal(new Set(error.outcomes.map(entry => entry.id)).size, 14);
     assert.deepEqual(error.outcomes.find(entry => entry.id === 'primary'), { id: 'primary', status: 'failed' });
     return /primary/u.test(error.message);
   });
   assert.equal(state.events.includes('stop:schemaMismatch'), true);
-  assert.equal(state.events.includes('stop:scale'), true);
+  assert.equal(state.events.includes('start:scale'), false);
   assert.equal(state.events.includes('scan'), false);
 });
 
@@ -217,7 +215,7 @@ for (const id of names) {
     state.options.runners[id] = async () => state.evidence[id];
     await assert.rejects(runNativeReleaseCapture(state.options), error => error.fatalAcceptanceCleanup === true && error.outcomes.some(entry => entry.id === id && entry.status === 'failed'));
     assert.equal(state.events.includes('scan'), false);
-    if (id !== 'scale') assert.equal(state.events.includes('stop:scale'), true);
+    if (id !== 'scale') assert.equal(state.events.includes('start:scale'), false);
   });
 }
 
@@ -232,7 +230,7 @@ for (const variant of ['duplicate', 'out-of-order', 'shutdown-failed', 'traffic-
       return state.evidence.primary;
     };
     await assert.rejects(runNativeReleaseCapture(state.options), error => error.outcomes.some(entry => entry.id === 'primary' && entry.status === 'failed'));
-    assert.equal(state.events.includes('stop:scale'), true);
+    assert.equal(state.events.includes('start:scale'), false);
     assert.equal(state.events.includes('scan'), false);
   });
 }
@@ -250,7 +248,7 @@ test('pure orchestration: fatal cleanup waits for the other active lane and admi
   await assert.rejects(runNativeReleaseCapture(state.options), error => error.fatalAcceptanceCleanup === true);
   assert.equal(peerStopped, true);
   assert.equal(state.events.includes('start:keyboard'), false);
-  assert.equal(state.events.includes('stop:scale'), true);
+  assert.equal(state.events.includes('start:scale'), false);
   assert.equal(state.events.includes('scan'), false);
 });
 
@@ -267,7 +265,7 @@ test('pure orchestration: an unsettled cancellation is fatal and never starts an
   try {
     await assert.rejects(runNativeReleaseCapture({ ...state.options, timeoutMs: 20, cleanupTimeoutMs: 20 }), error => error.fatalAcceptanceCleanup === true);
     assert.equal(state.events.includes('start:keyboard'), false);
-    assert.equal(state.events.includes('stop:scale'), true);
+    assert.equal(state.events.includes('start:scale'), false);
   } finally { release(); }
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(wasAborted, true);
@@ -283,7 +281,7 @@ test('pure orchestration: failed shutdown during timeout cleanup fences the next
   };
   await assert.rejects(runNativeReleaseCapture({ ...state.options, timeoutMs: 10, cleanupTimeoutMs: 100 }), error => error.fatalAcceptanceCleanup === true);
   assert.equal(state.events.includes('start:keyboard'), false);
-  assert.equal(state.events.includes('stop:scale'), true);
+  assert.equal(state.events.includes('start:scale'), false);
   assert.equal(state.events.includes('scan'), false);
 });
 
@@ -294,7 +292,7 @@ test('pure orchestration: expected plugin rejection may be a stopped host, but n
   const missing = setup();
   delete missing.evidence.pluginApiMismatch.nativeUnavailableObserved;
   await assert.rejects(runNativeReleaseCapture(missing.options), /nativeUnavailableObserved/u);
-  assert.equal(missing.events.includes('stop:scale'), true);
+  assert.equal(missing.events.includes('start:scale'), false);
 });
 
 test('pure orchestration: the final artifact scan must complete after teardown and cannot be replaced with a success flag', async () => {
@@ -343,7 +341,7 @@ test('pure orchestration: closed participant configuration and exact startup ide
   const stale = setup();
   stale.evidence.primary.startup.hostReceipt.sourceDigest = `sha256:${'f'.repeat(64)}`;
   await assert.rejects(runNativeReleaseCapture(stale.options), /pinned host receipt/u);
-  assert.equal(stale.events.includes('stop:scale'), true);
+  assert.equal(stale.events.includes('start:scale'), false);
 });
 
 test('pure orchestration: an observer exception cannot bypass the active peer teardown barrier', async () => {
@@ -361,5 +359,5 @@ test('pure orchestration: an observer exception cannot bypass the active peer te
   await assert.rejects(runNativeReleaseCapture(state.options));
   assert.equal(stopped, true);
   assert.equal(state.events.includes('start:keyboard'), false);
-  assert.equal(state.events.includes('stop:scale'), true);
+  assert.equal(state.events.includes('start:scale'), false);
 });

@@ -3,9 +3,8 @@ import { createAcceptanceReport, assertAcceptanceReportPassed, assertNonPerforma
 import { runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices } from '../../src/acceptance-scenario-coordinator.mjs';
 import { captureFirstReleasePerformanceBaseline, validateReleasePerformanceBaseline, deriveReleasePerformanceBudget, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../../src/performance-baseline.mjs';
 
-// Two fixed subsystem lanes, not an extensible workflow registry. Scale runs
-// first and exclusively so earlier host/browser participants cannot contaminate
-// its frozen timings. Each later pair settles before the next is admitted.
+// Two fixed subsystem lanes, not an extensible workflow registry. Each pair
+// settles before the next is admitted; scale never shares their resources.
 const NATIVE_LANE = Object.freeze(['primary', 'keyboard', 'secure', 'bridgeDenied', 'sourceUnavailable', 'combinedDegraded', 'restoration']);
 const COMPATIBILITY_LANE = Object.freeze(['hostMismatch', 'buildMismatch', 'pluginApiMismatch', 'bridgeProtocolMismatch', 'bindingMismatch', 'foreignRestoration', 'schemaMismatch']);
 const PARTICIPANTS = Object.freeze([...NATIVE_LANE, ...COMPATIBILITY_LANE, 'scale']);
@@ -142,18 +141,6 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
     assert.ok(result && typeof result === 'object' && !Array.isArray(result), `${id} produced no completion evidence`);
     return structuredClone(result);
   };
-  if (!prerequisitesOnly) {
-    progress({ id: 'scale', status: 'started', lane: 'exclusive-performance' });
-    if (observerFailure) throw captureFailure([{ id: 'progress-observer', error: observerFailure }], outcomes);
-    try {
-      results.set('scale', await runBoundedAcceptanceSlice('scale', execute('scale'), bounds));
-      progress({ id: 'scale', status: 'passed', lane: 'exclusive-performance' });
-    } catch (error) {
-      progress({ id: 'scale', status: 'failed', lane: 'exclusive-performance' });
-      throw captureFailure([{ id: 'scale', error }], outcomes);
-    }
-    if (observerFailure) throw captureFailure([{ id: 'progress-observer', error: observerFailure }], outcomes);
-  }
   for (let index = 0; index < NATIVE_LANE.length; index += 1) {
     const pair = [NATIVE_LANE[index], COMPATIBILITY_LANE[index]];
     const batch = await runIsolatedAcceptanceSlices(pair.map(id => ({ id, run: execute(id) })), { ...bounds, maxConcurrency, onProgress: progress });
@@ -214,6 +201,16 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
       privacy: { repository: true, generated: true, capturedOutput: true } });
   }
 
+  progress({ id: 'scale', status: 'started', lane: 'exclusive-performance' });
+  if (observerFailure) throw captureFailure([{ id: 'progress-observer', error: observerFailure }], outcomes);
+  try {
+    results.set('scale', await runBoundedAcceptanceSlice('scale', execute('scale'), bounds));
+    progress({ id: 'scale', status: 'passed', lane: 'exclusive-performance' });
+  } catch (error) {
+    progress({ id: 'scale', status: 'failed', lane: 'exclusive-performance' });
+    throw captureFailure([{ id: 'scale', error }], outcomes);
+  }
+  if (observerFailure) throw captureFailure([{ id: 'progress-observer', error: observerFailure }], outcomes);
   const scale = results.get('scale');
   const seed = {
     schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION,
