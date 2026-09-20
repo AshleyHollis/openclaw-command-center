@@ -148,7 +148,12 @@ jobs:
           first_status="${PIPESTATUS[0]}"
           set -e
           if [ "$first_status" -eq 0 ]; then
-            cp "$first" "$RUNNER_TEMP/qualification.log"
+            if [ "$COMMAND_CENTER_ACCEPTANCE_SCENARIO" != "scale-performance" ] ||
+              node scripts/validate-scale-qualification-log.mjs "$first"; then
+              cp "$first" "$RUNNER_TEMP/qualification.log"
+              exit 0
+            fi
+            retry_reason=performance-budget
           else
             if [ "$COMMAND_CENTER_ACCEPTANCE_SCENARIO" != "scale-performance" ] ||
               [ "$(grep -cF 'acceptance-scenario-failure=' "$first")" -ne 1 ] ||
@@ -158,9 +163,16 @@ jobs:
               [ "$(grep -cE 'acceptance-finalization=.*"status":"passed"' "$first")" -ne 6 ]; then
               exit "$first_status"
             fi
-            printf '%s\n' 'The first scale attempt hit a readiness-timeout after complete cleanup; running the one permitted audited retry.' >> "$GITHUB_STEP_SUMMARY"
-            node --test --test-isolation=none test/real-host.acceptance.test.mjs 2>&1 | tee "$RUNNER_TEMP/qualification.log"
+            retry_reason=readiness-timeout
           fi
+          if [ "$(grep -cE 'acceptance-finalization=.*"status":"started"' "$first")" -ne 6 ] ||
+            [ "$(grep -cE 'acceptance-finalization=.*"status":"passed"' "$first")" -ne 6 ]; then
+            printf '%s\n' 'The first scale attempt did not complete cleanup; refusing retry.' >&2
+            exit 1
+          fi
+          printf 'The first scale attempt hit %s after complete cleanup; running the one permitted audited retry.\n' "$retry_reason" >> "$GITHUB_STEP_SUMMARY"
+          node --test --test-isolation=none test/real-host.acceptance.test.mjs 2>&1 | tee "$RUNNER_TEMP/qualification.log"
+          node scripts/validate-scale-qualification-log.mjs "$RUNNER_TEMP/qualification.log"
 
       - name: Remove disposable Btrfs acceptance storage
         if: always()
