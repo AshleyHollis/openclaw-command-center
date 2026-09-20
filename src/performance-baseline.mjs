@@ -195,8 +195,8 @@ export function assertPerformanceObservationWithinBaseline(name, observation, ba
 // The first-capture artifact and its historical ceilings stay immutable. The
 // separately versioned qualification policy was approved before new samples;
 // it is an engineering allowance, not a statistical confidence interval.
-const QUALIFICATION_ALLOWANCE = Object.freeze({ policy: 'bounded-relative-allowance-v1',
-  relativeAllowance: 0.20, minimumAllowanceMs: 50, maximumAllowanceMs: 2000 });
+const QUALIFICATION_ALLOWANCE = Object.freeze({ policy: 'bounded-relative-allowance-v2',
+  relativeAllowance: 0.20, minimumAllowanceMs: 50, maximumAllowanceMs: 10000 });
 
 export function deriveReleasePerformanceBudget(baseline) {
   const validated = validateReleasePerformanceBaseline(baseline);

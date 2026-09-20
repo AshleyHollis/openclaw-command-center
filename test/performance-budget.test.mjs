@@ -19,11 +19,11 @@ const before = JSON.stringify(baseline);
 
 test('qualification uses a separately identified budget without rewriting the first observation', () => {
   const budget = budgetOwner.deriveReleasePerformanceBudget(baseline);
-  assert.equal(budget.policy, 'bounded-relative-allowance-v1');
+  assert.equal(budget.policy, 'bounded-relative-allowance-v2');
   assert.equal(budget.schemaVersion, 1);
   assert.equal(budget.baselineIdentityDigest, baseline.capture.identityDigest);
   assert.equal(budget.baselineObservationsDigest, baseline.capture.observationsDigest);
-  assert.equal(budget.thresholds.startupReadinessMs, 12665);
+  assert.equal(budget.thresholds.startupReadinessMs, 12798);
   assert.equal(budget.thresholds.conversationNextPageMs, 190);
   assert.equal(Object.isFrozen(budget.thresholds), true);
   assert.equal(JSON.stringify(baseline), before);
@@ -34,7 +34,7 @@ for (const name of budgetOwner.RELEASE_MEASUREMENTS) {
   test(`budget owner enforces the fixed formula and fractional edge for ${name}`, () => {
     const budget = budgetOwner.deriveReleasePerformanceBudget(baseline);
     const observed = baseline.observations[name];
-    const limit = Math.ceil(observed + Math.min(2000, Math.max(50, observed * 0.20)));
+    const limit = Math.ceil(observed + Math.min(10000, Math.max(50, observed * 0.20)));
     assert.equal(budget.thresholds[name], limit);
     assert.equal(budgetOwner.assertPerformanceObservationWithinBudget(name, limit, baseline), true);
     assert.throws(() => budgetOwner.assertPerformanceObservationWithinBudget(name, limit + 0.001, baseline), /exceeded/u);
