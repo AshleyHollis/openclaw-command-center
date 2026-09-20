@@ -84,12 +84,18 @@ export function createCapacityReviewService({ metadata, sourceService, scheduler
     const owned = Array.isArray(listed) ? listed.filter(job => job?.declarationKey === CAPACITY_REVIEW_SCHEDULE_KEY) : [];
     if (owned.length > 1) throw sourceError('conflict', 'Duplicate Command Center capacity review schedules were found.');
     let job = owned[0];
-    if (!job) job = jobFrom(await cron.add(declaration));
+    if (!job) {
+      const created = jobFrom(await cron.add(declaration));
+      const verified = jobsFrom(await cron.list({ includeDisabled: true }));
+      job = Array.isArray(verified) ? verified.find(candidate => candidate?.declarationKey === CAPACITY_REVIEW_SCHEDULE_KEY || created?.id && candidate?.id === created.id) : undefined;
+    }
     if (!job?.id || job.declarationKey !== CAPACITY_REVIEW_SCHEDULE_KEY || typeof job.configRevision !== 'string' || !job.configRevision.trim()) throw sourceError('source-recovery', 'Capacity review schedule identity was not verified.');
     const expected = { name: declaration.name, description: declaration.description, enabled: declaration.enabled, schedule: declaration.schedule, sessionTarget: declaration.sessionTarget, wakeMode: declaration.wakeMode, payload: declaration.payload, delivery: declaration.delivery };
     const actual = Object.fromEntries(Object.keys(expected).map(key => [key, job[key]]));
     if (canonical(expected) !== canonical(actual)) {
-      job = jobFrom(await cron.update(job.id, expected, job.configRevision));
+      await cron.update(job.id, expected, job.configRevision);
+      const verified = jobsFrom(await cron.list({ includeDisabled: true }));
+      job = Array.isArray(verified) ? verified.find(candidate => candidate?.id === job.id) : undefined;
     }
     const observed = Object.fromEntries(Object.keys(expected).map(key => [key, job?.[key]]));
     if (!job?.id || job.declarationKey !== CAPACITY_REVIEW_SCHEDULE_KEY || canonical(expected) !== canonical(observed)) throw sourceError('source-recovery', 'Capacity review schedule was not fully verified after reconciliation.');
