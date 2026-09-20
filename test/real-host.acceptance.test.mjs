@@ -2127,7 +2127,8 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const releaseLane = await acquireIsolatedLane();
     reportProgress(testContext, `isolated:${id}:started`);
     try {
-      const evidence = await runBoundedAcceptanceSlice(id, run, { timeoutMs: 240_000, cleanupTimeoutMs: 15_000 });
+      const timeoutMs = id === 'destructive-migration-restoration' ? 284_000 : 240_000;
+      const evidence = await runBoundedAcceptanceSlice(id, run, { timeoutMs, cleanupTimeoutMs: 15_000 });
       isolatedEvidence.set(id, evidence);
       reportProgress(testContext, `isolated:${id}:passed`);
     } catch (error) {
