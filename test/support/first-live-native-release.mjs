@@ -85,7 +85,7 @@ export async function runNativeReleasePrerequisites(options = {}) {
 }
 
 async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerformanceBaseline = false, baseline,
-  scanArtifacts, onProgress = () => {}, timeoutMs = 240_000, scaleTimeoutMs = timeoutMs, cleanupTimeoutMs = 15_000, maxConcurrency = 2 } = {}, prerequisitesOnly) {
+  scanArtifacts, onProgress = () => {}, timeoutMs = 240_000, cleanupTimeoutMs = 15_000, maxConcurrency = 2 } = {}, prerequisitesOnly) {
   assert.match(buildReceipt?.digest ?? '', /^[a-f0-9]{64}$/u, 'An exact sealed build receipt is required');
   assert.equal(typeof descriptor?.integrity, 'object', 'The verified host descriptor integrity is required');
   const participants = prerequisitesOnly ? PREREQUISITE_PARTICIPANTS : PARTICIPANTS;
@@ -95,7 +95,6 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
   assert.equal(typeof onProgress, 'function');
   assert.equal(typeof capturePerformanceBaseline, 'boolean');
   assert.ok(Number.isInteger(maxConcurrency) && maxConcurrency >= 1 && maxConcurrency <= 2, 'Native release concurrency must be one or two lanes');
-  assert.ok(Number.isInteger(scaleTimeoutMs) && scaleTimeoutMs >= timeoutMs, 'Exclusive scale timeout must cover the ordinary participant timeout');
   assert.ok(!capturePerformanceBaseline || baseline === undefined, 'A first capture must not replace an existing baseline');
   const sealedDigest = buildReceipt.digest;
   const sealedIntegrity = structuredClone(descriptor.integrity);
@@ -205,7 +204,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
   progress({ id: 'scale', status: 'started', lane: 'exclusive-performance' });
   if (observerFailure) throw captureFailure([{ id: 'progress-observer', error: observerFailure }], outcomes);
   try {
-    results.set('scale', await runBoundedAcceptanceSlice('scale', execute('scale'), { ...bounds, timeoutMs: scaleTimeoutMs }));
+    results.set('scale', await runBoundedAcceptanceSlice('scale', execute('scale'), bounds));
     progress({ id: 'scale', status: 'passed', lane: 'exclusive-performance' });
   } catch (error) {
     progress({ id: 'scale', status: 'failed', lane: 'exclusive-performance' });
