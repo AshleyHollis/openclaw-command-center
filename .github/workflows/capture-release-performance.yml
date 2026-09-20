@@ -134,6 +134,7 @@ jobs:
       - name: Run coherent native release qualification
         env:
           COMMAND_CENTER_SEALED_CANDIDATE: "1"
+          COMMAND_CENTER_RELEASE_MAX_CONCURRENCY: "1"
         run: |
           set -euo pipefail
           node --test --test-isolation=none test/real-host.acceptance.test.mjs 2>&1 | tee "$RUNNER_TEMP/qualification.log"

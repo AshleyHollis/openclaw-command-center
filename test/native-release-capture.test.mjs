@@ -97,6 +97,14 @@ test('pure orchestration: all fifteen unique participants yield exactly nine coh
   assert.equal(report.finalization.every(entry => entry.outcome === 'passed'), true);
 });
 
+test('pure orchestration: a resource-bounded release runs every native pair sequentially', async () => {
+  const state = setup();
+  const { report } = await runNativeReleaseCapture({ ...state.options, maxConcurrency: 1 });
+  assert.equal(report.outcome, 'passed');
+  assert.equal(state.maximumActive(), 1);
+  assert.deepEqual(state.events.filter(event => event?.status === 'passed').map(event => event.id).sort(), [...names].sort());
+});
+
 function prerequisiteOptions(state) {
   const { scale: _scale, ...runners } = state.options.runners;
   const { capturePerformanceBaseline: _capture, ...options } = state.options;

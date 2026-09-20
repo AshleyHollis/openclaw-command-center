@@ -85,7 +85,7 @@ export async function runNativeReleasePrerequisites(options = {}) {
 }
 
 async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerformanceBaseline = false, baseline,
-  scanArtifacts, onProgress = () => {}, timeoutMs = 240_000, cleanupTimeoutMs = 15_000 } = {}, prerequisitesOnly) {
+  scanArtifacts, onProgress = () => {}, timeoutMs = 240_000, cleanupTimeoutMs = 15_000, maxConcurrency = 2 } = {}, prerequisitesOnly) {
   assert.match(buildReceipt?.digest ?? '', /^[a-f0-9]{64}$/u, 'An exact sealed build receipt is required');
   assert.equal(typeof descriptor?.integrity, 'object', 'The verified host descriptor integrity is required');
   const participants = prerequisitesOnly ? PREREQUISITE_PARTICIPANTS : PARTICIPANTS;
@@ -94,6 +94,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
   assert.equal(typeof scanArtifacts, 'function', 'The final artifact scanner is required');
   assert.equal(typeof onProgress, 'function');
   assert.equal(typeof capturePerformanceBaseline, 'boolean');
+  assert.ok(Number.isInteger(maxConcurrency) && maxConcurrency >= 1 && maxConcurrency <= 2, 'Native release concurrency must be one or two lanes');
   assert.ok(!capturePerformanceBaseline || baseline === undefined, 'A first capture must not replace an existing baseline');
   const sealedDigest = buildReceipt.digest;
   const sealedIntegrity = structuredClone(descriptor.integrity);
@@ -142,7 +143,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
   };
   for (let index = 0; index < NATIVE_LANE.length; index += 1) {
     const pair = [NATIVE_LANE[index], COMPATIBILITY_LANE[index]];
-    const batch = await runIsolatedAcceptanceSlices(pair.map(id => ({ id, run: execute(id) })), { ...bounds, maxConcurrency: 2, onProgress: progress });
+    const batch = await runIsolatedAcceptanceSlices(pair.map(id => ({ id, run: execute(id) })), { ...bounds, maxConcurrency, onProgress: progress });
     for (const [id, result] of batch.results) results.set(id, result);
     failures.push(...batch.failures);
     if (batch.failures.some(entry => entry.error?.fatalAcceptanceCleanup === true)) throw captureFailure(failures, outcomes);

@@ -2095,6 +2095,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       descriptor, buildReceipt, ...(prerequisitesOnly ? {} : { baseline, capturePerformanceBaseline }),
       timeoutMs: 285_000,
       cleanupTimeoutMs: 14_000,
+      maxConcurrency: Number(process.env.COMMAND_CENTER_RELEASE_MAX_CONCURRENCY ?? 2),
       runners: {
         primary: bind(exerciseNativeControlUiActivation),
         keyboard: bind(exerciseNativeKeyboardJourney),
