@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { openNativeSessionRoster, rememberNativeScaleNotePage } from './support/first-live-native-scale.mjs';
+import { nativeScaleHistorySampleOffsets, nativeScaleHistorySourceStart } from './support/first-live-native-bootstrap.mjs';
 
 // Locator orchestration only; the real-host roster-only diagnostic exercises
 // the same helper against the actual native sidebar and authenticated host.
@@ -54,6 +55,18 @@ test('retains every observed scale Note page when responses race ahead of UI ass
   assert.equal(pages.get(0).value.offset, 0);
   assert.equal(pages.get(50).value.offset, 50);
   assert.equal(rememberNativeScaleNotePage(pages, { topicId: 'fictional-topic', offset: -1 }, {}), false);
+});
+
+test('samples scale history across the exact 5,000-message corpus without walking every page', () => {
+  const sampled = nativeScaleHistorySampleOffsets.flatMap(offset => {
+    const start = nativeScaleHistorySourceStart(5_000, offset, 200);
+    return Array.from({ length: 200 }, (_, index) => start + index);
+  });
+  assert.equal(sampled.length, 1_000);
+  assert.equal(new Set(sampled).size, sampled.length);
+  assert.equal(Math.min(...sampled), 0);
+  assert.equal(Math.max(...sampled), 4_999);
+  assert.deepEqual(nativeScaleHistorySampleOffsets, [0, 1_200, 2_400, 3_600, 4_800]);
 });
 
 for (const refusal of ['capture', 'unsealed']) {
