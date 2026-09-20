@@ -182,7 +182,23 @@ export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, on
   // therefore mistook preserved reader state for missing Conversation context.
   const reader = sidebar.locator('[data-topic-reader-page="panel"]');
   const filter = reader.getByRole('searchbox', { name: 'Filter filenames', exact: true });
-  await filter.waitFor({ state: 'visible', timeout: 30_000 });
+  try {
+    await filter.waitFor({ state: 'visible', timeout: 30_000 });
+  } catch (error) {
+    const diagnostic = await sidebar.evaluate((panel) => ({
+      text: panel.innerText.slice(0, 2_000),
+      statuses: Array.from(panel.querySelectorAll('[role="status"], [role="alert"]'), (status) => status.textContent?.trim().slice(0, 500) ?? ''),
+      pluginViews: Array.from(panel.querySelectorAll('openclaw-plugin-view'), (view) => ({
+        kind: view.getAttribute('kind'),
+        contributionKey: view.getAttribute('contributionkey'),
+        presented: Reflect.get(view, 'presented'),
+        props: Reflect.get(view, 'props'),
+        text: (view.textContent ?? '').slice(0, 500)
+      })),
+      tabs: Array.from(panel.querySelectorAll('[role="tab"]'), (tab) => ({ name: tab.getAttribute('aria-label') ?? tab.textContent?.trim(), selected: tab.getAttribute('aria-selected') }))
+    })).catch(() => null);
+    throw new Error(`Topic Notes panel did not mount its native reader: ${JSON.stringify(diagnostic).slice(0, 3_000)}`, { cause: error });
+  }
   await filter.fill('');
   const overview = reader.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true });
   try {
