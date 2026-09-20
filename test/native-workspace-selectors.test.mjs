@@ -74,3 +74,12 @@ test('native grouping journey scrolls the sidebar body to the Conversations tool
     assert.ok(await page.locator('.sidebar-shell__body').evaluate(element => element.scrollTop > 0));
   } finally { await browser.close(); }
 });
+
+test('native grouping journey reports a missing visible control within its local deadline', { timeout: 15_000 }, async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<openclaw-app-sidebar><button hidden class="sidebar-session-sort">Retired sort</button></openclaw-app-sidebar>');
+    await assert.rejects(selectNativeCategoryGrouping(page), /Native session grouping control is unavailable/u);
+  } finally { await browser.close(); }
+});

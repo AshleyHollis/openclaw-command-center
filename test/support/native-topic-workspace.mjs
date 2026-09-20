@@ -60,6 +60,7 @@ export async function selectNativeCategoryGrouping(page) {
     if (await collapseTopics.isVisible()) await collapseTopics.click({ timeout: 10_000 });
     const trigger = sidebar.locator('button.sidebar-session-sort:not(.sidebar-session-catalog-grouping):visible').first();
     groupingControl = trigger;
+    await trigger.waitFor({ state: 'visible', timeout: 10_000 });
     const triggerInViewport = await trigger.evaluate(element => {
       const rect = element.getBoundingClientRect();
       return rect.top >= 0 && rect.left >= 0 && rect.bottom <= innerHeight && rect.right <= innerWidth;
@@ -78,7 +79,7 @@ export async function selectNativeCategoryGrouping(page) {
     await trigger.click({ timeout: 10_000 });
   }
   catch (error) {
-    const state = groupingControl ? await groupingControl.evaluate(element => {
+    const state = groupingControl && await groupingControl.count() ? await groupingControl.evaluate(element => {
       const rect = element.getBoundingClientRect();
       const cx = rect.x + rect.width / 2;
       const cy = rect.y + rect.height / 2;
