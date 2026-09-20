@@ -316,13 +316,13 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         }
         const assertHistoryRead = method.startsWith('command-center.v1.histories.') || ['command-center.v1.sessions.topic-context', 'command-center.v1.sessions.group-preview'].includes(method) ? captureHistoryReadAuthority({ client, context, signal }) : null;
         if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
-        if (openLoopSchedulerRuntimeMethods.has(method) && client?.connect?.role === 'operator' && Array.isArray(client.connect.scopes) && typeof context?.getGatewayMethodRegistry === 'function') {
+        if (openLoopSchedulerRuntimeMethods.has(method) && client?.connect?.role === 'operator' && Array.isArray(client.connect.scopes)) {
           // The host SDK itself binds dispatch to this registered method's
           // exact allowlist and current authenticated client. Unlike Session
           // creation, Cron does not need a separately captured context
           // resolver or caller-selected durable identity.
           runtime = { gateway: Object.freeze({ request: createRequestScopedGatewayRequest() }) };
-        } else if (schedulerRuntimeMethods.has(method) && client) {
+        } else if (schedulerRuntimeMethods.has(method) && client && !openLoopSchedulerRuntimeMethods.has(method)) {
           runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
         }
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;

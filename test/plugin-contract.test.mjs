@@ -42,6 +42,9 @@ test('plugin service retains runtime state and source capability wiring', async 
 test('plugin registers the bridge with grant-aware mutation denial', async () => {
   const source = await pluginSource();
   assert.match(source, /registerBridgeMethods\(api, serviceProxy, \{ mutationsAllowed: controlUiMutationsAllowed \}\)/);
+  for (const method of ['Decide', 'PaymentStatus', 'RenovationRequirement', 'RenovationPurchase', 'RenovationPurchaseCorrection', 'RenovationReplacement', 'RenovationFulfilment']) {
+    assert.match(source, new RegExp(`openLoops${method}'\\) return \\(input, runtime\\) => service\\.openLoops${method}\\(input, runtime\\)`));
+  }
 });
 
 test('plugin keeps deferred tools, Search and maintenance out of first-live startup', async () => {

@@ -76,7 +76,11 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
       if (!handler) throw new Error(`Missing fake Gateway method ${name}`);
       currentBindingAvailable = true;
       let response;
-      const client = { connId: 'fictional-current-connection', authenticatedUserProfile: { profileId: 'fictional-operator' }, connect: { role: 'operator', scopes: ['operator.read', 'operator.write'] } };
+      // Open-loop tests inject their Scheduler adapter directly because this
+      // focused host does not emulate OpenClaw's AsyncLocalStorage-backed
+      // Gateway dispatch scope. Other native routes retain their client grant.
+      const client = { connId: 'fictional-current-connection', authenticatedUserProfile: { profileId: 'fictional-operator' },
+        ...(name.startsWith('command-center.v1.open-loops.') ? {} : { connect: { role: 'operator', scopes: ['operator.read', 'operator.write'] } }) };
       try {
         await handler({ req: { id: 'fictional-request' }, params, client, context: { authenticated: true, getClientConnIds: predicate => new Set(predicate(client) ? [client.connId] : []) }, respond(ok, result, error) { response = { ok, result, error }; } });
       } finally { currentBindingAvailable = false; }
