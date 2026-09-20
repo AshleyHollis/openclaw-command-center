@@ -6,7 +6,7 @@ status: accepted
 
 Linux `stat.dev` identifies the current mounted device namespace. It can change after a host restart or remount even when the Btrfs subvolume and every filesystem object are unchanged. Command Center therefore uses device numbers only for descriptor-held checks during one operation, never as durable identity.
 
-Durable Note Folder identity version 2 binds the reserved marker UUID to a stable mount witness and the directory and marker inode/birth-time evidence. On Linux the mount witness hashes the matching mount's filesystem type, source, root and Btrfs subvolume ID from `/proc/self/mountinfo`; the volatile major/minor device number is excluded. A different subvolume, recreated directory, replaced marker or copied marker remains a different identity.
+Durable Note Folder identity version 2 binds the reserved marker UUID to the Btrfs filesystem UUID and containing subvolume ID, plus directory and marker inode/birth-time evidence. OpenClaw reads the filesystem and subvolume identity from a held directory descriptor with `BTRFS_IOC_FS_INFO` and the unprivileged `BTRFS_IOC_INO_LOOKUP` containing-subvolume special case. This identifies nested subvolumes and snapshots directly and excludes the volatile mount device number. A different filesystem or subvolume, recreated directory, replaced marker or copied marker remains a different identity.
 
 Existing version-1 bindings are never upgraded merely because a path or name matches. They advance through the existing private, digest-pinned Note Folder Source Recovery batch, with their original Topic/source/locator revisions and stable operation IDs. This makes migration conditional, resumable and auditable. Unsupported or ambiguous witnesses remain in Source Recovery.
 

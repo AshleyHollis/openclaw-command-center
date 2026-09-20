@@ -39,6 +39,7 @@ export function createMetadataService(api) {
   let topicService;
   let stopPromise;
   let releaseDurableFolderStager;
+  let releaseFilesystemIdentityReader;
   let releaseNoteFilesystemCoordinator;
   let recoveryOnly = false;
   const refuseRecovery = () => { throw new SourceServiceError('recovery-only', 'Command Center is recovery-only; authoritative data and mutations remain unavailable.'); };
@@ -48,9 +49,10 @@ export function createMetadataService(api) {
     id: 'command-center-metadata',
     async start() {
       stopPromise = undefined;
-      const { setHostDurableFolderStager } = await import('./sources/note-folder-identity.mjs');
+      const { setHostDurableFolderStager, setHostFilesystemIdentityReader } = await import('./sources/note-folder-identity.mjs');
       const { setHostNoteFilesystemCoordinator } = await import('./sources/note-filesystem-owner.mjs');
       releaseDurableFolderStager = setHostDurableFolderStager(api.runtime?.fileAccess?.stageDurableFileInDirectory);
+      releaseFilesystemIdentityReader = setHostFilesystemIdentityReader(api.runtime?.fileAccess?.readDurableFilesystemIdentity);
       releaseNoteFilesystemCoordinator = setHostNoteFilesystemCoordinator(api.runtime?.fileAccess?.tryAcquireExclusiveSqliteCoordinator);
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
@@ -165,6 +167,8 @@ export function createMetadataService(api) {
         // The release closure cannot clear a capability installed by its successor.
         releaseDurableFolderStager?.();
         releaseDurableFolderStager = undefined;
+        releaseFilesystemIdentityReader?.();
+        releaseFilesystemIdentityReader = undefined;
         releaseNoteFilesystemCoordinator?.();
         releaseNoteFilesystemCoordinator = undefined;
         sourceService?.close?.();

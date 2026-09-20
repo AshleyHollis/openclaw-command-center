@@ -22,9 +22,10 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
   assert.deepEqual(paths, [
     ...['reconcile', 'prepare-topic'].flatMap(command => ['preflight', 'execute', 'resume', 'verify'].map(mode => `command-center ${command} ${mode}`)),
     'command-center initialize-metadata execute', 'command-center initialize-metadata verify',
-    ...['preflight', 'execute', 'verify'].map(mode => `command-center recover-note-folders ${mode}`)
+    ...['preflight', 'execute', 'verify'].map(mode => `command-center recover-note-folders ${mode}`),
+    'command-center verify-discoverability'
   ]);
-  assert.equal(required.length, 26); assert.equal(actions.length, 13);
+  assert.equal(required.length, 26); assert.equal(actions.length, 14);
 });
 
 test('Note Folder recovery CLI rejects an unpinned or noncanonical plan before opening metadata', async t => {

@@ -7,7 +7,7 @@ import { SourceServiceError, sourceError, nonBlank } from './errors.mjs';
 import { assertSafeDirectory, assertSafeNotePath, assertSafeTopicFilePath, isWithin, normalizeNotePath, normalizeTopicFilePath, sourceKindForTopicFilePath } from './note-path.mjs';
 import { NoteRecovery } from './note-recovery.mjs';
 import { readNoteFolderIdentity } from './note-folder-identity.mjs';
-import { sameFilesystemIdentity } from './filesystem-object-identity.mjs';
+import { sameTransientFilesystemIdentity } from './filesystem-object-identity.mjs';
 
 const NOTE_BROWSE_CONCURRENCY = 32;
 const NOTE_CATALOG_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
@@ -23,7 +23,7 @@ function sameStat(left, right) {
 }
 
 function sameIdentity(left, right) {
-  return sameFilesystemIdentity(left, right);
+  return sameTransientFilesystemIdentity(left, right);
 }
 
 function mutationResult(status, note, extra = {}) {

@@ -7,7 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createMetadataService, runNoteMaintenance } from '../src/plugin-service.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { enrollNoteFolderIdentity, setHostDurableFolderStager } from '../src/sources/note-folder-identity.mjs';
+import { enrollNoteFolderIdentity, setHostDurableFolderStager, setHostFilesystemIdentityReader } from '../src/sources/note-folder-identity.mjs';
 import { withNoteFilesystemOwner } from '../src/sources/note-filesystem-owner.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
 import { createHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
@@ -28,7 +28,7 @@ test('first-live startup serves core data and enables request-scoped native sche
     coordinatorLeases += 1;
     return hostAcquire(lockPath);
   } });
-  let service; let releaseDurableFolderStager; let sdkRequests = 0;
+  let service; let releaseDurableFolderStager; let releaseFilesystemIdentityReader; let sdkRequests = 0;
   const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
     if (specifier === 'openclaw/plugin-sdk/session-transcript-runtime') { sdkRequests += 1; throw new Error('The native transcript SDK is deliberately unavailable.'); }
     return nextResolve(specifier, context);
@@ -38,6 +38,7 @@ test('first-live startup serves core data and enables request-scoped native sche
   try {
     await mkdir(folder, { recursive: true }); await writeFile(path.join(folder, 'Overview.md'), '# Fictional Topic\nExisting readable content.\n');
     releaseDurableFolderStager = setHostDurableFolderStager(fileAccess.stageDurableFileInDirectory);
+    releaseFilesystemIdentityReader = setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
     const seed = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
     try {
       seed.createTopic({ topicId, name: 'Fictional Topic', paraCategory: 'project', lifecycle: 'active' });
@@ -45,7 +46,7 @@ test('first-live startup serves core data and enables request-scoped native sche
       seed.setSourceLocator({ referenceId: folderReferenceId, locator: folder, ownership: 'external', observedRevision: await enrollNoteFolderIdentity(folder) });
       seed.createSourceReference({ version: 1, referenceId: sessionReferenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey });
       seed.setSessionState({ referenceId: sessionReferenceId, sessionId, status: 'open', isPrimary: true });
-    } finally { seed.close(); releaseDurableFolderStager(); releaseDurableFolderStager = undefined; }
+    } finally { seed.close(); releaseDurableFolderStager(); releaseDurableFolderStager = undefined; releaseFilesystemIdentityReader(); releaseFilesystemIdentityReader = undefined; }
     const forbidden = label => () => { assert.fail(`Deferred ${label} capability was used during core startup.`); };
     const api = {
       runtime: {
@@ -91,7 +92,7 @@ test('first-live startup serves core data and enables request-scoped native sche
     await assert.rejects(service.searchRebuild({}), error => error.code === 'capability-unavailable');
     const reopened = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
     try { assert.equal(reopened.getTopicAnalysisSettings(), null); assert.equal(reopened.getTopic(topicId).revision, 0); } finally { reopened.close(); }
-  } finally { await service?.stop(); releaseDurableFolderStager?.(); hooks.deregister(); await rm(stateDir, { recursive: true, force: true }); }
+  } finally { await service?.stop(); releaseFilesystemIdentityReader?.(); releaseDurableFolderStager?.(); hooks.deregister(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
 test('first-live recovery-only startup preserves refused metadata and exposes a clear core recovery status', async () => {

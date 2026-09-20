@@ -116,7 +116,7 @@ export class AuthoritativeSourceService {
     if (!topic) throw sourceError('source-recovery', 'The requested Topic does not exist.');
     if (topic.lifecycle !== 'active') throw sourceError('source-recovery', 'The requested Topic is still provisioning and is not available for normal use.');
     if (write && topic.paraCategory === 'archive') throw sourceError('read-only', 'Archived Topics are read-only.');
-    if (write && requiredSourceKinds.length > 0 && (this.metadata.listSourceRecovery?.(topicId) ?? []).some((recovery) => recovery.state === 'required' && requiredSourceKinds.includes(recovery.sourceKind))) {
+    if (requiredSourceKinds.length > 0 && (this.metadata.listSourceRecovery?.(topicId) ?? []).some((recovery) => recovery.state === 'required' && requiredSourceKinds.includes(recovery.sourceKind))) {
       throw sourceError('source-recovery', 'The requested Topic has unresolved authoritative Source Recovery.');
     }
     this.assertTopicReadiness(topic);
@@ -199,7 +199,7 @@ export class AuthoritativeSourceService {
     if (configured && durableRow?.phase !== 'complete') throw sourceError('source-recovery', 'The migrated Topic has not completed destination verification.');
   }
 
-  async notesBrowse(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'notes'); return service.notes.browsePage(adapterInput(input)); }
+  async notesBrowse(input = {}) { const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] }); requireCapability(this.capabilities, 'notes'); return service.notes.browsePage(adapterInput(input)); }
   async documentsFileAttachment(input = {}) {
     const result = await this.documents.file(input);
     // Filing is the durable source-of-truth phase. Only an applied/reconciled
@@ -239,7 +239,7 @@ export class AuthoritativeSourceService {
   historiesRead(input, runtime) { return this.readImportedHistory('read', input, runtime); }
   historiesAttachmentRead(input, runtime) { return this.readImportedHistory('attachmentRead', input, runtime); }
   async notesRead(input = {}) {
-    const service = this.requireTopicService(input);
+    const service = this.requireTopicService(input, { requiredSourceKinds: ['note_folder'] });
     requireCapability(this.capabilities, 'notes');
     this.assertExactNoteReference(input, { read: true });
     const { offset: _offset, ...noteInput } = adapterInput(input);

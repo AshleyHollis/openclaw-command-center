@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { ownsNoteFilesystem, withNoteFilesystemOwner } from './note-filesystem-owner.mjs';
 import { revisionForBytes } from './reference.mjs';
 import { sourceError } from './errors.mjs';
-import { persistentFilesystemIdentity as identity, sameFilesystemIdentity as sameIdentity } from './filesystem-object-identity.mjs';
+import { persistentFilesystemIdentity as identity, samePersistentFilesystemIdentity as sameIdentity } from './filesystem-object-identity.mjs';
 
 const KIND = 'notes.filesystem-effect';
 // One host-owned SQLite transaction protects both the filesystem effect and its
