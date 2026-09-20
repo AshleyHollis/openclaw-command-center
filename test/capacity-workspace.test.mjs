@@ -62,6 +62,16 @@ test('accepted future planning removes an item from capacity until its chosen ti
   assert.equal(workspace.agenda[0].kind, 'planned');
 });
 
+test('an accepted review later today stays quiet until its exact time', () => {
+  const later = loop('review-later-today', { reviewAt: '2026-09-20T10:00:00Z' });
+  const before = projectCapacityWorkspace([later], { now: '2026-09-20T09:59:59Z' });
+  assert.equal(before.today.mandatory.length, 0);
+  assert.deepEqual(before.upcoming.map(item => item.loopId), ['review-later-today']);
+  const atTime = projectCapacityWorkspace([later], { now: '2026-09-20T10:00:00Z' });
+  assert.deepEqual(atTime.today.groups.reviews.map(item => item.loopId), ['review-later-today']);
+  assert.equal(atTime.upcoming.length, 0);
+});
+
 test('rich obligations cannot be silently completed from the board', () => {
   const bill = { ...loop('bill'), kind: 'payment', paymentState: 'unpaid' };
   assert.throws(() => planOrganizationChange(bill, { schemaVersion: 1, action: 'complete', updatedAt: '2026-09-20T09:00:00Z' }), /specific outcome flow/);

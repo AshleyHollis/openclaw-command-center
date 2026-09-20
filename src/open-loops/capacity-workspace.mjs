@@ -27,13 +27,18 @@ export function projectCapacityWorkspace(input, { now = new Date().toISOString()
   if (!Array.isArray(input) || !Number.isInteger(reviewLimit) || reviewLimit < 1 || reviewLimit > 25) throw new TypeError('capacity projection input is invalid');
   const loops = input.map(normalizeLoop);
   const today = day(now);
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(nowMs)) throw new TypeError('capacity projection now is invalid');
   const visible = loops.filter(loop => !terminal.has(loop.state));
   const mandatory = visible.filter(loop => {
     const due = dateOf(loop); const review = loop.reviewAt;
-    return due && day(due) <= today || review && day(review) <= today || decisionReasons.has(loop.attention?.reason);
+    return due && day(due) <= today || review && Date.parse(review) <= nowMs || decisionReasons.has(loop.attention?.reason);
   }).sort(compareScheduled);
   const plannedToday = visible.filter(loop => day(loop.attention?.plannedAt) === today && !mandatory.some(item => item.loopId === loop.loopId)).sort(compare);
-  const upcoming = visible.filter(loop => [dateOf(loop), loop.reviewAt, loop.attention?.plannedAt].some(value => value && day(value) > today)).sort(compareScheduled);
+  const upcoming = visible.filter(loop => {
+    const due = dateOf(loop); const review = loop.reviewAt; const planned = loop.attention?.plannedAt;
+    return due && day(due) > today || review && Date.parse(review) > nowMs || planned && day(planned) > today;
+  }).sort(compareScheduled);
   const capacity = visible.filter(loop => ready(loop) && !loop.attention?.someday && !mandatory.some(item => item.loopId === loop.loopId) && !loop.attention?.plannedAt && !loop.reviewAt)
     .filter(loop => topicId === undefined || loop.topicId === topicId)
     .filter(loop => importance === undefined || (loop.attention?.importance ?? 'normal') === importance)
