@@ -119,6 +119,7 @@ export default definePluginEntry({
         if (property === 'openLoopsIngestSelected') return (input) => service.openLoopsIngestSelected(input);
         if (property === 'openLoopsDecide') return (input, runtime) => service.openLoopsDecide(input, runtime);
         if (property === 'openLoopsPaymentStatus') return (input, runtime) => service.openLoopsPaymentStatus(input, runtime);
+        if (property === 'openLoopsOrganize') return (input, runtime) => service.openLoopsOrganize(input, runtime);
         if (property === 'openLoopsRenovationRequirement') return (input, runtime) => service.openLoopsRenovationRequirement(input, runtime);
         if (property === 'openLoopsRenovationPurchase') return (input, runtime) => service.openLoopsRenovationPurchase(input, runtime);
         if (property === 'openLoopsRenovationPurchaseCorrection') return (input, runtime) => service.openLoopsRenovationPurchaseCorrection(input, runtime);

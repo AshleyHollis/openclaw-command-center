@@ -216,6 +216,11 @@ test('the milestone manifest admits only scoped commitment capture and keeps fil
   }
 });
 
+test('installed plugin forwards the admitted capacity organization owner', async () => {
+  const source = await readFile(new URL('../src/plugin.mjs', import.meta.url), 'utf8');
+  assert.match(source, /property === 'openLoopsOrganize'.*service\.openLoopsOrganize/u);
+});
+
 test('the reader MVP leaves the flat host maintenance subscription unavailable', () => {
   const h = host({ flatAgentEvents: true });
   plugin.register(h.api);
