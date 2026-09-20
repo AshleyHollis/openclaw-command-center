@@ -126,8 +126,11 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   await ready(async () => await content.evaluate(node => node.textContent?.length) === 8_388_609);
   onProgress('large-note-rendered');
   observations.largeNoteReadMs = now() - started;
-  assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
-  assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
+  // Direct selectors avoid rebuilding an accessibility tree that contains the
+  // rendered 8 MiB Note while still proving the read-only build omitted its
+  // authoring controls and rendered the read-only contract.
+  assert.equal(await nativePage.locator('textarea').count(), 0);
+  assert.equal(await nativePage.locator('.reader-footer').textContent(), 'Read-only · Edit Notes in your external Note application.');
 
   const expectedNotePaths = [bootstrap.notePath, ...bootstrap.scaleNotes.map(note => note.path)];
   const assertNotePage = (catalog, offset) => {
