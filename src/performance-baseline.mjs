@@ -36,12 +36,12 @@ export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
 });
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 2,
-  sourceDigest: 'sha256:82b0eac19bde93ba3aaa050da44431ff59d7f2a9656bea4f396b09dc0163caaa',
+  sourceDigest: 'sha256:81b33ecf60501375552118c222c6db7d4d47c99b17a0dae95f53168413e3f414',
   commit: HOST_COMMIT,
   executableDigest: 'sha256:538e8ee2b65a0b24bb8a5ed3421bfe66621b1e0b5f726a167758c004f566fb36',
   contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6',
-  packageDigest: 'sha256:65c5934a7fff646c3b93b7045e217d25ada13b0e6fc2c8dc8e5bde72bfbae900',
-  runtimeDigest: 'sha256:762279802c7ab437016901b53e997aa4c1aa4b86f99e9c64826d165cb5810289'
+  packageDigest: 'sha256:36656252e71d7de38702d3ba18f69f164ac561e4f0792dab628bc70cbce1f5ac',
+  runtimeDigest: 'sha256:8be1b905edb3a2f9b55152bb580cc34620c40d718f30a1d9d392d5ef8ab82b0b'
 });
 
 function invalid(message) {
