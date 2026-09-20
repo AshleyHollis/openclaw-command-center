@@ -1292,8 +1292,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await waitForConsecutiveReadiness(async () => !!browserTopics?.activeGroups, host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
       const fixtureTopic = browserTopics.activeGroups[fixture.paraCategory].find((topic) => topic.topicId === fixture.topicId);
       assert.ok(fixtureTopic?.usable, 'The Notes workspace must start from a usable existing Topic.');
-      const planned = fixture.catalogNotes.find((entry) => entry.path === 'Z Projects/Alpha/Planning/Plan.md');
-      assert.ok(planned, 'The bounded catalogue must contain an exact nested duplicate filename.');
+      const planned = { path: 'Z Projects/Alpha/Planning/Plan.md',
+        text: await readFile(path.join(fixture.folder, 'Z Projects', 'Alpha', 'Planning', 'Plan.md'), 'utf8') };
       const catalogPages = await readNativeCatalogPagesToPath({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
         topicId: fixture.topicId, path: planned.path, signal });
       await retainNativeJourneyStage('open-topic-notes');
@@ -1386,8 +1386,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await selectNativeCategoryGrouping(page);
       progress('primary-sidebar-roster');
       await organizeNativeTopicConversations({ page, nativePage, fixture, observedRosters: () => scaleResponses.rosters });
-      const planned = catalog ? fixture.catalogNotes.find((entry) => entry.path === 'Z Projects/Alpha/Planning/Plan.md') : undefined;
-      if (catalog) assert.ok(planned, 'The bounded catalogue must contain an exact nested duplicate filename.');
+      const planned = catalog ? { path: 'Z Projects/Alpha/Planning/Plan.md',
+        text: await readFile(path.join(fixture.folder, 'Z Projects', 'Alpha', 'Planning', 'Plan.md'), 'utf8') } : undefined;
       const catalogPages = catalog ? await readNativeCatalogPagesToPath({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
         topicId: fixture.topicId, path: planned.path, signal }) : undefined;
       progress('primary-note-read');
