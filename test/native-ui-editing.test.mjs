@@ -69,9 +69,11 @@ async function fixture(run) {
             return { result: { ...note, contentEncoding: 'identity', contentBase64: btoa(String.fromCharCode(...bytes)), byteOffset: 0, nextOffset: bytes.length, totalBytes: bytes.length, complete: true } };
           }
           if (method.endsWith('sessions.browse')) return { result: { topicId: topic.topicId, conversations: [{ referenceId: 'session:primary', sessionId: 'primary-session', status: 'open', isPrimary: true }, { referenceId: 'session:new', sessionId: 'new-session', status: 'open', isPrimary: false }] } };
-          if (method.endsWith('sessions.resolve-native')) {
+          if (method.endsWith('sessions.navigate') || method.endsWith('sessions.resolve-native')) {
             if (window.navigationFailure) throw new Error('Native Chat is temporarily unavailable.');
-            return { result: { sessionKey: params.referenceId === 'session:primary' ? 'agent:fictional:primary' : 'agent:fictional:new' } };
+            const sessionKey = params.referenceId === 'session:primary' ? 'agent:fictional:primary' : 'agent:fictional:new';
+            if (method.endsWith('sessions.resolve-native')) return { result: { sessionKey } };
+            return { result: { sessionKey, sessionId: params.referenceId === 'session:primary' ? 'primary-session' : 'new-session', sourceReference: { topicId: topic.topicId, referenceId: params.referenceId } } };
           }
           throw new Error(`Unexpected method: ${method}`);
         },
@@ -315,7 +317,10 @@ test('native Topic creation uses the domain HTTP owner', topicProvisioning, () =
 }));
 
 test('healthy native Sessions remain usable when Notes are unavailable', { timeout: 30000 }, () => fixture(async (page) => {
-  await page.evaluate(() => { window.notesUnavailable = true; window.navigate('topic'); });
+  await page.evaluate(() => {
+    window.notesUnavailable = true;
+    window.changeTopicPolicy({ usable: false, recovery: [{ referenceId: 'folder:fictional', sourceKind: 'note_folder', state: 'required' }] });
+  });
   await page.getByText('Notes capability is unavailable.', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Open Topic in Chat' }).isEnabled(), true);
   assert.equal(await page.getByRole('button', { name: 'Read brief.md' }).count(), 0);
@@ -336,6 +341,16 @@ test('healthy native Sessions remain usable when Notes are unavailable', { timeo
   assert.equal(post.body.expectedRevision, 4);
 }));
 
+test('healthy native Notes remain usable when Sessions require recovery', { timeout: 30000 }, () => fixture(async (page) => {
+  await page.evaluate(() => window.changeTopicPolicy({ usable: false, recovery: [{ referenceId: 'session:primary', sourceKind: 'session', state: 'required' }] }));
+  await page.getByRole('button', { name: 'Read brief.md' }).click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="Note content"]')?.textContent === 'Authoritative brief');
+  assert.equal(await page.getByRole('region', { name: 'Note content', exact: true }).innerText(), 'Authoritative brief');
+  assert.equal(await page.getByRole('button', { name: 'Open Topic in Chat' }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Create Conversation' }).isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => window.opened), []);
+}));
+
 test('refused Conversation creation does not strand a pending Notes catalog', { timeout: 30000 }, () => fixture(async (page) => {
   await page.evaluate(() => { window.delayBrowse = true; window.mode = 'conflict'; window.navigate('topic'); });
   await page.waitForFunction(() => window.finishBrowse);
@@ -343,7 +358,7 @@ test('refused Conversation creation does not strand a pending Notes catalog', { 
   await page.getByRole('status').filter({ hasText: 'creation outcome is unknown' }).waitFor();
   await page.evaluate(() => window.finishBrowse());
   await page.getByRole('button', { name: 'Read brief.md' }).waitFor();
-  await page.getByRole('status').filter({ hasText: 'Notes 1–2 of 2.' }).waitFor();
+  await page.getByRole('status').filter({ hasText: /^Notes 1–2 of 2/ }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Create Conversation' }).isDisabled(), true);
   assert.equal(await page.getByRole('button', { name: 'Check creation outcome' }).isEnabled(), true);
   assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('sessions.create')).length), 1);

@@ -16,15 +16,16 @@ import { resolveCommandCenterDatabasePath } from '../../src/metadata/path.mjs';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { readNativeHistoryInventory } from '../../src/migration/native-history-source.mjs';
 import { runPreservedHistoryImport } from '../../src/migration/preserved-history-import.mjs';
-import { NOTE_FOLDER_IDENTITY_FILE, readNoteFolderIdentity } from '../../src/sources/note-folder-identity.mjs';
+import { NOTE_FOLDER_IDENTITY_FILE } from '../../src/sources/note-folder-identity.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isCommandCenterMigrationReady, readCommandCenterMigrationProgress, recordStartupObservation } from '../../src/acceptance-readiness.mjs';
 import { scanPublicEvidence } from '../../src/safety.mjs';
 import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory, isGatewayStartupPending } from './real-host-runtime.mjs';
 import { exerciseNativeKeyboardStates } from './first-live-native-keyboard.mjs';
 import { tabTo } from './keyboard-navigation.mjs';
 import { prepareNativeLegacyBootstrap, readNativeLegacyBootstrap } from './first-live-native-bootstrap.mjs';
-import { prepareNativeScaleConversations, exerciseNativeScaleStates, openNativeSessionRoster } from './first-live-native-scale.mjs';
+import { prepareNativeScaleConversations, exerciseNativeScaleStates, openNativeSessionRoster, rememberNativeScaleNotePage } from './first-live-native-scale.mjs';
 import { startFictionalOpenAiModel } from './fictional-openai-model.mjs';
+import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
 
 // Bounded fictional fixture bytes. These enter only the isolated world and
 // let the native Files replacement exercise its real document owner without
@@ -267,7 +268,10 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
   // fixture marker is safely created before binding; actual enrollment is
   // exercised by the host-owned recovery path.
   await writeFile(path.join(folder, NOTE_FOLDER_IDENTITY_FILE), `${JSON.stringify({ version: 1, id: randomUUID() })}\n`, { flag: 'wx', mode: 0o600 });
-  const identity = await readNoteFolderIdentity(folder);
+  // The external acceptance owner reads the witness through the exact pinned
+  // host runtime helper. This preserves parity with the Gateway process while
+  // keeping fixture setup outside the plugin's activation-scoped setters.
+  const identity = await readHostNoteFolderIdentity(folder);
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
   try {
     metadata.createTopic({ topicId, name, paraCategory, lifecycle: 'active' });
@@ -305,7 +309,7 @@ async function seedNativeResourceTopic({ world, signal }) {
   }
   await writeFile(path.join(folder, 'resource-index.json'), '{"fixture":true}\n', { flag: 'wx' });
   await writeFile(path.join(folder, NOTE_FOLDER_IDENTITY_FILE), `${JSON.stringify({ version: 1, id: randomUUID() })}\n`, { flag: 'wx', mode: 0o600 });
-  const identity = await readNoteFolderIdentity(folder);
+  const identity = await readHostNoteFolderIdentity(folder);
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
   try {
     metadata.createTopic({ topicId, name, paraCategory: 'resource', lifecycle: 'active' });
@@ -785,7 +789,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       let browserNote;
       let browserChatSend;
       let browserChatAcknowledgement;
-      const scaleResponses = { notes: undefined, rosters: [], rosterOverflow: false };
+      const scaleResponses = { notePages: new Map(), rosters: [], rosterOverflow: false };
       const conversationLabel = scale ? 'Fictional Native Scale 100' : 'Fictional Native Follow-up';
       const messageText = 'Fictional native Conversation message for exact Session readback.';
       const attachmentMessageText = 'File this fictional native attachment into the exact Topic Documents folder.';
@@ -801,7 +805,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           let message; try { message = JSON.parse(String(payload)); } catch { return; }
           if (message?.type === 'req' && (['command-center.v1.topics.list', 'command-center.v1.topics.get', 'command-center.v1.notes.read', 'command-center.v1.sessions.resolve-native', ...(scale ? ['command-center.v1.notes.browse', 'command-center.v1.sessions.browse'] : [])].includes(message.method) && message.params?.schemaVersion === 1 || message.method === 'sessions.list') && requests.size < 32) {
             requests.set(message.id, { method: message.method, params: message.params });
-            if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native'].includes(message.method)) progress(`browser-rpc-request:${message.method}`);
+            if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native', 'command-center.v1.notes.read'].includes(message.method)) progress(`browser-rpc-request:${message.method}`);
           }
           if (message?.type === 'req' && message.method === 'chat.send' && [messageText, attachmentMessageText].includes(message.params?.message)) {
             browserChatSend = message;
@@ -815,12 +819,12 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           const request = requests.get(message.id);
           requests.delete(message.id);
           if (!request || message.ok !== true) return;
-          if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native'].includes(request.method)) progress(`browser-rpc-response:${request.method}`);
+          if (scale && ['command-center.v1.sessions.browse', 'command-center.v1.sessions.resolve-native', 'command-center.v1.notes.read'].includes(request.method)) progress(`browser-rpc-response:${request.method}`);
           const value = message.payload?.result ?? message.payload;
           if (request.method === 'command-center.v1.topics.list') browserTopics = value;
           if (request.method === 'command-center.v1.notes.read') browserNote = { input: request.params, value };
           if (request.method === 'command-center.v1.sessions.resolve-native') browserNavigation = { input: request.params, value };
-          if (scale && request.method === 'command-center.v1.notes.browse') scaleResponses.notes = { input: request.params, value };
+          if (scale && request.method === 'command-center.v1.notes.browse') rememberNativeScaleNotePage(scaleResponses.notePages, request.params, value);
           if (request.method === 'sessions.list') {
             if (scaleResponses.rosters.length < 256) scaleResponses.rosters.push({ input: request.params, value });
             else scaleResponses.rosterOverflow = true;
@@ -1371,6 +1375,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const authoritative = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.topics.list', params: { schemaVersion: 1 }, signal });
       const topics = authoritative?.result ?? authoritative;
       const authoritativeCategories = Object.keys(topics?.activeGroups ?? {}).sort();
+      const visibleTopicCount = Object.values(topics?.activeGroups ?? {}).flat().length + (topics?.archived?.length ?? 0);
+      assert.ok(visibleTopicCount > 0 || (topics?.recovery?.length ?? 0) === 0, 'Post-startup Topic discoverability failed: every existing Topic requires Source Recovery');
       assert.ok(authoritativeCategories.includes(fixture.paraCategory));
       assert.deepEqual(Object.keys(browserTopics.activeGroups).sort(), authoritativeCategories);
       for (const category of authoritativeCategories) {

@@ -3,13 +3,14 @@ import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { assertConditionalFolderClaims } from './provisioning-primary.mjs';
+import { isNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 
 export const TOPIC_BOOTSTRAP_OPERATION = 'topic.bootstrap.v1';
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const hash = value => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
-const marker = value => typeof value === 'string' && /^note-folder:1:[a-f0-9-]{36}:[a-f0-9]{64}$/.test(value);
+const marker = isNoteFolderIdentity;
 const text = value => typeof value === 'string' && value.trim().length > 0 && value.length <= 1024 && !/[\x00-\x1f]/.test(value);
 const exact = (value, keys) => value && !Array.isArray(value) && typeof value === 'object' &&
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));

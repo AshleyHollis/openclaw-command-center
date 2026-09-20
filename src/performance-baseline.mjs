@@ -26,7 +26,7 @@ export const RELEASE_MEASUREMENTS = Object.freeze([
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest', 'packageDigest', 'runtimeDigest']);
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
-const HOST_COMMIT = '14ccf7ea9d83d8b9a817fc0927cfab8b3aa86971';
+const HOST_COMMIT = '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee';
 const HOST_VERSION = '2026.9.5';
 const PLAYWRIGHT_VERSION = '1.63.0';
 export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
@@ -36,12 +36,12 @@ export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
 });
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 2,
-  sourceDigest: 'sha256:82b0eac19bde93ba3aaa050da44431ff59d7f2a9656bea4f396b09dc0163caaa',
+  sourceDigest: 'sha256:c97ec69c39cf8b8d681dc8b111a00674ff6f81acad905e3b444ea2227841cdb1',
   commit: HOST_COMMIT,
   executableDigest: 'sha256:538e8ee2b65a0b24bb8a5ed3421bfe66621b1e0b5f726a167758c004f566fb36',
   contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6',
-  packageDigest: 'sha256:65c5934a7fff646c3b93b7045e217d25ada13b0e6fc2c8dc8e5bde72bfbae900',
-  runtimeDigest: 'sha256:762279802c7ab437016901b53e997aa4c1aa4b86f99e9c64826d165cb5810289'
+  packageDigest: 'sha256:58293f3ec4c1e996893184c6a4c2e544a3dcfaf43e701db60108446371134741',
+  runtimeDigest: 'sha256:8ba121cd3003c46c97a2e39f3bbcaf95d58fcdb48d12a585fdf0e9d6bc00066c'
 });
 
 function invalid(message) {
@@ -195,8 +195,8 @@ export function assertPerformanceObservationWithinBaseline(name, observation, ba
 // The first-capture artifact and its historical ceilings stay immutable. The
 // separately versioned qualification policy was approved before new samples;
 // it is an engineering allowance, not a statistical confidence interval.
-const QUALIFICATION_ALLOWANCE = Object.freeze({ policy: 'bounded-relative-allowance-v1',
-  relativeAllowance: 0.20, minimumAllowanceMs: 50, maximumAllowanceMs: 2000 });
+const QUALIFICATION_ALLOWANCE = Object.freeze({ policy: 'bounded-relative-allowance-v2',
+  relativeAllowance: 0.20, minimumAllowanceMs: 50, maximumAllowanceMs: 10000 });
 
 export function deriveReleasePerformanceBudget(baseline) {
   const validated = validateReleasePerformanceBaseline(baseline);

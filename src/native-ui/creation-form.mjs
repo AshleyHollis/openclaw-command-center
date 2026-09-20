@@ -1,5 +1,6 @@
 import { nativeMutation, nativeCreationRecovery, publishNativeState, subscribeNativeState, encodeNoteText, beginNativeNoteOperation, settleNativeNoteOperation } from './mutations.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
+import { topicSourceAvailable } from './topic-source-availability.mjs';
 
 function unavailableCreation(document, message) {
   const form = document.createElement('p'); form.textContent = message;
@@ -30,7 +31,7 @@ export function createNativeNoteCreationForm({ host, state, document, signal, pr
     element('p', 'Use a relative Markdown path, such as nested/brief.md. Creation drafts and uncertain inputs last only during this plugin activation; reloading or reconnecting loses them. Check an uncertain outcome before another creation.'));
   const readable = () => !disposed && !signal.aborted && presented() && state.active && host.connection.connected && host.connection.canRead;
   const checkable = () => readable() && host.connection.canWrite && typeof host.httpRequest === 'function';
-  const writable = () => checkable() && folder && getTopic()?.topicId === topic.topicId && getTopic()?.usable === true && getTopic()?.lifecycle === 'active';
+  const writable = () => checkable() && folder && getTopic()?.topicId === topic.topicId && topicSourceAvailable(getTopic(), 'note_folder') && getTopic()?.lifecycle === 'active';
   function sync() {
     if (!checkable()) { request.abort(); request = new AbortController(); }
     submit.disabled = !writable() || !!draft.operation || !!draft.created;
@@ -104,7 +105,7 @@ export function createNativeCreationForm({ host, state, document, signal, presen
   // Frame grants are asset authority, not mutation authority. Retained writes
   // are authenticated again by the declared HTTP route and the Session bridge
   // owner, so the UI must not infer route write access from host frame flags.
-  const allowed = () => state.active && !disposed && !signal.aborted && !host.signal?.aborted && presented() && host.connection.connected && host.connection.canRead && host.connection.canWrite !== false && typeof host.httpRequest === 'function' && (!conversation || getTopic()?.topicId === topicId && getTopic()?.usable === true && getTopic()?.lifecycle === 'active');
+  const allowed = () => state.active && !disposed && !signal.aborted && !host.signal?.aborted && presented() && host.connection.connected && host.connection.canRead && host.connection.canWrite !== false && typeof host.httpRequest === 'function' && (!conversation || getTopic()?.topicId === topicId && topicSourceAvailable(getTopic(), 'session') && getTopic()?.lifecycle === 'active');
   const restoreActionFocus = () => {
     if (!allowed() || !status.matches(':focus')) return;
     const target = (conversation ? [check, open, submit, inspect] : [submit]).find(button => !button.hidden && !button.disabled);

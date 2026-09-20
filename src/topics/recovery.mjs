@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
 import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
 import { enrollNoteFolderIdentity, readNoteFolderIdentity } from '../sources/note-folder-identity.mjs';
+import { isNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 import { ownsNoteFilesystem, withNoteFilesystemOwner } from '../sources/note-filesystem-owner.mjs';
 
 function bounded(value) { return String(value ?? '').slice(0, 180); }
@@ -117,7 +118,7 @@ export class TopicRecoveryService {
     const topicId = String(input.topicId ?? '').trim();
     const operationKind = 'topics.recovery.verify';
     const expectedReplacementIdentity = input.expectedReplacementIdentity === undefined ? null : String(input.expectedReplacementIdentity);
-    if (expectedReplacementIdentity !== null && !/^note-folder:1:[0-9a-f-]{36}:[0-9a-f]{64}$/u.test(expectedReplacementIdentity)) throw sourceError('invalid-request', 'Source Recovery rebind requires an exact current Note Folder identity.');
+    if (expectedReplacementIdentity !== null && !isNoteFolderIdentity(expectedReplacementIdentity)) throw sourceError('invalid-request', 'Source Recovery rebind requires an exact current Note Folder identity.');
     if (expectedReplacementIdentity !== null && input.replacementLocator === undefined) throw sourceError('invalid-request', 'Source Recovery rebind requires its exact replacement locator.');
     const intent = { topicId, referenceId, expectedRevision: input.expectedRevision, expectedSourceRevision: input.expectedSourceRevision, replacementLocator: input.replacementLocator ?? null, expectedReplacementIdentity };
     const reference = this.metadata.getSourceReference(referenceId);

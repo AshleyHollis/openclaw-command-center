@@ -6,12 +6,37 @@ import createDOMPurify from './vendor/purify.es.mjs';
 // before the rendered value reaches the DOM.
 const markdown = new MarkdownIt({ html: false, linkify: false, typographer: false });
 
+export const largeNoteRenderThreshold = 256 * 1024;
+
 function sanitiser(document) {
   return createDOMPurify(document.defaultView);
 }
 
+/** Keep oversized plaintext responsive without dropping authoritative bytes. */
+export function renderReadOnlySource(container, text) {
+  delete container.dataset.largeNote;
+  if (text.length <= largeNoteRenderThreshold) { container.textContent = text; return; }
+  container.replaceChildren();
+  container.dataset.largeNote = 'bounded';
+  const viewer = container.ownerDocument.createElement('textarea');
+  viewer.dataset.largeNoteViewer = '';
+  viewer.setAttribute('aria-label', 'Large Note content');
+  viewer.readOnly = true;
+  viewer.wrap = 'off';
+  viewer.spellcheck = false;
+  viewer.style.boxSizing = 'border-box';
+  viewer.style.inlineSize = '100%';
+  viewer.style.blockSize = '50vh';
+  viewer.style.resize = 'vertical';
+  viewer.textContent = text;
+  viewer.value = text;
+  container.append(viewer);
+}
+
 /** Render a conservative, read-only Note without enabling network-active media. */
 export function renderReadOnlyMarkdown(container, text) {
+  if (text.length > largeNoteRenderThreshold) { renderReadOnlySource(container, text); return; }
+  delete container.dataset.largeNote;
   // Frontmatter is a document envelope, not a Markdown heading. Keep its raw
   // text in a collapsed disclosure: no YAML evaluation or stored-file rewrite.
   // Unterminated/oversized envelopes remain ordinary source rather than being

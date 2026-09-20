@@ -28,6 +28,25 @@ test('formatted Reading preserves useful Markdown while blocking active content'
       return { heading: root.querySelector('h1')?.textContent, table: !!root.querySelector('table'), images: root.querySelectorAll('img').length, scripts: root.querySelectorAll('script').length, compromised: window.compromised === true, links: [...root.querySelectorAll('a')].map(link => link.getAttribute('href')) };
     });
     assert.deepEqual(result, { heading: 'Fictional heading', table: true, images: 0, scripts: 0, compromised: false, links: [] });
+
+    const large = await page.evaluate(async () => {
+      const { largeNoteRenderThreshold, renderReadOnlyMarkdown, renderReadOnlySource } = await import('/note-render.mjs');
+      const root = document.querySelector('main');
+      const text = 'L'.repeat(largeNoteRenderThreshold + 1);
+      renderReadOnlyMarkdown(root, text);
+      const readingViewer = root.querySelector('[data-large-note-viewer]');
+      const reading = { mode: root.dataset.largeNote, viewers: root.querySelectorAll('[data-large-note-viewer]').length,
+        exact: readingViewer.value === text && root.textContent === text, markup: root.querySelector('p') === null,
+        readOnly: readingViewer.readOnly, bounded: readingViewer.style.blockSize === '50vh' };
+      renderReadOnlySource(root, text);
+      const sourceViewer = root.querySelector('[data-large-note-viewer]');
+      return { reading, source: { mode: root.dataset.largeNote, viewers: root.querySelectorAll('[data-large-note-viewer]').length,
+        exact: sourceViewer.value === text && root.textContent === text, readOnly: sourceViewer.readOnly } };
+    });
+    assert.deepEqual(large, {
+      reading: { mode: 'bounded', viewers: 1, exact: true, markup: true, readOnly: true, bounded: true },
+      source: { mode: 'bounded', viewers: 1, exact: true, readOnly: true },
+    });
   } finally {
     await browser?.close();
     await new Promise(resolve => server.close(resolve));

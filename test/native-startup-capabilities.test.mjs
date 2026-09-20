@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createMetadataService } from '../src/plugin-service.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { createHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 // The public transcript SDK is an external boundary, not the capability under
 // test. Never read a host transcript or invoke a live Gateway in this fixture.
@@ -21,22 +22,28 @@ const referenceId = 'fictional-primary-reference';
 const sessionKey = 'agent:main:fictional-primary';
 const sessionId = 'fictional-primary-session';
 
-async function withStartedService(run, { pluginConfig = {}, sessionStore = true, category = 'project', startContext = {} } = {}) {
+async function withStartedService(run, { pluginConfig = {}, sessionStore = true, category = 'project', startContext = {}, noteRecovery = false } = {}) {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-native-startup-'));
   let service;
   const rows = new Map([[sessionKey, { sessionId, label: 'Primary', updatedAt: 1 }]]);
   try {
-    const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { sessions: true } });
+    const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
     try {
       metadata.createTopic({ topicId, paraCategory: category, lifecycle: 'active' });
       metadata.createSourceReference({ version: 1, referenceId, topicId, sourceSystem: 'openclaw', sourceKind: 'session', externalSourceId: sessionKey });
       metadata.setSessionState({ referenceId, sessionId, status: 'open', isPrimary: true, displayName: 'Primary', updatedAt: '2026-09-06T00:00:00.000Z' });
+      if (noteRecovery) {
+        const folderReferenceId = 'fictional-note-folder'; const folder = path.join(stateDir, 'Notes', 'Fictional');
+        metadata.createSourceReference({ version: 1, referenceId: folderReferenceId, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: folder });
+        metadata.setSourceLocator({ referenceId: folderReferenceId, locator: folder, ownership: 'external', observedRevision: `note-folder:1:11111111-1111-4111-8111-111111111111:${'a'.repeat(64)}` });
+        metadata.recordSourceRecovery({ recoveryId: `recovery:${folderReferenceId}`, topicId, referenceId: folderReferenceId, sourceKind: 'note_folder', state: 'required', lastLocator: folder, lastIdentity: 'fictional-v1-identity', failure: 'exact-folder-identity-mismatch', diagnostics: [], updatedAt: '2026-09-06T00:00:00.000Z' });
+      }
     } finally { metadata.close(); }
     const catalog = {
       listSessionEntries: () => [...rows].map(([key, entry]) => ({ sessionKey: key, entry: { ...entry } })),
       getSessionEntry: ({ sessionKey: key }) => rows.has(key) ? { ...rows.get(key) } : undefined
     };
-    const api = { runtime: { state: { resolveStateDir: () => stateDir }, ...(sessionStore ? { agent: { session: typeof sessionStore === 'object' ? sessionStore : catalog } } : {}) }, pluginConfig, logger: { warn() {} } };
+    const api = { runtime: { state: { resolveStateDir: () => stateDir }, fileAccess: createHostFileAccessFixture(), ...(sessionStore ? { agent: { session: typeof sessionStore === 'object' ? sessionStore : catalog } } : {}) }, pluginConfig, logger: { warn() {} } };
     service = createMetadataService(api);
     await service.start(startContext);
     await run({ service, rows });
@@ -113,4 +120,12 @@ test('native catalog availability does not adopt a missing or replaced linked Se
     await assert.rejects(service.sourceService.sessionsList({ topicId }), (error) => error.code === 'source-recovery');
     await assert.rejects(service.sourceService.sessionsCreate({ topicId, logicalOperationId: randomUUID(), label: 'Denied' }, { gatewayRequest: async () => { assert.fail('An unverified Primary Session dispatched a write.'); } }), (error) => error.code === 'source-recovery');
   });
+});
+
+test('Note Folder recovery blocks Notes while preserving the independently verified Primary Conversation', async () => {
+  await withStartedService(async ({ service }) => {
+    const conversations = await service.sourceService.sessionsList({ topicId });
+    assert.deepEqual(conversations.conversations.map(row => [row.sessionId, row.isPrimary]), [[sessionId, true]]);
+    await assert.rejects(service.sourceService.notesBrowse({ schemaVersion: 1, topicId }), { code: 'source-recovery' });
+  }, { noteRecovery: true });
 });

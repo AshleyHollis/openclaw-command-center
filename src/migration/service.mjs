@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { assertSafeDirectory } from '../sources/note-path.mjs';
 import { enrollNoteFolderIdentity, readNoteFolderIdentity } from '../sources/note-folder-identity.mjs';
+import { isNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 import { withNoteFilesystemOwner } from '../sources/note-filesystem-owner.mjs';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { normalizeLegacyDiscordMigration, normalizeOptionalLegacyDiscordMigration, legacyDiscordMigrationConfigDigest } from './config.mjs';
@@ -283,7 +284,7 @@ export class LegacyDiscordMigrationService {
     const reference = this.metadata.getSourceReference(referenceId);
     const binding = this.metadata.getSourceLocator(referenceId);
     const proof = value => value && ({ referenceId: value.referenceId, locator: value.locator, locatorVersion: value.locatorVersion, ownership: value.ownership, observedRevision: value.observedRevision });
-    if (!reference || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder' || !binding?.observedRevision?.startsWith('note-folder:1:') || binding.ownership !== 'external'
+    if (!reference || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder' || !isNoteFolderIdentity(binding?.observedRevision) || binding.ownership !== 'external'
       || mapping && (reference.topicId !== mapping.topicId || reference.externalSourceId !== mapping.noteFolderPath || binding.locator !== mapping.noteFolderPath || binding.locatorVersion !== 1)
       || expected && digest(proof(binding)) !== digest(expected)) throw Object.assign(new Error('The migration Note Folder binding requires explicit Source Recovery.'), { code: 'source-recovery' });
     const canonical = await assertSafeDirectory(binding.locator);

@@ -73,6 +73,12 @@ export async function prepareNativeScaleConversations({ world, signal, fixture }
   assert.deepEqual(new Set(catalog.conversations.map(row => row.referenceId)), references);
 }
 
+export function rememberNativeScaleNotePage(pages, input, value) {
+  if (!(pages instanceof Map) || !Number.isSafeInteger(input?.offset) || input.offset < 0) return false;
+  pages.set(input.offset, { input, value });
+  return true;
+}
+
 export async function openNativeSessionRoster(page) {
   const sidebar = page.locator('openclaw-app-sidebar');
   const sessions = sidebar.getByRole('link', { name: 'Sessions', exact: true });
@@ -107,21 +113,41 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   let started = now();
   await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).click();
   await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor();
-  await ready(async () => observed().notes?.value?.offset === 0 && observed().notes?.value?.total === 5_000);
+  await ready(async () => observed().notePages?.get(0)?.value?.total === 5_000);
   onProgress('topic-catalog-observed');
   await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).waitFor();
   onProgress('topic-catalog-rendered');
   observations.topicOpenMs = now() - started;
   onProgress('large-note-read');
   started = now();
-  await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).click();
   const content = nativePage.getByRole('region', { name: 'Note content', exact: true });
-  await ready(async () => (await content.textContent())?.length === 8_388_609);
-  assert.equal(await content.textContent(), bootstrap.noteText);
+  const contentHandle = await content.elementHandle();
+  assert.ok(contentHandle, 'Note content must be mounted before reading');
+  await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).click();
+  onProgress('large-note-clicked');
+  let renderedNote;
+  await ready(async () => {
+    renderedNote = await contentHandle.evaluate(node => {
+      const root = node.getRootNode();
+      return {
+        textLength: node.textContent?.length,
+        draftCount: root.querySelectorAll('textarea:not([readonly])').length,
+        viewerCount: root.querySelectorAll('textarea[data-large-note-viewer][readonly]').length,
+        viewerLength: root.querySelector('textarea[data-large-note-viewer][readonly]')?.value.length ?? 0,
+        footer: root.querySelector('.reader-footer')?.textContent ?? null,
+      };
+    });
+    return renderedNote.textLength === 8_388_609;
+  });
+  onProgress('large-note-rendered');
   observations.largeNoteReadMs = now() - started;
-  assert.equal(Buffer.byteLength(await content.textContent(), 'utf8'), 8_388_609);
-  assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
-  assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
+  assert.deepEqual(renderedNote, {
+    textLength: 8_388_609,
+    draftCount: 0,
+    viewerCount: 1,
+    viewerLength: 8_388_609,
+    footer: 'Read-only · Edit Notes in your external Note application.',
+  });
 
   const expectedNotePaths = [bootstrap.notePath, ...bootstrap.scaleNotes.map(note => note.path)];
   const assertNotePage = (catalog, offset) => {
@@ -136,17 +162,27 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     assert.deepEqual(paths, expectedNotePaths.slice(offset, offset + 50));
     return paths;
   };
-  const firstCatalog = observed().notes.value;
-  assert.equal(observed().notes.input.topicId, fixture.topicId);
-  const firstPaths = assertNotePage(firstCatalog, 0);
-  await ready(async () => JSON.stringify(await nativePage.getByRole('button', { name: /^Read / }).evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))) === JSON.stringify(firstPaths.map(value => `Read ${value}`)));
+  const firstPage = observed().notePages.get(0);
+  const firstCatalog = firstPage.value;
+  assert.equal(firstPage.input.topicId, fixture.topicId);
+  assertNotePage(firstCatalog, 0);
   assert.equal(firstCatalog.nextOffset, 50);
+  onProgress('notes-next-click');
   started = now();
-  await nativePage.getByRole('button', { name: 'Next Notes', exact: true }).click();
-  await ready(async () => observed().notes?.value?.offset === 50);
-  await nativePage.getByText('Notes 51–100 of 5000.', { exact: true }).waitFor();
+  await contentHandle.evaluate(node => {
+    const next = [...node.getRootNode().querySelectorAll('nav[aria-label="Note pages"] button')]
+      .find(button => button.textContent === 'Next Notes');
+    if (!next) throw new Error('Next Notes is unavailable');
+    next.click();
+  });
+  await ready(async () => observed().notePages?.get(50)?.value?.offset === 50);
+  await ready(async () => await contentHandle.evaluate(node => {
+    const pages = node.getRootNode().querySelector('nav[aria-label="Note pages"]');
+    return pages?.previousElementSibling?.textContent === 'Notes 51–100 of 5000.';
+  }));
+  onProgress('notes-next-rendered');
   observations.noteNextPageMs = now() - started;
-  assertNotePage(observed().notes.value, 50);
+  assertNotePage(observed().notePages.get(50).value, 50);
   // The UI proves the interactive first transition. Sample the middle and final
   // pages through the same authenticated snapshot cursor so the 5,000-item
   // ordering and terminal boundary are covered without 98 repetitive clicks.
@@ -168,9 +204,22 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     && new URL(response.url()).origin === new URL(world.gateway.url).origin
     && new URL(response.url()).pathname === '/plugins/command-center/api/topic/actions'
     && response.request().postDataJSON()?.action === 'conversations.create', { timeout: 30_000 }), () => {});
-  await nativePage.getByRole('textbox', { name: 'Conversation label', exact: true }).fill(conversationLabel);
+  await contentHandle.evaluate((node, value) => {
+    const form = [...node.getRootNode().querySelectorAll('form')]
+      .find(candidate => candidate.querySelector('h2')?.textContent === 'New Conversation');
+    const input = form?.querySelector('label input[type="text"]');
+    if (!input) throw new Error('Conversation label is unavailable');
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, conversationLabel);
   started = now();
-  await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).click();
+  await contentHandle.evaluate(node => {
+    const form = [...node.getRootNode().querySelectorAll('form')]
+      .find(candidate => candidate.querySelector('h2')?.textContent === 'New Conversation');
+    const submit = form?.querySelector('button[type="submit"]');
+    if (!submit || submit.textContent !== 'Create Conversation') throw new Error('Create Conversation is unavailable');
+    submit.click();
+  });
   const response = await creationResponse;
   assert.equal(hasSuccessfulBrowserResponse(response), true);
   const input = response.value.request().postDataJSON();

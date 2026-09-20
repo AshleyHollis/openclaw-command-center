@@ -7,6 +7,7 @@ import { createLegacyDiscordMigrationService } from './migration/service.mjs';
 import { createPreservedHistoryReader } from './migration/preserved-history-read.mjs';
 import { createAuthoritativeSourceService } from './sources/service.mjs';
 import { createTopicService } from './topics/service.mjs';
+import { inspectTopicDiscoverability } from './topics/discoverability.mjs';
 import { SourceServiceError } from './sources/errors.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { createOpenLoopReminderCoordinator } from './open-loops/reminder-coordinator.mjs';
@@ -84,9 +85,30 @@ export function createMetadataService(api) {
   let topicService;
   let stopPromise;
   let releaseDurableFolderStager;
+  let releaseFilesystemIdentityReader;
   let releaseNoteFilesystemCoordinator;
   let releaseTopicMaintenanceOwners;
   let recoveryOnly = false;
+  const closeActivation = () => {
+    releaseDurableFolderStager?.();
+    releaseDurableFolderStager = undefined;
+    releaseFilesystemIdentityReader?.();
+    releaseFilesystemIdentityReader = undefined;
+    releaseNoteFilesystemCoordinator?.();
+    releaseNoteFilesystemCoordinator = undefined;
+    releaseTopicMaintenanceOwners?.();
+    releaseTopicMaintenanceOwners = undefined;
+    sourceService?.close?.();
+    attentionService?.close?.();
+    metadataService?.close();
+    metadataService = undefined;
+    sourceService = undefined;
+    attentionService = undefined;
+    dashboardService = undefined;
+    openLoopReminders = undefined;
+    capacityReview = undefined;
+    topicService = undefined;
+  };
   const refuseRecovery = () => { throw new SourceServiceError('recovery-only', 'Command Center is recovery-only; authoritative data and mutations remain unavailable.'); };
   const requireOperational = () => { if (recoveryOnly) refuseRecovery(); };
   const refuseDeferred = feature => { requireOperational(); return unavailable(feature); };
@@ -126,10 +148,15 @@ export function createMetadataService(api) {
     id: 'command-center-metadata',
     async start(context = {}) {
       stopPromise = undefined;
-      const { setHostDurableFolderStager } = await import('./sources/note-folder-identity.mjs');
-      const { setHostNoteFilesystemCoordinator } = await import('./sources/note-filesystem-owner.mjs');
-      releaseDurableFolderStager = setHostDurableFolderStager(api.runtime?.fileAccess?.stageDurableFileInDirectory);
-      releaseNoteFilesystemCoordinator = setHostNoteFilesystemCoordinator(api.runtime?.fileAccess?.tryAcquireExclusiveSqliteCoordinator);
+      try {
+      const [{ setHostDurableFolderStager, setHostFilesystemIdentityReader }, { setHostNoteFilesystemCoordinator }, fileAccess, sqlite] = await Promise.all([
+        import('./sources/note-folder-identity.mjs'), import('./sources/note-filesystem-owner.mjs'),
+        import('openclaw/plugin-sdk/file-access-runtime'), import('openclaw/plugin-sdk/sqlite-runtime')
+      ]);
+      const fixtureFileAccess = api.runtime?.fileAccess ?? {};
+      releaseDurableFolderStager = setHostDurableFolderStager(fixtureFileAccess.stageDurableFileInDirectory ?? fileAccess.stageDurableFileInDirectory);
+      releaseFilesystemIdentityReader = setHostFilesystemIdentityReader(fixtureFileAccess.readDurableFilesystemIdentity ?? fileAccess.readDurableFilesystemIdentity);
+      releaseNoteFilesystemCoordinator = setHostNoteFilesystemCoordinator(fixtureFileAccess.tryAcquireExclusiveSqliteCoordinator ?? sqlite.tryAcquireExclusiveSqliteCoordinator);
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';
       const serviceCronAvailable = typeof context.getCron === 'function';
@@ -213,6 +240,15 @@ export function createMetadataService(api) {
       }
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot });
       const migrationResult = await migrationService.start();
+      // A running Gateway is insufficient evidence that existing Topics and
+      // their Primary Conversations survived startup. Report the bounded audit
+      // without making an unavailable Note source hide healthy Conversations.
+      try {
+        const discoverability = await inspectTopicDiscoverability({ metadata: metadataService, topics: topicService, sources: sourceService });
+        api.logger?.info?.(`Command Center discoverability ${JSON.stringify(discoverability)}`);
+      } catch (error) {
+        api.logger?.error?.(`Command Center discoverability ${JSON.stringify({ code: error?.code ?? 'topic-discoverability-check-failed', ...(error?.summary ? { summary: error.summary } : {}) })}`);
+      }
       releaseTopicMaintenanceOwners = publishTopicMaintenanceOwners(Object.freeze({ sourceService, metadata: metadataService, capacityReview }));
       if (FIRST_LIVE_FEATURES.dashboard) {
         try { await sourceService.refreshReminderAttention(); }
@@ -243,28 +279,17 @@ export function createMetadataService(api) {
       // Native Cron is acquired only by an authenticated Reminder/Schedule
       // request; startup itself touches no job or optional background owner.
       return migrationResult;
+      } catch (error) {
+        closeActivation();
+        throw error;
+      }
     },
     stop() {
       if (stopPromise) return stopPromise;
       stopPromise = Promise.resolve().then(() => {
         // Do not retain an old host activation's capability across a restart.
         // The release closure cannot clear a capability installed by its successor.
-        releaseDurableFolderStager?.();
-        releaseDurableFolderStager = undefined;
-        releaseNoteFilesystemCoordinator?.();
-        releaseNoteFilesystemCoordinator = undefined;
-        releaseTopicMaintenanceOwners?.();
-        releaseTopicMaintenanceOwners = undefined;
-        sourceService?.close?.();
-        attentionService?.close?.();
-        metadataService?.close();
-        metadataService = undefined;
-        sourceService = undefined;
-        attentionService = undefined;
-        dashboardService = undefined;
-        openLoopReminders = undefined;
-        capacityReview = undefined;
-        topicService = undefined;
+        closeActivation();
       });
       return stopPromise;
     },

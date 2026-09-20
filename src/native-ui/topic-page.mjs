@@ -5,6 +5,14 @@ import { createNativeCreationForm, createNativeNoteCreationForm } from './creati
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { readerStyles } from './reader-layout.mjs';
 import { loadTopicCatalog, topicCatalogPageSize } from './topic-catalog.mjs';
+import { topicSourceAvailable } from './topic-source-availability.mjs';
+
+export const nativeExplorerCompleteCatalogLimit = 500;
+
+export function nativeExplorerCatalogEntries(allNotes, pageNotes, limit = nativeExplorerCompleteCatalogLimit) {
+  if (!Array.isArray(allNotes) || !Array.isArray(pageNotes) || !Number.isSafeInteger(limit) || limit < 1) throw new TypeError('Native explorer catalog selection is invalid');
+  return allNotes.length <= limit ? allNotes : pageNotes;
+}
 
 /** Topic policy stays in the backend; OpenClaw owns routing and Chat. */
 export function mountTopicPage(container, context, state = createNativeState(), { panel = false, verifyContext } = {}) {
@@ -25,6 +33,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   let catalogOffset = 0;
   let catalogTotal = 0;
   let catalogNextOffset = null;
+  let pendingCatalogOffset = null;
   let catalogConversations = [];
   let catalogHistories = [];
   let noteText = '';
@@ -188,7 +197,12 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     readingMode.setAttribute('aria-pressed', String(reading)); sourceMode.setAttribute('aria-pressed', String(!reading));
     content.hidden = !reading; source.hidden = reading;
     if (!noteText) { content.replaceChildren(); source.textContent = ''; return; }
-    if (!reading) { source.textContent = noteText; return; }
+    if (!reading) {
+      const { renderReadOnlySource } = await import('./note-render.mjs');
+      if (signal.aborted || !presented || noteView !== 'source' || pending !== renderGeneration) return;
+      renderReadOnlySource(source, noteText);
+      return;
+    }
     content.textContent = 'Rendering Note…';
     try {
       const { renderReadOnlyMarkdown } = await import('./note-render.mjs');
@@ -261,7 +275,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   }
   function nativeTreeEntries() {
     const query = filter.value.trim().toLocaleLowerCase();
-    return catalogAllNotes
+    return nativeExplorerCatalogEntries(catalogAllNotes, catalogNotes)
       .filter((note) => note.path.toLocaleLowerCase().includes(query))
       .map((note) => ({ path: note.path, name: fileName(note.path), kind: 'file' }));
   }
@@ -397,10 +411,10 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     }
     return values.sort((left, right) => left.title.localeCompare(right.title) || left.historyId.localeCompare(right.historyId));
   }
-  async function loadCatalog(pending, onFirstPage) {
+  async function loadCatalog(pending, onFirstPage, onPage) {
     return loadTopicCatalog({
       request: (method, params) => host.request(method, params), topicId,
-      current: () => currentCatalog(pending), validate: validateCatalogNote, onFirstPage
+      current: () => currentCatalog(pending), validate: validateCatalogNote, onFirstPage, onPage
     });
   }
   function presentCatalogPage(offset = 0) {
@@ -415,6 +429,14 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   }
   async function loadCatalogPage(offset) {
     if (!presented || !readable() || offset < 0 || offset >= catalogTotal) return;
+    if (offset >= catalogAllNotes.length && catalogAllNotes.length < catalogTotal) {
+      pendingCatalogOffset = offset;
+      notePageStatus.textContent = `Loading Notes ${offset + 1}–${Math.min(offset + topicCatalogPageSize, catalogTotal)} of ${catalogTotal}…`;
+      previousNotes.disabled = true;
+      nextNotes.disabled = true;
+      return;
+    }
+    pendingCatalogOffset = null;
     presentCatalogPage(offset);
   }
   function showDraft() {
@@ -423,7 +445,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     editing.hidden = !draft;
     if (!draft) return;
     editor.value = draft.text;
-    editor.readOnly = topic?.lifecycle !== 'active' || topic?.usable !== true || !readable();
+    editor.readOnly = topic?.lifecycle !== 'active' || !topicSourceAvailable(topic, 'note_folder') || !readable();
     save.disabled = editor.readOnly || !host.connection.canWrite || typeof host.httpRequest !== 'function' || !!draft.operation;
     reconcile.hidden = !draft.operation?.unknown;
     reconcile.disabled = !readable() || !host.connection.canWrite || typeof host.httpRequest !== 'function' || !!draft.operation?.attempt;
@@ -529,6 +551,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   }
   async function load() {
     cancel(); const pending = catalogGeneration;
+    pendingCatalogOffset = null;
     showReaderPath(); status.title = '';
     creation?.dispose(); creation?.form.remove(); creation = undefined;
     noteCreation?.dispose(); noteCreation?.form.remove(); noteCreation = undefined;
@@ -551,7 +574,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       viewState.browserPath ??= '';
       filter.value = viewState.filter;
       heading.textContent = topic.name;
-      chat.disabled = topic.usable !== true || topic.lifecycle !== 'active';
+      chat.disabled = !topicSourceAvailable(topic, 'session') || topic.lifecycle !== 'active';
       if (!panel) creation = createNativeCreationForm({ host, state, document, signal, presented: () => presented, getTopic: () => topic,
         beginNavigation: () => { reading.abort(); navigation.cancel(); const selection = ++generation; return () => current(selection); },
         captureNavigation: () => { const selection = generation; return () => current(selection); },
@@ -593,12 +616,23 @@ export function mountTopicPage(container, context, state = createNativeState(), 
         catalogTotal = firstPage.total;
         presentCatalogPage(0);
         status.textContent = firstPage.complete ? '' : 'Loading remaining Topic files…';
+      }, page => {
+        if (!currentCatalog(pending) || page.offset === 0) return;
+        catalogAllNotes = page.notes;
+        if (pendingCatalogOffset !== null && pendingCatalogOffset < catalogAllNotes.length) {
+          const requestedOffset = pendingCatalogOffset;
+          pendingCatalogOffset = null;
+          presentCatalogPage(requestedOffset);
+        }
       });
       if (!currentCatalog(pending)) return;
       if (!catalog) return;
       catalogAllNotes = catalog.notes;
       catalogTotal = catalog.total;
-      presentCatalogPage(0);
+      const requestedOffset = pendingCatalogOffset;
+      pendingCatalogOffset = null;
+      const retainedOffset = Number.isSafeInteger(requestedOffset) ? requestedOffset : catalogOffset;
+      presentCatalogPage(retainedOffset >= 0 && retainedOffset < catalogTotal ? retainedOffset : 0);
       // The folder tree begins collapsed. Direct selection and filtering may
       // temporarily reveal only the ancestors needed for that exact result.
       status.textContent = catalogTotal ? '' : 'No Notes or filed attachments in this Topic.';
@@ -625,9 +659,13 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       }
       const prior = viewState.selected;
       const restore = prior && catalogAllNotes.find(note => note.path === prior.path && note.sourceReference.referenceId === prior.referenceId);
+      const alreadySelected = restore && selected?.path === restore.path && selected?.referenceId === restore.sourceReference.referenceId
+        && selected?.sourceKind === sourceKindFor(restore);
       if (restore) {
-        if (sourceKindFor(restore) === 'note') await openNote(restore);
-        else await openDocument(restore);
+        if (!alreadySelected) {
+          if (sourceKindFor(restore) === 'note') await openNote(restore);
+          else await openDocument(restore);
+        }
       } else if (prior) { viewState.selected = undefined; }
     } catch (error) {
       if (currentCatalog(pending)) {
@@ -638,7 +676,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   }
   async function saveNote({ reconcileOnly = false } = {}) {
     if (!FIRST_LIVE_FEATURES.noteWrite) return;
-    if (!selected || !presented || !readable() || !host.connection.canWrite || (!reconcileOnly && (topic?.lifecycle !== 'active' || topic?.usable !== true))) return;
+    if (!selected || !presented || !readable() || !host.connection.canWrite || (!reconcileOnly && (topic?.lifecycle !== 'active' || !topicSourceAvailable(topic, 'note_folder')))) return;
     const descriptor = { ...selected }; const key = draftKey(descriptor); const draft = drafts.get(key);
     if (!draft || (reconcileOnly ? !draft.operation?.unknown || draft.operation.attempt : draft.operation)) return;
     if (draft.path !== descriptor.path) { noteState.textContent = 'The Note moved while this draft was open. Source Recovery is required before saving.'; return; }

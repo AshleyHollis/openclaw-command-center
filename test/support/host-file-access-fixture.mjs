@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { link, unlink } from 'node:fs/promises';
 import path from 'node:path';
-import { setHostDurableFolderStager } from '../../src/sources/note-folder-identity.mjs';
+import { setHostDurableFolderStager, setHostFilesystemIdentityReader } from '../../src/sources/note-folder-identity.mjs';
 import { setHostNoteFilesystemCoordinator } from '../../src/sources/note-filesystem-owner.mjs';
 
 // A deliberately small host-contract double. It stages within the supplied
@@ -37,12 +37,16 @@ export function createHostFileAccessFixture() {
     held.add(lockPath);
     return Object.freeze({ release: () => { held.delete(lockPath); } });
   };
-  return Object.freeze({ stageDurableFileInDirectory, tryAcquireExclusiveSqliteCoordinator });
+  const readDurableFilesystemIdentity = async () => Object.freeze({
+    version: 1, filesystem: 'btrfs', filesystemId: '11111111-2222-4333-8444-555555555555', subvolumeId: '256'
+  });
+  return Object.freeze({ stageDurableFileInDirectory, tryAcquireExclusiveSqliteCoordinator, readDurableFilesystemIdentity });
 }
 
 export function installHostFileAccessFixture() {
   const fileAccess = createHostFileAccessFixture();
   const releaseStager = setHostDurableFolderStager(fileAccess.stageDurableFileInDirectory);
+  const releaseIdentityReader = setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
   const releaseCoordinator = setHostNoteFilesystemCoordinator(fileAccess.tryAcquireExclusiveSqliteCoordinator);
-  return () => { releaseCoordinator(); releaseStager(); };
+  return () => { releaseCoordinator(); releaseIdentityReader(); releaseStager(); };
 }

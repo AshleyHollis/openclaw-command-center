@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
+import { isNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 
 export const PROVISIONING_PRIMARY_OPERATION = 'topic.provisioning-primary.v1';
 export const CONDITIONAL_PRIMARY_MODE = 'conditional-native-v1';
@@ -82,7 +83,7 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
     const referenceId = `note-folder:${topicId}`;
     const reference = service.getSourceReference(referenceId); const locator = service.getSourceLocator(referenceId);
     if (reference?.topicId !== topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note_folder' ||
-      !locator?.observedRevision?.startsWith('note-folder:1:') || !locator.locator) fail('provisioning-folder-unavailable');
+      !isNoteFolderIdentity(locator?.observedRevision) || !locator.locator) fail('provisioning-folder-unavailable');
     return { reference, locator };
   }
   function assertBasis(db, receipt) {

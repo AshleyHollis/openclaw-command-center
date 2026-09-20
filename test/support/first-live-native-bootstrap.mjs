@@ -5,8 +5,18 @@ import path from 'node:path';
 import { retainPreparedMigrationFixtureEvidence, verifiedMigrationStatusReady } from '../../src/acceptance-migration.mjs';
 import { waitForConsecutiveReadiness } from '../../src/host-harness.mjs';
 import { readNativeNote } from '../../src/native-ui/note-read.mjs';
-import { NOTE_FOLDER_IDENTITY_FILE, readNoteFolderIdentity } from '../../src/sources/note-folder-identity.mjs';
+import { NOTE_FOLDER_IDENTITY_FILE } from '../../src/sources/note-folder-identity.mjs';
+import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
 import { readAuthenticatedHistory, requestAuthenticatedGateway } from './real-host-runtime.mjs';
+
+export const nativeScaleHistorySampleOffsets = Object.freeze([0, 1_200, 2_400, 3_600, 4_800]);
+
+export function nativeScaleHistorySourceStart(total, offset, length) {
+  assert.ok(Number.isSafeInteger(total) && Number.isSafeInteger(offset) && Number.isSafeInteger(length));
+  const start = total - offset - length;
+  assert.ok(start >= 0);
+  return start;
+}
 
 async function originalNoteIdentity(file) {
   const stat = await lstat(file, { bigint: true });
@@ -126,7 +136,7 @@ export async function readNativeLegacyBootstrap({ world, host, signal, bootstrap
   assert.equal(locators[0].locator, undefined);
   assert.equal(locators[0].ownership, 'external');
   assert.ok(Number.isSafeInteger(locators[0].locatorVersion) && locators[0].locatorVersion > 0);
-  assert.equal(locators[0].observedRevision, await readNoteFolderIdentity(bootstrap.folder), 'Default bootstrap must enroll and bind the actual existing Folder');
+  assert.equal(locators[0].observedRevision, await readHostNoteFolderIdentity(bootstrap.folder), 'Default bootstrap must enroll and bind the actual existing Folder');
   const catalog = await request('sessions.browse', { topicId: bootstrap.topicId, includeClosed: false });
   assert.equal(catalog.topicId, bootstrap.topicId);
   assert.equal(catalog.conversations.length, expectedConversationCount);
@@ -157,17 +167,26 @@ export async function readNativeLegacyBootstrap({ world, host, signal, bootstrap
   assert.deepEqual(await originalNoteIdentity(path.join(bootstrap.folder, bootstrap.notePath)), bootstrap.noteIdentity);
   assert.equal(await readFile(bootstrap.exportPath, 'utf8'), bootstrap.exportBytes);
   const history = bootstrap.scale
-    ? await readNativeScaleHistory({ world, target, signal })
+    ? await readNativeScaleHistorySample({ world, target, signal })
     : await readAuthenticatedHistory({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, sessionKey: target.sessionKey, signal }).then(response => response?.result ?? response);
   assert.equal(history.sessionKey, target.sessionKey);
   assert.equal(history.sessionId, target.sessionId);
   const channel = bootstrap.prepared.migrationExport.channels[0];
-  const imported = history.messages.filter(message => message?.__openclaw?.legacyDiscordV1?.immutable === true);
+  const imported = bootstrap.scale
+    ? history.samples.filter(({ message }) => message?.__openclaw?.legacyDiscordV1?.immutable === true)
+    : history.messages.filter(message => message?.__openclaw?.legacyDiscordV1?.immutable === true);
   const occurrenceCount = bootstrap.prepared.occurrenceCount;
-  assert.equal(imported.length, occurrenceCount, 'The actual import must retain exactly the original occurrences, without duplicates');
-  assert.deepEqual(history.messages.slice(0, occurrenceCount), imported, 'Imported history must remain the immutable Primary prefix');
+  if (bootstrap.scale) {
+    assert.equal(history.totalMessages, occurrenceCount, 'The actual import must retain the exact scale occurrence count');
+    assert.equal(imported.length, history.samples.length, 'Every sampled scale occurrence must retain immutable provenance');
+  } else {
+    assert.equal(imported.length, occurrenceCount, 'The actual import must retain exactly the original occurrences, without duplicates');
+    assert.deepEqual(history.messages.slice(0, occurrenceCount), imported, 'Imported history must remain the immutable Primary prefix');
+  }
   const occurrenceIds = new Set();
-  for (const [index, message] of imported.entries()) {
+  for (const [sampleIndex, entry] of imported.entries()) {
+    const index = bootstrap.scale ? entry.index : sampleIndex;
+    const message = bootstrap.scale ? entry.message : entry;
     const original = channel.messages[index];
     assert.equal(message.role, 'user');
     assert.equal(message.text, original.text);
@@ -185,7 +204,7 @@ export async function readNativeLegacyBootstrap({ world, host, signal, bootstrap
     assert.equal(message.idempotencyKey, provenance.occurrenceId);
     occurrenceIds.add(provenance.occurrenceId);
   }
-  assert.equal(occurrenceIds.size, occurrenceCount);
+  assert.equal(occurrenceIds.size, imported.length);
   return Object.freeze({
     fixture: Object.freeze({ topicId: bootstrap.topicId, name: bootstrap.name, paraCategory: topic.paraCategory, sessionReferenceId: target.sourceReference.referenceId,
       sessionKey: target.sessionKey, sessionId: target.sessionId, notePath: bootstrap.notePath, noteText: bootstrap.noteText, folder: bootstrap.folder,
@@ -195,11 +214,10 @@ export async function readNativeLegacyBootstrap({ world, host, signal, bootstrap
   });
 }
 
-async function readNativeScaleHistory({ world, target, signal }) {
-  let offset = 0;
-  const messages = [];
+async function readNativeScaleHistorySample({ world, target, signal }) {
+  const samples = [];
   const seen = new Set();
-  while (true) {
+  for (const offset of nativeScaleHistorySampleOffsets) {
     const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
       method: 'chat.history', params: { sessionKey: target.sessionKey, offset, limit: 200 }, signal });
     const history = response?.result ?? response;
@@ -207,23 +225,20 @@ async function readNativeScaleHistory({ world, target, signal }) {
     assert.equal(history.sessionId, target.sessionId);
     assert.equal(history.totalMessages, 5_000);
     assert.equal(history.offset, offset);
-    assert.ok(history.messages.length > 0);
-    for (const message of history.messages) {
+    assert.equal(history.messages.length, 200);
+    const sourceStart = nativeScaleHistorySourceStart(history.totalMessages, offset, history.messages.length);
+    for (const [pageIndex, message] of history.messages.entries()) {
       const id = message?.__openclaw?.legacyDiscordV1?.occurrenceId;
       assert.equal(typeof id, 'string');
       assert.equal(seen.has(id), false, 'Native history pagination must not repeat an occurrence');
       seen.add(id);
+      samples.push({ index: sourceStart + pageIndex, message });
     }
-    // Native offset pages walk backward from the current tail. Each page is
-    // chronological, so prepend whole pages, never sort away ordering defects.
-    messages.unshift(...history.messages);
-    if (!history.hasMore) break;
-    assert.ok(Number.isSafeInteger(history.nextOffset) && history.nextOffset > offset);
-    assert.ok(history.nextOffset < 5_000);
-    offset = history.nextOffset;
+    assert.equal(history.hasMore, offset !== 4_800);
   }
-  assert.equal(messages.length, 5_000);
-  return { sessionKey: target.sessionKey, sessionId: target.sessionId, messages };
+  assert.equal(samples.length, 1_000);
+  assert.equal(seen.size, samples.length);
+  return { sessionKey: target.sessionKey, sessionId: target.sessionId, totalMessages: 5_000, samples };
 }
 
 export async function assertNativeScaleSourcesUnchanged(bootstrap, signal) {

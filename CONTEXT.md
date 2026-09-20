@@ -19,6 +19,10 @@ Native OpenClaw still owns the outer pane arrangement, Conversation and draft.
 This correction is candidate-only until visual review and deployment approval;
 the earlier deployed reader evidence does not qualify its new interactions.
 
+## Restart-stable Note Folder identity
+
+Note Folder identity version 2 excludes volatile mount device numbers and binds the marker to a stable filesystem/subvolume witness plus object identity. Version-1 bindings migrate only through the digest-pinned Source Recovery batch. A Notes recovery condition remains visible under its Topic's PARA category and does not hide independently verified Conversations. See [ADR 0006](docs/adr/0006-versioned-note-folder-identity.md).
+
 ## Navigation and context
 
 **Command Center**:

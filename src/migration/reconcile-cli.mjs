@@ -5,6 +5,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { reconciliationPlanDigest, reconcilePreservedWorkspace } from './reconcile.mjs';
 import { assertPreparationPlan, prepareTopicForReconciliation } from './prepare-topic.mjs';
 import { createTopicService } from '../topics/service.mjs';
+import { createAuthoritativeSourceService } from '../sources/service.mjs';
+import { inspectTopicDiscoverability } from '../topics/discoverability.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const recoveryFailure = receipts => { throw Object.assign(new Error('note-folder-recovery-halted'), { code: 'note-folder-recovery-halted', receipts }); };
@@ -118,22 +120,29 @@ function assertNoteFolderRecoveryPlan(plan, expectedDigest) {
 // a Gateway RPC: it cannot scan a vault or infer a replacement folder, and its
 // stable per-binding operation IDs allow the existing recovery owner to resume
 // an interrupted marker enrollment safely.
-export async function runConfiguredNoteFolderRecovery({ mode, planPath, expectedDigest, config, signal }) {
+export async function runConfiguredNoteFolderRecovery({ mode, planPath, expectedDigest, config, signal, hostFileAccess }) {
   if (!['preflight', 'execute', 'verify'].includes(mode)) fail('note-folder-recovery-mode-invalid');
   const env = { ...process.env };
   const plan = await readPinnedReconciliationPlan(planPath, expectedDigest);
   assertNoteFolderRecoveryPlan(plan, expectedDigest);
-  const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([
-    import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')
+  const [{ resolveStateDir }, sdkFileAccess, sdkSqlite, { openCommandCenterMetadataService }, identity, filesystemOwner] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/file-access-runtime'), import('openclaw/plugin-sdk/sqlite-runtime'),
+    import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs'), import('../sources/note-filesystem-owner.mjs')
   ]);
+  const fileAccess = hostFileAccess ?? sdkFileAccess;
+  const sqlite = hostFileAccess ?? sdkSqlite;
   const stateDir = resolveStateDir(env);
   if (path.resolve(stateDir) !== plan.stateDirectory) fail('note-folder-recovery-state-mismatch');
   const pluginConfig = structuredClone(config)?.plugins?.entries?.['command-center']?.config ?? {};
   const noteRoot = pluginConfig.topics?.noteRoot;
   if (typeof noteRoot !== 'string' || !path.isAbsolute(noteRoot)) fail('note-folder-recovery-note-root-invalid');
   signal?.throwIfAborted();
-  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true }, readOnly: mode !== 'execute' });
+  const releaseStager = identity.setHostDurableFolderStager(fileAccess.stageDurableFileInDirectory);
+  const releaseIdentityReader = identity.setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
+  const releaseCoordinator = filesystemOwner.setHostNoteFilesystemCoordinator(sqlite.tryAcquireExclusiveSqliteCoordinator);
+  let metadata;
   try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true }, readOnly: mode !== 'execute' });
     const topics = createTopicService({ metadata, noteVaultRoot: noteRoot });
     const checks = [];
     for (const item of plan.bindings) {
@@ -150,7 +159,28 @@ export async function runConfiguredNoteFolderRecovery({ mode, planPath, expected
     const result = await topics.recoverNoteFoldersBatch({ bindings: plan.bindings, assertCurrent: () => signal?.throwIfAborted() });
     if (result.status !== 'completed') recoveryFailure(publicReceipts(result.receipts));
     return { phase: result.status, planDigest: expectedDigest, accounting: { recovered: result.receipts.filter(item => item.status === 'recovered').length, replayed: result.receipts.filter(item => item.status === 'replayed').length, alreadyHealthy: result.receipts.filter(item => item.status === 'already-healthy').length, blocked: result.receipts.filter(item => item.status === 'blocked').length }, receipts: publicReceipts(result.receipts) };
-  } finally { metadata.close(); }
+  } finally { metadata?.close(); releaseCoordinator(); releaseIdentityReader(); releaseStager(); }
+}
+
+export async function runConfiguredDiscoverabilityCheck({ config, signal }) {
+  const env = { ...process.env };
+  const pluginConfig = structuredClone(config)?.plugins?.entries?.['command-center']?.config ?? {};
+  const noteRoot = pluginConfig.topics?.noteRoot;
+  if (typeof noteRoot !== 'string' || !path.isAbsolute(noteRoot)) fail('topic-discoverability-note-root-invalid');
+  const [{ resolveStateDir }, sessionStore, fileAccess, { openCommandCenterMetadataService }, identity] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/session-store-runtime'), import('openclaw/plugin-sdk/file-access-runtime'),
+    import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs')
+  ]);
+  signal?.throwIfAborted();
+  const releaseIdentityReader = identity.setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
+  let metadata;
+  let sources;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir(env), capabilities: { notes: true, sessions: true }, readOnly: true });
+    sources = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: true }, api: { runtime: { agent: { session: sessionStore } } } });
+    const topics = createTopicService({ metadata, noteVaultRoot: noteRoot, sessionStore });
+    return await inspectTopicDiscoverability({ metadata, topics, sources, signal });
+  } finally { sources?.close(); metadata?.close(); releaseIdentityReader(); }
 }
 
 export function registerReconciliationCli({ program, config, logger }) {
@@ -175,4 +205,12 @@ export function registerReconciliationCli({ program, config, logger }) {
       });
   }
   }
+  group.command('verify-discoverability').description('Verify active Topic and Primary Conversation discoverability').action(async () => {
+    const cancellation = new AbortController();
+    const abort = () => cancellation.abort(Object.assign(new Error('reconciliation-cancelled'), { code: 'reconciliation-cancelled' }));
+    process.once('SIGINT', abort); process.once('SIGTERM', abort);
+    try { logger.info(JSON.stringify(await runConfiguredDiscoverabilityCheck({ config, signal: cancellation.signal }))); }
+    catch (error) { logger.error(JSON.stringify({ code: error?.code ?? 'topic-discoverability-check-failed', ...(error?.summary ? { summary: error.summary } : {}) })); process.exitCode = 1; }
+    finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
+  });
 }

@@ -1,5 +1,6 @@
 import { sourceError } from '../sources/errors.mjs';
 import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
+import { isNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 
 function binding(input) {
   if (!input || typeof input !== 'object') throw sourceError('invalid-request', 'Each Note Folder recovery binding is required.');
@@ -12,7 +13,7 @@ function binding(input) {
   const replacementLocator = ['enroll', 'rebind'].includes(mode) ? String(input.replacementLocator ?? '').trim() : undefined;
   const expectedReplacementIdentity = mode === 'rebind' ? String(input.expectedReplacementIdentity ?? '').trim() : undefined;
   if (['enroll', 'rebind'].includes(mode) && !replacementLocator) throw sourceError('invalid-request', 'An enrollment or rebind binding requires its exact approved Note Folder locator.');
-  if (mode === 'rebind' && !/^note-folder:1:[0-9a-f-]{36}:[0-9a-f]{64}$/u.test(expectedReplacementIdentity)) throw sourceError('invalid-request', 'A rebind binding requires the exact current Note Folder identity.');
+  if (mode === 'rebind' && !isNoteFolderIdentity(expectedReplacementIdentity)) throw sourceError('invalid-request', 'A rebind binding requires the exact current Note Folder identity.');
   return Object.freeze({ topicId, referenceId, mode, expectedRevision: input.expectedRevision, expectedSourceRevision: input.expectedSourceRevision, expectedLocatorVersion: input.expectedLocatorVersion, logicalOperationId, ...(replacementLocator ? { replacementLocator } : {}), ...(expectedReplacementIdentity ? { expectedReplacementIdentity } : {}) });
 }
 

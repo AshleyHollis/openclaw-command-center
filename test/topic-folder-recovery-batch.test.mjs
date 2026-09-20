@@ -53,7 +53,7 @@ test('controlled Note Folder batch halts before a mismatched marker can be rebou
 });
 
 test('controlled Note Folder batch permits only an operator-pinned same-locator rebind with both identities', async () => {
-  const currentIdentity = 'note-folder:1:11111111-1111-4111-8111-111111111111:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const currentIdentity = 'note-folder:2:11111111-1111-4111-8111-111111111111:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
   const sourceRevision = 'note-folder:1:11111111-1111-4111-8111-111111111111:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
   const f = fixture({ sourceRevision, inspection: { available: false, failure: 'exact-folder-identity-mismatch', locator: '/fictional/vault/Projects/Example', folderIdentity: currentIdentity } });
   const result = await f.batch.recover({ bindings: [{ ...bindings[0], mode: 'rebind', expectedSourceRevision: sourceRevision, expectedReplacementIdentity: currentIdentity }] });
