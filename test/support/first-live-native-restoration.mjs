@@ -18,6 +18,7 @@ import { controlUiPluginUrl } from '../../src/acceptance-readiness.mjs';
 import { scanPublicEvidence } from '../../src/safety.mjs';
 import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory } from './real-host-runtime.mjs';
 import { seedNativeExistingTopic } from './first-live-native-journey.mjs';
+import { assertNativeFormattedNote, assertNativeNoteSource } from './native-topic-workspace.mjs';
 
 // These capabilities qualify the metadata migration owner in isolation. They
 // do not enable deferred product services in the launched native application.
@@ -267,8 +268,8 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
       const content = nativePage.getByRole('region', { name: 'Note content', exact: true });
-      await content.filter({ hasText: fixture.noteText.trim() }).waitFor();
-      assert.equal(await content.textContent(), fixture.noteText);
+      await assertNativeFormattedNote(content, fixture);
+      await assertNativeNoteSource(nativePage, fixture);
       assert.equal(await readFile(path.join(fixture.folder, fixture.notePath), 'utf8'), fixture.noteText);
       assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
       assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
