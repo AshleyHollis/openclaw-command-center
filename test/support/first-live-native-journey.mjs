@@ -334,8 +334,8 @@ async function waitForNativeControlUiReadiness({ world, host, signal, scale, obs
     host.earlyExit, { required: 1, deadlineMs: 30_000, delayMs: 250, signal });
 }
 
-export async function exerciseNativeControlUiActivation({ descriptor, buildReceipt, signal, onFinalization }) {
-  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, keyboard: false });
+export async function exerciseNativeControlUiActivation({ descriptor, buildReceipt, signal, onFinalization, onScaleProgress }) {
+  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, onScaleProgress, keyboard: false });
 }
 
 // A bounded document-workspace fixture is separate from scale/performance
