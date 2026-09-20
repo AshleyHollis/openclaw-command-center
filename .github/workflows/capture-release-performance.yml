@@ -57,6 +57,22 @@ jobs:
           npx playwright install --with-deps chromium
           npm run build
 
+      - name: Prepare disposable Btrfs acceptance storage
+        run: |
+          set -euo pipefail
+          if ! command -v mkfs.btrfs >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes btrfs-progs
+          fi
+          image="$RUNNER_TEMP/command-center-acceptance.btrfs"
+          mountpoint="$RUNNER_TEMP/command-center-acceptance"
+          truncate --size=4G "$image"
+          mkfs.btrfs --quiet --force "$image"
+          mkdir -p "$mountpoint"
+          sudo mount -o loop "$image" "$mountpoint"
+          sudo chown "$(id -u):$(id -g)" "$mountpoint"
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$mountpoint" "$mountpoint" "$mountpoint" >> "$GITHUB_ENV"
+
       - name: Materialize authenticated host descriptor
         run: |
           set -euo pipefail
@@ -121,6 +137,13 @@ jobs:
         run: |
           set -euo pipefail
           node --test --test-isolation=none test/real-host.acceptance.test.mjs 2>&1 | tee "$RUNNER_TEMP/qualification.log"
+
+      - name: Remove disposable Btrfs acceptance storage
+        if: always()
+        run: |
+          set -euo pipefail
+          mountpoint="$RUNNER_TEMP/command-center-acceptance"
+          if mountpoint -q "$mountpoint"; then sudo umount "$mountpoint"; fi
 
       - name: Seal qualification receipt
         if: inputs.scenario == ''
