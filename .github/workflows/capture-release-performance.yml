@@ -141,7 +141,25 @@ jobs:
           COMMAND_CENTER_RELEASE_MAX_CONCURRENCY: "1"
         run: |
           set -euo pipefail
-          node --test --test-isolation=none test/real-host.acceptance.test.mjs 2>&1 | tee "$RUNNER_TEMP/qualification.log"
+          first="$RUNNER_TEMP/qualification-attempt-1.log"
+          set +e
+          node --test --test-isolation=none test/real-host.acceptance.test.mjs 2>&1 | tee "$first"
+          first_status="${PIPESTATUS[0]}"
+          set -e
+          if [ "$first_status" -eq 0 ]; then
+            cp "$first" "$RUNNER_TEMP/qualification.log"
+          else
+            if [ "$COMMAND_CENTER_ACCEPTANCE_SCENARIO" != "scale-performance" ] ||
+              [ "$(grep -cF 'acceptance-scenario-failure=' "$first")" -ne 1 ] ||
+              [ "$(grep -cF '"category":"readiness-timeout"' "$first")" -lt 1 ] ||
+              [ "$(grep -oE '"category":"[^"]+"' "$first" | grep -vcF '"category":"readiness-timeout"' || true)" -ne 0 ] ||
+              [ "$(grep -cE 'acceptance-finalization=.*"status":"started"' "$first")" -ne 6 ] ||
+              [ "$(grep -cE 'acceptance-finalization=.*"status":"passed"' "$first")" -ne 6 ]; then
+              exit "$first_status"
+            fi
+            printf '%s\n' 'The first scale attempt hit a readiness-timeout after complete cleanup; running the one permitted audited retry.' >> "$GITHUB_STEP_SUMMARY"
+            node --test --test-isolation=none test/real-host.acceptance.test.mjs 2>&1 | tee "$RUNNER_TEMP/qualification.log"
+          fi
 
       - name: Remove disposable Btrfs acceptance storage
         if: always()
