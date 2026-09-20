@@ -85,6 +85,7 @@ function compactOpenLoop(projected) {
     ...(loop.amount === undefined ? {} : { amount: loop.amount, currency: loop.currency }),
     ...(loop.dueAt === undefined ? {} : { dueAt: loop.dueAt }),
     ...(loop.dueDate === undefined ? {} : { dueDate: loop.dueDate, dueTimeZone: loop.dueTimeZone }),
+    ...(loop.reviewAt === undefined ? {} : { reviewAt: loop.reviewAt }),
     ...(projected.reason === undefined ? {} : { reason: projected.reason }),
     ...(projected.whyNow === undefined ? {} : { whyNow: projected.whyNow.slice(0, 500) }),
     ...(loop.attention === undefined ? {} : { planning: Object.freeze({
@@ -119,7 +120,12 @@ function openLoopProjection(metadata, serverTime) {
   const workspace = projectCapacityWorkspace(metadata.listOpenLoops(), { now: serverTime });
   const compactList = values => Object.freeze(values.map(loop => compactOpenLoop({ loop })));
   const capacityWorkspace = Object.freeze({
-    today: Object.freeze({ mandatory: compactList(workspace.today.mandatory), planned: compactList(workspace.today.planned) }),
+    today: Object.freeze({
+      mandatory: compactList(workspace.today.mandatory),
+      mandatoryTotal: workspace.today.mandatoryTotal,
+      groups: Object.freeze(Object.fromEntries(Object.entries(workspace.today.groups).map(([key, values]) => [key, compactList(values)]))),
+      planned: compactList(workspace.today.planned)
+    }),
     upcoming: compactList(workspace.upcoming), capacity: compactList(workspace.capacity.slice(0, CAPACITY_PREVIEW_LIMIT)), capacityTotal: workspace.capacity.length, waiting: compactList(workspace.waiting), someday: compactList(workspace.someday),
     review: Object.freeze({ batch: compactList(workspace.review.batch), remaining: workspace.review.remaining, eligibleTotal: workspace.review.eligibleTotal }),
     board: Object.freeze({ ready: compactList(workspace.board.ready), doing: compactList(workspace.board.doing), waiting: compactList(workspace.board.waiting), done: compactList(workspace.board.done), suggestions: compactList(workspace.board.suggestions) }),

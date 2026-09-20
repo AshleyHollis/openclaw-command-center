@@ -5,8 +5,23 @@ const terminal = new Set(['resolved', 'cancelled']);
 const rank = Object.freeze({ critical: 0, high: 1, normal: 2, low: 3 });
 const day = value => value?.slice?.(0, 10);
 const dateOf = loop => loop.dueAt ?? (loop.dueDate ? zonedDateAtNine(loop.dueDate, loop.dueTimeZone) : undefined);
+const firstScheduledAt = loop => [dateOf(loop), loop.reviewAt, loop.attention?.plannedAt].filter(Boolean).sort()[0];
 const compare = (left, right) => (rank[left.attention?.importance ?? 'normal'] - rank[right.attention?.importance ?? 'normal']) || (dateOf(left) ?? '9999').localeCompare(dateOf(right) ?? '9999') || left.loopId.localeCompare(right.loopId);
+const compareScheduled = (left, right) => (firstScheduledAt(left) ?? '9999').localeCompare(firstScheduledAt(right) ?? '9999') || compare(left, right);
 const ready = loop => ['confirmed'].includes(loop.state) && !(loop.attention?.dependencies?.length);
+const decisionReasons = new Set(['decision-requested', 'response-requested', 'material-change', 'evidence-conflict', 'activated-blocker']);
+
+function mandatoryGroups(mandatory, today) {
+  const groups = { overdue: [], dueToday: [], decisions: [], reviews: [] };
+  for (const loop of mandatory) {
+    const due = day(dateOf(loop));
+    if (due && due < today) groups.overdue.push(loop);
+    else if (due === today) groups.dueToday.push(loop);
+    else if (decisionReasons.has(loop.attention?.reason)) groups.decisions.push(loop);
+    else groups.reviews.push(loop);
+  }
+  return Object.freeze(Object.fromEntries(Object.entries(groups).map(([key, values]) => [key, Object.freeze(values)])));
+}
 
 export function projectCapacityWorkspace(input, { now = new Date().toISOString(), reviewLimit = 5, maxEffortMinutes, context, topicId, importance } = {}) {
   if (!Array.isArray(input) || !Number.isInteger(reviewLimit) || reviewLimit < 1 || reviewLimit > 25) throw new TypeError('capacity projection input is invalid');
@@ -15,10 +30,10 @@ export function projectCapacityWorkspace(input, { now = new Date().toISOString()
   const visible = loops.filter(loop => !terminal.has(loop.state));
   const mandatory = visible.filter(loop => {
     const due = dateOf(loop); const review = loop.reviewAt;
-    return due && day(due) <= today || review && day(review) <= today || ['decision-requested', 'response-requested', 'material-change', 'evidence-conflict', 'activated-blocker'].includes(loop.attention?.reason);
-  }).sort(compare);
+    return due && day(due) <= today || review && day(review) <= today || decisionReasons.has(loop.attention?.reason);
+  }).sort(compareScheduled);
   const plannedToday = visible.filter(loop => day(loop.attention?.plannedAt) === today && !mandatory.some(item => item.loopId === loop.loopId)).sort(compare);
-  const upcoming = visible.filter(loop => [dateOf(loop), loop.reviewAt, loop.attention?.plannedAt].some(value => value && day(value) > today)).sort(compare);
+  const upcoming = visible.filter(loop => [dateOf(loop), loop.reviewAt, loop.attention?.plannedAt].some(value => value && day(value) > today)).sort(compareScheduled);
   const capacity = visible.filter(loop => ready(loop) && !loop.attention?.someday && !mandatory.some(item => item.loopId === loop.loopId) && !loop.attention?.plannedAt && !loop.reviewAt)
     .filter(loop => topicId === undefined || loop.topicId === topicId)
     .filter(loop => importance === undefined || (loop.attention?.importance ?? 'normal') === importance)
@@ -43,7 +58,7 @@ export function projectCapacityWorkspace(input, { now = new Date().toISOString()
     ...(loop.reviewAt ? [{ kind: 'review', at: loop.reviewAt, loop }] : []),
     ...(loop.attention?.plannedAt ? [{ kind: 'planned', at: loop.attention.plannedAt, loop }] : [])
   ]).sort((left, right) => left.at.localeCompare(right.at) || left.loop.loopId.localeCompare(right.loop.loopId));
-  return Object.freeze({ schemaVersion: 1, now, today: Object.freeze({ mandatory: Object.freeze(mandatory), planned: Object.freeze(plannedToday) }), upcoming: Object.freeze(upcoming), capacity: Object.freeze(capacity), waiting: Object.freeze(waiting), review: Object.freeze({ batch: Object.freeze(reviewBatch), remaining: reviewEligible.length - reviewBatch.length, eligibleTotal: reviewEligible.length }), someday: Object.freeze(someday), board, agenda: Object.freeze(agenda) });
+  return Object.freeze({ schemaVersion: 1, now, today: Object.freeze({ mandatory: Object.freeze(mandatory), mandatoryTotal: mandatory.length, groups: mandatoryGroups(mandatory, today), planned: Object.freeze(plannedToday) }), upcoming: Object.freeze(upcoming), capacity: Object.freeze(capacity), waiting: Object.freeze(waiting), review: Object.freeze({ batch: Object.freeze(reviewBatch), remaining: reviewEligible.length - reviewBatch.length, eligibleTotal: reviewEligible.length }), someday: Object.freeze(someday), board, agenda: Object.freeze(agenda) });
 }
 
 export function planOrganizationChange(loopInput, input) {

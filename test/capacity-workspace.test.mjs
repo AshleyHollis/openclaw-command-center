@@ -14,6 +14,29 @@ test('Today is uncapped for deadlines while capacity stays quiet and filterable'
   assert.equal(result.review.remaining, 203);
 });
 
+test('busy and returning journeys keep every mandatory item in honest, non-overlapping groups', () => {
+  const overdue = Array.from({ length: 20 }, (_, i) => loop(`overdue-${i}`, { dueAt: '2026-09-13T10:00:00Z' }));
+  const dueToday = Array.from({ length: 3 }, (_, i) => loop(`today-${i}`, { dueAt: '2026-09-20T10:00:00Z', attention: { reason: 'response-requested' } }));
+  const decision = loop('undated-decision', { attention: { reason: 'decision-requested', whyNow: 'A choice is required before work can continue.' } });
+  const review = loop('accepted-review', { reviewAt: '2026-09-20T08:00:00Z' });
+  const backlog = Array.from({ length: 200 }, (_, i) => loop(`optional-${String(i).padStart(3, '0')}`, { attention: { importance: 'low' } }));
+  const result = projectCapacityWorkspace([...overdue, ...dueToday, decision, review, ...backlog], { now: '2026-09-20T09:00:00Z' });
+  assert.equal(result.today.mandatoryTotal, 25);
+  assert.deepEqual(Object.fromEntries(Object.entries(result.today.groups).map(([key, values]) => [key, values.length])), { overdue: 20, dueToday: 3, decisions: 1, reviews: 1 });
+  assert.equal(new Set(Object.values(result.today.groups).flat().map(item => item.loopId)).size, 25);
+  assert.equal(result.capacity.length, 200);
+  assert.equal(result.today.groups.decisions[0].dueAt, undefined, 'an actionable undated request must not gain a fabricated deadline');
+});
+
+test('upcoming work is chronological across planned, review and due meanings', () => {
+  const result = projectCapacityWorkspace([
+    loop('due-later', { dueAt: '2026-09-25T10:00:00Z', attention: { importance: 'critical' } }),
+    loop('review-first', { reviewAt: '2026-09-21T10:00:00Z', attention: { importance: 'low' } }),
+    loop('planned-middle', { attention: { plannedAt: '2026-09-22T10:00:00Z', importance: 'normal' } })
+  ], { now: '2026-09-20T09:00:00Z' });
+  assert.deepEqual(result.upcoming.map(item => item.loopId), ['review-first', 'planned-middle', 'due-later']);
+});
+
 test('review rotation is deterministic and only decisions mark consideration', () => {
   const items = ['a', 'b', 'c', 'd', 'e', 'f'].map(id => loop(id));
   const first = projectCapacityWorkspace(items, { now: '2026-09-20T08:00:00Z', reviewLimit: 2 });
