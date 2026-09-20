@@ -16,7 +16,7 @@ import { resolveCommandCenterDatabasePath } from '../../src/metadata/path.mjs';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { readNativeHistoryInventory } from '../../src/migration/native-history-source.mjs';
 import { runPreservedHistoryImport } from '../../src/migration/preserved-history-import.mjs';
-import { NOTE_FOLDER_IDENTITY_FILE, readNoteFolderIdentity, setHostFilesystemIdentityReader } from '../../src/sources/note-folder-identity.mjs';
+import { NOTE_FOLDER_IDENTITY_FILE } from '../../src/sources/note-folder-identity.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isCommandCenterMigrationReady, readCommandCenterMigrationProgress, recordStartupObservation } from '../../src/acceptance-readiness.mjs';
 import { scanPublicEvidence } from '../../src/safety.mjs';
 import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory, isGatewayStartupPending } from './real-host-runtime.mjs';
@@ -25,6 +25,7 @@ import { tabTo } from './keyboard-navigation.mjs';
 import { prepareNativeLegacyBootstrap, readNativeLegacyBootstrap } from './first-live-native-bootstrap.mjs';
 import { prepareNativeScaleConversations, exerciseNativeScaleStates, openNativeSessionRoster } from './first-live-native-scale.mjs';
 import { startFictionalOpenAiModel } from './fictional-openai-model.mjs';
+import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
 
 // Bounded fictional fixture bytes. These enter only the isolated world and
 // let the native Files replacement exercise its real document owner without
@@ -270,11 +271,7 @@ export async function seedNativeExistingTopic({ world, host, signal, catalog = f
   // The external acceptance owner reads the witness through the exact pinned
   // host runtime helper. This preserves parity with the Gateway process while
   // keeping fixture setup outside the plugin's activation-scoped setters.
-  const fileAccess = await import('openclaw/plugin-sdk/file-access-runtime');
-  const releaseIdentityReader = setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
-  let identity;
-  try { identity = await readNoteFolderIdentity(folder); }
-  finally { releaseIdentityReader(); }
+  const identity = await readHostNoteFolderIdentity(folder);
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
   try {
     metadata.createTopic({ topicId, name, paraCategory, lifecycle: 'active' });
@@ -312,7 +309,7 @@ async function seedNativeResourceTopic({ world, signal }) {
   }
   await writeFile(path.join(folder, 'resource-index.json'), '{"fixture":true}\n', { flag: 'wx' });
   await writeFile(path.join(folder, NOTE_FOLDER_IDENTITY_FILE), `${JSON.stringify({ version: 1, id: randomUUID() })}\n`, { flag: 'wx', mode: 0o600 });
-  const identity = await readNoteFolderIdentity(folder);
+  const identity = await readHostNoteFolderIdentity(folder);
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true, activity: true } });
   try {
     metadata.createTopic({ topicId, name, paraCategory: 'resource', lifecycle: 'active' });

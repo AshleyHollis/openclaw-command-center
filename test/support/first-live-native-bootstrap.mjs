@@ -5,7 +5,8 @@ import path from 'node:path';
 import { retainPreparedMigrationFixtureEvidence, verifiedMigrationStatusReady } from '../../src/acceptance-migration.mjs';
 import { waitForConsecutiveReadiness } from '../../src/host-harness.mjs';
 import { readNativeNote } from '../../src/native-ui/note-read.mjs';
-import { NOTE_FOLDER_IDENTITY_FILE, readNoteFolderIdentity } from '../../src/sources/note-folder-identity.mjs';
+import { NOTE_FOLDER_IDENTITY_FILE } from '../../src/sources/note-folder-identity.mjs';
+import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
 import { readAuthenticatedHistory, requestAuthenticatedGateway } from './real-host-runtime.mjs';
 
 async function originalNoteIdentity(file) {
@@ -126,7 +127,7 @@ export async function readNativeLegacyBootstrap({ world, host, signal, bootstrap
   assert.equal(locators[0].locator, undefined);
   assert.equal(locators[0].ownership, 'external');
   assert.ok(Number.isSafeInteger(locators[0].locatorVersion) && locators[0].locatorVersion > 0);
-  assert.equal(locators[0].observedRevision, await readNoteFolderIdentity(bootstrap.folder), 'Default bootstrap must enroll and bind the actual existing Folder');
+  assert.equal(locators[0].observedRevision, await readHostNoteFolderIdentity(bootstrap.folder), 'Default bootstrap must enroll and bind the actual existing Folder');
   const catalog = await request('sessions.browse', { topicId: bootstrap.topicId, includeClosed: false });
   assert.equal(catalog.topicId, bootstrap.topicId);
   assert.equal(catalog.conversations.length, expectedConversationCount);

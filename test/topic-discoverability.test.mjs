@@ -30,3 +30,12 @@ test('post-startup discoverability reports widespread Note identity recovery wit
     return true;
   });
 });
+
+test('post-startup discoverability treats an empty installation as healthy and ignores Archive recovery', async () => {
+  const result = await inspectTopicDiscoverability({ metadata: { listTopics: () => [] },
+    topics: { listDestinationVerified: async () => ({ activeGroups: { project: [], area: [], resource: [] }, recovery: [{ topicId: 'fictional-archive', lifecycle: 'active', paraCategory: 'archive', recovery: [{ referenceId: 'archive-folder', sourceKind: 'note_folder', state: 'required' }] }] }) },
+    sources: { sessionsList: () => assert.fail('An empty installation has no Session source to inspect') }
+  });
+  assert.deepEqual(result, { phase: 'healthy', schemaVersion: 1, activeTopics: 0, visibleTopics: 0, recoveryTopics: 0,
+    recoveryBySourceKind: {}, primaryConversationsVerified: 0, primaryConversationsMissing: 0, widespreadIdentityFailure: false });
+});
