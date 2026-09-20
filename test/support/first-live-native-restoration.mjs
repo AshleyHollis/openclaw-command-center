@@ -18,6 +18,7 @@ import { controlUiPluginUrl } from '../../src/acceptance-readiness.mjs';
 import { scanPublicEvidence } from '../../src/safety.mjs';
 import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory } from './real-host-runtime.mjs';
 import { seedNativeExistingTopic } from './first-live-native-journey.mjs';
+import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, openNativeTopicFiles } from './native-topic-workspace.mjs';
 
 // These capabilities qualify the metadata migration owner in isolation. They
 // do not enable deferred product services in the launched native application.
@@ -256,20 +257,29 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       const matching = topics.activeGroups[fixture.paraCategory].filter(topic => topic.topicId === fixture.topicId);
       assert.equal(matching.length, 1);
       assert.equal(matching[0].usable, true);
-      await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).press('Enter');
-      await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
-      const content = nativePage.getByRole('region', { name: 'Note content', exact: true });
-      await content.filter({ hasText: fixture.noteText.trim() }).waitFor();
-      assert.equal(await content.textContent(), fixture.noteText);
+      await openNativeTopicConversation({ page, fixture, referenceId: fixture.sessionReferenceId });
+      await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, fixture.sessionKey, { timeout: 30_000 });
+      const workspace = await openNativeTopicFiles({ page, fixture });
+      const reader = workspace.locator('[data-topic-reader-page="panel"]');
+      const filter = reader.getByRole('searchbox', { name: 'Filter files by name or path', exact: true });
+      await filter.fill(fixture.notePath);
+      await reader.getByRole('button', { name: fixture.notePath.split('/').at(-1), exact: true }).click({ timeout: 30_000 });
+      const content = workspace.getByRole('region', { name: 'Note content', exact: true });
+      await assertNativeFormattedNote(content, fixture);
+      await assertNativeNoteSource(workspace, fixture);
       assert.equal(await readFile(path.join(fixture.folder, fixture.notePath), 'utf8'), fixture.noteText);
-      assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
-      assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
+      assert.equal(await workspace.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
+      assert.equal(await workspace.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
+      await page.locator('openclaw-app-sidebar:visible [data-sidebar-entry="plugin:command-center/topics"]')
+        .getByRole('link', { name: 'Manage Topics', exact: true }).click({ timeout: 30_000 });
+      await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor({ timeout: 30_000 });
+      await nativePage.getByRole('button', { name: `View Notes for ${fixture.name}`, exact: true }).click({ timeout: 30_000 });
       const label = 'Fictional restored Conversation';
       const creationResponse = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'POST'
         && new URL(response.url()).pathname === '/plugins/command-center/api/topic/actions'
         && response.request().postDataJSON()?.action === 'conversations.create', { timeout: 30_000 }));
       await nativePage.getByRole('textbox', { name: 'Conversation label', exact: true }).fill(label);
-      await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).press('Enter');
+      await nativePage.getByRole('button', { name: 'Create Conversation', exact: true }).click({ timeout: 30_000 });
       const observed = await creationResponse;
       assert.equal(hasSuccessfulBrowserResponse(observed), true);
       const requestHeaders = observed.value.request().headers();
@@ -296,7 +306,7 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       assert.equal(created[0].isPrimary, false);
       assert.equal(created[0].status, 'open');
       assert.notEqual(created[0].sessionId, fixture.sessionId);
-      await nativePage.getByRole('button', { name: 'Open created Conversation', exact: true }).press('Enter');
+      await openNativeTopicConversation({ page, fixture, referenceId: receipt.result.referenceId });
       const navigationResponse = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.sessions.navigate', params: { schemaVersion: 1, topicId: fixture.topicId, referenceId: receipt.result.referenceId, nativeChat: true }, signal });
       const navigation = navigationResponse?.result ?? navigationResponse;
       assert.equal(navigation.sourceReference.referenceId, receipt.result.referenceId);
