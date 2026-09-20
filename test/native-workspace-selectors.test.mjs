@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { openNativeTopicFiles, organizeNativeTopicConversations, selectNativeCategoryGrouping, swapNativeTopicFilesWithChat } from './support/native-topic-workspace.mjs';
+import { openNativeTopicConversation, openNativeTopicFiles, organizeNativeTopicConversations, selectNativeCategoryGrouping, swapNativeTopicFilesWithChat } from './support/native-topic-workspace.mjs';
 
 test('native grouping journey selects a Topic row relative to its shadow-root page', { timeout: 10_000 }, async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
@@ -150,6 +150,30 @@ test('native Files resolution reuses an already-open exact workspace', { timeout
     const workspace = await openNativeTopicFiles({ page, fixture: { topicId: 'topic-one', paraCategory: 'project', sessionKey: 'agent:fictional:topic-one' } });
     assert.equal(await workspace.innerText(), 'Already open');
     assert.equal(await page.locator('body').getAttribute('data-reused'), 'true');
+  } finally { await browser.close(); }
+});
+
+test('native Conversation activation reveals the exact reconciled topic and ignores a hidden predecessor', { timeout: 10_000 }, async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<openclaw-app-sidebar hidden><div class="topic-sidebar"><section data-topic-id="topic-one" data-expanded="true"><button data-topic-control-key="conversation:topic-one:created-ref">Hidden predecessor Conversation</button></section></div></openclaw-app-sidebar><openclaw-app-sidebar><div class="topic-sidebar"><button data-topic-control-key="para:project" aria-expanded="false">Projects</button><div id="projects" hidden></div></div></openclaw-app-sidebar>');
+    await page.evaluate(() => {
+      const category = document.querySelector('openclaw-app-sidebar:not([hidden]) [data-topic-control-key="para:project"]');
+      category.addEventListener('click', () => {
+        category.setAttribute('aria-expanded', 'true');
+        const projects = document.querySelector('#projects'); projects.hidden = false;
+        projects.innerHTML = '<section data-topic-id="topic-one" data-expanded="false"><button data-topic-control-key="toggle:topic-one">Topic One</button><div hidden><button data-topic-control-key="conversation:topic-one:created-ref">Created Conversation</button></div></section>';
+        const topic = projects.querySelector('[data-topic-id="topic-one"]');
+        topic.querySelector('[data-topic-control-key="toggle:topic-one"]').addEventListener('click', () => {
+          topic.dataset.expanded = 'true'; topic.querySelector('div').hidden = false;
+        });
+        topic.querySelector('[data-topic-control-key="conversation:topic-one:created-ref"]').addEventListener('click', () => { document.body.dataset.openedReference = 'created-ref'; });
+      });
+    });
+    await openNativeTopicConversation({ page, fixture: { topicId: 'topic-one', paraCategory: 'project' }, referenceId: 'created-ref' });
+    assert.equal(await page.locator('body').getAttribute('data-opened-reference'), 'created-ref');
+    assert.equal(await page.locator('openclaw-app-sidebar:visible [data-topic-id="topic-one"]').getAttribute('data-expanded'), 'true');
   } finally { await browser.close(); }
 });
 

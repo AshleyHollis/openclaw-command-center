@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { assertNativeFormattedNote, assertNativeNoteSource, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
+import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, organizeNativeTopicConversations, selectNativeCategoryGrouping, verifyNativeTopicNotesPane } from './native-topic-workspace.mjs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
@@ -1501,7 +1501,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(createdConversation.status, 'open');
       assert.equal(createdConversation.isPrimary, false);
       assert.notEqual(createdConversation.sessionId, fixture.sessionId);
-      await nativePage.getByRole('button', { name: 'Open created Conversation', exact: true }).press('Enter');
+      await openNativeTopicConversation({ page, fixture, referenceId: newReferenceId });
       await waitForConsecutiveReadiness(async () => browserNavigation?.input?.referenceId === newReferenceId
         && typeof browserNavigation?.value?.sessionKey === 'string',
         host.earlyExit, { deadlineMs: 30_000, delayMs: 100, signal });
