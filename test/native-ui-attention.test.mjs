@@ -34,7 +34,7 @@ async function fixture(run) {
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
-          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }], activity: { records: structuredClone(window.activity) } } };
           if (method.endsWith('topics.list')) return { result: { schemaVersion: 1, activeGroups: { project: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }], area: [], resource: [] } } };
           if (method.endsWith('notes.browse')) {
             if (window.paginatedDocuments) {
@@ -120,13 +120,18 @@ async function fixture(run) {
           throw new Error(`Unexpected method ${method}`);
         } };
       const deactivate = plugin.activate(host);
-      if (!pages.has('attention')) throw new Error('First-live activation must register the native Attention destination.');
+      if (!pages.has('attention') || !pages.has('planner')) throw new Error('First-live activation must register Dashboard and Planner destinations.');
       window.mountRecord = (record = 'record-one') => {
         scope?.abort(); view?.dispose(); scope = new AbortController();
         context = { host, props: { notificationRecord: record }, signal: scope.signal, presented: true };
         view = mountAttentionPage(document.querySelector('#mount'), context, operations);
       };
       window.mountInbox = () => window.mountRecord(null);
+      window.mountPlanner = () => {
+        scope?.abort(); view?.dispose(); scope = new AbortController();
+        context = { host, props: {}, signal: scope.signal, presented: true };
+        view = pages.get('planner').mount(document.querySelector('#mount'), context);
+      };
       window.selectRecord = (record) => { context = { ...context, props: { notificationRecord: record } }; view.update(context); };
       window.setPresented = (presented) => { context = { ...context, presented }; view.update(context); };
       window.setAccess = (value) => { host.connection = { ...host.connection, ...value }; for (const fn of subscribers) fn(); };
@@ -327,6 +332,27 @@ test('native capacity workspace plans the same item without inventing a deadline
   assert.equal(request.params.action, 'plan');
   assert.equal(request.params.plannedAt, new Date('2026-09-21T10:30').toISOString());
   assert.equal(request.params.dueAt, undefined);
+}));
+
+test('combined Dashboard uses wide Focus and dashboard regions and keeps the Kanban on Planner', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const card = { loopId: 'dashboard-work', kind: 'general', topicId: 'topic-fictional-renovation', title: 'Review fictional joinery detail', state: 'confirmed', evidenceCount: 1, revision: 1, planning: { importance: 'normal', importanceOrigin: 'processing', contexts: ['home'], dependencies: [], someday: false } };
+    window.openLoops = { total: 1, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [], workspace: { today: { mandatory: [], planned: [] }, upcoming: [], capacity: [card], capacityTotal: 1, waiting: [], someday: [], review: { batch: [card], remaining: 0, eligibleTotal: 1 }, board: { ready: [card], doing: [], waiting: [], done: [], suggestions: [] }, agenda: [] } };
+    window.mountInbox();
+  });
+  await page.getByRole('heading', { name: 'Command Center' }).waitFor();
+  assert.equal(await page.locator('.cc-workspace').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length), 2);
+  await page.getByRole('heading', { name: 'What needs you now' }).waitFor();
+  await page.getByRole('heading', { name: 'Context at a glance' }).waitFor();
+  await page.getByRole('heading', { name: 'Fictional renovation' }).waitFor();
+  assert.equal(await page.locator('details[data-topic-board]').count(), 0);
+  await page.getByRole('button', { name: 'Open Planner' }).click();
+  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'planner' });
+  await page.evaluate(() => window.mountPlanner());
+  await page.getByRole('heading', { name: 'Planner' }).waitFor();
+  await page.getByText('Kanban board', { exact: true }).waitFor();
+  assert.equal(await page.getByText('Intake coverage', { exact: true }).count(), 0);
 }));
 
 test('native Attention confirms or dismisses suggestions and defers quiet items with exact review times', () => fixture(async (page) => {
