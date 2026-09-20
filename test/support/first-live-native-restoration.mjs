@@ -283,7 +283,8 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       assert.equal(hasSuccessfulBrowserResponse(observed), true);
       const creationUrl = new URL(observed.value.url());
       assert.equal(creationUrl.origin, new URL(world.gateway.url).origin);
-      assert.equal(observed.value.request().headers()['sec-fetch-site'], 'same-origin', 'The native loader must use its authenticated same-origin route');
+      const creationHeaders = await observed.value.request().allHeaders();
+      assert.equal(creationHeaders['sec-fetch-site'], 'same-origin', 'The native loader must use its authenticated same-origin route');
       const input = observed.value.request().postDataJSON();
       assert.deepEqual(Object.keys(input).sort(), ['action', 'expectedRevision', 'label', 'logicalOperationId', 'schemaVersion', 'topicId']);
       assert.equal(input.topicId, fixture.topicId);
