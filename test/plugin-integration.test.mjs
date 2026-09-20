@@ -104,6 +104,24 @@ function fictionalSchedulerGateway() {
   } };
 }
 
+test('recovered inbound tool registration resolves the exact active service owners', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-inbound-owner-'));
+  const fileAccess = createHostFileAccessFixture();
+  const host = fakePublishedApi(stateDir, { fileAccess });
+  const active = createMetadataService(host.api);
+  const recovered = createMetadataService(host.api);
+  try {
+    await active.start();
+    const owners = recovered.getTopicMaintenanceOwners();
+    assert.equal(owners.sourceService, active.sourceService);
+    assert.equal(owners.metadata, active.sourceService.metadata);
+  } finally {
+    await active.stop();
+    assert.deepEqual(recovered.getTopicMaintenanceOwners(), {});
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('native registration exposes authenticated Topic methods without an iframe descriptor API', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-plugin-descriptor-'));
   let service;

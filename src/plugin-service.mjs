@@ -14,6 +14,17 @@ import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 
+const activeTopicMaintenanceOwners = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');
+
+function publishTopicMaintenanceOwners(owners) {
+  globalThis[activeTopicMaintenanceOwners] = owners;
+  return () => { if (globalThis[activeTopicMaintenanceOwners] === owners) delete globalThis[activeTopicMaintenanceOwners]; };
+}
+
+function readTopicMaintenanceOwners() {
+  return globalThis[activeTopicMaintenanceOwners];
+}
+
 function unavailable(feature) {
   const reason = FIRST_LIVE_FEATURES[feature] === false
     ? 'is deferred from the first live release'
@@ -74,6 +85,7 @@ export function createMetadataService(api) {
   let stopPromise;
   let releaseDurableFolderStager;
   let releaseNoteFilesystemCoordinator;
+  let releaseTopicMaintenanceOwners;
   let recoveryOnly = false;
   const refuseRecovery = () => { throw new SourceServiceError('recovery-only', 'Command Center is recovery-only; authoritative data and mutations remain unavailable.'); };
   const requireOperational = () => { if (recoveryOnly) refuseRecovery(); };
@@ -201,6 +213,7 @@ export function createMetadataService(api) {
       }
       topicService = createTopicService({ metadata: metadataService, api, noteVaultRoot: api.pluginConfig?.topics?.noteRoot });
       const migrationResult = await migrationService.start();
+      releaseTopicMaintenanceOwners = publishTopicMaintenanceOwners(Object.freeze({ sourceService, metadata: metadataService }));
       if (FIRST_LIVE_FEATURES.dashboard) {
         try { await sourceService.refreshReminderAttention(); }
         catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
@@ -240,6 +253,8 @@ export function createMetadataService(api) {
         releaseDurableFolderStager = undefined;
         releaseNoteFilesystemCoordinator?.();
         releaseNoteFilesystemCoordinator = undefined;
+        releaseTopicMaintenanceOwners?.();
+        releaseTopicMaintenanceOwners = undefined;
         sourceService?.close?.();
         attentionService?.close?.();
         metadataService?.close();
@@ -260,7 +275,7 @@ export function createMetadataService(api) {
     // at the owning activation boundary so a host tool invocation cannot
     // depend on a secondary public-property lookup.
     getTopicMaintenanceOwners() {
-      return { sourceService, metadata: metadataService };
+      return sourceService && metadataService ? { sourceService, metadata: metadataService } : readTopicMaintenanceOwners() ?? {};
     },
     get capacityReview() { return capacityReview; },
     get attentionService() { return attentionService; },
