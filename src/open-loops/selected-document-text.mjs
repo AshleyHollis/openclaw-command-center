@@ -1,3 +1,5 @@
+import { loadPdfRuntime } from './pdf-runtime.mjs';
+
 const MAX_TEXT_BYTES = 32 * 1024;
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const MAX_PDF_PAGES = 20;
@@ -32,7 +34,7 @@ async function extractPdf(bytes) {
   let loadingTask;
   let pdf;
   try {
-    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const pdfjs = await loadPdfRuntime();
     loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes), disableWorker: true, isEvalSupported: false, enableXfa: false, useSystemFonts: false });
     pdf = await loadingTask.promise;
     if (!Number.isSafeInteger(pdf.numPages) || pdf.numPages < 1 || pdf.numPages > MAX_PDF_PAGES) return unsupported('pdf-page-limit', { pageCount: pdf.numPages });

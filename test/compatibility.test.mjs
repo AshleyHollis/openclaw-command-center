@@ -36,9 +36,10 @@ test('pins product compatibility and the controller to the exact stable source b
   assert.equal(packageJson.peerDependencies.openclaw, publishedSdkVersion);
   assert.equal(packageJson.devDependencies.openclaw, publishedSdkVersion);
   assert.equal(packageJson.openclaw.compat.pluginApi, `=${controllerPackageVersion}`);
-  assert.equal(packageJson.dependencies['pdfjs-dist'], '6.3.289', 'installed packages require the pinned server-side PDF extractor');
+  assert.equal(packageJson.devDependencies['pdfjs-dist'], '6.3.289', 'the sealed build requires the pinned PDF extractor');
+  assert.equal(packageJson.dependencies, undefined, 'the installed plugin must not declare unpackaged runtime dependencies');
   assert.equal(packageLock.packages[''].peerDependencies.openclaw, publishedSdkVersion);
-  assert.equal(packageLock.packages[''].dependencies['pdfjs-dist'], packageJson.dependencies['pdfjs-dist']);
+  assert.equal(packageLock.packages[''].devDependencies['pdfjs-dist'], packageJson.devDependencies['pdfjs-dist']);
   assert.equal(packageLock.packages[''].devDependencies.openclaw, publishedSdkVersion);
   assert.equal(packageLock.packages['node_modules/openclaw'].version, publishedSdkVersion);
   assert.equal(packageLock.packages['node_modules/openclaw'].dependencies['@openclaw/ai'], publishedSdkVersion);
