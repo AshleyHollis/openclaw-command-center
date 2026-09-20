@@ -22,7 +22,9 @@ export function createHostFileAccessFixture() {
         if (overwrite) throw new Error('The fixture does not permit overwrite publication.');
         await link(staged, path.join(directory.realPath, name));
         const heldDirectory = fs.openSync(directory.realPath, 'r');
-        try { fs.fsyncSync(heldDirectory); } finally { fs.closeSync(heldDirectory); }
+        try { fs.fsyncSync(heldDirectory); }
+        catch (error) { throw Object.assign(new Error('The fixture could not make the publication durable.'), { code: 'helper-failed', cause: error }); }
+        finally { fs.closeSync(heldDirectory); }
       },
       async cleanup() {
         await unlink(staged).catch(error => { if (error?.code !== 'ENOENT') throw error; });

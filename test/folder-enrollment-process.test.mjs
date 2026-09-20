@@ -18,7 +18,7 @@ function participant(stateDir, role) {
   async function wait(type) {
     const deadline = Date.now() + 45_000;
     while (!messages.some((message) => message.type === type)) {
-      if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Child ended before ${type}: ${errors}`);
+      if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Child ended before ${type}: ${errors} messages=${JSON.stringify(messages)}`);
       if (Date.now() > deadline) throw new Error(`Child timed out before ${type}: ${errors}`);
       await delay(10);
     }
