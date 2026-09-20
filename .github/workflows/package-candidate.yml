@@ -33,6 +33,7 @@ jobs:
       - name: Build and verify candidate archive
         env:
           TOOLCHAIN: ghcr.io/ashleyhollis/openclaw@sha256:1154a8fdd314ddf2e87be56f8e33eef78c7bd2eb93d3bd325723d4e9ca03d9c0
+          COMMAND_CENTER_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           docker pull "$TOOLCHAIN"
@@ -67,7 +68,7 @@ jobs:
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: command-center-candidate-${{ github.sha }}
+          name: command-center-candidate-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             ${{ runner.temp }}/candidate-package/artifact/command-center.tgz
             ${{ runner.temp }}/candidate-package/artifact/receipt.json
