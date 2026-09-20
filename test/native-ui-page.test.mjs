@@ -255,16 +255,23 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     if (scenario === 'Note pagination') {
       await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
       await page.getByRole('button', { name: 'Read note-0.md' }).waitFor();
+      await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Next Notes', exact: true }).click();
+      await page.getByText('Notes 51–51 of 51.', { exact: true }).waitFor();
       await page.getByRole('button', { name: 'Read last.md' }).waitFor({ timeout: 2000 });
-      assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 51);
-      assert.equal(await page.getByRole('button', { name: 'Next Notes' }).count(), 0);
+      assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 1);
+      assert.equal(await page.getByRole('button', { name: /Previous Notes|Next Notes/ }).count(), 2);
       await page.evaluate(() => window.disposeNative());
       return;
     }
     if (scenario === 'Note snapshot mismatch') {
       await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
+      await page.getByText('Notes 1–50 of 51.', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Next Notes', exact: true }).click();
       await page.getByText('The Note catalogue changed during retrieval; refresh Notes.', { exact: true }).waitFor();
-      assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 0);
+      assert.equal(await page.locator('[data-topic-notes] .note-tree-item').count(), 50, 'a failed next page retains the already verified page');
+      assert.equal(await page.getByRole('button', { name: 'Previous Notes', exact: true }).isDisabled(), true);
+      assert.equal(await page.getByRole('button', { name: 'Next Notes', exact: true }).isDisabled(), true);
       await page.evaluate(() => window.disposeNative());
       return;
     }
@@ -391,7 +398,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
     await page.waitForFunction(() => window.opened.length === 1, null, { timeout: 2000 });
     assert.deepEqual(await page.evaluate(() => window.opened), [{ sessionKey: 'agent:fictional:chat', agentId: 'fictional' }]);
     assert.equal(await page.locator('textarea,[contenteditable=true],iframe').count(), 0);
-    assert.equal(await page.evaluate(() => window.registrationCount()), 7);
+    assert.equal(await page.evaluate(() => window.registrationCount()), 9);
     await page.evaluate(() => window.disposeNative());
     assert.equal(await page.evaluate(() => window.registrationCount()), 0);
     assert.equal(await page.locator('#mount').innerText(), '');

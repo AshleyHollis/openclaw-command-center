@@ -1243,7 +1243,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       await nativePage.getByRole('heading', { name: fixture.name, exact: true }).waitFor({ timeout: 30_000 });
       const workspace = nativePage.locator('[data-topic-notes-workspace]');
       const filter = workspace.getByRole('searchbox', { name: 'Filter filenames', exact: true });
-      await workspace.getByText('120 Topic files available.', { exact: true }).waitFor({ timeout: 30_000 });
+      await workspace.getByText('Notes 1–50 of 120.', { exact: true }).waitFor({ timeout: 30_000 });
+      await workspace.getByText('50 Topic files available.', { exact: true }).waitFor({ timeout: 30_000 });
       await retainNativeJourneyStage('read-overview');
       await nativePage.getByRole('button', { name: `Read ${fixture.notePath}`, exact: true }).press('Enter');
       const noteContent = nativePage.getByRole('region', { name: 'Note content', exact: true });
@@ -1255,7 +1256,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       assert.equal(browserNote?.value.sourceReference?.topicId, fixture.topicId);
       await retainNativeJourneyStage('filename-filter');
       await filter.fill('Plan.md');
-      await workspace.getByText('3 of 120 Topic files match “Plan.md”.', { exact: true }).waitFor({ timeout: 30_000 });
+      await workspace.getByText('1 of 50 Topic files match “Plan.md”.', { exact: true }).waitFor({ timeout: 30_000 });
       const planned = fixture.catalogNotes.find((entry) => entry.path === 'Z Projects/Alpha/Planning/Plan.md');
       assert.ok(planned, 'The bounded catalogue must contain an exact nested duplicate filename.');
       const plannedButton = workspace.getByRole('button', { name: `Read ${planned.path}`, exact: true });
@@ -1343,9 +1344,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       if (catalog) {
         const workspace = nativePage.locator('[data-topic-notes-workspace]');
         const filter = workspace.getByRole('searchbox', { name: 'Filter filenames', exact: true });
-        await workspace.getByText('120 Topic files available.', { exact: true }).waitFor();
+        await workspace.getByText('Notes 1–50 of 120.', { exact: true }).waitFor();
+        await workspace.getByText('50 Topic files available.', { exact: true }).waitFor();
         await filter.fill('Plan.md');
-        await workspace.getByText('3 of 120 Topic files match “Plan.md”.', { exact: true }).waitFor();
+        await workspace.getByText('1 of 50 Topic files match “Plan.md”.', { exact: true }).waitFor();
         const planned = fixture.catalogNotes.find((entry) => entry.path === 'Z Projects/Alpha/Planning/Plan.md');
         assert.ok(planned, 'The bounded catalogue must contain an exact nested duplicate filename.');
         const plannedButton = workspace.getByRole('button', { name: `Read ${planned.path}`, exact: true });
@@ -1357,7 +1359,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         await nativePage.getByRole('region', { name: 'Note content', exact: true }).waitFor();
         await retainTopicNotesScreenshot(page, 'topic-notes-1366');
         await filter.fill('');
-        await workspace.getByText('120 Topic files available.', { exact: true }).waitFor();
+        await workspace.getByText('50 Topic files available.', { exact: true }).waitFor();
       }
       assert.equal(await nativePage.getByRole('textbox', { name: 'Note draft', exact: true }).count(), 0);
       assert.equal(await nativePage.getByRole('button', { name: 'Save Note', exact: true }).count(), 0);
