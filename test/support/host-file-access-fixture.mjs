@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { link, open, unlink, writeFile } from 'node:fs/promises';
+import fs from 'node:fs';
+import { link, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { setHostDurableFolderStager } from '../../src/sources/note-folder-identity.mjs';
 import { setHostNoteFilesystemCoordinator } from '../../src/sources/note-filesystem-owner.mjs';
@@ -11,13 +12,17 @@ export function createHostFileAccessFixture() {
   const held = new Set();
   const stageDurableFileInDirectory = async ({ directory, content, mode }) => {
     const staged = path.join(directory.realPath, `.fixture-stage-${randomUUID()}`);
-    await writeFile(staged, content, { flag: 'wx', mode });
+    const stagedDescriptor = fs.openSync(staged, 'wx', mode);
+    try {
+      fs.writeSync(stagedDescriptor, content);
+      fs.fsyncSync(stagedDescriptor);
+    } finally { fs.closeSync(stagedDescriptor); }
     return Object.freeze({
       async publish(name, { overwrite = false } = {}) {
         if (overwrite) throw new Error('The fixture does not permit overwrite publication.');
         await link(staged, path.join(directory.realPath, name));
-        const heldDirectory = await open(directory.realPath, 'r');
-        try { await heldDirectory.sync(); } finally { await heldDirectory.close(); }
+        const heldDirectory = fs.openSync(directory.realPath, 'r');
+        try { fs.fsyncSync(heldDirectory); } finally { fs.closeSync(heldDirectory); }
       },
       async cleanup() {
         await unlink(staged).catch(error => { if (error?.code !== 'ENOENT') throw error; });
