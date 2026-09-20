@@ -200,6 +200,21 @@ export async function openNativeTopicFiles({ page, fixture, onStage } = {}) {
   }
 }
 
+export async function swapNativeTopicFilesWithChat({ page, nativeChat }) {
+  const swap = nativeChat.locator('.chat-panel-swap:visible').first();
+  try {
+    await swap.waitFor({ state: 'visible', timeout: 10_000 });
+    assert.equal(await swap.getAttribute('aria-label'), 'Swap Topic Files and Chat');
+    await swap.click({ timeout: 10_000 });
+  } catch (error) {
+    const diagnostics = await page.locator('.chat-panel-swap').evaluateAll((controls) => controls.slice(0, 8).map((control) => ({
+      label: control.getAttribute('aria-label'), visible: control.checkVisibility(),
+      activeChat: control.closest('openclaw-chat-pane')?.getAttribute('aria-hidden') === 'false'
+    }))).catch(() => []);
+    throw new Error(`Native Topic Files swap control is unavailable: ${JSON.stringify(diagnostics)}`, { cause: error });
+  }
+}
+
 export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, onStage } = {}) {
   const workspace = await openNativeTopicFiles({ page, fixture, onStage });
   await onStage?.('select-overview-note');
@@ -278,10 +293,8 @@ export async function verifyNativeTopicNotesPane({ page, fixture, onPromoted, on
   assert.equal(await nativeChat.evaluate((pane) => pane.sessionKey), fixture.sessionKey);
   assert.equal(await composer.inputValue(), unsentDraft);
   await onStage?.('swap-pane');
-  const swap = page.getByRole('button', { name: 'Swap Topic Notes and Chat', exact: true });
-  await swap.waitFor();
   assert.equal(await page.locator('.sidebar-region__right-runtime').getByRole('tab', { name: 'Chat', exact: true }).count(), 1);
-  await swap.click();
+  await swapNativeTopicFilesWithChat({ page, nativeChat });
   await onStage?.('verify-swapped-pane');
   await page.locator('.sidebar-region__primary[data-region="main"]').waitFor({ state: 'visible', timeout: 10_000 });
   await assertNativeFormattedNote(page.locator('[data-panel-slot="workspace"][data-region="side"]:visible').getByRole('region', { name: 'Note content', exact: true }), fixture);

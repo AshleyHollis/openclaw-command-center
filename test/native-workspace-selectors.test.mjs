@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { openNativeTopicFiles, organizeNativeTopicConversations, selectNativeCategoryGrouping } from './support/native-topic-workspace.mjs';
+import { openNativeTopicFiles, organizeNativeTopicConversations, selectNativeCategoryGrouping, swapNativeTopicFilesWithChat } from './support/native-topic-workspace.mjs';
 
 test('native grouping journey selects a Topic row relative to its shadow-root page', { timeout: 10_000 }, async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
@@ -150,5 +150,17 @@ test('native Files resolution reuses an already-open exact workspace', { timeout
     const workspace = await openNativeTopicFiles({ page, fixture: { topicId: 'topic-one', paraCategory: 'project', sessionKey: 'agent:fictional:topic-one' } });
     assert.equal(await workspace.innerText(), 'Already open');
     assert.equal(await page.locator('body').getAttribute('data-reused'), 'true');
+  } finally { await browser.close(); }
+});
+
+test('native Files swap uses the active Chat pane control and current replacement label', { timeout: 10_000 }, async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<openclaw-chat-pane aria-hidden="true" hidden><button class="chat-panel-swap" aria-label="Swap Topic Notes and Chat">Hidden predecessor</button></openclaw-chat-pane><openclaw-chat-pane aria-hidden="false"><button class="chat-panel-swap" aria-label="Swap Topic Files and Chat">Swap</button></openclaw-chat-pane>');
+    await page.evaluate(() => document.querySelector('openclaw-chat-pane[aria-hidden="false"] .chat-panel-swap').addEventListener('click', () => { document.body.dataset.swapped = 'true'; }));
+    const nativeChat = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+    await swapNativeTopicFilesWithChat({ page, nativeChat });
+    assert.equal(await page.locator('body').getAttribute('data-swapped'), 'true');
   } finally { await browser.close(); }
 });
