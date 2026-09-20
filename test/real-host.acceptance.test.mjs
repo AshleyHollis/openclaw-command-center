@@ -101,6 +101,8 @@ function reportProgress(testContext, phase, detail = {}) {
 }
 
 const nativeVendorModules = Object.freeze([
+  'vendor/pdf.mjs',
+  'vendor/pdf.worker.mjs',
   'native-ui/vendor/markdown-it.mjs',
   'native-ui/vendor/purify.es.mjs',
   'native-ui/vendor/pdf.mjs',

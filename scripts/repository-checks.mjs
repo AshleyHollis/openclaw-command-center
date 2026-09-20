@@ -60,6 +60,8 @@ export async function runRepositoryChecks({ purpose = 'qualification' } = {}) {
       // browser packages and included in the sealed build receipt. Their
       // minified parser fixtures can resemble credentials to text heuristics.
       trustedContent: [
+        path.join(distRoot, 'vendor', 'pdf.mjs'),
+        path.join(distRoot, 'vendor', 'pdf.worker.mjs'),
         path.join(distRoot, 'native-ui', 'vendor', 'markdown-it.mjs'),
         path.join(distRoot, 'native-ui', 'vendor', 'purify.es.mjs'),
         path.join(distRoot, 'native-ui', 'vendor', 'pdf.mjs'),

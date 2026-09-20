@@ -56,6 +56,17 @@ test('sealed plugin packs deterministically and round trips through the native a
   assert.equal((await lstat(path.join(verified, 'dist'))).mode & 0o777, 0o755);
   assert.equal((await lstat(path.join(verified, 'dist/plugin.mjs'))).mode & 0o777, 0o644);
   assert.deepEqual(await readFile(path.join(verified, 'dist/plugin.mjs')), await readFile(path.join(root, 'dist/plugin.mjs')));
+  const installedPackage = JSON.parse(await readFile(path.join(verified, 'package.json'), 'utf8'));
+  assert.equal(installedPackage.dependencies, undefined, 'the archive must not declare dependencies it does not contain');
+  for (const member of ['dist/vendor/pdf.mjs', 'dist/vendor/pdf.worker.mjs', 'dist/vendor/pdfjs-LICENSE.txt']) {
+    assert.ok(first.receipt.files.some(file => file.path === member), `the archive is missing ${member}`);
+  }
+  const runtimeUrl = pathToFileURL(path.join(verified, 'dist/open-loops/pdf-runtime.mjs')).href;
+  const runtimeProbe = `const { loadPdfRuntime } = await import(${JSON.stringify(runtimeUrl)});\n` +
+    "const pdfjs = await loadPdfRuntime();\nif (typeof pdfjs.getDocument !== 'function') process.exit(71);\n";
+  await promisify(execFile)(process.execPath, ['--input-type=module', '--eval', runtimeProbe], {
+    cwd: verified, env: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH }, timeout: 30_000
+  });
   assert.deepEqual(JSON.parse(await readFile(first.receiptPath, 'utf8')), first.receipt);
 });
 

@@ -126,6 +126,7 @@ async function buildUnlocked() {
   for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'open-loops', 'search', 'topics', 'dashboard', 'notifications', 'http', 'native-ui', 'documents']) {
     await cp(path.join(sourceRoot, 'src', directory), path.join(distRoot, directory), { recursive: true, verbatimSymlinks: true });
   }
+  await mkdir(path.join(distRoot, 'vendor'), { recursive: true });
   // Native Control UI assets are served from one declared directory. Project
   // the root build-owned policy into that directory instead of making the
   // browser resolve a parent asset outside the host's immutable asset set.
@@ -142,6 +143,11 @@ async function buildUnlocked() {
   await cp(path.join(markdownIt, 'LICENSE'), path.join(distRoot, 'native-ui', 'vendor', 'markdown-it-LICENSE.txt'));
     await cp(path.join(dompurify, 'LICENSE'), path.join(distRoot, 'native-ui', 'vendor', 'dompurify-LICENSE.txt'));
     const pdfjs = installedPackageRoot('pdfjs-dist');
+    await cp(path.join(pdfjs, 'legacy', 'build', 'pdf.mjs'), path.join(distRoot, 'vendor', 'pdf.mjs'));
+    await cp(path.join(pdfjs, 'legacy', 'build', 'pdf.worker.mjs'), path.join(distRoot, 'vendor', 'pdf.worker.mjs'));
+    await cp(path.join(pdfjs, 'LICENSE'), path.join(distRoot, 'vendor', 'pdfjs-LICENSE.txt'));
+    await writeFile(path.join(distRoot, 'open-loops', 'pdf-runtime.mjs'),
+      "export const loadPdfRuntime = () => import('../vendor/pdf.mjs');\n");
     await cp(path.join(pdfjs, 'build', 'pdf.mjs'), path.join(distRoot, 'native-ui', 'vendor', 'pdf.mjs'));
     await cp(path.join(pdfjs, 'build', 'pdf.worker.mjs'), path.join(distRoot, 'native-ui', 'vendor', 'pdf.worker.mjs'));
     await writePdfResourceBundle(pdfjs, path.join(distRoot, 'native-ui', 'vendor', 'pdf-resources.mjs'));
