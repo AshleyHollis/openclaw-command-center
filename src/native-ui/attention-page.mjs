@@ -22,7 +22,9 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       const operation = value?.operation;
       const validDraft = draft && ['task', 'idea', 'note'].includes(draft.kind) && typeof draft.topicId === 'string' && typeof draft.title === 'string' && draft.title.length <= 300;
       const params = operation?.params;
-      const validOperation = operation && typeof operation.draftKey === 'string' && params?.schemaVersion === 1 && typeof params.logicalOperationId === 'string' && typeof params.captureId === 'string' && typeof params.capturedAt === 'string' && ['task', 'idea'].includes(params.captureKind) && typeof params.topicId === 'string' && typeof params.title === 'string';
+      const captureOperation = operation?.method === 'command-center.v1.open-loops.capture' && typeof params.captureId === 'string' && typeof params.capturedAt === 'string' && ['task', 'idea'].includes(params.captureKind) && typeof params.title === 'string';
+      const noteOperation = operation?.method === 'command-center.v1.notes.create' && typeof params.referenceId === 'string' && typeof params.path === 'string' && typeof params.text === 'string';
+      const validOperation = operation && typeof operation.draftKey === 'string' && params?.schemaVersion === 1 && typeof params.logicalOperationId === 'string' && typeof params.topicId === 'string' && (captureOperation || noteOperation);
       return { draft: validDraft ? draft : emptyQuickCaptureDraft(), operation: validOperation ? operation : undefined };
     } catch { return { draft: emptyQuickCaptureDraft(), operation: undefined }; }
   };
@@ -159,7 +161,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
 
   function renderQuickCapture(parent, dashboard, pending) {
     const module = element('section'); module.className = 'cc-module'; module.dataset.quickCapture = 'true';
-    module.append(element('h3', 'Quick capture'), element('p', 'Capture an explicit task or park an idea in one Topic. Notes stay quiet and require the Topic Notes authoring path.'));
+    module.append(element('h3', 'Quick capture'), element('p', 'Capture an explicit task, park an idea, or save a quiet note in one Topic.'));
     const form = element('form');
     const kindLabel = element('label', 'Type '); const kind = element('select');
     for (const [value, label] of [['task', 'Task'], ['idea', 'Idea'], ['note', 'Note']]) { const option = element('option', label); option.value = value; kind.append(option); }
@@ -170,10 +172,11 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     topic.value = quickCaptureDraft.topicId; topicLabel.append(topic);
     const titleLabel = element('label', ' What should be remembered? '); const title = element('input'); title.type = 'text'; title.required = true; title.maxLength = 300; title.value = quickCaptureDraft.title; titleLabel.append(title);
     const unchangedPending = () => quickCaptureOperation?.draftKey === JSON.stringify(quickCaptureDraft);
-    const save = element('button', kind.value === 'note' ? 'Open Topic Notes' : unchangedPending() ? 'Retry capture' : 'Capture'); save.type = 'submit';
+    const buttonLabel = () => unchangedPending() ? (quickCaptureDraft.kind === 'note' ? 'Retry note' : 'Retry capture') : quickCaptureDraft.kind === 'note' ? 'Save note' : 'Capture';
+    const save = element('button', buttonLabel()); save.type = 'submit';
     const update = () => {
       quickCaptureDraft = { kind: kind.value, topicId: topic.value, title: title.value };
-      save.textContent = kind.value === 'note' ? 'Open Topic Notes' : unchangedPending() ? 'Retry capture' : 'Capture';
+      save.textContent = buttonLabel();
       saveQuickCaptureState();
     };
     kind.addEventListener('change', update, { signal }); topic.addEventListener('change', update, { signal }); title.addEventListener('input', update, { signal });
@@ -181,23 +184,31 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     form.addEventListener('submit', async event => {
       event.preventDefault(); update();
       if (!current(pending) || !writable() || save.disabled || !quickCaptureDraft.topicId || !quickCaptureDraft.title.trim()) return;
-      if (quickCaptureDraft.kind === 'note') {
-        report('Note authoring is not admitted in this release. The draft remains here; open the Topic to use its available Notes reader.');
-        host.navigation.openPage({ id: 'topic', params: { topicId: quickCaptureDraft.topicId } });
-        return;
-      }
       save.disabled = true;
-      const draftKey = JSON.stringify(quickCaptureDraft);
-      if (!quickCaptureOperation || quickCaptureOperation.draftKey !== draftKey) {
-        quickCaptureOperation = { draftKey, params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), captureId: crypto.randomUUID(), capturedAt: new Date().toISOString(), topicId: quickCaptureDraft.topicId, captureKind: quickCaptureDraft.kind, title: quickCaptureDraft.title.trim() } };
-        saveQuickCaptureState();
-      }
       try {
-        const response = await host.request('command-center.v1.open-loops.capture', quickCaptureOperation.params);
+        const draftKey = JSON.stringify(quickCaptureDraft);
+        if (!quickCaptureOperation || quickCaptureOperation.draftKey !== draftKey) {
+          if (quickCaptureDraft.kind === 'note') {
+            const topicResponse = unwrap(await host.request('command-center.v1.topics.get', { schemaVersion: 1, topicId: quickCaptureDraft.topicId }));
+            const exactTopic = topicResponse?.topic;
+            if (!current(pending) || exactTopic?.topicId !== quickCaptureDraft.topicId || !nonBlank(exactTopic.noteFolderReferenceId)) throw new Error('This Topic does not have an authorized Note Folder. The draft remains available.');
+            const logicalOperationId = crypto.randomUUID();
+            const day = new Date().toISOString().slice(0, 10);
+            quickCaptureOperation = { draftKey, method: 'command-center.v1.notes.create', params: { schemaVersion: 1, logicalOperationId, topicId: quickCaptureDraft.topicId, referenceId: exactTopic.noteFolderReferenceId, path: `Inbox/${day}-${logicalOperationId.slice(0, 8)}.md`, text: `# ${quickCaptureDraft.title.trim()}\n` } };
+          } else {
+            quickCaptureOperation = { draftKey, method: 'command-center.v1.open-loops.capture', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), captureId: crypto.randomUUID(), capturedAt: new Date().toISOString(), topicId: quickCaptureDraft.topicId, captureKind: quickCaptureDraft.kind, title: quickCaptureDraft.title.trim() } };
+          }
+          saveQuickCaptureState();
+        }
+        const response = await host.request(quickCaptureOperation.method, quickCaptureOperation.params);
         const result = unwrap(response);
-        if (!result?.loop?.loopId || result.loop.topicId !== quickCaptureOperation.params.topicId || !['confirmed', 'suggested'].includes(result.loop.state)) throw new Error('The quick-capture acknowledgement was incomplete. Retry the unchanged capture.');
+        if (quickCaptureOperation.method === 'command-center.v1.notes.create') {
+          const note = result?.value?.note ?? result?.note;
+          if (note?.path !== quickCaptureOperation.params.path || note?.topicId !== undefined && note.topicId !== quickCaptureOperation.params.topicId) throw new Error('The note acknowledgement was incomplete. Retry the unchanged note.');
+        } else if (!result?.loop?.loopId || result.loop.topicId !== quickCaptureOperation.params.topicId || !['confirmed', 'suggested'].includes(result.loop.state)) throw new Error('The quick-capture acknowledgement was incomplete. Retry the unchanged capture.');
+        const completedKind = quickCaptureDraft.kind;
         quickCaptureOperation = undefined; quickCaptureDraft = { kind: quickCaptureDraft.kind, topicId: quickCaptureDraft.topicId, title: '' }; saveQuickCaptureState();
-        await load(quickCaptureDraft.kind === 'idea' ? 'Idea captured for bounded suggestion review.' : 'Task captured and acknowledged.');
+        await load(completedKind === 'note' ? 'Note saved quietly in the Topic. No obligation was created.' : completedKind === 'idea' ? 'Idea captured for bounded suggestion review.' : 'Task captured and acknowledged.');
       } catch (error) { if (current(pending)) report(error?.message || 'The capture outcome is unknown. Retry the unchanged capture.'); }
       finally { if (current(pending)) save.disabled = false; }
     }, { signal });

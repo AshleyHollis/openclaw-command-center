@@ -47,6 +47,7 @@ async function fixture(run) {
             return { result: { schemaVersion: 1, notes: [{ schemaVersion: 1, path: 'invoices/fictional-progress-invoice.txt', revision: 'authoritative-v1', sourceKind: 'document', sourceReference: { referenceId: 'document-fictional-progress-invoice', topicId: params.topicId, sourceSystem: 'fictional-documents', sourceKind: 'document' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-document-page' } };
           }
           if (method.endsWith('open-loops.intake-selected')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: window.intakeResult ?? { schemaVersion: 1, disposition: 'applied', checkpoint: { schemaVersion: 1 }, freshness: { status: 'available', lastObservedAt: params.selections[0].observedAt }, hasMore: false, results: [{ disposition: 'applied', observationId: 'selected-observation', sourceVersion: 'authoritative-v1', historicalBaseline: false, loop: { loopId: 'selected-loop', kind: 'payment', state: 'confirmed', revision: 1 } }] } };
+          if (method.endsWith('notes.create')) return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { status: 'applied', value: { note: { schemaVersion: 1, topicId: params.topicId, path: params.path, revision: 'quick-note-v1', sourceKind: 'note', sourceReference: { referenceId: 'quick-note-reference', topicId: params.topicId, sourceSystem: 'fictional-notes', sourceKind: 'note' } } } } };
           if (method.endsWith('open-loops.capture')) {
             if (window.quickCaptureMode === 'unknown') throw new Error('The transport outcome is unknown.');
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: { schemaVersion: 1, loopId: `captured-${params.captureId}`, kind: 'general', stableSubjectId: `manual-${params.captureId}`, title: params.title, topicId: params.topicId, state: params.captureKind === 'idea' ? 'suggested' : 'confirmed', evidenceObservationIds: ['manual-evidence'], revision: 1 } } };
@@ -119,7 +120,7 @@ async function fixture(run) {
             const navigation = window.actionNavigation;
             return { schemaVersion: 1, logicalOperationId: params.logicalOperationId, result: { status: 'applied', episode, ...(navigation ? { navigation } : {}) } };
           }
-          if (method.endsWith('topics.get')) return { result: { topic: { topicId: params.topicId } } };
+          if (method.endsWith('topics.get')) return { result: { topic: { topicId: params.topicId, noteFolderReferenceId: 'fictional-note-folder' } } };
           if (method.endsWith('sessions.resolve-native')) return { result: { sessionKey: 'agent:main:fictional-activity' } };
           throw new Error(`Unexpected method ${method}`);
         } };
@@ -381,7 +382,7 @@ test('Planner uses the full workspace and exposes every card in real Kanban lane
   await page.getByRole('heading', { name: 'Ready item 25', exact: true }).waitFor();
 }));
 
-test('Dashboard quick capture acknowledges tasks and does not turn notes into obligations', () => fixture(async (page) => {
+test('Dashboard quick capture saves notes quietly without turning them into obligations', () => fixture(async (page) => {
   await page.evaluate(() => { window.cards = []; window.mountInbox(); });
   const quick = page.locator('section[data-quick-capture]');
   await quick.getByLabel('What should be remembered?').fill('Call the fictional cabinet maker');
@@ -396,10 +397,15 @@ test('Dashboard quick capture acknowledges tasks and does not turn notes into ob
   const nextQuick = page.locator('section[data-quick-capture]');
   await nextQuick.getByLabel('Type').selectOption('note');
   await nextQuick.getByLabel('What should be remembered?').fill('Fictional splashback colour reference');
-  const countBefore = await page.evaluate(() => window.requests.filter(entry => entry.method.endsWith('open-loops.capture')).length);
-  await nextQuick.getByRole('button', { name: 'Open Topic Notes' }).click();
-  assert.equal(await page.evaluate(() => window.requests.filter(entry => entry.method.endsWith('open-loops.capture')).length), countBefore);
-  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'topic-fictional-renovation' } });
+  const obligationCountBefore = await page.evaluate(() => window.requests.filter(entry => entry.method.endsWith('open-loops.capture')).length);
+  await nextQuick.getByRole('button', { name: 'Save note' }).click();
+  await page.getByText('Note saved quietly in the Topic. No obligation was created.', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(entry => entry.method.endsWith('open-loops.capture')).length), obligationCountBefore);
+  const note = await page.evaluate(() => window.requests.find(entry => entry.method.endsWith('notes.create')).params);
+  assert.equal(note.topicId, 'topic-fictional-renovation');
+  assert.equal(note.referenceId, 'fictional-note-folder');
+  assert.match(note.path, /^Inbox\/\d{4}-\d{2}-\d{2}-[0-9a-f]{8}\.md$/u);
+  assert.equal(note.text, '# Fictional splashback colour reference\n');
 }));
 
 test('Dashboard quick capture preserves one retry identity across an ambiguous remount', () => fixture(async (page) => {

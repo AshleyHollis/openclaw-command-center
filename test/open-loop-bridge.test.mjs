@@ -131,10 +131,9 @@ test('open-loop bridge handler forwards its authenticated Scheduler runtime', as
   assert.equal(result.reminder.status, 'applied');
 });
 
-test('open-loop Reminder routes declare the exact native Cron dispatch allowlist', () => {
+test('open-loop Reminder routes use the authenticated 9.5 Gateway facade without legacy dispatch options', () => {
   const registrations = [];
   registerBridgeMethods({ registerGatewayMethod: (...args) => registrations.push(args) }, {});
-  const expected = ['cron.add', 'cron.get', 'cron.list', 'cron.update'];
   for (const method of [
     'command-center.v1.open-loops.decide',
     'command-center.v1.open-loops.payment-status',
@@ -143,6 +142,6 @@ test('open-loop Reminder routes declare the exact native Cron dispatch allowlist
     'command-center.v1.open-loops.renovation-purchase-correction',
     'command-center.v1.open-loops.renovation-replacement',
     'command-center.v1.open-loops.renovation-fulfilment'
-  ]) assert.deepEqual(registrations.find(([name]) => name === method)[2].gatewayMethodDispatchMethods, expected);
+  ]) assert.equal(registrations.find(([name]) => name === method)[2].gatewayMethodDispatchMethods, undefined);
   assert.equal(registrations.find(([name]) => name === 'command-center.v1.open-loops.intake-selected')[2].gatewayMethodDispatchMethods, undefined);
 });
