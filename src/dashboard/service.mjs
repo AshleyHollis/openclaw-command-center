@@ -73,8 +73,9 @@ function compactEpisode(episode) {
   });
 }
 
-function compactOpenLoop(projected) {
+function compactOpenLoop(projected, metadata) {
   const loop = projected.loop;
+  const sourceKinds = [...new Set(loop.evidenceObservationIds.map(id => metadata?.getOpenLoopObservation?.(id)?.source?.kind).filter(value => ['email', 'message', 'note', 'document', 'reminder', 'chat'].includes(value)))];
   return Object.freeze({
     loopId: loop.loopId,
     kind: loop.kind,
@@ -101,6 +102,7 @@ function compactOpenLoop(projected) {
       someday: loop.attention.someday === true
     }) }),
     actions: Object.freeze(asArray(projected.actions).slice(0, 4)),
+    ...(sourceKinds.length ? { sourceLabel: sourceKinds.map(value => value === 'message' ? 'Email or message' : value[0].toUpperCase() + value.slice(1)).join(', ') } : {}),
     evidenceCount: loop.evidenceObservationIds.length,
     revision: loop.revision
   });
@@ -111,14 +113,14 @@ function openLoopProjection(metadata, serverTime) {
   const inbox = metadata.getQuietAttentionInbox({ now: serverTime });
   const rawStageReviews = typeof metadata.projectActiveRenovationStagePrerequisites === 'function' ? metadata.projectActiveRenovationStagePrerequisites() : [];
   const activeStageIds = new Set(rawStageReviews.flatMap(group => group.items.map(item => item.loop.loopId)));
-  const stageReviews = rawStageReviews.map(group => Object.freeze({ stage: group.stage, activationObservationId: group.activationObservationId, items: Object.freeze(group.items.map(item => compactOpenLoop(item))) }));
+  const stageReviews = rawStageReviews.map(group => Object.freeze({ stage: group.stage, activationObservationId: group.activationObservationId, items: Object.freeze(group.items.map(item => compactOpenLoop(item, metadata))) }));
   const attention = inbox.attention.filter(item => !activeStageIds.has(item.loop.loopId));
   const conflicts = attention.filter(item => item.reason === 'evidence-conflict');
   const ordinary = attention.filter(item => item.reason !== 'evidence-conflict').slice(0, HIGHLIGHTED_OPEN_LOOP_LIMIT);
-  const highlighted = [...conflicts, ...ordinary].filter((item, index, values) => values.findIndex(candidate => candidate.loop.loopId === item.loop.loopId) === index).map(compactOpenLoop);
+  const highlighted = [...conflicts, ...ordinary].filter((item, index, values) => values.findIndex(candidate => candidate.loop.loopId === item.loop.loopId) === index).map(item => compactOpenLoop(item, metadata));
   const total = Object.values(inbox).reduce((sum, values) => sum + values.length, 0);
   const workspace = projectCapacityWorkspace(metadata.listOpenLoops(), { now: serverTime });
-  const compactList = values => Object.freeze(values.map(loop => compactOpenLoop({ loop })));
+  const compactList = values => Object.freeze(values.map(loop => compactOpenLoop({ loop }, metadata)));
   const capacityWorkspace = Object.freeze({
     today: Object.freeze({
       mandatory: compactList(workspace.today.mandatory),
@@ -129,7 +131,7 @@ function openLoopProjection(metadata, serverTime) {
     upcoming: compactList(workspace.upcoming), capacity: compactList(workspace.capacity.slice(0, CAPACITY_PREVIEW_LIMIT)), capacityTotal: workspace.capacity.length, waiting: compactList(workspace.waiting), someday: compactList(workspace.someday),
     review: Object.freeze({ batch: compactList(workspace.review.batch), remaining: workspace.review.remaining, eligibleTotal: workspace.review.eligibleTotal }),
     board: Object.freeze({ ready: compactList(workspace.board.ready), doing: compactList(workspace.board.doing), waiting: compactList(workspace.board.waiting), done: compactList(workspace.board.done), suggestions: compactList(workspace.board.suggestions) }),
-    agenda: Object.freeze(workspace.agenda.map(entry => Object.freeze({ kind: entry.kind, at: entry.at, item: compactOpenLoop({ loop: entry.loop }) })))
+    agenda: Object.freeze(workspace.agenda.map(entry => Object.freeze({ kind: entry.kind, at: entry.at, item: compactOpenLoop({ loop: entry.loop }, metadata) })))
   });
   return Object.freeze({
     total,
@@ -138,15 +140,15 @@ function openLoopProjection(metadata, serverTime) {
     stageReviewTotal: stageReviews.length,
     stageReviews: Object.freeze(stageReviews),
     comingUpTotal: inbox.comingUp.length,
-    comingUp: Object.freeze(inbox.comingUp.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    comingUp: Object.freeze(inbox.comingUp.slice(0, OPEN_LOOP_GROUP_LIMIT).map(item => compactOpenLoop(item, metadata))),
     waitingTotal: inbox.waiting.filter(item => !activeStageIds.has(item.loop.loopId)).length,
-    waiting: Object.freeze(inbox.waiting.filter(item => !activeStageIds.has(item.loop.loopId)).slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    waiting: Object.freeze(inbox.waiting.filter(item => !activeStageIds.has(item.loop.loopId)).slice(0, OPEN_LOOP_GROUP_LIMIT).map(item => compactOpenLoop(item, metadata))),
     suggestedTotal: inbox.suggested.length,
-    suggested: Object.freeze(inbox.suggested.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    suggested: Object.freeze(inbox.suggested.slice(0, OPEN_LOOP_GROUP_LIMIT).map(item => compactOpenLoop(item, metadata))),
     deferredTotal: inbox.deferred.length,
-    deferred: Object.freeze(inbox.deferred.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    deferred: Object.freeze(inbox.deferred.slice(0, OPEN_LOOP_GROUP_LIMIT).map(item => compactOpenLoop(item, metadata))),
     reconciliationTotal: inbox.reconciliation.length,
-    reconciliation: Object.freeze(inbox.reconciliation.slice(0, OPEN_LOOP_GROUP_LIMIT).map(compactOpenLoop)),
+    reconciliation: Object.freeze(inbox.reconciliation.slice(0, OPEN_LOOP_GROUP_LIMIT).map(item => compactOpenLoop(item, metadata))),
     workspace: capacityWorkspace
   });
 }

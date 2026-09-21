@@ -15,6 +15,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let topicFilter = context.props.topicId;
   let generation = 0;
   let selected;
+  const transientUiState = { disclosures: new Set(), scrollTop: 0, windowScrollY: 0, laneScroll: new Map(), planner: { search: '', topic: topicFilter ?? '', state: '', importance: '', view: 'board' } };
   const quickCaptureKey = 'command-center.quick-capture.v1';
   const emptyQuickCaptureDraft = () => ({ kind: 'task', topicId: '', title: '' });
   const readQuickCaptureState = () => {
@@ -71,6 +72,24 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   const writable = () => !signal.aborted && presented && readable() && host.connection.canWrite;
   const report = (message) => { status.textContent = host.redact(message); };
   const setBusy = (busy) => { content.setAttribute('aria-busy', String(busy)); refresh.disabled = busy; };
+  const disclosureKey = node => {
+    const owner = node.closest('[data-open-loop-id],[data-workspace-loop-id]');
+    const identity = owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId ?? '';
+    const named = node.dataset.workspaceSection ?? node.dataset.openLoopGroup ?? node.dataset.dashboardSection ?? Object.keys(node.dataset).sort().find(key => node.dataset[key] === 'true') ?? '';
+    return `${identity}|${named}|${node.querySelector(':scope > summary')?.textContent ?? ''}`;
+  };
+  const captureTransientUiState = () => {
+    transientUiState.disclosures = new Set([...content.querySelectorAll('details[open]')].map(disclosureKey));
+    transientUiState.scrollTop = container.scrollTop;
+    transientUiState.windowScrollY = document.defaultView?.scrollY ?? 0;
+    transientUiState.laneScroll = new Map([...content.querySelectorAll('[data-board-lane]')].map(node => [node.dataset.boardLane, node.scrollTop]));
+  };
+  const restoreTransientUiState = () => {
+    for (const node of content.querySelectorAll('details')) if (transientUiState.disclosures.has(disclosureKey(node))) node.open = true;
+    for (const node of content.querySelectorAll('[data-board-lane]')) node.scrollTop = transientUiState.laneScroll.get(node.dataset.boardLane) ?? 0;
+    container.scrollTop = transientUiState.scrollTop;
+    document.defaultView?.scrollTo?.({ top: transientUiState.windowScrollY, behavior: 'auto' });
+  };
 
   const formatInstant = value => {
     if (!nonBlank(value) || Number.isNaN(Date.parse(value))) return value;
@@ -644,15 +663,17 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       }
       if (planner) {
         const controls = element('section'); controls.className = 'cc-planner-controls'; controls.setAttribute('aria-label', 'Planner controls');
-        const searchLabel = element('label', 'Search'); const search = element('input'); search.type = 'search'; search.placeholder = 'Search work'; searchLabel.append(search);
+        const searchLabel = element('label', 'Search'); const search = element('input'); search.type = 'search'; search.placeholder = 'Search work'; search.value = transientUiState.planner.search; searchLabel.append(search);
         const topicLabel = element('label', 'Topic'); const topic = element('select'); const allTopics = element('option', 'All Topics'); allTopics.value = ''; topic.append(allTopics);
         const completeBoard = Object.values(workspace.board ?? {}).flatMap(openLoopsArray);
         for (const topicId of [...new Set(completeBoard.map(card => card.topicId).filter(nonBlank))].sort()) { const option = element('option', topicId); option.value = topicId; topic.append(option); }
-        topic.value = targets.topicId ?? ''; topicLabel.append(topic);
+        topic.value = targets.topicId ?? transientUiState.planner.topic ?? ''; topicLabel.append(topic);
         const stateLabel = element('label', 'Status'); const state = element('select');
         for (const [value, label] of [['', 'All statuses'], ['confirmed', 'Confirmed'], ['monitoring', 'Monitoring'], ['waiting', 'Waiting'], ['decision-needed', 'Decision needed'], ['suggested', 'Suggestions'], ['resolved', 'Resolved']]) { const option = element('option', label); option.value = value; state.append(option); } stateLabel.append(state);
+        state.value = transientUiState.planner.state;
         const priorityLabel = element('label', 'Priority'); const importance = element('select');
         for (const [value, label] of [['', 'All priorities'], ['critical', 'Critical'], ['high', 'High'], ['normal', 'Normal'], ['low', 'Low']]) { const option = element('option', label); option.value = value; importance.append(option); } priorityLabel.append(importance);
+        importance.value = transientUiState.planner.importance;
         const views = element('div'); views.className = 'cc-view-switcher'; views.setAttribute('aria-label', 'Planner view');
         const boardView = element('button', 'Board'); boardView.type = 'button'; boardView.setAttribute('aria-pressed', 'true');
         const listView = element('button', 'List'); listView.type = 'button'; listView.setAttribute('aria-pressed', 'false');
@@ -677,6 +698,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         for (const entry of workspace.agenda ?? []) agenda.append(element('p', `${formatInstant(entry.at)} · ${entry.kind} · ${entry.item?.title ?? 'Item'}`));
         primary.append(agenda);
         const applyFilters = () => {
+          transientUiState.planner = { ...transientUiState.planner, search: search.value, topic: topic.value, state: state.value, importance: importance.value };
           const query = search.value.trim().toLocaleLowerCase();
           for (const card of [...board.querySelectorAll('[data-workspace-loop-id]'), ...list.querySelectorAll('[data-workspace-loop-id]')]) {
             card.hidden = Boolean((query && !card.dataset.cardTitle.includes(query)) || (topic.value && card.dataset.cardTopic !== topic.value) || (state.value && card.dataset.cardState !== state.value) || (importance.value && card.dataset.cardPriority !== importance.value));
@@ -684,11 +706,12 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         };
         for (const input of [search, topic, state, importance]) input.addEventListener(input === search ? 'input' : 'change', applyFilters, { signal });
         const showView = selectedView => {
+          transientUiState.planner.view = selectedView;
           board.hidden = selectedView !== 'board'; list.hidden = selectedView !== 'list'; agenda.hidden = selectedView !== 'agenda';
           for (const [button, value] of [[boardView, 'board'], [listView, 'list'], [agendaView, 'agenda']]) button.setAttribute('aria-pressed', String(value === selectedView));
         };
         boardView.addEventListener('click', () => showView('board'), { signal }); listView.addEventListener('click', () => showView('list'), { signal }); agendaView.addEventListener('click', () => showView('agenda'), { signal });
-        applyFilters();
+        showView(transientUiState.planner.view); applyFilters();
       }
     }
     if (planner) {
@@ -708,7 +731,8 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         if (!nonBlank(card.loopId) || !nonBlank(card.title)) continue;
         const row = element('article'); row.className = 'cc-open-loop-card'; row.dataset.openLoopId = card.loopId; row.dataset.loopKind = card.kind ?? 'general';
         row.append(element('h4', card.title));
-        const facts = [card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, formatDue(card) ? `Due ${formatDue(card)}` : null].filter(Boolean);
+        const topicName = targets.topics?.find(topic => topic.topicId === card.topicId)?.name ?? card.topicId;
+        const facts = [nonBlank(topicName) ? `Topic: ${topicName}` : null, nonBlank(card.sourceLabel) ? `Source: ${card.sourceLabel}` : null, card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, formatDue(card) ? `Due ${formatDue(card)}` : null].filter(Boolean);
         if (facts.length) row.append(element('p', facts.join(' · ')));
         if (nonBlank(card.whyNow)) row.append(element('p', card.whyNow));
         row.append(element('p', `${Number.isSafeInteger(card.evidenceCount) ? card.evidenceCount : 0} linked source ${card.evidenceCount === 1 ? 'item' : 'items'}.`));
@@ -933,6 +957,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   }
 
   async function load(message = '') {
+    if (content.childElementCount) captureTransientUiState();
     const pending = ++generation; selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
     intake.hidden = Boolean(recordId) || pageMode === 'planner';
     if (signal.aborted || !presented) return;
@@ -993,10 +1018,11 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { notificationRecord: card.notificationRecordId } }); }, { signal }); focus.append(button);
         }
-        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined });
+        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined, topics: dashboard.topics });
         if (pageMode === 'dashboard') renderQuickCapture(focus, dashboard, pending);
         if (pageMode === 'dashboard') { renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending, dashboards); applyDashboardPreferences(dashboards); }
         const coverageKnown = Array.isArray(dashboard.intakeCoverage) && dashboard.intakeCoverage.length > 0;
+        restoreTransientUiState();
         report(message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.')); return;
       }
       const matches = cards.filter((card) => card.notificationRecordId === recordId);

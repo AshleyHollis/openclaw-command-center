@@ -393,7 +393,7 @@ test('rich Dashboard presents a normal day with source-linked work and quiet opt
   await page.evaluate(() => {
     window.cards = [];
     const planning = (importance, effortMinutes) => ({ importance, importanceOrigin: 'processing', effortMinutes, contexts: ['home'], dependencies: [], someday: false });
-    const bill = { loopId: 'visual-bill', kind: 'payment', topicId: 'topic-fictional-renovation', title: 'Review the fictional progress invoice', state: 'confirmed', paymentState: 'unpaid', amount: 245000, currency: 'AUD', dueDate: '2026-09-24', dueTimeZone: 'Australia/Brisbane', whyNow: 'The accepted due date is approaching.', evidenceCount: 2, revision: 1, planning: planning('critical', 10) };
+    const bill = { loopId: 'visual-bill', kind: 'payment', topicId: 'topic-fictional-renovation', sourceLabel: 'Email', title: 'Review the fictional progress invoice', state: 'confirmed', paymentState: 'unpaid', amount: 245000, currency: 'AUD', dueDate: '2026-09-24', dueTimeZone: 'Australia/Brisbane', whyNow: 'The accepted due date is approaching.', evidenceCount: 2, revision: 1, planning: planning('critical', 10) };
     const decision = { loopId: 'visual-decision', kind: 'decision', topicId: 'topic-fictional-renovation', title: 'Choose the fictional cabinet finish', state: 'decision-needed', whyNow: 'A revised quote changed the recorded option.', evidenceCount: 2, revision: 1, planning: planning('high', 15) };
     const reply = { loopId: 'visual-reply', kind: 'response', topicId: 'topic-fictional-renovation', title: 'Confirm access for the fictional builder', state: 'confirmed', whyNow: 'The builder asked for a reply before tomorrow.', evidenceCount: 1, revision: 1, planning: planning('high', 5) };
     const optional = { loopId: 'visual-capacity', kind: 'general', topicId: 'topic-fictional-renovation', title: 'Compare laundry storage options', state: 'confirmed', evidenceCount: 1, revision: 1, planning: planning('low', 30) };
@@ -404,6 +404,7 @@ test('rich Dashboard presents a normal day with source-linked work and quiet opt
   await page.getByRole('heading', { name: 'Review the fictional progress invoice' }).waitFor();
   assert.ok(await page.getByRole('heading', { name: 'Review the fictional progress invoice' }).evaluate(node => Boolean(node.compareDocumentPosition(document.querySelector('[data-workspace-section^="When I have capacity"]')) & Node.DOCUMENT_POSITION_FOLLOWING)));
   await page.getByText('AUD 2450.00', { exact: false }).waitFor();
+  await page.getByText('Topic: Fictional renovation · Source: Email', { exact: false }).waitFor();
   await page.getByText('The builder asked for a reply before tomorrow.', { exact: true }).waitFor();
   if (process.env.COMMAND_CENTER_DASHBOARD_1440_SCREENSHOT) { await page.setViewportSize({ width: 1440, height: 1000 }); await page.screenshot({ path: process.env.COMMAND_CENTER_DASHBOARD_1440_SCREENSHOT, fullPage: true }); }
   if (process.env.COMMAND_CENTER_DASHBOARD_1920_SCREENSHOT) { await page.setViewportSize({ width: 1920, height: 1080 }); await page.screenshot({ path: process.env.COMMAND_CENTER_DASHBOARD_1920_SCREENSHOT, fullPage: true }); }
@@ -431,6 +432,11 @@ test('Planner uses the full workspace and exposes every card in real Kanban lane
   assert.equal(await page.locator('details[data-topic-board]').isHidden(), true);
   await page.getByRole('button', { name: 'Agenda', exact: true }).click();
   assert.equal(await page.locator('details[data-agenda]').isVisible(), true);
+  await page.getByRole('button', { name: 'Refresh Planner', exact: true }).click();
+  await page.getByLabel('Search').waitFor();
+  assert.equal(await page.getByLabel('Search').inputValue(), 'Ready item 25');
+  assert.equal(await page.locator('details[data-agenda]').isVisible(), true);
+  assert.equal(await page.locator('section[aria-label="Planner list"]').isHidden(), true);
 }));
 
 test('Topic mini dashboard counts the complete board rather than its capacity preview', () => fixture(async (page) => {

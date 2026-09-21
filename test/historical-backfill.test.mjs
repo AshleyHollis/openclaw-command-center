@@ -4,9 +4,10 @@ import { createHistoricalBackfill, withdrawHistoricalBackfill } from '../src/ope
 
 const plan = { schemaVersion: 1, backfillId: 'renovation-notes-2026-09', sourceKind: 'note', scope: { topicIds: [], topicNames: ['Fictional renovation'], maxRecords: 4 } };
 
-function harness({ failAt } = {}) {
-  let state = null;
-  const calls = { apply: [], receipts: [], saves: [] };
+function harness({ failAt, loseReplyAt } = {}) {
+  const states = new Map();
+  const effects = new Map();
+  const calls = { apply: [], reconcile: [], receipts: [], saves: [] };
   const records = [
     { schemaVersion: 1, sourceExternalId: 'note-1', sourceVersion: 'v1', checkpoint: '001', rawText: 'fixture knowledge-only' },
     { schemaVersion: 1, sourceExternalId: 'note-2', sourceVersion: 'v1', checkpoint: '002', rawText: 'fixture completed' },
@@ -28,13 +29,17 @@ function harness({ failAt } = {}) {
       calls.apply.push(input);
       if (input.record.checkpoint === failAt) throw new Error('fixture-interruption');
       if (input.classification.disposition === 'knowledge-only') return { disposition: 'unchanged' };
-      return { disposition: 'created', effectId: `loop:${input.record.sourceExternalId}`, revision: 1 };
+      const result = { disposition: 'created', effectId: `loop:${input.record.sourceExternalId}`, revision: 1 };
+      effects.set(input.logicalOperationId, result);
+      if (input.record.checkpoint === loseReplyAt) { loseReplyAt = null; throw new Error('fixture-lost-reply'); }
+      return result;
     },
-    async loadState() { return state; },
-    async saveState(input) { state = structuredClone(input.state); calls.saves.push(structuredClone(input)); },
+    async reconcileRecord(input) { calls.reconcile.push(input); return effects.has(input.logicalOperationId) ? { status: 'applied', result: effects.get(input.logicalOperationId) } : { status: 'not-applied' }; },
+    async loadState({ stateKey }) { return states.get(stateKey) ?? null; },
+    async saveState(input) { states.set(input.stateKey, structuredClone(input.state)); calls.saves.push(structuredClone(input)); },
     async recordReceipt(input) { calls.receipts.push(input); }
   });
-  return { service, calls, getState: () => state, clearFailure: () => { failAt = null; } };
+  return { service, calls, getState: (mode = 'apply') => states.get(`${plan.backfillId}:${mode}`), clearFailure: () => { failAt = null; } };
 }
 
 test('preview is bounded, content-free and performs no writes', async () => {
@@ -43,7 +48,16 @@ test('preview is bounded, content-free and performs no writes', async () => {
   assert.deepEqual(report.counts, { read: 4, skipped: 1, knowledgeOnly: 1, created: 0, updated: 0, uncertain: 1, failed: 0 });
   assert.equal(calls.apply.length, 0);
   assert.equal(JSON.stringify(report).includes('fixture'), false);
+  assert.equal(JSON.stringify(report).includes('Fictional renovation'), false);
   assert.equal(calls.receipts.at(-1).status, 'complete');
+});
+
+test('a completed preview does not consume apply authority', async () => {
+  const { service, calls } = harness();
+  await service.run({ mode: 'preview', plan });
+  const applied = await service.run({ mode: 'apply', plan });
+  assert.equal(applied.counts.created, 2);
+  assert.equal(calls.apply.length, 3);
 });
 
 test('apply keeps completed history quiet and makes old uncertainty a suggestion', async () => {
@@ -67,6 +81,15 @@ test('resume starts after the last durably acknowledged checkpoint', async () =>
   assert.equal(report.counts.read, 4);
   assert.equal(report.counts.failed, 1);
   assert.equal(report.counts.created, 2);
+});
+
+test('a lost effect reply reconciles its durable operation instead of dispatching again', async () => {
+  const fixture = harness({ loseReplyAt: '003' });
+  await assert.rejects(() => fixture.service.run({ mode: 'apply', plan }), error => error.message === 'fixture-lost-reply' && error.checkpoint === '002');
+  const report = await fixture.service.run({ mode: 'apply', plan });
+  assert.equal(report.complete, true);
+  assert.equal(fixture.calls.apply.filter(call => call.record.checkpoint === '003').length, 1);
+  assert.equal(fixture.calls.reconcile.some(call => call.recordDigest), true);
 });
 
 test('changed scope cannot resume an existing run identity', async () => {
