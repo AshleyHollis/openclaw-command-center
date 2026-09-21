@@ -69,7 +69,7 @@ export default definePluginEntry({
       label: 'Command Center native Sessions',
       audience: 'gateway-operators',
       supportsProcessHomeIsolation: true,
-      resolveCreateSession: () => ({ model: 'openai/gpt-5.6-luna', agentRuntime: 'openclaw' }),
+      resolveCreateSession: () => ({ model: api.pluginConfig?.conversationModel ?? 'openai/gpt-5.6-luna', agentRuntime: 'openclaw' }),
       list: async () => [],
       read: async () => ({ sessions: [] })
     });

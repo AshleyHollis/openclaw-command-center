@@ -106,6 +106,13 @@
         "const": false,
         "description": "Fail closed by withholding the external-tab grant in an isolated compatibility variant."
       },
+      "conversationModel": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 200,
+        "pattern": "^[^/\\s]+/[^/\\s]+$",
+        "description": "OpenClaw provider/model used for new Topic Conversations. Existing Conversations retain their authoritative model."
+      },
       "capacityReview": {
         "type": "object",
         "description": "Explicit native weekly capacity-review schedule. Omit to create no review automation.",
