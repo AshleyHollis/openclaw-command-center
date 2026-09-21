@@ -348,6 +348,13 @@ test('combined Dashboard uses wide Focus and dashboard regions and keeps the Kan
   });
   await page.getByRole('heading', { name: 'Command Center' }).waitFor();
   assert.equal(await page.locator('.cc-workspace').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length), 2);
+  const columns = await page.locator('.cc-workspace').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').map(parseFloat));
+  assert.ok(columns[0] > columns[1]);
+  assert.ok(columns[0] / columns[1] > 1.35 && columns[0] / columns[1] < 1.65);
+  assert.equal(await page.locator('.cc-page-head').count(), 1);
+  assert.equal(await page.locator('.cc-zone-head.cc-module').count(), 0);
+  assert.ok(await page.locator('article.cc-work-card[data-workspace-loop-id="dashboard-work"]').count() >= 1);
+  assert.ok(await page.locator('.cc-module').first().evaluate(node => parseFloat(getComputedStyle(node).borderRadius)) >= 14);
   await page.getByRole('heading', { name: 'What needs you now' }).waitFor();
   await page.getByRole('heading', { name: 'Context at a glance' }).waitFor();
   await page.getByRole('heading', { name: 'Fictional renovation' }).waitFor();
@@ -366,6 +373,41 @@ test('combined Dashboard uses wide Focus and dashboard regions and keeps the Kan
   assert.equal(await page.getByText('Intake coverage', { exact: true }).count(), 0);
 }));
 
+test('Dashboard distinguishes disconnected intake from a healthy empty day', () => fixture(async (page) => {
+  await page.evaluate(() => window.setAccess({ connected: false }));
+  await page.getByRole('heading', { name: 'Command Center is not connected' }).waitFor();
+  await page.getByText('Email, Chat and Note processing coverage cannot be checked yet.', { exact: false }).waitFor();
+  assert.equal(await page.getByText('Nothing needs you today.', { exact: false }).count(), 0);
+  await page.evaluate(() => {
+    window.cards = [];
+    window.intakeCoverage = [{ source: 'Email intake', sourceKind: 'email', status: 'receipt-current', lastSuccessfulAt: '2026-09-21T01:00:00.000Z' }];
+    window.openLoops.workspace = { today: { mandatory: [], planned: [] }, upcoming: [], capacity: [], capacityTotal: 0, waiting: [], someday: [], review: { batch: [], remaining: 0, eligibleTotal: 0 }, board: { ready: [], doing: [], waiting: [], done: [], suggestions: [] }, agenda: [] };
+    window.setAccess({ connected: true }); window.mountInbox();
+  });
+  await page.getByRole('heading', { name: 'What needs you now' }).waitFor();
+  await page.getByText('Nothing needs you today.', { exact: false }).waitFor();
+  await page.getByRole('status').filter({ hasText: 'Intake coverage is shown in Dashboards.' }).waitFor();
+}));
+
+test('rich Dashboard presents a normal day with source-linked work and quiet optional capacity', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const planning = (importance, effortMinutes) => ({ importance, importanceOrigin: 'processing', effortMinutes, contexts: ['home'], dependencies: [], someday: false });
+    const bill = { loopId: 'visual-bill', kind: 'payment', topicId: 'topic-fictional-renovation', title: 'Review the fictional progress invoice', state: 'confirmed', paymentState: 'unpaid', amount: 245000, currency: 'AUD', dueDate: '2026-09-24', dueTimeZone: 'Australia/Brisbane', whyNow: 'The accepted due date is approaching.', evidenceCount: 2, revision: 1, planning: planning('critical', 10) };
+    const decision = { loopId: 'visual-decision', kind: 'decision', topicId: 'topic-fictional-renovation', title: 'Choose the fictional cabinet finish', state: 'decision-needed', whyNow: 'A revised quote changed the recorded option.', evidenceCount: 2, revision: 1, planning: planning('high', 15) };
+    const reply = { loopId: 'visual-reply', kind: 'response', topicId: 'topic-fictional-renovation', title: 'Confirm access for the fictional builder', state: 'confirmed', whyNow: 'The builder asked for a reply before tomorrow.', evidenceCount: 1, revision: 1, planning: planning('high', 5) };
+    const optional = { loopId: 'visual-capacity', kind: 'general', topicId: 'topic-fictional-renovation', title: 'Compare laundry storage options', state: 'confirmed', evidenceCount: 1, revision: 1, planning: planning('low', 30) };
+    window.intakeCoverage = [{ source: 'Email intake', sourceKind: 'email', status: 'receipt-current', lastSuccessfulAt: '2026-09-21T01:00:00.000Z' }, { source: 'Chat commitments', sourceKind: 'chat', status: 'receipt-current', lastSuccessfulAt: '2026-09-21T00:55:00.000Z' }, { source: 'Note processing', sourceKind: 'note', status: 'receipt-current', lastSuccessfulAt: '2026-09-21T00:50:00.000Z' }];
+    window.openLoops = { total: 4, attentionTotal: 3, highlighted: [bill, decision, reply], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [], workspace: { today: { mandatory: [], planned: [] }, upcoming: [], capacity: [optional], capacityTotal: 1, waiting: [], someday: [], review: { batch: [optional], remaining: 0, eligibleTotal: 1 }, board: { ready: [bill, decision, reply, optional], doing: [], waiting: [], done: [], suggestions: [] }, agenda: [{ at: '2026-09-24T00:00:00.000Z', kind: 'due', item: bill }] } };
+    window.mountInbox();
+  });
+  await page.getByRole('heading', { name: 'Review the fictional progress invoice' }).waitFor();
+  await page.getByText('AUD 2450.00', { exact: false }).waitFor();
+  await page.getByText('The builder asked for a reply before tomorrow.', { exact: true }).waitFor();
+  if (process.env.COMMAND_CENTER_DASHBOARD_1440_SCREENSHOT) { await page.setViewportSize({ width: 1440, height: 1000 }); await page.screenshot({ path: process.env.COMMAND_CENTER_DASHBOARD_1440_SCREENSHOT, fullPage: true }); }
+  if (process.env.COMMAND_CENTER_DASHBOARD_1920_SCREENSHOT) { await page.setViewportSize({ width: 1920, height: 1080 }); await page.screenshot({ path: process.env.COMMAND_CENTER_DASHBOARD_1920_SCREENSHOT, fullPage: true }); }
+}));
+
 test('Planner uses the full workspace and exposes every card in real Kanban lanes', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];
@@ -379,7 +421,15 @@ test('Planner uses the full workspace and exposes every card in real Kanban lane
   assert.equal(await workspace.locator('.cc-dashboards').count(), 0);
   assert.equal(await page.locator('.cc-planner-board').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length), 5);
   assert.equal(await page.locator('[data-board-lane="ready"] article[data-workspace-loop-id]').count(), 25);
-  await page.getByRole('heading', { name: 'Ready item 25', exact: true }).waitFor();
+  await page.locator('[data-board-lane="ready"]').getByRole('heading', { name: 'Ready item 25', exact: true }).waitFor();
+  if (process.env.COMMAND_CENTER_PLANNER_SCREENSHOT) { await page.setViewportSize({ width: 1440, height: 1000 }); await page.screenshot({ path: process.env.COMMAND_CENTER_PLANNER_SCREENSHOT, fullPage: true }); }
+  await page.getByLabel('Search').fill('Ready item 25');
+  assert.equal(await page.locator('[data-board-lane="ready"] article[data-workspace-loop-id]:visible').count(), 1);
+  await page.getByRole('button', { name: 'List', exact: true }).click();
+  assert.equal(await page.locator('section[aria-label="Planner list"] article[data-workspace-loop-id]:visible').count(), 1);
+  assert.equal(await page.locator('details[data-topic-board]').isHidden(), true);
+  await page.getByRole('button', { name: 'Agenda', exact: true }).click();
+  assert.equal(await page.locator('details[data-agenda]').isVisible(), true);
 }));
 
 test('Topic mini dashboard counts the complete board rather than its capacity preview', () => fixture(async (page) => {
