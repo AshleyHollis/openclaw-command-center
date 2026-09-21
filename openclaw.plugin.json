@@ -106,6 +106,13 @@
         "const": false,
         "description": "Fail closed by withholding the external-tab grant in an isolated compatibility variant."
       },
+      "conversationModel": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 200,
+        "pattern": "^[^/\\s]+/[^/\\s]+$",
+        "description": "OpenClaw provider/model used for new Topic Conversations. Existing Conversations retain their authoritative model."
+      },
       "capacityReview": {
         "type": "object",
         "description": "Explicit native weekly capacity-review schedule. Omit to create no review automation.",
@@ -118,12 +125,21 @@
           "localTime": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
           "timeZone": { "type": "string", "minLength": 1, "maxLength": 100 }
         }
+      },
+      "conversationCapture": {
+        "type": "object",
+        "description": "Explicitly enabled Chat and Note-work capture guidance. Requires the separately granted conversation-hook permission.",
+        "additionalProperties": false,
+        "required": ["enabled"],
+        "properties": {
+          "enabled": { "const": true }
+        }
       }
     },
     "additionalProperties": false
   },
   "contracts": {
-    "tools": ["command_center_capture_commitment", "command_center_open_capacity_review", "command_center_save_source_note", "command_center_capture_source_commitment", "command_center_record_intake_receipt"],
+    "tools": ["command_center_capture_commitment", "command_center_open_capacity_review", "command_center_resolve_source_topic", "command_center_save_source_note", "command_center_capture_source_commitment", "command_center_record_intake_receipt"],
     "gatewayMethodDispatch": ["authenticated-request"],
     "workspaceSessionTurnScheduling": []
   },

@@ -1,3 +1,5 @@
+import { attentionStyles } from './attention-styles.mjs';
+
 const text = (value) => typeof value === 'string' ? value : JSON.stringify(value ?? null);
 const nonBlank = (value) => typeof value === 'string' && value.trim().length > 0;
 const unwrap = (response) => response?.result ?? response;
@@ -13,6 +15,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let topicFilter = context.props.topicId;
   let generation = 0;
   let selected;
+  const transientUiState = { disclosures: new Set(), focusKey: null, scrollTop: 0, windowScrollY: 0, laneScroll: new Map(), planner: { search: '', topic: topicFilter ?? '', state: '', importance: '', view: 'board' } };
   const quickCaptureKey = 'command-center.quick-capture.v1';
   const emptyQuickCaptureDraft = () => ({ kind: 'task', topicId: '', title: '' });
   const readQuickCaptureState = () => {
@@ -48,40 +51,53 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   const saveDashboardPreferences = () => { try { localStorage.setItem(preferenceKey, JSON.stringify(dashboardPreferences)); } catch { /* browser storage may be unavailable */ } };
   const element = (tag, value) => { const node = document.createElement(tag); if (value) node.textContent = value; return node; };
   const heading = element('h1', pageMode === 'planner' ? 'Planner' : 'Command Center');
-  const status = element('p'); status.setAttribute('role', 'status'); status.tabIndex = -1;
+  const titleGroup = element('div'); titleGroup.className = 'cc-title-group';
+  const eyebrow = element('p', pageMode === 'planner' ? 'Plan and review' : 'Your daily workspace'); eyebrow.className = 'cc-eyebrow';
+  const subtitle = element('p', pageMode === 'planner' ? 'See every commitment without crowding today.' : 'Act on what matters now, then use your dashboards for context.'); subtitle.className = 'cc-subtitle';
+  titleGroup.append(eyebrow, heading, subtitle);
+  const status = element('p'); status.className = 'cc-status'; status.setAttribute('role', 'status'); status.tabIndex = -1;
   const refresh = element('button', pageMode === 'planner' ? 'Refresh Planner' : 'Refresh Dashboard'); refresh.type = 'button';
   const topics = element('button', 'All Topics'); topics.type = 'button';
   const switchView = element('button', pageMode === 'planner' ? 'Open Dashboard' : 'Open Planner'); switchView.type = 'button';
   const intake = element('details'); intake.dataset.selectedDocumentIntake = 'true'; intake.append(element('summary', 'Import one selected document'));
   const content = element('section'); content.setAttribute('aria-label', 'Attention items'); content.style.overflowWrap = 'anywhere';
   const style = element('style');
-  style.textContent = `
-    .cc-toolbar{display:flex;gap:.65rem;flex-wrap:wrap;align-items:center;margin-block:.5rem 1rem}
-    .cc-workspace{display:grid;grid-template-columns:minmax(0,3fr) minmax(18rem,2fr);gap:1rem;align-items:start}
-    .cc-workspace[data-page-mode="planner"]{grid-template-columns:minmax(0,1fr)}
-    .cc-focus,.cc-dashboards{min-width:0;display:grid;gap:1rem}
-    .cc-module,.cc-dashboards>details{border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:.8rem;padding:1rem;background:color-mix(in srgb,Canvas 96%,currentColor 4%);box-shadow:0 1px 2px color-mix(in srgb,currentColor 8%,transparent)}
-    .cc-module>h2,.cc-module>h3{margin-block-start:0}
-    .cc-kicker{font-size:.82rem;letter-spacing:.04em;text-transform:uppercase;opacity:.72}
-    .cc-mini-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}
-    .cc-focus>details,.cc-focus>article{border:1px solid color-mix(in srgb,currentColor 14%,transparent);border-radius:.65rem;padding:.85rem}
-    .cc-toolbar button,.cc-module button{min-height:2.25rem;padding-inline:.85rem}
-    .cc-planner-board{display:grid;grid-template-columns:repeat(5,minmax(16rem,1fr));gap:1rem;overflow-x:auto;padding-block:.75rem;scrollbar-gutter:stable}
-    .cc-planner-lane{min-width:0;border:1px solid color-mix(in srgb,currentColor 14%,transparent);border-radius:.65rem;padding:.75rem;background:color-mix(in srgb,Canvas 98%,currentColor 2%)}
-    .cc-planner-lane>h3{margin-block-start:0;position:sticky;top:0;background:Canvas;padding-block:.25rem;z-index:1}
-    article{border-block-start:1px solid color-mix(in srgb,currentColor 14%,transparent);padding-block:.8rem}
-    @media(max-width:850px){.cc-command-center-page{box-sizing:border-box;padding-inline-start:3rem}.cc-workspace{grid-template-columns:1fr}.cc-mini-grid{grid-template-columns:1fr}.cc-dashboard-jump{display:inline-block}}
-    @media(min-width:851px){.cc-dashboard-jump{display:none}}
-    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
-  `;
-  const toolbar = element('div'); toolbar.className = 'cc-toolbar'; toolbar.append(topics, switchView, refresh);
+  style.textContent = attentionStyles;
+  const toolbar = element('div'); toolbar.className = 'cc-toolbar'; toolbar.append(topics, switchView, intake, refresh);
+  const pageHeader = element('header'); pageHeader.className = 'cc-page-head'; pageHeader.append(titleGroup, toolbar);
   container.classList.add('cc-command-center-page');
-  container.replaceChildren(style, heading, toolbar, status, intake, content);
+  container.replaceChildren(style, pageHeader, status, content);
   const readable = () => host.connection.connected && host.connection.canRead;
   const current = (pending) => !signal.aborted && presented && readable() && pending === generation;
   const writable = () => !signal.aborted && presented && readable() && host.connection.canWrite;
   const report = (message) => { status.textContent = host.redact(message); };
   const setBusy = (busy) => { content.setAttribute('aria-busy', String(busy)); refresh.disabled = busy; };
+  const disclosureKey = node => {
+    const owner = node.closest('[data-open-loop-id],[data-workspace-loop-id]');
+    const identity = owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId ?? '';
+    const named = node.dataset.workspaceSection ?? node.dataset.openLoopGroup ?? node.dataset.dashboardSection ?? Object.keys(node.dataset).sort().find(key => node.dataset[key] === 'true') ?? '';
+    return `${identity}|${named}|${node.querySelector(':scope > summary')?.textContent ?? ''}`;
+  };
+  const focusKey = node => {
+    if (!node || !container.contains(node)) return null;
+    const owner = node.closest('[data-open-loop-id],[data-workspace-loop-id]');
+    const identity = owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId ?? '';
+    return `${identity}|${node.getAttribute('aria-label') ?? node.closest('label')?.firstChild?.textContent?.trim() ?? ''}|${node.name ?? ''}|${node.textContent?.trim() ?? ''}`;
+  };
+  const captureTransientUiState = () => {
+    transientUiState.disclosures = new Set([...content.querySelectorAll('details[open]')].map(disclosureKey));
+    transientUiState.scrollTop = container.scrollTop;
+    transientUiState.windowScrollY = document.defaultView?.scrollY ?? 0;
+    transientUiState.laneScroll = new Map([...content.querySelectorAll('[data-board-lane]')].map(node => [node.dataset.boardLane, node.scrollTop]));
+    transientUiState.focusKey = focusKey(document.activeElement);
+  };
+  const restoreTransientUiState = () => {
+    for (const node of content.querySelectorAll('details')) if (transientUiState.disclosures.has(disclosureKey(node))) node.open = true;
+    for (const node of content.querySelectorAll('[data-board-lane]')) node.scrollTop = transientUiState.laneScroll.get(node.dataset.boardLane) ?? 0;
+    container.scrollTop = transientUiState.scrollTop;
+    document.defaultView?.scrollTo?.({ top: transientUiState.windowScrollY, behavior: 'auto' });
+    if (transientUiState.focusKey) [...content.querySelectorAll('button,input,select,textarea,summary,a[href]')].find(node => focusKey(node) === transientUiState.focusKey)?.focus({ preventScroll: true });
+  };
 
   const formatInstant = value => {
     if (!nonBlank(value) || Number.isNaN(Date.parse(value))) return value;
@@ -160,7 +176,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   }
 
   function renderQuickCapture(parent, dashboard, pending) {
-    const module = element('section'); module.className = 'cc-module'; module.dataset.quickCapture = 'true';
+    const module = element('section'); module.className = 'cc-module cc-quick-capture'; module.dataset.quickCapture = 'true';
     module.append(element('h3', 'Quick capture'), element('p', 'Capture an explicit task, park an idea, or save a quiet note in one Topic.'));
     const form = element('form');
     const kindLabel = element('label', 'Type '); const kind = element('select');
@@ -355,7 +371,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     if (!records.length) return;
     const activity = element('section'); activity.className = 'cc-module'; activity.dataset.dashboardSection = 'activity'; activity.append(element('h2', 'Recent Activity'));
     for (const record of records) {
-      const row = element('article');
+      const row = element('article'); row.className = 'cc-activity-card';
       const operation = nonBlank(record.operationKind) ? record.operationKind : nonBlank(record.actionId) ? record.actionId : 'Activity';
       row.append(element('h3', operation), element('p', `${nonBlank(record.outcome) ? record.outcome : 'recorded'}${nonBlank(record.occurredAt) ? ` · ${record.occurredAt}` : ''}`));
       const target = record.navigation;
@@ -585,12 +601,14 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     const primary = targets.primary ?? content;
     const secondary = targets.secondary ?? primary;
     const planner = targets.planner === true;
+    const afterAttention = [];
     const workspace = openLoops.workspace;
     if (workspace && typeof workspace === 'object') {
-      primary.append(element('h2', 'Today / Needs you'));
-      const renderPlanningCard = (parent, card, reason) => {
+      const renderPlanningCard = (parent, card, reason, compactActions = false) => {
         if (!nonBlank(card?.loopId) || !nonBlank(card?.title)) return;
-        const row = element('article'); row.dataset.workspaceLoopId = card.loopId;
+        const row = element('article'); row.className = 'cc-work-card'; row.dataset.workspaceLoopId = card.loopId;
+        row.dataset.loopKind = card.kind ?? 'general'; row.dataset.cardTitle = card.title.toLocaleLowerCase();
+        row.dataset.cardTopic = card.topicId ?? ''; row.dataset.cardState = card.state ?? ''; row.dataset.cardPriority = card.planning?.importance ?? 'normal';
         row.append(element('h3', card.title));
         const planning = card.planning ?? {};
         row.append(element('p', [reason, planning.importance ? `${planning.importance} importance` : null, planning.effortMinutes ? `${planning.effortMinutes} min` : null, planning.contexts?.length ? planning.contexts.join(', ') : null].filter(Boolean).join(' · ')));
@@ -613,11 +631,14 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           } catch (error) { if (current(pending)) report(error?.message || 'The planning outcome is unknown. Retry the same action.'); }
           finally { if (current(pending)) save.disabled = false; }
         }, { signal });
-        row.append(form); parent.append(row);
+        if (compactActions) { const actions = element('details'); actions.className = 'cc-card-actions'; actions.append(element('summary', 'Actions'), form); row.append(actions); }
+        else row.append(form);
+        parent.append(row);
       };
       const todayMandatory = Array.isArray(workspace.today?.mandatory) ? workspace.today.mandatory : [];
       const todayPlanned = Array.isArray(workspace.today?.planned) ? workspace.today.planned : [];
-      if (!todayMandatory.length && !todayPlanned.length) primary.append(element('p', 'Nothing needs you today. Choose optional work from When I have capacity.'));
+      if (planner || todayMandatory.length || todayPlanned.length || openLoops.attentionTotal === 0) primary.append(element('h2', 'Today / Needs you'));
+      if (!todayMandatory.length && !todayPlanned.length && openLoops.attentionTotal === 0) { const empty = element('p', 'Nothing needs you today. Choose optional work from When I have capacity.'); empty.className = 'cc-empty'; primary.append(empty); }
       const grouped = workspace.today?.groups ?? {};
       const renderedMandatory = new Set();
       for (const [key, label, reason] of [
@@ -644,28 +665,67 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         const dashboardSection = label.startsWith('Planned / Upcoming') ? 'upcoming' : label.startsWith('Waiting') ? 'waiting' : label.startsWith('Review') ? 'review' : label.startsWith('Someday') ? 'someday' : null;
         if (dashboardSection) disclosure.dataset.dashboardSection = dashboardSection;
         for (const card of Array.isArray(cards) ? cards : []) renderPlanningCard(disclosure, card, reason(card));
-        const destination = planner || label.startsWith('When I have capacity') ? primary : secondary;
-        destination.append(disclosure);
+        const capacity = label.startsWith('When I have capacity');
+        const destination = planner || capacity ? primary : secondary;
+        if (!planner && capacity) afterAttention.push(disclosure); else destination.append(disclosure);
       }
       if (planner) {
+        const controls = element('section'); controls.className = 'cc-planner-controls'; controls.setAttribute('aria-label', 'Planner controls');
+        const searchLabel = element('label', 'Search'); const search = element('input'); search.type = 'search'; search.placeholder = 'Search work'; search.value = transientUiState.planner.search; searchLabel.append(search);
+        const topicLabel = element('label', 'Topic'); const topic = element('select'); const allTopics = element('option', 'All Topics'); allTopics.value = ''; topic.append(allTopics);
+        const completeBoard = Object.values(workspace.board ?? {}).flatMap(openLoopsArray);
+        for (const topicId of [...new Set(completeBoard.map(card => card.topicId).filter(nonBlank))].sort()) { const option = element('option', topicId); option.value = topicId; topic.append(option); }
+        topic.value = targets.topicId ?? transientUiState.planner.topic ?? ''; topicLabel.append(topic);
+        const stateLabel = element('label', 'Status'); const state = element('select');
+        for (const [value, label] of [['', 'All statuses'], ['confirmed', 'Confirmed'], ['monitoring', 'Monitoring'], ['waiting', 'Waiting'], ['decision-needed', 'Decision needed'], ['suggested', 'Suggestions'], ['resolved', 'Resolved']]) { const option = element('option', label); option.value = value; state.append(option); } stateLabel.append(state);
+        state.value = transientUiState.planner.state;
+        const priorityLabel = element('label', 'Priority'); const importance = element('select');
+        for (const [value, label] of [['', 'All priorities'], ['critical', 'Critical'], ['high', 'High'], ['normal', 'Normal'], ['low', 'Low']]) { const option = element('option', label); option.value = value; importance.append(option); } priorityLabel.append(importance);
+        importance.value = transientUiState.planner.importance;
+        const views = element('div'); views.className = 'cc-view-switcher'; views.setAttribute('aria-label', 'Planner view');
+        const boardView = element('button', 'Board'); boardView.type = 'button'; boardView.setAttribute('aria-pressed', 'true');
+        const listView = element('button', 'List'); listView.type = 'button'; listView.setAttribute('aria-pressed', 'false');
+        const agendaView = element('button', 'Agenda'); agendaView.type = 'button'; agendaView.setAttribute('aria-pressed', 'false');
+        views.append(boardView, listView, agendaView); controls.append(searchLabel, topicLabel, stateLabel, priorityLabel, views); primary.append(controls);
         const board = element('details'); board.open = true; board.dataset.topicBoard = 'true'; board.append(element('summary', 'Kanban board'));
         const lanes = element('div'); lanes.className = 'cc-planner-board'; lanes.setAttribute('aria-label', 'Kanban lanes');
         for (const [key, label] of [['ready', 'Ready'], ['doing', 'Doing'], ['waiting', 'Waiting'], ['done', 'Done'], ['suggestions', 'Suggestions']]) {
           const cards = workspace.board?.[key] ?? [];
           const lane = element('section'); lane.className = 'cc-planner-lane'; lane.dataset.boardLane = key; lane.append(element('h3', `${label} (${cards.length})`));
           if (!cards.length) lane.append(element('p', `No ${label.toLowerCase()} items.`));
-          for (const card of cards) renderPlanningCard(lane, card, label);
+          for (const card of cards) renderPlanningCard(lane, card, label, true);
           lanes.append(lane);
         }
         board.append(lanes);
         primary.append(board);
-        const agenda = element('details'); agenda.dataset.agenda = 'true'; agenda.append(element('summary', `Agenda (${workspace.agenda?.length ?? 0})`));
+        const list = element('section'); list.className = 'cc-planner-list'; list.hidden = true; list.setAttribute('aria-label', 'Planner list');
+        const uniqueCards = [...new Map(completeBoard.map(card => [card.loopId, card])).values()];
+        for (const card of uniqueCards) renderPlanningCard(list, card, 'Planner list', true);
+        primary.append(list);
+        const agenda = element('details'); agenda.className = 'cc-planner-agenda'; agenda.hidden = true; agenda.open = true; agenda.dataset.agenda = 'true'; agenda.append(element('summary', `Agenda (${workspace.agenda?.length ?? 0})`));
         for (const entry of workspace.agenda ?? []) agenda.append(element('p', `${formatInstant(entry.at)} · ${entry.kind} · ${entry.item?.title ?? 'Item'}`));
         primary.append(agenda);
+        const applyFilters = () => {
+          transientUiState.planner = { ...transientUiState.planner, search: search.value, topic: topic.value, state: state.value, importance: importance.value };
+          const query = search.value.trim().toLocaleLowerCase();
+          for (const card of [...board.querySelectorAll('[data-workspace-loop-id]'), ...list.querySelectorAll('[data-workspace-loop-id]')]) {
+            card.hidden = Boolean((query && !card.dataset.cardTitle.includes(query)) || (topic.value && card.dataset.cardTopic !== topic.value) || (state.value && card.dataset.cardState !== state.value) || (importance.value && card.dataset.cardPriority !== importance.value));
+          }
+        };
+        for (const input of [search, topic, state, importance]) input.addEventListener(input === search ? 'input' : 'change', applyFilters, { signal });
+        const showView = selectedView => {
+          transientUiState.planner.view = selectedView;
+          board.hidden = selectedView !== 'board'; list.hidden = selectedView !== 'list'; agenda.hidden = selectedView !== 'agenda';
+          for (const [button, value] of [[boardView, 'board'], [listView, 'list'], [agendaView, 'agenda']]) button.setAttribute('aria-pressed', String(value === selectedView));
+        };
+        boardView.addEventListener('click', () => showView('board'), { signal }); listView.addEventListener('click', () => showView('list'), { signal }); agendaView.addEventListener('click', () => showView('agenda'), { signal });
+        showView(transientUiState.planner.view); applyFilters();
       }
     }
-    primary.append(element('h2', 'Open loops'));
-    primary.append(element('p', `${openLoops.attentionTotal} need attention · ${openLoops.comingUpTotal} coming up · ${openLoops.waitingTotal} waiting · ${openLoops.suggestedTotal} suggestions · ${openLoops.deferredTotal} deferred`));
+    if (planner) {
+      primary.append(element('h2', 'Open loops'));
+      primary.append(element('p', `${openLoops.attentionTotal} need attention · ${openLoops.comingUpTotal} coming up · ${openLoops.waitingTotal} waiting · ${openLoops.suggestedTotal} suggestions · ${openLoops.deferredTotal} deferred`));
+    }
     const stageGroups = Array.isArray(openLoops.stageReviews) ? openLoops.stageReviews.map(group => [`Active renovation stage: ${group.stage?.id ?? 'stage'}`, group.items]) : [];
     const groups = [['Needs attention', openLoops.highlighted], ...stageGroups, ['Coming up', openLoops.comingUp], ['Waiting', openLoops.waiting], ['Suggestions', openLoops.suggested], ['Deferred', openLoops.deferred], ['Needs reconciliation', openLoops.reconciliation]];
     for (const [label, cards] of groups) {
@@ -677,9 +737,10 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       else destination.append(element('h3', label));
       for (const card of cards) {
         if (!nonBlank(card.loopId) || !nonBlank(card.title)) continue;
-        const row = element('article'); row.dataset.openLoopId = card.loopId;
+        const row = element('article'); row.className = 'cc-open-loop-card'; row.dataset.openLoopId = card.loopId; row.dataset.loopKind = card.kind ?? 'general';
         row.append(element('h4', card.title));
-        const facts = [card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, formatDue(card) ? `Due ${formatDue(card)}` : null].filter(Boolean);
+        const topicName = targets.topics?.find(topic => topic.topicId === card.topicId)?.name ?? card.topicId;
+        const facts = [nonBlank(topicName) ? `Topic: ${topicName}` : null, nonBlank(card.sourceLabel) ? `Source: ${card.sourceLabel}` : null, card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, formatDue(card) ? `Due ${formatDue(card)}` : null].filter(Boolean);
         if (facts.length) row.append(element('p', facts.join(' · ')));
         if (nonBlank(card.whyNow)) row.append(element('p', card.whyNow));
         row.append(element('p', `${Number.isSafeInteger(card.evidenceCount) ? card.evidenceCount : 0} linked source ${card.evidenceCount === 1 ? 'item' : 'items'}.`));
@@ -769,6 +830,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         group.append(row);
       }
     }
+    for (const section of afterAttention) primary.append(section);
     const inventory = element('details'); inventory.dataset.openLoopInventory = 'true'; inventory.append(element('summary', `Review all open loops (${openLoops.total})`));
     const inventoryRows = element('section'); inventoryRows.setAttribute('aria-label', 'All open loops');
     const more = element('button', 'Load open loops'); more.type = 'button'; let offset = 0; let cursor;
@@ -780,7 +842,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         if (!current(pending) || !Array.isArray(page?.loops) || page.offset !== offset) throw new Error('The open-loop inventory changed. Refresh before continuing.');
         for (const loop of page.loops) {
           if (!nonBlank(loop.loopId) || !nonBlank(loop.title) || inventoryRows.querySelector(`[data-open-loop-id="${CSS.escape(loop.loopId)}"]`)) continue;
-          const row = element('article'); row.dataset.openLoopId = loop.loopId;
+          const row = element('article'); row.className = 'cc-open-loop-card'; row.dataset.openLoopId = loop.loopId; row.dataset.loopKind = loop.kind ?? 'general';
           row.append(element('h4', loop.title), element('p', [loop.paymentState ?? loop.state, formatDue(loop) ? `Due ${formatDue(loop)}` : null].filter(Boolean).join(' · ')));
           const evidence = element('button', 'Review evidence'); evidence.type = 'button';
           evidence.addEventListener('click', async () => {
@@ -903,10 +965,15 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   }
 
   async function load(message = '') {
+    if (content.childElementCount) captureTransientUiState();
     const pending = ++generation; selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
     intake.hidden = Boolean(recordId) || pageMode === 'planner';
     if (signal.aborted || !presented) return;
-    if (!readable()) { report('Connect with read access to view Attention.'); return; }
+    if (!readable()) {
+      const disconnected = element('section'); disconnected.className = 'cc-disconnected';
+      disconnected.append(element('h2', 'Command Center is not connected'), element('p', 'Email, Chat and Note processing coverage cannot be checked yet. Connect with read access before treating this inbox as complete.'));
+      content.append(disconnected); report('Connect with read access to view Attention.'); return;
+    }
     setBusy(true); report('Loading Attention…');
     try {
       const response = await host.request('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 20 });
@@ -919,15 +986,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         const focus = element('section'); focus.className = 'cc-focus'; focus.setAttribute('aria-label', pageMode === 'planner' ? 'Planner workspace' : 'Focus');
         const dashboards = element('aside'); dashboards.className = 'cc-dashboards'; dashboards.id = 'command-center-dashboards'; dashboards.setAttribute('aria-label', 'Dashboards');
         if (pageMode === 'dashboard') {
-          const focusTitle = element('div'); focusTitle.className = 'cc-module'; focusTitle.append(element('p', 'Focus')); focusTitle.firstChild.className = 'cc-kicker';
-          focusTitle.append(element('h2', 'What needs you now'));
+          const focusTitle = element('div'); focusTitle.className = 'cc-zone-head'; focusTitle.append(element('h2', 'What needs you now'), element('p', 'Focused and time-sensitive'));
           const jump = element('a', 'Jump to dashboards'); jump.href = '#command-center-dashboards'; jump.className = 'cc-dashboard-jump'; focusTitle.append(jump); focus.append(focusTitle);
-          const dashboardsTitle = element('div'); dashboardsTitle.className = 'cc-module'; dashboardsTitle.append(element('p', 'Dashboards')); dashboardsTitle.firstChild.className = 'cc-kicker'; dashboardsTitle.append(element('h2', 'Context at a glance')); dashboards.append(dashboardsTitle);
-          renderQuickCapture(focus, dashboard, pending);
+          const dashboardsTitle = element('div'); dashboardsTitle.className = 'cc-zone-head'; dashboardsTitle.append(element('h2', 'Context at a glance'), element('p', 'Topics, intake and what is coming')); dashboards.append(dashboardsTitle);
           renderDashboardPreferences(dashboards, dashboard, pending);
           const topic = dashboard.topics?.find(item => item.topicId === dashboardPreferences.pinnedTopicId) ?? dashboard.topics?.find(item => /renovat/i.test(item.name)) ?? dashboard.topics?.[0];
           if (topic) {
-            const topicCard = element('section'); topicCard.className = 'cc-module'; topicCard.dataset.dashboardSection = 'topic'; topicCard.append(element('h3', topic.name));
+            const topicCard = element('section'); topicCard.className = 'cc-module cc-topic-widget'; topicCard.dataset.dashboardSection = 'topic'; topicCard.append(element('p', 'Pinned Topic'), element('h3', topic.name)); topicCard.firstChild.className = 'cc-kicker';
             const openLoops = dashboard.openLoops ?? {};
             const projected = openLoops.workspace ?? {};
             const completeBoard = Object.values(projected.board ?? {}).flatMap(openLoopsArray);
@@ -937,17 +1002,18 @@ export function mountAttentionPage(container, context, operations = new Map(), p
             ]).filter(item => item.topicId === topic.topicId);
             const topicTotal = new Set(topicLoops.map(item => item.loopId)).size;
             topicCard.append(element('p', `${topicTotal} current item${topicTotal === 1 ? '' : 's'} across the complete workspace board.`));
-            const openTopicWork = element('button', `View ${topicTotal} matching item${topicTotal === 1 ? '' : 's'} in Planner`); openTopicWork.type = 'button'; openTopicWork.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'planner', params: { topicId: topic.topicId } }); }, { signal }); topicCard.append(openTopicWork);
-            const openTopic = element('button', `Open ${topic.name}`); openTopic.type = 'button'; openTopic.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'topic', params: { topicId: topic.topicId } }); }, { signal }); topicCard.append(openTopic); dashboards.append(topicCard);
+            const widgetActions = element('div'); widgetActions.className = 'cc-widget-actions';
+            const openTopicWork = element('button', `View ${topicTotal} matching item${topicTotal === 1 ? '' : 's'} in Planner`); openTopicWork.type = 'button'; openTopicWork.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'planner', params: { topicId: topic.topicId } }); }, { signal }); widgetActions.append(openTopicWork);
+            const openTopic = element('button', `Open ${topic.name}`); openTopic.type = 'button'; openTopic.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'topic', params: { topicId: topic.topicId } }); }, { signal }); widgetActions.append(openTopic); topicCard.append(widgetActions); dashboards.append(topicCard);
           }
           const coverage = element('section'); coverage.className = 'cc-module'; coverage.dataset.dashboardSection = 'coverage'; coverage.append(element('h3', 'Intake coverage'));
           const coverageRows = Array.isArray(dashboard.intakeCoverage) ? dashboard.intakeCoverage : [];
           if (!coverageRows.length) coverage.append(element('p', 'Coverage is unknown because this response contains no maintained processing receipts.'));
           for (const row of coverageRows) {
-            const article = element('article'); article.append(element('h4', row.source ?? row.sourceKind ?? 'Source'), element('p', `${row.status ?? 'unknown'}${row.lastSuccessfulAt ? ` · Last successful ${formatInstant(row.lastSuccessfulAt)}` : row.lastObservedAt ? ` · Last observed ${formatInstant(row.lastObservedAt)}` : ''}`));
+            const article = element('article'); article.className = 'cc-coverage-card'; article.append(element('h4', row.source ?? row.sourceKind ?? 'Source'), element('p', `${row.status ?? 'unknown'}${row.lastSuccessfulAt ? ` · Last successful ${formatInstant(row.lastSuccessfulAt)}` : row.lastObservedAt ? ` · Last observed ${formatInstant(row.lastObservedAt)}` : ''}`));
             if (row.explanation) article.append(element('p', row.explanation)); coverage.append(article);
           }
-          coverage.append(element('p', 'Gateway availability is not treated as proof that email or Notes were processed.')); dashboards.append(coverage);
+          const coverageNote = element('p', 'Gateway availability is not treated as proof that email or Notes were processed.'); coverageNote.className = 'cc-coverage-note'; coverage.append(coverageNote); dashboards.append(coverage);
         } else if (nonBlank(topicFilter)) {
           const filteredTopic = dashboard.topics?.find(item => item.topicId === topicFilter);
           const filter = element('section'); filter.className = 'cc-module'; filter.append(element('h2', `Planner for ${filteredTopic?.name ?? topicFilter}`), element('p', 'Showing this Topic across the complete board, agenda and open-loop views.'));
@@ -960,9 +1026,12 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { notificationRecord: card.notificationRecordId } }); }, { signal }); focus.append(button);
         }
-        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined });
+        renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined, topics: dashboard.topics });
+        if (pageMode === 'dashboard') renderQuickCapture(focus, dashboard, pending);
         if (pageMode === 'dashboard') { renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending, dashboards); applyDashboardPreferences(dashboards); }
-        report(message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : 'No current Attention items.')); return;
+        const coverageKnown = Array.isArray(dashboard.intakeCoverage) && dashboard.intakeCoverage.length > 0;
+        restoreTransientUiState();
+        report(message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.')); return;
       }
       const matches = cards.filter((card) => card.notificationRecordId === recordId);
       if (matches.length !== 1) { report(`${message ? `${message} ` : ''}The exact Attention item is no longer available in the current inbox. Refresh to check again.`); return; }

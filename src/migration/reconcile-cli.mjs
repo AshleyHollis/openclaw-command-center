@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, realpath } from 'node:fs/promises';
 import path from 'node:path';
@@ -7,18 +8,21 @@ import { assertPreparationPlan, prepareTopicForReconciliation } from './prepare-
 import { createTopicService } from '../topics/service.mjs';
 import { createAuthoritativeSourceService } from '../sources/service.mjs';
 import { inspectTopicDiscoverability } from '../topics/discoverability.mjs';
+import { createHistoricalBackfill, historicalBackfillPlanDigest, withdrawHistoricalBackfill } from '../open-loops/historical-backfill.mjs';
+import { createHistoricalBackfillStore } from '../open-loops/historical-backfill-store.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const recoveryFailure = receipts => { throw Object.assign(new Error('note-folder-recovery-halted'), { code: 'note-folder-recovery-halted', receipts }); };
 const MAX_PLAN_BYTES = 2 * 1024 * 1024;
+const MAX_ADAPTER_BYTES = 2 * 1024 * 1024;
 
-export async function readPinnedReconciliationPlan(filename, expectedDigest) {
-  if (typeof filename !== 'string' || !path.isAbsolute(filename) || !/^[a-f0-9]{64}$/.test(expectedDigest)) fail('reconciliation-plan-invalid');
-  if (path.resolve(await realpath(filename)) !== path.resolve(filename)) fail('reconciliation-plan-unsafe');
+async function readPinnedJson(filename, invalidCode, unsafeCode, changedCode) {
+  if (typeof filename !== 'string' || !path.isAbsolute(filename)) fail(invalidCode);
+  if (path.resolve(await realpath(filename)) !== path.resolve(filename)) fail(unsafeCode);
   const handle = await open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const before = await handle.stat({ bigint: true });
-    if (!before.isFile() || before.size > BigInt(MAX_PLAN_BYTES)) fail('reconciliation-plan-unsafe');
+    if (!before.isFile() || before.size > BigInt(MAX_PLAN_BYTES)) fail(unsafeCode);
     const buffer = Buffer.alloc(MAX_PLAN_BYTES + 1);
     let count = 0;
     while (count < buffer.length) {
@@ -27,13 +31,75 @@ export async function readPinnedReconciliationPlan(filename, expectedDigest) {
       count += bytesRead;
     }
     const after = await handle.stat({ bigint: true });
-    if (count > MAX_PLAN_BYTES || BigInt(count) !== before.size || ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key] !== after[key])) fail('reconciliation-plan-changed');
+    if (count > MAX_PLAN_BYTES || BigInt(count) !== before.size || ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key] !== after[key])) fail(changedCode);
     let plan;
     try { plan = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, count))); }
-    catch { fail('reconciliation-plan-invalid'); }
-    if (reconciliationPlanDigest(plan) !== expectedDigest) fail('reconciliation-plan-digest-mismatch');
+    catch { fail(invalidCode); }
     return plan;
   } finally { await handle.close(); }
+}
+
+export async function readPinnedReconciliationPlan(filename, expectedDigest) {
+  if (!/^[a-f0-9]{64}$/u.test(expectedDigest)) fail('reconciliation-plan-invalid');
+  const plan = await readPinnedJson(filename, 'reconciliation-plan-invalid', 'reconciliation-plan-unsafe', 'reconciliation-plan-changed');
+  if (reconciliationPlanDigest(plan) !== expectedDigest) fail('reconciliation-plan-digest-mismatch');
+  return plan;
+}
+
+export async function readPinnedHistoricalBackfillPlan(filename, expectedDigest) {
+  if (!/^sha256:[a-f0-9]{64}$/u.test(expectedDigest)) fail('backfill-plan-invalid');
+  const plan = await readPinnedJson(filename, 'backfill-plan-invalid', 'backfill-plan-unsafe', 'backfill-plan-changed');
+  if (historicalBackfillPlanDigest(plan) !== expectedDigest) fail('backfill-plan-digest-mismatch');
+  return plan;
+}
+
+async function importPinnedBackfillAdapter(filename, expectedDigest) {
+  const digestText = String(expectedDigest).replace(/^sha256:/u, '');
+  if (typeof filename !== 'string' || !path.isAbsolute(filename) || !/^[a-f0-9]{64}$/u.test(digestText)) fail('backfill-adapter-invalid');
+  if (path.resolve(await realpath(filename)) !== path.resolve(filename)) fail('backfill-adapter-unsafe');
+  const handle = await open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let source;
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size > BigInt(MAX_ADAPTER_BYTES)) fail('backfill-adapter-unsafe');
+    const buffer = Buffer.alloc(Number(before.size));
+    let count = 0;
+    while (count < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, count, buffer.length - count, count);
+      if (!bytesRead) break;
+      count += bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (BigInt(count) !== before.size || ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key] !== after[key])) fail('backfill-adapter-changed');
+    if (createHash('sha256').update(buffer).digest('hex') !== digestText) fail('backfill-adapter-digest-mismatch');
+    source = buffer;
+  } finally { await handle.close(); }
+  // Import the descriptor-bound bytes, not the mutable pathname. Adapters are
+  // standalone operator modules and may use built-in or package imports.
+  const module = await import(`data:text/javascript;base64,${source.toString('base64')}#sha256=${digestText}`);
+  if (typeof module.createHistoricalBackfillAdapter !== 'function') fail('backfill-adapter-invalid');
+  source.fill(0);
+  return module.createHistoricalBackfillAdapter;
+}
+
+export async function runConfiguredHistoricalBackfill({ mode, planPath, expectedDigest, adapterPath, expectedAdapterDigest, config, signal }) {
+  if (!['preview', 'apply', 'withdraw'].includes(mode)) fail('backfill-mode-invalid');
+  const plan = await readPinnedHistoricalBackfillPlan(planPath, expectedDigest);
+  signal?.throwIfAborted();
+  const createAdapter = await importPinnedBackfillAdapter(adapterPath, expectedAdapterDigest);
+  const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')
+  ]);
+  const metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
+  try {
+    const adapterDigest = `sha256:${String(expectedAdapterDigest).replace(/^sha256:/u, '')}`;
+    const adapter = await createAdapter({ plan: structuredClone(plan), mode, config: structuredClone(config), signal });
+    if (!adapter || typeof adapter !== 'object') fail('backfill-adapter-invalid');
+    const store = createHistoricalBackfillStore({ metadata });
+    const assertCurrent = () => signal?.throwIfAborted();
+    if (mode === 'withdraw') return await withdrawHistoricalBackfill({ ...adapter, ...store, backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent });
+    return await createHistoricalBackfill({ ...adapter, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
+  } finally { metadata.close(); }
 }
 
 // Local operator CLI, not a Gateway RPC or startup importer. Host CLI admission
@@ -204,6 +270,26 @@ export function registerReconciliationCli({ program, config, logger }) {
         } finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
       });
   }
+  }
+  const backfill = group.command('backfill').description('Run an explicitly pinned private historical intake plan');
+  for (const mode of ['preview', 'apply', 'withdraw']) {
+    backfill.command(mode)
+      .requiredOption('--plan <absolute-path>', 'Private approved plan JSON')
+      .requiredOption('--digest <sha256>', 'Approved canonical plan SHA-256')
+      .requiredOption('--adapter <absolute-path>', 'Private approved source adapter module')
+      .requiredOption('--adapter-digest <sha256>', 'Approved source adapter SHA-256')
+      .action(async options => {
+        const cancellation = new AbortController();
+        const abort = () => cancellation.abort(Object.assign(new Error('backfill-cancelled'), { code: 'backfill-cancelled' }));
+        process.once('SIGINT', abort); process.once('SIGTERM', abort);
+        try {
+          logger.info(JSON.stringify(await runConfiguredHistoricalBackfill({ mode, planPath: options.plan, expectedDigest: options.digest,
+            adapterPath: options.adapter, expectedAdapterDigest: options.adapterDigest, config, signal: cancellation.signal })));
+        } catch (error) {
+          logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'backfill-failed');
+          process.exitCode = 1;
+        } finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
+      });
   }
   group.command('verify-discoverability').description('Verify active Topic and Primary Conversation discoverability').action(async () => {
     const cancellation = new AbortController();

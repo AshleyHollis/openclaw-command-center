@@ -43,6 +43,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
   const methods = new Map();
   const services = [];
   const lifecycles = [];
+  const sessionCatalogs = [];
   const candidates = [];
   let currentBindingAvailable = bindingAvailable;
   let revoked = false;
@@ -65,12 +66,13 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
       }
     },
     registerHttpRoute(value) { routes.push(value); },
+    registerSessionCatalog(value) { sessionCatalogs.push(value); },
     registerGatewayMethod(name, handler) { methods.set(name, handler); },
     registerTool() {},
     registerService(service) { services.push(service); }
   };
   return {
-    api, declarations, descriptors, routes, methods, services, lifecycles, candidates,
+    api, declarations, descriptors, routes, methods, services, lifecycles, sessionCatalogs, candidates,
     async authenticatedGatewayRequest(name, params) {
       const handler = methods.get(name);
       if (!handler) throw new Error(`Missing fake Gateway method ${name}`);
@@ -568,6 +570,17 @@ test('native manifest uses the supported asset declaration while routes stay reg
     assert.equal(route.match, 'exact');
   }
   assert.ok(host.routes.some((route) => route.path === '/plugins/command-center/api/topic/actions'));
+});
+
+test('new Topic Conversations use the configured model while retaining the production default', () => {
+  const configured = fakePublishedApi(path.join(os.tmpdir(), 'fictional-session-model-configured'), { pluginConfig: { conversationModel: 'fixture/fixture-model' } });
+  plugin.register(configured.api);
+  assert.equal(configured.sessionCatalogs.length, 1);
+  assert.deepEqual(configured.sessionCatalogs[0].resolveCreateSession(), { model: 'fixture/fixture-model', agentRuntime: 'openclaw' });
+
+  const defaults = fakePublishedApi(path.join(os.tmpdir(), 'fictional-session-model-default'));
+  plugin.register(defaults.api);
+  assert.deepEqual(defaults.sessionCatalogs[0].resolveCreateSession(), { model: 'openai/gpt-5.6-luna', agentRuntime: 'openclaw' });
 });
 
 test('production first-live plugin keeps deferred analysis unavailable without dispatch', async () => {

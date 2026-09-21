@@ -61,6 +61,7 @@ test('fixture manifest supplies the built candidate to the isolated host seam', 
     assert.deepEqual(config.plugins.allow, ['command-center']);
     assert.deepEqual(config.plugins.load.paths, [world.manifest.candidate.root]);
     assert.deepEqual(config.plugins.entries['memory-core'], { enabled: true, config: { dreaming: { enabled: false } } });
+    assert.equal(config.plugins.entries['command-center'].config.conversationModel, 'fixture/fixture-model');
   } finally { await disposeIsolatedWorld(world); }
 });
 

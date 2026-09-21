@@ -5,8 +5,9 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
-import { readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredNoteFolderRecovery, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
+import { readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
 import { reconciliationPlanDigest } from '../src/migration/reconcile.mjs';
+import { historicalBackfillPlanDigest } from '../src/open-loops/historical-backfill.mjs';
 
 test('CLI metadata declares lazy reconciliation without runtime activation', async () => {
   let registration; let declaration;
@@ -23,9 +24,43 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
     ...['reconcile', 'prepare-topic'].flatMap(command => ['preflight', 'execute', 'resume', 'verify'].map(mode => `command-center ${command} ${mode}`)),
     'command-center initialize-metadata execute', 'command-center initialize-metadata verify',
     ...['preflight', 'execute', 'verify'].map(mode => `command-center recover-note-folders ${mode}`),
+    ...['preview', 'apply', 'withdraw'].map(mode => `command-center backfill ${mode}`),
     'command-center verify-discoverability'
   ]);
-  assert.equal(required.length, 26); assert.equal(actions.length, 14);
+  assert.equal(required.length, 38); assert.equal(actions.length, 17);
+});
+
+test('historical backfill CLI runs a digest-pinned private adapter with durable metadata', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'backfill-cli-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const planPath = path.join(root, 'plan.json');
+  const adapterPath = path.join(root, 'adapter.mjs');
+  const effectPath = path.join(root, 'effect.json');
+  const plan = { schemaVersion: 1, backfillId: 'fictional-cli-preview', sourceKind: 'email', scope: { topicIds: [], topicNames: [], maxRecords: 1 } };
+  const adapterSource = `import { existsSync, rmSync, writeFileSync } from 'node:fs';
+  const effectPath = ${JSON.stringify(effectPath)};
+  export function createHistoricalBackfillAdapter() { return {
+    async readPage() { return { records: [{ schemaVersion: 1, sourceExternalId: 'fictional', sourceVersion: '1', checkpoint: '001' }], next: '001', done: true }; },
+    async classify() { return { schemaVersion: 1, disposition: 'actionable', obligationId: 'fictional', title: 'Review fictional work' }; },
+    async applyRecord() { writeFileSync(effectPath, '{"revision":1}'); return { disposition: 'created', effectId: 'loop:fictional', revision: 1 }; },
+    async reconcileRecord() { return existsSync(effectPath) ? { status: 'applied', result: { disposition: 'created', effectId: 'loop:fictional', revision: 1 } } : { status: 'not-applied' }; },
+    async inspectEffect() { return existsSync(effectPath) ? { revision: 1, userDecided: false } : null; },
+    async withdrawEffect() { rmSync(effectPath); return { status: 'applied' }; },
+    async reconcileWithdrawal() { return existsSync(effectPath) ? { status: 'not-applied' } : { status: 'applied' }; },
+    async recordReceipt() {}
+  }; }\n`;
+  await writeFile(planPath, JSON.stringify(plan)); await writeFile(adapterPath, adapterSource);
+  const adapterDigest = `sha256:${(await import('node:crypto')).createHash('sha256').update(adapterSource).digest('hex')}`;
+  const saved = process.env.OPENCLAW_STATE_DIR; process.env.OPENCLAW_STATE_DIR = root;
+  try {
+    const result = await runConfiguredHistoricalBackfill({ mode: 'preview', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {} });
+    assert.equal(result.complete, true); assert.equal(result.counts.created, 0);
+    const applied = await runConfiguredHistoricalBackfill({ mode: 'apply', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {} });
+    assert.equal(applied.counts.created, 1);
+    const withdrawn = await runConfiguredHistoricalBackfill({ mode: 'withdraw', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {} });
+    assert.equal(withdrawn.counts.withdrawn, 1);
+    await assert.rejects(runConfiguredHistoricalBackfill({ mode: 'preview', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: `sha256:${'0'.repeat(64)}`, config: {} }), { code: 'backfill-adapter-digest-mismatch' });
+  } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
 });
 
 test('Note Folder recovery CLI rejects an unpinned or noncanonical plan before opening metadata', async t => {

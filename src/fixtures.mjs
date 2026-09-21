@@ -167,7 +167,7 @@ export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot
             // Keep the built-in memory owner available while suppressing its
             // unrelated scheduled dreaming setup in this disposable release test.
             'memory-core': { enabled: true, config: { dreaming: { enabled: false } } },
-            [candidate.id]: { enabled: true, config: { topics: { noteRoot: paths.vault } } }
+            [candidate.id]: { enabled: true, config: { topics: { noteRoot: paths.vault }, conversationModel: 'fixture/fixture-model' } }
           }
         }
       })}\n`);

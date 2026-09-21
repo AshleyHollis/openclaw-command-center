@@ -24,4 +24,5 @@ test('shared schema preserves existing migration limits and fail-closed capabili
   }
   assert.equal(plugin.configSchema.properties.sourceCapabilities.additionalProperties, false);
   assert.deepEqual(plugin.configSchema.properties.controlUiGrant.const, false);
+  assert.equal(plugin.configSchema.properties.conversationModel.pattern, '^[^/\\s]+/[^/\\s]+$');
 });

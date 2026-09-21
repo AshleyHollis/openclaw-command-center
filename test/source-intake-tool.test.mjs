@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory } from '../src/open-loops/source-intake-tool.mjs';
+import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory } from '../src/open-loops/source-intake-tool.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 
 function metadataOwner() {
@@ -16,6 +16,41 @@ function metadataOwner() {
     listOperations() { return [...operations.values()]; }
   };
 }
+
+test('maintained intake resolves only one exact active Topic without returning its locator', async () => {
+  const metadata = {
+    listTopics: () => [
+      { topicId: 'topic-fictional-home', name: 'Fictional Home', lifecycle: 'active' },
+      { topicId: 'topic-fictional-archive', name: 'Fictional Home', lifecycle: 'archived' }
+    ],
+    listSourceReferences: topicId => topicId === 'topic-fictional-home'
+      ? [{ referenceId: 'folder:fictional-home', topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/private/fictional/home' }]
+      : []
+  };
+  const sourceService = { notesRead: async input => ({ path: input.path, revision: 'note-v7', sourceReference: { referenceId: 'note:fictional-existing', topicId: input.topicId, sourceKind: 'note' } }) };
+  const tool = sourceTopicResolverToolFactory({ getOwners: () => ({ metadata, sourceService }) })();
+  const result = await tool.execute(randomUUID(), { topicName: 'Fictional Home' });
+  assert.deepEqual(result.details, { status: 'resolved', topicId: 'topic-fictional-home', noteFolderReferenceId: 'folder:fictional-home' });
+  assert.equal(result.content[0].text.includes('/private/'), false);
+  const existing = await tool.execute(randomUUID(), { topicName: 'Fictional Home', notePath: 'Invoices/Fictional.md' });
+  assert.deepEqual(existing.details.evidence, { sourceReferenceId: 'note:fictional-existing', revision: 'note-v7', path: 'Invoices/Fictional.md' });
+  assert.equal((await tool.execute(randomUUID(), { topicName: 'Unknown Topic' })).details.status, 'unresolved');
+  await assert.rejects(() => tool.execute(randomUUID(), { topicName: ' Fictional Home' }), /exact canonical Topic name/u);
+});
+
+test('maintained intake refuses ambiguous Topic ownership and Topics without one Note Folder', async () => {
+  const metadata = {
+    listTopics: () => [
+      { topicId: 'topic-one', name: 'Duplicate', lifecycle: 'active' },
+      { topicId: 'topic-two', name: 'Duplicate', lifecycle: 'active' },
+      { topicId: 'topic-no-folder', name: 'No Folder', lifecycle: 'active' }
+    ],
+    listSourceReferences: topicId => topicId === 'topic-no-folder' ? [] : [{ referenceId: `folder:${topicId}`, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder' }]
+  };
+  const tool = sourceTopicResolverToolFactory({ getOwners: () => ({ metadata }) })();
+  assert.equal((await tool.execute(randomUUID(), { topicName: 'Duplicate' })).details.status, 'ambiguous');
+  assert.equal((await tool.execute(randomUUID(), { topicName: 'No Folder' })).details.status, 'unresolved');
+});
 
 test('maintained producer saves one quiet Note with stable retry identity and exact evidence', async () => {
   const calls = [];
@@ -68,4 +103,12 @@ test('receipt tool records a healthy empty Note pass without creating an obligat
   const result = await tool.execute('ignored-by-stable-receipt-owner', { sourceKind: 'note', runId: 'fictional-note-run', checkpoint: 'complete', status: 'healthy-empty', observedAt: '2026-09-20T01:00:00.000Z', lastSuccessfulAt: '2026-09-20T01:00:00.000Z', nextExpectedAt: '2026-09-27T01:00:00.000Z', processedCount: 0, actionableCount: 0, noteCount: 0 });
   assert.equal(result.details.receipt.status, 'healthy-empty');
   assert.equal(metadata.operations.size, 1);
+});
+
+test('receipt tool records Chat coverage separately from Note processing', async () => {
+  const metadata = metadataOwner();
+  const tool = intakeReceiptToolFactory({ getOwners: () => ({ metadata }) })();
+  const result = await tool.execute('chat-receipt', { sourceKind: 'chat', runId: 'fictional-chat-run', checkpoint: 'message-9', status: 'healthy-processed', observedAt: '2026-09-20T02:00:00.000Z', lastSuccessfulAt: '2026-09-20T02:00:00.000Z', nextExpectedAt: '2026-09-21T02:00:00.000Z', processedCount: 1, actionableCount: 1, noteCount: 0 });
+  assert.equal(result.details.receipt.sourceKind, 'chat');
+  assert.equal([...metadata.operations.values()][0].operationKind, 'intake-receipt.chat.v1');
 });

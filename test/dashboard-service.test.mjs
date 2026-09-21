@@ -87,11 +87,12 @@ test('Dashboard presents an open-loop obligation once when its owned native Remi
     async attentionList() { return { episodes: [{ episodeId: 'native-reminder-episode', sourceCapabilityId: 'reminders', sourceKind: 'reminder', stableSubjectId: 'native-job', state: 'Active', severity: 'Reminder', topicId: 'topic-one', sourceReferenceId: referenceId, actions: [], evidenceFacts: { reminderDue: true, dueAt: now } }], inProgress: [] }; },
     async listReminderOccurrences() { return [{ topicId: 'topic-one', sourceReference: { referenceId, sourceKind: 'reminder_schedule' }, job: { id: 'native-job', enabled: true, schedule: { kind: 'at', at: now } } }]; }
   };
-  const metadata = { listUsableTopics: () => [{ topicId: 'topic-one', name: 'Fictional Topic', lifecycle: 'active' }], listOpenLoops: () => [loop], getQuietAttentionInbox: () => ({ attention: [{ loop, reason: 'due-window', whyNow: loop.attention.whyNow, actions: loop.attention.actions }], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
+  const metadata = { listUsableTopics: () => [{ topicId: 'topic-one', name: 'Fictional Topic', lifecycle: 'active' }], listOpenLoops: () => [loop], getOpenLoopObservation: () => ({ source: { kind: 'email' } }), getQuietAttentionInbox: () => ({ attention: [{ loop, reason: 'due-window', whyNow: loop.attention.whyNow, actions: loop.attention.actions }], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
   const result = await projectDashboard({ sourceService, metadata, now: () => now });
   assert.equal(result.attention.length, 0, 'the scheduler-owned projection is suppressed');
   assert.equal(result.comingUp.length, 0, 'the scheduler-owned future row is suppressed');
   assert.equal(result.openLoops.attentionTotal, 1);
+  assert.equal(result.openLoops.highlighted[0].sourceLabel, 'Email');
   assert.equal(result.attentionBadgeCount, 1);
 });
 
@@ -112,9 +113,9 @@ test('Dashboard coverage distinguishes maintained receipts from unknown email an
     listOperations: () => [{ operationKind: 'selected-source-intake-root', state: 'applied', resultIdentity: JSON.stringify({ freshness: { status: 'available', lastObservedAt: '2026-09-20T01:00:00.000Z', lastAvailableAt: '2026-09-20T01:00:00.000Z' } }) }]
   };
   const result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
-  assert.deepEqual(result.intakeCoverage.map(row => [row.sourceKind, row.status]), [['email', 'unknown'], ['note', 'unknown'], ['document', 'receipt-current']]);
-  assert.equal(result.intakeCoverage[2].lastSuccessfulAt, '2026-09-20T01:00:00.000Z');
-  assert.match(result.intakeCoverage[2].explanation, /does not prove automatic email or Note coverage/u);
+  assert.deepEqual(result.intakeCoverage.map(row => [row.sourceKind, row.status]), [['email', 'unknown'], ['chat', 'unknown'], ['note', 'unknown'], ['document', 'receipt-current']]);
+  assert.equal(result.intakeCoverage[3].lastSuccessfulAt, '2026-09-20T01:00:00.000Z');
+  assert.match(result.intakeCoverage[3].explanation, /does not prove automatic email or Note coverage/u);
 });
 
 test('Dashboard coverage reports healthy, stale, pending, failed and never-connected producer receipts honestly', async () => {
@@ -125,13 +126,13 @@ test('Dashboard coverage reports healthy, stale, pending, failed and never-conne
     operation('note', 'applied', { status: 'healthy-processed', observedAt: '2026-09-18T01:00:00.000Z', lastSuccessfulAt: '2026-09-18T01:00:00.000Z', nextExpectedAt: '2026-09-19T01:00:00.000Z' }, '2026-09-18T01:00:00.000Z')
   ] };
   let result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
-  assert.deepEqual(result.intakeCoverage.slice(0, 2).map(row => [row.sourceKind, row.status]), [['email', 'healthy-empty'], ['note', 'stale']]);
+  assert.deepEqual(result.intakeCoverage.slice(0, 3).map(row => [row.sourceKind, row.status]), [['email', 'healthy-empty'], ['chat', 'unknown'], ['note', 'stale']]);
   metadata.listOperations = () => [
     operation('email', 'pending', { status: 'pending', observedAt: '2026-09-20T01:00:00.000Z', nextExpectedAt: '2026-09-21T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z'),
     operation('note', 'applied', { status: 'never-connected', observedAt: '2026-09-20T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z')
   ];
   result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
-  assert.deepEqual(result.intakeCoverage.slice(0, 2).map(row => [row.sourceKind, row.status]), [['email', 'pending'], ['note', 'never-connected']]);
+  assert.deepEqual(result.intakeCoverage.slice(0, 3).map(row => [row.sourceKind, row.status]), [['email', 'pending'], ['chat', 'unknown'], ['note', 'never-connected']]);
   metadata.listOperations = () => [operation('email', 'not-applied', { status: 'failed', observedAt: '2026-09-20T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z')];
   result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
   assert.equal(result.intakeCoverage[0].status, 'failed');

@@ -43,3 +43,10 @@ deadline extension, scope reduction or runtime permission change is authorized.
 Exclusive performance, final coherent nine-boundary acceptance, independent
 evaluation and protected live admission remain required. See the
 [research and fixed limits](../research/release-performance-budget-policy.md).
+
+## Later release qualification — 2026-09-21
+
+The blanket gate above remains the historical first-live decision. Later
+Command Center releases use the risk-based profiles accepted in
+[ADR 0007](0007-use-risk-based-release-qualification.md). The fixed performance
+budget still applies whenever that policy selects performance qualification.
