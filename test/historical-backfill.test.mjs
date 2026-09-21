@@ -3,6 +3,8 @@ import test from 'node:test';
 import { createHistoricalBackfill, withdrawHistoricalBackfill } from '../src/open-loops/historical-backfill.mjs';
 
 const plan = { schemaVersion: 1, backfillId: 'renovation-notes-2026-09', sourceKind: 'note', scope: { topicIds: [], topicNames: ['Fictional renovation'], maxRecords: 4 } };
+const adapterDigest = `sha256:${'a'.repeat(64)}`;
+const run = (service, mode = 'apply', selectedPlan = plan) => service.run({ mode, plan: selectedPlan, adapterDigest });
 
 function harness({ failAt, loseReplyAt } = {}) {
   const states = new Map();
@@ -44,7 +46,7 @@ function harness({ failAt, loseReplyAt } = {}) {
 
 test('preview is bounded, content-free and performs no writes', async () => {
   const { service, calls } = harness();
-  const report = await service.run({ mode: 'preview', plan });
+  const report = await run(service, 'preview');
   assert.deepEqual(report.counts, { read: 4, skipped: 1, knowledgeOnly: 1, created: 0, updated: 0, uncertain: 1, failed: 0 });
   assert.equal(calls.apply.length, 0);
   assert.equal(JSON.stringify(report).includes('fixture'), false);
@@ -54,15 +56,15 @@ test('preview is bounded, content-free and performs no writes', async () => {
 
 test('a completed preview does not consume apply authority', async () => {
   const { service, calls } = harness();
-  await service.run({ mode: 'preview', plan });
-  const applied = await service.run({ mode: 'apply', plan });
+  await run(service, 'preview');
+  const applied = await run(service);
   assert.equal(applied.counts.created, 2);
   assert.equal(calls.apply.length, 3);
 });
 
 test('apply keeps completed history quiet and makes old uncertainty a suggestion', async () => {
   const { service, calls } = harness();
-  const report = await service.run({ mode: 'apply', plan });
+  const report = await run(service);
   assert.equal(report.counts.created, 2);
   assert.equal(report.counts.skipped, 2);
   const uncertain = calls.apply.find(call => call.record.checkpoint === '003');
@@ -73,10 +75,10 @@ test('apply keeps completed history quiet and makes old uncertainty a suggestion
 
 test('resume starts after the last durably acknowledged checkpoint', async () => {
   const fixture = harness({ failAt: '003' });
-  await assert.rejects(() => fixture.service.run({ mode: 'apply', plan }), error => error.message === 'fixture-interruption' && error.checkpoint === '002');
+  await assert.rejects(() => run(fixture.service), error => error.message === 'fixture-interruption' && error.checkpoint === '002');
   assert.equal(fixture.getState().checkpoint, '002');
   fixture.clearFailure();
-  const report = await fixture.service.run({ mode: 'apply', plan });
+  const report = await run(fixture.service);
   assert.equal(report.complete, true);
   assert.equal(report.counts.read, 4);
   assert.equal(report.counts.failed, 1);
@@ -85,8 +87,8 @@ test('resume starts after the last durably acknowledged checkpoint', async () =>
 
 test('a lost effect reply reconciles its durable operation instead of dispatching again', async () => {
   const fixture = harness({ loseReplyAt: '003' });
-  await assert.rejects(() => fixture.service.run({ mode: 'apply', plan }), error => error.message === 'fixture-lost-reply' && error.checkpoint === '002');
-  const report = await fixture.service.run({ mode: 'apply', plan });
+  await assert.rejects(() => run(fixture.service), error => error.message === 'fixture-lost-reply' && error.checkpoint === '002');
+  const report = await run(fixture.service);
   assert.equal(report.complete, true);
   assert.equal(fixture.calls.apply.filter(call => call.record.checkpoint === '003').length, 1);
   assert.equal(fixture.calls.reconcile.some(call => call.recordDigest), true);
@@ -94,14 +96,38 @@ test('a lost effect reply reconciles its durable operation instead of dispatchin
 
 test('changed scope cannot resume an existing run identity', async () => {
   const { service } = harness({ failAt: '003' });
-  await assert.rejects(() => service.run({ mode: 'apply', plan }));
-  await assert.rejects(() => service.run({ mode: 'apply', plan: { ...plan, scope: { ...plan.scope, maxRecords: 3 } } }), error => error.code === 'backfill-state-conflict');
+  await assert.rejects(() => run(service));
+  await assert.rejects(() => run(service, 'apply', { ...plan, scope: { ...plan.scope, maxRecords: 3 } }), error => error.code === 'backfill-state-conflict');
+});
+
+test('changed adapter identity cannot resume an existing run', async () => {
+  const { service } = harness({ failAt: '003' });
+  await assert.rejects(() => run(service));
+  await assert.rejects(() => service.run({ mode: 'apply', plan, adapterDigest: `sha256:${'d'.repeat(64)}` }), { code: 'backfill-state-conflict' });
+});
+
+test('central cancellation fences an effect even when the adapter does not', async () => {
+  const controller = new AbortController();
+  let applied = false;
+  const states = new Map();
+  const service = createHistoricalBackfill({
+    assertCurrent: () => controller.signal.throwIfAborted(),
+    async readPage() { return { records: [{ schemaVersion: 1, sourceExternalId: 'one', sourceVersion: '1', checkpoint: '001' }], next: '001', done: true }; },
+    async classify() { controller.abort(); return { schemaVersion: 1, disposition: 'actionable', obligationId: 'one', title: 'Fixture' }; },
+    async applyRecord() { applied = true; return { disposition: 'created', effectId: 'one', revision: 1 }; },
+    async reconcileRecord() { return { status: 'not-applied' }; },
+    async loadState({ stateKey }) { return states.get(stateKey) ?? null; },
+    async saveState({ stateKey, state }) { states.set(stateKey, state); },
+    async recordReceipt() {}
+  });
+  await assert.rejects(() => run(service), { name: 'AbortError' });
+  assert.equal(applied, false);
 });
 
 test('Topic-name scope is exact and rejects whitespace or duplicate selectors', async () => {
   const { service } = harness();
-  await assert.rejects(() => service.run({ mode: 'preview', plan: { ...plan, scope: { ...plan.scope, topicNames: [' Fictional renovation'] } } }), error => error.code === 'backfill-scope-invalid');
-  await assert.rejects(() => service.run({ mode: 'preview', plan: { ...plan, scope: { ...plan.scope, topicNames: ['Fictional renovation', 'Fictional renovation'] } } }), error => error.code === 'backfill-scope-invalid');
+  await assert.rejects(() => run(service, 'preview', { ...plan, scope: { ...plan.scope, topicNames: [' Fictional renovation'] } }), error => error.code === 'backfill-scope-invalid');
+  await assert.rejects(() => run(service, 'preview', { ...plan, scope: { ...plan.scope, topicNames: ['Fictional renovation', 'Fictional renovation'] } }), error => error.code === 'backfill-scope-invalid');
 });
 
 test('withdraw preserves user decisions and concurrent changes', async () => {
@@ -115,7 +141,9 @@ test('withdraw preserves user decisions and concurrent changes', async () => {
   let withdrawalState = null;
   const report = await withdrawHistoricalBackfill({
     backfillId: 'fixture-backfill',
-    async loadState() { return { effects }; },
+    expectedPlanDigest: `sha256:${'b'.repeat(64)}`,
+    adapterDigest,
+    async loadState() { return { planDigest: `sha256:${'b'.repeat(64)}`, adapterDigest, effects }; },
     async inspectEffect({ effectId }) {
       if (effectId.endsWith('user-decided')) return { revision: 1, userDecided: true };
       if (effectId.endsWith('advanced')) return { revision: 2, userDecided: false };
@@ -142,7 +170,9 @@ test('withdraw reconciles a lost successful reply without repeating the effect',
   let dispatches = 0;
   const adapters = {
     backfillId: 'fixture-lost-withdrawal',
-    async loadState() { return { effects }; },
+    expectedPlanDigest: `sha256:${'b'.repeat(64)}`,
+    adapterDigest,
+    async loadState() { return { planDigest: `sha256:${'b'.repeat(64)}`, adapterDigest, effects }; },
     async loadWithdrawalState() { return withdrawalState; },
     async saveWithdrawalState({ state }) { withdrawalState = structuredClone(state); },
     async inspectEffect() { return { revision: 1, userDecided: false }; },
@@ -155,4 +185,14 @@ test('withdraw reconciles a lost successful reply without repeating the effect',
   const report = await withdrawHistoricalBackfill(adapters);
   assert.equal(report.counts.withdrawn, 1);
   assert.equal(dispatches, 1);
+});
+
+test('withdrawal refuses a different pinned plan or adapter identity', async () => {
+  const base = {
+    backfillId: 'fixture-bound-withdrawal', expectedPlanDigest: `sha256:${'b'.repeat(64)}`, adapterDigest,
+    async loadState() { return { planDigest: `sha256:${'e'.repeat(64)}`, adapterDigest, effects: [] }; },
+    async loadWithdrawalState() { return null; }, async saveWithdrawalState() {}, async inspectEffect() {},
+    async withdrawEffect() {}, async reconcileWithdrawal() {}, async recordReceipt() {}
+  };
+  await assert.rejects(() => withdrawHistoricalBackfill(base), { code: 'backfill-state-unavailable' });
 });

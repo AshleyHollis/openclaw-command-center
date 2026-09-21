@@ -48,5 +48,5 @@ evaluation and protected live admission remain required. See the
 
 The blanket gate above remains the historical first-live decision. Later
 Command Center releases use the risk-based profiles accepted in
-[ADR 0005](0005-use-risk-based-release-qualification.md). The fixed performance
+[ADR 0007](0007-use-risk-based-release-qualification.md). The fixed performance
 budget still applies whenever that policy selects performance qualification.

@@ -37,6 +37,22 @@ test('reprocessing appends evidence while user planning and importance win', () 
   assert.equal(next.evidenceObservationIds.length, 2);
 });
 
+test('the same Topic obligation reconciles evidence from email, Chat and Note into one item', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-cross-source-'));
+  const metadata = openCommandCenterMetadataService({ stateDir });
+  try {
+    metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
+    const service = createCommitmentCaptureService({ metadata });
+    const email = await service.capture(base({ sourceKind: 'email', sourceExternalId: 'email:fictional', sourceVersion: '1' }));
+    const chat = await service.capture(base({ logicalOperationId: '20000000-0000-4000-8000-000000000002', sourceKind: 'chat', sourceExternalId: 'chat:fictional', sourceVersion: '2' }));
+    const note = await service.capture(base({ logicalOperationId: '30000000-0000-4000-8000-000000000003', sourceKind: 'note', sourceExternalId: 'note:fictional', sourceVersion: '3' }));
+    assert.equal(chat.loop.loopId, email.loop.loopId);
+    assert.equal(note.loop.loopId, email.loop.loopId);
+    assert.equal(metadata.listOpenLoops().length, 1);
+    assert.equal(note.loop.evidenceObservationIds.length, 3);
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('capture owner atomically replays and verifies exact Note references', async () => {
   const loops = new Map(); const receipts = new Map();
   const metadata = {

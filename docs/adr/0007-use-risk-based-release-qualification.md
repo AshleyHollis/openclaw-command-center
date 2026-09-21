@@ -11,6 +11,8 @@ whole candidate. That was appropriate for the initial release, but applying the
 same qualification to static UI changes and storage mutations delays feedback
 without adding evidence about the changed behavior.
 
+Decision issue: [#257](https://github.com/AshleyHollis/openclaw-command-center/issues/257).
+
 Use the three delivery classes in
 [the release policy](../agents/release-policy.md). Presentation and read-only UI
 changes use focused browser and installed-package proof. Compatible plugin

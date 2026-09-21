@@ -40,9 +40,9 @@ function emptyCounts() {
   return { read: 0, skipped: 0, knowledgeOnly: 0, created: 0, updated: 0, uncertain: 0, failed: 0 };
 }
 
-function normalizeState(value, planDigest, mode) {
-  if (value === null || value === undefined) return { schemaVersion: 1, planDigest, mode, checkpoint: null, complete: false, counts: emptyCounts(), effects: [], pending: null };
-  if (value.schemaVersion !== 1 || value.planDigest !== planDigest || value.mode !== mode || typeof value.complete !== 'boolean' || !value.counts || !Array.isArray(value.effects) || !(value.pending === null || typeof value.pending === 'object')) fail('backfill-state-conflict');
+function normalizeState(value, planDigest, adapterDigest, mode) {
+  if (value === null || value === undefined) return { schemaVersion: 1, planDigest, adapterDigest, mode, checkpoint: null, complete: false, counts: emptyCounts(), effects: [], pending: null };
+  if (value.schemaVersion !== 1 || value.planDigest !== planDigest || value.adapterDigest !== adapterDigest || value.mode !== mode || typeof value.complete !== 'boolean' || !value.counts || !Array.isArray(value.effects) || !(value.pending === null || typeof value.pending === 'object')) fail('backfill-state-conflict');
   return { ...value, counts: { ...emptyCounts(), ...value.counts }, effects: [...value.effects], pending: value.pending ? { ...value.pending } : null };
 }
 
@@ -74,37 +74,46 @@ function contentFreeReport({ mode, plan, state }) {
  * classification and writes remain injected ownership boundaries. Persisted
  * state contains only checkpoints, counters and effect identities.
  */
-export function createHistoricalBackfill({ readPage, classify, applyRecord, reconcileRecord, loadState, saveState, recordReceipt, now = () => new Date().toISOString() } = {}) {
+export function createHistoricalBackfill({ readPage, classify, applyRecord, reconcileRecord, loadState, saveState, recordReceipt, assertCurrent = () => {}, now = () => new Date().toISOString() } = {}) {
   if (![readPage, classify, applyRecord, reconcileRecord, loadState, saveState, recordReceipt].every(value => typeof value === 'function')) fail('backfill-adapter-invalid');
   return Object.freeze({
-    async run({ mode, plan: inputPlan }) {
+    async run({ mode, plan: inputPlan, adapterDigest }) {
       if (!modes.has(mode)) fail('backfill-mode-invalid');
+      if (!/^sha256:[a-f0-9]{64}$/u.test(adapterDigest)) fail('backfill-adapter-digest-invalid');
       const plan = normalizePlan(inputPlan);
       const planDigest = digest(plan);
       const stateKey = `${plan.backfillId}:${mode}`;
+      assertCurrent();
       const persisted = await loadState({ backfillId: plan.backfillId, mode, stateKey });
-      const state = normalizeState(persisted, planDigest, mode);
+      assertCurrent();
+      const state = normalizeState(persisted, planDigest, adapterDigest, mode);
       if (state.complete) return contentFreeReport({ mode, plan, state });
       let cursor = state.checkpoint;
       while (state.counts.read < plan.scope.maxRecords) {
         const remaining = plan.scope.maxRecords - state.counts.read;
+        assertCurrent();
         const page = await readPage({ sourceKind: plan.sourceKind, scope: plan.scope, after: cursor, limit: Math.min(25, remaining) });
+        assertCurrent();
         if (!page || !Array.isArray(page.records) || page.records.length > Math.min(25, remaining) || (page.next === cursor && page.records.length > 0)) fail('backfill-page-invalid');
         for (const record of page.records) {
           assertRecord(record);
           const beforeCounts = { ...state.counts };
           const beforeEffects = state.effects.length;
           try {
+            assertCurrent();
             const classification = await classify({ sourceKind: plan.sourceKind, record, historicalBaseline: true });
+            assertCurrent();
             assertClassification(classification);
             const recordDigest = digest({ sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, checkpoint: record.checkpoint });
             const classificationDigest = digest(classification);
             let result;
             if (mode === 'apply' && !['completed', 'unchanged'].includes(classification.disposition)) {
-              const logicalOperationId = digest({ owner: 'command-center.historical-backfill.v1', planDigest, recordDigest });
+              const logicalOperationId = digest({ owner: 'command-center.historical-backfill.v1', planDigest, adapterDigest, recordDigest });
               if (state.pending) {
                 if (state.pending.recordDigest !== recordDigest || state.pending.classificationDigest !== classificationDigest || state.pending.logicalOperationId !== logicalOperationId) fail('backfill-pending-conflict');
+                assertCurrent();
                 const reconciliation = await reconcileRecord({ backfillId: plan.backfillId, logicalOperationId, recordDigest });
+                assertCurrent();
                 if (!reconciliation || !['applied', 'not-applied', 'unknown', 'conflict'].includes(reconciliation.status)) fail('backfill-reconciliation-invalid');
                 if (reconciliation.status === 'unknown') fail('backfill-effect-unknown');
                 if (reconciliation.status === 'conflict') fail('backfill-effect-conflict');
@@ -112,13 +121,14 @@ export function createHistoricalBackfill({ readPage, classify, applyRecord, reco
               } else {
                 state.pending = { logicalOperationId, recordDigest, classificationDigest };
                 await saveState({ backfillId: plan.backfillId, mode, stateKey, state: { ...state, updatedAt: now() } });
+                assertCurrent();
               }
-              if (!result) result = await applyRecord({
+              if (!result) { assertCurrent(); result = await applyRecord({
                 backfillId: plan.backfillId, logicalOperationId, sourceKind: plan.sourceKind, record,
                 classification: classification.disposition === 'uncertain'
                   ? { ...classification, provenance: 'inferred', historicalBaseline: true }
                   : { ...classification, historicalBaseline: true }
-              });
+              }); assertCurrent(); }
               if (!result || !['created', 'updated', 'unchanged'].includes(result.disposition)) fail('backfill-apply-result-invalid');
             }
             state.counts.read += 1;
@@ -137,6 +147,7 @@ export function createHistoricalBackfill({ readPage, classify, applyRecord, reco
             cursor = record.checkpoint;
             state.checkpoint = cursor;
             await saveState({ backfillId: plan.backfillId, mode, stateKey, state: { ...state, updatedAt: now() } });
+            assertCurrent();
           } catch (error) {
             state.counts = beforeCounts;
             state.effects.length = beforeEffects;
@@ -163,10 +174,13 @@ export function createHistoricalBackfill({ readPage, classify, applyRecord, reco
 
 /** Withdraws only effects created by this backfill and only at their recorded
  * revision. Updated records and later user/concurrent changes are preserved. */
-export async function withdrawHistoricalBackfill({ backfillId, loadState, loadWithdrawalState, saveWithdrawalState, inspectEffect, withdrawEffect, reconcileWithdrawal, recordReceipt, now = () => new Date().toISOString() } = {}) {
+export async function withdrawHistoricalBackfill({ backfillId, expectedPlanDigest, adapterDigest, loadState, loadWithdrawalState, saveWithdrawalState, inspectEffect, withdrawEffect, reconcileWithdrawal, recordReceipt, assertCurrent = () => {}, now = () => new Date().toISOString() } = {}) {
   if (!nonBlank(backfillId) || ![loadState, loadWithdrawalState, saveWithdrawalState, inspectEffect, withdrawEffect, reconcileWithdrawal, recordReceipt].every(value => typeof value === 'function')) fail('backfill-withdraw-invalid');
+  if (!/^sha256:[a-f0-9]{64}$/u.test(expectedPlanDigest) || !/^sha256:[a-f0-9]{64}$/u.test(adapterDigest)) fail('backfill-withdraw-invalid');
+  assertCurrent();
   const state = await loadState({ backfillId, mode: 'apply', stateKey: `${backfillId}:apply` });
-  if (!state || !Array.isArray(state.effects)) fail('backfill-state-unavailable');
+  assertCurrent();
+  if (!state || state.planDigest !== expectedPlanDigest || state.adapterDigest !== adapterDigest || !Array.isArray(state.effects)) fail('backfill-state-unavailable');
   const stateKey = `${backfillId}:withdraw`;
   const saved = await loadWithdrawalState({ backfillId, stateKey });
   const withdrawal = saved ?? { schemaVersion: 1, effectDigest: digest(state.effects), index: 0, counts: { withdrawn: 0, preserved: 0, failed: 0 }, pending: null, complete: false };
@@ -174,7 +188,9 @@ export async function withdrawHistoricalBackfill({ backfillId, loadState, loadWi
   if (withdrawal.complete) return Object.freeze({ schemaVersion: 1, backfillId, counts: Object.freeze({ ...withdrawal.counts }), observedAt: now() });
   for (; withdrawal.index < state.effects.length;) {
     const owned = state.effects[withdrawal.index];
+    assertCurrent();
     const current = await inspectEffect({ effectId: owned.effectId });
+    assertCurrent();
     if (!current || current.revision !== owned.revision || current.userDecided === true) {
       withdrawal.counts.preserved += 1; withdrawal.index += 1;
       await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
@@ -184,6 +200,7 @@ export async function withdrawHistoricalBackfill({ backfillId, loadState, loadWi
     if (withdrawal.pending) {
       if (withdrawal.pending.logicalOperationId !== logicalOperationId || withdrawal.pending.effectId !== owned.effectId || withdrawal.pending.revision !== owned.revision) fail('backfill-withdraw-pending-conflict');
       const reconciliation = await reconcileWithdrawal({ backfillId, logicalOperationId, effectId: owned.effectId, expectedRevision: owned.revision });
+      assertCurrent();
       if (!reconciliation || !['applied', 'not-applied', 'unknown', 'conflict'].includes(reconciliation.status)) fail('backfill-withdraw-reconciliation-invalid');
       if (reconciliation.status === 'unknown') fail('backfill-withdraw-unknown');
       if (reconciliation.status === 'conflict') fail('backfill-withdraw-conflict');
@@ -197,7 +214,9 @@ export async function withdrawHistoricalBackfill({ backfillId, loadState, loadWi
       await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
     }
     try {
+      assertCurrent();
       const result = await withdrawEffect({ logicalOperationId, effectId: owned.effectId, expectedRevision: owned.revision, backfillId });
+      assertCurrent();
       if (!result || result.status !== 'applied') fail('backfill-withdraw-result-invalid');
     } catch (error) {
       withdrawal.counts.failed += 1;

@@ -16,6 +16,8 @@ function instant(value, field) {
   return result;
 }
 function stable(parts) { return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32); }
+function subject(value) { return `commitment:${stable([value.topicId, value.obligationId])}`; }
+function legacySubject(value) { return `commitment:${stable([value.sourceKind, value.sourceExternalId, value.obligationId])}`; }
 
 export function normalizeCommitmentCapture(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('capture must be an object');
@@ -80,7 +82,7 @@ export function planCommitmentCapture(input, existingLoop = null) {
     facts: { title: value.title, obligationId: value.obligationId, provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath }) }
   });
   const { digest: _digest, ...observation } = normalizedObservation;
-  const stableSubjectId = `commitment:${stable([value.sourceKind, value.sourceExternalId, value.obligationId])}`;
+  const stableSubjectId = subject(value);
   const suggestion = value.provenance !== 'explicit';
   const priorAttention = existingLoop?.attention ?? {};
   const preserveUserImportance = priorAttention.importanceOrigin === 'user';
@@ -125,8 +127,9 @@ export function createCommitmentCaptureService({ metadata, sourceService } = {})
         if (!reference || reference.topicId !== value.topicId || !['note', 'document'].includes(reference.sourceKind)) throw new TypeError('capture source reference is not exactly owned by the Topic');
         if (sourceService?.notesRead && reference.sourceKind === 'note') await sourceService.notesRead({ schemaVersion: 1, topicId: value.topicId, referenceId: value.sourceReferenceId, path: value.sourcePath });
       }
-      const subject = `commitment:${stable([value.sourceKind, value.sourceExternalId, value.obligationId])}`;
-      const existing = metadata.findOpenLoopBySubject('general', subject);
+      const stableSubjectId = subject(value);
+      const existing = metadata.findOpenLoopBySubject('general', stableSubjectId)
+        ?? metadata.findOpenLoopBySubject('general', legacySubject(value));
       const planned = planCommitmentCapture(value, existing);
       return metadata.applyOpenLoopChange({
         schemaVersion: 1,

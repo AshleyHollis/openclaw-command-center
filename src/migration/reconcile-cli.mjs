@@ -92,11 +92,13 @@ export async function runConfiguredHistoricalBackfill({ mode, planPath, expected
   ]);
   const metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
   try {
-    const adapter = await createAdapter({ plan: structuredClone(plan), mode, config: structuredClone(config), signal, metadata });
+    const adapterDigest = `sha256:${String(expectedAdapterDigest).replace(/^sha256:/u, '')}`;
+    const adapter = await createAdapter({ plan: structuredClone(plan), mode, config: structuredClone(config), signal });
     if (!adapter || typeof adapter !== 'object') fail('backfill-adapter-invalid');
     const store = createHistoricalBackfillStore({ metadata });
-    if (mode === 'withdraw') return await withdrawHistoricalBackfill({ backfillId: plan.backfillId, ...store, ...adapter });
-    return await createHistoricalBackfill({ ...adapter, ...store }).run({ mode, plan });
+    const assertCurrent = () => signal?.throwIfAborted();
+    if (mode === 'withdraw') return await withdrawHistoricalBackfill({ backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent, ...store, ...adapter });
+    return await createHistoricalBackfill({ ...adapter, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
   } finally { metadata.close(); }
 }
 

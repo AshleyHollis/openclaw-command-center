@@ -7,6 +7,7 @@ import { createHistoricalBackfillStore } from '../../src/open-loops/historical-b
 const [stateDir] = process.argv.slice(2);
 const effectPath = path.join(stateDir, 'fictional-effect.json');
 const plan = { schemaVersion: 1, backfillId: 'process-death-fixture', sourceKind: 'email', scope: { topicIds: [], topicNames: [], maxRecords: 1 } };
+const adapterDigest = `sha256:${'c'.repeat(64)}`;
 const metadata = openCommandCenterMetadataService({ stateDir });
 try {
   const store = createHistoricalBackfillStore({ metadata });
@@ -23,6 +24,6 @@ try {
     async reconcileRecord() { return existsSync(effectPath) ? { status: 'applied', result: { disposition: 'created', effectId: 'loop:fictional', revision: 1 } } : { status: 'not-applied' }; },
     async recordReceipt() {}
   });
-  const result = await service.run({ mode: 'apply', plan });
+  const result = await service.run({ mode: 'apply', plan, adapterDigest });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } finally { metadata.close(); }
