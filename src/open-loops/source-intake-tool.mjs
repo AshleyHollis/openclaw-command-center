@@ -13,6 +13,44 @@ function sourceNoteOperationId(params) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${(Number.parseInt(hex[16], 16) & 3 | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+export function sourceTopicResolverToolFactory({ getOwners } = {}) {
+  if (typeof getOwners !== 'function') throw new TypeError('Source Topic resolution requires authoritative owners.');
+  return () => ({
+    name: 'command_center_resolve_source_topic',
+    description: 'Resolve one exact existing active Topic name to its Note Folder reference for maintained intake. An optional Topic-relative Note path also resolves existing Note evidence without returning its content. Missing, unusable, or ambiguous matches stay unresolved. Private folder locators are never returned.',
+    parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
+      topicName: { type: 'string', minLength: 1, maxLength: 200 }, notePath: { type: 'string', minLength: 1, maxLength: 1000 }
+    }, required: ['topicName'] }),
+    async execute(_toolCallId, params) {
+      const { metadata, sourceService } = getOwners() ?? {};
+      if (!metadata || typeof metadata.listTopics !== 'function' || typeof metadata.listSourceReferences !== 'function') throw sourceError('capability-unavailable', 'Source Topic ownership is not ready.');
+      const topicName = params.topicName.trim();
+      if (topicName.length === 0 || topicName !== params.topicName) throw sourceError('invalid-request', 'Source Topic resolution requires one exact canonical Topic name.');
+      const candidates = metadata.listTopics().filter(topic => topic.name === topicName && topic.lifecycle === 'active');
+      const matches = candidates.flatMap(topic => {
+        const folders = metadata.listSourceReferences(topic.topicId).filter(reference => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder');
+        return folders.length === 1 ? [{ topicId: topic.topicId, noteFolderReferenceId: folders[0].referenceId }] : [];
+      });
+      if (matches.length !== 1) {
+        return Object.freeze({ content: [{ type: 'text', text: JSON.stringify({ status: matches.length > 1 ? 'ambiguous' : 'unresolved' }) }], details: Object.freeze({ status: matches.length > 1 ? 'ambiguous' : 'unresolved' }) });
+      }
+      let evidence;
+      if (params.notePath !== undefined) {
+        if (!sourceService || typeof sourceService.notesRead !== 'function') throw sourceError('capability-unavailable', 'Source Note resolution is not ready.');
+        try {
+          const note = await sourceService.notesRead({ schemaVersion: 1, topicId: matches[0].topicId, referenceId: matches[0].noteFolderReferenceId, path: params.notePath });
+          const reference = note?.sourceReference;
+          if (reference?.topicId === matches[0].topicId && reference.sourceKind === 'note') evidence = Object.freeze({ sourceReferenceId: reference.referenceId, revision: note.revision, path: note.path });
+        } catch (error) {
+          if (!['not-found', 'source-unavailable'].includes(error?.code)) throw error;
+        }
+      }
+      const result = Object.freeze({ status: 'resolved', ...matches[0], ...(evidence ? { evidence } : {}) });
+      return Object.freeze({ content: [{ type: 'text', text: JSON.stringify(result) }], details: result });
+    }
+  });
+}
+
 export function sourceNoteCaptureToolFactory({ getOwners } = {}) {
   if (typeof getOwners !== 'function') throw new TypeError('Source Note capture requires authoritative owners.');
   return () => ({

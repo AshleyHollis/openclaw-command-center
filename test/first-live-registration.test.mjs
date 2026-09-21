@@ -201,10 +201,10 @@ test('deferred HTTP actions are non-retryable and cannot reach services before s
 
 test('the milestone manifest admits scoped capture and capacity review while keeping filing/maintenance triggers unavailable', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
-  assert.deepEqual(manifest.contracts.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
+  assert.deepEqual(manifest.contracts.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
   assert.deepEqual(manifest.contracts.workspaceSessionTurnScheduling, []);
   const h = host(); plugin.register(h.api);
-  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
+  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
   assert.equal(h.agentEventSubscriptions.length, 0);
   for (const suffix of ['', '/app.js', '/styles.css', '/markdown.js']) {
     const route = h.routes.find(value => value.path === `/plugins/command-center${suffix}`);
@@ -233,7 +233,7 @@ test('host workflow primitives admit capture and configured review without activ
   plugin.register(h.api);
   assert.equal(FIRST_LIVE_FEATURES.noteMaintenance, false);
   assert.equal(FIRST_LIVE_FEATURES.analysis, false);
-  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
+  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_receipt']);
   assert.equal(h.agentEventSubscriptions.length, 0);
 });
 
