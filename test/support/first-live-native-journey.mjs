@@ -693,7 +693,19 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
   const progressStarted = performance.now();
   const progress = stage => { onScaleProgress?.({ stage, elapsedMs: Math.round(performance.now() - progressStarted) }); };
   assert.equal(keyboard && scale, false, 'Performance qualification cannot share a keyboard diagnostic');
-  return withIsolatedWorld(async (world) => {
+  let fictionalModel;
+  try {
+    return await withIsolatedWorld(async (world) => {
+    const exercisesCreatedConversation = !keyboard && !scale && !chatHandoffOnly && !notesWorkspaceOnly && !nativeFilesWorkspace;
+    if (exercisesCreatedConversation) {
+      fictionalModel = await startFictionalOpenAiModel({ firstTurnFinal: true });
+      const configured = JSON.parse(await readFile(world.manifest.configPath, 'utf8'));
+      configured.models.providers.fixture.baseUrl = fictionalModel.baseUrl;
+      configured.models.providers.fixture.api = 'openai-completions';
+      configured.models.providers.fixture.models[0].api = 'openai-completions';
+      configured.models.providers.fixture.request = { allowPrivateNetwork: true };
+      await writeFile(world.manifest.configPath, `${JSON.stringify(configured)}\n`);
+    }
     const bootstrap = keyboard || nativeFilesWorkspace ? null : await prepareNativeLegacyBootstrap({ world, signal, scale, catalog: catalogJourney });
     const historySource = nativeFilesWorkspace ? await prepareNativeHistorySource({ world }) : null;
     let host = await withDeadline('native pinned host launch', (launchSignal) => launchPinnedHost({ descriptor, world, buildReceipt, signal: launchSignal }), 120_000, signal);
@@ -1729,5 +1741,8 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       throw new AggregateError([failure], `Native activation failed; host=${JSON.stringify(hostEvidence)}`);
     }
     return result;
-  }, { candidateRoot: process.cwd() });
+    }, { candidateRoot: process.cwd() });
+  } finally {
+    await fictionalModel?.close();
+  }
 }
