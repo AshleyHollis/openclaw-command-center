@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createDailyWorkspaceService } from '../src/daily-workspace/service.mjs';
+import { briefingPublishToolFactory } from '../src/daily-workspace/briefing-tool.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { invokeBridgeMethod } from '../src/bridge/register.mjs';
 
@@ -23,6 +24,26 @@ function memoryMetadata() {
     }
   };
 }
+
+test('scheduled briefing publication resolves its exact native session from the host catalog', async () => {
+  const published = [];
+  const factory = briefingPublishToolFactory({
+    getOwner: () => ({ publishBriefing(input) { published.push(input); return input; } }),
+    resolveSessionKey: async context => context.sessionId === 'session-id-1' ? 'agent:main:dashboard:briefing' : undefined
+  });
+  const tool = factory({ sessionId: 'session-id-1', agentId: 'main' });
+  const result = await tool.execute('tool-call-1', { briefingId: 'morning', editionId: 'morning:2026-09-21', title: 'Morning briefing', publishedAt: '2026-09-21T20:30:00.000Z', priority: 100, summary: 'The report is ready.' });
+  assert.equal(published[0].source.sessionKey, 'agent:main:dashboard:briefing');
+  assert.match(result.content[0].text, /"status":"saved"/u);
+});
+
+test('scheduled briefing publication fails closed when the native session is ambiguous', async () => {
+  const tool = briefingPublishToolFactory({
+    getOwner: () => ({ publishBriefing() { throw new Error('must not publish'); } }),
+    resolveSessionKey: async () => undefined
+  })({ sessionId: 'missing-session' });
+  await assert.rejects(() => tool.execute('tool-call-2', { briefingId: 'morning', editionId: 'morning:2026-09-21', title: 'Morning briefing', publishedAt: '2026-09-21T20:30:00.000Z', priority: 100, summary: 'The report is ready.' }), /active native report session/i);
+});
 
 test('new briefing editions are unread, can be read and undone without changing the report', () => {
   const metadata = memoryMetadata();

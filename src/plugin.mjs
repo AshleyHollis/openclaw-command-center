@@ -225,7 +225,17 @@ export default definePluginEntry({
     api.registerTool(sourceNoteCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_save_source_note', optional: true });
     api.registerTool(sourceCommitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_source_commitment', optional: true });
     api.registerTool(intakeReceiptToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_receipt', optional: true });
-    api.registerTool(briefingPublishToolFactory({ getOwner: () => service.dailyWorkspace }), { name: 'command_center_publish_briefing', optional: true });
+    api.registerTool(briefingPublishToolFactory({
+      getOwner: () => service.dailyWorkspace,
+      resolveSessionKey: context => {
+        if (typeof context?.sessionId !== 'string' || !context.sessionId) return undefined;
+        const list = api.runtime?.agent?.session?.listSessionEntries;
+        if (typeof list !== 'function') return undefined;
+        const matches = list({ agentId: context.agentId ?? 'main', readOnly: true })
+          .filter(row => row?.entry?.sessionId === context.sessionId && typeof row.sessionKey === 'string' && row.sessionKey);
+        return matches.length === 1 ? matches[0].sessionKey : undefined;
+      }
+    }), { name: 'command_center_publish_briefing', optional: true });
     registerConversationCaptureHook(api);
     // The host exposes the same subscription contract in both its current
     // flat SDK form and its nested facade form. Prefer the facade where it is
