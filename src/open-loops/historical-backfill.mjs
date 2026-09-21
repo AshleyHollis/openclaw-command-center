@@ -34,6 +34,8 @@ function normalizePlan(plan) {
   });
 }
 
+export const historicalBackfillPlanDigest = plan => digest(normalizePlan(plan));
+
 function emptyCounts() {
   return { read: 0, skipped: 0, knowledgeOnly: 0, created: 0, updated: 0, uncertain: 0, failed: 0 };
 }

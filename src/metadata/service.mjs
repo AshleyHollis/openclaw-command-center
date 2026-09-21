@@ -68,6 +68,7 @@ const diagnosticLimit = 300;
 const migrationTestHooksSymbol = Symbol.for('openclaw.command-center.test.migration-hooks');
 const commandCenterProjectionId = 'command-center-core-v1';
 const sha256DigestPattern = /^sha256:[0-9a-f]{64}$/u;
+const HISTORICAL_BACKFILL_STATE_OPERATION = 'historical-backfill.state.v1';
 
 export class CommandCenterMetadataError extends Error {
   constructor(code, message, details = {}) {
@@ -1203,6 +1204,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
       if (operationKind === TOPIC_BOOTSTRAP_OPERATION || existing?.operation_kind === TOPIC_BOOTSTRAP_OPERATION) throw new CommandCenterMetadataError('bootstrap-owner-required', 'Topic bootstrap receipts require their dedicated owner.');
       if (operationKind === RECONCILIATION_OPERATION || existing?.operation_kind === RECONCILIATION_OPERATION) throw new CommandCenterMetadataError('reconciliation-owner-required', 'Reconciliation receipts require their dedicated owner.');
       if (operationKind === PROVISIONING_PRIMARY_OPERATION || existing?.operation_kind === PROVISIONING_PRIMARY_OPERATION) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning receipts require their dedicated owner.');
+      if (operationKind === HISTORICAL_BACKFILL_STATE_OPERATION || existing?.operation_kind === HISTORICAL_BACKFILL_STATE_OPERATION) throw new CommandCenterMetadataError('historical-backfill-owner-required', 'Historical backfill state requires its dedicated owner.');
       reconciliationClaims.assertChildClaim(db, { logicalOperationId, operationKind, intentDigest }, true);
       if (existing && existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
       db.prepare(`INSERT INTO operation_journal
@@ -1218,6 +1220,60 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   };
   service.getOperation = (logicalOperationId) => readOne('SELECT * FROM operation_journal WHERE logical_operation_id = ?', [requiredString(logicalOperationId, 'logicalOperationId')], mapOperation) || null;
   service.listOperations = () => readMany('SELECT * FROM operation_journal ORDER BY created_at, logical_operation_id', [], mapOperation);
+
+  const historicalBackfillStateId = (stateKey) => {
+    const key = requiredString(stateKey, 'stateKey');
+    if (key.length > 300) throw new CommandCenterMetadataError('invalid-value', 'stateKey is too long');
+    return `historical-backfill-state:${createHash('sha256').update(key).digest('hex')}`;
+  };
+
+  const decodeHistoricalBackfillState = (row, stateKey) => {
+    if (!row) return null;
+    if (row.operation_kind !== HISTORICAL_BACKFILL_STATE_OPERATION) throw new CommandCenterMetadataError('historical-backfill-state-conflict', 'Historical backfill state is owned by another operation.');
+    let envelope;
+    try { envelope = JSON.parse(row.result_identity); } catch { throw new CommandCenterMetadataError('historical-backfill-state-corrupt', 'Historical backfill state is unreadable.'); }
+    if (!envelope || envelope.schemaVersion !== 1 || envelope.stateKey !== stateKey || !Number.isSafeInteger(envelope.sequence) || envelope.sequence < 1 || !envelope.state || typeof envelope.state !== 'object' || Array.isArray(envelope.state)) {
+      throw new CommandCenterMetadataError('historical-backfill-state-corrupt', 'Historical backfill state is invalid.');
+    }
+    return Object.freeze({ sequence: envelope.sequence, state: structuredClone(envelope.state), updatedAt: row.updated_at });
+  };
+
+  service.getHistoricalBackfillState = (stateKey) => {
+    const key = requiredString(stateKey, 'stateKey');
+    return readOne('SELECT * FROM operation_journal WHERE logical_operation_id = ?', [historicalBackfillStateId(key)], row => decodeHistoricalBackfillState(row, key));
+  };
+
+  service.saveHistoricalBackfillState = (input) => {
+    const value = objectValue(input, 'historical backfill state');
+    allowedKeys(value, ['stateKey', 'expectedSequence', 'state', 'updatedAt'], 'historical backfill state');
+    const stateKey = requiredString(value.stateKey, 'stateKey');
+    const expectedSequence = integerValue(value.expectedSequence, 'expectedSequence', { minimum: 0 });
+    if (!value.state || typeof value.state !== 'object' || Array.isArray(value.state)) throw new CommandCenterMetadataError('invalid-value', 'state must be an object');
+    const logicalOperationId = historicalBackfillStateId(stateKey);
+    const updatedAt = timestamp(value.updatedAt, 'updatedAt');
+    const intentDigest = `sha256:${createHash('sha256').update(canonicalJson({ owner: HISTORICAL_BACKFILL_STATE_OPERATION, stateKey })).digest('hex')}`;
+    return mutate(null, (db) => {
+      const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
+      const current = existing ? decodeHistoricalBackfillState(existing, stateKey) : null;
+      const currentSequence = current?.sequence ?? 0;
+      if (currentSequence !== expectedSequence) throw new CommandCenterMetadataError('historical-backfill-state-conflict', 'Historical backfill state changed concurrently.');
+      const sequence = currentSequence + 1;
+      const serialized = canonicalJson({ schemaVersion: 1, stateKey, sequence, state: structuredClone(value.state) });
+      if (!existing) {
+        db.prepare(`INSERT INTO operation_journal
+          (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'pending', 'checkpoint', ?, ?, ?, ?)`).run(
+          logicalOperationId, logicalOperationId, intentDigest, HISTORICAL_BACKFILL_STATE_OPERATION, serialized, String(sequence), updatedAt, updatedAt
+        );
+      } else {
+        if (existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('historical-backfill-state-conflict', 'Historical backfill state intent changed.');
+        const result = db.prepare(`UPDATE operation_journal SET result_identity = ?, observed_revision = ?, updated_at = ?
+          WHERE logical_operation_id = ? AND observed_revision = ?`).run(serialized, String(sequence), updatedAt, logicalOperationId, String(expectedSequence));
+        if (result.changes !== 1) throw new CommandCenterMetadataError('historical-backfill-state-conflict', 'Historical backfill state changed concurrently.');
+      }
+      return Object.freeze({ sequence, state: structuredClone(value.state), updatedAt });
+    });
+  };
 
   service.setSessionState = (input) => {
     const value = objectValue(input, 'session state');
