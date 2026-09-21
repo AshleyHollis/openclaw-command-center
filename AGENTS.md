@@ -12,6 +12,14 @@ The default five-label triage vocabulary is used. See `docs/agents/triage-labels
 
 This repository uses a single-context domain layout. See `docs/agents/domain.md`.
 
+### Delivery policy
+
+Classify each deployable change with `docs/agents/release-policy.md` before
+choosing tests or release evidence. Use the smallest qualifying profile and
+reuse still-valid host evidence. A mixed change takes the highest applicable
+class; split independent presentation work from mutations when that lets useful
+work ship sooner.
+
 ## Repository scope
 
 Command Center is an OpenClaw plugin. Keep plugin-specific policy and personal workflows out of OpenClaw core. Any proposed OpenClaw fork change must be generic, narrow, independently tested, and tracked separately.
