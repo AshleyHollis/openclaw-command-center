@@ -14,6 +14,7 @@ import { topicNoteMaintenanceToolFactory } from './maintenance/tool.mjs';
 import { commitmentCaptureToolFactory } from './open-loops/commitment-tool.mjs';
 import { capacityReviewToolFactory } from './open-loops/capacity-review-tool.mjs';
 import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory } from './open-loops/source-intake-tool.mjs';
+import { briefingPublishToolFactory } from './daily-workspace/briefing-tool.mjs';
 import { registerConversationCaptureHook } from './open-loops/conversation-capture-hook.mjs';
 import { createTopicMaintenanceCompletionSubscription } from './maintenance/completion.mjs';
 import { createTopicPageActionsHandler } from './topics/page-http.mjs';
@@ -117,6 +118,8 @@ export default definePluginEntry({
         if (property === 'topics') return service.topicService;
         if (property === 'dashboard') return { get: (input, runtime) => service.dashboardGet(input, runtime) };
         if (property === 'dashboardGet') return (input, runtime) => service.dashboardGet(input, runtime);
+        if (property === 'briefingSetRead') return (input) => service.briefingSetRead(input);
+        if (property === 'routineDecide') return (input) => service.routineDecide(input);
         if (property === 'openLoopsList') return (input) => service.openLoopsList(input);
         if (property === 'openLoopsGet') return (input) => service.openLoopsGet(input);
         if (property === 'openLoopsCapture') return (input) => service.openLoopsCapture(input);
@@ -222,6 +225,7 @@ export default definePluginEntry({
     api.registerTool(sourceNoteCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_save_source_note', optional: true });
     api.registerTool(sourceCommitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_source_commitment', optional: true });
     api.registerTool(intakeReceiptToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_receipt', optional: true });
+    api.registerTool(briefingPublishToolFactory({ getOwner: () => service.dailyWorkspace }), { name: 'command_center_publish_briefing', optional: true });
     registerConversationCaptureHook(api);
     // The host exposes the same subscription contract in both its current
     // flat SDK form and its nested facade form. Prefer the facade where it is

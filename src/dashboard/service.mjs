@@ -216,7 +216,7 @@ function intakeCoverage(metadata, serverTime) {
   return Object.freeze(rows.map(row => Object.freeze(row)));
 }
 
-export async function projectDashboard({ sourceService, attentionService, metadata, now = () => new Date().toISOString(), timeZone = 'UTC', activityOffset = 0, activityLimit = DEFAULT_ACTIVITY_LIMIT, navigationResolver, notificationSettings } = {}) {
+export async function projectDashboard({ sourceService, attentionService, metadata, dailyWorkspace, now = () => new Date().toISOString(), timeZone = 'UTC', activityOffset = 0, activityLimit = DEFAULT_ACTIVITY_LIMIT, navigationResolver, notificationSettings } = {}) {
   if (!Number.isInteger(activityOffset) || activityOffset < 0) throw sourceError('invalid-request', 'activityOffset must be a non-negative integer.');
   if (!Number.isInteger(activityLimit) || activityLimit < 1 || activityLimit > MAX_ACTIVITY_LIMIT) throw sourceError('invalid-request', 'activityLimit must be between 1 and 50.');
   const clock = typeof now === 'function' ? now() : now;
@@ -285,6 +285,7 @@ export async function projectDashboard({ sourceService, attentionService, metada
     topics: Object.freeze(topics.map((topic) => Object.freeze({ topicId: topic.topicId, name: topicName(topic), paraCategory: topic.paraCategory }))),
     activity,
     intakeCoverage: intakeCoverage(metadata, new Date(serverTimeMs).toISOString()),
+    ...(dailyWorkspace ? dailyWorkspace.get() : {}),
     activityOffset,
     activityLimit,
     ...(settings ? { notificationSettings: Object.freeze({ ...settings }) } : {})

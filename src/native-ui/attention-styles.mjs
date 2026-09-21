@@ -75,6 +75,9 @@ export const attentionStyles = `
   .cc-disconnected p { margin:0; color:var(--cc-muted); line-height:1.55; }
   .cc-topic-widget { background:linear-gradient(145deg, var(--cc-warm-soft), var(--cc-panel)); }
   .cc-topic-widget .cc-widget-actions { display:flex; flex-wrap:wrap; gap:.55rem; }
+  .cc-briefing-card, .cc-briefing-history { border-top:1px solid var(--cc-line); padding-block:.8rem; }
+  .cc-briefing-card:first-of-type { border-top:0; }
+  .cc-routine-card { border-inline-start:4px solid var(--cc-accent); }
   .cc-coverage-card { display:grid; grid-template-columns:minmax(6rem,.7fr) minmax(0,1.3fr); gap:.25rem .75rem; align-items:baseline; }
   .cc-coverage-card h4 { margin:0; }
   .cc-coverage-card p { margin:0; }

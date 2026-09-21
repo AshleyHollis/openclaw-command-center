@@ -95,7 +95,9 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.open-loops.renovation-fulfilment',
   'command-center.v1.open-loops.renovation-stage',
   'command-center.v1.open-loops.renovation-decision-conflict',
-  'command-center.v1.open-loops.renovation-decision-revise'
+  'command-center.v1.open-loops.renovation-decision-revise',
+  'command-center.v1.briefings.set-read',
+  'command-center.v1.routines.decide'
 ]);
 
 // The pinned host protects Cron mutations with operator.admin. These bridge
@@ -121,7 +123,7 @@ export const ADMIN_METHODS = Object.freeze([
 ]);
 
 const common = ['schemaVersion'];
-const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'plannedAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption', 'captureId', 'capturedAt', 'title']);
+const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'plannedAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption', 'captureId', 'capturedAt', 'title', 'editionId', 'routineId', 'occurrenceDate', 'until']);
 const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession', 'authorization', 'checkpoint', 'window', 'requirement', 'reconciliation', 'correction', 'replacement', 'fulfilment', 'activation', 'stage', 'conflict']);
 const arrayFields = new Set(['expectedRevisions', 'selections', 'contexts', 'dependencies']);
 
@@ -134,11 +136,13 @@ function parameterSchema(field, method) {
   if (field === 'includeClosed' && method === 'command-center.v1.sessions.browse') return Object.freeze({ type: 'boolean' });
   if (field === 'includeDocuments' && method === 'command-center.v1.notes.browse') return Object.freeze({ type: 'boolean' });
   if (field === 'sourceKind' && method === 'command-center.v1.notes.read') return Object.freeze({ type: 'string', enum: ['note', 'document'] });
-  if (field === 'expectedRevision') return Object.freeze({ type: method.includes('.topics.') || method.includes('.open-loops.') || method === 'command-center.v1.sessions.create' ? 'integer' : 'string' });
+  if (field === 'expectedRevision') return Object.freeze({ type: method.includes('.topics.') || method.includes('.open-loops.') || method.includes('.routines.') || method === 'command-center.v1.sessions.create' ? 'integer' : 'string' });
   if (field === 'decision') return Object.freeze({ type: 'string', enum: ['confirm', 'defer', 'dismiss', 'resolve', 'correct-date'] });
   if (field === 'captureKind') return Object.freeze({ type: 'string', enum: ['task', 'idea'] });
   if (field === 'paymentState') return Object.freeze({ type: 'string', enum: ['partially-paid', 'payment-pending', 'paid', 'disputed', 'cancelled', 'uncertain'] });
   if (field === 'action' && method.endsWith('.open-loops.organize')) return Object.freeze({ type: 'string', enum: ['plan', 'keep', 'review-later', 'someday', 'drop', 'start', 'wait', 'reopen', 'complete', 'set-priority'] });
+  if (field === 'action' && method.endsWith('.routines.decide')) return Object.freeze({ type: 'string', enum: ['complete', 'defer'] });
+  if (field === 'read') return Object.freeze({ type: 'boolean' });
   if (field === 'importance') return Object.freeze({ type: 'string', enum: ['critical', 'high', 'normal', 'low'] });
   if (field === 'effortMinutes') return Object.freeze({ type: 'integer', minimum: 1, maximum: 10080 });
   if (field === 'paidAmount' || field === 'amount') return Object.freeze({ type: 'integer', minimum: 0 });
@@ -155,6 +159,8 @@ function parameterSchema(field, method) {
 }
 
 function actionResultSchema(method) {
+  if (method === 'command-center.v1.briefings.set-read') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, editionId: { type: 'string' }, read: { type: 'boolean' }, sequence: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'editionId', 'read', 'sequence', 'decidedAt'] });
+  if (method === 'command-center.v1.routines.decide') return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, routineId: { type: 'string' }, occurrenceDate: { type: 'string' }, action: { enum: ['complete', 'defer'] }, until: { type: 'string' }, revision: { type: 'integer' }, decidedAt: { type: 'string' } }), required: ['schemaVersion', 'routineId', 'occurrenceDate', 'action', 'revision', 'decidedAt'] });
   if (method.startsWith('command-center.v1.open-loops.')) {
     const attention = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ reason: { type: 'string' }, whyNow: { type: 'string' }, actions: { type: 'array', items: { type: 'string' } }, materialRevision: { type: 'string' }, activated: { type: 'boolean' }, currentEvidence: { type: 'boolean' }, importance: { type: 'string' }, importanceOrigin: { type: 'string' }, plannedAt: { type: 'string' }, effortMinutes: { type: 'integer' }, contexts: { type: 'array', items: { type: 'string' } }, dependencies: { type: 'array', items: { type: 'string' } }, provenance: { type: 'string' }, confidence: { type: 'number' }, lastConsideredAt: { type: 'string' }, someday: { type: 'boolean' } }) });
     const loop = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loopId: { type: 'string' }, kind: { type: 'string' }, stableSubjectId: { type: 'string' }, title: { type: 'string' }, topicId: { type: 'string' }, state: { type: 'string' }, paymentState: { type: 'string' }, amount: { type: 'integer' }, currency: { type: 'string' }, dueAt: { type: 'string' }, dueDate: { type: 'string' }, dueTimeZone: { type: 'string' }, reviewAt: { type: 'string' }, expectedEvent: { type: 'string' }, attention, evidenceObservationIds: { type: 'array', items: { type: 'string' } }, revision: { type: 'integer' } }), required: ['schemaVersion', 'loopId', 'kind', 'stableSubjectId', 'title', 'state', 'evidenceObservationIds', 'revision'] });
@@ -304,6 +310,9 @@ function actionResultSchema(method) {
     activityLimit: Object.freeze({ type: 'integer' }),
     notificationSettings: Object.freeze({ type: 'object' }),
     intakeCoverage: Object.freeze({ type: 'array' }),
+    briefings: Object.freeze({ type: 'array' }),
+    briefingHistory: Object.freeze({ type: 'array' }),
+    routineOccurrences: Object.freeze({ type: 'array' }),
     topicIds: Object.freeze({ type: 'array' })
   };
   if (method === 'command-center.v1.sessions.assign-topic') return Object.freeze({
@@ -362,7 +371,7 @@ function actionResultSchema(method) {
     : method.endsWith('activity.get')
     ? ['schemaVersion', 'record']
     : method.endsWith('dashboard.get')
-    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'openLoops', 'topics', 'activity', 'activityOffset', 'activityLimit', 'intakeCoverage', 'notificationSettings']
+    ? ['schemaVersion', 'serverTime', 'attention', 'attentionBadgeCount', 'inProgress', 'comingUp', 'openLoops', 'topics', 'activity', 'activityOffset', 'activityLimit', 'intakeCoverage', 'briefings', 'briefingHistory', 'routineOccurrences', 'notificationSettings']
     : method.endsWith('analysis.read')
     ? ['status', 'analysisId', 'observedRevision']
     : ['schemaVersion', 'status', 'requestId', 'logicalOperationId', 'value', 'note', 'sourceReference', 'job', 'results', 'activity', 'episode', 'attempt', 'navigation', 'approval'];
@@ -448,6 +457,8 @@ const required = Object.freeze({
   'command-center.v1.activity.list': [],
   'command-center.v1.activity.get': ['activityId'],
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit'],
+  'command-center.v1.briefings.set-read': ['editionId', 'read'],
+  'command-center.v1.routines.decide': ['routineId', 'occurrenceDate', 'expectedRevision', 'action'],
   'command-center.v1.open-loops.list': [],
   'command-center.v1.open-loops.get': ['loopId'],
   'command-center.v1.open-loops.capture': ['topicId', 'captureId', 'captureKind', 'capturedAt', 'title', 'logicalOperationId'],
@@ -539,6 +550,8 @@ const fields = Object.freeze({
   'command-center.v1.activity.list': ['topicId', 'episodeId', 'offset', 'limit'],
   'command-center.v1.activity.get': ['activityId'],
   'command-center.v1.dashboard.get': ['activityOffset', 'activityLimit'],
+  'command-center.v1.briefings.set-read': ['editionId', 'read'],
+  'command-center.v1.routines.decide': ['routineId', 'occurrenceDate', 'expectedRevision', 'action', 'until'],
   'command-center.v1.open-loops.list': ['offset', 'limit', 'cursor'],
   'command-center.v1.open-loops.get': ['loopId'],
   'command-center.v1.open-loops.capture': ['topicId', 'captureId', 'captureKind', 'capturedAt', 'title'],
@@ -652,6 +665,7 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
     if ((params.action === 'review-later') !== (params.reviewAt !== undefined)) throw sourceError('invalid-request', 'Only review-later requires reviewAt.');
     if ((params.action === 'set-priority') !== (params.importance !== undefined)) throw sourceError('invalid-request', 'Only set-priority requires importance.');
   }
+  if (method.endsWith('.routines.decide') && (params.action === 'defer') !== (params.until !== undefined)) throw sourceError('invalid-request', 'Only a deferred routine occurrence requires until.');
   if (mutation && !isCanonicalUuid(params.logicalOperationId)) throw sourceError('invalid-request', 'Mutations require a canonical logicalOperationId.');
   return contract;
 }
