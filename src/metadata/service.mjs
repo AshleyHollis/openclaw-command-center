@@ -1221,6 +1221,45 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   service.getOperation = (logicalOperationId) => readOne('SELECT * FROM operation_journal WHERE logical_operation_id = ?', [requiredString(logicalOperationId, 'logicalOperationId')], mapOperation) || null;
   service.listOperations = () => readMany('SELECT * FROM operation_journal ORDER BY created_at, logical_operation_id', [], mapOperation);
 
+  service.commitDailyWorkspaceOperation = (input) => {
+    const value = objectValue(input, 'daily workspace operation');
+    allowedKeys(value, ['logicalOperationId', 'intentDigest', 'operationKind', 'entityId', 'expectedRevision', 'result', 'createdAt'], 'daily workspace operation');
+    const logicalOperationId = requiredString(value.logicalOperationId, 'logicalOperationId');
+    const intentDigest = requiredString(value.intentDigest, 'intentDigest');
+    const operationKind = enumValue(value.operationKind, ['daily-workspace.briefing.publish', 'daily-workspace.briefing.read', 'daily-workspace.routine.decision'], 'operationKind');
+    const entityId = requiredString(value.entityId, 'entityId');
+    const createdAt = timestamp(value.createdAt, 'createdAt');
+    const requestedResult = objectValue(value.result, 'daily workspace result');
+    return mutate(null, (db) => {
+      const existingOperation = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
+      if (existingOperation) {
+        if (existingOperation.operation_kind !== operationKind || existingOperation.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
+        return mapOperation(existingOperation);
+      }
+      const prior = db.prepare('SELECT result_identity FROM operation_journal WHERE operation_kind = ? AND state = ? ORDER BY rowid').all(operationKind, 'applied').map(row => { try { return JSON.parse(row.result_identity); } catch { return null; } }).filter(Boolean);
+      let result = structuredClone(requestedResult);
+      if (operationKind === 'daily-workspace.briefing.publish') {
+        const bound = prior.find(item => item.editionId === entityId);
+        if (bound && JSON.stringify(bound) !== JSON.stringify(result)) throw new CommandCenterMetadataError('conflict', 'Briefing edition identity is already bound to different content.');
+        result = bound ?? result;
+      } else if (operationKind === 'daily-workspace.briefing.read') {
+        result.sequence = prior.filter(item => item.editionId === entityId).reduce((highest, item) => Math.max(highest, item.sequence ?? 0), 0) + 1;
+      } else {
+        const occurrenceDecisions = prior.filter(item => `${item.routineId}:${item.occurrenceDate}` === entityId);
+        const revision = occurrenceDecisions.reduce((highest, item) => Math.max(highest, item.revision ?? 0), 0);
+        if (value.expectedRevision !== revision) throw new CommandCenterMetadataError('conflict', 'Routine occurrence revision is stale.');
+        const latest = occurrenceDecisions.find(item => item.revision === revision);
+        if (latest?.action === 'complete') throw new CommandCenterMetadataError('conflict', 'A completed routine occurrence is terminal.');
+        if (latest?.action === 'defer' && Date.parse(latest.until) > Date.parse(result.decidedAt)) throw new CommandCenterMetadataError('conflict', 'The routine occurrence is not visible while its deferral is active.');
+        result.revision = revision + 1;
+      }
+      db.prepare(`INSERT INTO operation_journal
+        (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'applied', 'applied', ?, NULL, ?, ?)`).run(logicalOperationId, logicalOperationId, intentDigest, operationKind, JSON.stringify(result), createdAt, createdAt);
+      return mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId));
+    });
+  };
+
   const historicalBackfillStateId = (stateKey) => {
     const key = requiredString(stateKey, 'stateKey');
     if (key.length > 300) throw new CommandCenterMetadataError('invalid-value', 'stateKey is too long');

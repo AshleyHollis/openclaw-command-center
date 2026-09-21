@@ -23,7 +23,7 @@ async function fixture(run) {
       const { mountAttentionPage } = await import('/attention-page.mjs');
       const operations = new Map();
       const lifetime = new AbortController(); const pages = new Map(); const subscribers = new Set();
-      window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.quickCaptureMode = 'success'; window.activity = []; window.allOpenLoops = []; window.intakeResult = null; window.intakeCoverage = [];
+      window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.quickCaptureMode = 'success'; window.dailyMode = 'success'; window.activity = []; window.allOpenLoops = []; window.intakeResult = null; window.intakeCoverage = []; window.briefings = []; window.briefingHistory = []; window.routineOccurrences = [];
       window.openLoops = { total: 0, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 };
       const action = { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', target: { topicId: 'fictional-topic', sourceReferenceId: 'fictional-source' }, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string' } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact reminder.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true } };
       window.cards = ['one', 'two'].map((id) => ({ notificationRecordId: `record-${id}`, episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
@@ -34,7 +34,9 @@ async function fixture(run) {
         ui: { registerPanel: () => () => {}, registerPage: (page) => { pages.set(page.id, page); return () => pages.delete(page.id); }, registerNavigation: () => () => {} },
         request: async (method, params) => {
           window.requests.push({ method, params: structuredClone(params) });
-          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }], intakeCoverage: structuredClone(window.intakeCoverage), activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('dashboard.get')) return { result: { attention: structuredClone(window.cards), inProgress: [], openLoops: structuredClone(window.openLoops), topics: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation', paraCategory: 'project' }], intakeCoverage: structuredClone(window.intakeCoverage), briefings: structuredClone(window.briefings), briefingHistory: structuredClone(window.briefingHistory), routineOccurrences: structuredClone(window.routineOccurrences), activity: { records: structuredClone(window.activity) } } };
+          if (method.endsWith('briefings.set-read')) { const item = window.briefingHistory.find(row => row.editionId === params.editionId); item.read = params.read; window.briefings = window.briefingHistory.filter(row => !row.read); if (window.dailyMode === 'unknown-once') { window.dailyMode = 'success'; throw new Error('The transport outcome is unknown.'); } return { result: structuredClone(item) }; }
+          if (method.endsWith('routines.decide')) { window.routineOccurrences = window.routineOccurrences.filter(row => !(row.routineId === params.routineId && row.occurrenceDate === params.occurrenceDate)); return { result: { schemaVersion: 1, ...params, revision: params.expectedRevision + 1 } }; }
           if (method.endsWith('topics.list')) return { result: { schemaVersion: 1, activeGroups: { project: [{ topicId: 'topic-fictional-renovation', name: 'Fictional renovation' }], area: [], resource: [] } } };
           if (method.endsWith('notes.browse')) {
             if (window.paginatedDocuments) {
@@ -387,6 +389,43 @@ test('Dashboard distinguishes disconnected intake from a healthy empty day', () 
   await page.getByRole('heading', { name: 'What needs you now' }).waitFor();
   await page.getByText('Nothing needs you today.', { exact: false }).waitFor();
   await page.getByRole('status').filter({ hasText: 'Intake coverage is shown in Dashboards.' }).waitFor();
+}));
+
+test('Dashboard reads a saved briefing and completes only the current routine occurrence', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    const briefing = { schemaVersion: 1, briefingId: 'morning', editionId: 'morning:2026-09-22', title: 'Morning briefing', summary: 'Bins tonight and the day ahead.', publishedAt: '2026-09-21T20:30:00.000Z', priority: 100, read: false, source: { kind: 'session', sessionKey: 'agent:main:cron:morning:run:fictional' } };
+    window.cards = []; window.briefings = [briefing]; window.briefingHistory = [briefing];
+    window.routineOccurrences = [{ schemaVersion: 1, routineId: 'bins', occurrenceDate: '2026-09-22', title: 'Take the bins out', topicId: 'topic-fictional-renovation', sourceReferenceId: 'routine-bins', dueAt: '2026-09-22T08:00:00.000Z', visibleAt: '2026-09-21T08:00:00.000Z', priority: 100, revision: 0, actions: ['complete', 'defer'] }];
+    window.mountInbox();
+  });
+  await page.getByRole('heading', { name: 'Morning briefing' }).waitFor();
+  await page.getByText('Bins tonight and the day ahead.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Open briefing' }).click();
+  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { session: { sessionKey: 'agent:main:cron:morning:run:fictional' } });
+  await page.getByRole('button', { name: 'Mark read' }).click();
+  await page.getByText('No unread briefings.', { exact: false }).waitFor();
+  await page.getByText('Read history (1)', { exact: true }).click();
+  await page.getByRole('button', { name: 'Mark unread' }).click();
+  await page.getByRole('heading', { name: 'Morning briefing' }).waitFor();
+  await page.getByRole('heading', { name: 'Take the bins out' }).waitFor();
+  await page.getByRole('button', { name: 'Open source' }).click();
+  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'topic-fictional-renovation', sourceReferenceId: 'routine-bins' } });
+  await page.getByRole('button', { name: 'Done' }).click();
+  assert.equal(await page.getByRole('heading', { name: 'Take the bins out' }).count(), 0);
+  const decision = (await page.evaluate(() => window.requests)).findLast(row => row.method.endsWith('routines.decide'));
+  assert.equal(decision.params.occurrenceDate, '2026-09-22');
+}));
+
+test('Dashboard retries a lost briefing response with the same logical operation', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    const briefing = { schemaVersion: 1, briefingId: 'morning', editionId: 'morning:retry', title: 'Retry briefing', summary: 'Fictional retry report.', publishedAt: '2026-09-21T20:30:00.000Z', priority: 100, read: false, source: { kind: 'session', sessionKey: 'agent:main:cron:morning:run:retry' } };
+    window.cards = []; window.briefings = [briefing]; window.briefingHistory = [briefing]; window.dailyMode = 'unknown-once'; window.mountInbox();
+  });
+  const button = page.getByRole('button', { name: 'Mark read' }); await button.click();
+  await page.getByRole('status').filter({ hasText: 'transport outcome is unknown' }).waitFor();
+  await button.click(); await page.getByText('No unread briefings.', { exact: false }).waitFor();
+  const requests = (await page.evaluate(() => window.requests)).filter(row => row.method.endsWith('briefings.set-read'));
+  assert.equal(requests.length, 2); assert.equal(requests[0].params.logicalOperationId, requests[1].params.logicalOperationId);
 }));
 
 test('rich Dashboard presents a normal day with source-linked work and quiet optional capacity', () => fixture(async (page) => {

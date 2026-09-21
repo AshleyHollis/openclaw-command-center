@@ -39,7 +39,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     catch { /* retry identity remains available for this mounted plugin lifetime */ }
   };
   const preferenceKey = 'command-center.dashboard.preferences.v1';
-  const defaultSectionOrder = ['topic', 'coverage', 'upcoming', 'waiting', 'review', 'someday', 'activity'];
+  const defaultSectionOrder = ['briefings', 'topic', 'coverage', 'upcoming', 'waiting', 'review', 'someday', 'activity'];
   const readDashboardPreferences = () => {
     try {
       const value = JSON.parse(localStorage.getItem(preferenceKey) ?? 'null');
@@ -411,7 +411,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     for (const topic of dashboard.topics ?? []) { const option = element('option', topic.name ?? topic.topicId); option.value = topic.topicId; pin.append(option); }
     pin.value = dashboardPreferences.pinnedTopicId ?? ''; pinLabel.append(pin); disclosure.append(pinLabel);
     pin.addEventListener('change', () => { dashboardPreferences = { ...dashboardPreferences, pinnedTopicId: pin.value || null }; saveDashboardPreferences(); void load('Dashboard preferences saved.'); }, { signal });
-    const labels = { topic: 'Pinned Topic', coverage: 'Intake coverage', upcoming: 'Upcoming', waiting: 'Waiting', review: 'Review', someday: 'Someday', activity: 'Recent activity' };
+    const labels = { briefings: 'Briefings', topic: 'Pinned Topic', coverage: 'Intake coverage', upcoming: 'Upcoming', waiting: 'Waiting', review: 'Review', someday: 'Someday', activity: 'Recent activity' };
     for (const key of dashboardPreferences.rightOrder) {
       const row = element('div'); row.dataset.preferenceSection = key;
       const visibleLabel = element('label'); const visible = element('input'); visible.type = 'checkbox'; visible.checked = !dashboardPreferences.hidden.includes(key); visibleLabel.append(visible, ` ${labels[key]}`);
@@ -422,6 +422,42 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       up.addEventListener('click', () => move(-1), { signal }); down.addEventListener('click', () => move(1), { signal }); row.append(visibleLabel, up, down); disclosure.append(row);
     }
     parent.append(disclosure);
+  }
+
+  function renderBriefings(parent, dashboard, pending) {
+    const module = element('section'); module.className = 'cc-module cc-briefings'; module.dataset.dashboardSection = 'briefings'; module.append(element('h3', 'Briefings'));
+    const rows = Array.isArray(dashboard.briefings) ? dashboard.briefings : [];
+    if (!rows.length) module.append(element('p', 'No unread briefings. Read editions remain available in history.'));
+    for (const item of rows) {
+      const card = element('article'); card.className = 'cc-briefing-card'; card.append(element('h4', item.title), element('p', item.summary));
+      const meta = element('p', `${formatInstant(item.publishedAt)} · Priority ${item.priority}`); meta.className = 'cc-kicker'; card.append(meta);
+      const actions = element('div'); actions.className = 'cc-widget-actions';
+      const open = element('button', 'Open briefing'); open.type = 'button'; open.addEventListener('click', () => { if (current(pending)) host.sessions.openChat({ sessionKey: item.source.sessionKey }); }, { signal });
+      const read = element('button', 'Mark read'); read.type = 'button'; read.disabled = !writable(); read.addEventListener('click', async () => { const key = `briefing-read:${item.editionId}`; const operation = operations.get(key) ?? { method: 'command-center.v1.briefings.set-read', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), editionId: item.editionId, read: true } }; operations.set(key, operation); try { await host.request(operation.method, operation.params); operations.delete(key); if (current(pending)) await load('Briefing marked read. Use history to mark it unread again.'); } catch (error) { if (current(pending)) report(error?.message || 'Briefing was not changed. Retry to reconcile the same operation.'); } }, { signal });
+      actions.append(open, read); card.append(actions); module.append(card);
+    }
+    const readRows = (Array.isArray(dashboard.briefingHistory) ? dashboard.briefingHistory : []).filter(item => item.read);
+    const history = element('details'); history.append(element('summary', `Read history (${readRows.length})`));
+    for (const item of readRows) {
+      const row = element('article'); row.className = 'cc-briefing-history'; row.append(element('h4', item.title), element('p', formatInstant(item.publishedAt)));
+      const open = element('button', 'Open'); open.type = 'button'; open.addEventListener('click', () => { if (current(pending)) host.sessions.openChat({ sessionKey: item.source.sessionKey }); }, { signal });
+      const undo = element('button', 'Mark unread'); undo.type = 'button'; undo.disabled = !writable(); undo.addEventListener('click', async () => { const key = `briefing-unread:${item.editionId}`; const operation = operations.get(key) ?? { method: 'command-center.v1.briefings.set-read', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), editionId: item.editionId, read: false } }; operations.set(key, operation); try { await host.request(operation.method, operation.params); operations.delete(key); if (current(pending)) await load('Briefing returned to the unread list.'); } catch (error) { if (current(pending)) report(error?.message || 'Briefing was not changed. Retry to reconcile the same operation.'); } }, { signal });
+      const actions = element('div'); actions.className = 'cc-widget-actions'; actions.append(open, undo); row.append(actions); history.append(row);
+    }
+    module.append(history);
+    parent.append(module);
+  }
+
+  function renderRoutineOccurrences(parent, dashboard, pending) {
+    for (const item of Array.isArray(dashboard.routineOccurrences) ? dashboard.routineOccurrences : []) {
+      const card = element('article'); card.className = 'cc-module cc-routine-card'; card.dataset.routineOccurrence = item.occurrenceDate; card.append(element('p', 'Household routine'), element('h3', item.title), element('p', `Due ${formatInstant(item.dueAt)}`)); card.firstChild.className = 'cc-kicker';
+      const actions = element('div'); actions.className = 'cc-widget-actions';
+      const act = async (action, until) => { const key = `routine:${item.routineId}:${item.occurrenceDate}:${action}`; const operation = operations.get(key) ?? { method: 'command-center.v1.routines.decide', params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), routineId: item.routineId, occurrenceDate: item.occurrenceDate, expectedRevision: item.revision, action, ...(until ? { until } : {}) } }; operations.set(key, operation); try { await host.request(operation.method, operation.params); operations.delete(key); if (current(pending)) await load(action === 'complete' ? 'Routine occurrence completed.' : 'Routine occurrence deferred.'); } catch (error) { if (current(pending)) report(error?.message || 'Routine occurrence was not changed. Retry to reconcile the same operation.'); } };
+      const complete = element('button', 'Done'); complete.type = 'button'; complete.disabled = !writable(); complete.addEventListener('click', () => void act('complete'), { signal });
+      const defer = element('button', 'Later today'); defer.type = 'button'; defer.disabled = !writable(); defer.addEventListener('click', () => void act('defer', new Date(Date.now() + 3 * 3600000).toISOString()), { signal });
+      const source = element('button', 'Open source'); source.type = 'button'; source.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'topic', params: { topicId: item.topicId, sourceReferenceId: item.sourceReferenceId } }); }, { signal });
+      actions.append(complete, defer, source); card.append(actions); parent.append(card);
+    }
   }
 
   function applyDashboardPreferences(parent) {
@@ -990,6 +1026,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const jump = element('a', 'Jump to dashboards'); jump.href = '#command-center-dashboards'; jump.className = 'cc-dashboard-jump'; focusTitle.append(jump); focus.append(focusTitle);
           const dashboardsTitle = element('div'); dashboardsTitle.className = 'cc-zone-head'; dashboardsTitle.append(element('h2', 'Context at a glance'), element('p', 'Topics, intake and what is coming')); dashboards.append(dashboardsTitle);
           renderDashboardPreferences(dashboards, dashboard, pending);
+          renderBriefings(dashboards, dashboard, pending);
           const topic = dashboard.topics?.find(item => item.topicId === dashboardPreferences.pinnedTopicId) ?? dashboard.topics?.find(item => /renovat/i.test(item.name)) ?? dashboard.topics?.[0];
           if (topic) {
             const topicCard = element('section'); topicCard.className = 'cc-module cc-topic-widget'; topicCard.dataset.dashboardSection = 'topic'; topicCard.append(element('p', 'Pinned Topic'), element('h3', topic.name)); topicCard.firstChild.className = 'cc-kicker';
@@ -1020,6 +1057,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const clear = element('button', 'Show all Topics'); clear.type = 'button'; clear.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'planner' }); }, { signal }); filter.append(clear); focus.append(filter);
         }
         workspace.append(focus); if (pageMode === 'dashboard') workspace.append(dashboards); content.append(workspace);
+        if (pageMode === 'dashboard') renderRoutineOccurrences(focus, dashboard, pending);
         if (cards.length) focus.append(element('h2', 'Needs Attention'));
         for (const card of cards) {
           if (!nonBlank(card.notificationRecordId)) continue;
