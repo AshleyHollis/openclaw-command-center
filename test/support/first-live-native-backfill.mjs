@@ -44,6 +44,22 @@ async function waitForMetadata(world, host, signal) {
   );
 }
 
+async function readDashboardWhenReady(world, host, signal) {
+  let dashboard;
+  await waitForConsecutiveReadiness(async probeSignal => {
+    try {
+      dashboard = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+        method: 'command-center.v1.dashboard.get', params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, signal: probeSignal });
+      return true;
+    } catch (error) {
+      probeSignal.throwIfAborted();
+      if (/Gateway (?:connection|challenge).*failed/iu.test(error?.message ?? '') || error?.category === 'transport-timeout') return false;
+      throw error;
+    }
+  }, host.earlyExit, { required: 2, deadlineMs: 60_000, delayMs: 100, signal });
+  return dashboard;
+}
+
 /**
  * Qualifies the sealed package's private-adapter boundary in a disposable
  * native host. The adapter deliberately loses its first apply reply so the
@@ -110,7 +126,7 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
       } finally { verification.close(); }
 
       await restartHost();
-      const dashboard = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.dashboard.get', params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, signal });
+      const dashboard = await readDashboardWhenReady(world, host, signal);
       assert.match(JSON.stringify(dashboard), /Pay fictional packaged bill/u);
       await stopPinnedHost(host.child);
       await host.outputDrained;
@@ -118,7 +134,7 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
       await runPackagedBackfillCli({ ...cli, mode: 'withdraw' });
 
       await restartHost();
-      const afterWithdrawal = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.dashboard.get', params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, signal });
+      const afterWithdrawal = await readDashboardWhenReady(world, host, signal);
       assert.doesNotMatch(JSON.stringify(afterWithdrawal), /Pay fictional packaged bill/u);
       return Object.freeze({ packaged: true, isolatedHost: true, previewed: true, lostReplyReconciled: true, visibleAfterRestart: true, withdrawn: true, absentAfterWithdrawalRestart: true });
     } finally {
