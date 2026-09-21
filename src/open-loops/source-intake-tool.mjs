@@ -59,7 +59,7 @@ export function intakeReceiptToolFactory({ getOwners } = {}) {
   if (typeof getOwners !== 'function') throw new TypeError('Intake receipts require authoritative owners.');
   return () => ({
     name: 'command_center_record_intake_receipt',
-    description: 'Record a content-free maintained email or Note processing checkpoint for Command Center intake health.',
+    description: 'Record a content-free maintained email, Chat or Note processing checkpoint for Command Center intake health. Chat is on demand and may omit nextExpectedAt.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
       sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, runId: { type: 'string', minLength: 1 }, checkpoint: { type: 'string', minLength: 1 }, status: { type: 'string', enum: ['healthy-empty', 'healthy-processed', 'pending', 'failed', 'never-connected'] }, observedAt: { type: 'string' }, lastSuccessfulAt: { type: 'string' }, nextExpectedAt: { type: 'string' }, processedCount: { type: 'integer', minimum: 0 }, actionableCount: { type: 'integer', minimum: 0 }, noteCount: { type: 'integer', minimum: 0 }
     }, required: ['sourceKind', 'runId', 'checkpoint', 'status', 'observedAt', 'processedCount', 'actionableCount', 'noteCount'] }),

@@ -19,7 +19,7 @@ export function normalizeIntakeReceipt(input) {
   if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !sourceKinds.has(input.sourceKind) || !statuses.has(input.status)) throw sourceError('invalid-request', 'Intake receipt is invalid.');
   const healthy = input.status === 'healthy-empty' || input.status === 'healthy-processed';
   if (healthy && input.lastSuccessfulAt === undefined) throw sourceError('invalid-request', 'A healthy intake receipt requires lastSuccessfulAt.');
-  if (!['failed', 'never-connected'].includes(input.status) && input.nextExpectedAt === undefined) throw sourceError('invalid-request', 'An active intake receipt requires nextExpectedAt.');
+  if (input.sourceKind !== 'chat' && !['failed', 'never-connected'].includes(input.status) && input.nextExpectedAt === undefined) throw sourceError('invalid-request', 'A scheduled intake receipt requires nextExpectedAt.');
   return Object.freeze({
     schemaVersion: 1, sourceKind: input.sourceKind, runId: text(input.runId, 'runId'), checkpoint: text(input.checkpoint, 'checkpoint'), status: input.status,
     observedAt: instant(input.observedAt, 'observedAt'),

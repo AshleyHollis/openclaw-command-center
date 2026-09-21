@@ -118,6 +118,15 @@
           "localTime": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
           "timeZone": { "type": "string", "minLength": 1, "maxLength": 100 }
         }
+      },
+      "conversationCapture": {
+        "type": "object",
+        "description": "Explicitly enabled Chat and Note-work capture guidance. Requires the separately granted conversation-hook permission.",
+        "additionalProperties": false,
+        "required": ["enabled"],
+        "properties": {
+          "enabled": { "const": true }
+        }
       }
     },
     "additionalProperties": false

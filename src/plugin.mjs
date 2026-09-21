@@ -14,6 +14,7 @@ import { topicNoteMaintenanceToolFactory } from './maintenance/tool.mjs';
 import { commitmentCaptureToolFactory } from './open-loops/commitment-tool.mjs';
 import { capacityReviewToolFactory } from './open-loops/capacity-review-tool.mjs';
 import { sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory } from './open-loops/source-intake-tool.mjs';
+import { registerConversationCaptureHook } from './open-loops/conversation-capture-hook.mjs';
 import { createTopicMaintenanceCompletionSubscription } from './maintenance/completion.mjs';
 import { createTopicPageActionsHandler } from './topics/page-http.mjs';
 import { createSearchRebuildHttpHandler, searchRebuildRoute } from './search/http-route.mjs';
@@ -220,6 +221,7 @@ export default definePluginEntry({
     api.registerTool(sourceNoteCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_save_source_note', optional: true });
     api.registerTool(sourceCommitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_source_commitment', optional: true });
     api.registerTool(intakeReceiptToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_receipt', optional: true });
+    registerConversationCaptureHook(api);
     // The host exposes the same subscription contract in both its current
     // flat SDK form and its nested facade form. Prefer the facade where it is
     // present, but never silently drop automatic maintenance for a host that
