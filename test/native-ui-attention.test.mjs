@@ -432,9 +432,11 @@ test('Planner uses the full workspace and exposes every card in real Kanban lane
   assert.equal(await page.locator('details[data-topic-board]').isHidden(), true);
   await page.getByRole('button', { name: 'Agenda', exact: true }).click();
   assert.equal(await page.locator('details[data-agenda]').isVisible(), true);
-  await page.getByRole('button', { name: 'Refresh Planner', exact: true }).click();
+  await page.getByLabel('Search').focus();
+  await page.evaluate(() => [...document.querySelectorAll('button')].find(button => button.textContent === 'Refresh Planner').click());
   await page.getByLabel('Search').waitFor();
   assert.equal(await page.getByLabel('Search').inputValue(), 'Ready item 25');
+  assert.equal(await page.getByLabel('Search').evaluate(node => node === document.activeElement), true);
   assert.equal(await page.locator('details[data-agenda]').isVisible(), true);
   assert.equal(await page.locator('section[aria-label="Planner list"]').isHidden(), true);
 }));

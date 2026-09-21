@@ -112,6 +112,7 @@ test('withdraw preserves user decisions and concurrent changes', async () => {
   ];
   const withdrawn = [];
   const receipts = [];
+  let withdrawalState = null;
   const report = await withdrawHistoricalBackfill({
     backfillId: 'fixture-backfill',
     async loadState() { return { effects }; },
@@ -120,11 +121,38 @@ test('withdraw preserves user decisions and concurrent changes', async () => {
       if (effectId.endsWith('advanced')) return { revision: 2, userDecided: false };
       return { revision: 1, userDecided: false };
     },
-    async withdrawEffect(input) { withdrawn.push(input); },
+    async loadWithdrawalState() { return withdrawalState; },
+    async saveWithdrawalState({ state }) { withdrawalState = structuredClone(state); },
+    async withdrawEffect(input) { withdrawn.push(input); return { status: 'applied' }; },
+    async reconcileWithdrawal() { return { status: 'not-applied' }; },
     async recordReceipt(input) { receipts.push(input); },
     now: () => '2026-09-21T05:00:00.000Z'
   });
   assert.deepEqual(report.counts, { withdrawn: 1, preserved: 2, failed: 0 });
-  assert.deepEqual(withdrawn, [{ effectId: 'loop:unchanged', expectedRevision: 1, backfillId: 'fixture-backfill' }]);
+  assert.equal(withdrawn.length, 1);
+  assert.deepEqual({ effectId: withdrawn[0].effectId, expectedRevision: withdrawn[0].expectedRevision, backfillId: withdrawn[0].backfillId }, { effectId: 'loop:unchanged', expectedRevision: 1, backfillId: 'fixture-backfill' });
+  assert.match(withdrawn[0].logicalOperationId, /^sha256:[a-f0-9]{64}$/u);
   assert.equal(receipts[0].status, 'complete');
+});
+
+test('withdraw reconciles a lost successful reply without repeating the effect', async () => {
+  const effects = [{ effectId: 'loop:created', revision: 1 }];
+  let withdrawalState = null;
+  let appliedOperation;
+  let dispatches = 0;
+  const adapters = {
+    backfillId: 'fixture-lost-withdrawal',
+    async loadState() { return { effects }; },
+    async loadWithdrawalState() { return withdrawalState; },
+    async saveWithdrawalState({ state }) { withdrawalState = structuredClone(state); },
+    async inspectEffect() { return { revision: 1, userDecided: false }; },
+    async withdrawEffect(input) { dispatches += 1; appliedOperation = input.logicalOperationId; throw new Error('fixture-lost-withdrawal-reply'); },
+    async reconcileWithdrawal({ logicalOperationId }) { return { status: logicalOperationId === appliedOperation ? 'applied' : 'unknown' }; },
+    async recordReceipt() {},
+    now: () => '2026-09-21T05:00:00.000Z'
+  };
+  await assert.rejects(() => withdrawHistoricalBackfill(adapters), /fixture-lost-withdrawal-reply/u);
+  const report = await withdrawHistoricalBackfill(adapters);
+  assert.equal(report.counts.withdrawn, 1);
+  assert.equal(dispatches, 1);
 });

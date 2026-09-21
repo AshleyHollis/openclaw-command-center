@@ -161,22 +161,55 @@ export function createHistoricalBackfill({ readPage, classify, applyRecord, reco
 
 /** Withdraws only effects created by this backfill and only at their recorded
  * revision. Updated records and later user/concurrent changes are preserved. */
-export async function withdrawHistoricalBackfill({ backfillId, loadState, inspectEffect, withdrawEffect, recordReceipt, now = () => new Date().toISOString() } = {}) {
-  if (!nonBlank(backfillId) || ![loadState, inspectEffect, withdrawEffect, recordReceipt].every(value => typeof value === 'function')) fail('backfill-withdraw-invalid');
+export async function withdrawHistoricalBackfill({ backfillId, loadState, loadWithdrawalState, saveWithdrawalState, inspectEffect, withdrawEffect, reconcileWithdrawal, recordReceipt, now = () => new Date().toISOString() } = {}) {
+  if (!nonBlank(backfillId) || ![loadState, loadWithdrawalState, saveWithdrawalState, inspectEffect, withdrawEffect, reconcileWithdrawal, recordReceipt].every(value => typeof value === 'function')) fail('backfill-withdraw-invalid');
   const state = await loadState({ backfillId, mode: 'apply', stateKey: `${backfillId}:apply` });
   if (!state || !Array.isArray(state.effects)) fail('backfill-state-unavailable');
-  const counts = { withdrawn: 0, preserved: 0, failed: 0 };
-  for (const owned of state.effects) {
-    try {
-      const current = await inspectEffect({ effectId: owned.effectId });
-      if (!current || current.revision !== owned.revision || current.userDecided === true) { counts.preserved += 1; continue; }
-      await withdrawEffect({ effectId: owned.effectId, expectedRevision: owned.revision, backfillId });
-      counts.withdrawn += 1;
-    } catch {
-      counts.failed += 1;
+  const stateKey = `${backfillId}:withdraw`;
+  const saved = await loadWithdrawalState({ backfillId, stateKey });
+  const withdrawal = saved ?? { schemaVersion: 1, effectDigest: digest(state.effects), index: 0, counts: { withdrawn: 0, preserved: 0, failed: 0 }, pending: null, complete: false };
+  if (withdrawal.schemaVersion !== 1 || withdrawal.effectDigest !== digest(state.effects) || !Number.isSafeInteger(withdrawal.index) || withdrawal.index < 0 || !withdrawal.counts || !(withdrawal.pending === null || typeof withdrawal.pending === 'object')) fail('backfill-withdraw-state-conflict');
+  if (withdrawal.complete) return Object.freeze({ schemaVersion: 1, backfillId, counts: Object.freeze({ ...withdrawal.counts }), observedAt: now() });
+  for (; withdrawal.index < state.effects.length;) {
+    const owned = state.effects[withdrawal.index];
+    const current = await inspectEffect({ effectId: owned.effectId });
+    if (!current || current.revision !== owned.revision || current.userDecided === true) {
+      withdrawal.counts.preserved += 1; withdrawal.index += 1;
+      await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
+      continue;
     }
+    const logicalOperationId = digest({ owner: 'command-center.historical-backfill-withdraw.v1', backfillId, effectId: owned.effectId, revision: owned.revision });
+    if (withdrawal.pending) {
+      if (withdrawal.pending.logicalOperationId !== logicalOperationId || withdrawal.pending.effectId !== owned.effectId || withdrawal.pending.revision !== owned.revision) fail('backfill-withdraw-pending-conflict');
+      const reconciliation = await reconcileWithdrawal({ backfillId, logicalOperationId, effectId: owned.effectId, expectedRevision: owned.revision });
+      if (!reconciliation || !['applied', 'not-applied', 'unknown', 'conflict'].includes(reconciliation.status)) fail('backfill-withdraw-reconciliation-invalid');
+      if (reconciliation.status === 'unknown') fail('backfill-withdraw-unknown');
+      if (reconciliation.status === 'conflict') fail('backfill-withdraw-conflict');
+      if (reconciliation.status === 'applied') {
+        withdrawal.counts.withdrawn += 1; withdrawal.index += 1; withdrawal.pending = null;
+        await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
+        continue;
+      }
+    } else {
+      withdrawal.pending = { logicalOperationId, effectId: owned.effectId, revision: owned.revision };
+      await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
+    }
+    try {
+      const result = await withdrawEffect({ logicalOperationId, effectId: owned.effectId, expectedRevision: owned.revision, backfillId });
+      if (!result || result.status !== 'applied') fail('backfill-withdraw-result-invalid');
+    } catch (error) {
+      withdrawal.counts.failed += 1;
+      await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
+      const failed = Object.freeze({ schemaVersion: 1, backfillId, counts: Object.freeze({ ...withdrawal.counts }), observedAt: now() });
+      await recordReceipt({ ...failed, status: 'failed' });
+      throw Object.assign(error instanceof Error ? error : new Error('backfill-withdraw-failed'), { report: failed });
+    }
+    withdrawal.counts.withdrawn += 1; withdrawal.index += 1; withdrawal.pending = null;
+    await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
   }
-  const report = Object.freeze({ schemaVersion: 1, backfillId, counts: Object.freeze(counts), observedAt: now() });
-  await recordReceipt({ ...report, status: counts.failed ? 'failed' : 'complete' });
+  withdrawal.complete = true;
+  await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
+  const report = Object.freeze({ schemaVersion: 1, backfillId, counts: Object.freeze({ ...withdrawal.counts }), observedAt: now() });
+  await recordReceipt({ ...report, status: 'complete' });
   return report;
 }

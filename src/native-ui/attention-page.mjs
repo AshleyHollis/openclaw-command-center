@@ -15,7 +15,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   let topicFilter = context.props.topicId;
   let generation = 0;
   let selected;
-  const transientUiState = { disclosures: new Set(), scrollTop: 0, windowScrollY: 0, laneScroll: new Map(), planner: { search: '', topic: topicFilter ?? '', state: '', importance: '', view: 'board' } };
+  const transientUiState = { disclosures: new Set(), focusKey: null, scrollTop: 0, windowScrollY: 0, laneScroll: new Map(), planner: { search: '', topic: topicFilter ?? '', state: '', importance: '', view: 'board' } };
   const quickCaptureKey = 'command-center.quick-capture.v1';
   const emptyQuickCaptureDraft = () => ({ kind: 'task', topicId: '', title: '' });
   const readQuickCaptureState = () => {
@@ -78,17 +78,25 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     const named = node.dataset.workspaceSection ?? node.dataset.openLoopGroup ?? node.dataset.dashboardSection ?? Object.keys(node.dataset).sort().find(key => node.dataset[key] === 'true') ?? '';
     return `${identity}|${named}|${node.querySelector(':scope > summary')?.textContent ?? ''}`;
   };
+  const focusKey = node => {
+    if (!node || !container.contains(node)) return null;
+    const owner = node.closest('[data-open-loop-id],[data-workspace-loop-id]');
+    const identity = owner?.dataset.openLoopId ?? owner?.dataset.workspaceLoopId ?? '';
+    return `${identity}|${node.getAttribute('aria-label') ?? node.closest('label')?.firstChild?.textContent?.trim() ?? ''}|${node.name ?? ''}|${node.textContent?.trim() ?? ''}`;
+  };
   const captureTransientUiState = () => {
     transientUiState.disclosures = new Set([...content.querySelectorAll('details[open]')].map(disclosureKey));
     transientUiState.scrollTop = container.scrollTop;
     transientUiState.windowScrollY = document.defaultView?.scrollY ?? 0;
     transientUiState.laneScroll = new Map([...content.querySelectorAll('[data-board-lane]')].map(node => [node.dataset.boardLane, node.scrollTop]));
+    transientUiState.focusKey = focusKey(document.activeElement);
   };
   const restoreTransientUiState = () => {
     for (const node of content.querySelectorAll('details')) if (transientUiState.disclosures.has(disclosureKey(node))) node.open = true;
     for (const node of content.querySelectorAll('[data-board-lane]')) node.scrollTop = transientUiState.laneScroll.get(node.dataset.boardLane) ?? 0;
     container.scrollTop = transientUiState.scrollTop;
     document.defaultView?.scrollTo?.({ top: transientUiState.windowScrollY, behavior: 'auto' });
+    if (transientUiState.focusKey) [...content.querySelectorAll('button,input,select,textarea,summary,a[href]')].find(node => focusKey(node) === transientUiState.focusKey)?.focus({ preventScroll: true });
   };
 
   const formatInstant = value => {
