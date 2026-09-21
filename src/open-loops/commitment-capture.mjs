@@ -16,12 +16,12 @@ function instant(value, field) {
   return result;
 }
 function stable(parts) { return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32); }
-function subject(value) { return `commitment:${stable([value.topicId, value.obligationId])}`; }
+function subject(value) { return value.correlationId ? `commitment:${stable([value.topicId, value.correlationNamespace, value.correlationId])}` : legacySubject(value); }
 function legacySubject(value) { return `commitment:${stable([value.sourceKind, value.sourceExternalId, value.obligationId])}`; }
 
 export function normalizeCommitmentCapture(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('capture must be an object');
-  const allowed = ['schemaVersion', 'logicalOperationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'topicId', 'title', 'obligationId', 'provenance', 'confidence', 'occurredAt', 'observedAt', 'historicalBaseline', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies'];
+  const allowed = ['schemaVersion', 'logicalOperationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'topicId', 'title', 'obligationId', 'correlationNamespace', 'correlationId', 'provenance', 'confidence', 'occurredAt', 'observedAt', 'historicalBaseline', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies'];
   const extra = Object.keys(input).find(key => !allowed.includes(key));
   if (extra) fail(`capture contains unsupported field ${extra}`);
   if (input.schemaVersion !== 1 || !sourceKinds.has(input.sourceKind) || !provenanceKinds.has(input.provenance)) fail('capture vocabulary is unsupported');
@@ -29,6 +29,7 @@ export function normalizeCommitmentCapture(input) {
   if (input.importanceOrigin !== undefined && !['source', 'processing'].includes(input.importanceOrigin)) fail('capture cannot claim a user importance decision');
   if ((input.importance === undefined) !== (input.importanceOrigin === undefined)) fail('importance and importanceOrigin must be provided together');
   if ((input.sourceReferenceId === undefined) !== (input.sourcePath === undefined)) fail('sourceReferenceId and sourcePath must be provided together');
+  if ((input.correlationNamespace === undefined) !== (input.correlationId === undefined)) fail('correlationNamespace and correlationId must be provided together');
   const confidence = input.confidence === undefined ? undefined : Number(input.confidence);
   if (confidence !== undefined && (!Number.isFinite(confidence) || confidence < 0 || confidence > 1)) fail('confidence must be between 0 and 1');
   const effortMinutes = input.effortMinutes === undefined ? undefined : Number(input.effortMinutes);
@@ -51,6 +52,7 @@ export function normalizeCommitmentCapture(input) {
     topicId: text(input.topicId, 'topicId', 300),
     title: text(input.title, 'title', 300),
     obligationId: text(input.obligationId, 'obligationId', 300),
+    ...(input.correlationId === undefined ? {} : { correlationNamespace: text(input.correlationNamespace, 'correlationNamespace', 120), correlationId: text(input.correlationId, 'correlationId', 300) }),
     provenance: input.provenance,
     ...(confidence === undefined ? {} : { confidence }),
     occurredAt: instant(input.occurredAt, 'occurredAt'),
@@ -79,7 +81,7 @@ export function planCommitmentCapture(input, existingLoop = null) {
     historicalBaseline: value.historicalBaseline,
     topicId: value.topicId,
     entityRefs: [{ kind: 'obligation', id: value.obligationId }],
-    facts: { title: value.title, obligationId: value.obligationId, provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath }) }
+    facts: { title: value.title, obligationId: value.obligationId, ...(value.correlationId === undefined ? {} : { correlationNamespace: value.correlationNamespace, correlationId: value.correlationId }), provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath }) }
   });
   const { digest: _digest, ...observation } = normalizedObservation;
   const stableSubjectId = subject(value);
@@ -128,9 +130,12 @@ export function createCommitmentCaptureService({ metadata, sourceService } = {})
         if (sourceService?.notesRead && reference.sourceKind === 'note') await sourceService.notesRead({ schemaVersion: 1, topicId: value.topicId, referenceId: value.sourceReferenceId, path: value.sourcePath });
       }
       const stableSubjectId = subject(value);
-      const existing = metadata.findOpenLoopBySubject('general', stableSubjectId)
-        ?? metadata.findOpenLoopBySubject('general', legacySubject(value))
-        ?? metadata.findCommitmentLoopByObligation?.(value.topicId, value.obligationId);
+      const current = metadata.findOpenLoopBySubject('general', stableSubjectId);
+      const legacy = value.correlationId ? metadata.findCommitmentLoopsByLegacyObligation?.(value.topicId, value.obligationId) ?? [] : [];
+      const distinctLegacy = legacy.filter(loop => loop.loopId !== current?.loopId);
+      const sameSourceLegacy = value.correlationId ? metadata.findOpenLoopBySubject('general', legacySubject(value)) : null;
+      if (distinctLegacy.length > 1 || current && distinctLegacy.length || !current && distinctLegacy.length && !sameSourceLegacy) throw new TypeError('capture correlation requires explicit duplicate review');
+      const existing = current ?? sameSourceLegacy ?? null;
       const planned = planCommitmentCapture(value, existing);
       return metadata.applyOpenLoopChange({
         schemaVersion: 1,

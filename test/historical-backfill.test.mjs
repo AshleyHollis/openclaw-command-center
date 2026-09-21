@@ -109,6 +109,7 @@ test('changed adapter identity cannot resume an existing run', async () => {
 test('central cancellation fences an effect even when the adapter does not', async () => {
   const controller = new AbortController();
   let applied = false;
+  let receipts = 0;
   const states = new Map();
   const service = createHistoricalBackfill({
     assertCurrent: () => controller.signal.throwIfAborted(),
@@ -118,10 +119,11 @@ test('central cancellation fences an effect even when the adapter does not', asy
     async reconcileRecord() { return { status: 'not-applied' }; },
     async loadState({ stateKey }) { return states.get(stateKey) ?? null; },
     async saveState({ stateKey, state }) { states.set(stateKey, state); },
-    async recordReceipt() {}
+    async recordReceipt() { receipts += 1; }
   });
   await assert.rejects(() => run(service), { name: 'AbortError' });
   assert.equal(applied, false);
+  assert.equal(receipts, 0);
 });
 
 test('Topic-name scope is exact and rejects whitespace or duplicate selectors', async () => {

@@ -153,6 +153,7 @@ export function createHistoricalBackfill({ readPage, classify, applyRecord, reco
             state.effects.length = beforeEffects;
             state.counts.failed += 1;
             await saveState({ backfillId: plan.backfillId, mode, stateKey, state: { ...state, updatedAt: now() } });
+            assertCurrent();
             await recordReceipt({ ...contentFreeReport({ mode, plan, state }), status: 'failed', observedAt: now() });
             throw Object.assign(error instanceof Error ? error : new Error('backfill-failed'), { checkpoint: state.checkpoint, report: contentFreeReport({ mode, plan, state }) });
           }
@@ -166,6 +167,7 @@ export function createHistoricalBackfill({ readPage, classify, applyRecord, reco
       }
       await saveState({ backfillId: plan.backfillId, mode, stateKey, state: { ...state, updatedAt: now() } });
       const report = contentFreeReport({ mode, plan, state });
+      assertCurrent();
       await recordReceipt({ ...report, status: state.complete ? 'complete' : 'limit-reached', observedAt: now() });
       return report;
     }
@@ -222,6 +224,7 @@ export async function withdrawHistoricalBackfill({ backfillId, expectedPlanDiges
       withdrawal.counts.failed += 1;
       await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
       const failed = Object.freeze({ schemaVersion: 1, backfillId, counts: Object.freeze({ ...withdrawal.counts }), observedAt: now() });
+      assertCurrent();
       await recordReceipt({ ...failed, status: 'failed' });
       throw Object.assign(error instanceof Error ? error : new Error('backfill-withdraw-failed'), { report: failed });
     }
@@ -231,6 +234,7 @@ export async function withdrawHistoricalBackfill({ backfillId, expectedPlanDiges
   withdrawal.complete = true;
   await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
   const report = Object.freeze({ schemaVersion: 1, backfillId, counts: Object.freeze({ ...withdrawal.counts }), observedAt: now() });
+  assertCurrent();
   await recordReceipt({ ...report, status: 'complete' });
   return report;
 }

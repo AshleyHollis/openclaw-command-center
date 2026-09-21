@@ -205,15 +205,14 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
   });
   service.getOpenLoop = loopId => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(text(loopId, 'loopId'))));
   service.findOpenLoopBySubject = (kind, stableSubjectId) => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(text(kind, 'kind', 80), text(stableSubjectId, 'stableSubjectId', 500))));
-  service.findCommitmentLoopByObligation = (topicId, obligationId) => inspect(db => {
+  service.findCommitmentLoopsByLegacyObligation = (topicId, obligationId) => inspect(db => {
     const rows = db.prepare(`SELECT DISTINCT l.* FROM source_observations o
       JOIN open_loop_evidence e ON e.observation_id = o.observation_id
       JOIN open_loops l ON l.loop_id = e.loop_id
       WHERE l.loop_kind = 'general' AND l.topic_id = ? AND o.source_system = 'command-center-capture'
         AND json_extract(o.facts_json, '$.obligationId') = ?
-      ORDER BY l.loop_id LIMIT 2`).all(text(topicId, 'topicId'), text(obligationId, 'obligationId'));
-    if (rows.length > 1) fail('open-loop-subject-conflict', 'Multiple historical commitment loops claim this Topic obligation.');
-    return mapLoop(db, rows[0]);
+      ORDER BY l.loop_id LIMIT 3`).all(text(topicId, 'topicId'), text(obligationId, 'obligationId'));
+    return rows.map(row => mapLoop(db, row));
   });
   service.findOpenLoopsBySource = (system, kind, externalId, limit = 2) => {
     const boundedLimit = Number(limit);

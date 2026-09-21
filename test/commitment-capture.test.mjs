@@ -43,9 +43,10 @@ test('the same Topic obligation reconciles evidence from email, Chat and Note in
   try {
     metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
     const service = createCommitmentCaptureService({ metadata });
-    const email = await service.capture(base({ sourceKind: 'email', sourceExternalId: 'email:fictional', sourceVersion: '1' }));
-    const chat = await service.capture(base({ logicalOperationId: '20000000-0000-4000-8000-000000000002', sourceKind: 'chat', sourceExternalId: 'chat:fictional', sourceVersion: '2' }));
-    const note = await service.capture(base({ logicalOperationId: '30000000-0000-4000-8000-000000000003', sourceKind: 'note', sourceExternalId: 'note:fictional', sourceVersion: '3' }));
+    const correlation = { correlationNamespace: 'fictional-project-obligation', correlationId: 'laundry-storage-research' };
+    const email = await service.capture(base({ ...correlation, sourceKind: 'email', sourceExternalId: 'email:fictional', sourceVersion: '1' }));
+    const chat = await service.capture(base({ ...correlation, logicalOperationId: '20000000-0000-4000-8000-000000000002', sourceKind: 'chat', sourceExternalId: 'chat:fictional', sourceVersion: '2' }));
+    const note = await service.capture(base({ ...correlation, logicalOperationId: '30000000-0000-4000-8000-000000000003', sourceKind: 'note', sourceExternalId: 'note:fictional', sourceVersion: '3' }));
     assert.equal(chat.loop.loopId, email.loop.loopId);
     assert.equal(note.loop.loopId, email.loop.loopId);
     assert.equal(metadata.listOpenLoops().length, 1);
@@ -59,13 +60,40 @@ test('a new source adopts one pre-upgrade source-scoped commitment by Topic and 
   try {
     metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
     const legacy = planCommitmentCapture(base({ sourceKind: 'email', sourceExternalId: 'email:legacy', sourceVersion: '1' }));
-    const legacyLoop = { ...legacy.loop, loopId: 'open-loop:legacy-fixture', stableSubjectId: 'commitment:legacy-fixture' };
+    const legacyLoop = legacy.loop;
     metadata.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: '40000000-0000-4000-8000-000000000004', operationKind: 'commitment.capture.v1', intent: legacy.value,
       expectedRevision: 0, observation: legacy.observation, loop: legacyLoop, evidenceRoles: { [legacy.observation.observationId]: 'origin' }, updatedAt: legacy.value.observedAt });
     const service = createCommitmentCaptureService({ metadata });
-    const result = await service.capture(base({ logicalOperationId: '50000000-0000-4000-8000-000000000005', sourceKind: 'chat', sourceExternalId: 'chat:new', sourceVersion: '2' }));
+    const result = await service.capture(base({ logicalOperationId: '50000000-0000-4000-8000-000000000005', sourceKind: 'email', sourceExternalId: 'email:legacy', sourceVersion: '2', correlationNamespace: 'fictional-project-obligation', correlationId: 'laundry-storage-research' }));
     assert.equal(result.loop.loopId, legacyLoop.loopId);
     assert.equal(result.loop.evidenceObservationIds.length, 2);
+    assert.equal(metadata.listOpenLoops().length, 1);
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('matching generic obligation labels do not merge without exact shared correlation', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-no-guessed-correlation-'));
+  const metadata = openCommandCenterMetadataService({ stateDir });
+  try {
+    metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
+    const service = createCommitmentCaptureService({ metadata });
+    await service.capture(base({ sourceKind: 'email', sourceExternalId: 'email:one', sourceVersion: '1', obligationId: 'reply' }));
+    await service.capture(base({ logicalOperationId: '60000000-0000-4000-8000-000000000006', sourceKind: 'chat', sourceExternalId: 'chat:two', sourceVersion: '1', obligationId: 'reply' }));
+    assert.equal(metadata.listOpenLoops().length, 2);
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('a cross-source correlation does not silently adopt unnamespaced legacy evidence', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-legacy-ambiguity-'));
+  const metadata = openCommandCenterMetadataService({ stateDir });
+  try {
+    metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
+    const legacy = planCommitmentCapture(base({ sourceKind: 'email', sourceExternalId: 'email:legacy-ambiguous', sourceVersion: '1' }));
+    metadata.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: '70000000-0000-4000-8000-000000000007', operationKind: 'commitment.capture.v1', intent: legacy.value,
+      expectedRevision: 0, observation: legacy.observation, loop: { ...legacy.loop, loopId: 'open-loop:legacy-ambiguous', stableSubjectId: 'commitment:legacy-ambiguous' },
+      evidenceRoles: { [legacy.observation.observationId]: 'origin' }, updatedAt: legacy.value.observedAt });
+    const service = createCommitmentCaptureService({ metadata });
+    await assert.rejects(() => service.capture(base({ logicalOperationId: '80000000-0000-4000-8000-000000000008', sourceKind: 'chat', sourceExternalId: 'chat:new', sourceVersion: '2', correlationNamespace: 'fictional-project-obligation', correlationId: 'laundry-storage-research' })), /explicit duplicate review/u);
     assert.equal(metadata.listOpenLoops().length, 1);
   } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
