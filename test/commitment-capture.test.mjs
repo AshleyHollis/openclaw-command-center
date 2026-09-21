@@ -53,6 +53,23 @@ test('the same Topic obligation reconciles evidence from email, Chat and Note in
   } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('a new source adopts one pre-upgrade source-scoped commitment by Topic and obligation', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-legacy-source-'));
+  const metadata = openCommandCenterMetadataService({ stateDir });
+  try {
+    metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
+    const legacy = planCommitmentCapture(base({ sourceKind: 'email', sourceExternalId: 'email:legacy', sourceVersion: '1' }));
+    const legacyLoop = { ...legacy.loop, loopId: 'open-loop:legacy-fixture', stableSubjectId: 'commitment:legacy-fixture' };
+    metadata.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: '40000000-0000-4000-8000-000000000004', operationKind: 'commitment.capture.v1', intent: legacy.value,
+      expectedRevision: 0, observation: legacy.observation, loop: legacyLoop, evidenceRoles: { [legacy.observation.observationId]: 'origin' }, updatedAt: legacy.value.observedAt });
+    const service = createCommitmentCaptureService({ metadata });
+    const result = await service.capture(base({ logicalOperationId: '50000000-0000-4000-8000-000000000005', sourceKind: 'chat', sourceExternalId: 'chat:new', sourceVersion: '2' }));
+    assert.equal(result.loop.loopId, legacyLoop.loopId);
+    assert.equal(result.loop.evidenceObservationIds.length, 2);
+    assert.equal(metadata.listOpenLoops().length, 1);
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('capture owner atomically replays and verifies exact Note references', async () => {
   const loops = new Map(); const receipts = new Map();
   const metadata = {

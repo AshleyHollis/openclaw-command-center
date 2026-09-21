@@ -129,7 +129,8 @@ export function createCommitmentCaptureService({ metadata, sourceService } = {})
       }
       const stableSubjectId = subject(value);
       const existing = metadata.findOpenLoopBySubject('general', stableSubjectId)
-        ?? metadata.findOpenLoopBySubject('general', legacySubject(value));
+        ?? metadata.findOpenLoopBySubject('general', legacySubject(value))
+        ?? metadata.findCommitmentLoopByObligation?.(value.topicId, value.obligationId);
       const planned = planCommitmentCapture(value, existing);
       return metadata.applyOpenLoopChange({
         schemaVersion: 1,
