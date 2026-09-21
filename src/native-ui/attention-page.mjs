@@ -574,9 +574,9 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     const primary = targets.primary ?? content;
     const secondary = targets.secondary ?? primary;
     const planner = targets.planner === true;
+    const afterAttention = [];
     const workspace = openLoops.workspace;
     if (workspace && typeof workspace === 'object') {
-      primary.append(element('h2', 'Today / Needs you'));
       const renderPlanningCard = (parent, card, reason, compactActions = false) => {
         if (!nonBlank(card?.loopId) || !nonBlank(card?.title)) return;
         const row = element('article'); row.className = 'cc-work-card'; row.dataset.workspaceLoopId = card.loopId;
@@ -610,6 +610,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       };
       const todayMandatory = Array.isArray(workspace.today?.mandatory) ? workspace.today.mandatory : [];
       const todayPlanned = Array.isArray(workspace.today?.planned) ? workspace.today.planned : [];
+      if (planner || todayMandatory.length || todayPlanned.length || openLoops.attentionTotal === 0) primary.append(element('h2', 'Today / Needs you'));
       if (!todayMandatory.length && !todayPlanned.length && openLoops.attentionTotal === 0) { const empty = element('p', 'Nothing needs you today. Choose optional work from When I have capacity.'); empty.className = 'cc-empty'; primary.append(empty); }
       const grouped = workspace.today?.groups ?? {};
       const renderedMandatory = new Set();
@@ -637,8 +638,9 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         const dashboardSection = label.startsWith('Planned / Upcoming') ? 'upcoming' : label.startsWith('Waiting') ? 'waiting' : label.startsWith('Review') ? 'review' : label.startsWith('Someday') ? 'someday' : null;
         if (dashboardSection) disclosure.dataset.dashboardSection = dashboardSection;
         for (const card of Array.isArray(cards) ? cards : []) renderPlanningCard(disclosure, card, reason(card));
-        const destination = planner || label.startsWith('When I have capacity') ? primary : secondary;
-        destination.append(disclosure);
+        const capacity = label.startsWith('When I have capacity');
+        const destination = planner || capacity ? primary : secondary;
+        if (!planner && capacity) afterAttention.push(disclosure); else destination.append(disclosure);
       }
       if (planner) {
         const controls = element('section'); controls.className = 'cc-planner-controls'; controls.setAttribute('aria-label', 'Planner controls');
@@ -689,8 +691,10 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         applyFilters();
       }
     }
-    primary.append(element('h2', 'Open loops'));
-    primary.append(element('p', `${openLoops.attentionTotal} need attention · ${openLoops.comingUpTotal} coming up · ${openLoops.waitingTotal} waiting · ${openLoops.suggestedTotal} suggestions · ${openLoops.deferredTotal} deferred`));
+    if (planner) {
+      primary.append(element('h2', 'Open loops'));
+      primary.append(element('p', `${openLoops.attentionTotal} need attention · ${openLoops.comingUpTotal} coming up · ${openLoops.waitingTotal} waiting · ${openLoops.suggestedTotal} suggestions · ${openLoops.deferredTotal} deferred`));
+    }
     const stageGroups = Array.isArray(openLoops.stageReviews) ? openLoops.stageReviews.map(group => [`Active renovation stage: ${group.stage?.id ?? 'stage'}`, group.items]) : [];
     const groups = [['Needs attention', openLoops.highlighted], ...stageGroups, ['Coming up', openLoops.comingUp], ['Waiting', openLoops.waiting], ['Suggestions', openLoops.suggested], ['Deferred', openLoops.deferred], ['Needs reconciliation', openLoops.reconciliation]];
     for (const [label, cards] of groups) {
@@ -794,6 +798,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         group.append(row);
       }
     }
+    for (const section of afterAttention) primary.append(section);
     const inventory = element('details'); inventory.dataset.openLoopInventory = 'true'; inventory.append(element('summary', `Review all open loops (${openLoops.total})`));
     const inventoryRows = element('section'); inventoryRows.setAttribute('aria-label', 'All open loops');
     const more = element('button', 'Load open loops'); more.type = 'button'; let offset = 0; let cursor;
@@ -951,7 +956,6 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const focusTitle = element('div'); focusTitle.className = 'cc-zone-head'; focusTitle.append(element('h2', 'What needs you now'), element('p', 'Focused and time-sensitive'));
           const jump = element('a', 'Jump to dashboards'); jump.href = '#command-center-dashboards'; jump.className = 'cc-dashboard-jump'; focusTitle.append(jump); focus.append(focusTitle);
           const dashboardsTitle = element('div'); dashboardsTitle.className = 'cc-zone-head'; dashboardsTitle.append(element('h2', 'Context at a glance'), element('p', 'Topics, intake and what is coming')); dashboards.append(dashboardsTitle);
-          renderQuickCapture(focus, dashboard, pending);
           renderDashboardPreferences(dashboards, dashboard, pending);
           const topic = dashboard.topics?.find(item => item.topicId === dashboardPreferences.pinnedTopicId) ?? dashboard.topics?.find(item => /renovat/i.test(item.name)) ?? dashboard.topics?.[0];
           if (topic) {
@@ -990,6 +994,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { notificationRecord: card.notificationRecordId } }); }, { signal }); focus.append(button);
         }
         renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined });
+        if (pageMode === 'dashboard') renderQuickCapture(focus, dashboard, pending);
         if (pageMode === 'dashboard') { renderActivity(Array.isArray(dashboard?.activity?.records) ? dashboard.activity.records : [], pending, dashboards); applyDashboardPreferences(dashboards); }
         const coverageKnown = Array.isArray(dashboard.intakeCoverage) && dashboard.intakeCoverage.length > 0;
         report(message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.')); return;

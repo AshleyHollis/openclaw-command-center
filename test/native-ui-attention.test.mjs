@@ -289,7 +289,7 @@ test('native Attention reviews evidence and records status without paying or sen
     };
     window.mountInbox();
   });
-  await page.getByRole('heading', { name: 'Open loops' }).waitFor();
+  await page.getByRole('heading', { name: 'Needs attention' }).waitFor();
   await page.getByRole('heading', { name: 'Confirm the fictional cabinet delivery access window.' }).waitFor();
   await page.getByText('AUD 2450.00', { exact: false }).waitFor();
   await page.getByText('Waiting (1 shown)', { exact: true }).click();
@@ -402,6 +402,7 @@ test('rich Dashboard presents a normal day with source-linked work and quiet opt
     window.mountInbox();
   });
   await page.getByRole('heading', { name: 'Review the fictional progress invoice' }).waitFor();
+  assert.ok(await page.getByRole('heading', { name: 'Review the fictional progress invoice' }).evaluate(node => Boolean(node.compareDocumentPosition(document.querySelector('[data-workspace-section^="When I have capacity"]')) & Node.DOCUMENT_POSITION_FOLLOWING)));
   await page.getByText('AUD 2450.00', { exact: false }).waitFor();
   await page.getByText('The builder asked for a reply before tomorrow.', { exact: true }).waitFor();
   if (process.env.COMMAND_CENTER_DASHBOARD_1440_SCREENSHOT) { await page.setViewportSize({ width: 1440, height: 1000 }); await page.screenshot({ path: process.env.COMMAND_CENTER_DASHBOARD_1440_SCREENSHOT, fullPage: true }); }
