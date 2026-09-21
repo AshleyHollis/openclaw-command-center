@@ -182,7 +182,7 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
       : receipt.status === 'never-connected' ? 'never-connected'
         : overdue ? 'stale'
           : receipt.status === 'healthy-empty' ? 'healthy-empty' : 'receipt-current';
-  const label = sourceKind === 'email' ? 'Email intake' : 'Note processing';
+  const label = sourceKind === 'email' ? 'Email intake' : sourceKind === 'chat' ? 'Chat commitments' : 'Note processing';
   const explanations = {
     pending: 'The maintained producer has started a run but has not recorded its final checkpoint.',
     failed: 'The maintained producer recorded a failed checkpoint.',
@@ -197,6 +197,7 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
 function intakeCoverage(metadata, serverTime) {
   const rows = [
     intakeReceiptCoverage(metadata, 'email', serverTime) ?? { source: 'Email intake', sourceKind: 'email', status: 'unknown', explanation: 'No maintained email-intake receipt is available.' },
+    intakeReceiptCoverage(metadata, 'chat', serverTime) ?? { source: 'Chat commitments', sourceKind: 'chat', status: 'unknown', explanation: 'No maintained Chat-commitment receipt is available.' },
     intakeReceiptCoverage(metadata, 'note', serverTime) ?? { source: 'Note processing', sourceKind: 'note', status: 'unknown', explanation: 'No maintained Note-processing receipt is available.' }
   ];
   const operations = typeof metadata?.listOperations === 'function' ? metadata.listOperations().filter(item => item.operationKind === 'selected-source-intake-root') : [];

@@ -112,9 +112,9 @@ test('Dashboard coverage distinguishes maintained receipts from unknown email an
     listOperations: () => [{ operationKind: 'selected-source-intake-root', state: 'applied', resultIdentity: JSON.stringify({ freshness: { status: 'available', lastObservedAt: '2026-09-20T01:00:00.000Z', lastAvailableAt: '2026-09-20T01:00:00.000Z' } }) }]
   };
   const result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
-  assert.deepEqual(result.intakeCoverage.map(row => [row.sourceKind, row.status]), [['email', 'unknown'], ['note', 'unknown'], ['document', 'receipt-current']]);
-  assert.equal(result.intakeCoverage[2].lastSuccessfulAt, '2026-09-20T01:00:00.000Z');
-  assert.match(result.intakeCoverage[2].explanation, /does not prove automatic email or Note coverage/u);
+  assert.deepEqual(result.intakeCoverage.map(row => [row.sourceKind, row.status]), [['email', 'unknown'], ['chat', 'unknown'], ['note', 'unknown'], ['document', 'receipt-current']]);
+  assert.equal(result.intakeCoverage[3].lastSuccessfulAt, '2026-09-20T01:00:00.000Z');
+  assert.match(result.intakeCoverage[3].explanation, /does not prove automatic email or Note coverage/u);
 });
 
 test('Dashboard coverage reports healthy, stale, pending, failed and never-connected producer receipts honestly', async () => {
@@ -125,13 +125,13 @@ test('Dashboard coverage reports healthy, stale, pending, failed and never-conne
     operation('note', 'applied', { status: 'healthy-processed', observedAt: '2026-09-18T01:00:00.000Z', lastSuccessfulAt: '2026-09-18T01:00:00.000Z', nextExpectedAt: '2026-09-19T01:00:00.000Z' }, '2026-09-18T01:00:00.000Z')
   ] };
   let result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
-  assert.deepEqual(result.intakeCoverage.slice(0, 2).map(row => [row.sourceKind, row.status]), [['email', 'healthy-empty'], ['note', 'stale']]);
+  assert.deepEqual(result.intakeCoverage.slice(0, 3).map(row => [row.sourceKind, row.status]), [['email', 'healthy-empty'], ['chat', 'unknown'], ['note', 'stale']]);
   metadata.listOperations = () => [
     operation('email', 'pending', { status: 'pending', observedAt: '2026-09-20T01:00:00.000Z', nextExpectedAt: '2026-09-21T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z'),
     operation('note', 'applied', { status: 'never-connected', observedAt: '2026-09-20T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z')
   ];
   result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
-  assert.deepEqual(result.intakeCoverage.slice(0, 2).map(row => [row.sourceKind, row.status]), [['email', 'pending'], ['note', 'never-connected']]);
+  assert.deepEqual(result.intakeCoverage.slice(0, 3).map(row => [row.sourceKind, row.status]), [['email', 'pending'], ['chat', 'unknown'], ['note', 'never-connected']]);
   metadata.listOperations = () => [operation('email', 'not-applied', { status: 'failed', observedAt: '2026-09-20T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z')];
   result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
   assert.equal(result.intakeCoverage[0].status, 'failed');

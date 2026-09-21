@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
 
-const sourceKinds = new Set(['email', 'note']);
+const sourceKinds = new Set(['email', 'chat', 'note']);
 const statuses = new Set(['healthy-empty', 'healthy-processed', 'pending', 'failed', 'never-connected']);
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'

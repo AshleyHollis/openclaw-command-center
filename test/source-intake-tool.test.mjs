@@ -69,3 +69,11 @@ test('receipt tool records a healthy empty Note pass without creating an obligat
   assert.equal(result.details.receipt.status, 'healthy-empty');
   assert.equal(metadata.operations.size, 1);
 });
+
+test('receipt tool records Chat coverage separately from Note processing', async () => {
+  const metadata = metadataOwner();
+  const tool = intakeReceiptToolFactory({ getOwners: () => ({ metadata }) })();
+  const result = await tool.execute('chat-receipt', { sourceKind: 'chat', runId: 'fictional-chat-run', checkpoint: 'message-9', status: 'healthy-processed', observedAt: '2026-09-20T02:00:00.000Z', lastSuccessfulAt: '2026-09-20T02:00:00.000Z', nextExpectedAt: '2026-09-21T02:00:00.000Z', processedCount: 1, actionableCount: 1, noteCount: 0 });
+  assert.equal(result.details.receipt.sourceKind, 'chat');
+  assert.equal([...metadata.operations.values()][0].operationKind, 'intake-receipt.chat.v1');
+});

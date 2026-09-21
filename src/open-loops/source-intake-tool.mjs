@@ -61,7 +61,7 @@ export function intakeReceiptToolFactory({ getOwners } = {}) {
     name: 'command_center_record_intake_receipt',
     description: 'Record a content-free maintained email or Note processing checkpoint for Command Center intake health.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
-      sourceKind: { type: 'string', enum: ['email', 'note'] }, runId: { type: 'string', minLength: 1 }, checkpoint: { type: 'string', minLength: 1 }, status: { type: 'string', enum: ['healthy-empty', 'healthy-processed', 'pending', 'failed', 'never-connected'] }, observedAt: { type: 'string' }, lastSuccessfulAt: { type: 'string' }, nextExpectedAt: { type: 'string' }, processedCount: { type: 'integer', minimum: 0 }, actionableCount: { type: 'integer', minimum: 0 }, noteCount: { type: 'integer', minimum: 0 }
+      sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, runId: { type: 'string', minLength: 1 }, checkpoint: { type: 'string', minLength: 1 }, status: { type: 'string', enum: ['healthy-empty', 'healthy-processed', 'pending', 'failed', 'never-connected'] }, observedAt: { type: 'string' }, lastSuccessfulAt: { type: 'string' }, nextExpectedAt: { type: 'string' }, processedCount: { type: 'integer', minimum: 0 }, actionableCount: { type: 'integer', minimum: 0 }, noteCount: { type: 'integer', minimum: 0 }
     }, required: ['sourceKind', 'runId', 'checkpoint', 'status', 'observedAt', 'processedCount', 'actionableCount', 'noteCount'] }),
     async execute(_toolCallId, params) {
       const { metadata } = getOwners() ?? {};
