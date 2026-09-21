@@ -73,7 +73,7 @@ linuxTest('record authority rejects missing evidence, mismatched sources, and ou
       await owner.commandCenter.readNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, path: 'Invoices/Fictional.md' });
       return owner.commandCenter.captureCommitment({ logicalOperationId: input.logicalOperationId, capture: capture({ sourceKind: 'note' }) });
     }), { code: 'backfill-capture-authority-mismatch' });
-    assert.throws(() => owner.runWithRecordAuthority(input, () => owner.commandCenter.resolveTopic({ topicName: 'Other Topic' })), { code: 'backfill-topic-out-of-scope' });
+    await assert.rejects(() => owner.runWithRecordAuthority(input, () => owner.commandCenter.resolveTopic({ topicName: 'Other Topic' })), { code: 'backfill-topic-out-of-scope' });
   });
 });
 
