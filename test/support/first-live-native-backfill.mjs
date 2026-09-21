@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { withIsolatedWorld } from '../../src/fixtures.mjs';
+import { fixtureEnvironment, withIsolatedWorld } from '../../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, launchPinnedHost, restartPinnedHost, stopPinnedHost, waitForConsecutiveReadiness } from '../../src/host-harness.mjs';
 import { isCommandCenterMetadataReady } from '../../src/acceptance-readiness.mjs';
 import { resolveCommandCenterDatabasePath } from '../../src/metadata/path.mjs';
@@ -14,6 +15,19 @@ import { withDeadline, requestAuthenticatedGateway, stopHostOnAbort } from './re
 import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
 
 const sha256 = value => `sha256:${createHash('sha256').update(value).digest('hex')}`;
+
+function runPackagedBackfillCli({ host, world, stateDir, mode, planPath, planDigest, adapterPath, adapterDigest, signal }) {
+  const executable = host.host.runtimeExecutable || host.host.wrapper;
+  const command = ['command-center', 'backfill', mode, '--plan', planPath, '--digest', planDigest, '--adapter', adapterPath, '--adapter-digest', adapterDigest];
+  const args = host.host.runtimeExecutable ? [host.host.wrapper, ...command] : command;
+  const guardModule = new URL('../../src/isolated-child-guard.mjs', import.meta.url);
+  return new Promise((resolve, reject) => execFile(executable, args, {
+    cwd: host.host.checkout, signal, timeout: 120_000, maxBuffer: 1024 * 1024,
+    env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath,
+      OPENCLAW_STATE_DIR: stateDir, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot,
+      COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.href}` }
+  }, (error, stdout, stderr) => error ? reject(Object.assign(error, { stdout, stderr })) : resolve({ stdout, stderr })));
+}
 
 async function waitForMetadata(world, host, signal) {
   await waitForConsecutiveReadiness(
@@ -40,7 +54,6 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
       removeAbortCleanup = stopHostOnAbort(signal, host);
       await waitForMetadata(world, host, signal);
     };
-    const savedStateDir = process.env.OPENCLAW_STATE_DIR;
     try {
       await waitForMetadata(world, host, signal);
       await stopPinnedHost(host.child);
@@ -74,15 +87,20 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
 }; }\n`;
       await writeFile(planPath, `${JSON.stringify(plan)}\n`);
       await writeFile(adapterPath, adapterSource);
-      const packagedCli = await import(pathToFileURL(path.join(world.manifest.candidate.root, 'dist', 'migration', 'reconcile-cli.mjs')).href);
       const packagedBackfill = await import(pathToFileURL(path.join(world.manifest.candidate.root, 'dist', 'open-loops', 'historical-backfill.mjs')).href);
-      const options = { planPath, expectedDigest: packagedBackfill.historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: sha256(adapterSource), config: {}, signal };
-      process.env.OPENCLAW_STATE_DIR = stateDir;
-      const preview = await packagedCli.runConfiguredHistoricalBackfill({ ...options, mode: 'preview' });
-      assert.deepEqual({ complete: preview.complete, created: preview.counts.created, effectCount: preview.effectCount }, { complete: true, created: 0, effectCount: 0 });
-      await assert.rejects(packagedCli.runConfiguredHistoricalBackfill({ ...options, mode: 'apply' }), { code: 'fictional-lost-reply' });
-      const applied = await packagedCli.runConfiguredHistoricalBackfill({ ...options, mode: 'apply' });
-      assert.deepEqual({ complete: applied.complete, created: applied.counts.created, effectCount: applied.effectCount }, { complete: true, created: 1, effectCount: 1 });
+      const cli = { host, world, stateDir, planPath, planDigest: packagedBackfill.historicalBackfillPlanDigest(plan), adapterPath, adapterDigest: sha256(adapterSource), signal };
+      await runPackagedBackfillCli({ ...cli, mode: 'preview' });
+      let verification = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
+      try { assert.equal(verification.listOpenLoops().length, 0, 'preview must not create an effect'); }
+      finally { verification.close(); }
+      await assert.rejects(runPackagedBackfillCli({ ...cli, mode: 'apply' }), error => `${error.stdout}\n${error.stderr}`.includes('fictional-lost-reply'));
+      await runPackagedBackfillCli({ ...cli, mode: 'apply' });
+      verification = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
+      try {
+        const loops = verification.listOpenLoops();
+        assert.equal(loops.length, 1);
+        assert.equal(loops[0].title, 'Pay fictional packaged bill');
+      } finally { verification.close(); }
 
       await restartHost();
       const dashboard = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.dashboard.get', params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, signal });
@@ -90,15 +108,13 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
       await stopPinnedHost(host.child);
       await host.outputDrained;
       removeAbortCleanup();
-      const withdrawn = await packagedCli.runConfiguredHistoricalBackfill({ ...options, mode: 'withdraw' });
-      assert.equal(withdrawn.counts.withdrawn, 1);
+      await runPackagedBackfillCli({ ...cli, mode: 'withdraw' });
 
       await restartHost();
       const afterWithdrawal = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'command-center.v1.dashboard.get', params: { schemaVersion: 1, activityOffset: 0, activityLimit: 50 }, signal });
       assert.doesNotMatch(JSON.stringify(afterWithdrawal), /Pay fictional packaged bill/u);
       return Object.freeze({ packaged: true, isolatedHost: true, previewed: true, lostReplyReconciled: true, visibleAfterRestart: true, withdrawn: true, absentAfterWithdrawalRestart: true });
     } finally {
-      if (savedStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = savedStateDir;
       removeAbortCleanup();
       await stopPinnedHost(host.child);
       await host.outputDrained;
