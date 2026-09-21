@@ -88,12 +88,19 @@ export async function runConfiguredHistoricalBackfill({ mode, planPath, expected
   const plan = await readPinnedHistoricalBackfillPlan(planPath, expectedDigest);
   signal?.throwIfAborted();
   const createAdapter = await importPinnedBackfillAdapter(adapterPath, expectedAdapterDigest);
-  const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([
-    import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')
+  const [{ resolveStateDir }, fileAccess, { openCommandCenterMetadataService }, identity] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/file-access-runtime'),
+    import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs')
   ]);
-  const metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
-  const sourceService = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: false } });
+  // CLI registration is intentionally lazy and does not run normal plugin
+  // activation, so install the published host identity reader for this bounded
+  // operator invocation. Exact Note reads still verify the enrolled folder and
+  // held filesystem witness before the adapter can commit an effect.
+  const releaseIdentityReader = identity.setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
+  let metadata; let sourceService;
   try {
+    metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
+    sourceService = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: false } });
     const adapterDigest = `sha256:${String(expectedAdapterDigest).replace(/^sha256:/u, '')}`;
     const store = createHistoricalBackfillStore({ metadata });
     const assertCurrent = () => signal?.throwIfAborted();
@@ -112,7 +119,7 @@ export async function runConfiguredHistoricalBackfill({ mode, planPath, expected
     };
     if (mode === 'withdraw') return await withdrawHistoricalBackfill({ ...wrapped, ...store, backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent });
     return await createHistoricalBackfill({ ...wrapped, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
-  } finally { sourceService.close(); metadata.close(); }
+  } finally { sourceService?.close(); metadata?.close(); releaseIdentityReader(); }
 }
 
 // Local operator CLI, not a Gateway RPC or startup importer. Host CLI admission
