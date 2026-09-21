@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,6 +9,7 @@ import { isCommandCenterMetadataReady } from '../../src/acceptance-readiness.mjs
 import { resolveCommandCenterDatabasePath } from '../../src/metadata/path.mjs';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { revisionForBytes } from '../../src/sources/reference.mjs';
+import { NOTE_FOLDER_IDENTITY_FILE } from '../../src/sources/note-folder-identity.mjs';
 import { withDeadline, requestAuthenticatedGateway, stopHostOnAbort } from './real-host-runtime.mjs';
 import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
 
@@ -52,6 +53,7 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
       const noteBytes = Buffer.from('# Fictional packaged bill\n\nPay the fictional test invoice.\n', 'utf8');
       await mkdir(path.dirname(noteFile), { recursive: true });
       await writeFile(noteFile, noteBytes);
+      await writeFile(path.join(vault, NOTE_FOLDER_IDENTITY_FILE), `${JSON.stringify({ version: 1, id: randomUUID() })}\n`, { flag: 'wx', mode: 0o600 });
       const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
       try {
         metadata.createTopic({ topicId: 'topic-fictional-packaged-backfill', name: 'Fictional Packaged Backfill', paraCategory: 'project', lifecycle: 'active' });
