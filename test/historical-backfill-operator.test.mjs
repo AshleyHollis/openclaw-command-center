@@ -102,3 +102,27 @@ linuxTest('effect authority permits only the exact effect recorded by this backf
     await assert.rejects(() => owner.runWithEffectAuthority({ effectId: 'open-loop:foreign' }, () => owner.commandCenter.inspectEffect({ effectId: 'open-loop:foreign' })), { code: 'backfill-effect-not-owned' });
   });
 });
+
+linuxTest('record and effect authority are revoked from late async descendants', async () => {
+  await withOwner(async ({ owner, setEffects }) => {
+    let lateRecord;
+    await owner.runWithRecordAuthority(recordInput(), () => {
+      lateRecord = new Promise(resolve => setTimeout(() => {
+        try { owner.commandCenter.resolveTopic({ topicName: 'Fictional Home' }); resolve(null); }
+        catch (error) { resolve(error); }
+      }, 0));
+    });
+    assert.equal((await lateRecord)?.code, 'backfill-record-authority-required');
+
+    const created = await admittedCapture(owner);
+    setEffects([created]);
+    let lateEffect;
+    await owner.runWithEffectAuthority({ effectId: created.effectId }, () => {
+      lateEffect = new Promise(resolve => setTimeout(() => {
+        try { owner.commandCenter.inspectEffect({ effectId: created.effectId }); resolve(null); }
+        catch (error) { resolve(error); }
+      }, 0));
+    });
+    assert.equal((await lateEffect)?.code, 'backfill-effect-authority-required');
+  });
+});

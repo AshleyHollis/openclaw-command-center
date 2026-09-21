@@ -29,13 +29,13 @@ export function createHistoricalBackfillOperator({ metadata, sourceService, plan
   const requireRecord = () => {
     assertCurrent();
     const current = authority.getStore();
-    if (current?.kind !== 'record') fail('backfill-record-authority-required');
+    if (current?.kind !== 'record' || current.active !== true) fail('backfill-record-authority-required');
     return current;
   };
   const requireEffect = (effectId, expectedRevision) => {
     assertCurrent();
     const current = authority.getStore();
-    if (current?.kind !== 'effect' || current.effect.effectId !== effectId || expectedRevision !== undefined && current.effect.revision !== expectedRevision) fail('backfill-effect-authority-required');
+    if (current?.kind !== 'effect' || current.active !== true || current.effect.effectId !== effectId || expectedRevision !== undefined && current.effect.revision !== expectedRevision) fail('backfill-effect-authority-required');
     return current;
   };
   const assertTopicScope = (topicName, topicId) => {
@@ -73,7 +73,7 @@ export function createHistoricalBackfillOperator({ metadata, sourceService, plan
       const reference = matches[0];
       const result = await sourceService.notesRead({ schemaVersion: 1, topicId: selectedTopicId, referenceId: reference.referenceId, observedRevision: reference.observedRevision, path: selectedPath });
       assertCurrent();
-      if (authority.getStore() !== current) fail('backfill-record-authority-replaced');
+      if (authority.getStore() !== current || current.active !== true) fail('backfill-record-authority-replaced');
       const observed = result?.sourceReference;
       if (!observed || observed.referenceId !== reference.referenceId || observed.topicId !== selectedTopicId || observed.sourceKind !== 'note' || result.revision !== reference.observedRevision) fail('backfill-note-evidence-invalid');
       current.evidence.set(reference.referenceId, Object.freeze({ topicId: selectedTopicId, sourceReferenceId: reference.referenceId, path: result.path, revision: result.revision }));
@@ -133,10 +133,12 @@ export function createHistoricalBackfillOperator({ metadata, sourceService, plan
 
   return Object.freeze({
     commandCenter,
-    runWithRecordAuthority(input, callback) {
+    async runWithRecordAuthority(input, callback) {
       assertCurrent();
       if (!input || input.sourceKind !== plan.sourceKind || typeof callback !== 'function') fail('backfill-record-authority-invalid');
-      return authority.run({ kind: 'record', input, evidence: new Map() }, callback);
+      const capability = { kind: 'record', input, evidence: new Map(), active: true };
+      try { return await authority.run(capability, callback); }
+      finally { capability.active = false; capability.evidence.clear(); }
     },
     async runWithEffectAuthority(input, callback) {
       assertCurrent();
@@ -147,7 +149,9 @@ export function createHistoricalBackfillOperator({ metadata, sourceService, plan
       if (matches.length !== 1) fail('backfill-effect-not-owned');
       const effect = matches[0];
       if (input.expectedRevision !== undefined && input.expectedRevision !== effect.revision) fail('backfill-effect-not-owned');
-      return authority.run({ kind: 'effect', effect }, callback);
+      const capability = { kind: 'effect', effect, active: true };
+      try { return await authority.run(capability, callback); }
+      finally { capability.active = false; }
     }
   });
 }

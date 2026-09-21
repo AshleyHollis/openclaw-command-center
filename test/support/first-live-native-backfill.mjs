@@ -10,7 +10,7 @@ import { resolveCommandCenterDatabasePath } from '../../src/metadata/path.mjs';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { revisionForBytes } from '../../src/sources/reference.mjs';
 import { withDeadline, requestAuthenticatedGateway, stopHostOnAbort } from './real-host-runtime.mjs';
-import { enrollFixtureFolder } from './note-folder-fixture.mjs';
+import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
 
 const sha256 = value => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 
@@ -56,7 +56,7 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
       try {
         metadata.createTopic({ topicId: 'topic-fictional-packaged-backfill', name: 'Fictional Packaged Backfill', paraCategory: 'project', lifecycle: 'active' });
         metadata.createSourceReference({ version: 1, referenceId: 'folder:fictional-packaged-backfill', topicId: 'topic-fictional-packaged-backfill', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault });
-        await enrollFixtureFolder(metadata, 'folder:fictional-packaged-backfill', vault);
+        metadata.setSourceLocator({ referenceId: 'folder:fictional-packaged-backfill', locator: vault, observedRevision: await readHostNoteFolderIdentity(vault), ownership: 'external' });
         metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-packaged-backfill', topicId: 'topic-fictional-packaged-backfill', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: noteFile, observedRevision: revisionForBytes(noteBytes) });
       } finally { metadata.close(); }
 
