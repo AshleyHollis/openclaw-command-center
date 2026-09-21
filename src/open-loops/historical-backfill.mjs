@@ -10,12 +10,14 @@ const digest = value => `sha256:${createHash('sha256').update(JSON.stringify(val
 function normalizePlan(plan) {
   if (!plan || plan.schemaVersion !== 1 || !nonBlank(plan.backfillId) || !sourceKinds.has(plan.sourceKind)) fail('backfill-plan-invalid');
   if (!plan.scope || typeof plan.scope !== 'object' || Array.isArray(plan.scope)) fail('backfill-scope-invalid');
-  const allowed = ['topicIds', 'since', 'until', 'maxRecords'];
+  const allowed = ['topicIds', 'topicNames', 'since', 'until', 'maxRecords'];
   if (Object.keys(plan.scope).some(key => !allowed.includes(key))) fail('backfill-scope-invalid');
   const maxRecords = plan.scope.maxRecords;
   if (!Number.isSafeInteger(maxRecords) || maxRecords < 1 || maxRecords > 5000) fail('backfill-scope-invalid');
   const topicIds = plan.scope.topicIds ?? [];
   if (!Array.isArray(topicIds) || topicIds.length > 50 || topicIds.some(value => !nonBlank(value)) || new Set(topicIds).size !== topicIds.length) fail('backfill-scope-invalid');
+  const topicNames = plan.scope.topicNames ?? [];
+  if (!Array.isArray(topicNames) || topicNames.length > 50 || topicNames.some(value => !nonBlank(value) || value !== value.trim()) || new Set(topicNames).size !== topicNames.length) fail('backfill-scope-invalid');
   const instant = (value, field) => {
     if (value === undefined) return undefined;
     if (!nonBlank(value) || !Number.isFinite(Date.parse(value))) fail(`backfill-${field}-invalid`);
@@ -28,7 +30,7 @@ function normalizePlan(plan) {
     schemaVersion: 1,
     backfillId: plan.backfillId.trim(),
     sourceKind: plan.sourceKind,
-    scope: Object.freeze({ topicIds: Object.freeze([...topicIds]), ...(since ? { since } : {}), ...(until ? { until } : {}), maxRecords })
+    scope: Object.freeze({ topicIds: Object.freeze([...topicIds]), topicNames: Object.freeze([...topicNames]), ...(since ? { since } : {}), ...(until ? { until } : {}), maxRecords })
   });
 }
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHistoricalBackfill, withdrawHistoricalBackfill } from '../src/open-loops/historical-backfill.mjs';
 
-const plan = { schemaVersion: 1, backfillId: 'renovation-notes-2026-09', sourceKind: 'note', scope: { topicIds: ['topic-home'], maxRecords: 4 } };
+const plan = { schemaVersion: 1, backfillId: 'renovation-notes-2026-09', sourceKind: 'note', scope: { topicIds: [], topicNames: ['Fictional renovation'], maxRecords: 4 } };
 
 function harness({ failAt } = {}) {
   let state = null;
@@ -73,6 +73,12 @@ test('changed scope cannot resume an existing run identity', async () => {
   const { service } = harness({ failAt: '003' });
   await assert.rejects(() => service.run({ mode: 'apply', plan }));
   await assert.rejects(() => service.run({ mode: 'apply', plan: { ...plan, scope: { ...plan.scope, maxRecords: 3 } } }), error => error.code === 'backfill-state-conflict');
+});
+
+test('Topic-name scope is exact and rejects whitespace or duplicate selectors', async () => {
+  const { service } = harness();
+  await assert.rejects(() => service.run({ mode: 'preview', plan: { ...plan, scope: { ...plan.scope, topicNames: [' Fictional renovation'] } } }), error => error.code === 'backfill-scope-invalid');
+  await assert.rejects(() => service.run({ mode: 'preview', plan: { ...plan, scope: { ...plan.scope, topicNames: ['Fictional renovation', 'Fictional renovation'] } } }), error => error.code === 'backfill-scope-invalid');
 });
 
 test('withdraw preserves user decisions and concurrent changes', async () => {
