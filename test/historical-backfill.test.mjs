@@ -126,6 +126,37 @@ test('central cancellation fences an effect even when the adapter does not', asy
   assert.equal(receipts, 0);
 });
 
+test('cancellation during receipt publication is fenced at the owner commit', async () => {
+  const controller = new AbortController();
+  const states = new Map();
+  let releaseReceipt;
+  let receipts = 0;
+  const enteredReceipt = new Promise(resolve => { releaseReceipt = resolve; });
+  let acknowledgeReceipt;
+  const receiptBlocked = new Promise(resolve => { acknowledgeReceipt = resolve; });
+  const service = createHistoricalBackfill({
+    assertCurrent: () => controller.signal.throwIfAborted(),
+    async readPage() { return { records: [], next: null, done: true }; },
+    async classify() { throw new Error('not reached'); },
+    async applyRecord() { throw new Error('not reached'); },
+    async reconcileRecord() { throw new Error('not reached'); },
+    async loadState({ stateKey }) { return states.get(stateKey) ?? null; },
+    async saveState({ stateKey, state }) { states.set(stateKey, state); },
+    async recordReceipt(_receipt, authority) {
+      acknowledgeReceipt();
+      await enteredReceipt;
+      authority.assertCurrent();
+      receipts += 1;
+    }
+  });
+  const running = run(service);
+  await receiptBlocked;
+  controller.abort();
+  releaseReceipt();
+  await assert.rejects(running, { name: 'AbortError' });
+  assert.equal(receipts, 0);
+});
+
 test('Topic-name scope is exact and rejects whitespace or duplicate selectors', async () => {
   const { service } = harness();
   await assert.rejects(() => run(service, 'preview', { ...plan, scope: { ...plan.scope, topicNames: [' Fictional renovation'] } }), error => error.code === 'backfill-scope-invalid');

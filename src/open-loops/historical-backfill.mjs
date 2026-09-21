@@ -154,7 +154,8 @@ export function createHistoricalBackfill({ readPage, classify, applyRecord, reco
             state.counts.failed += 1;
             await saveState({ backfillId: plan.backfillId, mode, stateKey, state: { ...state, updatedAt: now() } });
             assertCurrent();
-            await recordReceipt({ ...contentFreeReport({ mode, plan, state }), status: 'failed', observedAt: now() });
+            await recordReceipt({ ...contentFreeReport({ mode, plan, state }), status: 'failed', observedAt: now() }, { assertCurrent });
+            assertCurrent();
             throw Object.assign(error instanceof Error ? error : new Error('backfill-failed'), { checkpoint: state.checkpoint, report: contentFreeReport({ mode, plan, state }) });
           }
         }
@@ -168,7 +169,8 @@ export function createHistoricalBackfill({ readPage, classify, applyRecord, reco
       await saveState({ backfillId: plan.backfillId, mode, stateKey, state: { ...state, updatedAt: now() } });
       const report = contentFreeReport({ mode, plan, state });
       assertCurrent();
-      await recordReceipt({ ...report, status: state.complete ? 'complete' : 'limit-reached', observedAt: now() });
+      await recordReceipt({ ...report, status: state.complete ? 'complete' : 'limit-reached', observedAt: now() }, { assertCurrent });
+      assertCurrent();
       return report;
     }
   });
@@ -225,7 +227,8 @@ export async function withdrawHistoricalBackfill({ backfillId, expectedPlanDiges
       await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
       const failed = Object.freeze({ schemaVersion: 1, backfillId, counts: Object.freeze({ ...withdrawal.counts }), observedAt: now() });
       assertCurrent();
-      await recordReceipt({ ...failed, status: 'failed' });
+      await recordReceipt({ ...failed, mode: 'withdraw', status: 'failed' }, { assertCurrent });
+      assertCurrent();
       throw Object.assign(error instanceof Error ? error : new Error('backfill-withdraw-failed'), { report: failed });
     }
     withdrawal.counts.withdrawn += 1; withdrawal.index += 1; withdrawal.pending = null;
@@ -235,6 +238,7 @@ export async function withdrawHistoricalBackfill({ backfillId, expectedPlanDiges
   await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
   const report = Object.freeze({ schemaVersion: 1, backfillId, counts: Object.freeze({ ...withdrawal.counts }), observedAt: now() });
   assertCurrent();
-  await recordReceipt({ ...report, status: 'complete' });
+  await recordReceipt({ ...report, mode: 'withdraw', status: 'complete' }, { assertCurrent });
+  assertCurrent();
   return report;
 }

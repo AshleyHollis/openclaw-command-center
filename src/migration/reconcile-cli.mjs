@@ -97,7 +97,7 @@ export async function runConfiguredHistoricalBackfill({ mode, planPath, expected
     if (!adapter || typeof adapter !== 'object') fail('backfill-adapter-invalid');
     const store = createHistoricalBackfillStore({ metadata });
     const assertCurrent = () => signal?.throwIfAborted();
-    if (mode === 'withdraw') return await withdrawHistoricalBackfill({ backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent, ...store, ...adapter });
+    if (mode === 'withdraw') return await withdrawHistoricalBackfill({ ...adapter, ...store, backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent });
     return await createHistoricalBackfill({ ...adapter, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
   } finally { metadata.close(); }
 }

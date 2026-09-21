@@ -410,6 +410,72 @@ test('rich Dashboard presents a normal day with source-linked work and quiet opt
   if (process.env.COMMAND_CENTER_DASHBOARD_1920_SCREENSHOT) { await page.setViewportSize({ width: 1920, height: 1080 }); await page.screenshot({ path: process.env.COMMAND_CENTER_DASHBOARD_1920_SCREENSHOT, fullPage: true }); }
 }));
 
+test('busy Dashboard keeps 25 Attention items visible while 200 optional items stay collapsed', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    const planning = { importance: 'low', importanceOrigin: 'processing', contexts: ['home'], dependencies: [], someday: false };
+    window.cards = Array.from({ length: 25 }, (_, index) => ({
+      notificationRecordId: `busy-record-${index + 1}`, episodeId: `busy-episode-${index + 1}`,
+      topicId: 'topic-fictional-renovation', sourceReferenceId: `busy-source-${index + 1}`,
+      sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 1,
+      severity: 'Reminder', state: 'Active', context: `Required item ${index + 1}`, actions: [], eligibleSnoozeChoices: []
+    }));
+    const optional = Array.from({ length: 200 }, (_, index) => ({
+      loopId: `optional-${index + 1}`, kind: 'general', topicId: 'topic-fictional-renovation',
+      title: `Optional item ${index + 1}`, state: 'confirmed', evidenceCount: 1, revision: 1, planning
+    }));
+    window.openLoops = {
+      total: 200, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [],
+      suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [],
+      workspace: { today: { mandatory: [], planned: [] }, upcoming: [], capacity: optional, capacityTotal: 200, waiting: [], someday: [], review: { batch: optional.slice(0, 5), remaining: 195, eligibleTotal: 200 }, board: { ready: optional, doing: [], waiting: [], done: [], suggestions: [] }, agenda: [] }
+    };
+    window.mountInbox();
+  });
+  await page.getByRole('button', { name: 'Review Required item 25', exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: /^Review Required item /u }).count(), 25);
+  const capacity = page.locator('details[data-workspace-section^="When I have capacity"]');
+  await capacity.getByText('When I have capacity (200 total) (200 shown)', { exact: true }).waitFor();
+  assert.equal(await capacity.evaluate(node => node.open), false);
+  assert.equal(await capacity.locator('article[data-workspace-loop-id]').count(), 200);
+  assert.equal(await capacity.locator('article[data-workspace-loop-id]:visible').count(), 0);
+}));
+
+test('returning after a week shows every overdue, due, decision and accepted review group honestly', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    const planning = { importance: 'normal', importanceOrigin: 'processing', contexts: [], dependencies: [], someday: false };
+    const overdue = Array.from({ length: 20 }, (_, index) => ({ loopId: `return-overdue-${index + 1}`, kind: 'general', title: `Overdue item ${index + 1}`, topicId: 'topic-fictional-renovation', state: 'confirmed', dueDate: '2026-09-13', dueTimeZone: 'Australia/Brisbane', evidenceCount: 1, revision: 1, planning }));
+    const dueToday = Array.from({ length: 3 }, (_, index) => ({ loopId: `return-today-${index + 1}`, kind: 'response', title: `Due today item ${index + 1}`, topicId: 'topic-fictional-renovation', state: 'confirmed', dueDate: '2026-09-20', dueTimeZone: 'Australia/Brisbane', evidenceCount: 1, revision: 1, planning }));
+    const decision = { loopId: 'return-decision', kind: 'decision', title: 'Choose the revised fictional finish', topicId: 'topic-fictional-renovation', state: 'decision-needed', whyNow: 'A choice is required before work can continue.', evidenceCount: 1, revision: 1, planning };
+    const review = { loopId: 'return-review', kind: 'general', title: 'Review the parked fictional quote', topicId: 'topic-fictional-renovation', state: 'confirmed', reviewAt: '2026-09-20T08:00:00.000Z', evidenceCount: 1, revision: 1, planning };
+    const mandatory = [...overdue, ...dueToday, decision, review];
+    window.openLoops = { total: 25, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [], workspace: { today: { mandatory, planned: [], groups: { overdue, dueToday, decisions: [decision], reviews: [review] } }, upcoming: [], capacity: [], capacityTotal: 0, waiting: [], someday: [], review: { batch: [], remaining: 0, eligibleTotal: 0 }, board: { ready: mandatory, doing: [], waiting: [], done: [], suggestions: [] }, agenda: [] } };
+    window.mountInbox();
+  });
+  await page.getByRole('heading', { name: 'Overdue (20)', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Due today (3)', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Decisions and changes (1)', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Accepted reviews (1)', exact: true }).waitFor();
+  assert.equal(await page.locator('.cc-focus > article.cc-work-card').count(), 25);
+  const decision = page.locator('article[data-workspace-loop-id="return-decision"]');
+  await decision.getByText('A choice is required before work can continue.', { exact: false }).waitFor();
+  assert.equal(await decision.getByText(/Due /u).count(), 0);
+}));
+
+test('a failed producer remains a titled dashboard widget without blanking focused work', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [{ notificationRecordId: 'producer-record', episodeId: 'producer-episode', topicId: 'topic-fictional-renovation', sourceReferenceId: 'producer-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 1, severity: 'Reminder', state: 'Active', context: 'Review unaffected fictional work', actions: [], eligibleSnoozeChoices: [] }];
+    window.intakeCoverage = [{ source: 'Email intake', sourceKind: 'email', status: 'failed', explanation: 'The last bounded producer run failed before publishing a receipt.' }];
+    window.mountInbox();
+  });
+  await page.getByRole('button', { name: 'Review Review unaffected fictional work', exact: true }).waitFor();
+  const coverage = page.locator('section[data-dashboard-section="coverage"]');
+  await coverage.getByRole('heading', { name: 'Intake coverage', exact: true }).waitFor();
+  await coverage.getByRole('heading', { name: 'Email intake', exact: true }).waitFor();
+  await coverage.getByText('failed', { exact: true }).waitFor();
+  await coverage.getByText('The last bounded producer run failed before publishing a receipt.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('heading', { name: 'What needs you now', exact: true }).isVisible(), true);
+}));
+
 test('Planner uses the full workspace and exposes every card in real Kanban lanes', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];

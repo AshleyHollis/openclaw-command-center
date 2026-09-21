@@ -105,6 +105,12 @@ of every intermediate batch. Intermediate batch reviews remain useful for a
 high-risk owner or when they unblock parallel work, but they are not a default
 release gate.
 
+Only checks required by the repository ruleset or named by the selected class
+are release gates. An optional third-party integration that is not configured
+for this repository is advisory; record its configuration error, confirm that
+it is not required, and continue using the repository-owned safety and package
+workflows. Do not add duplicate tooling solely to turn an advisory status green.
+
 ## Deployment sequence
 
 1. Classify the diff before implementation and again on the final diff.

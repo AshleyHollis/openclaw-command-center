@@ -59,6 +59,19 @@ test('generic operation writes cannot take over the backfill checkpoint owner', 
   } finally { metadata.close(); }
 }));
 
+test('receipt publication is owned by metadata and checks cancellation at commit', async () => fixture(async stateDir => {
+  const metadata = openCommandCenterMetadataService({ stateDir });
+  try {
+    const store = createHistoricalBackfillStore({ metadata });
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(() => store.recordReceipt({ schemaVersion: 1, backfillId: 'fixture', mode: 'apply', counts: { read: 0 }, status: 'complete', observedAt: timestamp }, { assertCurrent: () => controller.signal.throwIfAborted() }), { name: 'AbortError' });
+    assert.equal(metadata.listOperations().some(item => item.operationKind === 'historical-backfill.receipt.v1'), false);
+    await store.recordReceipt({ schemaVersion: 1, backfillId: 'fixture', mode: 'apply', counts: { read: 0 }, status: 'complete', observedAt: timestamp });
+    assert.equal(metadata.listOperations().find(item => item.operationKind === 'historical-backfill.receipt.v1').resultStatus, 'complete');
+  } finally { metadata.close(); }
+}));
+
 test('a real process death after the external effect resumes by reconciliation without redispatch', async () => fixture(async stateDir => {
   const child = fileURLToPath(new URL('./fixtures/historical-backfill-crash-child.mjs', import.meta.url));
   const first = spawnSync(process.execPath, [child, stateDir], { encoding: 'utf8' });
