@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fixtureEnvironment, withIsolatedWorld } from '../../src/fixtures.mjs';
@@ -16,17 +16,24 @@ import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
 
 const sha256 = value => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 
-function runPackagedBackfillCli({ host, world, stateDir, mode, planPath, planDigest, adapterPath, adapterDigest, signal }) {
+async function runPackagedBackfillCli({ host, world, stateDir, mode, planPath, planDigest, adapterPath, adapterDigest, signal }) {
   const executable = host.host.runtimeExecutable || host.host.wrapper;
   const command = ['command-center', 'backfill', mode, '--plan', planPath, '--digest', planDigest, '--adapter', adapterPath, '--adapter-digest', adapterDigest];
   const args = host.host.runtimeExecutable ? [host.host.wrapper, ...command] : command;
   const guardModule = new URL('../../src/isolated-child-guard.mjs', import.meta.url);
-  return new Promise((resolve, reject) => execFile(executable, args, {
-    cwd: host.host.checkout, signal, timeout: 120_000, maxBuffer: 1024 * 1024,
-    env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath,
-      OPENCLAW_STATE_DIR: stateDir, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot,
-      COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.href}` }
-  }, (error, stdout, stderr) => error ? reject(Object.assign(error, { stdout, stderr })) : resolve({ stdout, stderr })));
+  // Each native CLI process owns a fresh scratch lifetime. OpenClaw captures an
+  // immutable plugin generation below TMP and normally has a supervising parent
+  // reclaim it. This acceptance process is that parent, so remove the exited
+  // child's generation before starting the next crash/replay phase.
+  const childTemp = await mkdtemp(path.join(world.tempRoot, 'backfill-cli-'));
+  try {
+    return await new Promise((resolve, reject) => execFile(executable, args, {
+      cwd: host.host.checkout, signal, timeout: 120_000, maxBuffer: 1024 * 1024,
+      env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath,
+        OPENCLAW_STATE_DIR: stateDir, HOME: world.root, TMPDIR: childTemp, TMP: childTemp, TEMP: childTemp,
+        COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.href}` }
+    }, (error, stdout, stderr) => error ? reject(Object.assign(error, { stdout, stderr })) : resolve({ stdout, stderr })));
+  } finally { await rm(childTemp, { recursive: true, force: true }); }
 }
 
 async function waitForMetadata(world, host, signal) {
