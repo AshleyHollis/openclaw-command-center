@@ -205,7 +205,7 @@ export async function withdrawHistoricalBackfill({ backfillId, expectedPlanDiges
     const current = await inspectEffect({ effectId: owned.effectId });
     assertCurrent();
     if (!current || current.revision !== owned.revision || current.userDecided === true) {
-      withdrawal.counts.preserved += 1; withdrawal.index += 1;
+      withdrawal.counts.preserved += 1; withdrawal.index += 1; withdrawal.pending = null;
       await saveWithdrawalState({ backfillId, stateKey, state: { ...withdrawal, updatedAt: now() } });
       continue;
     }

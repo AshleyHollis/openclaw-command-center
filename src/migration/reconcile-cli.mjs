@@ -95,13 +95,23 @@ export async function runConfiguredHistoricalBackfill({ mode, planPath, expected
   const sourceService = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: false } });
   try {
     const adapterDigest = `sha256:${String(expectedAdapterDigest).replace(/^sha256:/u, '')}`;
-    const commandCenter = createHistoricalBackfillOperator({ metadata, sourceService });
-    const adapter = await createAdapter({ plan: structuredClone(plan), mode, config: structuredClone(config), signal, commandCenter });
-    if (!adapter || typeof adapter !== 'object') fail('backfill-adapter-invalid');
     const store = createHistoricalBackfillStore({ metadata });
     const assertCurrent = () => signal?.throwIfAborted();
-    if (mode === 'withdraw') return await withdrawHistoricalBackfill({ ...adapter, ...store, backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent });
-    return await createHistoricalBackfill({ ...adapter, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
+    const owner = createHistoricalBackfillOperator({ metadata, sourceService, plan, assertCurrent,
+      loadBackfillState: () => store.loadState({ backfillId: plan.backfillId, mode: 'apply', stateKey: `${plan.backfillId}:apply` }) });
+    const adapter = await createAdapter({ plan: structuredClone(plan), mode, config: structuredClone(config), signal, commandCenter: owner.commandCenter });
+    assertCurrent();
+    if (!adapter || typeof adapter !== 'object') fail('backfill-adapter-invalid');
+    const wrapped = {
+      ...adapter,
+      ...(typeof adapter.applyRecord === 'function' ? { applyRecord: input => owner.runWithRecordAuthority(input, () => adapter.applyRecord(input)) } : {}),
+      ...(typeof adapter.reconcileRecord === 'function' ? { reconcileRecord: input => owner.runWithRecordAuthority(input, () => adapter.reconcileRecord(input)) } : {}),
+      ...(typeof adapter.inspectEffect === 'function' ? { inspectEffect: input => owner.runWithEffectAuthority(input, () => adapter.inspectEffect(input)) } : {}),
+      ...(typeof adapter.withdrawEffect === 'function' ? { withdrawEffect: input => owner.runWithEffectAuthority(input, () => adapter.withdrawEffect(input)) } : {}),
+      ...(typeof adapter.reconcileWithdrawal === 'function' ? { reconcileWithdrawal: input => owner.runWithEffectAuthority(input, () => adapter.reconcileWithdrawal(input)) } : {})
+    };
+    if (mode === 'withdraw') return await withdrawHistoricalBackfill({ ...wrapped, ...store, backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent });
+    return await createHistoricalBackfill({ ...wrapped, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
   } finally { sourceService.close(); metadata.close(); }
 }
 

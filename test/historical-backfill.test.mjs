@@ -224,6 +224,32 @@ test('withdraw reconciles a lost successful reply without repeating the effect',
   assert.equal(dispatches, 1);
 });
 
+test('withdraw clears a lost-reply pending marker when a later edit preserves that effect', async () => {
+  const effects = [{ effectId: 'loop:edited-after-reply-loss', revision: 1 }, { effectId: 'loop:next-owned', revision: 1 }];
+  let withdrawalState = null;
+  let firstAdvanced = false;
+  const withdrawn = [];
+  const adapters = {
+    backfillId: 'fixture-preserve-after-loss', expectedPlanDigest: `sha256:${'b'.repeat(64)}`, adapterDigest,
+    async loadState() { return { planDigest: `sha256:${'b'.repeat(64)}`, adapterDigest, effects }; },
+    async loadWithdrawalState() { return withdrawalState; },
+    async saveWithdrawalState({ state }) { withdrawalState = structuredClone(state); },
+    async inspectEffect({ effectId }) { return { revision: effectId === effects[0].effectId && firstAdvanced ? 2 : 1, userDecided: false }; },
+    async withdrawEffect(input) {
+      withdrawn.push(input.effectId);
+      if (input.effectId === effects[0].effectId) { firstAdvanced = true; throw new Error('fixture-lost-reply-followed-by-edit'); }
+      return { status: 'applied' };
+    },
+    async reconcileWithdrawal() { throw new Error('a preserved changed effect must not reconcile its stale pending operation'); },
+    async recordReceipt() {}, now: () => '2026-09-21T05:00:00.000Z'
+  };
+  await assert.rejects(() => withdrawHistoricalBackfill(adapters), /fixture-lost-reply-followed-by-edit/u);
+  const report = await withdrawHistoricalBackfill(adapters);
+  assert.deepEqual(report.counts, { withdrawn: 1, preserved: 1, failed: 1 });
+  assert.deepEqual(withdrawn, [effects[0].effectId, effects[1].effectId]);
+  assert.equal(withdrawalState.pending, null);
+});
+
 test('withdrawal refuses a different pinned plan or adapter identity', async () => {
   const base = {
     backfillId: 'fixture-bound-withdrawal', expectedPlanDigest: `sha256:${'b'.repeat(64)}`, adapterDigest,

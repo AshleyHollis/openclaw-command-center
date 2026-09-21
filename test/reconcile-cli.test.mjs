@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,6 +9,12 @@ import { readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredH
 import { reconciliationPlanDigest } from '../src/migration/reconcile.mjs';
 import { historicalBackfillPlanDigest } from '../src/open-loops/historical-backfill.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { revisionForBytes } from '../src/sources/reference.mjs';
+import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+
+const releaseHostFileAccessFixture = installHostFileAccessFixture();
+test.after(() => releaseHostFileAccessFixture());
 
 test('CLI metadata declares lazy reconciliation without runtime activation', async () => {
   let registration; let declaration;
@@ -31,17 +37,18 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
   assert.equal(required.length, 38); assert.equal(actions.length, 17);
 });
 
-test('historical backfill CLI runs a digest-pinned private adapter with durable metadata', async t => {
+test('historical backfill CLI runs a digest-pinned private adapter with durable metadata', { skip: process.platform !== 'linux' }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'backfill-cli-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const planPath = path.join(root, 'plan.json');
   const adapterPath = path.join(root, 'adapter.mjs');
+  const vault = path.join(root, 'vault');
   const plan = { schemaVersion: 1, backfillId: 'fictional-cli-preview', sourceKind: 'email', scope: { topicIds: [], topicNames: [], maxRecords: 1 } };
   const adapterSource = `export function createHistoricalBackfillAdapter({ commandCenter }) { if (!commandCenter || 'metadata' in commandCenter) throw new Error('bounded-owner-required'); return {
     async readPage() { return { records: [{ schemaVersion: 1, sourceExternalId: 'fictional', sourceVersion: '1', checkpoint: '001' }], next: '001', done: true }; },
-    async classify() { return { schemaVersion: 1, disposition: 'actionable', obligationId: 'fictional', title: 'Review fictional work', topicId: 'topic-fictional-cli', provenance: 'explicit', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-21T00:00:00.000Z' }; },
-    async applyRecord({ logicalOperationId, sourceKind, record, classification }) { return commandCenter.captureCommitment({ logicalOperationId, capture: { schemaVersion: 1, sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, topicId: classification.topicId, title: classification.title, obligationId: classification.obligationId, provenance: classification.provenance, occurredAt: classification.occurredAt, observedAt: classification.observedAt } }); },
-    async reconcileRecord({ logicalOperationId, sourceKind, record, classification }) { return commandCenter.reconcileCommitment({ logicalOperationId, capture: { schemaVersion: 1, sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, topicId: classification.topicId, title: classification.title, obligationId: classification.obligationId, provenance: classification.provenance, occurredAt: classification.occurredAt, observedAt: classification.observedAt } }); },
+    async classify() { return { schemaVersion: 1, disposition: 'actionable', obligationId: 'fictional', title: 'Review fictional work', topicName: 'Fictional CLI', notePath: 'Inbox/Fictional.md', provenance: 'explicit', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-21T00:00:00.000Z' }; },
+    async applyRecord(input) { const topic = commandCenter.resolveTopic({ topicName: input.classification.topicName }); const evidence = await commandCenter.readNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, path: input.classification.notePath }); return commandCenter.captureCommitment({ logicalOperationId: input.logicalOperationId, capture: { schemaVersion: 1, sourceKind: input.sourceKind, sourceExternalId: input.record.sourceExternalId, sourceVersion: input.record.sourceVersion, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.path, topicId: topic.topicId, title: input.classification.title, obligationId: input.classification.obligationId, provenance: input.classification.provenance, occurredAt: input.classification.occurredAt, observedAt: input.classification.observedAt } }); },
+    async reconcileRecord(input) { const topic = commandCenter.resolveTopic({ topicName: input.classification.topicName }); const evidence = await commandCenter.readNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, path: input.classification.notePath }); return commandCenter.reconcileCommitment({ logicalOperationId: input.logicalOperationId, capture: { schemaVersion: 1, sourceKind: input.sourceKind, sourceExternalId: input.record.sourceExternalId, sourceVersion: input.record.sourceVersion, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.path, topicId: topic.topicId, title: input.classification.title, obligationId: input.classification.obligationId, provenance: input.classification.provenance, occurredAt: input.classification.occurredAt, observedAt: input.classification.observedAt } }); },
     async inspectEffect(input) { return commandCenter.inspectEffect(input); },
     async withdrawEffect(input) { return commandCenter.withdrawEffect(input); },
     async reconcileWithdrawal(input) { return commandCenter.reconcileWithdrawal(input); },
@@ -51,8 +58,14 @@ test('historical backfill CLI runs a digest-pinned private adapter with durable 
   const adapterDigest = `sha256:${(await import('node:crypto')).createHash('sha256').update(adapterSource).digest('hex')}`;
   const saved = process.env.OPENCLAW_STATE_DIR; process.env.OPENCLAW_STATE_DIR = root;
   try {
-    const metadata = openCommandCenterMetadataService({ stateDir: root });
+    await mkdir(path.join(vault, 'Inbox'), { recursive: true });
+    const noteBytes = Buffer.from('# Fictional evidence\n', 'utf8');
+    await writeFile(path.join(vault, 'Inbox', 'Fictional.md'), noteBytes);
+    const metadata = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
     metadata.createTopic({ topicId: 'topic-fictional-cli', name: 'Fictional CLI', paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'folder:fictional-cli', topicId: 'topic-fictional-cli', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault });
+    await enrollFixtureFolder(metadata, 'folder:fictional-cli', vault);
+    metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-cli', topicId: 'topic-fictional-cli', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${vault}/Inbox/Fictional.md`, observedRevision: revisionForBytes(noteBytes) });
     metadata.close();
     const result = await runConfiguredHistoricalBackfill({ mode: 'preview', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {} });
     assert.equal(result.complete, true); assert.equal(result.counts.created, 0);
