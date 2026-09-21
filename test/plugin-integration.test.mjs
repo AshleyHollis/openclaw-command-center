@@ -117,9 +117,11 @@ test('recovered inbound tool registration resolves the exact active service owne
     const owners = recovered.getTopicMaintenanceOwners();
     assert.equal(owners.sourceService, active.sourceService);
     assert.equal(owners.metadata, active.sourceService.metadata);
+    assert.equal(recovered.dailyWorkspace, active.dailyWorkspace);
   } finally {
     await active.stop();
     assert.deepEqual(recovered.getTopicMaintenanceOwners(), {});
+    assert.equal(recovered.dailyWorkspace, undefined);
     await rm(stateDir, { recursive: true, force: true });
   }
 });
