@@ -91,7 +91,11 @@ test('a lost effect reply reconciles its durable operation instead of dispatchin
   const report = await run(fixture.service);
   assert.equal(report.complete, true);
   assert.equal(fixture.calls.apply.filter(call => call.record.checkpoint === '003').length, 1);
-  assert.equal(fixture.calls.reconcile.some(call => call.recordDigest), true);
+  const reconciled = fixture.calls.reconcile.find(call => call.recordDigest);
+  assert.equal(reconciled.record.checkpoint, '003');
+  assert.equal(reconciled.sourceKind, 'note');
+  assert.equal(reconciled.classification.provenance, 'inferred');
+  assert.equal(reconciled.classification.historicalBaseline, true);
 });
 
 test('changed scope cannot resume an existing run identity', async () => {

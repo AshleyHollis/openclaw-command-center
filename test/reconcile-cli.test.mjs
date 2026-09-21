@@ -8,6 +8,7 @@ import plugin from '../src/plugin.mjs';
 import { readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
 import { reconciliationPlanDigest } from '../src/migration/reconcile.mjs';
 import { historicalBackfillPlanDigest } from '../src/open-loops/historical-backfill.mjs';
+import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 
 test('CLI metadata declares lazy reconciliation without runtime activation', async () => {
   let registration; let declaration;
@@ -35,24 +36,24 @@ test('historical backfill CLI runs a digest-pinned private adapter with durable 
   t.after(() => rm(root, { recursive: true, force: true }));
   const planPath = path.join(root, 'plan.json');
   const adapterPath = path.join(root, 'adapter.mjs');
-  const effectPath = path.join(root, 'effect.json');
   const plan = { schemaVersion: 1, backfillId: 'fictional-cli-preview', sourceKind: 'email', scope: { topicIds: [], topicNames: [], maxRecords: 1 } };
-  const adapterSource = `import { existsSync, rmSync, writeFileSync } from 'node:fs';
-  const effectPath = ${JSON.stringify(effectPath)};
-  export function createHistoricalBackfillAdapter() { return {
+  const adapterSource = `export function createHistoricalBackfillAdapter({ commandCenter }) { if (!commandCenter || 'metadata' in commandCenter) throw new Error('bounded-owner-required'); return {
     async readPage() { return { records: [{ schemaVersion: 1, sourceExternalId: 'fictional', sourceVersion: '1', checkpoint: '001' }], next: '001', done: true }; },
-    async classify() { return { schemaVersion: 1, disposition: 'actionable', obligationId: 'fictional', title: 'Review fictional work' }; },
-    async applyRecord() { writeFileSync(effectPath, '{"revision":1}'); return { disposition: 'created', effectId: 'loop:fictional', revision: 1 }; },
-    async reconcileRecord() { return existsSync(effectPath) ? { status: 'applied', result: { disposition: 'created', effectId: 'loop:fictional', revision: 1 } } : { status: 'not-applied' }; },
-    async inspectEffect() { return existsSync(effectPath) ? { revision: 1, userDecided: false } : null; },
-    async withdrawEffect() { rmSync(effectPath); return { status: 'applied' }; },
-    async reconcileWithdrawal() { return existsSync(effectPath) ? { status: 'not-applied' } : { status: 'applied' }; },
+    async classify() { return { schemaVersion: 1, disposition: 'actionable', obligationId: 'fictional', title: 'Review fictional work', topicId: 'topic-fictional-cli', provenance: 'explicit', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-21T00:00:00.000Z' }; },
+    async applyRecord({ logicalOperationId, sourceKind, record, classification }) { return commandCenter.captureCommitment({ logicalOperationId, capture: { schemaVersion: 1, sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, topicId: classification.topicId, title: classification.title, obligationId: classification.obligationId, provenance: classification.provenance, occurredAt: classification.occurredAt, observedAt: classification.observedAt } }); },
+    async reconcileRecord({ logicalOperationId, sourceKind, record, classification }) { return commandCenter.reconcileCommitment({ logicalOperationId, capture: { schemaVersion: 1, sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, topicId: classification.topicId, title: classification.title, obligationId: classification.obligationId, provenance: classification.provenance, occurredAt: classification.occurredAt, observedAt: classification.observedAt } }); },
+    async inspectEffect(input) { return commandCenter.inspectEffect(input); },
+    async withdrawEffect(input) { return commandCenter.withdrawEffect(input); },
+    async reconcileWithdrawal(input) { return commandCenter.reconcileWithdrawal(input); },
     async recordReceipt() {}
   }; }\n`;
   await writeFile(planPath, JSON.stringify(plan)); await writeFile(adapterPath, adapterSource);
   const adapterDigest = `sha256:${(await import('node:crypto')).createHash('sha256').update(adapterSource).digest('hex')}`;
   const saved = process.env.OPENCLAW_STATE_DIR; process.env.OPENCLAW_STATE_DIR = root;
   try {
+    const metadata = openCommandCenterMetadataService({ stateDir: root });
+    metadata.createTopic({ topicId: 'topic-fictional-cli', name: 'Fictional CLI', paraCategory: 'project', lifecycle: 'active' });
+    metadata.close();
     const result = await runConfiguredHistoricalBackfill({ mode: 'preview', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {} });
     assert.equal(result.complete, true); assert.equal(result.counts.created, 0);
     const applied = await runConfiguredHistoricalBackfill({ mode: 'apply', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {} });

@@ -112,7 +112,16 @@ export function createHistoricalBackfill({ readPage, classify, applyRecord, reco
               if (state.pending) {
                 if (state.pending.recordDigest !== recordDigest || state.pending.classificationDigest !== classificationDigest || state.pending.logicalOperationId !== logicalOperationId) fail('backfill-pending-conflict');
                 assertCurrent();
-                const reconciliation = await reconcileRecord({ backfillId: plan.backfillId, logicalOperationId, recordDigest });
+                const reconciliation = await reconcileRecord({
+                  backfillId: plan.backfillId,
+                  logicalOperationId,
+                  recordDigest,
+                  sourceKind: plan.sourceKind,
+                  record,
+                  classification: classification.disposition === 'uncertain'
+                    ? { ...classification, provenance: 'inferred', historicalBaseline: true }
+                    : { ...classification, historicalBaseline: true }
+                });
                 assertCurrent();
                 if (!reconciliation || !['applied', 'not-applied', 'unknown', 'conflict'].includes(reconciliation.status)) fail('backfill-reconciliation-invalid');
                 if (reconciliation.status === 'unknown') fail('backfill-effect-unknown');

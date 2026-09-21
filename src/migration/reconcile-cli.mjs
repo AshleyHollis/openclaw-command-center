@@ -10,6 +10,7 @@ import { createAuthoritativeSourceService } from '../sources/service.mjs';
 import { inspectTopicDiscoverability } from '../topics/discoverability.mjs';
 import { createHistoricalBackfill, historicalBackfillPlanDigest, withdrawHistoricalBackfill } from '../open-loops/historical-backfill.mjs';
 import { createHistoricalBackfillStore } from '../open-loops/historical-backfill-store.mjs';
+import { createHistoricalBackfillOperator } from '../open-loops/historical-backfill-operator.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const recoveryFailure = receipts => { throw Object.assign(new Error('note-folder-recovery-halted'), { code: 'note-folder-recovery-halted', receipts }); };
@@ -91,15 +92,17 @@ export async function runConfiguredHistoricalBackfill({ mode, planPath, expected
     import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')
   ]);
   const metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
+  const sourceService = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: false } });
   try {
     const adapterDigest = `sha256:${String(expectedAdapterDigest).replace(/^sha256:/u, '')}`;
-    const adapter = await createAdapter({ plan: structuredClone(plan), mode, config: structuredClone(config), signal });
+    const commandCenter = createHistoricalBackfillOperator({ metadata, sourceService });
+    const adapter = await createAdapter({ plan: structuredClone(plan), mode, config: structuredClone(config), signal, commandCenter });
     if (!adapter || typeof adapter !== 'object') fail('backfill-adapter-invalid');
     const store = createHistoricalBackfillStore({ metadata });
     const assertCurrent = () => signal?.throwIfAborted();
     if (mode === 'withdraw') return await withdrawHistoricalBackfill({ ...adapter, ...store, backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent });
     return await createHistoricalBackfill({ ...adapter, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
-  } finally { metadata.close(); }
+  } finally { sourceService.close(); metadata.close(); }
 }
 
 // Local operator CLI, not a Gateway RPC or startup importer. Host CLI admission
