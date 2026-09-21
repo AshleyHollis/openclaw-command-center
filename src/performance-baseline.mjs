@@ -26,7 +26,7 @@ export const RELEASE_MEASUREMENTS = Object.freeze([
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest', 'packageDigest', 'runtimeDigest']);
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
-const HOST_COMMIT = '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee';
+const HOST_COMMIT = '21f1ca697532a9bd9e9cc46322a598a31435de15';
 const HOST_VERSION = '2026.9.5';
 const PLAYWRIGHT_VERSION = '1.63.0';
 export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
