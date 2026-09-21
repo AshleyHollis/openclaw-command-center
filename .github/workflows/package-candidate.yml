@@ -52,7 +52,9 @@ jobs:
             --entrypoint /bin/sh "$TOOLCHAIN" -eu -c '
               cp -R /candidate/. /workspace/
               cd /workspace
-              node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs
+              node --test test/plugin-artifact.test.mjs test/note-folder-identity-migration.test.mjs \
+                test/historical-backfill-operator.test.mjs test/historical-backfill.test.mjs \
+                test/historical-backfill-store.test.mjs test/reconcile-cli.test.mjs
               node scripts/package-candidate.mjs --output /output/artifact
             '
           # Container output is private to its UID until the child has exited.
