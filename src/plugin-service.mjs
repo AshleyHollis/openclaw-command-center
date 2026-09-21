@@ -253,7 +253,7 @@ export function createMetadataService(api) {
       } catch (error) {
         api.logger?.error?.(`Command Center discoverability ${JSON.stringify({ code: error?.code ?? 'topic-discoverability-check-failed', ...(error?.summary ? { summary: error.summary } : {}) })}`);
       }
-      releaseTopicMaintenanceOwners = publishTopicMaintenanceOwners(Object.freeze({ sourceService, metadata: metadataService, capacityReview }));
+      releaseTopicMaintenanceOwners = publishTopicMaintenanceOwners(Object.freeze({ sourceService, metadata: metadataService, capacityReview, dailyWorkspace }));
       if (FIRST_LIVE_FEATURES.dashboard) {
         try { await sourceService.refreshReminderAttention(); }
         catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
@@ -308,7 +308,7 @@ export function createMetadataService(api) {
       return sourceService && metadataService ? { sourceService, metadata: metadataService } : readTopicMaintenanceOwners() ?? {};
     },
     get capacityReview() { return capacityReview ?? readTopicMaintenanceOwners()?.capacityReview; },
-    get dailyWorkspace() { return dailyWorkspace; },
+    get dailyWorkspace() { return dailyWorkspace ?? readTopicMaintenanceOwners()?.dailyWorkspace; },
     get attentionService() { return attentionService; },
     get maintenanceService() { return undefined; },
     get searchService() { return undefined; },
