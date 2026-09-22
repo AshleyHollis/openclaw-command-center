@@ -54,6 +54,19 @@ export async function resolveSourceTopic({ metadata, sourceService, topicName: r
         if (!['not-found', 'source-unavailable'].includes(error?.code)) throw error;
       }
     }
+    // A maintained producer may have just written and verified the Note before
+    // Command Center has observed it. Admit that exact Topic-relative path
+    // through the authoritative Note reader, which records the retained Note
+    // revision without conflating it with the upstream source revision.
+    if (!evidence && references.length <= 1) {
+      try {
+        const note = await sourceService.notesRead({ schemaVersion: 1, topicId: match.topicId, path: notePath });
+        const reference = note?.sourceReference;
+        if (reference?.referenceId && reference.topicId === match.topicId && reference.sourceKind === 'note' && note.revision === reference.observedRevision) evidence = Object.freeze({ sourceReferenceId: reference.referenceId, revision: note.revision, path: note.path });
+      } catch (error) {
+        if (!['not-found', 'source-unavailable'].includes(error?.code)) throw error;
+      }
+    }
   }
   return Object.freeze({ status: 'resolved', topicId: match.topicId, noteFolderReferenceId: match.noteFolderReferenceId, ...(evidence ? { evidence } : {}) });
 }

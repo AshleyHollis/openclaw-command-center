@@ -67,6 +67,22 @@ test('maintained intake refuses ambiguous Topic ownership and Topics without one
   assert.equal((await tool.execute(randomUUID(), { topicName: 'No Folder' })).details.status, 'unresolved');
 });
 
+test('maintained intake admits one freshly verified producer Note through its exact Topic path', async () => {
+  const metadata = {
+    listTopics: () => [{ topicId: 'topic-fictional-home', name: 'Fictional Home', lifecycle: 'active' }],
+    listSourceReferences: () => [{ referenceId: 'folder:fictional-home', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/vault' }]
+  };
+  let read;
+  const sourceService = { async notesRead(input) {
+    read = input;
+    return { path: input.path, revision: 'sha256:retained-note', sourceReference: { referenceId: 'note:fresh-email', topicId: input.topicId, sourceKind: 'note', observedRevision: 'sha256:retained-note' } };
+  } };
+  const tool = sourceTopicResolverToolFactory({ getOwners: () => ({ metadata, sourceService }) })();
+  const result = await tool.execute(randomUUID(), { topicName: 'Fictional Home', notePath: 'Inbox/Fresh email.md' });
+  assert.deepEqual(read, { schemaVersion: 1, topicId: 'topic-fictional-home', path: 'Inbox/Fresh email.md' });
+  assert.deepEqual(result.details.evidence, { sourceReferenceId: 'note:fresh-email', revision: 'sha256:retained-note', path: 'Inbox/Fresh email.md' });
+});
+
 test('maintained producer saves one quiet Note with stable retry identity and exact evidence', async () => {
   const calls = [];
   const sourceService = { async notesCreate(input) {
