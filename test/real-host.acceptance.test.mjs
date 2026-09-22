@@ -1257,7 +1257,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         try { durableBeforeRestart = loadIntakeSourceAccount(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-real-host-mixed-message', sourceVersion: 'email-change-key-real-host-52' }); }
         finally { metadata.close(); }
         assert.equal(durableBeforeRestart.plan.processorVersion, 'fictional-real-host-processor-v1');
-        assert.deepEqual(durableBeforeRestart.account.counts, { expected: 4, accounted: 1, obligations: 2, decisionsPending: 1, quiet: 0, unresolvedTopics: 0, failed: 0 });
+        assert.deepEqual(durableBeforeRestart.account.counts, { expected: 4, accounted: 2, obligations: 2, decisionsPending: 1, quiet: 1, unresolvedTopics: 0, failed: 0 });
         const pendingDecision = durableBeforeRestart.account.outcomes.find(item => item.kind === 'decision');
         assert.equal(pendingDecision.status, 'pending-decision');
         const detail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: pendingDecision.loopId }, signal });
@@ -1312,10 +1312,12 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.notEqual(quiet.target.sourceVersion, 'email-change-key-real-host-52');
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-capture-choice').length, 1);
         assert.equal(fictionalModel.requests.filter(item => ['accounted-capture-payment', 'accounted-capture-reply'].includes(item.action)).length, 2);
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-save').length, 1);
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-resolve').length, 1);
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-load').length, 1);
-        const durableResume = fictionalModel.requests.find(item => item.action === 'accounted-resolve' && item.loadedProcessorVersion);
+        const durableResume = fictionalModel.requests.find(item => item.action === 'accounted-capture-payment' && item.loadedProcessorVersion);
         assert.equal(durableResume?.loadedProcessorVersion, 'fictional-real-host-processor-v1');
-        assert.deepEqual(durableResume.loadedOutcomeStatuses, [['real-host-choice', 'clarified'], ['real-host-payment', 'missing'], ['real-host-reply', 'missing'], ['real-host-reference', 'missing']]);
+        assert.deepEqual(durableResume.loadedOutcomeStatuses, [['real-host-choice', 'clarified'], ['real-host-payment', 'missing'], ['real-host-reply', 'missing'], ['real-host-reference', 'quiet']]);
         return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true });
       }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
