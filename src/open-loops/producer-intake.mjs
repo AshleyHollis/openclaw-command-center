@@ -89,7 +89,10 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
           let evidence;
           const retainedKnowledge = knowledgeOutcomeId ? accountOutcome(account, knowledgeOutcomeId) : null;
           if (retainedKnowledge?.status === 'quiet') evidence = exactEvidence(retainedKnowledge);
-          else if (record.existingEvidence ?? topic.evidence) evidence = exactEvidence(record.existingEvidence ?? { ...topic.evidence, topicId: topic.topicId });
+          else if (record.existingEvidence ?? topic.evidence) {
+            const selected = record.existingEvidence ?? { topicId: topic.topicId, sourceReferenceId: topic.evidence.sourceReferenceId, sourcePath: topic.evidence.sourcePath ?? topic.evidence.path, sourceReferenceVersion: topic.evidence.sourceReferenceVersion ?? topic.evidence.revision };
+            evidence = exactEvidence(selected);
+          }
           else if (extraction.knowledgeMarkdown.trim()) {
             if (!nonBlank(topic.noteFolderReferenceId) || !nonBlank(extraction.notePath)) fail('producer-note-destination-unavailable');
             const saved = await saveSourceNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, sourceKind: record.sourceKind === 'chat' ? 'note' : record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, path: extraction.notePath, markdown: extraction.knowledgeMarkdown });

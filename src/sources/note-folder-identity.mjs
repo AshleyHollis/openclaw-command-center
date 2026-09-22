@@ -16,8 +16,9 @@ let hostFilesystemIdentityReader;
 // durable publish operation.
 export function setHostDurableFolderStager(stager) {
   const installed = typeof stager === 'function' ? stager : undefined;
+  const previous = hostDurableStager;
   hostDurableStager = installed;
-  return () => { if (hostDurableStager === installed) hostDurableStager = undefined; };
+  return () => { if (hostDurableStager === installed) hostDurableStager = previous; };
 }
 const physicalIdentity = (stat) => `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
 const sameIdentity = (left, right) => left && right && physicalIdentity(left) === physicalIdentity(right);
@@ -133,8 +134,9 @@ export async function inspectNoteFolderCandidate(root) {
 }
 export function setHostFilesystemIdentityReader(reader) {
   const installed = typeof reader === 'function' ? reader : undefined;
+  const previous = hostFilesystemIdentityReader;
   hostFilesystemIdentityReader = installed;
-  return () => { if (hostFilesystemIdentityReader === installed) hostFilesystemIdentityReader = undefined; };
+  return () => { if (hostFilesystemIdentityReader === installed) hostFilesystemIdentityReader = previous; };
 }
 
 export function withBootstrapNoteFolder(root, options, run) {

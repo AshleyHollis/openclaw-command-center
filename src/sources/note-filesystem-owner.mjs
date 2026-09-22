@@ -14,8 +14,9 @@ let hostCoordinator;
 // without importing an arbitrary SDK implementation from the plugin tree.
 export function setHostNoteFilesystemCoordinator(acquire) {
   const installed = typeof acquire === 'function' ? acquire : undefined;
+  const previous = hostCoordinator;
   hostCoordinator = installed;
-  return () => { if (hostCoordinator === installed) hostCoordinator = undefined; };
+  return () => { if (hostCoordinator === installed) hostCoordinator = previous; };
 }
 
 export function ownsNoteFilesystem(metadata) {
