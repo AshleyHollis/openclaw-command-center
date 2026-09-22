@@ -169,7 +169,14 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
 
       await restartHost();
       const afterWithdrawal = await readDashboardWhenReady(world, host, signal);
-      assert.doesNotMatch(JSON.stringify(afterWithdrawal), /Pay fictional packaged bill/u);
+      const openLoops = afterWithdrawal.result.openLoops;
+      const activeProjections = { attention: afterWithdrawal.result.attention, highlighted: openLoops.highlighted, comingUp: openLoops.comingUp,
+        waiting: openLoops.waiting, suggested: openLoops.suggested, deferred: openLoops.deferred, today: openLoops.workspace.today,
+        workspaceUpcoming: openLoops.workspace.upcoming, capacity: openLoops.workspace.capacity, workspaceWaiting: openLoops.workspace.waiting,
+        someday: openLoops.workspace.someday, ready: openLoops.workspace.board.ready, doing: openLoops.workspace.board.doing,
+        boardWaiting: openLoops.workspace.board.waiting, suggestions: openLoops.workspace.board.suggestions, agenda: openLoops.workspace.agenda };
+      assert.doesNotMatch(JSON.stringify(activeProjections), /Pay fictional packaged bill/u);
+      assert.equal(openLoops.workspace.board.done.find(item => item.title === 'Pay fictional packaged bill')?.state, 'cancelled');
       assert.match(JSON.stringify(afterWithdrawal), /Review fictional retained renewal/u);
       return Object.freeze({ packaged: true, isolatedHost: true, previewed: true, lostReplyReconciledWithoutDuplicate: true, visibleAfterRestart: true, withdrawn: true, userDecisionPreservedAfterRestart: true, absentAfterWithdrawalRestart: true });
     } finally {
