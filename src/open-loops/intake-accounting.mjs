@@ -49,7 +49,7 @@ function sourceIdentity(input) {
 
 export function normalizeIntakeSourcePlan(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid-request', 'Intake source plan is invalid.');
-  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'acceptedExtraction', 'outcomes', 'enumeration'];
+  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'retainedNoteRevision', 'acceptedExtraction', 'outcomes', 'enumeration'];
   if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !Array.isArray(input.outcomes) || input.outcomes.length < 1 || input.outcomes.length > 100) fail('invalid-request', 'Intake source plan is invalid.');
   const source = sourceIdentity(input);
   const outcomes = input.outcomes.map((item, index) => {
@@ -61,13 +61,14 @@ export function normalizeIntakeSourcePlan(input) {
   if (!enumeration || typeof enumeration !== 'object' || Array.isArray(enumeration) || Object.keys(enumeration).some(key => !['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached', 'scopeId', 'resumeCursor'].includes(key)) || !['complete', 'bounded', 'partial'].includes(enumeration.scope) || typeof enumeration.scanCapReached !== 'boolean') fail('invalid-request', 'enumeration is invalid.');
   const incomplete = enumeration.scope !== 'complete' || enumeration.remainingCount > 0 || enumeration.failedReadCount > 0 || enumeration.scanCapReached;
   if (incomplete && (enumeration.scopeId === undefined || enumeration.resumeCursor === undefined)) fail('invalid-request', 'Incomplete enumeration requires an exact resume scope and cursor.');
-  return Object.freeze({ schemaVersion: 1, ...source, checkpoint: text(input.checkpoint, 'checkpoint'), observedAt: instant(input.observedAt, 'observedAt'), processorVersion: text(input.processorVersion, 'processorVersion', 300), acceptedExtraction: normalizeAcceptedExtraction(input.acceptedExtraction), outcomes: Object.freeze(outcomes), enumeration: Object.freeze({ scope: enumeration.scope, scannedCount: count(enumeration.scannedCount, 'scannedCount'), remainingCount: count(enumeration.remainingCount, 'remainingCount'), failedReadCount: count(enumeration.failedReadCount, 'failedReadCount'), scanCapReached: enumeration.scanCapReached, ...(incomplete ? { scopeId: text(enumeration.scopeId, 'scopeId'), resumeCursor: text(enumeration.resumeCursor, 'resumeCursor') } : {}) }) });
+  const retainedNoteRevision = input.retainedNoteRevision === undefined ? undefined : text(input.retainedNoteRevision, 'retainedNoteRevision', 100);
+  return Object.freeze({ schemaVersion: 1, ...source, checkpoint: text(input.checkpoint, 'checkpoint'), observedAt: instant(input.observedAt, 'observedAt'), processorVersion: text(input.processorVersion, 'processorVersion', 300), ...(retainedNoteRevision ? { retainedNoteRevision } : {}), acceptedExtraction: normalizeAcceptedExtraction(input.acceptedExtraction), outcomes: Object.freeze(outcomes), enumeration: Object.freeze({ scope: enumeration.scope, scannedCount: count(enumeration.scannedCount, 'scannedCount'), remainingCount: count(enumeration.remainingCount, 'remainingCount'), failedReadCount: count(enumeration.failedReadCount, 'failedReadCount'), scanCapReached: enumeration.scanCapReached, ...(incomplete ? { scopeId: text(enumeration.scopeId, 'scopeId'), resumeCursor: text(enumeration.resumeCursor, 'resumeCursor') } : {}) }) });
 }
 
 export function recordIntakeSourcePlan(metadata, input) {
   if (!metadata?.commitIntakeAccountingOperation) throw new TypeError('Intake accounting requires metadata ownership.');
   const plan = normalizeIntakeSourcePlan(input);
-  const identity = { schemaVersion: 1, sourceKind: plan.sourceKind, sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, checkpoint: plan.checkpoint, processorVersion: plan.processorVersion, acceptedExtraction: plan.acceptedExtraction, outcomes: plan.outcomes, enumeration: plan.enumeration };
+  const identity = { schemaVersion: 1, sourceKind: plan.sourceKind, sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, checkpoint: plan.checkpoint, processorVersion: plan.processorVersion, ...(plan.retainedNoteRevision ? { retainedNoteRevision: plan.retainedNoteRevision } : {}), acceptedExtraction: plan.acceptedExtraction, outcomes: plan.outcomes, enumeration: plan.enumeration };
   const logicalOperationId = stableUuid(`command-center:intake-source:${plan.sourceKind}:${plan.sourceExternalId}:${plan.sourceVersion}`);
   const intentDigest = digest(identity);
   const committed = metadata.commitIntakeAccountingOperation({ logicalOperationId, intentDigest, operationKind: `intake-source.${plan.sourceKind}.v1`, state: 'applied', resultStatus: 'planned', resultIdentity: JSON.stringify(plan), observedRevision: plan.sourceVersion, createdAt: plan.observedAt });

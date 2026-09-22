@@ -67,9 +67,9 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
             if (proposedKnowledgeId) proposedOutcomes.push({ outcomeId: proposedKnowledgeId, kind: 'information' });
             if (proposed.noAction) proposedOutcomes.push({ outcomeId: proposed.noAction.outcomeId, kind: 'no-action' });
             if (proposedOutcomes.length === 0) proposedOutcomes.push({ outcomeId: `${record.sourceExternalId}:no-action`, kind: 'no-action' });
-            durable = accountingResult(await recordIntakeSourcePlan({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, checkpoint: record.checkpoint, observedAt, processorVersion, acceptedExtraction: proposed, outcomes: proposedOutcomes, enumeration: enumerationValue }));
+            durable = accountingResult(await recordIntakeSourcePlan({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, checkpoint: record.checkpoint, observedAt, processorVersion, ...(record.retainedNoteRevision ? { retainedNoteRevision: record.retainedNoteRevision } : {}), acceptedExtraction: proposed, outcomes: proposedOutcomes, enumeration: enumerationValue }));
           }
-          if (!durable?.plan || durable.plan.sourceKind !== record.sourceKind || durable.plan.sourceExternalId !== record.sourceExternalId || durable.plan.sourceVersion !== record.sourceVersion || !nonBlank(durable.plan.processorVersion)) fail('producer-durable-plan-unavailable');
+          if (!durable?.plan || durable.plan.sourceKind !== record.sourceKind || durable.plan.sourceExternalId !== record.sourceExternalId || durable.plan.sourceVersion !== record.sourceVersion || durable.plan.retainedNoteRevision !== record.retainedNoteRevision || !nonBlank(durable.plan.processorVersion)) fail('producer-durable-plan-unavailable');
           const extraction = acceptedExtraction(durable.plan.acceptedExtraction);
           const plannedOutcomes = durable.plan.outcomes;
           const account = durable.account;

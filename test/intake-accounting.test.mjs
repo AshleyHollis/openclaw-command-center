@@ -79,6 +79,20 @@ test('mixed email accounting distinguishes accounted-for from resolved and retai
   } finally { await temporary.cleanup(); }
 });
 
+test('a pinned producer plan admits the exact externally retained Note without claiming it was created', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-admitted-note-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata);
+    const plan = sourcePlan(); plan.retainedNoteRevision = 'sha256:retained-note';
+    recordIntakeSourcePlan(metadata, plan);
+    metadata.createSourceReference({ version: 1, referenceId: 'note:externally-retained', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/Inbox/reference.md', observedRevision: 'sha256:retained-note' });
+    const outcome = recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Retained external producer Note', topicId: 'topic-fictional-home', sourceReferenceId: 'note:externally-retained', sourcePath: 'Inbox/reference.md', sourceReferenceVersion: 'sha256:retained-note', recordedAt: '2026-09-22T01:01:00.000Z' });
+    assert.equal(outcome.outcome.status, 'quiet');
+    assert.equal(metadata.listOperations().some(item => item.operationKind === 'notes.create'), false);
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
 test('a structured clarification resolves only its linked outcome and survives SQLite restart', async () => {
   const temporary = await temporaryStateDir('command-center-intake-clarification-');
   try {
