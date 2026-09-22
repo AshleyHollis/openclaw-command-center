@@ -1,0 +1,113 @@
+import { createHash } from 'node:crypto';
+import { sourceError } from '../sources/errors.mjs';
+
+const sourceKinds = new Set(['email', 'chat', 'note']);
+const outcomeKinds = new Set(['obligation', 'decision', 'information', 'no-action']);
+const outcomeStatuses = new Set(['applied', 'pending-decision', 'quiet', 'no-action', 'unresolved-topic', 'failed', 'unknown']);
+const unsettledLoopStates = new Set(['suggested', 'decision-needed', 'uncertain']);
+
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)]))
+  : value;
+const digest = value => `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}`;
+function stableUuid(value) { const hex = createHash('sha256').update(value).digest('hex').slice(0, 32).split(''); hex[12] = '4'; hex[16] = ['8', '9', 'a', 'b'][Number.parseInt(hex[16], 16) % 4]; return `${hex.slice(0, 8).join('')}-${hex.slice(8, 12).join('')}-${hex.slice(12, 16).join('')}-${hex.slice(16, 20).join('')}-${hex.slice(20).join('')}`; }
+const fail = (code, message = code) => { throw sourceError(code, message); };
+function text(value, name, limit = 500) { if (typeof value !== 'string' || !value.trim() || value.length > limit) fail('invalid-request', `${name} is invalid.`); return value.trim(); }
+function instant(value, name) { const result = text(value, name, 64); if (!Number.isFinite(Date.parse(result))) fail('invalid-request', `${name} is invalid.`); return new Date(result).toISOString(); }
+function count(value, name) { if (!Number.isSafeInteger(value) || value < 0) fail('invalid-request', `${name} is invalid.`); return value; }
+function sourceIdentity(input) {
+  return Object.freeze({
+    sourceKind: sourceKinds.has(input?.sourceKind) ? input.sourceKind : fail('invalid-request', 'sourceKind is invalid.'),
+    sourceExternalId: text(input.sourceExternalId, 'sourceExternalId'),
+    sourceVersion: text(input.sourceVersion, 'sourceVersion', 300)
+  });
+}
+
+export function normalizeIntakeSourcePlan(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid-request', 'Intake source plan is invalid.');
+  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'outcomes', 'enumeration'];
+  if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !Array.isArray(input.outcomes) || input.outcomes.length < 1 || input.outcomes.length > 100) fail('invalid-request', 'Intake source plan is invalid.');
+  const source = sourceIdentity(input);
+  const outcomes = input.outcomes.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(key => !['outcomeId', 'kind'].includes(key)) || !outcomeKinds.has(item.kind)) fail('invalid-request', `outcomes[${index}] is invalid.`);
+    return Object.freeze({ outcomeId: text(item.outcomeId, `outcomes[${index}].outcomeId`, 300), kind: item.kind });
+  });
+  if (new Set(outcomes.map(item => item.outcomeId)).size !== outcomes.length) fail('invalid-request', 'Intake outcome identities must be unique.');
+  const enumeration = input.enumeration ?? { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false };
+  if (!enumeration || typeof enumeration !== 'object' || Array.isArray(enumeration) || Object.keys(enumeration).some(key => !['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached'].includes(key)) || !['complete', 'bounded', 'partial'].includes(enumeration.scope) || typeof enumeration.scanCapReached !== 'boolean') fail('invalid-request', 'enumeration is invalid.');
+  return Object.freeze({ schemaVersion: 1, ...source, checkpoint: text(input.checkpoint, 'checkpoint'), observedAt: instant(input.observedAt, 'observedAt'), outcomes: Object.freeze(outcomes), enumeration: Object.freeze({ scope: enumeration.scope, scannedCount: count(enumeration.scannedCount, 'scannedCount'), remainingCount: count(enumeration.remainingCount, 'remainingCount'), failedReadCount: count(enumeration.failedReadCount, 'failedReadCount'), scanCapReached: enumeration.scanCapReached }) });
+}
+
+export function recordIntakeSourcePlan(metadata, input) {
+  if (!metadata?.recordOperation) throw new TypeError('Intake accounting requires metadata ownership.');
+  const plan = normalizeIntakeSourcePlan(input);
+  const identity = { schemaVersion: 1, sourceKind: plan.sourceKind, sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, checkpoint: plan.checkpoint, outcomes: plan.outcomes };
+  const logicalOperationId = stableUuid(`command-center:intake-source:${plan.sourceKind}:${plan.sourceExternalId}:${plan.sourceVersion}`);
+  const prior = metadata.getOperation?.(logicalOperationId);
+  const intentDigest = digest(identity);
+  if (prior && (prior.intentDigest !== intentDigest || prior.operationKind !== `intake-source.${plan.sourceKind}.v1`)) fail('intent-mismatch', 'The intake source plan changed for an existing source revision.');
+  if (!prior) metadata.recordOperation({ logicalOperationId, transportRequestId: logicalOperationId, intentDigest, operationKind: `intake-source.${plan.sourceKind}.v1`, state: 'applied', resultStatus: 'planned', resultIdentity: JSON.stringify(plan), observedRevision: plan.sourceVersion, createdAt: plan.observedAt, updatedAt: plan.observedAt });
+  return Object.freeze({ schemaVersion: 1, disposition: prior ? 'duplicate' : 'recorded', logicalOperationId, plan });
+}
+
+export function normalizeIntakeOutcome(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid-request', 'Intake outcome is invalid.');
+  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'kind', 'status', 'summary', 'loopId', 'sourceReferenceId', 'recordedAt', 'errorCode'];
+  if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !outcomeKinds.has(input.kind) || !outcomeStatuses.has(input.status)) fail('invalid-request', 'Intake outcome is invalid.');
+  const source = sourceIdentity(input);
+  const value = { schemaVersion: 1, ...source, outcomeId: text(input.outcomeId, 'outcomeId', 300), kind: input.kind, status: input.status, summary: text(input.summary, 'summary', 300), recordedAt: instant(input.recordedAt, 'recordedAt') };
+  if (input.loopId !== undefined) value.loopId = text(input.loopId, 'loopId', 300);
+  if (input.sourceReferenceId !== undefined) value.sourceReferenceId = text(input.sourceReferenceId, 'sourceReferenceId', 300);
+  if (input.errorCode !== undefined) value.errorCode = text(input.errorCode, 'errorCode', 100);
+  if (['applied', 'pending-decision'].includes(value.status) && !value.loopId) fail('invalid-request', 'An actionable intake outcome requires loopId.');
+  if (value.status === 'quiet' && !value.sourceReferenceId) fail('invalid-request', 'A quiet intake outcome requires sourceReferenceId.');
+  if (value.status === 'pending-decision' && value.kind !== 'decision') fail('invalid-request', 'Only a decision outcome can remain pending.');
+  return Object.freeze(value);
+}
+
+export function recordIntakeOutcome(metadata, input) {
+  if (!metadata?.recordOperation) throw new TypeError('Intake accounting requires metadata ownership.');
+  const outcome = normalizeIntakeOutcome(input);
+  const sourceId = stableUuid(`command-center:intake-source:${outcome.sourceKind}:${outcome.sourceExternalId}:${outcome.sourceVersion}`);
+  const planOperation = metadata.getOperation?.(sourceId);
+  if (!planOperation) fail('conflict', 'The intake source plan must be recorded before its outcomes.');
+  let plan;
+  try { plan = JSON.parse(planOperation.resultIdentity); } catch { fail('conflict', 'The intake source plan is unavailable.'); }
+  const expected = plan?.outcomes?.find(item => item.outcomeId === outcome.outcomeId);
+  if (!expected || expected.kind !== outcome.kind) fail('intent-mismatch', 'The intake outcome does not match its source plan.');
+  const logicalOperationId = stableUuid(`command-center:intake-outcome:${outcome.sourceKind}:${outcome.sourceExternalId}:${outcome.sourceVersion}:${outcome.outcomeId}`);
+  const intent = { schemaVersion: 1, sourceKind: outcome.sourceKind, sourceExternalId: outcome.sourceExternalId, sourceVersion: outcome.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind };
+  const prior = metadata.getOperation?.(logicalOperationId);
+  const intentDigest = digest(intent);
+  if (prior && (prior.intentDigest !== intentDigest || prior.operationKind !== `intake-outcome.${outcome.sourceKind}.v1`)) fail('intent-mismatch', 'The intake outcome identity changed.');
+  if (prior) {
+    let priorOutcome;
+    try { priorOutcome = JSON.parse(prior.resultIdentity); } catch { fail('conflict', 'The intake outcome receipt is unavailable.'); }
+    const { recordedAt: _priorTime, ...priorResult } = priorOutcome;
+    const { recordedAt: _retryTime, ...retryResult } = outcome;
+    if (digest(priorResult) !== digest(retryResult)) fail('intent-mismatch', 'The intake outcome result changed under an existing identity.');
+    return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', logicalOperationId, outcome: Object.freeze(priorOutcome) });
+  } else metadata.recordOperation({ logicalOperationId, transportRequestId: logicalOperationId, intentDigest, operationKind: `intake-outcome.${outcome.sourceKind}.v1`, state: ['failed', 'unknown'].includes(outcome.status) ? 'not-applied' : 'applied', resultStatus: outcome.status, resultIdentity: JSON.stringify(outcome), observedRevision: outcome.sourceVersion, createdAt: outcome.recordedAt, updatedAt: outcome.recordedAt });
+  return Object.freeze({ schemaVersion: 1, disposition: 'recorded', logicalOperationId, outcome });
+}
+
+function parsedResult(operation) { try { return JSON.parse(operation?.resultIdentity ?? 'null'); } catch { return null; } }
+export function projectIntakeAccounts(metadata, sourceKind, limit = 10) {
+  if (!sourceKinds.has(sourceKind) || !Number.isSafeInteger(limit) || limit < 1 || limit > 50) fail('invalid-request', 'Intake account projection is invalid.');
+  const operations = metadata?.listOperations?.() ?? [];
+  const plans = operations.filter(item => item.operationKind === `intake-source.${sourceKind}.v1`).map(operation => ({ operation, plan: parsedResult(operation) })).filter(item => item.plan).slice(-limit).reverse();
+  const outcomes = operations.filter(item => item.operationKind === `intake-outcome.${sourceKind}.v1`).map(parsedResult).filter(Boolean);
+  return Object.freeze(plans.map(({ plan }) => {
+    const matching = new Map(outcomes.filter(item => item.sourceExternalId === plan.sourceExternalId && item.sourceVersion === plan.sourceVersion).map(item => [item.outcomeId, item]));
+    const projected = plan.outcomes.map(expected => {
+      const outcome = matching.get(expected.outcomeId);
+      if (!outcome) return Object.freeze({ ...expected, status: 'missing' });
+      const loop = outcome.loopId ? metadata.getOpenLoop?.(outcome.loopId) : null;
+      const clarified = outcome.status === 'pending-decision' && loop && !unsettledLoopStates.has(loop.state);
+      return Object.freeze({ ...outcome, ...(clarified ? { status: 'clarified', loopRevision: loop.revision } : loop ? { loopRevision: loop.revision } : {}) });
+    });
+    const accounted = projected.every(item => item.status !== 'missing');
+    const resolved = accounted && projected.every(item => !['pending-decision', 'unresolved-topic', 'failed', 'unknown'].includes(item.status));
+    return Object.freeze({ schemaVersion: 1, sourceKind, sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, checkpoint: plan.checkpoint, observedAt: plan.observedAt, enumeration: plan.enumeration, accounted, resolved, counts: Object.freeze({ expected: projected.length, accounted: projected.filter(item => item.status !== 'missing').length, obligations: projected.filter(item => item.kind === 'obligation').length, decisionsPending: projected.filter(item => item.status === 'pending-decision').length, quiet: projected.filter(item => item.status === 'quiet').length, unresolvedTopics: projected.filter(item => item.status === 'unresolved-topic').length, failed: projected.filter(item => ['failed', 'unknown'].includes(item.status)).length }), outcomes: Object.freeze(projected) });
+  }));
+}

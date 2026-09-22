@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory } from '../src/open-loops/source-intake-tool.mjs';
+import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeOutcomeToolFactory } from '../src/open-loops/source-intake-tool.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 
 function metadataOwner() {
@@ -111,4 +111,16 @@ test('receipt tool records Chat coverage separately from Note processing', async
   const result = await tool.execute('chat-receipt', { sourceKind: 'chat', runId: 'fictional-chat-run', checkpoint: 'message-9', status: 'healthy-processed', observedAt: '2026-09-20T02:00:00.000Z', lastSuccessfulAt: '2026-09-20T02:00:00.000Z', nextExpectedAt: '2026-09-21T02:00:00.000Z', processedCount: 1, actionableCount: 1, noteCount: 0 });
   assert.equal(result.details.receipt.sourceKind, 'chat');
   assert.equal([...metadata.operations.values()][0].operationKind, 'intake-receipt.chat.v1');
+});
+
+test('source-accounting tools retain a stable plan and each exact outcome', async () => {
+  const metadata = metadataOwner();
+  const planTool = intakeSourcePlanToolFactory({ getOwners: () => ({ metadata }) })();
+  const outcomeTool = intakeOutcomeToolFactory({ getOwners: () => ({ metadata }) })();
+  const source = { sourceKind: 'email', sourceExternalId: 'fictional-message-accounted', sourceVersion: 'v3' };
+  const planned = await planTool.execute('plan', { ...source, checkpoint: 'page-2:message-7', observedAt: '2026-09-22T02:00:00.000Z', outcomes: [{ outcomeId: 'quiet-reference', kind: 'information' }], enumeration: { scope: 'bounded', scannedCount: 10, remainingCount: 2, failedReadCount: 0, scanCapReached: true } });
+  const outcome = await outcomeTool.execute('outcome', { ...source, outcomeId: 'quiet-reference', kind: 'information', status: 'quiet', summary: 'Fictional reference retained', sourceReferenceId: 'note:fictional-reference', recordedAt: '2026-09-22T02:00:01.000Z' });
+  assert.equal(planned.details.plan.outcomes.length, 1);
+  assert.equal(outcome.details.outcome.status, 'quiet');
+  assert.deepEqual([...metadata.operations.values()].map(item => item.operationKind).sort(), ['intake-outcome.email.v1', 'intake-source.email.v1']);
 });

@@ -1048,7 +1048,25 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           if (!coverageRows.length) coverage.append(element('p', 'Coverage is unknown because this response contains no maintained processing receipts.'));
           for (const row of coverageRows) {
             const article = element('article'); article.className = 'cc-coverage-card'; article.append(element('h4', row.source ?? row.sourceKind ?? 'Source'), element('p', `${row.status ?? 'unknown'}${row.lastSuccessfulAt ? ` · Last successful ${formatInstant(row.lastSuccessfulAt)}` : row.lastObservedAt ? ` · Last observed ${formatInstant(row.lastObservedAt)}` : ''}`));
-            if (row.explanation) article.append(element('p', row.explanation)); coverage.append(article);
+            if (row.explanation) article.append(element('p', row.explanation));
+            if (row.sourceCounts || row.outcomeCounts) {
+              const summary = element('p', `${row.sourceCounts?.accounted ?? 0} of ${row.sourceCounts?.observed ?? 0} sources accounted for · ${row.sourceCounts?.resolved ?? 0} resolved · ${row.outcomeCounts?.accounted ?? 0} of ${row.outcomeCounts?.expected ?? 0} outcomes accounted for`);
+              summary.className = 'cc-coverage-note'; article.append(summary);
+            }
+            const recentSources = Array.isArray(row.recentSources) ? row.recentSources : [];
+            if (recentSources.length) {
+              const details = element('details'); details.append(element('summary', `Inspect ${recentSources.length} recent source${recentSources.length === 1 ? '' : 's'}`));
+              for (const source of recentSources) {
+                const sourceRow = element('div'); sourceRow.className = 'cc-coverage-source';
+                sourceRow.append(element('strong', source.checkpoint ?? 'Source checkpoint'), element('p', `${source.accounted ? 'Accounted for' : 'Partially accounted for'} · ${source.resolved ? 'Resolved' : 'Still open'} · ${source.counts?.accounted ?? 0} of ${source.counts?.expected ?? 0} outcomes`));
+                if (source.enumeration?.failedReadCount || source.enumeration?.remainingCount || source.enumeration?.scanCapReached) sourceRow.append(element('p', `${source.enumeration.failedReadCount ?? 0} failed reads · ${source.enumeration.remainingCount ?? 0} remaining${source.enumeration.scanCapReached ? ' · scan cap reached' : ''}`));
+                const outcomes = element('ul');
+                for (const outcome of source.outcomes ?? []) outcomes.append(element('li', `${outcome.summary ?? outcome.outcomeId}: ${outcome.status}`));
+                sourceRow.append(outcomes); details.append(sourceRow);
+              }
+              article.append(details);
+            }
+            coverage.append(article);
           }
           const coverageNote = element('p', 'Gateway availability is not treated as proof that email or Notes were processed.'); coverageNote.className = 'cc-coverage-note'; coverage.append(coverageNote); dashboards.append(coverage);
         } else if (nonBlank(topicFilter)) {

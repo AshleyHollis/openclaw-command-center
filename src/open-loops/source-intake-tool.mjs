@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createCommitmentCaptureService } from './commitment-capture.mjs';
 import { recordIntakeReceipt } from './intake-receipt.mjs';
+import { recordIntakeOutcome, recordIntakeSourcePlan } from './intake-accounting.mjs';
 import { sourceError } from '../sources/errors.mjs';
 
 function sourceCaptureOperationId(params) {
@@ -106,6 +107,42 @@ export function intakeReceiptToolFactory({ getOwners } = {}) {
       if (!metadata) throw sourceError('capability-unavailable', 'Intake receipt ownership is not ready.');
       const result = recordIntakeReceipt(metadata, { schemaVersion: 1, ...params });
       return Object.freeze({ content: [{ type: 'text', text: JSON.stringify({ status: result.disposition, sourceKind: result.receipt.sourceKind, checkpoint: result.receipt.checkpoint }) }], details: result });
+    }
+  });
+}
+
+export function intakeSourcePlanToolFactory({ getOwners } = {}) {
+  if (typeof getOwners !== 'function') throw new TypeError('Intake source accounting requires authoritative owners.');
+  return () => ({
+    name: 'command_center_plan_intake_source',
+    description: 'Record the exact source revision and complete planned outcome identities before applying maintained intake effects. This makes partial work and safe replay visible without copying source content.',
+    parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
+      sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, checkpoint: { type: 'string', minLength: 1 }, observedAt: { type: 'string' },
+      outcomes: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', additionalProperties: false, properties: { outcomeId: { type: 'string', minLength: 1 }, kind: { type: 'string', enum: ['obligation', 'decision', 'information', 'no-action'] } }, required: ['outcomeId', 'kind'] } },
+      enumeration: { type: 'object', additionalProperties: false, properties: { scope: { type: 'string', enum: ['complete', 'bounded', 'partial'] }, scannedCount: { type: 'integer', minimum: 0 }, remainingCount: { type: 'integer', minimum: 0 }, failedReadCount: { type: 'integer', minimum: 0 }, scanCapReached: { type: 'boolean' } }, required: ['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached'] }
+    }, required: ['sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'outcomes', 'enumeration'] }),
+    async execute(_toolCallId, params) {
+      const { metadata } = getOwners() ?? {};
+      if (!metadata) throw sourceError('capability-unavailable', 'Intake source accounting is not ready.');
+      const result = recordIntakeSourcePlan(metadata, { schemaVersion: 1, ...params });
+      return Object.freeze({ content: [{ type: 'text', text: JSON.stringify({ status: result.disposition, sourceKind: result.plan.sourceKind, checkpoint: result.plan.checkpoint, outcomeCount: result.plan.outcomes.length }) }], details: result });
+    }
+  });
+}
+
+export function intakeOutcomeToolFactory({ getOwners } = {}) {
+  if (typeof getOwners !== 'function') throw new TypeError('Intake outcome accounting requires authoritative owners.');
+  return () => ({
+    name: 'command_center_record_intake_outcome',
+    description: 'Record one exact outcome from a previously planned maintained source revision after its effect is known. Retries must preserve the same outcome identity and result.',
+    parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
+      sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, outcomeId: { type: 'string', minLength: 1 }, kind: { type: 'string', enum: ['obligation', 'decision', 'information', 'no-action'] }, status: { type: 'string', enum: ['applied', 'pending-decision', 'quiet', 'no-action', 'unresolved-topic', 'failed', 'unknown'] }, summary: { type: 'string', minLength: 1, maxLength: 300 }, loopId: { type: 'string', minLength: 1 }, sourceReferenceId: { type: 'string', minLength: 1 }, recordedAt: { type: 'string' }, errorCode: { type: 'string', minLength: 1, maxLength: 100 }
+    }, required: ['sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'kind', 'status', 'summary', 'recordedAt'] }),
+    async execute(_toolCallId, params) {
+      const { metadata } = getOwners() ?? {};
+      if (!metadata) throw sourceError('capability-unavailable', 'Intake outcome accounting is not ready.');
+      const result = recordIntakeOutcome(metadata, { schemaVersion: 1, ...params });
+      return Object.freeze({ content: [{ type: 'text', text: JSON.stringify({ status: result.disposition, outcomeId: result.outcome.outcomeId, outcomeStatus: result.outcome.status }) }], details: result });
     }
   });
 }

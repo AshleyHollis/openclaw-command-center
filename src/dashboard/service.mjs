@@ -2,6 +2,7 @@ import { sourceError } from '../sources/errors.mjs';
 import { opaqueNotificationId } from '../notifications/preview.mjs';
 import { openLoopReminderReferenceId, zonedDateAtNine } from '../open-loops/reminder-coordinator.mjs';
 import { projectCapacityWorkspace } from '../open-loops/capacity-workspace.mjs';
+import { projectIntakeAccounts } from '../open-loops/intake-accounting.mjs';
 
 const DEFAULT_ACTIVITY_LIMIT = 50;
 const MAX_ACTIVITY_LIMIT = 50;
@@ -179,11 +180,23 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
   try { receipt = JSON.parse(latest.resultIdentity ?? 'null'); } catch { receipt = null; }
   if (!receipt || receipt.sourceKind !== sourceKind) return null;
   const overdue = receipt.nextExpectedAt && Date.parse(receipt.nextExpectedAt) < Date.parse(serverTime);
-  const status = latest.state === 'pending' || receipt.status === 'pending' ? 'pending'
+  const accounts = projectIntakeAccounts(metadata, sourceKind);
+  const accountedSources = accounts.filter(item => item.accounted).length;
+  const resolvedSources = accounts.filter(item => item.resolved).length;
+  const expectedOutcomes = accounts.reduce((sum, item) => sum + item.counts.expected, 0);
+  const accountedOutcomes = accounts.reduce((sum, item) => sum + item.counts.accounted, 0);
+  const pendingDecisions = accounts.reduce((sum, item) => sum + item.counts.decisionsPending, 0);
+  const failedOutcomes = accounts.reduce((sum, item) => sum + item.counts.failed, 0);
+  const unresolvedTopics = accounts.reduce((sum, item) => sum + item.counts.unresolvedTopics, 0);
+  const incompleteEnumeration = accounts.some(item => item.enumeration.scope !== 'complete' || item.enumeration.remainingCount > 0 || item.enumeration.failedReadCount > 0 || item.enumeration.scanCapReached);
+  const receiptStatus = latest.state === 'pending' || receipt.status === 'pending' ? 'pending'
     : latest.state !== 'applied' || receipt.status === 'failed' ? 'failed'
       : receipt.status === 'never-connected' ? 'never-connected'
         : overdue ? 'stale'
           : receipt.status === 'healthy-empty' ? 'healthy-empty' : 'receipt-current';
+  const status = accounts.length && (failedOutcomes || unresolvedTopics || accounts.some(item => !item.accounted)) ? 'partial'
+    : accounts.length && pendingDecisions ? 'needs-review'
+      : incompleteEnumeration ? 'bounded' : receiptStatus;
   const label = sourceKind === 'email' ? 'Email intake' : sourceKind === 'chat' ? 'Chat commitments' : 'Note processing';
   const explanations = {
     pending: 'The maintained producer has started a run but has not recorded its final checkpoint.',
@@ -193,7 +206,20 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
     'healthy-empty': 'The maintained producer completed successfully and found no new items.',
     'receipt-current': 'The maintained producer completed successfully and recorded its checkpoint.'
   };
-  return Object.freeze({ source: label, sourceKind, status, lastObservedAt: receipt.observedAt, ...(receipt.lastSuccessfulAt ? { lastSuccessfulAt: receipt.lastSuccessfulAt } : {}), ...(receipt.nextExpectedAt ? { nextExpectedAt: receipt.nextExpectedAt } : {}), counts: Object.freeze({ processed: receipt.processedCount, actionable: receipt.actionableCount, notes: receipt.noteCount }), explanation: explanations[status] });
+  const accountExplanation = status === 'partial' ? 'Some source outcomes are missing, failed or awaiting Topic ownership; processing can resume from the retained source revision.'
+    : status === 'needs-review' ? 'All source outcomes are accounted for, but at least one clarification still needs your decision.'
+      : status === 'bounded' ? 'The recorded sources are accounted for, but the producer reported a bounded or incomplete enumeration scope.' : explanations[status];
+  return Object.freeze({
+    source: label, sourceKind, status, receiptStatus,
+    lastObservedAt: receipt.observedAt,
+    ...(receipt.lastSuccessfulAt ? { lastSuccessfulAt: receipt.lastSuccessfulAt } : {}),
+    ...(receipt.nextExpectedAt ? { nextExpectedAt: receipt.nextExpectedAt } : {}),
+    counts: Object.freeze({ processed: receipt.processedCount, actionable: receipt.actionableCount, notes: receipt.noteCount }),
+    sourceCounts: Object.freeze({ observed: accounts.length, accounted: accountedSources, resolved: resolvedSources }),
+    outcomeCounts: Object.freeze({ expected: expectedOutcomes, accounted: accountedOutcomes, pendingDecisions, failed: failedOutcomes, unresolvedTopics }),
+    recentSources: accounts,
+    explanation: accountExplanation
+  });
 }
 
 function intakeCoverage(metadata, serverTime) {

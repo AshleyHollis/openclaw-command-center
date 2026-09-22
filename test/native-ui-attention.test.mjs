@@ -515,6 +515,27 @@ test('a failed producer remains a titled dashboard widget without blanking focus
   assert.equal(await page.getByRole('heading', { name: 'What needs you now', exact: true }).isVisible(), true);
 }));
 
+test('Dashboard intake drill-through distinguishes accounted sources, pending decisions and enumeration gaps', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.intakeCoverage = [{
+      source: 'Email intake', sourceKind: 'email', status: 'needs-review', lastSuccessfulAt: '2026-09-22T01:02:00.000Z',
+      explanation: 'All source outcomes are accounted for, but at least one clarification still needs your decision.',
+      sourceCounts: { observed: 1, accounted: 1, resolved: 0 }, outcomeCounts: { expected: 4, accounted: 4, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 },
+      recentSources: [{ checkpoint: 'page-2:message-42', accounted: true, resolved: false, counts: { expected: 4, accounted: 4 }, enumeration: { failedReadCount: 1, remainingCount: 3, scanCapReached: true }, outcomes: [
+        { outcomeId: 'pay', summary: 'Pay fictional invoice', status: 'applied' }, { outcomeId: 'reply', summary: 'Reply with fictional reference', status: 'applied' }, { outcomeId: 'choose', summary: 'Choose fictional delivery window', status: 'pending-decision' }, { outcomeId: 'reference', summary: 'Retained fictional reference', status: 'quiet' }
+      ] }]
+    }];
+    window.mountInbox();
+  });
+  const coverage = page.locator('section[data-dashboard-section="coverage"]');
+  await coverage.getByText('1 of 1 sources accounted for · 0 resolved · 4 of 4 outcomes accounted for', { exact: true }).waitFor();
+  await coverage.getByText('Inspect 1 recent source', { exact: true }).click();
+  await coverage.getByText('page-2:message-42', { exact: true }).waitFor();
+  await coverage.getByText('1 failed reads · 3 remaining · scan cap reached', { exact: true }).waitFor();
+  await coverage.getByText('Choose fictional delivery window: pending-decision', { exact: true }).waitFor();
+  await coverage.getByText('Retained fictional reference: quiet', { exact: true }).waitFor();
+}));
+
 test('Planner uses the full workspace and exposes every card in real Kanban lanes', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];
