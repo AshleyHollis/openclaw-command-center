@@ -150,6 +150,10 @@ test('Dashboard distinguishes source accounting from outcome resolution and expo
   assert.deepEqual(email.sourceCounts, { observed: 1, accounted: 1, resolved: 0 });
   assert.deepEqual(email.outcomeCounts, { expected: 3, accounted: 3, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 });
   assert.equal(email.recentSources[0].enumeration.scanCapReached, true);
+  assert.equal(JSON.stringify(email.recentSources).includes(source.sourceExternalId), false);
+  assert.equal(JSON.stringify(email.recentSources).includes(source.sourceVersion), false);
+  assert.equal(JSON.stringify(email.recentSources).includes('loop-choose'), false);
+  assert.equal(JSON.stringify(email.recentSources).includes('note-reference'), false);
   metadata.getOpenLoop = id => id === 'loop-choose' ? { loopId: id, state: 'confirmed', revision: 2 } : null;
   const clarified = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-22T02:00:00.000Z' });
   assert.equal(clarified.intakeCoverage[0].status, 'bounded');

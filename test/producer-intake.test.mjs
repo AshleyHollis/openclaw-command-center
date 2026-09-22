@@ -8,6 +8,7 @@ function harness({ failCapture = false } = {}) {
     now: (() => { let tick = 0; return () => `2026-09-21T00:0${tick++}:00.000Z`; })(),
     async extract(input) {
       calls.extract.push(input);
+      if (input.rawText.includes('no action')) return { schemaVersion: 1, proposedTopic: 'home', notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'notice:no-action', summary: 'Fictional notice requires no action' } };
       if (input.rawText.includes('information only')) return { schemaVersion: 1, proposedTopic: 'home', notePath: 'Inbox/information.md', knowledgeMarkdown: '# Information\n', obligations: [] };
       if (input.rawText.includes('uncertain topic')) return { schemaVersion: 1, proposedTopic: null, notePath: '', knowledgeMarkdown: '', obligations: [] };
       return { schemaVersion: 1, proposedTopic: 'home', notePath: 'Inbox/invoice.md', knowledgeMarkdown: '# Fictional invoice\n', knowledgeOutcomeId: 'invoice-42:information', obligations: [
@@ -45,6 +46,14 @@ test('information-only input remains quiet and existing evidence is reused witho
   await adapter.process({ runId: 'note-run-1', nextExpectedAt: '2026-09-28T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'note', sourceExternalId: 'note-1', sourceVersion: 'v1', checkpoint: 'note-1', rawText: 'information only', existingEvidence: { topicId: 'topic-home', sourceReferenceId: 'note:existing', sourcePath: 'Reference/existing.md', sourceVersion: 'v1' } }] });
   assert.equal(calls.save.length, 0); assert.equal(calls.source.length, 0); assert.equal(calls.receipt.at(-1).actionableCount, 0);
   assert.equal(calls.outcomes[0].status, 'quiet');
+});
+
+test('an explicit no-action result is durably planned and accounted without creating work', async () => {
+  const { adapter, calls } = harness();
+  const result = await adapter.process({ runId: 'email-run-no-action', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'notice-1', sourceVersion: 'v1', checkpoint: 'notice-1', rawText: 'no action' }] });
+  assert.deepEqual(calls.plans[0].outcomes, [{ outcomeId: 'notice:no-action', kind: 'no-action' }]);
+  assert.deepEqual(calls.outcomes.map(item => [item.outcomeId, item.kind, item.status]), [['notice:no-action', 'no-action', 'no-action']]);
+  assert.deepEqual({ processed: result.processedCount, skipped: result.skippedCount, actionable: result.actionableCount, notes: result.noteCount }, { processed: 1, skipped: 1, actionable: 0, notes: 0 });
 });
 
 test('ambiguous Topic ownership creates no Note or obligation and remains visible in receipt counters', async () => {
