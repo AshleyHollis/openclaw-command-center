@@ -5,7 +5,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
-import { readPinnedProducerIntakePlan, readProducerIntakePlanDigest, readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredProducerIntake, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
+import { producerSourceExternalId, readPinnedProducerIntakePlan, readProducerIntakePlanDigest, readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredProducerIntake, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
 import { reconciliationPlanDigest } from '../src/migration/reconcile.mjs';
 import { historicalBackfillPlanDigest } from '../src/open-loops/historical-backfill.mjs';
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
@@ -48,6 +48,7 @@ test('producer intake digest uses the package canonicalizer and rejects dishones
   assert.equal(await readProducerIntakePlanDigest(planPath), producerIntakePlanDigest(plan));
   assert.throws(() => producerIntakePlanDigest({ ...plan, scope: { ...plan.scope, maxMessages: 6 } }), error => error.code === 'producer-plan-invalid');
   assert.throws(() => producerIntakePlanDigest({ ...plan, sourceNamespace: undefined }), error => error.code === 'producer-plan-invalid');
+  assert.throws(() => producerIntakePlanDigest({ ...plan, enumeration: { ...plan.enumeration, scannedCount: 6 } }), error => error.code === 'producer-plan-invalid');
   plan.enumeration.scannedCount = 0; await writeFile(planPath, JSON.stringify(plan));
   await assert.rejects(() => readProducerIntakePlanDigest(planPath), error => error.code === 'producer-plan-invalid');
 });
@@ -83,11 +84,16 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
       const loops = verification.listOpenLoops(); assert.equal(loops.length, 1); assert.equal(loops[0].title, 'Pay fictional accepted invoice'); assert.equal(loops[0].revision, 1);
       const observation = loops[0].evidenceObservationIds.map(id => verification.getOpenLoopObservation(id)).find(item => item?.facts?.obligationId === 'fictional-message:payment');
       assert.equal(observation.facts.sourceVersion, 'email-change-key-9');
-      assert.equal(observation.source.externalId, 'fictional-graph:account-one:fictional-message-id');
+      assert.equal(observation.source.externalId, producerSourceExternalId('fictional-graph:account-one', 'fictional-message-id'));
       const account = verification.listOperations().find(item => item.operationKind === 'intake-source.email.v1');
       assert.equal(account.observedRevision, 'email-change-key-9');
     } finally { verification.close(); }
   } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
+});
+
+test('producer source namespace encoding cannot collide across ambiguous separators', () => {
+  assert.notEqual(producerSourceExternalId('a:b', 'c'), producerSourceExternalId('a', 'b:c'));
+  assert.match(producerSourceExternalId('a:b', 'c'), /^namespaced:v1:sha256:[a-f0-9]{64}$/u);
 });
 
 test('historical backfill CLI runs a digest-pinned private adapter with durable metadata', { skip: process.platform !== 'linux' }, async t => {

@@ -69,6 +69,11 @@ export async function readProducerIntakePlanDigest(filename) {
   return producerIntakePlanDigest(input);
 }
 
+export function producerSourceExternalId(sourceNamespace, sourceExternalId) {
+  const digest = createHash('sha256').update(JSON.stringify([sourceNamespace, sourceExternalId])).digest('hex');
+  return `namespaced:v1:sha256:${digest}`;
+}
+
 async function importPinnedBackfillAdapter(filename, expectedDigest) {
   const digestText = String(expectedDigest).replace(/^sha256:/u, '');
   if (typeof filename !== 'string' || !path.isAbsolute(filename) || !/^[a-f0-9]{64}$/u.test(digestText)) fail('backfill-adapter-invalid');
@@ -180,7 +185,7 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
       async captureChatCommitment() { fail('producer-source-kind-invalid'); },
       recordIntakeSourcePlan: params => invoke(tools.plan, params), recordIntakeOutcome: params => invoke(tools.outcome, params), recordIntakeReceipt: params => invoke(tools.receipt, params)
     });
-    return await adapter.process({ runId: plan.runId, sourceKind: plan.sourceKind, records: plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: `${plan.sourceNamespace}:${record.sourceExternalId}` })), nextExpectedAt: plan.nextExpectedAt, enumeration: plan.enumeration });
+    return await adapter.process({ runId: plan.runId, sourceKind: plan.sourceKind, records: plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, enumeration: plan.enumeration });
   } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
 }
 

@@ -25,12 +25,12 @@ function boundedScope(value, recordCount) {
   if (new Set(folders).size !== folders.length || maxMessages < 1 || maxMessages > 50 || value.batchKind === 'canary' && maxMessages > 5 || recordCount > maxMessages || Date.parse(sinceUtc) >= Date.parse(beforeUtc)) fail('producer-plan-invalid');
   return Object.freeze({ accountBinding: text(value.accountBinding, 300), folders: Object.freeze(folders), sinceUtc, beforeUtc, maxMessages, batchKind: value.batchKind });
 }
-function enumeration(value, recordCount) {
+function enumeration(value, recordCount, maxMessages) {
   const selected = value ?? { scope: 'complete', scannedCount: recordCount, remainingCount: 0, failedReadCount: 0, scanCapReached: false };
   const keys = ['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached', 'scopeId', 'resumeCursor'];
   if (!selected || typeof selected !== 'object' || Array.isArray(selected) || Object.keys(selected).some(key => !keys.includes(key)) || !['complete', 'bounded', 'partial'].includes(selected.scope) || typeof selected.scanCapReached !== 'boolean') fail('producer-plan-invalid');
   const result = { scope: selected.scope, scannedCount: count(selected.scannedCount), remainingCount: count(selected.remainingCount), failedReadCount: count(selected.failedReadCount), scanCapReached: selected.scanCapReached };
-  if (result.scannedCount < recordCount) fail('producer-plan-invalid');
+  if (result.scannedCount < recordCount || result.scannedCount > maxMessages) fail('producer-plan-invalid');
   const incomplete = result.scope !== 'complete' || result.remainingCount > 0 || result.failedReadCount > 0 || result.scanCapReached;
   if (incomplete) { result.scopeId = text(selected.scopeId, 500); result.resumeCursor = text(selected.resumeCursor, 1000); }
   else if (selected.scopeId !== undefined || selected.resumeCursor !== undefined) fail('producer-plan-invalid');
@@ -51,8 +51,9 @@ export function normalizeProducerIntakePlan(input) {
     } catch (error) { if (error?.code === 'producer-plan-invalid') throw error; fail('producer-plan-invalid'); }
   });
   if (new Set(records.map(record => `${record.sourceExternalId}\0${record.sourceVersion}`)).size !== records.length) fail('producer-plan-invalid');
-  return Object.freeze({ schemaVersion: 1, purpose: input.purpose, runId: text(input.runId, 300), sourceKind: input.sourceKind, sourceNamespace: text(input.sourceNamespace, 300), scope: boundedScope(input.scope, records.length),
-    processorVersion: text(input.processorVersion, 300), nextExpectedAt: instant(input.nextExpectedAt), enumeration: enumeration(input.enumeration, records.length), records: Object.freeze(records) });
+  const scope = boundedScope(input.scope, records.length);
+  return Object.freeze({ schemaVersion: 1, purpose: input.purpose, runId: text(input.runId, 300), sourceKind: input.sourceKind, sourceNamespace: text(input.sourceNamespace, 300), scope,
+    processorVersion: text(input.processorVersion, 300), nextExpectedAt: instant(input.nextExpectedAt), enumeration: enumeration(input.enumeration, records.length, scope.maxMessages), records: Object.freeze(records) });
 }
 
 export function producerIntakePlanDigest(input) {

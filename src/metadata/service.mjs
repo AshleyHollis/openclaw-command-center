@@ -1219,10 +1219,13 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
         if (!planned || planned.kind !== result.kind) throw new CommandCenterMetadataError('intent-mismatch', 'The intake outcome does not match its source plan.');
         if (['applied', 'pending-decision'].includes(result.status)) {
           const loop = db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(result.loopId);
+          const plannedTopicName = plan.acceptedExtraction?.proposedTopic;
+          const matchingTopics = typeof plannedTopicName === 'string' ? db.prepare("SELECT topic_id FROM topics WHERE name = ? AND lifecycle = 'active'").all(plannedTopicName) : [];
+          const topicMatchesPlan = matchingTopics.length === 1 && matchingTopics[0].topic_id === loop?.topic_id;
           const evidence = db.prepare(`SELECT 1 FROM open_loop_evidence e JOIN source_observations o ON o.observation_id = e.observation_id
             WHERE e.loop_id = ? AND o.source_system = 'command-center-capture' AND o.source_kind = ? AND o.external_source_id = ?
               AND json_extract(o.facts_json, '$.sourceVersion') = ? AND json_extract(o.facts_json, '$.obligationId') = ? LIMIT 1`).get(result.loopId, result.sourceKind, result.sourceExternalId, result.sourceVersion, result.outcomeId);
-          if (!loop || !evidence || result.status === 'pending-decision' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
+          if (!loop || !topicMatchesPlan || !evidence || result.status === 'pending-decision' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
         } else if (result.status === 'quiet') {
           const reference = db.prepare(`SELECT reference.*, locator.locator AS current_locator FROM source_references AS reference
             LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
