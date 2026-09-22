@@ -5,7 +5,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
-import { readPinnedProducerIntakePlan, readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredProducerIntake, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
+import { readPinnedProducerIntakePlan, readProducerIntakePlanDigest, readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredProducerIntake, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
 import { reconciliationPlanDigest } from '../src/migration/reconcile.mjs';
 import { historicalBackfillPlanDigest } from '../src/open-loops/historical-backfill.mjs';
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
@@ -33,10 +33,21 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
     'command-center initialize-metadata execute', 'command-center initialize-metadata verify',
     ...['preflight', 'execute', 'verify'].map(mode => `command-center recover-note-folders ${mode}`),
     ...['preview', 'apply', 'withdraw'].map(mode => `command-center backfill ${mode}`),
-    'command-center intake apply',
+    'command-center intake digest', 'command-center intake apply',
     'command-center verify-discoverability'
   ]);
-  assert.equal(required.length, 40); assert.equal(actions.length, 18);
+  assert.equal(required.length, 41); assert.equal(actions.length, 19);
+});
+
+test('producer intake digest uses the package canonicalizer and rejects dishonest enumeration', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'producer-intake-digest-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const plan = { schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-digest', sourceKind: 'email', processorVersion: 'fictional-v1', nextExpectedAt: '2026-09-22T12:00:00.000Z',
+    enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false }, records: [{ schemaVersion: 1, sourceExternalId: 'fictional-message', sourceVersion: 'fictional-change-key', checkpoint: 'fictional-checkpoint', acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [] } }] };
+  const planPath = path.join(root, 'plan.json'); await writeFile(planPath, JSON.stringify(plan));
+  assert.equal(await readProducerIntakePlanDigest(planPath), producerIntakePlanDigest(plan));
+  plan.enumeration.scannedCount = 0; await writeFile(planPath, JSON.stringify(plan));
+  await assert.rejects(() => readProducerIntakePlanDigest(planPath), error => error.code === 'producer-plan-invalid');
 });
 
 test('producer intake CLI consumes accepted extraction with distinct upstream and retained Note revisions', { skip: process.platform !== 'linux' }, async t => {

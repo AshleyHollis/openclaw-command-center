@@ -64,6 +64,11 @@ export async function readPinnedProducerIntakePlan(filename, expectedDigest) {
   return normalizeProducerIntakePlan(input);
 }
 
+export async function readProducerIntakePlanDigest(filename) {
+  const input = await readPinnedJson(filename, 'producer-plan-invalid', 'producer-plan-unsafe', 'producer-plan-changed');
+  return producerIntakePlanDigest(input);
+}
+
 async function importPinnedBackfillAdapter(filename, expectedDigest) {
   const digestText = String(expectedDigest).replace(/^sha256:/u, '');
   if (typeof filename !== 'string' || !path.isAbsolute(filename) || !/^[a-f0-9]{64}$/u.test(digestText)) fail('backfill-adapter-invalid');
@@ -368,7 +373,14 @@ export function registerReconciliationCli({ program, config, logger }) {
         } finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
       });
   }
-  group.command('intake').description('Apply one explicitly pinned maintained-producer handoff').command('apply')
+  const intake = group.command('intake').description('Digest or apply one explicitly pinned maintained-producer handoff');
+  intake.command('digest')
+    .requiredOption('--plan <absolute-path>', 'Private accepted-extraction batch JSON')
+    .action(async options => {
+      try { logger.info(await readProducerIntakePlanDigest(options.plan)); }
+      catch (error) { logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'producer-intake-failed'); process.exitCode = 1; }
+    });
+  intake.command('apply')
     .requiredOption('--plan <absolute-path>', 'Private accepted-extraction batch JSON')
     .requiredOption('--digest <sha256>', 'Approved canonical batch SHA-256')
     .action(async options => {

@@ -21,6 +21,7 @@ function enumeration(value, recordCount) {
   const keys = ['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached', 'scopeId', 'resumeCursor'];
   if (!selected || typeof selected !== 'object' || Array.isArray(selected) || Object.keys(selected).some(key => !keys.includes(key)) || !['complete', 'bounded', 'partial'].includes(selected.scope) || typeof selected.scanCapReached !== 'boolean') fail('producer-plan-invalid');
   const result = { scope: selected.scope, scannedCount: count(selected.scannedCount), remainingCount: count(selected.remainingCount), failedReadCount: count(selected.failedReadCount), scanCapReached: selected.scanCapReached };
+  if (result.scannedCount < recordCount) fail('producer-plan-invalid');
   const incomplete = result.scope !== 'complete' || result.remainingCount > 0 || result.failedReadCount > 0 || result.scanCapReached;
   if (incomplete) { result.scopeId = text(selected.scopeId, 500); result.resumeCursor = text(selected.resumeCursor, 1000); }
   else if (selected.scopeId !== undefined || selected.resumeCursor !== undefined) fail('producer-plan-invalid');
