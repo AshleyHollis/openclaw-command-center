@@ -36,7 +36,8 @@ export function createProducerIntakeAdapter({ extract, resolveTopic, saveSourceN
       const incompleteEnumeration = receiptEnumeration && (receiptEnumeration.scope !== 'complete' || receiptEnumeration.remainingCount > 0 || receiptEnumeration.failedReadCount > 0 || receiptEnumeration.scanCapReached);
       if (incompleteEnumeration && (!nonBlank(receiptEnumeration.scopeId) || !nonBlank(receiptEnumeration.resumeCursor))) fail('producer-continuation-required');
       const continuation = incompleteEnumeration ? { scopeId: receiptEnumeration.scopeId, cursor: receiptEnumeration.resumeCursor, remainingCount: receiptEnumeration.remainingCount, failedReadCount: receiptEnumeration.failedReadCount, scanCapReached: receiptEnumeration.scanCapReached } : undefined;
-      await recordIntakeReceipt({ sourceKind, runId, checkpoint, status: 'pending', observedAt, nextExpectedAt, ...receiptCounts() });
+      const pending = await recordIntakeReceipt({ sourceKind, runId, checkpoint, status: 'pending', observedAt, nextExpectedAt, ...receiptCounts() });
+      if (pending?.receipt && pending.receipt.status !== 'pending') return Object.freeze({ schemaVersion: 1, checkpoint: pending.receipt.checkpoint, status: pending.receipt.status, processedCount: pending.receipt.processedCount, actionableCount: pending.receipt.actionableCount, noteCount: pending.receipt.noteCount, skippedCount: 0, uncertainCount: 0, failedCount: pending.receipt.status === 'failed' ? 1 : 0, ...(pending.receipt.continuation ? { continuation: pending.receipt.continuation } : {}), receipt: pending });
       try {
         for (const record of records) {
           assertRecord(record);

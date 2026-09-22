@@ -59,7 +59,7 @@ test('crash after the first effect resumes the exact mixed email without duplica
     const request = { runId: 'email-run-crash', records: [record], nextExpectedAt: '2026-09-23T01:00:00.000Z', enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } };
     await assert.rejects(() => f.adapter.process(request), /fictional-process-death/u);
     assert.equal(f.metadata.listOpenLoops().length, 1);
-    await f.adapter.process(request);
+    await f.adapter.process({ ...request, runId: 'email-run-crash-resume' });
     assert.equal(f.metadata.listOpenLoops().length, 3);
     const [account] = projectIntakeAccounts(f.metadata, 'email');
     assert.deepEqual({ accounted: account.accounted, resolved: account.resolved, outcomes: account.counts.expected, pending: account.counts.decisionsPending }, { accounted: true, resolved: false, outcomes: 4, pending: 1 });
@@ -77,7 +77,7 @@ test('a lost outcome response replays the same effect and receipt exactly once',
   try {
     const request = { runId: 'email-run-lost-response', records: [record], nextExpectedAt: '2026-09-23T01:00:00.000Z' };
     await assert.rejects(() => f.adapter.process(request), /fictional-lost-response/u);
-    await f.adapter.process(request);
+    await f.adapter.process({ ...request, runId: 'email-run-lost-response-resume' });
     assert.equal(f.metadata.listOpenLoops().length, 3);
     assert.equal(f.metadata.listOperations().filter(item => item.operationKind === 'intake-source.email.v1').length, 1);
     assert.equal(f.metadata.listOperations().filter(item => item.operationKind === 'intake-outcome.email.v1').length, 4);

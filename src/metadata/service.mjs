@@ -1230,7 +1230,10 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
           const sourceNote = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(sourceNoteOperationId);
           const existingNoteEvidence = result.sourceKind === 'note' && result.sourceReferenceId === result.sourceExternalId;
           const createdNoteEvidence = sourceNote?.operation_kind === 'notes.create' && sourceNote.state === 'applied' && sourceNote.result_identity === reference?.external_source_id && sourceNote.observed_revision === result.sourceReferenceVersion;
-          if (!reference || reference.topic_id !== result.topicId || !['note', 'document'].includes(reference.source_kind) || reference.last_observed_revision !== result.sourceReferenceVersion || !(existingNoteEvidence || createdNoteEvidence)) throw new CommandCenterMetadataError('conflict', 'The exact quiet intake evidence is unavailable.');
+          const normalizedExternalPath = reference?.external_source_id?.replaceAll('\\', '/');
+          const normalizedSourcePath = result.sourcePath?.replaceAll('\\', '/').replace(/^\/+/, '');
+          const exactPath = normalizedExternalPath === normalizedSourcePath || normalizedExternalPath?.endsWith(`/${normalizedSourcePath}`);
+          if (!reference || reference.topic_id !== result.topicId || !['note', 'document'].includes(reference.source_kind) || reference.last_observed_revision !== result.sourceReferenceVersion || !exactPath || !(existingNoteEvidence || createdNoteEvidence)) throw new CommandCenterMetadataError('conflict', 'The exact quiet intake evidence is unavailable.');
         }
       }
       db.prepare(`INSERT INTO operation_journal
@@ -1268,8 +1271,9 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
         return Object.freeze({ disposition: 'recorded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
       }
       const latest = db.prepare('SELECT rowid FROM operation_journal WHERE operation_kind = ? ORDER BY rowid DESC LIMIT 1').get(operationKind);
-      if (state === 'pending' && existing.result_status !== 'pending') {
-        return Object.freeze({ disposition: 'duplicate', operation: mapOperation(existing) });
+      if (existing.result_status !== 'pending') {
+        if (state === 'pending' || existing.result_identity === resultIdentity) return Object.freeze({ disposition: 'duplicate', operation: mapOperation(existing) });
+        throw new CommandCenterMetadataError('intent-mismatch', 'A terminal intake receipt cannot be replaced by a different result.');
       }
       if (state !== 'pending' && latest?.rowid !== existing.rowid) {
         db.prepare("UPDATE operation_journal SET state = 'not-applied', result_status = 'superseded', updated_at = ? WHERE logical_operation_id = ?").run(updatedAt, logicalOperationId);

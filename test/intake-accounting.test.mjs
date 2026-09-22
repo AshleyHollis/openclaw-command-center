@@ -50,9 +50,9 @@ function addEffects(metadata) {
   const payment = addObligationLoop(metadata, 'pay-invoice', 'Pay fictional invoice');
   const response = addObligationLoop(metadata, 'send-reference', 'Send fictional reference');
   const decision = addDecisionLoop(metadata);
-  metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-message-42', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/reference.md', observedRevision: 'note-v1' });
+  metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-message-42', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/Inbox/reference.md', observedRevision: 'note-v1' });
   const logicalOperationId = sourceNoteOperationId({ topicId: 'topic-fictional-home', sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7' });
-  metadata.recordOperation({ logicalOperationId, transportRequestId: logicalOperationId, intentDigest: 'sha256:fictional-source-note', operationKind: 'notes.create', state: 'applied', resultStatus: 'applied', resultIdentity: '/fictional/reference.md', observedRevision: 'note-v1', createdAt: '2026-09-22T01:00:00.000Z', updatedAt: '2026-09-22T01:00:00.000Z' });
+  metadata.recordOperation({ logicalOperationId, transportRequestId: logicalOperationId, intentDigest: 'sha256:fictional-source-note', operationKind: 'notes.create', state: 'applied', resultStatus: 'applied', resultIdentity: '/fictional/Inbox/reference.md', observedRevision: 'note-v1', createdAt: '2026-09-22T01:00:00.000Z', updatedAt: '2026-09-22T01:00:00.000Z' });
   return { payment, response, decision };
 }
 
@@ -184,12 +184,33 @@ test('a completed run dominates a replayed pending receipt for the same run', as
   } finally { await temporary.cleanup(); }
 });
 
+test('a terminal receipt cannot be replaced by a different terminal result for the same run', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-terminal-conflict-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path });
+    const base = { schemaVersion: 1, sourceKind: 'email', runId: 'terminal-run', checkpoint: 'complete', observedAt: '2026-09-22T02:00:00.000Z', nextExpectedAt: '2026-09-23T02:00:00.000Z', processedCount: 1, actionableCount: 1, noteCount: 1 };
+    recordIntakeReceipt(metadata, { ...base, status: 'healthy-processed', lastSuccessfulAt: base.observedAt });
+    assert.throws(() => recordIntakeReceipt(metadata, { ...base, status: 'failed', observedAt: '2026-09-22T02:01:00.000Z' }), { code: 'intent-mismatch' });
+    assert.equal(metadata.listOperations().find(item => item.operationKind === 'intake-receipt.email.v1').resultStatus, 'healthy-processed');
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
 test('quiet intake rejects an unrelated Note even when its revision matches', async () => {
   const temporary = await temporaryStateDir('command-center-intake-unrelated-note-');
   try {
     const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata); recordIntakeSourcePlan(metadata, sourcePlan());
     metadata.createSourceReference({ version: 1, referenceId: 'note:unrelated', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/unrelated.md', observedRevision: 'note-v1' });
     assert.throws(() => recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Incorrect unrelated evidence', topicId: 'topic-fictional-home', sourceReferenceId: 'note:unrelated', sourcePath: 'Inbox/unrelated.md', sourceReferenceVersion: 'note-v1', recordedAt: '2026-09-22T02:00:00.000Z' }), { code: 'conflict' });
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
+test('quiet intake rejects a navigation path that does not identify its exact Note', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-wrong-path-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata); recordIntakeSourcePlan(metadata, sourcePlan()); addEffects(metadata);
+    assert.throws(() => recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Wrong path', topicId: 'topic-fictional-home', sourceReferenceId: 'note:fictional-message-42', sourcePath: 'Totally/Wrong.md', sourceReferenceVersion: 'note-v1', recordedAt: '2026-09-22T02:00:00.000Z' }), { code: 'conflict' });
     metadata.close();
   } finally { await temporary.cleanup(); }
 });
