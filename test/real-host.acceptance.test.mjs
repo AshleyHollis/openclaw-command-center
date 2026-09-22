@@ -14,12 +14,13 @@ import { assertAcceptanceReportPassed, createAcceptanceReport, RELEASE_ROW_IDS, 
 import { hasSuccessfulBrowserResponse, observeBrowserResponse, recordBounded } from '../src/browser-evidence.mjs';
 import { build, assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
-import { assertNoFatalHostOutput, assertRecordedChildTraffic, fetchJsonWithDeadline, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
+import { assertNoFatalHostOutput, assertRecordedChildTraffic, fetchJsonWithDeadline, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, restartPinnedHost, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { assertWebSocketDestination, TrafficGuard } from '../src/isolation.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
 import { COMMAND_CENTER_SCHEMA_VERSION, metadataSchemaV1Sql } from '../src/metadata/schema.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { loadIntakeSourceAccount } from '../src/open-loops/intake-accounting.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl, isControlUiPluginUrl } from '../src/acceptance-readiness.mjs';
@@ -34,12 +35,13 @@ import { tabTo } from './support/keyboard-navigation.mjs';
 import { activate, enterText, chooseOption, auditDynamicAccessibilityState, assertNoFrameOverflow, assertResponsiveFrame, assertKeyboardAccessibility } from './support/keyboard-accessibility.mjs';
 import { closeOpenConversation } from './support/conversation-lifecycle.mjs';
 import { acceptanceSignalContext, EXTERNAL_OPERATION_TIMEOUT_MS, BRIDGE_UI_OPERATION_BUDGET_MS, createGatewayDeviceIdentity, withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory } from './support/real-host-runtime.mjs';
-import { exerciseNativeControlUiActivation, exerciseNativeKeyboardJourney, exerciseNativeScaleStartup, exerciseNativeTopicChatHandoffJourney, exerciseNativeTopicFilesWorkspaceJourney, exerciseNativeTopicNotesVisualJourney, exerciseNativeTopicNotesWorkspaceJourney, exerciseNativeTopicToolsJourney } from './support/first-live-native-journey.mjs';
+import { exerciseNativeControlUiActivation, exerciseNativeKeyboardJourney, exerciseNativeScaleStartup, exerciseNativeTopicChatHandoffJourney, exerciseNativeTopicFilesWorkspaceJourney, exerciseNativeTopicNotesVisualJourney, exerciseNativeTopicNotesWorkspaceJourney, exerciseNativeTopicToolsJourney, seedNativeExistingTopic } from './support/first-live-native-journey.mjs';
 import { exerciseNativeScaleJourney } from './support/first-live-native-scale.mjs';
 import { runNativeReleaseCapture, runNativeReleasePrerequisites } from './support/first-live-native-release.mjs';
 import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVariant } from './support/first-live-native-degraded.mjs';
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
 import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
+import { startFictionalOpenAiModel } from './support/fictional-openai-model.mjs';
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
@@ -1160,7 +1162,20 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       } finally { activity.close(); }
       scaleProjectionRoot = path.join(path.dirname(resolveCommandCenterDatabasePath(stateDir)), 'projections');
     }
-    const scenarioHost = await withDeadline(`${kind} fresh host launch`, (signal) => launchPinnedHost({ descriptor, world: scenarioWorld, buildReceipt, signal }), 120_000);
+    let fictionalModel;
+    if (kind === 'accounted-email') {
+      fictionalModel = await startFictionalOpenAiModel();
+      const config = JSON.parse(await readFile(scenarioWorld.manifest.configPath, 'utf8'));
+      config.models.providers.fixture.baseUrl = fictionalModel.baseUrl;
+      config.models.providers.fixture.api = 'openai-completions';
+      config.models.providers.fixture.models[0].api = 'openai-completions';
+      config.models.providers.fixture.models[0].compat = { supportsTools: true };
+      config.models.providers.fixture.request = { allowPrivateNetwork: true };
+      config.agents.entries = { ...(config.agents.entries ?? {}), main: { model: 'fixture/fixture-model', modelPolicy: { allow: ['fixture/fixture-model'] } } };
+      config.tools = { ...(config.tools ?? {}), alsoAllow: [...new Set([...(config.tools?.alsoAllow ?? []), 'command_center_resolve_source_topic', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt'])] };
+      await writeFile(scenarioWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
+    }
+    let scenarioHost = await withDeadline(`${kind} fresh host launch`, (signal) => launchPinnedHost({ descriptor, world: scenarioWorld, buildReceipt, signal }), 120_000);
     let managedBrowser;
     const abortCleanup = () => {
       void stopPinnedHost(scenarioHost.child);
@@ -1180,10 +1195,21 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       };
       try {
         await waitForConsecutiveReadiness(async (probeSignal) => {
-          try { return (await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, `${kind} fresh readiness`, 10_000)).ok; }
+          try {
+            const response = await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, `${kind} fresh readiness`, 10_000);
+            if (!response.ok) return false;
+            return routeGrant(await response.json());
+          }
           catch (error) { if (error?.category === 'transport-timeout') { observeMigration(); return false; } throw error; }
         }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
-      } catch (error) { observeMigration(); throw new Error(`Host transport readiness failed; durableStartupProgress=${JSON.stringify(readinessProgress)}`, { cause: error }); }
+      } catch (error) {
+        observeMigration();
+        throw new Error(`Host plugin readiness failed; durableStartupProgress=${JSON.stringify(readinessProgress)}; host=${JSON.stringify(boundedHostEvidence(scenarioHost.diagnostics))}`, { cause: error });
+      }
+      await waitForConsecutiveReadiness(async probeSignal => {
+        const catalog = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'plugins.controlUi.list', signal: probeSignal });
+        return Boolean(catalog?.plugins?.find(plugin => plugin.pluginId === 'command-center')?.revision);
+      }, scenarioHost.earlyExit, { required: 1, deadlineMs: 30_000, delayMs: 250, signal });
       if (kind === 'scale') {
         let lastMigrationStatus;
         try {
@@ -1197,14 +1223,116 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         try { assert.ok(readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId: scaleTopicId }), 'verified scale migration must have a durable completion and exact Primary binding'); }
         finally { database.close(); }
       }
+      const nativeFixture = kind === 'accounted-email' ? await seedNativeExistingTopic({ world: scenarioWorld, host: scenarioHost, signal }) : null;
       managedBrowser = await withDeadline(`${kind} fresh browser launch`, () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       const page = await managedBrowser.browser.newPage({ viewport: { width, height: 900 } });
       const evidence = { console: [], errors: [], requests: [], responses: [] };
       await configureEvidencePage(page, browserGuard, evidence);
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: width <= 320 ? 'active' : 'none' });
+      if (kind === 'accounted-email') {
+        page.setDefaultTimeout(10_000);
+        const milestone = name => process.stdout.write(`accounted-email-milestone=${name}\n`);
+        const openNativeChat = async () => {
+          await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'topics', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+          const nativePage = page.locator('openclaw-plugin-page');
+          await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor({ timeout: 30_000 });
+          await nativePage.getByRole('button', { name: `View Notes for ${nativeFixture.name}`, exact: true }).press('Enter');
+          await nativePage.getByRole('heading', { name: nativeFixture.name, exact: true }).waitFor({ timeout: 30_000 });
+          await nativePage.getByRole('button', { name: 'Open Topic in Chat', exact: true }).press('Enter');
+          const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+          await chatPane.waitFor({ timeout: 30_000 });
+          await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, nativeFixture.sessionKey, { timeout: 30_000 });
+          return chatPane;
+        };
+        const sendNativeTurn = async (chatPane, message, completedAction) => {
+          const requestCount = fictionalModel.requests.length;
+          await chatPane.locator('.agent-chat__composer-combobox textarea').fill(message);
+          await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
+          await waitForConsecutiveReadiness(() => fictionalModel.requests.slice(requestCount).some(entry => entry.action === 'final' && entry.completedCurrentTool && entry.currentToolResultId), scenarioHost.earlyExit, { required: 1, deadlineMs: 60_000, delayMs: 100, signal });
+          assert.ok(fictionalModel.requests.slice(requestCount).some(entry => entry.action === completedAction), `Native turn did not execute ${completedAction}`);
+          await chatPane.getByText(message, { exact: true }).waitFor({ timeout: 30_000 });
+        };
+        let chatPane = await openNativeChat();
+        await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-1] Process the fictional mixed email through the registered Command Center intake commands.', 'accounted-outcome-choice');
+        milestone('phase-one-complete');
+        const metadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+        let durableBeforeRestart;
+        try { durableBeforeRestart = loadIntakeSourceAccount(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-real-host-mixed-message', sourceVersion: 'email-change-key-real-host-52' }); }
+        finally { metadata.close(); }
+        assert.equal(durableBeforeRestart.plan.processorVersion, 'fictional-real-host-processor-v1');
+        assert.deepEqual(durableBeforeRestart.account.counts, { expected: 4, accounted: 2, obligations: 2, decisionsPending: 1, quiet: 1, unresolvedTopics: 0, failed: 0 });
+        const pendingDecision = durableBeforeRestart.account.outcomes.find(item => item.kind === 'decision');
+        assert.equal(pendingDecision.status, 'pending-decision');
+        const detail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: pendingDecision.loopId }, signal });
+        const loop = (detail.result ?? detail).loop;
+        const decisionDevice = createGatewayDeviceIdentity();
+        const bootstrap = await fetchJsonWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal }, { label: 'accounted email authenticated build identity', timeoutMs: 10_000 });
+        assert.equal(bootstrap.response.ok, true);
+        assert.ok(typeof bootstrap.body.serverBuildId === 'string' && bootstrap.body.serverBuildId.trim());
+        await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId, method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
+        milestone('decision-recorded');
+        const killed = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
+        scenarioHost.child.kill('SIGKILL');
+        assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
+        milestone('host-killed');
+        scenarioHost = await withDeadline('accounted email host restart', restartSignal => restartPinnedHost(scenarioHost, { signal: restartSignal }), 120_000);
+        await waitForConsecutiveReadiness(async probeSignal => {
+          try {
+            const response = await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, 'accounted email restart bootstrap', 10_000);
+            return response.ok && routeGrant(await response.json());
+          } catch (error) {
+            if (/fetch failed|timed out|ECONNREFUSED/iu.test(`${error?.message ?? ''} ${error?.cause?.message ?? ''}`)) return false;
+            throw error;
+          }
+        }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
+        await waitForConsecutiveReadiness(async probeSignal => {
+          try {
+            const catalog = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'plugins.controlUi.list', signal: probeSignal });
+            return Boolean(catalog?.plugins?.find(plugin => plugin.pluginId === 'command-center')?.revision);
+          } catch (error) {
+            if (/Gateway (?:challenge socket|connection) failed|timed out/iu.test(error?.message ?? '')) return false;
+            throw error;
+          }
+        }, scenarioHost.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
+        milestone('host-restarted');
+        chatPane = await openNativeChat();
+        await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-2] Resume only unfinished outcomes from the durable accepted extraction.', 'accounted-load-final');
+        milestone('phase-two-complete');
+        await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        const dashboardPage = page.locator('openclaw-plugin-page');
+        await dashboardPage.getByRole('heading', { name: 'Command Center', exact: true }).waitFor({ timeout: 30_000 });
+        milestone('dashboard-mounted');
+        const emailCard = dashboardPage.locator('.cc-coverage-card').filter({ hasText: 'Email intake' });
+        await emailCard.getByText('1 of 1 sources accounted for · 1 resolved · 4 of 4 outcomes accounted for', { exact: true }).waitFor();
+        await emailCard.locator('details > summary').click();
+        await emailCard.getByText('Choose fictional real-host delivery window: clarified', { exact: true }).waitFor();
+        await emailCard.getByText('Pay fictional real-host invoice: applied', { exact: true }).waitFor();
+        await emailCard.getByText('Reply with fictional real-host reference: applied', { exact: true }).waitFor();
+        await emailCard.getByText('Retain fictional real-host reference: quiet', { exact: true }).waitFor();
+        await emailCard.getByRole('button', { name: 'Review item', exact: true }).first().click();
+        await emailCard.locator('details[data-intake-outcome-evidence][open]').waitFor();
+        milestone('evidence-inspected');
+        await retainNativeChatScreenshot(page, 'accounted-mixed-email-dashboard');
+        await emailCard.getByRole('button', { name: 'Open retained Note', exact: true }).click();
+        await page.locator('openclaw-plugin-page').getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
+        milestone('retained-note-inspected');
+        const finalDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
+        const finalEmail = finalDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
+        const quiet = finalEmail.recentSources[0].outcomes.find(item => item.kind === 'information');
+        assert.notEqual(quiet.target.sourceVersion, 'email-change-key-real-host-52');
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-capture-choice').length, 1);
+        assert.equal(fictionalModel.requests.filter(item => ['accounted-capture-payment', 'accounted-capture-reply'].includes(item.action)).length, 2);
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-save').length, 1);
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-resolve').length, 1);
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-load').length, 1);
+        const durableResume = fictionalModel.requests.find(item => item.action === 'accounted-capture-payment' && item.loadedProcessorVersion);
+        assert.equal(durableResume?.loadedProcessorVersion, 'fictional-real-host-processor-v1');
+        assert.deepEqual(durableResume.loadedOutcomeStatuses, [['real-host-choice', 'clarified'], ['real-host-payment', 'missing'], ['real-host-reply', 'missing'], ['real-host-reference', 'quiet']]);
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true });
+      }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      let { frame } = await mountedPluginFrame(page, await pluginDocument);
+      let { frame } = await mountedPluginFrame(page, await pluginDocument, evidence);
       const scenarioName = kind === 'review' ? 'Area: Fictional Fresh Review Topic' : kind === 'scale-analysis' ? 'Area: Fictional Fresh Scale Analysis Topic' : `Fictional Fresh ${kind} Topic`;
       const { frame: returnedFrame, ...journey } = await runUiJourney(frame, { page, width, name: scenarioName, category: 'project', keyboard: true });
       frame = returnedFrame;
@@ -1398,11 +1526,11 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
     } finally {
       signal?.removeEventListener('abort', abortCleanup);
       await closeManagedBrowser(managedBrowser).catch(() => {});
-      await withDeadline(`${kind} fresh host stop`, async () => { await stopPinnedHost(scenarioHost.child); await scenarioHost.outputDrained; });
-      assertNoFatalHostOutput(scenarioHost.diagnostics);
+      await withDeadline(`${kind} fresh host stop`, async () => { for (const generation of [...scenarioHost.generations].reverse()) { await stopPinnedHost(generation.child); await generation.outputDrained; } });
+      await fictionalModel?.close();
+      for (const generation of scenarioHost.generations) { assertNoFatalHostOutput(generation.diagnostics); generation.diagnostics.guard.assertClean(); }
       await assertRecordedChildTraffic(scenarioWorld);
       browserGuard.assertClean();
-      scenarioHost.diagnostics.guard.assertClean();
     }
   }, { candidateRoot: process.cwd() });
 }
@@ -2164,7 +2292,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const releaseLane = await acquireIsolatedLane();
     reportProgress(testContext, `isolated:${id}:started`);
     try {
-      const timeoutMs = id === 'destructive-migration-restoration' ? 284_000 : 240_000;
+      const timeoutMs = ['destructive-migration-restoration', 'accounted-mixed-email'].includes(id) ? 284_000 : 240_000;
       const evidence = await runBoundedAcceptanceSlice(id, run, { timeoutMs, cleanupTimeoutMs: 15_000 });
       isolatedEvidence.set(id, evidence);
       reportProgress(testContext, `isolated:${id}:passed`);
@@ -2198,6 +2326,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   const isolatedRunPromises = new Map();
   // Diagnostic only: do not silently add a new release-matrix requirement.
   if (acceptancePlan.isolatedSliceIds?.includes('dashboard-mixed-payload')) isolatedSlices.set('dashboard-mixed-payload', startIsolatedSlice('dashboard-mixed-payload', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'dashboard-payload', width: 1440, signal })));
+  if (acceptancePlan.isolatedSliceIds?.includes('accounted-mixed-email')) isolatedSlices.set('accounted-mixed-email', startIsolatedSlice('accounted-mixed-email', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'accounted-email', width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('fresh-mobile')) isolatedSlices.set('fresh-mobile', startIsolatedSlice('fresh-mobile', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'mobile', width: 320, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('reminder-runtime-lifecycle')) isolatedSlices.set('reminder-runtime-lifecycle', startIsolatedSlice('reminder-runtime-lifecycle', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'reminder-lifecycle', width: 1440, signal })));
   const isolatedResult = async (id) => {
@@ -2220,6 +2349,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     if (failures.length) throw new AggregateError(failures, 'Independent diagnostic slices failed');
     assert.equal(isolatedEvidence.size, acceptancePlan.isolatedSliceIds.length);
     if (acceptancePlan.isolatedSliceIds.includes('reminder-runtime-lifecycle')) testContext.diagnostic(`reminder-lifecycle-evidence=${JSON.stringify(isolatedEvidence.get('reminder-runtime-lifecycle'))}`);
+    if (acceptancePlan.isolatedSliceIds.includes('accounted-mixed-email')) testContext.diagnostic(`accounted-mixed-email-evidence=${JSON.stringify(isolatedEvidence.get('accounted-mixed-email'))}`);
     testContext.diagnostic(`acceptance-scenario-result=${JSON.stringify({ schemaVersion: 1, outcome: 'passed', scenario: process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO, isolatedSliceIds: [...isolatedEvidence.keys()], buildDigest: buildReceipt.digest, performanceQualified: false })}`);
     return;
   }

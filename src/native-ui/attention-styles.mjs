@@ -82,6 +82,11 @@ export const attentionStyles = `
   .cc-coverage-card h4 { margin:0; }
   .cc-coverage-card p { margin:0; }
   .cc-coverage-note { font-size:.74rem; }
+  .cc-coverage-card details { grid-column:1/-1; margin-top:.35rem; }
+  .cc-coverage-card details>summary { cursor:pointer; font-size:.78rem; font-weight:650; }
+  .cc-coverage-source { margin-top:.65rem; padding:.65rem; border:1px solid var(--cc-line); border-radius:.65rem; background:color-mix(in srgb, CanvasText 2%, Canvas); }
+  .cc-coverage-source>p { margin:.25rem 0; }
+  .cc-coverage-source ul { margin:.4rem 0 0; padding-inline-start:1.2rem; font-size:.76rem; color:var(--cc-muted); }
   .cc-planner-board { display:grid; grid-template-columns:repeat(5,minmax(15rem,1fr)); gap:.8rem; overflow-x:auto; padding:.75rem .15rem .35rem; scrollbar-gutter:stable; }
   .cc-planner-lane { min-width:0; min-height:16rem; max-height:68vh; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--cc-line); border-radius:.85rem; padding:.7rem; background:color-mix(in srgb, Canvas 94%, CanvasText 6%); scrollbar-gutter:stable; }
   .cc-planner-lane>h3 { position:sticky; top:0; z-index:1; margin:0; padding:.45rem; border-radius:.5rem; background:var(--cc-panel); font-size:.85rem; }

@@ -121,7 +121,8 @@ test('native tool resolves Topic from the exact active Session and never accepts
   const tool = commitmentCaptureToolFactory({ getOwners: () => ({ metadata, sourceService }) })({ sessionKey: 'agent:main:fictional', sessionId: 'session-1' });
   const result = await tool.execute('tool-call-1', { title: 'Research laundry storage', obligationId: 'laundry-storage-research', provenance: 'explicit' });
   assert.equal(captured.loop.topicId, 'topic-home');
-  assert.match(captured.observation.source.version, /^tool:[0-9a-f-]{36}$/u);
+  assert.match(captured.observation.source.version, /^commitment:[0-9a-f]{32}$/u);
+  assert.match(captured.observation.facts.sourceVersion, /^tool:[0-9a-f-]{36}$/u);
   assert.equal(result.details.loop.state, 'confirmed');
 });
 

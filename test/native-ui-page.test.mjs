@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { chromium } from 'playwright';
 
-for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note selection during pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Evidence deep link', 'Changed evidence deep link', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
+for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note selection during pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Evidence deep link', 'Changed evidence deep link', 'Note evidence deep link', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
   const server = createServer(async (req, res) => {
     if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional native host</title><style>#mount{height:700px;width:900px}</style><main id="mount"></main></html>'); return; }
     // Serve the actual native module directory, including newly added siblings.
@@ -92,6 +92,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
             }
             if (scenario === 'Note tree filter') return { result: { notes: ['root.md', 'planning/brief.md', 'planning/invoice.md'].map((path) => ({ path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: `fictional:${path}` } })), total: 3, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-cursor' } };
             if (scenario === 'Note selection superseded') return { result: { notes: ['first.md', 'nested/second.md'].map((path) => ({ path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: `fictional:${path}` } })), total: 2, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-cursor' } };
+            if (scenario === 'Note evidence deep link') return { result: { notes: [{ path: 'Inbox/reference.md', revision: 'note-v1', sourceKind: 'note', sourceReference: { topicId: 'fictional-topic', referenceId: 'fictional-note-evidence', sourceKind: 'note' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-note-cursor' } };
             if (['Original attachments', 'Replaced panel document', 'Evidence deep link', 'Changed evidence deep link'].includes(scenario)) return { result: { notes: [{ path: 'Documents/ATO/return.pdf', revision: scenario === 'Changed evidence deep link' ? 'sha256:current-version' : 'sha256:8c39a3fe40d6c8d46260914e943df7d2a921ab4c92b6f48803c867fb854bf1b2', sourceKind: 'document', sourceReference: { topicId: 'fictional-topic', referenceId: 'fictional-document', sourceKind: 'document' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-cursor' } };
             return { result: { notes: [{ path: 'brief.md', revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId: 'fictional-note' } }], total: 1, offset: 0, nextOffset: null, hasMore: false, cursor: 'fictional-cursor' } };
           }
@@ -103,10 +104,11 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
             }
             if (['Late panel Note', 'Replaced panel Session'].includes(scenario)) { const delayed = Promise.withResolvers(); window.resolveNote = delayed.resolve; await delayed.promise; }
             if (scenario === 'Note selection superseded' && params.path === 'first.md') { const delayed = Promise.withResolvers(); window.resolveFirstNote = delayed.resolve; await delayed.promise; }
-            const path = ['Note tree filter', 'Note selection superseded', 'Note selection during pagination'].includes(scenario) ? params.path : 'brief.md';
-            const referenceId = ['Note tree filter', 'Note selection superseded', 'Note selection during pagination'].includes(scenario) ? `fictional:${path}` : 'fictional-note';
+            const path = ['Note tree filter', 'Note selection superseded', 'Note selection during pagination', 'Note evidence deep link'].includes(scenario) ? params.path : 'brief.md';
+            const referenceId = scenario === 'Note evidence deep link' ? 'fictional-note-evidence' : ['Note tree filter', 'Note selection superseded', 'Note selection during pagination'].includes(scenario) ? `fictional:${path}` : 'fictional-note';
+            const revision = scenario === 'Note evidence deep link' ? 'note-v1' : 'r1';
             const text = path === 'brief.md' ? '<img src=x onerror=alert(1)>Fictional Note' : `Fictional Note ${path}`;
-            return { result: { path, revision: 'r1', sourceReference: { topicId: 'fictional-topic', referenceId }, contentEncoding: 'identity', contentBase64: btoa(text), byteOffset: 0, nextOffset: text.length, totalBytes: text.length, complete: true } };
+            return { result: { path, revision, sourceReference: { topicId: 'fictional-topic', referenceId }, contentEncoding: 'identity', contentBase64: btoa(text), byteOffset: 0, nextOffset: text.length, totalBytes: text.length, complete: true } };
           }
           if (method.endsWith('topics.list')) return { result: { activeGroups: { project: [{ topicId: 'fictional-topic', name: 'Fictional project', usable: true }], area: [], resource: [] } } };
           if (method.endsWith('sessions.browse')) {
@@ -145,8 +147,8 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       window.deactivate = plugin.activate(host);
       window.registrationCount = () => registrations.size;
       const panel = scenario.includes('panel');
-      const evidence = ['Evidence deep link', 'Changed evidence deep link'].includes(scenario);
-      context = { host, signal: lifetime.signal, props: panel ? { sessionKey: 'agent:fictional:chat', agentId: 'fictional' } : evidence ? { topicId: 'fictional-topic', sourceReferenceId: 'fictional-document', sourcePath: 'Documents/ATO/return.pdf', evidenceSourceVersion: 'sha256:8c39a3fe40d6c8d46260914e943df7d2a921ab4c92b6f48803c867fb854bf1b2' } : {}, presented: true,
+      const evidence = ['Evidence deep link', 'Changed evidence deep link', 'Note evidence deep link'].includes(scenario);
+      context = { host, signal: lifetime.signal, props: panel ? { sessionKey: 'agent:fictional:chat', agentId: 'fictional' } : scenario === 'Note evidence deep link' ? { topicId: 'fictional-topic', sourceReferenceId: 'fictional-note-evidence', sourcePath: 'Inbox/reference.md', evidenceSourceVersion: 'note-v1' } : evidence ? { topicId: 'fictional-topic', sourceReferenceId: 'fictional-document', sourcePath: 'Documents/ATO/return.pdf', evidenceSourceVersion: 'sha256:8c39a3fe40d6c8d46260914e943df7d2a921ab4c92b6f48803c867fb854bf1b2' } : {}, presented: true,
         ...(scenario === 'Missing panel promotion' ? {} : { panel: { showInMain: () => window.promoted++ } }) };
       view = registrations.get(panel ? 'replacement:topic-files' : evidence ? 'page:topic' : 'page:topics').mount(document.querySelector('#mount'), context);
       window.selectUnbound = () => { context = { ...context, props: { sessionKey: 'agent:fictional:unbound', agentId: 'fictional' } }; view.update(context); };
@@ -178,6 +180,12 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       await page.getByText('The evidence used source version', { exact: false }).waitFor();
       await page.getByText('It was not opened as the earlier evidence.', { exact: false }).waitFor();
       assert.equal(await page.evaluate(() => window.methods.some(method => method.endsWith('notes.read'))), false);
+      await page.evaluate(() => window.disposeNative());
+      return;
+    }
+    if (scenario === 'Note evidence deep link') {
+      await page.getByRole('region', { name: 'Note content' }).filter({ hasText: 'Fictional Note' }).waitFor();
+      assert.equal(await page.evaluate(() => window.methods.filter(method => method.endsWith('notes.read')).length), 1);
       await page.evaluate(() => window.disposeNative());
       return;
     }

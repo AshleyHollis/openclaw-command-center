@@ -644,7 +644,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
           status.textContent = 'The requested evidence source is invalid. Select a file from the authorized catalog.';
           return;
         }
-        const matches = catalogAllNotes.filter(note => sourceKindFor(note) === 'document' && note.path === requested.path && note.sourceReference?.referenceId === requested.referenceId);
+        const matches = catalogAllNotes.filter(note => ['note', 'document'].includes(sourceKindFor(note)) && note.path === requested.path && note.sourceReference?.referenceId === requested.referenceId);
         if (matches.length !== 1) {
           status.textContent = 'The exact evidence source is no longer available in this Topic. Select the current original from Files if appropriate.';
           return;
@@ -654,7 +654,8 @@ export function mountTopicPage(container, context, state = createNativeState(), 
           status.textContent = `The evidence used source version ${requested.evidenceSourceVersion}; the current original is ${matches[0].revision}. It was not opened as the earlier evidence.`;
           return;
         }
-        await openDocument(matches[0]);
+        if (sourceKindFor(matches[0]) === 'note') await openNote(matches[0]);
+        else await openDocument(matches[0]);
         return;
       }
       const prior = viewState.selected;

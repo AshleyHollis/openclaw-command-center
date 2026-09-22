@@ -71,17 +71,18 @@ export function normalizeCommitmentCapture(input) {
 export function planCommitmentCapture(input, existingLoop = null) {
   const value = normalizeCommitmentCapture(input);
   const observationId = `commitment-observation:${stable([value.sourceKind, value.sourceExternalId, value.sourceVersion, value.obligationId])}`;
+  const observationVersion = `commitment:${stable([value.sourceVersion, value.obligationId])}`;
   const normalizedObservation = normalizeObservation({
     schemaVersion: 1,
     observationId,
-    source: { system: 'command-center-capture', kind: value.sourceKind, externalId: value.sourceExternalId, version: value.sourceVersion },
+    source: { system: 'command-center-capture', kind: value.sourceKind, externalId: value.sourceExternalId, version: observationVersion },
     type: 'general',
     occurredAt: value.occurredAt,
     observedAt: value.observedAt,
     historicalBaseline: value.historicalBaseline,
     topicId: value.topicId,
     entityRefs: [{ kind: 'obligation', id: value.obligationId }],
-    facts: { title: value.title, obligationId: value.obligationId, ...(value.correlationId === undefined ? {} : { correlationNamespace: value.correlationNamespace, correlationId: value.correlationId }), provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath }) }
+    facts: { title: value.title, obligationId: value.obligationId, sourceVersion: value.sourceVersion, ...(value.correlationId === undefined ? {} : { correlationNamespace: value.correlationNamespace, correlationId: value.correlationId }), provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath }) }
   });
   const { digest: _digest, ...observation } = normalizedObservation;
   const stableSubjectId = subject(value);

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
@@ -12,6 +13,7 @@ import { createNotificationService } from '../src/notifications/service.mjs';
 import { invokeBridgeMethod } from '../src/bridge/register.mjs';
 import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
+import { build, distRoot } from '../src/build.mjs';
 
 const qualifyOpenLoop = (service, method, params) => invokeBridgeMethod(service, method, params, 'fictional-qualification-request', 'fictional-operator');
 const qualifyRegisteredOpenLoop = async (host, method, params) => (await host.authenticatedGatewayRequest(method, params)).result;
@@ -45,6 +47,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
   const lifecycles = [];
   const sessionCatalogs = [];
   const candidates = [];
+  const tools = new Map();
   let currentBindingAvailable = bindingAvailable;
   let revoked = false;
   let bindingCaptures = 0;
@@ -68,11 +71,11 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     registerHttpRoute(value) { routes.push(value); },
     registerSessionCatalog(value) { sessionCatalogs.push(value); },
     registerGatewayMethod(name, handler) { methods.set(name, handler); },
-    registerTool() {},
+    registerTool(factory, declaration) { tools.set(declaration.name, factory); },
     registerService(service) { services.push(service); }
   };
   return {
-    api, declarations, descriptors, routes, methods, services, lifecycles, sessionCatalogs, candidates,
+    api, declarations, descriptors, routes, methods, services, lifecycles, sessionCatalogs, candidates, tools,
     async authenticatedGatewayRequest(name, params) {
       const handler = methods.get(name);
       if (!handler) throw new Error(`Missing fake Gateway method ${name}`);
@@ -259,7 +262,10 @@ test('authenticated quick capture uses the durable shared owner and survives res
     await service.stop(); service = undefined;
 
     host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
-    assert.equal(service.openLoopsGet({ loopId: first.loop.loopId }).loop.title, 'Book the fictional electrician');
+    const persisted = service.openLoopsGet({ loopId: first.loop.loopId });
+    assert.equal(persisted.loop.title, 'Book the fictional electrician');
+    assert.equal(persisted.evidence[0].sourceVersion, `quick-capture:${params.captureId}`);
+    assert.doesNotMatch(persisted.evidence[0].sourceVersion, /^commitment:/u);
     assert.equal(service.openLoopsList({ limit: 20 }).total, 1);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
@@ -853,5 +859,56 @@ test('background notification reconciliation excludes a future Reminder and rout
     notification.close();
     metadata.close();
     await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('built package processes a mixed email through registered Note-save, capture and accounting tools', { skip: process.platform !== 'linux' && 'descriptor-backed installed-package Note journey requires the supported Linux host', timeout: 120_000 }, async () => {
+  await build();
+  const { default: builtPlugin } = await import(`${pathToFileURL(path.join(distRoot, 'plugin.mjs')).href}?accounted=${Date.now()}`);
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-built-accounted-email-'));
+  const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-built-accounted-email-vault-'));
+  const host = fakePublishedApi(stateDir, { fileAccess: createHostFileAccessFixture() });
+  let seed;
+  try {
+    seed = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    seed.createTopic({ topicId: 'topic-built-home', name: 'Fictional built home', paraCategory: 'project', lifecycle: 'active', createdAt: '2026-09-22T00:00:00.000Z', updatedAt: '2026-09-22T00:00:00.000Z' });
+    seed.createSourceReference({ version: 1, referenceId: 'folder:built-home', topicId: 'topic-built-home', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault });
+    const releaseEnrollmentAccess = installHostFileAccessFixture();
+    try { await enrollFixtureFolder(seed, 'folder:built-home', vault); } finally { releaseEnrollmentAccess(); }
+    seed.close(); seed = undefined;
+    builtPlugin.register(host.api); const service = host.services[0]; await service.start();
+    const source = { sourceKind: 'email', sourceExternalId: 'fictional-built-message', sourceVersion: 'change-key-built-19' };
+    const extraction = { schemaVersion: 1, proposedTopic: 'Fictional built home', notePath: 'Inbox/built-message.md', knowledgeMarkdown: '# Fictional built reference\n', knowledgeOutcomeId: 'reference-built', obligations: [{ obligationId: 'pay-built', title: 'Pay fictional built invoice', provenance: 'explicit' }, { obligationId: 'reply-built', title: 'Reply with fictional built reference', provenance: 'explicit' }, { obligationId: 'choose-built', title: 'Choose fictional built window', provenance: 'inferred', classification: 'decision' }] };
+    const invokeTool = async (name, params) => host.tools.get(name)().execute(randomUUID(), params);
+    const resolved = await invokeTool('command_center_resolve_source_topic', { topicName: extraction.proposedTopic });
+    await invokeTool('command_center_plan_intake_source', { ...source, checkpoint: 'page-1:fictional-built-message', observedAt: '2026-09-22T01:00:00.000Z', processorVersion: 'fictional-built-processor-v1', acceptedExtraction: extraction, outcomes: [{ outcomeId: 'pay-built', kind: 'obligation' }, { outcomeId: 'reply-built', kind: 'obligation' }, { outcomeId: 'choose-built', kind: 'decision' }, { outcomeId: 'reference-built', kind: 'information' }], enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } });
+    const saved = await invokeTool('command_center_save_source_note', { topicId: resolved.details.topicId, noteFolderReferenceId: resolved.details.noteFolderReferenceId, ...source, path: extraction.notePath, markdown: extraction.knowledgeMarkdown });
+    const noteRevision = saved.details.note.revision;
+    assert.notEqual(noteRevision, source.sourceVersion);
+    const evidence = { topicId: resolved.details.topicId, ...source, sourceReferenceId: saved.details.sourceReference.referenceId, sourcePath: saved.details.note.path };
+    const capture = async (obligationId, title, provenance = 'explicit') => (await invokeTool('command_center_capture_source_commitment', { ...evidence, obligationId, title, provenance })).details.loop;
+    const payment = await capture('pay-built', 'Pay fictional built invoice');
+    const reply = await capture('reply-built', 'Reply with fictional built reference');
+    const decision = await capture('choose-built', 'Choose fictional built window', 'inferred');
+    const base = { ...source, recordedAt: '2026-09-22T01:01:00.000Z' };
+    await invokeTool('command_center_record_intake_outcome', { ...base, outcomeId: 'pay-built', kind: 'obligation', status: 'applied', summary: 'Pay fictional built invoice', loopId: payment.loopId });
+    await invokeTool('command_center_record_intake_outcome', { ...base, outcomeId: 'reply-built', kind: 'obligation', status: 'applied', summary: 'Reply with fictional built reference', loopId: reply.loopId });
+    await invokeTool('command_center_record_intake_outcome', { ...base, outcomeId: 'choose-built', kind: 'decision', status: 'pending-decision', summary: 'Choose fictional built window', loopId: decision.loopId });
+    await invokeTool('command_center_record_intake_outcome', { ...base, outcomeId: 'reference-built', kind: 'information', status: 'quiet', summary: 'Retain fictional built reference', topicId: evidence.topicId, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath, sourceReferenceVersion: noteRevision });
+    const account = await invokeTool('command_center_get_intake_source_account', source);
+    assert.equal(account.details.plan.processorVersion, 'fictional-built-processor-v1');
+    assert.deepEqual(account.details.plan.acceptedExtraction, extraction);
+    assert.deepEqual(account.details.account.outcomes.map(item => item.status), ['applied', 'applied', 'pending-decision', 'quiet']);
+    await invokeTool('command_center_record_intake_receipt', { sourceKind: 'email', runId: 'built-email-run', checkpoint: 'complete', status: 'healthy-processed', observedAt: '2026-09-22T01:02:00.000Z', lastSuccessfulAt: '2026-09-22T01:02:00.000Z', nextExpectedAt: '2026-09-23T01:02:00.000Z', processedCount: 1, actionableCount: 3, noteCount: 1 });
+    const dashboardResponse = await host.authenticatedGatewayRequest('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 20 });
+    const email = (dashboardResponse.result ?? dashboardResponse).intakeCoverage.find(item => item.sourceKind === 'email');
+    assert.deepEqual(email.sourceCounts, { observed: 1, accounted: 1, resolved: 0 });
+    assert.deepEqual(email.outcomeCounts, { expected: 4, accounted: 4, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 });
+    assert.equal(email.status, 'needs-review');
+    assert.deepEqual(email.recentSources[0].outcomes.map(item => item.kind), ['obligation', 'obligation', 'decision', 'information']);
+  } finally {
+    seed?.close(); await host.services[0]?.stop?.();
+    await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(vault, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

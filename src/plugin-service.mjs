@@ -45,7 +45,7 @@ function publicOpenLoopEvidence(observation) {
     type: observation.type,
     sourceSystem: observation.source.system,
     sourceKind: observation.source.kind,
-    sourceVersion: observation.source.version,
+    sourceVersion: observation.facts.sourceVersion ?? observation.source.version,
     occurredAt: observation.occurredAt,
     observedAt: observation.observedAt,
     historicalBaseline: observation.historicalBaseline,
