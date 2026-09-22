@@ -119,12 +119,24 @@ test('receipt tool records Chat coverage separately from Note processing', async
   assert.equal([...metadata.operations.values()][0].operationKind, 'intake-receipt.chat.v1');
 });
 
+test('receipt tool returns the exact durable continuation until a resumed run completes', async () => {
+  const metadata = metadataOwner();
+  const tool = intakeReceiptToolFactory({ getOwners: () => ({ metadata }) })();
+  const counts = { processedCount: 1, actionableCount: 0, noteCount: 0 };
+  await tool.execute('partial', { sourceKind: 'email', runId: 'email-partial', checkpoint: 'page-2', status: 'incomplete', observedAt: '2026-09-22T02:00:00.000Z', nextExpectedAt: '2026-09-22T02:05:00.000Z', ...counts, continuation: { scopeId: 'mailbox-fixture', cursor: 'page-3', remainingCount: 2, failedReadCount: 1, scanCapReached: true } });
+  const resumed = await tool.execute('resume', { sourceKind: 'email', runId: 'email-resume', checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T02:05:00.000Z', nextExpectedAt: '2026-09-22T02:10:00.000Z', ...counts });
+  assert.deepEqual(resumed.details.resumeFrom, { scopeId: 'mailbox-fixture', cursor: 'page-3', remainingCount: 2, failedReadCount: 1, scanCapReached: true });
+  await tool.execute('complete', { sourceKind: 'email', runId: 'email-resume', checkpoint: 'complete', status: 'healthy-processed', observedAt: '2026-09-22T02:06:00.000Z', lastSuccessfulAt: '2026-09-22T02:06:00.000Z', nextExpectedAt: '2026-09-23T02:06:00.000Z', ...counts });
+  const next = await tool.execute('next', { sourceKind: 'email', runId: 'email-next', checkpoint: 'start', status: 'pending', observedAt: '2026-09-23T02:06:00.000Z', nextExpectedAt: '2026-09-23T02:10:00.000Z', ...counts });
+  assert.equal(next.details.resumeFrom, undefined);
+});
+
 test('source-accounting tools retain a stable plan and each exact outcome', async () => {
   const metadata = metadataOwner();
   const planTool = intakeSourcePlanToolFactory({ getOwners: () => ({ metadata }) })();
   const outcomeTool = intakeOutcomeToolFactory({ getOwners: () => ({ metadata }) })();
   const source = { sourceKind: 'email', sourceExternalId: 'fictional-message-accounted', sourceVersion: 'v3' };
-  const planned = await planTool.execute('plan', { ...source, checkpoint: 'page-2:message-7', observedAt: '2026-09-22T02:00:00.000Z', outcomes: [{ outcomeId: 'quiet-reference', kind: 'information' }], enumeration: { scope: 'bounded', scannedCount: 10, remainingCount: 2, failedReadCount: 0, scanCapReached: true } });
+  const planned = await planTool.execute('plan', { ...source, checkpoint: 'page-2:message-7', observedAt: '2026-09-22T02:00:00.000Z', outcomes: [{ outcomeId: 'quiet-reference', kind: 'information' }], enumeration: { scope: 'bounded', scannedCount: 10, remainingCount: 2, failedReadCount: 0, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-3' } });
   const outcome = await outcomeTool.execute('outcome', { ...source, outcomeId: 'quiet-reference', kind: 'information', status: 'quiet', summary: 'Fictional reference retained', sourceReferenceId: 'note:fictional-reference', sourceReferenceVersion: 'note-v1', recordedAt: '2026-09-22T02:00:01.000Z' });
   assert.equal(planned.details.plan.outcomes.length, 1);
   assert.equal(outcome.details.outcome.status, 'quiet');

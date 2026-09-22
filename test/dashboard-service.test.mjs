@@ -140,9 +140,9 @@ test('Dashboard coverage reports healthy, stale, pending, failed and never-conne
 
 test('Dashboard distinguishes source accounting from outcome resolution and exposes bounded gaps', async () => {
   const base = { listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
-  const source = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'v7', checkpoint: 'page-2:message-42', observedAt: '2026-09-22T01:00:00.000Z', outcomes: [{ outcomeId: 'pay', kind: 'obligation' }, { outcomeId: 'choose', kind: 'decision' }, { outcomeId: 'reference', kind: 'information' }], enumeration: { scope: 'bounded', scannedCount: 25, remainingCount: 3, failedReadCount: 1, scanCapReached: true } };
+  const source = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'v7', checkpoint: 'page-2:message-42', observedAt: '2026-09-22T01:00:00.000Z', outcomes: [{ outcomeId: 'pay', kind: 'obligation' }, { outcomeId: 'choose', kind: 'decision' }, { outcomeId: 'reference', kind: 'information' }], enumeration: { scope: 'bounded', scannedCount: 25, remainingCount: 3, failedReadCount: 1, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-3' } };
   const outcome = (outcomeId, kind, status, extra = {}) => ({ operationKind: 'intake-outcome.email.v1', state: 'applied', resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind: 'email', sourceExternalId: source.sourceExternalId, sourceVersion: source.sourceVersion, outcomeId, kind, status, summary: `Fictional ${outcomeId}`, recordedAt: '2026-09-22T01:01:00.000Z', ...extra }) });
-  const receipt = { operationKind: 'intake-receipt.email.v1', state: 'applied', resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind: 'email', runId: 'email-run', checkpoint: source.checkpoint, status: 'healthy-processed', observedAt: '2026-09-22T01:02:00.000Z', lastSuccessfulAt: '2026-09-22T01:02:00.000Z', nextExpectedAt: '2026-09-23T01:02:00.000Z', processedCount: 1, actionableCount: 2, noteCount: 1 }) };
+  const receipt = { operationKind: 'intake-receipt.email.v1', state: 'applied', resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind: 'email', runId: 'email-run', checkpoint: source.checkpoint, status: 'incomplete', observedAt: '2026-09-22T01:02:00.000Z', nextExpectedAt: '2026-09-23T01:02:00.000Z', processedCount: 1, actionableCount: 2, noteCount: 1, continuation: { scopeId: 'mailbox-fixture', cursor: 'page-3', remainingCount: 3, failedReadCount: 1, scanCapReached: true } }) };
   const metadata = { ...base, listOperations: () => [receipt, { operationKind: 'intake-source.email.v1', state: 'applied', resultIdentity: JSON.stringify(source) }, outcome('pay', 'obligation', 'applied', { loopId: 'loop-pay' }), outcome('choose', 'decision', 'pending-decision', { loopId: 'loop-choose' }), outcome('reference', 'information', 'quiet', { sourceReferenceId: 'note-reference' })], getOpenLoop: id => id === 'loop-choose' ? { loopId: id, state: 'suggested', revision: 1 } : null };
   const result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-22T02:00:00.000Z' });
   const email = result.intakeCoverage[0];
@@ -150,12 +150,14 @@ test('Dashboard distinguishes source accounting from outcome resolution and expo
   assert.deepEqual(email.sourceCounts, { observed: 1, accounted: 1, resolved: 0 });
   assert.deepEqual(email.outcomeCounts, { expected: 3, accounted: 3, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 });
   assert.equal(email.recentSources[0].enumeration.scanCapReached, true);
+  assert.equal(email.recentSources[0].enumeration.canResume, true);
   assert.equal(JSON.stringify(email.recentSources).includes(source.sourceExternalId), false);
   assert.equal(JSON.stringify(email.recentSources).includes(source.sourceVersion), false);
   assert.equal(JSON.stringify(email.recentSources).includes('loop-choose'), false);
   assert.equal(JSON.stringify(email.recentSources).includes('note-reference'), false);
   metadata.getOpenLoop = id => id === 'loop-choose' ? { loopId: id, state: 'confirmed', revision: 2 } : null;
+  receipt.resultIdentity = JSON.stringify({ schemaVersion: 1, sourceKind: 'email', runId: 'email-resume', checkpoint: 'complete', status: 'healthy-processed', observedAt: '2026-09-22T01:30:00.000Z', lastSuccessfulAt: '2026-09-22T01:30:00.000Z', nextExpectedAt: '2026-09-23T01:30:00.000Z', processedCount: 1, actionableCount: 0, noteCount: 0 });
   const clarified = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-22T02:00:00.000Z' });
-  assert.equal(clarified.intakeCoverage[0].status, 'bounded');
+  assert.equal(clarified.intakeCoverage[0].status, 'receipt-current');
   assert.equal(clarified.intakeCoverage[0].sourceCounts.resolved, 1);
 });

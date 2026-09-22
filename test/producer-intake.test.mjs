@@ -75,3 +75,14 @@ test('partial failure reports the last acknowledged checkpoint and never publish
   assert.deepEqual(calls.receipt.map(call => call.status), ['pending', 'failed']);
   assert.equal(calls.receipt.at(-1).checkpoint, 'start');
 });
+
+test('a bounded page records and returns an exact resumable continuation', async () => {
+  const { adapter, calls } = harness();
+  const enumeration = { scope: 'bounded', scannedCount: 1, remainingCount: 4, failedReadCount: 1, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-3' };
+  const result = await adapter.process({ runId: 'email-run-bounded', nextExpectedAt: '2026-09-22T00:05:00.000Z', enumeration, records: [{ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'notice-1', sourceVersion: 'v1', checkpoint: 'page-2:notice-1', rawText: 'no action' }] });
+  assert.equal(result.status, 'incomplete');
+  assert.deepEqual(result.continuation, { scopeId: 'mailbox-fixture', cursor: 'page-3', remainingCount: 4, failedReadCount: 1, scanCapReached: true });
+  assert.deepEqual(calls.receipt.map(item => item.status), ['pending', 'incomplete']);
+  assert.deepEqual(calls.receipt.at(-1).continuation, result.continuation);
+  assert.deepEqual(calls.plans[0].enumeration, enumeration);
+});

@@ -188,9 +188,10 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
   const pendingDecisions = accounts.reduce((sum, item) => sum + item.counts.decisionsPending, 0);
   const failedOutcomes = accounts.reduce((sum, item) => sum + item.counts.failed, 0);
   const unresolvedTopics = accounts.reduce((sum, item) => sum + item.counts.unresolvedTopics, 0);
-  const incompleteEnumeration = accounts.some(item => item.enumeration.scope !== 'complete' || item.enumeration.remainingCount > 0 || item.enumeration.failedReadCount > 0 || item.enumeration.scanCapReached);
+  const incompleteEnumeration = receipt.status === 'incomplete' || receipt.continuation !== undefined;
   const receiptStatus = latest.state === 'pending' || receipt.status === 'pending' ? 'pending'
     : latest.state !== 'applied' || receipt.status === 'failed' ? 'failed'
+      : receipt.status === 'incomplete' ? 'incomplete'
       : receipt.status === 'never-connected' ? 'never-connected'
         : overdue ? 'stale'
           : receipt.status === 'healthy-empty' ? 'healthy-empty' : 'receipt-current';
@@ -204,6 +205,7 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
     'never-connected': 'The maintained producer reported that this source is not connected.',
     stale: 'The maintained producer has not recorded the next expected checkpoint.',
     'healthy-empty': 'The maintained producer completed successfully and found no new items.',
+    incomplete: 'The maintained producer stopped at a durable continuation and can resume from its exact retained cursor.',
     'receipt-current': 'The maintained producer completed successfully and recorded its checkpoint.'
   };
   const accountExplanation = status === 'partial' ? 'Some source outcomes are missing, failed or awaiting Topic ownership; processing can resume from the retained source revision.'
@@ -222,7 +224,7 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
       accounted: account.accounted,
       resolved: account.resolved,
       counts: account.counts,
-      enumeration: account.enumeration,
+      enumeration: Object.freeze({ scope: account.enumeration.scope, scannedCount: account.enumeration.scannedCount, remainingCount: account.enumeration.remainingCount, failedReadCount: account.enumeration.failedReadCount, scanCapReached: account.enumeration.scanCapReached, canResume: account.enumeration.scopeId !== undefined && account.enumeration.resumeCursor !== undefined }),
       outcomes: Object.freeze(account.outcomes.map(outcome => Object.freeze({ kind: outcome.kind, status: outcome.status, ...(outcome.summary ? { summary: outcome.summary } : {}) })))
     }))),
     explanation: accountExplanation

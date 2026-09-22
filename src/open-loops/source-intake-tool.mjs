@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createCommitmentCaptureService } from './commitment-capture.mjs';
-import { recordIntakeReceipt } from './intake-receipt.mjs';
+import { findIntakeContinuation, recordIntakeReceipt } from './intake-receipt.mjs';
 import { recordIntakeOutcome, recordIntakeSourcePlan } from './intake-accounting.mjs';
 import { sourceError } from '../sources/errors.mjs';
 
@@ -100,13 +100,15 @@ export function intakeReceiptToolFactory({ getOwners } = {}) {
     name: 'command_center_record_intake_receipt',
     description: 'Record a content-free maintained email, Chat or Note processing checkpoint for Command Center intake health. Chat is on demand and may omit nextExpectedAt.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
-      sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, runId: { type: 'string', minLength: 1 }, checkpoint: { type: 'string', minLength: 1 }, status: { type: 'string', enum: ['healthy-empty', 'healthy-processed', 'pending', 'failed', 'never-connected'] }, observedAt: { type: 'string' }, lastSuccessfulAt: { type: 'string' }, nextExpectedAt: { type: 'string' }, processedCount: { type: 'integer', minimum: 0 }, actionableCount: { type: 'integer', minimum: 0 }, noteCount: { type: 'integer', minimum: 0 }
+      sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, runId: { type: 'string', minLength: 1 }, checkpoint: { type: 'string', minLength: 1 }, status: { type: 'string', enum: ['healthy-empty', 'healthy-processed', 'incomplete', 'pending', 'failed', 'never-connected'] }, observedAt: { type: 'string' }, lastSuccessfulAt: { type: 'string' }, nextExpectedAt: { type: 'string' }, processedCount: { type: 'integer', minimum: 0 }, actionableCount: { type: 'integer', minimum: 0 }, noteCount: { type: 'integer', minimum: 0 }, continuation: { type: 'object', additionalProperties: false, properties: { scopeId: { type: 'string', minLength: 1 }, cursor: { type: 'string', minLength: 1 }, remainingCount: { type: 'integer', minimum: 0 }, failedReadCount: { type: 'integer', minimum: 0 }, scanCapReached: { type: 'boolean' } }, required: ['scopeId', 'cursor', 'remainingCount', 'failedReadCount', 'scanCapReached'] }
     }, required: ['sourceKind', 'runId', 'checkpoint', 'status', 'observedAt', 'processedCount', 'actionableCount', 'noteCount'] }),
     async execute(_toolCallId, params) {
       const { metadata } = getOwners() ?? {};
       if (!metadata) throw sourceError('capability-unavailable', 'Intake receipt ownership is not ready.');
+      const resumeFrom = params.status === 'pending' ? findIntakeContinuation(metadata, params.sourceKind) : null;
       const result = recordIntakeReceipt(metadata, { schemaVersion: 1, ...params });
-      return Object.freeze({ content: [{ type: 'text', text: JSON.stringify({ status: result.disposition, sourceKind: result.receipt.sourceKind, checkpoint: result.receipt.checkpoint }) }], details: result });
+      const details = Object.freeze({ ...result, ...(resumeFrom ? { resumeFrom } : {}) });
+      return Object.freeze({ content: [{ type: 'text', text: JSON.stringify({ status: result.disposition, sourceKind: result.receipt.sourceKind, checkpoint: result.receipt.checkpoint, ...(resumeFrom ? { resumeFrom } : {}) }) }], details });
     }
   });
 }
@@ -119,7 +121,7 @@ export function intakeSourcePlanToolFactory({ getOwners } = {}) {
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
       sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, checkpoint: { type: 'string', minLength: 1 }, observedAt: { type: 'string' },
       outcomes: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', additionalProperties: false, properties: { outcomeId: { type: 'string', minLength: 1 }, kind: { type: 'string', enum: ['obligation', 'decision', 'information', 'no-action'] } }, required: ['outcomeId', 'kind'] } },
-      enumeration: { type: 'object', additionalProperties: false, properties: { scope: { type: 'string', enum: ['complete', 'bounded', 'partial'] }, scannedCount: { type: 'integer', minimum: 0 }, remainingCount: { type: 'integer', minimum: 0 }, failedReadCount: { type: 'integer', minimum: 0 }, scanCapReached: { type: 'boolean' } }, required: ['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached'] }
+      enumeration: { type: 'object', additionalProperties: false, properties: { scope: { type: 'string', enum: ['complete', 'bounded', 'partial'] }, scannedCount: { type: 'integer', minimum: 0 }, remainingCount: { type: 'integer', minimum: 0 }, failedReadCount: { type: 'integer', minimum: 0 }, scanCapReached: { type: 'boolean' }, scopeId: { type: 'string', minLength: 1 }, resumeCursor: { type: 'string', minLength: 1 } }, required: ['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached'] }
     }, required: ['sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'outcomes', 'enumeration'] }),
     async execute(_toolCallId, params) {
       const { metadata } = getOwners() ?? {};

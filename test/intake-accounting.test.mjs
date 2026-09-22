@@ -3,6 +3,7 @@ import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { planCommitmentCapture } from '../src/open-loops/commitment-capture.mjs';
 import { projectIntakeAccounts, recordIntakeOutcome, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
+import { findIntakeContinuation, recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,7 +22,7 @@ function sourcePlan() {
       { outcomeId: 'choose-delivery', kind: 'decision' },
       { outcomeId: 'reference-details', kind: 'information' }
     ],
-    enumeration: { scope: 'bounded', scannedCount: 25, remainingCount: 4, failedReadCount: 1, scanCapReached: true }
+    enumeration: { scope: 'bounded', scannedCount: 25, remainingCount: 4, failedReadCount: 1, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-2' }
   };
 }
 
@@ -67,7 +68,7 @@ test('mixed email accounting distinguishes accounted-for from resolved and retai
     const [account] = projectIntakeAccounts(metadata, 'email');
     assert.equal(first.plan.sourceVersion, 'change-key-7');
     assert.deepEqual({ accounted: account.accounted, resolved: account.resolved, expected: account.counts.expected, pending: account.counts.decisionsPending, quiet: account.counts.quiet }, { accounted: true, resolved: false, expected: 4, pending: 1, quiet: 1 });
-    assert.deepEqual(account.enumeration, { scope: 'bounded', scannedCount: 25, remainingCount: 4, failedReadCount: 1, scanCapReached: true });
+    assert.deepEqual(account.enumeration, { scope: 'bounded', scannedCount: 25, remainingCount: 4, failedReadCount: 1, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-2' });
     assert.equal(recordIntakeOutcome(metadata, { ...base, outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Retained fictional reference details', sourceReferenceId: 'note:fictional-message-42', sourceReferenceVersion: 'note-v1' }).disposition, 'duplicate');
     assert.throws(() => recordIntakeOutcome(metadata, { ...base, outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Changed under retry', sourceReferenceId: 'note:fictional-message-42', sourceReferenceVersion: 'note-v1' }), { code: 'intent-mismatch' });
     metadata.close();
@@ -133,4 +134,20 @@ test('generic operation writes cannot forge or replace intake accounting receipt
     assert.throws(() => metadata.recordOperation({ logicalOperationId: 'forged-intake', transportRequestId: 'forged-intake', intentDigest: 'sha256:forged', operationKind: 'intake-source.email.v1', state: 'applied', resultStatus: 'planned', resultIdentity: '{}', observedRevision: 'v1', createdAt: '2026-09-22T01:00:00.000Z', updatedAt: '2026-09-22T01:00:00.000Z' }), { code: 'intake-accounting-owner-required' });
     metadata.close();
   } finally { await temporary.cleanup(); }
+});
+
+test('a failed page continuation survives SQLite restart and clears only after successful resume', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-continuation-');
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path });
+    const counts = { processedCount: 25, actionableCount: 2, noteCount: 1 };
+    const continuation = { scopeId: 'mailbox-fixture', cursor: 'page-3', remainingCount: 4, failedReadCount: 1, scanCapReached: true };
+    recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: 'email-partial', checkpoint: 'page-2', status: 'incomplete', observedAt: '2026-09-22T02:00:00.000Z', nextExpectedAt: '2026-09-22T02:05:00.000Z', ...counts, continuation });
+    metadata.close(); metadata = openCommandCenterMetadataService({ stateDir: temporary.path });
+    assert.deepEqual(findIntakeContinuation(metadata, 'email'), continuation);
+    recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: 'email-resume', checkpoint: 'complete', status: 'healthy-processed', observedAt: '2026-09-22T02:06:00.000Z', lastSuccessfulAt: '2026-09-22T02:06:00.000Z', nextExpectedAt: '2026-09-23T02:06:00.000Z', ...counts });
+    assert.equal(findIntakeContinuation(metadata, 'email'), null);
+    metadata.close(); metadata = undefined;
+  } finally { metadata?.close(); await temporary.cleanup(); }
 });
