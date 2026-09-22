@@ -59,11 +59,11 @@ export async function resolveSourceTopic({ metadata, sourceService, topicName: r
     // Command Center has observed it. Admit that exact Topic-relative path
     // through the authoritative Note reader, which records the retained Note
     // revision without conflating it with the upstream source revision.
-    if (!evidence && references.length <= 1) {
+    if (!evidence && references.length <= 1 && expectedNoteRevision !== undefined) {
       try {
-        const note = await sourceService.notesRead({ schemaVersion: 1, topicId: match.topicId, path: notePath });
+        const note = await sourceService.notesRead({ schemaVersion: 1, topicId: match.topicId, path: notePath, observedRevision: expectedNoteRevision });
         const reference = note?.sourceReference;
-        if (expectedNoteRevision !== undefined && note.revision !== expectedNoteRevision) throw sourceError('conflict', 'The retained producer Note changed after verification.');
+        if (note.revision !== expectedNoteRevision) throw sourceError('conflict', 'The retained producer Note changed after verification.');
         if (reference?.referenceId && reference.topicId === match.topicId && reference.sourceKind === 'note' && note.revision === reference.observedRevision) evidence = Object.freeze({ sourceReferenceId: reference.referenceId, revision: note.revision, path: note.path });
       } catch (error) {
         if (!['not-found', 'source-unavailable'].includes(error?.code)) throw error;
@@ -116,10 +116,10 @@ export function sourceCommitmentCaptureToolFactory({ getOwners } = {}) {
     name: 'command_center_capture_source_commitment',
     description: 'Capture one obligation or bounded suggestion from a maintained email or Note producer after it has created an exact Topic Note reference. Do not call for informational knowledge with no unresolved action.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
-      topicId: { type: 'string', minLength: 1 }, sourceKind: { type: 'string', enum: ['email', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, sourceReferenceId: { type: 'string', minLength: 1 }, sourcePath: { type: 'string', minLength: 1 },
+      topicId: { type: 'string', minLength: 1 }, sourceKind: { type: 'string', enum: ['email', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, sourceReferenceId: { type: 'string', minLength: 1 }, sourcePath: { type: 'string', minLength: 1 }, sourceReferenceVersion: { type: 'string', minLength: 1 },
       title: { type: 'string', minLength: 1 }, obligationId: { type: 'string', minLength: 1 }, correlationNamespace: { type: 'string', minLength: 1 }, correlationId: { type: 'string', minLength: 1 }, provenance: { type: 'string', enum: ['explicit', 'inferred', 'idea', 'quoted'] }, confidence: { type: 'number', minimum: 0, maximum: 1 },
       dueAt: { type: 'string' }, reviewAt: { type: 'string' }, plannedAt: { type: 'string' }, importance: { type: 'string', enum: ['critical', 'high', 'normal', 'low'] }, importanceOrigin: { type: 'string', enum: ['source', 'processing'] }, effortMinutes: { type: 'integer', minimum: 1, maximum: 10080 }, contexts: { type: 'array', items: { type: 'string' }, maxItems: 8 }, dependencies: { type: 'array', items: { type: 'string' }, maxItems: 16 }
-    }, required: ['topicId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'title', 'obligationId', 'provenance'] }),
+    }, required: ['topicId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'title', 'obligationId', 'provenance'] }),
     async execute(_toolCallId, params) {
       const { sourceService, metadata } = getOwners() ?? {};
       if (!sourceService || !metadata) throw sourceError('capability-unavailable', 'Source capture ownership is not ready.');

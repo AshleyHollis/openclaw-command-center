@@ -111,7 +111,8 @@ export function normalizeIntakeOutcome(input) {
 export function recordIntakeOutcome(metadata, input) {
   if (!metadata?.commitIntakeAccountingOperation) throw new TypeError('Intake accounting requires metadata ownership.');
   const outcome = normalizeIntakeOutcome(input);
-  const logicalOperationId = stableUuid(`command-center:intake-outcome:${outcome.sourceKind}:${outcome.sourceExternalId}:${outcome.sourceVersion}:${outcome.outcomeId}`);
+  const provisional = ['unresolved-topic', 'failed', 'unknown'].includes(outcome.status);
+  const logicalOperationId = stableUuid(`command-center:intake-outcome:${outcome.sourceKind}:${outcome.sourceExternalId}:${outcome.sourceVersion}:${outcome.outcomeId}${provisional ? `:${outcome.status}` : ''}`);
   const intent = { schemaVersion: 1, sourceKind: outcome.sourceKind, sourceExternalId: outcome.sourceExternalId, sourceVersion: outcome.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind };
   const { recordedAt: _recordedAt, ...semanticResult } = outcome;
   const intentDigest = digest({ ...intent, result: semanticResult });

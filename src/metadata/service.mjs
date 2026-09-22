@@ -1235,9 +1235,12 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
           const intakeSource = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(intakeSourceOperationId);
           let acceptedPlan;
           try { acceptedPlan = JSON.parse(intakeSource?.result_identity ?? 'null'); } catch { acceptedPlan = null; }
+          const plannedTopicName = acceptedPlan?.acceptedExtraction?.proposedTopic;
+          const matchingTopics = typeof plannedTopicName === 'string' ? db.prepare("SELECT topic_id FROM topics WHERE name = ? AND lifecycle = 'active'").all(plannedTopicName) : [];
+          const topicMatchesPlan = matchingTopics.length === 1 && matchingTopics[0].topic_id === result.topicId;
           const existingNoteEvidence = result.sourceKind === 'note' && result.sourceReferenceId === result.sourceExternalId;
           const createdNoteEvidence = sourceNote?.operation_kind === 'notes.create' && sourceNote.state === 'applied' && sourceNote.result_identity === reference?.external_source_id && sourceNote.observed_revision === result.sourceReferenceVersion;
-          const admittedProducerEvidence = intakeSource?.operation_kind === `intake-source.${result.sourceKind}.v1` && intakeSource.state === 'applied' && acceptedPlan?.retainedNoteRevision === result.sourceReferenceVersion && acceptedPlan?.acceptedExtraction?.notePath === result.sourcePath;
+          const admittedProducerEvidence = intakeSource?.operation_kind === `intake-source.${result.sourceKind}.v1` && intakeSource.state === 'applied' && topicMatchesPlan && acceptedPlan?.retainedNoteRevision === result.sourceReferenceVersion && acceptedPlan?.acceptedExtraction?.notePath === result.sourcePath;
           const normalizedExternalPath = (reference?.current_locator ?? reference?.external_source_id)?.replaceAll('\\', '/').replace(/\/$/, '');
           const normalizedSourcePath = result.sourcePath?.replaceAll('\\', '/').replace(/^\/+/, '');
           const folders = db.prepare(`SELECT COALESCE(locator.locator, reference.external_source_id) AS effective_locator FROM source_references AS reference

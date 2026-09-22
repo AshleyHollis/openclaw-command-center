@@ -124,6 +124,34 @@ test('missing and unresolved outcomes remain visible instead of advancing the so
   } finally { await temporary.cleanup(); }
 });
 
+test('an unresolved outcome can become applied without replacing its durable history', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-resume-outcome-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata); recordIntakeSourcePlan(metadata, sourcePlan());
+    const base = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'pay-invoice', kind: 'obligation', summary: 'Pay fictional invoice' };
+    recordIntakeOutcome(metadata, { ...base, status: 'unresolved-topic', recordedAt: '2026-09-22T01:01:00.000Z' });
+    const { payment } = addEffects(metadata);
+    recordIntakeOutcome(metadata, { ...base, status: 'applied', loopId: payment.loopId, recordedAt: '2026-09-22T01:02:00.000Z' });
+    const [account] = projectIntakeAccounts(metadata, 'email');
+    assert.equal(account.outcomes.find(item => item.outcomeId === 'pay-invoice').status, 'applied');
+    assert.equal(metadata.listOperations().filter(item => item.operationKind === 'intake-outcome.email.v1').length, 2);
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
+test('an admitted external producer Note cannot be accounted under a different Topic', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-wrong-topic-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata);
+    const plan = sourcePlan(); plan.retainedNoteRevision = 'sha256:retained-note'; recordIntakeSourcePlan(metadata, plan);
+    metadata.createTopic({ topicId: 'topic-foreign', name: 'Fictional Foreign', paraCategory: 'area', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'folder:foreign', topicId: 'topic-foreign', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/foreign' });
+    metadata.createSourceReference({ version: 1, referenceId: 'note:foreign', topicId: 'topic-foreign', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/foreign/Inbox/reference.md', observedRevision: 'sha256:retained-note' });
+    assert.throws(() => recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Wrong Topic', topicId: 'topic-foreign', sourceReferenceId: 'note:foreign', sourcePath: 'Inbox/reference.md', sourceReferenceVersion: 'sha256:retained-note', recordedAt: '2026-09-22T01:01:00.000Z' }), { code: 'conflict' });
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
 test('the intake owner commits one durable result across simultaneous SQLite owners', async () => {
   const temporary = await temporaryStateDir('command-center-intake-concurrent-');
   let first; let second;

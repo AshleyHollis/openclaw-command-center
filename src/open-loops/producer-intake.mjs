@@ -24,7 +24,7 @@ function acceptedExtraction(value) {
 
 function accountingResult(value) { return value?.details ?? value; }
 function accountOutcome(account, outcomeId) { return account?.outcomes?.find(item => item.outcomeId === outcomeId); }
-function unfinished(account, outcomeId) { return !accountOutcome(account, outcomeId) || ['missing', 'unresolved-topic', 'failed'].includes(accountOutcome(account, outcomeId).status); }
+function unfinished(account, outcomeId) { return !accountOutcome(account, outcomeId) || ['missing', 'unresolved-topic', 'failed', 'unknown'].includes(accountOutcome(account, outcomeId).status); }
 
 /**
  * Orchestrates a maintained producer without owning extraction or source storage.
@@ -108,7 +108,7 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
             if (!obligation || !nonBlank(obligation.obligationId) || !nonBlank(obligation.title) || !['explicit', 'inferred', 'idea', 'quoted'].includes(obligation.provenance)) fail('producer-obligation-invalid');
             if (!unfinished(account, obligation.obligationId)) continue;
             const { classification, ...captureObligation } = obligation;
-            const params = { ...captureObligation, topicId: topic.topicId, sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath };
+            const params = { ...captureObligation, topicId: topic.topicId, sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath, sourceReferenceVersion: evidence.sourceReferenceVersion };
             const captured = record.sourceKind === 'chat' ? await captureChatCommitment(params) : await captureSourceCommitment(params);
             const loop = captured?.loop ?? captured?.details?.loop;
             if (!nonBlank(loop?.loopId)) fail('producer-outcome-evidence-required');

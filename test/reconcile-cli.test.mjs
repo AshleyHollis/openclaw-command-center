@@ -42,10 +42,12 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
 test('producer intake digest uses the package canonicalizer and rejects dishonest enumeration', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'producer-intake-digest-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const plan = { schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-digest', sourceKind: 'email', processorVersion: 'fictional-v1', nextExpectedAt: '2026-09-22T12:00:00.000Z',
+  const plan = { schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-digest', sourceKind: 'email', sourceNamespace: 'fictional-graph:account-one', scope: { accountBinding: 'fictional-account-one', folders: ['inbox'], sinceUtc: '2026-09-15T12:40:00.000Z', beforeUtc: '2026-09-22T12:40:00.000Z', maxMessages: 5, batchKind: 'canary' }, processorVersion: 'fictional-v1', nextExpectedAt: '2026-09-22T12:00:00.000Z',
     enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false }, records: [{ schemaVersion: 1, sourceExternalId: 'fictional-message', sourceVersion: 'fictional-change-key', checkpoint: 'fictional-checkpoint', acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [] } }] };
   const planPath = path.join(root, 'plan.json'); await writeFile(planPath, JSON.stringify(plan));
   assert.equal(await readProducerIntakePlanDigest(planPath), producerIntakePlanDigest(plan));
+  assert.throws(() => producerIntakePlanDigest({ ...plan, scope: { ...plan.scope, maxMessages: 6 } }), error => error.code === 'producer-plan-invalid');
+  assert.throws(() => producerIntakePlanDigest({ ...plan, sourceNamespace: undefined }), error => error.code === 'producer-plan-invalid');
   plan.enumeration.scannedCount = 0; await writeFile(planPath, JSON.stringify(plan));
   await assert.rejects(() => readProducerIntakePlanDigest(planPath), error => error.code === 'producer-plan-invalid');
 });
@@ -57,7 +59,7 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
   await mkdir(path.dirname(noteFile), { recursive: true });
   const noteBytes = Buffer.from('# Fictional accepted email\n', 'utf8'); await writeFile(noteFile, noteBytes);
   const noteRevision = revisionForBytes(noteBytes);
-  const plan = { schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-email-handoff-1', sourceKind: 'email', processorVersion: 'fictional-email-processor-v1', nextExpectedAt: '2026-09-22T12:00:00.000Z',
+  const plan = { schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-email-handoff-1', sourceKind: 'email', sourceNamespace: 'fictional-graph:account-one', scope: { accountBinding: 'fictional-account-one', folders: ['inbox'], sinceUtc: '2026-09-15T12:40:00.000Z', beforeUtc: '2026-09-22T12:40:00.000Z', maxMessages: 5, batchKind: 'canary' }, processorVersion: 'fictional-email-processor-v1', nextExpectedAt: '2026-09-22T12:00:00.000Z',
     enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false }, records: [{ schemaVersion: 1, sourceExternalId: 'fictional-message-id', sourceVersion: 'email-change-key-9', checkpoint: 'fictional-checkpoint-1', retainedNoteRevision: noteRevision, acceptedExtraction: {
       schemaVersion: 1, proposedTopic: 'Fictional Email Intake', notePath, knowledgeMarkdown: '# Fictional accepted email\n', knowledgeOutcomeId: 'fictional-message:information', knowledgeSummary: 'Fictional email retained', obligations: [{ obligationId: 'fictional-message:payment', title: 'Pay fictional accepted invoice', provenance: 'explicit', importance: 'high', importanceOrigin: 'source' }]
     } }] };
@@ -81,7 +83,7 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
       const loops = verification.listOpenLoops(); assert.equal(loops.length, 1); assert.equal(loops[0].title, 'Pay fictional accepted invoice'); assert.equal(loops[0].revision, 1);
       const observation = loops[0].evidenceObservationIds.map(id => verification.getOpenLoopObservation(id)).find(item => item?.facts?.obligationId === 'fictional-message:payment');
       assert.equal(observation.facts.sourceVersion, 'email-change-key-9');
-      assert.equal(observation.source.externalId, 'fictional-message-id');
+      assert.equal(observation.source.externalId, 'fictional-graph:account-one:fictional-message-id');
       const account = verification.listOperations().find(item => item.operationKind === 'intake-source.email.v1');
       assert.equal(account.observedRevision, 'email-change-key-9');
     } finally { verification.close(); }
