@@ -158,7 +158,12 @@ export function intakeSourceAccountToolFactory({ getOwners } = {}) {
       const { metadata } = getOwners() ?? {};
       if (!metadata) throw sourceError('capability-unavailable', 'Intake source accounting is not ready.');
       const result = loadIntakeSourceAccount(metadata, params);
-      return Object.freeze({ content: [{ type: 'text', text: JSON.stringify(result ? { status: 'found', sourceKind: result.plan.sourceKind, processorVersion: result.plan.processorVersion, outcomeCount: result.plan.outcomes.length } : { status: 'not-found', sourceKind: params.sourceKind }) }], details: result });
+      const projection = result ? Object.freeze({
+        status: 'found', sourceKind: result.plan.sourceKind, sourceExternalId: result.plan.sourceExternalId, sourceVersion: result.plan.sourceVersion,
+        processorVersion: result.plan.processorVersion, acceptedExtraction: result.plan.acceptedExtraction,
+        outcomes: result.account?.outcomes ?? result.plan.outcomes.map(outcome => Object.freeze({ ...outcome, status: 'missing' }))
+      }) : Object.freeze({ status: 'not-found', sourceKind: params.sourceKind });
+      return Object.freeze({ content: [{ type: 'text', text: JSON.stringify(projection) }], details: result });
     }
   });
 }

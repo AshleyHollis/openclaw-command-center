@@ -1276,6 +1276,9 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-capture-choice').length, 1);
         assert.equal(fictionalModel.requests.filter(item => ['accounted-capture-payment', 'accounted-capture-reply'].includes(item.action)).length, 2);
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-load').length, 1);
+        const durableResume = fictionalModel.requests.find(item => item.action === 'accounted-resolve' && item.loadedProcessorVersion);
+        assert.equal(durableResume?.loadedProcessorVersion, 'fictional-real-host-processor-v1');
+        assert.deepEqual(durableResume.loadedOutcomeStatuses, [['real-host-choice', 'clarified'], ['real-host-payment', 'missing'], ['real-host-reply', 'missing'], ['real-host-reference', 'missing']]);
         return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true });
       }
       if (kind === 'dashboard-payload') {

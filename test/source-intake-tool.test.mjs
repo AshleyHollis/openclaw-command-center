@@ -151,7 +151,9 @@ test('source-accounting tools retain a stable plan and each exact outcome', asyn
   assert.equal(before.details.plan.processorVersion, 'fictional-processor-v4');
   assert.deepEqual(before.details.plan.acceptedExtraction, extraction);
   assert.equal(before.details.account.outcomes[0].status, 'missing');
+  assert.deepEqual(JSON.parse(before.content[0].text), { status: 'found', ...source, processorVersion: 'fictional-processor-v4', acceptedExtraction: extraction, outcomes: [{ outcomeId: 'quiet-reference', kind: 'information', status: 'missing' }] });
   assert.equal(outcome.details.outcome.status, 'quiet');
   assert.equal(after.details.account.outcomes[0].status, 'quiet');
+  assert.equal(JSON.parse(after.content[0].text).outcomes[0].sourceReferenceVersion, 'note-v1');
   assert.deepEqual([...metadata.operations.values()].map(item => item.operationKind).sort(), ['intake-outcome.email.v1', 'intake-source.email.v1']);
 });
