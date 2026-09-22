@@ -1205,6 +1205,10 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         observeMigration();
         throw new Error(`Host plugin readiness failed; durableStartupProgress=${JSON.stringify(readinessProgress)}; host=${JSON.stringify(boundedHostEvidence(scenarioHost.diagnostics))}`, { cause: error });
       }
+      await waitForConsecutiveReadiness(async probeSignal => {
+        const catalog = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'plugins.controlUi.list', signal: probeSignal });
+        return Boolean(catalog?.plugins?.find(plugin => plugin.pluginId === 'command-center')?.revision);
+      }, scenarioHost.earlyExit, { required: 1, deadlineMs: 30_000, delayMs: 250, signal });
       if (kind === 'scale') {
         let lastMigrationStatus;
         try {
