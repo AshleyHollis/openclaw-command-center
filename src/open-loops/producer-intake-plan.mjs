@@ -32,10 +32,13 @@ export function normalizeProducerIntakePlan(input) {
   const keys = ['schemaVersion', 'purpose', 'runId', 'sourceKind', 'processorVersion', 'nextExpectedAt', 'enumeration', 'records'];
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !keys.includes(key)) || input.schemaVersion !== 1 || input.purpose !== 'command-center-producer-intake' || input.sourceKind !== 'email' || !Array.isArray(input.records) || input.records.length > 500) fail('producer-plan-invalid');
   const records = input.records.map(record => {
-    const recordKeys = ['schemaVersion', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'acceptedExtraction'];
+    const recordKeys = ['schemaVersion', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'retainedNoteRevision', 'acceptedExtraction'];
     if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).some(key => !recordKeys.includes(key)) || record.schemaVersion !== 1) fail('producer-plan-invalid');
     try {
-      return Object.freeze({ schemaVersion: 1, sourceExternalId: text(record.sourceExternalId, 1000), sourceVersion: text(record.sourceVersion, 300), checkpoint: text(record.checkpoint, 1000), acceptedExtraction: normalizeAcceptedExtraction(record.acceptedExtraction) });
+      const acceptedExtraction = normalizeAcceptedExtraction(record.acceptedExtraction);
+      const retainedNoteRevision = record.retainedNoteRevision === undefined ? undefined : text(record.retainedNoteRevision, 100);
+      if (acceptedExtraction.notePath && !/^sha256:[a-f0-9]{64}$/u.test(retainedNoteRevision ?? '')) fail('producer-plan-invalid');
+      return Object.freeze({ schemaVersion: 1, sourceExternalId: text(record.sourceExternalId, 1000), sourceVersion: text(record.sourceVersion, 300), checkpoint: text(record.checkpoint, 1000), ...(retainedNoteRevision ? { retainedNoteRevision } : {}), acceptedExtraction });
     } catch (error) { if (error?.code === 'producer-plan-invalid') throw error; fail('producer-plan-invalid'); }
   });
   if (new Set(records.map(record => `${record.sourceExternalId}\0${record.sourceVersion}`)).size !== records.length) fail('producer-plan-invalid');

@@ -56,8 +56,9 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
   const vault = path.join(root, 'vault'); const notePath = 'Inbox/Fictional accepted email.md'; const noteFile = path.join(vault, 'Inbox', 'Fictional accepted email.md');
   await mkdir(path.dirname(noteFile), { recursive: true });
   const noteBytes = Buffer.from('# Fictional accepted email\n', 'utf8'); await writeFile(noteFile, noteBytes);
+  const noteRevision = revisionForBytes(noteBytes);
   const plan = { schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-email-handoff-1', sourceKind: 'email', processorVersion: 'fictional-email-processor-v1', nextExpectedAt: '2026-09-22T12:00:00.000Z',
-    enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false }, records: [{ schemaVersion: 1, sourceExternalId: 'fictional-message-id', sourceVersion: 'email-change-key-9', checkpoint: 'fictional-checkpoint-1', acceptedExtraction: {
+    enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false }, records: [{ schemaVersion: 1, sourceExternalId: 'fictional-message-id', sourceVersion: 'email-change-key-9', checkpoint: 'fictional-checkpoint-1', retainedNoteRevision: noteRevision, acceptedExtraction: {
       schemaVersion: 1, proposedTopic: 'Fictional Email Intake', notePath, knowledgeMarkdown: '# Fictional accepted email\n', knowledgeOutcomeId: 'fictional-message:information', knowledgeSummary: 'Fictional email retained', obligations: [{ obligationId: 'fictional-message:payment', title: 'Pay fictional accepted invoice', provenance: 'explicit', importance: 'high', importanceOrigin: 'source' }]
     } }] };
   const planPath = path.join(root, 'producer-plan.json'); await writeFile(planPath, JSON.stringify(plan));
@@ -69,7 +70,6 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
     metadata.createTopic({ topicId: 'topic-fictional-email-intake', name: 'Fictional Email Intake', paraCategory: 'area', lifecycle: 'active' });
     metadata.createSourceReference({ version: 1, referenceId: 'folder:fictional-email-intake', topicId: 'topic-fictional-email-intake', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault });
     await enrollFixtureFolder(metadata, 'folder:fictional-email-intake', vault);
-    const noteRevision = revisionForBytes(noteBytes);
     assert.notEqual(noteRevision, plan.records[0].sourceVersion);
     metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-accepted-email', topicId: 'topic-fictional-email-intake', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${vault}/${notePath}`, observedRevision: noteRevision });
     metadata.close();

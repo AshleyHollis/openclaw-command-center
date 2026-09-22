@@ -76,7 +76,7 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
           const obligations = extraction.obligations;
           const knowledgeOutcomeId = extraction.knowledgeMarkdown.trim() ? extraction.knowledgeOutcomeId ?? `${record.sourceExternalId}:information` : null;
           const noAction = extraction.noAction;
-          const topic = await resolveTopic({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, proposedTopic: extraction.proposedTopic, notePath: extraction.notePath });
+          const topic = await resolveTopic({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, proposedTopic: extraction.proposedTopic, notePath: extraction.notePath, expectedNoteRevision: record.retainedNoteRevision });
           if (!topic || !nonBlank(topic.topicId)) {
             for (const outcome of plannedOutcomes.filter(item => unfinished(account, item.outcomeId))) await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind, status: 'unresolved-topic', summary: 'Topic ownership requires review', recordedAt: now() });
             counts.uncertainCount += 1; counts.processedCount += 1; checkpoint = record.checkpoint; continue;

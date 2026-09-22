@@ -73,14 +73,16 @@ test('maintained intake admits one freshly verified producer Note through its ex
     listSourceReferences: () => [{ referenceId: 'folder:fictional-home', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/vault' }]
   };
   let read;
+  const expectedNoteRevision = `sha256:${'a'.repeat(64)}`;
   const sourceService = { async notesRead(input) {
     read = input;
-    return { path: input.path, revision: 'sha256:retained-note', sourceReference: { referenceId: 'note:fresh-email', topicId: input.topicId, sourceKind: 'note', observedRevision: 'sha256:retained-note' } };
+    return { path: input.path, revision: expectedNoteRevision, sourceReference: { referenceId: 'note:fresh-email', topicId: input.topicId, sourceKind: 'note', observedRevision: expectedNoteRevision } };
   } };
   const tool = sourceTopicResolverToolFactory({ getOwners: () => ({ metadata, sourceService }) })();
-  const result = await tool.execute(randomUUID(), { topicName: 'Fictional Home', notePath: 'Inbox/Fresh email.md' });
+  const result = await tool.execute(randomUUID(), { topicName: 'Fictional Home', notePath: 'Inbox/Fresh email.md', expectedNoteRevision });
   assert.deepEqual(read, { schemaVersion: 1, topicId: 'topic-fictional-home', path: 'Inbox/Fresh email.md' });
-  assert.deepEqual(result.details.evidence, { sourceReferenceId: 'note:fresh-email', revision: 'sha256:retained-note', path: 'Inbox/Fresh email.md' });
+  assert.deepEqual(result.details.evidence, { sourceReferenceId: 'note:fresh-email', revision: expectedNoteRevision, path: 'Inbox/Fresh email.md' });
+  await assert.rejects(() => tool.execute(randomUUID(), { topicName: 'Fictional Home', notePath: 'Inbox/Fresh email.md', expectedNoteRevision: `sha256:${'b'.repeat(64)}` }), error => error.code === 'conflict');
 });
 
 test('maintained producer saves one quiet Note with stable retry identity and exact evidence', async () => {

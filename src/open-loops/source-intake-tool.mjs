@@ -28,7 +28,7 @@ export function sourceNoteOperationId(params) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${(Number.parseInt(hex[16], 16) & 3 | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-export async function resolveSourceTopic({ metadata, sourceService, topicName: requestedTopicName, notePath } = {}) {
+export async function resolveSourceTopic({ metadata, sourceService, topicName: requestedTopicName, notePath, expectedNoteRevision } = {}) {
   if (!metadata || typeof metadata.listTopics !== 'function' || typeof metadata.listSourceReferences !== 'function') throw sourceError('capability-unavailable', 'Source Topic ownership is not ready.');
   const topicName = requestedTopicName?.trim();
   if (!topicName || topicName !== requestedTopicName) throw sourceError('invalid-request', 'Source Topic resolution requires one exact canonical Topic name.');
@@ -49,6 +49,7 @@ export async function resolveSourceTopic({ metadata, sourceService, topicName: r
       try {
         const note = await sourceService.notesRead({ schemaVersion: 1, topicId: match.topicId, referenceId: references[0].referenceId, observedRevision: references[0].observedRevision, path: notePath });
         const reference = note?.sourceReference;
+        if (expectedNoteRevision !== undefined && note.revision !== expectedNoteRevision) throw sourceError('conflict', 'The retained producer Note changed after verification.');
         if (reference?.referenceId === references[0].referenceId && reference.topicId === match.topicId && reference.sourceKind === 'note' && note.revision === references[0].observedRevision) evidence = Object.freeze({ sourceReferenceId: reference.referenceId, revision: note.revision, path: note.path });
       } catch (error) {
         if (!['not-found', 'source-unavailable'].includes(error?.code)) throw error;
@@ -62,6 +63,7 @@ export async function resolveSourceTopic({ metadata, sourceService, topicName: r
       try {
         const note = await sourceService.notesRead({ schemaVersion: 1, topicId: match.topicId, path: notePath });
         const reference = note?.sourceReference;
+        if (expectedNoteRevision !== undefined && note.revision !== expectedNoteRevision) throw sourceError('conflict', 'The retained producer Note changed after verification.');
         if (reference?.referenceId && reference.topicId === match.topicId && reference.sourceKind === 'note' && note.revision === reference.observedRevision) evidence = Object.freeze({ sourceReferenceId: reference.referenceId, revision: note.revision, path: note.path });
       } catch (error) {
         if (!['not-found', 'source-unavailable'].includes(error?.code)) throw error;
@@ -77,11 +79,11 @@ export function sourceTopicResolverToolFactory({ getOwners } = {}) {
     name: 'command_center_resolve_source_topic',
     description: 'Resolve one exact existing active Topic name to its Note Folder reference for maintained intake. An optional Topic-relative Note path also resolves existing Note evidence without returning its content. Missing, unusable, or ambiguous matches stay unresolved. Private folder locators are never returned.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
-      topicName: { type: 'string', minLength: 1, maxLength: 200 }, notePath: { type: 'string', minLength: 1, maxLength: 1000 }
+      topicName: { type: 'string', minLength: 1, maxLength: 200 }, notePath: { type: 'string', minLength: 1, maxLength: 1000 }, expectedNoteRevision: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' }
     }, required: ['topicName'] }),
     async execute(_toolCallId, params) {
       const { metadata, sourceService } = getOwners() ?? {};
-      const result = await resolveSourceTopic({ metadata, sourceService, topicName: params.topicName, notePath: params.notePath });
+      const result = await resolveSourceTopic({ metadata, sourceService, topicName: params.topicName, notePath: params.notePath, expectedNoteRevision: params.expectedNoteRevision });
       return Object.freeze({ content: [{ type: 'text', text: JSON.stringify(result) }], details: result });
     }
   });

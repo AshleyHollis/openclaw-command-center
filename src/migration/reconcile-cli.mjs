@@ -167,9 +167,9 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
       processorVersion: plan.processorVersion,
       async extract() { fail('producer-extractor-unavailable'); },
       loadIntakeSourceAccount: params => invoke(tools.account, params),
-      async resolveTopic({ proposedTopic, notePath }) {
+      async resolveTopic({ proposedTopic, notePath, expectedNoteRevision }) {
         if (typeof proposedTopic !== 'string' || !proposedTopic.trim()) return null;
-        const result = await invoke(tools.resolve, { topicName: proposedTopic, ...(notePath ? { notePath } : {}) });
+        const result = await invoke(tools.resolve, { topicName: proposedTopic, ...(notePath ? { notePath } : {}), ...(expectedNoteRevision ? { expectedNoteRevision } : {}) });
         return result?.status === 'resolved' ? result : null;
       },
       async saveSourceNote(params) {
