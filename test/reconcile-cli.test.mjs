@@ -79,8 +79,9 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
     const verification = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
     try {
       const loops = verification.listOpenLoops(); assert.equal(loops.length, 1); assert.equal(loops[0].title, 'Pay fictional accepted invoice'); assert.equal(loops[0].revision, 1);
-      const observation = verification.getOpenLoopObservation(loops[0].evidenceObservationIds[0]);
-      assert.equal(observation.source.version, 'email-change-key-9');
+      const observation = loops[0].evidenceObservationIds.map(id => verification.getOpenLoopObservation(id)).find(item => item?.facts?.obligationId === 'fictional-message:payment');
+      assert.equal(observation.facts.sourceVersion, 'email-change-key-9');
+      assert.equal(observation.source.externalId, 'fictional-message-id');
       const account = verification.listOperations().find(item => item.operationKind === 'intake-source.email.v1');
       assert.equal(account.observedRevision, 'email-change-key-9');
     } finally { verification.close(); }
