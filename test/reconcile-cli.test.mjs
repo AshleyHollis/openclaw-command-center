@@ -11,7 +11,7 @@ import { historicalBackfillPlanDigest } from '../src/open-loops/historical-backf
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { revisionForBytes } from '../src/sources/reference.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
-import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 const releaseHostFileAccessFixture = installHostFileAccessFixture();
 test.after(() => releaseHostFileAccessFixture());
@@ -57,6 +57,7 @@ test('historical backfill CLI runs a digest-pinned private adapter with durable 
   await writeFile(planPath, JSON.stringify(plan)); await writeFile(adapterPath, adapterSource);
   const adapterDigest = `sha256:${(await import('node:crypto')).createHash('sha256').update(adapterSource).digest('hex')}`;
   const saved = process.env.OPENCLAW_STATE_DIR; process.env.OPENCLAW_STATE_DIR = root;
+  const hostFileAccess = createHostFileAccessFixture();
   try {
     await mkdir(path.join(vault, 'Inbox'), { recursive: true });
     const noteBytes = Buffer.from('# Fictional evidence\n', 'utf8');
@@ -67,13 +68,13 @@ test('historical backfill CLI runs a digest-pinned private adapter with durable 
     await enrollFixtureFolder(metadata, 'folder:fictional-cli', vault);
     metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-cli', topicId: 'topic-fictional-cli', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${vault}/Inbox/Fictional.md`, observedRevision: revisionForBytes(noteBytes) });
     metadata.close();
-    const result = await runConfiguredHistoricalBackfill({ mode: 'preview', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {} });
+    const result = await runConfiguredHistoricalBackfill({ mode: 'preview', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {}, hostFileAccess });
     assert.equal(result.complete, true); assert.equal(result.counts.created, 0);
-    const applied = await runConfiguredHistoricalBackfill({ mode: 'apply', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {} });
+    const applied = await runConfiguredHistoricalBackfill({ mode: 'apply', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {}, hostFileAccess });
     assert.equal(applied.counts.created, 1);
-    const withdrawn = await runConfiguredHistoricalBackfill({ mode: 'withdraw', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {} });
+    const withdrawn = await runConfiguredHistoricalBackfill({ mode: 'withdraw', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: adapterDigest, config: {}, hostFileAccess });
     assert.equal(withdrawn.counts.withdrawn, 1);
-    await assert.rejects(runConfiguredHistoricalBackfill({ mode: 'preview', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: `sha256:${'0'.repeat(64)}`, config: {} }), { code: 'backfill-adapter-digest-mismatch' });
+    await assert.rejects(runConfiguredHistoricalBackfill({ mode: 'preview', planPath, expectedDigest: historicalBackfillPlanDigest(plan), adapterPath, expectedAdapterDigest: `sha256:${'0'.repeat(64)}`, config: {}, hostFileAccess }), { code: 'backfill-adapter-digest-mismatch' });
   } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
 });
 

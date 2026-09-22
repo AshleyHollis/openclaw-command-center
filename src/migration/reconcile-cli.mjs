@@ -83,20 +83,23 @@ async function importPinnedBackfillAdapter(filename, expectedDigest) {
   return module.createHistoricalBackfillAdapter;
 }
 
-export async function runConfiguredHistoricalBackfill({ mode, planPath, expectedDigest, adapterPath, expectedAdapterDigest, config, signal }) {
+export async function runConfiguredHistoricalBackfill({ mode, planPath, expectedDigest, adapterPath, expectedAdapterDigest, config, signal, hostFileAccess }) {
   if (!['preview', 'apply', 'withdraw'].includes(mode)) fail('backfill-mode-invalid');
   const plan = await readPinnedHistoricalBackfillPlan(planPath, expectedDigest);
   signal?.throwIfAborted();
   const createAdapter = await importPinnedBackfillAdapter(adapterPath, expectedAdapterDigest);
-  const [{ resolveStateDir }, fileAccess, { openCommandCenterMetadataService }, identity] = await Promise.all([
-    import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/file-access-runtime'),
-    import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs')
+  const [{ resolveStateDir }, sdkFileAccess, sdkSqlite, { openCommandCenterMetadataService }, identity, filesystemOwner] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/file-access-runtime'), import('openclaw/plugin-sdk/sqlite-runtime'),
+    import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs'), import('../sources/note-filesystem-owner.mjs')
   ]);
+  const fileAccess = hostFileAccess ?? sdkFileAccess;
+  const sqlite = hostFileAccess ?? sdkSqlite;
   // CLI registration is intentionally lazy and does not run normal plugin
   // activation, so install the published host identity reader for this bounded
   // operator invocation. Exact Note reads still verify the enrolled folder and
   // held filesystem witness before the adapter can commit an effect.
   const releaseIdentityReader = identity.setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
+  const releaseCoordinator = filesystemOwner.setHostNoteFilesystemCoordinator(sqlite.tryAcquireExclusiveSqliteCoordinator);
   let metadata; let sourceService;
   try {
     metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
@@ -119,7 +122,7 @@ export async function runConfiguredHistoricalBackfill({ mode, planPath, expected
     };
     if (mode === 'withdraw') return await withdrawHistoricalBackfill({ ...wrapped, ...store, backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent });
     return await createHistoricalBackfill({ ...wrapped, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
-  } finally { sourceService?.close(); metadata?.close(); releaseIdentityReader(); }
+  } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
 }
 
 // Local operator CLI, not a Gateway RPC or startup importer. Host CLI admission
