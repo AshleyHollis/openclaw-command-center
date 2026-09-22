@@ -35,10 +35,14 @@ test('maintained intake resolves only one exact active Topic without returning i
       { topicId: 'topic-fictional-archive', name: 'Fictional Home', lifecycle: 'archived' }
     ],
     listSourceReferences: topicId => topicId === 'topic-fictional-home'
-      ? [{ referenceId: 'folder:fictional-home', topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/private/fictional/home' }]
+      ? [{ referenceId: 'folder:fictional-home', topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/vault' },
+        { referenceId: 'note:fictional-existing', topicId, sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/vault/Invoices/Fictional.md', observedRevision: 'note-v7' }]
       : []
   };
-  const sourceService = { notesRead: async input => ({ path: input.path, revision: 'note-v7', sourceReference: { referenceId: 'note:fictional-existing', topicId: input.topicId, sourceKind: 'note' } }) };
+  const sourceService = { notesRead: async input => {
+    assert.equal(input.referenceId, 'note:fictional-existing'); assert.equal(input.observedRevision, 'note-v7');
+    return { path: input.path, revision: 'note-v7', sourceReference: { referenceId: 'note:fictional-existing', topicId: input.topicId, sourceKind: 'note' } };
+  } };
   const tool = sourceTopicResolverToolFactory({ getOwners: () => ({ metadata, sourceService }) })();
   const result = await tool.execute(randomUUID(), { topicName: 'Fictional Home' });
   assert.deepEqual(result.details, { status: 'resolved', topicId: 'topic-fictional-home', noteFolderReferenceId: 'folder:fictional-home' });

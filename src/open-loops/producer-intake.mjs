@@ -5,7 +5,9 @@ const nonBlank = value => typeof value === 'string' && value.trim().length > 0;
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 
 function assertRecord(record) {
-  if (!record || record.schemaVersion !== 1 || !kinds.has(record.sourceKind) || !nonBlank(record.sourceExternalId) || !nonBlank(record.sourceVersion) || !nonBlank(record.checkpoint) || !nonBlank(record.rawText)) fail('producer-record-invalid');
+  const hasRawText = nonBlank(record?.rawText);
+  const hasAcceptedExtraction = record?.acceptedExtraction !== undefined;
+  if (!record || record.schemaVersion !== 1 || !kinds.has(record.sourceKind) || !nonBlank(record.sourceExternalId) || !nonBlank(record.sourceVersion) || !nonBlank(record.checkpoint) || hasRawText === hasAcceptedExtraction) fail('producer-record-invalid');
 }
 
 function exactEvidence(value) {
@@ -34,12 +36,12 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
   if (!nonBlank(processorVersion) || ![extract, loadIntakeSourceAccount, resolveTopic, saveSourceNote, captureSourceCommitment, captureChatCommitment, recordIntakeSourcePlan, recordIntakeOutcome, recordIntakeReceipt].every(value => typeof value === 'function')) fail('producer-adapter-invalid');
 
   return Object.freeze({
-    async process({ runId, records, nextExpectedAt, enumeration }) {
-      if (!nonBlank(runId) || !Array.isArray(records) || records.length > 500 || !nonBlank(nextExpectedAt)) fail('producer-batch-invalid');
+    async process({ runId, sourceKind: selectedSourceKind, records, nextExpectedAt, enumeration }) {
+      if (!nonBlank(runId) || !Array.isArray(records) || records.length > 500 || !nonBlank(nextExpectedAt) || selectedSourceKind !== undefined && !kinds.has(selectedSourceKind)) fail('producer-batch-invalid');
       const counts = { processedCount: 0, actionableCount: 0, noteCount: 0, skippedCount: 0, uncertainCount: 0, failedCount: 0 };
       let checkpoint = 'start';
       const observedAt = now();
-      const sourceKinds = new Set(records.map(record => record?.sourceKind).filter(kind => kinds.has(kind)));
+      const sourceKinds = new Set([selectedSourceKind, ...records.map(record => record?.sourceKind)].filter(kind => kinds.has(kind)));
       if (sourceKinds.size !== 1) fail('producer-batch-source-kind-mismatch');
       const sourceKind = [...sourceKinds][0];
       const receiptCounts = () => ({ processedCount: counts.processedCount, actionableCount: counts.actionableCount, noteCount: counts.noteCount });
@@ -57,7 +59,9 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
           const enumerationValue = receiptEnumeration ?? { scope: 'complete', scannedCount: records.length, remainingCount: 0, failedReadCount: 0, scanCapReached: false };
           let durable = accountingResult(await loadIntakeSourceAccount({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion }));
           if (!durable) {
-            const proposed = acceptedExtraction(await extract({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, rawText: record.rawText }));
+            const proposed = record.acceptedExtraction === undefined
+              ? acceptedExtraction(await extract({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, rawText: record.rawText }))
+              : acceptedExtraction(record.acceptedExtraction);
             const proposedOutcomes = proposed.obligations.map(obligation => ({ outcomeId: obligation.obligationId, kind: obligation.classification }));
             const proposedKnowledgeId = proposed.knowledgeMarkdown.trim() ? proposed.knowledgeOutcomeId ?? `${record.sourceExternalId}:information` : null;
             if (proposedKnowledgeId) proposedOutcomes.push({ outcomeId: proposedKnowledgeId, kind: 'information' });
@@ -72,7 +76,7 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
           const obligations = extraction.obligations;
           const knowledgeOutcomeId = extraction.knowledgeMarkdown.trim() ? extraction.knowledgeOutcomeId ?? `${record.sourceExternalId}:information` : null;
           const noAction = extraction.noAction;
-          const topic = await resolveTopic({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, proposedTopic: extraction.proposedTopic });
+          const topic = await resolveTopic({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, proposedTopic: extraction.proposedTopic, notePath: extraction.notePath });
           if (!topic || !nonBlank(topic.topicId)) {
             for (const outcome of plannedOutcomes.filter(item => unfinished(account, item.outcomeId))) await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind, status: 'unresolved-topic', summary: 'Topic ownership requires review', recordedAt: now() });
             counts.uncertainCount += 1; counts.processedCount += 1; checkpoint = record.checkpoint; continue;
@@ -80,7 +84,7 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
           let evidence;
           const retainedKnowledge = knowledgeOutcomeId ? accountOutcome(account, knowledgeOutcomeId) : null;
           if (retainedKnowledge?.status === 'quiet') evidence = exactEvidence(retainedKnowledge);
-          else if (record.existingEvidence) evidence = exactEvidence(record.existingEvidence);
+          else if (record.existingEvidence ?? topic.evidence) evidence = exactEvidence(record.existingEvidence ?? { ...topic.evidence, topicId: topic.topicId });
           else if (extraction.knowledgeMarkdown.trim()) {
             if (!nonBlank(topic.noteFolderReferenceId) || !nonBlank(extraction.notePath)) fail('producer-note-destination-unavailable');
             const saved = await saveSourceNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, sourceKind: record.sourceKind === 'chat' ? 'note' : record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, path: extraction.notePath, markdown: extraction.knowledgeMarkdown });

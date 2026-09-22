@@ -52,6 +52,23 @@ test('email producer extracts natural-language input, saves evidence once and ca
   assert.deepEqual(calls.receipt.map(call => [call.status, call.checkpoint]), [['pending', 'start'], ['healthy-processed', 'message-42']]);
 });
 
+test('a producer-supplied accepted extraction is durably planned without re-extracting source content', async () => {
+  const { adapter, calls } = harness();
+  const acceptedExtraction = { schemaVersion: 1, proposedTopic: 'home', notePath: 'Inbox/accepted.md', knowledgeMarkdown: '# Accepted fictional evidence\n', knowledgeOutcomeId: 'accepted:information', obligations: [
+    { obligationId: 'accepted:pay', title: 'Pay the accepted fictional invoice', provenance: 'explicit', importance: 'high', importanceOrigin: 'source' }
+  ] };
+  const result = await adapter.process({ runId: 'email-accepted-1', sourceKind: 'email', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'message-accepted', sourceVersion: 'change-key-accepted', checkpoint: 'accepted-1', acceptedExtraction }] });
+  assert.equal(result.status, 'healthy-processed'); assert.equal(calls.extract.length, 0); assert.equal(calls.save.length, 1); assert.equal(calls.source.length, 1);
+  assert.equal(calls.plans[0].acceptedExtraction.knowledgeOutcomeId, 'accepted:information');
+  assert.equal(calls.source[0].sourceVersion, 'change-key-accepted');
+});
+
+test('an empty bounded producer run records healthy coverage using the declared source kind', async () => {
+  const { adapter, calls } = harness();
+  const result = await adapter.process({ runId: 'email-empty-1', sourceKind: 'email', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [] });
+  assert.equal(result.status, 'healthy-empty'); assert.deepEqual(calls.receipt.map(item => item.status), ['pending', 'healthy-empty']);
+});
+
 test('information-only input remains quiet and existing evidence is reused without manufacturing a Note', async () => {
   const { adapter, calls } = harness();
   await adapter.process({ runId: 'note-run-1', nextExpectedAt: '2026-09-28T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'note', sourceExternalId: 'note-1', sourceVersion: 'v1', checkpoint: 'note-1', rawText: 'information only', existingEvidence: { topicId: 'topic-home', sourceReferenceId: 'note:existing', sourcePath: 'Reference/existing.md', sourceReferenceVersion: 'note-revision-1' } }] });

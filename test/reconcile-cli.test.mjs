@@ -5,9 +5,10 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
-import { readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
+import { readPinnedProducerIntakePlan, readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredProducerIntake, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
 import { reconciliationPlanDigest } from '../src/migration/reconcile.mjs';
 import { historicalBackfillPlanDigest } from '../src/open-loops/historical-backfill.mjs';
+import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { revisionForBytes } from '../src/sources/reference.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
@@ -32,9 +33,47 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
     'command-center initialize-metadata execute', 'command-center initialize-metadata verify',
     ...['preflight', 'execute', 'verify'].map(mode => `command-center recover-note-folders ${mode}`),
     ...['preview', 'apply', 'withdraw'].map(mode => `command-center backfill ${mode}`),
+    'command-center intake apply',
     'command-center verify-discoverability'
   ]);
-  assert.equal(required.length, 38); assert.equal(actions.length, 17);
+  assert.equal(required.length, 40); assert.equal(actions.length, 18);
+});
+
+test('producer intake CLI consumes accepted extraction with distinct upstream and retained Note revisions', { skip: process.platform !== 'linux' }, async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'producer-intake-cli-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const vault = path.join(root, 'vault'); const notePath = 'Inbox/Fictional accepted email.md'; const noteFile = path.join(vault, 'Inbox', 'Fictional accepted email.md');
+  await mkdir(path.dirname(noteFile), { recursive: true });
+  const noteBytes = Buffer.from('# Fictional accepted email\n', 'utf8'); await writeFile(noteFile, noteBytes);
+  const plan = { schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-email-handoff-1', sourceKind: 'email', processorVersion: 'fictional-email-processor-v1', nextExpectedAt: '2026-09-22T12:00:00.000Z',
+    enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false }, records: [{ schemaVersion: 1, sourceExternalId: 'fictional-message-id', sourceVersion: 'email-change-key-9', checkpoint: 'fictional-checkpoint-1', acceptedExtraction: {
+      schemaVersion: 1, proposedTopic: 'Fictional Email Intake', notePath, knowledgeMarkdown: '# Fictional accepted email\n', knowledgeOutcomeId: 'fictional-message:information', knowledgeSummary: 'Fictional email retained', obligations: [{ obligationId: 'fictional-message:payment', title: 'Pay fictional accepted invoice', provenance: 'explicit', importance: 'high', importanceOrigin: 'source' }]
+    } }] };
+  const planPath = path.join(root, 'producer-plan.json'); await writeFile(planPath, JSON.stringify(plan));
+  assert.deepEqual(await readPinnedProducerIntakePlan(planPath, producerIntakePlanDigest(plan)), { ...plan, records: plan.records.map(item => ({ ...item, acceptedExtraction: { ...item.acceptedExtraction, obligations: item.acceptedExtraction.obligations.map(obligation => ({ ...obligation, classification: 'obligation' })) } })) });
+  const saved = process.env.OPENCLAW_STATE_DIR; process.env.OPENCLAW_STATE_DIR = root;
+  const hostFileAccess = createHostFileAccessFixture();
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
+    metadata.createTopic({ topicId: 'topic-fictional-email-intake', name: 'Fictional Email Intake', paraCategory: 'area', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'folder:fictional-email-intake', topicId: 'topic-fictional-email-intake', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault });
+    await enrollFixtureFolder(metadata, 'folder:fictional-email-intake', vault);
+    const noteRevision = revisionForBytes(noteBytes);
+    assert.notEqual(noteRevision, plan.records[0].sourceVersion);
+    metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-accepted-email', topicId: 'topic-fictional-email-intake', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${vault}/${notePath}`, observedRevision: noteRevision });
+    metadata.close();
+    const first = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), config: {}, hostFileAccess });
+    const replay = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), config: {}, hostFileAccess });
+    assert.equal(first.status, 'healthy-processed'); assert.equal(replay.status, 'healthy-processed');
+    const verification = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
+    try {
+      const loops = verification.listOpenLoops(); assert.equal(loops.length, 1); assert.equal(loops[0].title, 'Pay fictional accepted invoice'); assert.equal(loops[0].revision, 1);
+      const observation = verification.getOpenLoopObservation(loops[0].evidenceObservationIds[0]);
+      assert.equal(observation.source.version, 'email-change-key-9');
+      const account = verification.listOperations().find(item => item.operationKind === 'intake-source.email.v1');
+      assert.equal(account.observedRevision, 'email-change-key-9');
+    } finally { verification.close(); }
+  } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
 });
 
 test('historical backfill CLI runs a digest-pinned private adapter with durable metadata', { skip: process.platform !== 'linux' }, async t => {
