@@ -89,6 +89,36 @@ test('maintained intake admits one freshly verified producer Note through its ex
   assert.equal(read, undefined);
 });
 
+test('maintained intake refreshes a stale Note observation only through the producer-pinned retained revision', async () => {
+  const staleRevision = `sha256:${'1'.repeat(64)}`;
+  const retainedRevision = `sha256:${'2'.repeat(64)}`;
+  const metadata = {
+    listTopics: () => [{ topicId: 'topic-fictional-home', name: 'Fictional Home', lifecycle: 'active' }],
+    listSourceReferences: () => [
+      { referenceId: 'folder:fictional-home', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/vault' },
+      { referenceId: 'note:stale-email', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/vault/Inbox/Replaced email.md', observedRevision: staleRevision }
+    ]
+  };
+  const reads = [];
+  const sourceService = { async notesRead(input) {
+    reads.push(input);
+    if (input.referenceId) throw Object.assign(new Error('stale observation'), { code: 'conflict' });
+    if (input.observedRevision !== retainedRevision) throw Object.assign(new Error('retained Note changed'), { code: 'conflict' });
+    return { path: input.path, revision: retainedRevision, sourceReference: { referenceId: 'note:stale-email', topicId: input.topicId, sourceKind: 'note', observedRevision: retainedRevision } };
+  } };
+  const tool = sourceTopicResolverToolFactory({ getOwners: () => ({ metadata, sourceService }) })();
+  const result = await tool.execute(randomUUID(), { topicName: 'Fictional Home', notePath: 'Inbox/Replaced email.md', expectedNoteRevision: retainedRevision });
+  assert.deepEqual(reads, [
+    { schemaVersion: 1, topicId: 'topic-fictional-home', referenceId: 'note:stale-email', observedRevision: staleRevision, path: 'Inbox/Replaced email.md' },
+    { schemaVersion: 1, topicId: 'topic-fictional-home', path: 'Inbox/Replaced email.md', observedRevision: retainedRevision }
+  ]);
+  assert.deepEqual(result.details.evidence, { sourceReferenceId: 'note:stale-email', revision: retainedRevision, path: 'Inbox/Replaced email.md' });
+
+  reads.length = 0;
+  await assert.rejects(() => tool.execute(randomUUID(), { topicName: 'Fictional Home', notePath: 'Inbox/Replaced email.md' }), error => error.code === 'conflict');
+  assert.equal(reads.length, 1);
+});
+
 test('maintained producer saves one quiet Note with stable retry identity and exact evidence', async () => {
   const calls = [];
   const sourceService = { async notesCreate(input) {

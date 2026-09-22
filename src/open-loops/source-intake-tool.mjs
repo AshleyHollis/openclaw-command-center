@@ -52,7 +52,12 @@ export async function resolveSourceTopic({ metadata, sourceService, topicName: r
         if (expectedNoteRevision !== undefined && note.revision !== expectedNoteRevision) throw sourceError('conflict', 'The retained producer Note changed after verification.');
         if (reference?.referenceId === references[0].referenceId && reference.topicId === match.topicId && reference.sourceKind === 'note' && note.revision === references[0].observedRevision) evidence = Object.freeze({ sourceReferenceId: reference.referenceId, revision: note.revision, path: note.path });
       } catch (error) {
-        if (!['not-found', 'source-unavailable'].includes(error?.code)) throw error;
+        // A producer can retain a verified replacement before Command Center
+        // refreshes an older path observation. When the producer supplied the
+        // exact retained revision, let the path-pinned read below distinguish
+        // that safe refresh from an actual content change.
+        const staleObservedRevision = error?.code === 'conflict' && expectedNoteRevision !== undefined;
+        if (!staleObservedRevision && !['not-found', 'source-unavailable'].includes(error?.code)) throw error;
       }
     }
     // A maintained producer may have just written and verified the Note before
