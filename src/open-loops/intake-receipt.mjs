@@ -38,7 +38,7 @@ function parsedReceipt(operation) { try { return JSON.parse(operation?.resultIde
 
 export function findIntakeContinuation(metadata, sourceKind) {
   if (!sourceKinds.has(sourceKind)) throw sourceError('invalid-request', 'sourceKind is invalid.');
-  const operations = (metadata?.listOperations?.() ?? []).filter(item => item.operationKind === `intake-receipt.${sourceKind}.v1`).reverse();
+  const operations = (metadata?.listOperations?.() ?? []).filter(item => item.operationKind === `intake-receipt.${sourceKind}.v1` && item.resultStatus !== 'superseded').reverse();
   for (const operation of operations) {
     const receipt = parsedReceipt(operation);
     if (!receipt || receipt.sourceKind !== sourceKind) continue;
@@ -49,16 +49,16 @@ export function findIntakeContinuation(metadata, sourceKind) {
 }
 
 export function recordIntakeReceipt(metadata, input) {
-  if (!metadata?.recordOperation) throw new TypeError('Intake receipts require metadata ownership.');
+  if (!metadata?.commitIntakeReceiptOperation) throw new TypeError('Intake receipts require metadata ownership.');
   const receipt = normalizeIntakeReceipt(input);
-  const identity = { schemaVersion: 1, sourceKind: receipt.sourceKind, runId: receipt.runId, checkpoint: receipt.checkpoint };
-  const logicalOperationId = stableUuid(`command-center:intake-receipt:${receipt.sourceKind}:${receipt.runId}:${receipt.checkpoint}`);
-  const prior = metadata.getOperation?.(logicalOperationId);
-  if (prior && prior.intentDigest !== digest(identity)) throw sourceError('intent-mismatch', 'The intake receipt identity changed.');
-  metadata.recordOperation({
+  const identity = { schemaVersion: 1, sourceKind: receipt.sourceKind, runId: receipt.runId };
+  const logicalOperationId = stableUuid(`command-center:intake-receipt:${receipt.sourceKind}:${receipt.runId}`);
+  const committed = metadata.commitIntakeReceiptOperation({
     logicalOperationId, transportRequestId: logicalOperationId, intentDigest: digest(identity), operationKind: `intake-receipt.${receipt.sourceKind}.v1`,
     state: receipt.status === 'pending' ? 'pending' : receipt.status === 'failed' ? 'not-applied' : 'applied', resultStatus: receipt.status,
-    resultIdentity: JSON.stringify(receipt), observedRevision: `${receipt.runId}:${receipt.checkpoint}`, createdAt: prior?.createdAt ?? receipt.observedAt, updatedAt: receipt.observedAt
+    resultIdentity: JSON.stringify(receipt), observedRevision: `${receipt.runId}:${receipt.checkpoint}`, createdAt: receipt.observedAt, updatedAt: receipt.observedAt
   });
-  return Object.freeze({ schemaVersion: 1, disposition: prior ? 'updated' : 'recorded', logicalOperationId, receipt });
+  let durableReceipt;
+  try { durableReceipt = JSON.parse(committed.operation.resultIdentity); } catch { throw sourceError('conflict', 'The durable intake receipt is unavailable.'); }
+  return Object.freeze({ schemaVersion: 1, disposition: committed.disposition, logicalOperationId, receipt: Object.freeze(durableReceipt) });
 }

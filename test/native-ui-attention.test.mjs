@@ -517,12 +517,13 @@ test('a failed producer remains a titled dashboard widget without blanking focus
 
 test('Dashboard intake drill-through distinguishes accounted sources, pending decisions and enumeration gaps', () => fixture(async (page) => {
   await page.evaluate(() => {
+    window.allOpenLoops = [{ loopId: 'loop-choose', kind: 'decision', title: 'Choose fictional delivery window', topicId: 'topic-fictional-renovation', state: 'suggested', evidenceCount: 1, revision: 1 }];
     window.intakeCoverage = [{
       source: 'Email intake', sourceKind: 'email', status: 'needs-review', lastSuccessfulAt: '2026-09-22T01:02:00.000Z',
       explanation: 'All source outcomes are accounted for, but at least one clarification still needs your decision.',
       sourceCounts: { observed: 1, accounted: 1, resolved: 0 }, outcomeCounts: { expected: 4, accounted: 4, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 },
       recentSources: [{ checkpoint: 'page-2:message-42', accounted: true, resolved: false, counts: { expected: 4, accounted: 4 }, enumeration: { failedReadCount: 1, remainingCount: 3, scanCapReached: true }, outcomes: [
-        { outcomeId: 'pay', summary: 'Pay fictional invoice', status: 'applied' }, { outcomeId: 'reply', summary: 'Reply with fictional reference', status: 'applied' }, { outcomeId: 'choose', summary: 'Choose fictional delivery window', status: 'pending-decision' }, { outcomeId: 'reference', summary: 'Retained fictional reference', status: 'quiet' }
+        { summary: 'Pay fictional invoice', status: 'applied' }, { summary: 'Reply with fictional reference', status: 'applied' }, { summary: 'Choose fictional delivery window', status: 'pending-decision', target: { kind: 'open-loop', loopId: 'loop-choose' } }, { summary: 'Retained fictional reference', status: 'quiet', target: { kind: 'topic-note', topicId: 'topic-fictional-renovation', sourceReferenceId: 'note-fictional-reference', sourcePath: 'Inbox/reference.md', sourceVersion: 'note-v1' } }
       ] }]
     }];
     window.mountInbox();
@@ -534,6 +535,11 @@ test('Dashboard intake drill-through distinguishes accounted sources, pending de
   await coverage.getByText('1 failed reads · 3 remaining · scan cap reached', { exact: true }).waitFor();
   await coverage.getByText('Choose fictional delivery window: pending-decision', { exact: true }).waitFor();
   await coverage.getByText('Retained fictional reference: quiet', { exact: true }).waitFor();
+  await coverage.getByRole('button', { name: 'Review item', exact: true }).click();
+  await coverage.getByText('Source evidence', { exact: true }).waitFor();
+  assert.equal((await page.evaluate(() => window.requests.filter(item => item.method.endsWith('open-loops.get')).at(-1).params.loopId)), 'loop-choose');
+  await coverage.getByRole('button', { name: 'Open retained Note', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'topic-fictional-renovation', sourceReferenceId: 'note-fictional-reference', sourcePath: 'Inbox/reference.md', evidenceSourceVersion: 'note-v1' } });
 }));
 
 test('Planner uses the full workspace and exposes every card in real Kanban lanes', () => fixture(async (page) => {

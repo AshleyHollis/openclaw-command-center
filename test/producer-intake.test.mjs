@@ -86,3 +86,20 @@ test('a bounded page records and returns an exact resumable continuation', async
   assert.deepEqual(calls.receipt.at(-1).continuation, result.continuation);
   assert.deepEqual(calls.plans[0].enumeration, enumeration);
 });
+
+test('record-level bounded enumeration becomes the authoritative durable continuation', async () => {
+  const { adapter, calls } = harness();
+  const enumeration = { scope: 'bounded', scannedCount: 1, remainingCount: 4, failedReadCount: 1, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-2' };
+  const result = await adapter.process({ runId: 'email-record-bounded', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'notice-bounded', sourceVersion: 'v1', checkpoint: 'page-1', rawText: 'no action', enumeration }] });
+  assert.equal(result.status, 'incomplete');
+  assert.deepEqual(result.continuation, { scopeId: 'mailbox-fixture', cursor: 'page-2', remainingCount: 4, failedReadCount: 1, scanCapReached: true });
+  assert.equal(calls.receipt.at(-1).status, 'incomplete');
+  assert.deepEqual(calls.plans[0].enumeration, enumeration);
+});
+
+test('multiple record-level enumeration scopes are rejected before a receipt is published', async () => {
+  const { adapter, calls } = harness();
+  const base = { schemaVersion: 1, sourceKind: 'email', sourceVersion: 'v1', rawText: 'no action', enumeration: { scope: 'bounded', scannedCount: 1, remainingCount: 1, failedReadCount: 0, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'next' } };
+  await assert.rejects(() => adapter.process({ runId: 'email-conflicting-enumeration', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ ...base, sourceExternalId: 'one', checkpoint: 'one' }, { ...base, sourceExternalId: 'two', checkpoint: 'two' }] }), error => error.code === 'producer-enumeration-scope-invalid');
+  assert.equal(calls.receipt.length, 0);
+});

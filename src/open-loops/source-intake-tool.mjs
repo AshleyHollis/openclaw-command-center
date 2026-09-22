@@ -9,7 +9,7 @@ function sourceCaptureOperationId(params) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${(Number.parseInt(hex[16], 16) & 3 | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-function sourceNoteOperationId(params) {
+export function sourceNoteOperationId(params) {
   const hex = createHash('sha256').update(['command-center.source-note.v1', params.topicId, params.sourceKind, params.sourceExternalId, params.sourceVersion].join('\0')).digest('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${(Number.parseInt(hex[16], 16) & 3 | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
@@ -138,7 +138,7 @@ export function intakeOutcomeToolFactory({ getOwners } = {}) {
     name: 'command_center_record_intake_outcome',
     description: 'Record one exact outcome from a previously planned maintained source revision after its effect is known. Retries must preserve the same outcome identity and result.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
-      sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, outcomeId: { type: 'string', minLength: 1 }, kind: { type: 'string', enum: ['obligation', 'decision', 'information', 'no-action'] }, status: { type: 'string', enum: ['applied', 'pending-decision', 'quiet', 'no-action', 'unresolved-topic', 'failed', 'unknown'] }, summary: { type: 'string', minLength: 1, maxLength: 300 }, loopId: { type: 'string', minLength: 1 }, sourceReferenceId: { type: 'string', minLength: 1 }, sourceReferenceVersion: { type: 'string', minLength: 1 }, recordedAt: { type: 'string' }, errorCode: { type: 'string', minLength: 1, maxLength: 100 }
+      sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, outcomeId: { type: 'string', minLength: 1 }, kind: { type: 'string', enum: ['obligation', 'decision', 'information', 'no-action'] }, status: { type: 'string', enum: ['applied', 'pending-decision', 'quiet', 'no-action', 'unresolved-topic', 'failed', 'unknown'] }, summary: { type: 'string', minLength: 1, maxLength: 300 }, loopId: { type: 'string', minLength: 1 }, topicId: { type: 'string', minLength: 1 }, sourceReferenceId: { type: 'string', minLength: 1 }, sourcePath: { type: 'string', minLength: 1 }, sourceReferenceVersion: { type: 'string', minLength: 1 }, recordedAt: { type: 'string' }, errorCode: { type: 'string', minLength: 1, maxLength: 100 }
     }, required: ['sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'kind', 'status', 'summary', 'recordedAt'] }),
     async execute(_toolCallId, params) {
       const { metadata } = getOwners() ?? {};

@@ -172,7 +172,7 @@ async function activityPage({ sourceService, attentionService, metadata, offset,
 
 function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
   const operations = typeof metadata?.listOperations === 'function'
-    ? metadata.listOperations().filter(item => item.operationKind === `intake-receipt.${sourceKind}.v1`)
+    ? metadata.listOperations().filter(item => item.operationKind === `intake-receipt.${sourceKind}.v1` && item.resultStatus !== 'superseded')
     : [];
   const latest = operations.at(-1);
   if (!latest) return null;
@@ -225,7 +225,13 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
       resolved: account.resolved,
       counts: account.counts,
       enumeration: Object.freeze({ scope: account.enumeration.scope, scannedCount: account.enumeration.scannedCount, remainingCount: account.enumeration.remainingCount, failedReadCount: account.enumeration.failedReadCount, scanCapReached: account.enumeration.scanCapReached, canResume: account.enumeration.scopeId !== undefined && account.enumeration.resumeCursor !== undefined }),
-      outcomes: Object.freeze(account.outcomes.map(outcome => Object.freeze({ kind: outcome.kind, status: outcome.status, ...(outcome.summary ? { summary: outcome.summary } : {}) })))
+      outcomes: Object.freeze(account.outcomes.map(outcome => Object.freeze({
+        kind: outcome.kind,
+        status: outcome.status,
+        ...(outcome.summary ? { summary: outcome.summary } : {}),
+        ...(outcome.loopId ? { target: Object.freeze({ kind: 'open-loop', loopId: outcome.loopId }) } : {}),
+        ...(outcome.status === 'quiet' && outcome.topicId && outcome.sourceReferenceId && outcome.sourcePath && outcome.sourceReferenceVersion ? { target: Object.freeze({ kind: 'topic-note', topicId: outcome.topicId, sourceReferenceId: outcome.sourceReferenceId, sourcePath: outcome.sourcePath, sourceVersion: outcome.sourceReferenceVersion }) } : {})
+      })))
     }))),
     explanation: accountExplanation
   });

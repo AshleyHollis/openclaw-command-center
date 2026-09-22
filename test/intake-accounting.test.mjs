@@ -7,6 +7,7 @@ import { findIntakeContinuation, recordIntakeReceipt } from '../src/open-loops/i
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { sourceNoteOperationId } from '../src/open-loops/source-intake-tool.mjs';
 
 async function temporaryStateDir(prefix) {
   const value = await mkdtemp(path.join(os.tmpdir(), prefix));
@@ -50,6 +51,8 @@ function addEffects(metadata) {
   const response = addObligationLoop(metadata, 'send-reference', 'Send fictional reference');
   const decision = addDecisionLoop(metadata);
   metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-message-42', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/reference.md', observedRevision: 'note-v1' });
+  const logicalOperationId = sourceNoteOperationId({ topicId: 'topic-fictional-home', sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7' });
+  metadata.recordOperation({ logicalOperationId, transportRequestId: logicalOperationId, intentDigest: 'sha256:fictional-source-note', operationKind: 'notes.create', state: 'applied', resultStatus: 'applied', resultIdentity: '/fictional/reference.md', observedRevision: 'note-v1', createdAt: '2026-09-22T01:00:00.000Z', updatedAt: '2026-09-22T01:00:00.000Z' });
   return { payment, response, decision };
 }
 
@@ -64,13 +67,13 @@ test('mixed email accounting distinguishes accounted-for from resolved and retai
     recordIntakeOutcome(metadata, { ...base, outcomeId: 'pay-invoice', kind: 'obligation', status: 'applied', summary: 'Pay fictional invoice', loopId: payment.loopId });
     recordIntakeOutcome(metadata, { ...base, outcomeId: 'send-reference', kind: 'obligation', status: 'applied', summary: 'Send fictional reference', loopId: response.loopId });
     recordIntakeOutcome(metadata, { ...base, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision', summary: 'Choose fictional delivery window', loopId: decision.loopId });
-    recordIntakeOutcome(metadata, { ...base, outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Retained fictional reference details', sourceReferenceId: 'note:fictional-message-42', sourceReferenceVersion: 'note-v1' });
+    recordIntakeOutcome(metadata, { ...base, outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Retained fictional reference details', topicId: 'topic-fictional-home', sourceReferenceId: 'note:fictional-message-42', sourcePath: 'Inbox/reference.md', sourceReferenceVersion: 'note-v1' });
     const [account] = projectIntakeAccounts(metadata, 'email');
     assert.equal(first.plan.sourceVersion, 'change-key-7');
     assert.deepEqual({ accounted: account.accounted, resolved: account.resolved, expected: account.counts.expected, pending: account.counts.decisionsPending, quiet: account.counts.quiet }, { accounted: true, resolved: false, expected: 4, pending: 1, quiet: 1 });
     assert.deepEqual(account.enumeration, { scope: 'bounded', scannedCount: 25, remainingCount: 4, failedReadCount: 1, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-2' });
-    assert.equal(recordIntakeOutcome(metadata, { ...base, outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Retained fictional reference details', sourceReferenceId: 'note:fictional-message-42', sourceReferenceVersion: 'note-v1' }).disposition, 'duplicate');
-    assert.throws(() => recordIntakeOutcome(metadata, { ...base, outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Changed under retry', sourceReferenceId: 'note:fictional-message-42', sourceReferenceVersion: 'note-v1' }), { code: 'intent-mismatch' });
+    assert.equal(recordIntakeOutcome(metadata, { ...base, outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Retained fictional reference details', topicId: 'topic-fictional-home', sourceReferenceId: 'note:fictional-message-42', sourcePath: 'Inbox/reference.md', sourceReferenceVersion: 'note-v1' }).disposition, 'duplicate');
+    assert.throws(() => recordIntakeOutcome(metadata, { ...base, outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Changed under retry', topicId: 'topic-fictional-home', sourceReferenceId: 'note:fictional-message-42', sourcePath: 'Inbox/reference.md', sourceReferenceVersion: 'note-v1' }), { code: 'intent-mismatch' });
     metadata.close();
   } finally { await temporary.cleanup(); }
 });
@@ -83,7 +86,7 @@ test('a structured clarification resolves only its linked outcome and survives S
     recordIntakeOutcome(metadata, { ...base, outcomeId: 'pay-invoice', kind: 'obligation', status: 'applied', summary: 'Pay fictional invoice', loopId: payment.loopId });
     recordIntakeOutcome(metadata, { ...base, outcomeId: 'send-reference', kind: 'obligation', status: 'applied', summary: 'Send fictional reference', loopId: response.loopId });
     recordIntakeOutcome(metadata, { ...base, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision', summary: 'Choose fictional delivery window', loopId: decision.loopId });
-    recordIntakeOutcome(metadata, { ...base, outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Retained fictional reference details', sourceReferenceId: 'note:fictional-message-42', sourceReferenceVersion: 'note-v1' });
+    recordIntakeOutcome(metadata, { ...base, outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Retained fictional reference details', topicId: 'topic-fictional-home', sourceReferenceId: 'note:fictional-message-42', sourcePath: 'Inbox/reference.md', sourceReferenceVersion: 'note-v1' });
     metadata.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'clarify-fictional-delivery', loopId: decision.loopId, expectedRevision: decision.revision, decision: 'confirm', actorId: 'operator-fixture', rationale: 'Use the standard fictional window.', updatedAt: '2026-09-22T01:05:00.000Z' });
     metadata.close(); metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
     const [account] = projectIntakeAccounts(metadata, 'email');
@@ -150,4 +153,29 @@ test('a failed page continuation survives SQLite restart and clears only after s
     assert.equal(findIntakeContinuation(metadata, 'email'), null);
     metadata.close(); metadata = undefined;
   } finally { metadata?.close(); await temporary.cleanup(); }
+});
+
+test('a late older run cannot restore its obsolete continuation after a newer run succeeds', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-generation-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path });
+    const counts = { processedCount: 0, actionableCount: 0, noteCount: 0 };
+    recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: 'older-run', checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T02:00:00.000Z', nextExpectedAt: '2026-09-22T02:05:00.000Z', ...counts });
+    recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: 'newer-run', checkpoint: 'complete', status: 'healthy-empty', observedAt: '2026-09-22T02:01:00.000Z', lastSuccessfulAt: '2026-09-22T02:01:00.000Z', nextExpectedAt: '2026-09-23T02:01:00.000Z', ...counts });
+    const late = recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: 'older-run', checkpoint: 'page-1', status: 'incomplete', observedAt: '2026-09-22T02:02:00.000Z', nextExpectedAt: '2026-09-22T02:05:00.000Z', ...counts, continuation: { scopeId: 'mailbox-fixture', cursor: 'obsolete', remainingCount: 1, failedReadCount: 0, scanCapReached: true } });
+    assert.equal(late.disposition, 'superseded');
+    assert.equal(findIntakeContinuation(metadata, 'email'), null);
+    assert.equal(metadata.listOperations().find(item => item.logicalOperationId === late.logicalOperationId).resultStatus, 'superseded');
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
+test('quiet intake rejects an unrelated Note even when its revision matches', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-unrelated-note-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata); recordIntakeSourcePlan(metadata, sourcePlan());
+    metadata.createSourceReference({ version: 1, referenceId: 'note:unrelated', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/unrelated.md', observedRevision: 'note-v1' });
+    assert.throws(() => recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Incorrect unrelated evidence', topicId: 'topic-fictional-home', sourceReferenceId: 'note:unrelated', sourcePath: 'Inbox/unrelated.md', sourceReferenceVersion: 'note-v1', recordedAt: '2026-09-22T02:00:00.000Z' }), { code: 'conflict' });
+    metadata.close();
+  } finally { await temporary.cleanup(); }
 });

@@ -1061,7 +1061,27 @@ export function mountAttentionPage(container, context, operations = new Map(), p
                 sourceRow.append(element('strong', source.checkpoint ?? 'Source checkpoint'), element('p', `${source.accounted ? 'Accounted for' : 'Partially accounted for'} · ${source.resolved ? 'Resolved' : 'Still open'} · ${source.counts?.accounted ?? 0} of ${source.counts?.expected ?? 0} outcomes`));
                 if (source.enumeration?.failedReadCount || source.enumeration?.remainingCount || source.enumeration?.scanCapReached) sourceRow.append(element('p', `${source.enumeration.failedReadCount ?? 0} failed reads · ${source.enumeration.remainingCount ?? 0} remaining${source.enumeration.scanCapReached ? ' · scan cap reached' : ''}`));
                 const outcomes = element('ul');
-                for (const outcome of source.outcomes ?? []) outcomes.append(element('li', `${outcome.summary ?? outcome.outcomeId}: ${outcome.status}`));
+                for (const outcome of source.outcomes ?? []) {
+                  const item = element('li'); item.append(element('span', `${outcome.summary ?? 'Recorded outcome'}: ${outcome.status}`));
+                  if (outcome.target?.kind === 'open-loop' && nonBlank(outcome.target.loopId)) {
+                    const review = element('button', 'Review item'); review.type = 'button';
+                    review.addEventListener('click', async () => {
+                      if (!current(pending) || review.disabled) return; review.disabled = true;
+                      try {
+                        const detail = unwrap(await host.request('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: outcome.target.loopId }));
+                        if (!current(pending) || detail?.loop?.loopId !== outcome.target.loopId) return;
+                        let disclosure = item.querySelector('details[data-intake-outcome-evidence]');
+                        if (!disclosure) { disclosure = element('details'); disclosure.dataset.intakeOutcomeEvidence = 'true'; disclosure.append(element('summary', 'Source evidence')); item.append(disclosure); }
+                        renderEvidence(disclosure, detail); disclosure.open = true;
+                      } catch (error) { if (current(pending)) report(error?.message || 'The recorded item is unavailable.'); }
+                      finally { if (current(pending)) review.disabled = false; }
+                    }, { signal }); item.append(review);
+                  } else if (outcome.target?.kind === 'topic-note' && [outcome.target.topicId, outcome.target.sourceReferenceId, outcome.target.sourcePath, outcome.target.sourceVersion].every(nonBlank)) {
+                    const open = element('button', 'Open retained Note'); open.type = 'button';
+                    open.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'topic', params: { topicId: outcome.target.topicId, sourceReferenceId: outcome.target.sourceReferenceId, sourcePath: outcome.target.sourcePath, evidenceSourceVersion: outcome.target.sourceVersion } }); }, { signal }); item.append(open);
+                  }
+                  outcomes.append(item);
+                }
                 sourceRow.append(outcomes); details.append(sourceRow);
               }
               article.append(details);

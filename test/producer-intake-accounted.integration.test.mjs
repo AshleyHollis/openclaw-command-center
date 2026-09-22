@@ -8,6 +8,7 @@ import { createCommitmentCaptureService } from '../src/open-loops/commitment-cap
 import { projectIntakeAccounts, recordIntakeOutcome, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { createProducerIntakeAdapter } from '../src/open-loops/producer-intake.mjs';
+import { sourceNoteOperationId } from '../src/open-loops/source-intake-tool.mjs';
 
 const record = Object.freeze({ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-mixed-message', sourceVersion: 'change-key-9', checkpoint: 'page-3:fictional-mixed-message', rawText: 'Fictional mixed email' });
 const extraction = Object.freeze({ schemaVersion: 1, proposedTopic: 'Fictional Home', notePath: 'Inbox/fictional-mixed-email.md', knowledgeMarkdown: '# Fictional reference details\n', knowledgeOutcomeId: 'reference-details', knowledgeSummary: 'Retain fictional reference details', obligations: [
@@ -28,7 +29,11 @@ async function fixture(prefix, { failSecondCaptureOnce = false, loseFirstOutcome
     extract: async () => extraction,
     resolveTopic: async () => ({ topicId: 'topic-fictional-home', noteFolderReferenceId: 'folder:fictional-home' }),
     saveSourceNote: async () => {
-      if (!metadata.getSourceReference(noteReferenceId)) metadata.createSourceReference({ version: 1, referenceId: noteReferenceId, topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/Inbox/fictional-mixed-email.md', observedRevision: record.sourceVersion });
+      if (!metadata.getSourceReference(noteReferenceId)) {
+        metadata.createSourceReference({ version: 1, referenceId: noteReferenceId, topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/Inbox/fictional-mixed-email.md', observedRevision: record.sourceVersion });
+        const logicalOperationId = sourceNoteOperationId({ topicId: 'topic-fictional-home', sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion });
+        metadata.recordOperation({ logicalOperationId, transportRequestId: logicalOperationId, intentDigest: 'sha256:fictional-source-note', operationKind: 'notes.create', state: 'applied', resultStatus: 'applied', resultIdentity: '/fictional/Inbox/fictional-mixed-email.md', observedRevision: record.sourceVersion, createdAt: '2026-09-22T01:00:00.000Z', updatedAt: '2026-09-22T01:00:00.000Z' });
+      }
       return { topicId: 'topic-fictional-home', sourceReferenceId: noteReferenceId, sourcePath: extraction.notePath, sourceVersion: record.sourceVersion, replayed: captureCalls > 0 };
     },
     captureSourceCommitment: async input => {

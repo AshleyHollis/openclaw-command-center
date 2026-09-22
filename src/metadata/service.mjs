@@ -1225,13 +1225,56 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
           if (!loop || !evidence || result.status === 'pending-decision' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
         } else if (result.status === 'quiet') {
           const reference = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(result.sourceReferenceId);
-          if (!reference || !['note', 'document'].includes(reference.source_kind) || reference.last_observed_revision !== result.sourceReferenceVersion) throw new CommandCenterMetadataError('conflict', 'The exact quiet intake evidence is unavailable.');
+          const sourceNoteHex = createHash('sha256').update(['command-center.source-note.v1', result.topicId, result.sourceKind, result.sourceExternalId, result.sourceVersion].join('\0')).digest('hex');
+          const sourceNoteOperationId = `${sourceNoteHex.slice(0, 8)}-${sourceNoteHex.slice(8, 12)}-4${sourceNoteHex.slice(13, 16)}-${(Number.parseInt(sourceNoteHex[16], 16) & 3 | 8).toString(16)}${sourceNoteHex.slice(17, 20)}-${sourceNoteHex.slice(20, 32)}`;
+          const sourceNote = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(sourceNoteOperationId);
+          const existingNoteEvidence = result.sourceKind === 'note' && result.sourceReferenceId === result.sourceExternalId;
+          const createdNoteEvidence = sourceNote?.operation_kind === 'notes.create' && sourceNote.state === 'applied' && sourceNote.result_identity === reference?.external_source_id && sourceNote.observed_revision === result.sourceReferenceVersion;
+          if (!reference || reference.topic_id !== result.topicId || !['note', 'document'].includes(reference.source_kind) || reference.last_observed_revision !== result.sourceReferenceVersion || !(existingNoteEvidence || createdNoteEvidence)) throw new CommandCenterMetadataError('conflict', 'The exact quiet intake evidence is unavailable.');
         }
       }
       db.prepare(`INSERT INTO operation_journal
         (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(logicalOperationId, logicalOperationId, intentDigest, operationKind, state, resultStatus, resultIdentity, observedRevision, createdAt, createdAt);
       return Object.freeze({ disposition: 'recorded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
+    });
+  };
+
+  service.commitIntakeReceiptOperation = (input) => {
+    const value = objectValue(input, 'intake receipt operation');
+    allowedKeys(value, ['logicalOperationId', 'transportRequestId', 'intentDigest', 'operationKind', 'state', 'resultStatus', 'resultIdentity', 'observedRevision', 'createdAt', 'updatedAt'], 'intake receipt operation');
+    const logicalOperationId = requiredString(value.logicalOperationId, 'logicalOperationId');
+    const transportRequestId = requiredString(value.transportRequestId, 'transportRequestId');
+    const intentDigest = requiredString(value.intentDigest, 'intentDigest');
+    const operationKind = requiredString(value.operationKind, 'operationKind');
+    const match = /^intake-receipt\.(email|chat|note)\.v1$/u.exec(operationKind);
+    if (!match) throw new CommandCenterMetadataError('invalid-value', 'Intake receipt operation kind is unsupported.');
+    const state = enumValue(value.state, ['pending', 'applied', 'not-applied'], 'state');
+    const resultStatus = requiredString(value.resultStatus, 'resultStatus');
+    const resultIdentity = requiredString(value.resultIdentity, 'resultIdentity');
+    const observedRevision = requiredString(value.observedRevision, 'observedRevision');
+    const createdAt = timestamp(value.createdAt, 'createdAt');
+    const updatedAt = timestamp(value.updatedAt, 'updatedAt', createdAt);
+    let result;
+    try { result = JSON.parse(resultIdentity); } catch { throw new CommandCenterMetadataError('invalid-value', 'Intake receipt result is invalid.'); }
+    if (!result || result.schemaVersion !== 1 || result.sourceKind !== match[1] || !observedRevision.startsWith(`${result.runId}:`)) throw new CommandCenterMetadataError('invalid-value', 'Intake receipt result does not match its operation identity.');
+    return mutate(null, db => {
+      const existing = db.prepare('SELECT rowid, * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
+      if (existing && (existing.operation_kind !== operationKind || existing.intent_digest !== intentDigest)) throw new CommandCenterMetadataError('intent-mismatch', 'Intake receipt identity was reused with a different run.');
+      if (!existing) {
+        db.prepare(`INSERT INTO operation_journal
+          (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(logicalOperationId, transportRequestId, intentDigest, operationKind, state, resultStatus, resultIdentity, observedRevision, createdAt, updatedAt);
+        return Object.freeze({ disposition: 'recorded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
+      }
+      const latest = db.prepare('SELECT rowid FROM operation_journal WHERE operation_kind = ? ORDER BY rowid DESC LIMIT 1').get(operationKind);
+      if (state !== 'pending' && latest?.rowid !== existing.rowid) {
+        db.prepare("UPDATE operation_journal SET state = 'not-applied', result_status = 'superseded', updated_at = ? WHERE logical_operation_id = ?").run(updatedAt, logicalOperationId);
+        return Object.freeze({ disposition: 'superseded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
+      }
+      db.prepare(`UPDATE operation_journal SET transport_request_id = ?, state = ?, result_status = ?, result_identity = ?, observed_revision = ?, updated_at = ?
+        WHERE logical_operation_id = ?`).run(transportRequestId, state, resultStatus, resultIdentity, observedRevision, updatedAt, logicalOperationId);
+      return Object.freeze({ disposition: 'updated', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
     });
   };
 
@@ -1253,6 +1296,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
       if (operationKind === PROVISIONING_PRIMARY_OPERATION || existing?.operation_kind === PROVISIONING_PRIMARY_OPERATION) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning receipts require their dedicated owner.');
       if (operationKind === HISTORICAL_BACKFILL_STATE_OPERATION || existing?.operation_kind === HISTORICAL_BACKFILL_STATE_OPERATION) throw new CommandCenterMetadataError('historical-backfill-owner-required', 'Historical backfill state requires its dedicated owner.');
       if (/^intake-(?:source|outcome)\./u.test(operationKind) || /^intake-(?:source|outcome)\./u.test(existing?.operation_kind ?? '')) throw new CommandCenterMetadataError('intake-accounting-owner-required', 'Intake accounting receipts require their dedicated owner.');
+      if (/^intake-receipt\./u.test(operationKind) || /^intake-receipt\./u.test(existing?.operation_kind ?? '')) throw new CommandCenterMetadataError('intake-receipt-owner-required', 'Intake run receipts require their dedicated owner.');
       reconciliationClaims.assertChildClaim(db, { logicalOperationId, operationKind, intentDigest }, true);
       if (existing && existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
       db.prepare(`INSERT INTO operation_journal

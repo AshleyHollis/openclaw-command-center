@@ -30,9 +30,12 @@ export function createProducerIntakeAdapter({ extract, resolveTopic, saveSourceN
       if (sourceKinds.size !== 1) fail('producer-batch-source-kind-mismatch');
       const sourceKind = [...sourceKinds][0];
       const receiptCounts = () => ({ processedCount: counts.processedCount, actionableCount: counts.actionableCount, noteCount: counts.noteCount });
-      const incompleteEnumeration = enumeration && (enumeration.scope !== 'complete' || enumeration.remainingCount > 0 || enumeration.failedReadCount > 0 || enumeration.scanCapReached);
-      if (incompleteEnumeration && (!nonBlank(enumeration.scopeId) || !nonBlank(enumeration.resumeCursor))) fail('producer-continuation-required');
-      const continuation = incompleteEnumeration ? { scopeId: enumeration.scopeId, cursor: enumeration.resumeCursor, remainingCount: enumeration.remainingCount, failedReadCount: enumeration.failedReadCount, scanCapReached: enumeration.scanCapReached } : undefined;
+      const recordEnumerations = records.map(record => record?.enumeration).filter(Boolean);
+      if (enumeration && recordEnumerations.length || recordEnumerations.length > 1) fail('producer-enumeration-scope-invalid');
+      const receiptEnumeration = enumeration ?? recordEnumerations[0];
+      const incompleteEnumeration = receiptEnumeration && (receiptEnumeration.scope !== 'complete' || receiptEnumeration.remainingCount > 0 || receiptEnumeration.failedReadCount > 0 || receiptEnumeration.scanCapReached);
+      if (incompleteEnumeration && (!nonBlank(receiptEnumeration.scopeId) || !nonBlank(receiptEnumeration.resumeCursor))) fail('producer-continuation-required');
+      const continuation = incompleteEnumeration ? { scopeId: receiptEnumeration.scopeId, cursor: receiptEnumeration.resumeCursor, remainingCount: receiptEnumeration.remainingCount, failedReadCount: receiptEnumeration.failedReadCount, scanCapReached: receiptEnumeration.scanCapReached } : undefined;
       await recordIntakeReceipt({ sourceKind, runId, checkpoint, status: 'pending', observedAt, nextExpectedAt, ...receiptCounts() });
       try {
         for (const record of records) {
@@ -48,7 +51,7 @@ export function createProducerIntakeAdapter({ extract, resolveTopic, saveSourceN
           if (noAction !== undefined && (!noAction || !nonBlank(noAction.outcomeId) || !nonBlank(noAction.summary))) fail('producer-extraction-invalid');
           if (noAction) plannedOutcomes.push({ outcomeId: noAction.outcomeId, kind: 'no-action' });
           if (plannedOutcomes.length === 0) plannedOutcomes.push({ outcomeId: `${record.sourceExternalId}:no-action`, kind: 'no-action' });
-          const enumerationValue = record.enumeration ?? enumeration ?? { scope: 'complete', scannedCount: records.length, remainingCount: 0, failedReadCount: 0, scanCapReached: false };
+          const enumerationValue = receiptEnumeration ?? { scope: 'complete', scannedCount: records.length, remainingCount: 0, failedReadCount: 0, scanCapReached: false };
           await recordIntakeSourcePlan({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, checkpoint: record.checkpoint, observedAt, outcomes: plannedOutcomes, enumeration: enumerationValue });
           const topic = await resolveTopic({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, proposedTopic: extraction.proposedTopic });
           if (!topic || !nonBlank(topic.topicId)) {
@@ -65,7 +68,7 @@ export function createProducerIntakeAdapter({ extract, resolveTopic, saveSourceN
           }
           if (knowledgeOutcomeId) {
             if (!evidence) fail('producer-evidence-required');
-            await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: knowledgeOutcomeId, kind: 'information', status: 'quiet', summary: extraction.knowledgeSummary ?? 'Information retained in the Topic Note', sourceReferenceId: evidence.sourceReferenceId, sourceReferenceVersion: evidence.sourceVersion, recordedAt: now() });
+            await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: knowledgeOutcomeId, kind: 'information', status: 'quiet', summary: extraction.knowledgeSummary ?? 'Information retained in the Topic Note', topicId: evidence.topicId, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath, sourceReferenceVersion: evidence.sourceVersion, recordedAt: now() });
           }
           if (obligations.length && !evidence) fail('producer-evidence-required');
           for (const obligation of obligations) {

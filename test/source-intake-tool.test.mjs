@@ -19,6 +19,11 @@ function metadataOwner() {
       if (!prior) operations.set(input.logicalOperationId, { ...input });
       return { disposition: prior ? 'duplicate' : 'recorded', operation: prior ?? operations.get(input.logicalOperationId) };
     },
+    commitIntakeReceiptOperation(input) {
+      const prior = operations.get(input.logicalOperationId);
+      operations.set(input.logicalOperationId, { ...input, createdAt: prior?.createdAt ?? input.createdAt });
+      return { disposition: prior ? 'updated' : 'recorded', operation: operations.get(input.logicalOperationId) };
+    },
     listOperations() { return [...operations.values()]; }
   };
 }
@@ -137,7 +142,7 @@ test('source-accounting tools retain a stable plan and each exact outcome', asyn
   const outcomeTool = intakeOutcomeToolFactory({ getOwners: () => ({ metadata }) })();
   const source = { sourceKind: 'email', sourceExternalId: 'fictional-message-accounted', sourceVersion: 'v3' };
   const planned = await planTool.execute('plan', { ...source, checkpoint: 'page-2:message-7', observedAt: '2026-09-22T02:00:00.000Z', outcomes: [{ outcomeId: 'quiet-reference', kind: 'information' }], enumeration: { scope: 'bounded', scannedCount: 10, remainingCount: 2, failedReadCount: 0, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-3' } });
-  const outcome = await outcomeTool.execute('outcome', { ...source, outcomeId: 'quiet-reference', kind: 'information', status: 'quiet', summary: 'Fictional reference retained', sourceReferenceId: 'note:fictional-reference', sourceReferenceVersion: 'note-v1', recordedAt: '2026-09-22T02:00:01.000Z' });
+  const outcome = await outcomeTool.execute('outcome', { ...source, outcomeId: 'quiet-reference', kind: 'information', status: 'quiet', summary: 'Fictional reference retained', topicId: 'topic-fictional-home', sourceReferenceId: 'note:fictional-reference', sourcePath: 'Inbox/fictional-reference.md', sourceReferenceVersion: 'note-v1', recordedAt: '2026-09-22T02:00:01.000Z' });
   assert.equal(planned.details.plan.outcomes.length, 1);
   assert.equal(outcome.details.outcome.status, 'quiet');
   assert.deepEqual([...metadata.operations.values()].map(item => item.operationKind).sort(), ['intake-outcome.email.v1', 'intake-source.email.v1']);

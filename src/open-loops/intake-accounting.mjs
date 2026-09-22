@@ -54,16 +54,18 @@ export function recordIntakeSourcePlan(metadata, input) {
 
 export function normalizeIntakeOutcome(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid-request', 'Intake outcome is invalid.');
-  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'kind', 'status', 'summary', 'loopId', 'sourceReferenceId', 'sourceReferenceVersion', 'recordedAt', 'errorCode'];
+  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'kind', 'status', 'summary', 'loopId', 'topicId', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'recordedAt', 'errorCode'];
   if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !outcomeKinds.has(input.kind) || !outcomeStatuses.has(input.status)) fail('invalid-request', 'Intake outcome is invalid.');
   const source = sourceIdentity(input);
   const value = { schemaVersion: 1, ...source, outcomeId: text(input.outcomeId, 'outcomeId', 300), kind: input.kind, status: input.status, summary: text(input.summary, 'summary', 300), recordedAt: instant(input.recordedAt, 'recordedAt') };
   if (input.loopId !== undefined) value.loopId = text(input.loopId, 'loopId', 300);
+  if (input.topicId !== undefined) value.topicId = text(input.topicId, 'topicId', 300);
   if (input.sourceReferenceId !== undefined) value.sourceReferenceId = text(input.sourceReferenceId, 'sourceReferenceId', 300);
+  if (input.sourcePath !== undefined) value.sourcePath = text(input.sourcePath, 'sourcePath', 1000);
   if (input.sourceReferenceVersion !== undefined) value.sourceReferenceVersion = text(input.sourceReferenceVersion, 'sourceReferenceVersion', 300);
   if (input.errorCode !== undefined) value.errorCode = text(input.errorCode, 'errorCode', 100);
   if (['applied', 'pending-decision'].includes(value.status) && !value.loopId) fail('invalid-request', 'An actionable intake outcome requires loopId.');
-  if (value.status === 'quiet' && (!value.sourceReferenceId || !value.sourceReferenceVersion)) fail('invalid-request', 'A quiet intake outcome requires exact Source Reference evidence.');
+  if (value.status === 'quiet' && (!value.topicId || !value.sourceReferenceId || !value.sourcePath || !value.sourceReferenceVersion)) fail('invalid-request', 'A quiet intake outcome requires exact Source Reference evidence.');
   if (value.status === 'pending-decision' && value.kind !== 'decision') fail('invalid-request', 'Only a decision outcome can remain pending.');
   return Object.freeze(value);
 }
