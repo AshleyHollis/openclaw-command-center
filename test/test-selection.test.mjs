@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 test('Topic Review diagnosis reuses its exact independent real-host fixture', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-topic-review').isolatedSliceIds, ['fresh-review']);
 });
+
+test('accounted mixed email diagnosis selects its exact installed-host journey', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-accounted-mixed-email').isolatedSliceIds, ['accounted-mixed-email']);
+});
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 import { ordinaryTestArgv, ordinaryTestLanes, resolveRealHostAcceptancePlan, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectReaderMvpTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';

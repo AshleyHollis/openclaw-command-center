@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
 
 const sourceKinds = new Set(['email', 'chat', 'note']);
-const statuses = new Set(['healthy-empty', 'healthy-processed', 'pending', 'failed', 'never-connected']);
+const statuses = new Set(['healthy-empty', 'healthy-processed', 'incomplete', 'pending', 'failed', 'never-connected']);
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)]))
@@ -15,31 +15,50 @@ function count(value, name) { if (!Number.isSafeInteger(value) || value < 0) thr
 
 export function normalizeIntakeReceipt(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw sourceError('invalid-request', 'Intake receipt is invalid.');
-  const allowed = ['schemaVersion', 'sourceKind', 'runId', 'checkpoint', 'status', 'observedAt', 'lastSuccessfulAt', 'nextExpectedAt', 'processedCount', 'actionableCount', 'noteCount'];
+  const allowed = ['schemaVersion', 'sourceKind', 'runId', 'checkpoint', 'status', 'observedAt', 'lastSuccessfulAt', 'nextExpectedAt', 'processedCount', 'actionableCount', 'noteCount', 'continuation'];
   if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !sourceKinds.has(input.sourceKind) || !statuses.has(input.status)) throw sourceError('invalid-request', 'Intake receipt is invalid.');
   const healthy = input.status === 'healthy-empty' || input.status === 'healthy-processed';
   if (healthy && input.lastSuccessfulAt === undefined) throw sourceError('invalid-request', 'A healthy intake receipt requires lastSuccessfulAt.');
+  const continuation = input.continuation;
+  if (continuation !== undefined && (!continuation || typeof continuation !== 'object' || Array.isArray(continuation) || Object.keys(continuation).some(key => !['scopeId', 'cursor', 'remainingCount', 'failedReadCount', 'scanCapReached'].includes(key)) || typeof continuation.scanCapReached !== 'boolean')) throw sourceError('invalid-request', 'Intake continuation is invalid.');
+  if (input.status === 'incomplete' && continuation === undefined) throw sourceError('invalid-request', 'Incomplete intake requires an exact continuation.');
+  if (healthy && continuation !== undefined) throw sourceError('invalid-request', 'Healthy intake cannot retain a continuation.');
   if (input.sourceKind !== 'chat' && !['failed', 'never-connected'].includes(input.status) && input.nextExpectedAt === undefined) throw sourceError('invalid-request', 'A scheduled intake receipt requires nextExpectedAt.');
   return Object.freeze({
     schemaVersion: 1, sourceKind: input.sourceKind, runId: text(input.runId, 'runId'), checkpoint: text(input.checkpoint, 'checkpoint'), status: input.status,
     observedAt: instant(input.observedAt, 'observedAt'),
     ...(input.lastSuccessfulAt === undefined ? {} : { lastSuccessfulAt: instant(input.lastSuccessfulAt, 'lastSuccessfulAt') }),
     ...(input.nextExpectedAt === undefined ? {} : { nextExpectedAt: instant(input.nextExpectedAt, 'nextExpectedAt') }),
-    processedCount: count(input.processedCount, 'processedCount'), actionableCount: count(input.actionableCount, 'actionableCount'), noteCount: count(input.noteCount, 'noteCount')
+    processedCount: count(input.processedCount, 'processedCount'), actionableCount: count(input.actionableCount, 'actionableCount'), noteCount: count(input.noteCount, 'noteCount'),
+    ...(continuation === undefined ? {} : { continuation: Object.freeze({ scopeId: text(continuation.scopeId, 'continuation.scopeId'), cursor: text(continuation.cursor, 'continuation.cursor'), remainingCount: count(continuation.remainingCount, 'continuation.remainingCount'), failedReadCount: count(continuation.failedReadCount, 'continuation.failedReadCount'), scanCapReached: continuation.scanCapReached }) })
   });
 }
 
+function parsedReceipt(operation) { try { return JSON.parse(operation?.resultIdentity ?? 'null'); } catch { return null; } }
+
+export function findIntakeContinuation(metadata, sourceKind) {
+  if (!sourceKinds.has(sourceKind)) throw sourceError('invalid-request', 'sourceKind is invalid.');
+  const operations = (metadata?.listOperations?.() ?? []).filter(item => item.operationKind === `intake-receipt.${sourceKind}.v1` && item.resultStatus !== 'superseded').reverse();
+  for (const operation of operations) {
+    const receipt = parsedReceipt(operation);
+    if (!receipt || receipt.sourceKind !== sourceKind) continue;
+    if (['healthy-empty', 'healthy-processed', 'never-connected'].includes(receipt.status)) return null;
+    if (['incomplete', 'failed'].includes(receipt.status) && receipt.continuation) return Object.freeze({ ...receipt.continuation });
+  }
+  return null;
+}
+
 export function recordIntakeReceipt(metadata, input) {
-  if (!metadata?.recordOperation) throw new TypeError('Intake receipts require metadata ownership.');
+  if (!metadata?.commitIntakeReceiptOperation) throw new TypeError('Intake receipts require metadata ownership.');
   const receipt = normalizeIntakeReceipt(input);
-  const identity = { schemaVersion: 1, sourceKind: receipt.sourceKind, runId: receipt.runId, checkpoint: receipt.checkpoint };
-  const logicalOperationId = stableUuid(`command-center:intake-receipt:${receipt.sourceKind}:${receipt.runId}:${receipt.checkpoint}`);
-  const prior = metadata.getOperation?.(logicalOperationId);
-  if (prior && prior.intentDigest !== digest(identity)) throw sourceError('intent-mismatch', 'The intake receipt identity changed.');
-  metadata.recordOperation({
+  const identity = { schemaVersion: 1, sourceKind: receipt.sourceKind, runId: receipt.runId };
+  const logicalOperationId = stableUuid(`command-center:intake-receipt:${receipt.sourceKind}:${receipt.runId}`);
+  const committed = metadata.commitIntakeReceiptOperation({
     logicalOperationId, transportRequestId: logicalOperationId, intentDigest: digest(identity), operationKind: `intake-receipt.${receipt.sourceKind}.v1`,
     state: receipt.status === 'pending' ? 'pending' : receipt.status === 'failed' ? 'not-applied' : 'applied', resultStatus: receipt.status,
-    resultIdentity: JSON.stringify(receipt), observedRevision: `${receipt.runId}:${receipt.checkpoint}`, createdAt: prior?.createdAt ?? receipt.observedAt, updatedAt: receipt.observedAt
+    resultIdentity: JSON.stringify(receipt), observedRevision: `${receipt.runId}:${receipt.checkpoint}`, createdAt: receipt.observedAt, updatedAt: receipt.observedAt
   });
-  return Object.freeze({ schemaVersion: 1, disposition: prior ? 'updated' : 'recorded', logicalOperationId, receipt });
+  let durableReceipt;
+  try { durableReceipt = JSON.parse(committed.operation.resultIdentity); } catch { throw sourceError('conflict', 'The durable intake receipt is unavailable.'); }
+  return Object.freeze({ schemaVersion: 1, disposition: committed.disposition, logicalOperationId, receipt: Object.freeze(durableReceipt) });
 }

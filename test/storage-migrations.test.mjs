@@ -119,6 +119,54 @@ test('schema-5 to schema-9 preserves Topic Search bookkeeping and backfills exac
   });
 });
 
+for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) test(`a committed schema-${schemaVersion} migration manifest remains valid after a compatible host-only upgrade`, async () => {
+  await withState(async (stateDir) => {
+    await seedMigratableSchema(stateDir, schemaVersion, `topic-compatible-host-upgrade-${schemaVersion}`);
+    const migrated = open({ stateDir });
+    assert.equal(migrated.getOperatingStatus().mode, 'ready');
+    migrated.close();
+
+    const manifestPath = path.join(resolveCommandCenterRecoveryMigrationPath(stateDir), 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const historicalCommit = '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee';
+    if (manifest.sourceRelease.host.commit === manifest.targetRelease.host.commit) manifest.sourceRelease.host.commit = historicalCommit;
+    manifest.targetRelease.host.commit = historicalCommit;
+    const historicalBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
+    await writeFile(manifestPath, historicalBytes);
+
+    const reopened = open({ stateDir });
+    assert.deepEqual(reopened.getOperatingStatus(), { mode: 'ready', schemaVersion: 9, diagnostics: [], unavailableCapabilities: [] });
+    assert.equal(reopened.getTopic(`topic-compatible-host-upgrade-${schemaVersion}`).paraCategory, 'area');
+    reopened.close();
+    assert.deepEqual(await readFile(manifestPath), historicalBytes, 'startup must preserve the exact historical recovery facts');
+  });
+});
+
+test('a prepared or internally inconsistent manifest cannot cross a host commit', async () => {
+  for (const mutate of [
+    (manifest) => { manifest.sourceRelease.host.commit = manifest.targetRelease.host.commit = '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee'; manifest.state = 'prepared'; },
+    (manifest) => { manifest.sourceRelease.host.commit = '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee'; },
+    (manifest) => { manifest.targetRelease.host.commit = '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee'; },
+    (manifest) => { manifest.sourceRelease.host.commit = manifest.targetRelease.host.commit = '0'.repeat(40); },
+    (manifest) => { manifest.targetRelease = { ...canonical.priorRelease, host: { ...canonical.priorRelease.host, commit: '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee' } }; }
+  ]) await withState(async (stateDir) => {
+    await seedMigratableSchema(stateDir, 8, 'topic-refused-host-upgrade');
+    const migrated = open({ stateDir });
+    assert.equal(migrated.getOperatingStatus().mode, 'ready');
+    migrated.close();
+
+    const manifestPath = path.join(resolveCommandCenterRecoveryMigrationPath(stateDir), 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    mutate(manifest);
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+
+    const refused = open({ stateDir });
+    assert.equal(refused.getOperatingStatus().mode, 'recovery-only');
+    assert.equal(refused.getOperatingStatus().diagnostics[0].code, 'recovery-manifest-invalid');
+    refused.close();
+  });
+});
+
 test('schema-6 ledger accepts the authenticated schema-5 release build', async () => {
   await withState(async (stateDir) => {
     const databasePath = resolveCommandCenterDatabasePath(stateDir);

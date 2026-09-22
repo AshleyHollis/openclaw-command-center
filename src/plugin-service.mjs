@@ -14,6 +14,7 @@ import { createOpenLoopReminderCoordinator } from './open-loops/reminder-coordin
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
+import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
 
 const activeTopicMaintenanceOwners = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');
 
@@ -44,7 +45,7 @@ function publicOpenLoopEvidence(observation) {
     type: observation.type,
     sourceSystem: observation.source.system,
     sourceKind: observation.source.kind,
-    sourceVersion: observation.source.version,
+    sourceVersion: observation.facts.sourceVersion ?? observation.source.version,
     occurredAt: observation.occurredAt,
     observedAt: observation.observedAt,
     historicalBaseline: observation.historicalBaseline,
@@ -82,6 +83,7 @@ export function createMetadataService(api) {
   let dashboardService;
   let openLoopReminders;
   let capacityReview;
+  let dailyWorkspace;
   let topicService;
   let stopPromise;
   let releaseDurableFolderStager;
@@ -107,6 +109,7 @@ export function createMetadataService(api) {
     dashboardService = undefined;
     openLoopReminders = undefined;
     capacityReview = undefined;
+    dailyWorkspace = undefined;
     topicService = undefined;
   };
   const refuseRecovery = () => { throw new SourceServiceError('recovery-only', 'Command Center is recovery-only; authoritative data and mutations remain unavailable.'); };
@@ -172,6 +175,7 @@ export function createMetadataService(api) {
         search: false, analysis: false, attention: FIRST_LIVE_FEATURES.dashboard
       };
       metadataService = openCommandCenterMetadataService({ stateDir, capabilities });
+      dailyWorkspace = createDailyWorkspaceService({ metadata: metadataService, routines: api.pluginConfig?.routines ?? [] });
       recoveryOnly = metadataService.getOperatingStatus().mode === 'recovery-only';
       if (recoveryOnly) {
         // Refused metadata must never be opened independently by a consumer.
@@ -249,7 +253,7 @@ export function createMetadataService(api) {
       } catch (error) {
         api.logger?.error?.(`Command Center discoverability ${JSON.stringify({ code: error?.code ?? 'topic-discoverability-check-failed', ...(error?.summary ? { summary: error.summary } : {}) })}`);
       }
-      releaseTopicMaintenanceOwners = publishTopicMaintenanceOwners(Object.freeze({ sourceService, metadata: metadataService, capacityReview }));
+      releaseTopicMaintenanceOwners = publishTopicMaintenanceOwners(Object.freeze({ sourceService, metadata: metadataService, capacityReview, dailyWorkspace }));
       if (FIRST_LIVE_FEATURES.dashboard) {
         try { await sourceService.refreshReminderAttention(); }
         catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
@@ -257,6 +261,7 @@ export function createMetadataService(api) {
           sourceService,
           attentionService,
           metadata: metadataService,
+          dailyWorkspace,
           now: () => new Date().toISOString(),
           timeZone: api.config?.agents?.defaults?.userTimezone ?? 'UTC',
           navigationResolver: async (record) => {
@@ -303,6 +308,7 @@ export function createMetadataService(api) {
       return sourceService && metadataService ? { sourceService, metadata: metadataService } : readTopicMaintenanceOwners() ?? {};
     },
     get capacityReview() { return capacityReview ?? readTopicMaintenanceOwners()?.capacityReview; },
+    get dailyWorkspace() { return dailyWorkspace ?? readTopicMaintenanceOwners()?.dailyWorkspace; },
     get attentionService() { return attentionService; },
     get maintenanceService() { return undefined; },
     get searchService() { return undefined; },
@@ -328,6 +334,8 @@ export function createMetadataService(api) {
       delete request.requestId;
       return dashboardService.get(request);
     },
+    briefingSetRead(input = {}) { requireOperational(); return dailyWorkspace.setBriefingRead(input); },
+    routineDecide(input = {}) { requireOperational(); return dailyWorkspace.decideRoutine(input); },
     openLoopsList(input = {}) {
       requireOperational();
       const offset = Number.isInteger(input.offset) ? input.offset : 0;

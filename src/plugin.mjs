@@ -13,7 +13,8 @@ import { topicDocumentFileToolFactory } from './documents/tool.mjs';
 import { topicNoteMaintenanceToolFactory } from './maintenance/tool.mjs';
 import { commitmentCaptureToolFactory } from './open-loops/commitment-tool.mjs';
 import { capacityReviewToolFactory } from './open-loops/capacity-review-tool.mjs';
-import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory } from './open-loops/source-intake-tool.mjs';
+import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeSourceAccountToolFactory, intakeOutcomeToolFactory } from './open-loops/source-intake-tool.mjs';
+import { briefingPublishToolFactory } from './daily-workspace/briefing-tool.mjs';
 import { registerConversationCaptureHook } from './open-loops/conversation-capture-hook.mjs';
 import { createTopicMaintenanceCompletionSubscription } from './maintenance/completion.mjs';
 import { createTopicPageActionsHandler } from './topics/page-http.mjs';
@@ -117,6 +118,8 @@ export default definePluginEntry({
         if (property === 'topics') return service.topicService;
         if (property === 'dashboard') return { get: (input, runtime) => service.dashboardGet(input, runtime) };
         if (property === 'dashboardGet') return (input, runtime) => service.dashboardGet(input, runtime);
+        if (property === 'briefingSetRead') return (input) => service.briefingSetRead(input);
+        if (property === 'routineDecide') return (input) => service.routineDecide(input);
         if (property === 'openLoopsList') return (input) => service.openLoopsList(input);
         if (property === 'openLoopsGet') return (input) => service.openLoopsGet(input);
         if (property === 'openLoopsCapture') return (input) => service.openLoopsCapture(input);
@@ -221,7 +224,21 @@ export default definePluginEntry({
     api.registerTool(sourceTopicResolverToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_resolve_source_topic', optional: true });
     api.registerTool(sourceNoteCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_save_source_note', optional: true });
     api.registerTool(sourceCommitmentCaptureToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_capture_source_commitment', optional: true });
+    api.registerTool(intakeSourcePlanToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_plan_intake_source', optional: true });
+    api.registerTool(intakeSourceAccountToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_intake_source_account', optional: true });
+    api.registerTool(intakeOutcomeToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_outcome', optional: true });
     api.registerTool(intakeReceiptToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_receipt', optional: true });
+    api.registerTool(briefingPublishToolFactory({
+      getOwner: () => service.dailyWorkspace,
+      resolveSessionKey: context => {
+        if (typeof context?.sessionId !== 'string' || !context.sessionId) return undefined;
+        const list = api.runtime?.agent?.session?.listSessionEntries;
+        if (typeof list !== 'function') return undefined;
+        const matches = list({ agentId: context.agentId ?? 'main', readOnly: true })
+          .filter(row => row?.entry?.sessionId === context.sessionId && typeof row.sessionKey === 'string' && row.sessionKey);
+        return matches.length === 1 ? matches[0].sessionKey : undefined;
+      }
+    }), { name: 'command_center_publish_briefing', optional: true });
     registerConversationCaptureHook(api);
     // The host exposes the same subscription contract in both its current
     // flat SDK form and its nested facade form. Prefer the facade where it is

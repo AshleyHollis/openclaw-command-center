@@ -131,7 +131,7 @@ async function buildUnlocked() {
   await cp(path.join(sourceRoot, 'src', 'compatibility.mjs'), path.join(distRoot, 'compatibility.mjs'));
   await cp(path.join(sourceRoot, 'src', 'asset-handler.mjs'), path.join(distRoot, 'asset-handler.mjs'));
   await cp(path.join(sourceRoot, 'src', 'metadata'), path.join(distRoot, 'metadata'), { recursive: true, verbatimSymlinks: true });
-  for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'open-loops', 'search', 'topics', 'dashboard', 'notifications', 'http', 'native-ui', 'documents']) {
+  for (const directory of ['sources', 'bridge', 'activity', 'maintenance', 'migration', 'attention', 'open-loops', 'daily-workspace', 'search', 'topics', 'dashboard', 'notifications', 'http', 'native-ui', 'documents']) {
     await cp(path.join(sourceRoot, 'src', directory), path.join(distRoot, directory), { recursive: true, verbatimSymlinks: true });
   }
   await mkdir(path.join(distRoot, 'vendor'), { recursive: true });

@@ -147,6 +147,7 @@ const diagnosticSliceLanes = Object.freeze({
   'diagnostic-degraded-source': Object.freeze(['degraded-source-availability']),
   'diagnostic-combined-degraded': Object.freeze(['combined-degraded']),
   'diagnostic-dashboard-payload': Object.freeze(['dashboard-mixed-payload']),
+  'diagnostic-accounted-mixed-email': Object.freeze(['accounted-mixed-email']),
   'diagnostic-topic-review': Object.freeze(['fresh-review']),
   'diagnostic-reminder-lifecycle': Object.freeze(['reminder-runtime-lifecycle']),
   'diagnostic-scale': Object.freeze(['fresh-scale']),

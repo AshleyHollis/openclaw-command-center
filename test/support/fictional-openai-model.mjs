@@ -64,6 +64,13 @@ function newestUnusedMediaReference(messages, usedMediaReferences) {
   return null;
 }
 
+function latestToolResult(messages) {
+  const message = [...messages].reverse().find(item => item?.role === 'tool');
+  if (!message) return null;
+  const content = typeof message.content === 'string' ? message.content : Array.isArray(message.content) ? message.content.map(part => part?.text ?? part?.content ?? '').join('') : '';
+  try { return JSON.parse(content); } catch { return null; }
+}
+
 function transcriptShape(messages) {
   return messages.slice(-12).map((message) => Object.freeze({
     role: typeof message?.role === 'string' ? message.role : null,
@@ -111,7 +118,9 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
   const requests = [];
   const ingress = [];
   const pendingToolCalls = new Set();
+  const pendingToolActions = new Map();
   const usedMediaReferences = new Set();
+  const accounted = { phaseOneStep: 0, phaseTwoStep: 0, resolved: null, saved: null, captured: null };
   let sequence = 0;
   let initialTurnCompleted = false;
   const server = createServer(async (request, response) => {
@@ -131,7 +140,9 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     const tools = new Set((Array.isArray(body.tools) ? body.tools : []).map(entry => entry?.function?.name).filter(value => typeof value === 'string'));
     const currentMessage = messages.at(-1) ?? null;
     const currentToolResultId = currentTurnToolResultId(messages, pendingToolCalls);
+    const completedToolAction = currentToolResultId === null ? null : pendingToolActions.get(currentToolResultId) ?? null;
     const completedCurrentTool = currentToolResultId !== null && pendingToolCalls.delete(currentToolResultId);
+    if (completedCurrentTool) pendingToolActions.delete(currentToolResultId);
     // Native Chat appends a normalized current-user record after the original
     // attachment-bearing record. Select the newest unconsumed managed reference
     // rather than assuming that the last user record carries every attachment.
@@ -144,9 +155,38 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     const serializedMessages = JSON.stringify(messages);
     const captureFixtureTurn = serializedMessages.includes('[fixture:capture-laundry]');
     const vagueFixtureTurn = serializedMessages.includes('[fixture:capture-vague]');
+    const accountedPhaseOne = serializedMessages.includes('[fixture:accounted-mixed-email-phase-1]');
+    const accountedPhaseTwo = serializedMessages.includes('[fixture:accounted-mixed-email-phase-2]');
+    if (completedCurrentTool && (accountedPhaseOne || accountedPhaseTwo)) {
+      const result = latestToolResult(messages);
+      if (completedToolAction === 'command_center_get_intake_source_account') accounted.loaded = result;
+      if (completedToolAction === 'command_center_resolve_source_topic') accounted.resolved = result;
+      if (completedToolAction === 'command_center_save_source_note') accounted.saved = result;
+      if (completedToolAction === 'command_center_capture_source_commitment') accounted.captured = result;
+    }
+    const source = { sourceKind: 'email', sourceExternalId: 'fictional-real-host-mixed-message', sourceVersion: 'email-change-key-real-host-52' };
+    const acceptedExtraction = { schemaVersion: 1, proposedTopic: 'Fictional Native Journey', notePath: 'Inbox/fictional-real-host-mixed-email.md', knowledgeMarkdown: '# Fictional retained real-host reference\n', knowledgeOutcomeId: 'real-host-reference', obligations: [{ obligationId: 'real-host-choice', title: 'Choose fictional real-host delivery window', provenance: 'inferred', classification: 'decision' }, { obligationId: 'real-host-payment', title: 'Pay fictional real-host invoice', provenance: 'explicit' }, { obligationId: 'real-host-reply', title: 'Reply with fictional real-host reference', provenance: 'explicit' }] };
     let frames;
     let action = 'final';
-    if (completedCurrentTool) {
+    if (accountedPhaseOne && accounted.phaseOneStep <= 5) {
+      const step = accounted.phaseOneStep++;
+      if (step === 0) { action = 'accounted-resolve'; frames = toolCall({ id, model, name: 'command_center_resolve_source_topic', arguments: { topicName: acceptedExtraction.proposedTopic } }); }
+      else if (step === 1) { action = 'accounted-plan'; frames = toolCall({ id, model, name: 'command_center_plan_intake_source', arguments: { ...source, checkpoint: 'page-1:fictional-real-host-mixed-message', observedAt: '2026-09-22T04:00:00.000Z', processorVersion: 'fictional-real-host-processor-v1', acceptedExtraction, outcomes: [{ outcomeId: 'real-host-choice', kind: 'decision' }, { outcomeId: 'real-host-payment', kind: 'obligation' }, { outcomeId: 'real-host-reply', kind: 'obligation' }, { outcomeId: 'real-host-reference', kind: 'information' }], enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } } }); }
+      else if (step === 2) { action = 'accounted-save'; frames = toolCall({ id, model, name: 'command_center_save_source_note', arguments: { topicId: accounted.resolved?.topicId, noteFolderReferenceId: accounted.resolved?.noteFolderReferenceId, ...source, path: acceptedExtraction.notePath, markdown: acceptedExtraction.knowledgeMarkdown } }); }
+      else if (step === 3) { action = 'accounted-outcome-reference'; frames = toolCall({ id, model, name: 'command_center_record_intake_outcome', arguments: { ...source, outcomeId: 'real-host-reference', kind: 'information', status: 'quiet', summary: 'Retain fictional real-host reference', topicId: accounted.resolved?.topicId, sourceReferenceId: accounted.saved?.sourceReferenceId, sourcePath: accounted.saved?.path, sourceReferenceVersion: accounted.saved?.revision, recordedAt: '2026-09-22T04:00:05.000Z' } }); }
+      else if (step === 4) { action = 'accounted-capture-choice'; frames = toolCall({ id, model, name: 'command_center_capture_source_commitment', arguments: { topicId: accounted.resolved?.topicId, ...source, sourceReferenceId: accounted.saved?.sourceReferenceId, sourcePath: accounted.saved?.path, title: 'Choose fictional real-host delivery window', obligationId: 'real-host-choice', provenance: 'inferred' } }); }
+      else { action = 'accounted-outcome-choice'; frames = toolCall({ id, model, name: 'command_center_record_intake_outcome', arguments: { ...source, outcomeId: 'real-host-choice', kind: 'decision', status: 'pending-decision', summary: 'Choose fictional real-host delivery window', loopId: accounted.captured?.loopId, recordedAt: '2026-09-22T04:00:10.000Z' } }); }
+    } else if (accountedPhaseTwo && accounted.phaseTwoStep <= 6) {
+      const step = accounted.phaseTwoStep++;
+      const durableExtraction = accounted.loaded?.acceptedExtraction;
+      const durableOutcomes = Array.isArray(accounted.loaded?.outcomes) ? accounted.loaded.outcomes : [];
+      const durableOutcome = outcomeId => durableOutcomes.find(outcome => outcome.outcomeId === outcomeId);
+      const retained = durableOutcome('real-host-reference');
+      if (step === 0 || step === 6) { action = step === 0 ? 'accounted-load' : 'accounted-load-final'; frames = toolCall({ id, model, name: 'command_center_get_intake_source_account', arguments: source }); }
+      else if (step === 1 || step === 3) { const payment = step === 1; const obligation = durableExtraction?.obligations?.find(item => item.obligationId === (payment ? 'real-host-payment' : 'real-host-reply')); action = payment ? 'accounted-capture-payment' : 'accounted-capture-reply'; frames = toolCall({ id, model, name: 'command_center_capture_source_commitment', arguments: { ...obligation, classification: undefined, topicId: retained?.topicId, ...source, sourceReferenceId: retained?.sourceReferenceId, sourcePath: retained?.sourcePath } }); }
+      else if (step === 2 || step === 4) { const payment = step === 2; const outcome = durableOutcome(payment ? 'real-host-payment' : 'real-host-reply'); const obligation = durableExtraction?.obligations?.find(item => item.obligationId === outcome?.outcomeId); action = payment ? 'accounted-outcome-payment' : 'accounted-outcome-reply'; frames = toolCall({ id, model, name: 'command_center_record_intake_outcome', arguments: { ...source, outcomeId: outcome?.outcomeId, kind: outcome?.kind, status: 'applied', summary: obligation?.title, loopId: accounted.captured?.loopId, recordedAt: payment ? '2026-09-22T04:01:10.000Z' : '2026-09-22T04:01:20.000Z' } }); }
+      else { action = 'accounted-receipt'; frames = toolCall({ id, model, name: 'command_center_record_intake_receipt', arguments: { sourceKind: 'email', runId: 'fictional-real-host-resume', checkpoint: 'page-1:fictional-real-host-mixed-message', status: 'healthy-processed', observedAt: '2026-09-22T04:02:00.000Z', lastSuccessfulAt: '2026-09-22T04:02:00.000Z', nextExpectedAt: '2026-09-23T04:02:00.000Z', processedCount: 1, actionableCount: 2, noteCount: 0 } }); }
+    } else if (completedCurrentTool) {
       frames = textCompletion({ id, model, text: 'Fictional native tool action completed.' });
     } else if (firstTurnFinal && !initialTurnCompleted) {
       // The native Chat transport may normalize user content before it reaches
@@ -170,9 +210,9 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
       frames = textCompletion({ id, model, text: 'Fictional native Chat reply.' });
     }
     const issuedToolCallId = action === 'final' ? null : stableToolCallId(id);
-    if (issuedToolCallId) pendingToolCalls.add(issuedToolCallId);
+    if (issuedToolCallId) { pendingToolCalls.add(issuedToolCallId); pendingToolActions.set(issuedToolCallId, frames[0].choices[0].delta.tool_calls[0].function.name); }
     if (action === 'file' && mediaRef) usedMediaReferences.add(mediaRef);
-    requests.push(Object.freeze({ id, action, mediaRef, tools: [...tools].sort(), messageCount: messages.length, currentRole: currentMessage?.role ?? null, currentToolResultId, currentToolStatus: toolResultStatus(currentMessage), completedCurrentTool, issuedToolCallId, transcriptShape: transcriptShape(messages) }));
+    requests.push(Object.freeze({ id, action, mediaRef, tools: [...tools].sort(), messageCount: messages.length, currentRole: currentMessage?.role ?? null, currentToolResultId, currentToolStatus: toolResultStatus(currentMessage), completedCurrentTool, issuedToolCallId, transcriptShape: transcriptShape(messages), loadedProcessorVersion: accounted.loaded?.processorVersion ?? null, loadedOutcomeStatuses: accounted.loaded?.outcomes?.map(outcome => [outcome.outcomeId, outcome.status]) ?? [] }));
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     for (const frame of frames) response.write(`data: ${JSON.stringify(frame)}\n\n`);
     response.end('data: [DONE]\n\n');

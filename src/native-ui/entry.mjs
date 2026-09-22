@@ -172,12 +172,13 @@ export default {
     const page = host.ui.registerPage({ id: 'topics', label: 'Manage Topics', mount: (container, context) => mountTopics(container, context, state) });
     const topic = host.ui.registerPage({ id: 'topic', label: 'Topic Notes', mount: (container, context) => mountTopicPage(container, context, state) });
     const histories = host.ui.registerPage({ id: 'histories', label: 'Imported History', mount: mountHistoryPage });
-    const historyNavigation = host.ui.registerNavigation({ id: 'histories', label: 'Imported History', page: { id: 'histories' }, order: 11 });
-    const navigation = host.ui.registerNavigation({ id: 'topics', label: 'Manage Topics', page: { id: 'topics' }, order: 10 });
+    const group = { id: 'workspace', label: 'Command Center' };
+    const historyNavigation = host.ui.registerNavigation({ id: 'histories', label: 'Imported History', page: { id: 'histories' }, group, order: 11 });
+    const navigation = host.ui.registerNavigation({ id: 'topics', label: 'Manage Topics', page: { id: 'topics' }, group, order: 10 });
     const attention = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerPage({ id: 'attention', label: 'Dashboard', mount: mountAttentionPage }) : () => {};
     const planner = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerPage({ id: 'planner', label: 'Planner', mount: mountPlannerPage }) : () => {};
-    const attentionNavigation = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerNavigation({ id: 'attention', label: 'Dashboard', page: { id: 'attention' }, order: 8 }) : () => {};
-    const plannerNavigation = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerNavigation({ id: 'planner', label: 'Planner', page: { id: 'planner' }, order: 9 }) : () => {};
+    const attentionNavigation = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerNavigation({ id: 'attention', label: 'Dashboard', page: { id: 'attention' }, group, order: 8 }) : () => {};
+    const plannerNavigation = FIRST_LIVE_FEATURES.dashboard ? host.ui.registerNavigation({ id: 'planner', label: 'Planner', page: { id: 'planner' }, group, order: 9 }) : () => {};
     return () => { state.retire(); sidebarState.retire(); if (replacements) { host.ui.selectReplacement('session-files', null); host.ui.selectReplacement('session-list', null); } plannerNavigation(); attentionNavigation(); planner(); attention(); topicSidebar(); topicFiles(); historyNavigation(); histories(); navigation(); topic(); page(); };
   }
 };

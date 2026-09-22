@@ -1188,6 +1188,110 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   service.getProjectionBookkeeping = (projectionId) => readOne('SELECT * FROM projection_bookkeeping WHERE projection_id = ?', [requiredString(projectionId, 'projectionId')], mapProjection) || null;
   service.listProjectionBookkeeping = () => readMany('SELECT * FROM projection_bookkeeping ORDER BY projection_id', [], mapProjection);
 
+  service.commitIntakeAccountingOperation = (input) => {
+    const value = objectValue(input, 'intake accounting operation');
+    allowedKeys(value, ['logicalOperationId', 'intentDigest', 'operationKind', 'state', 'resultStatus', 'resultIdentity', 'observedRevision', 'createdAt'], 'intake accounting operation');
+    const logicalOperationId = requiredString(value.logicalOperationId, 'logicalOperationId');
+    const intentDigest = requiredString(value.intentDigest, 'intentDigest');
+    const operationKind = requiredString(value.operationKind, 'operationKind');
+    const match = /^(intake-source|intake-outcome)\.(email|chat|note)\.v1$/u.exec(operationKind);
+    if (!match) throw new CommandCenterMetadataError('invalid-value', 'Intake accounting operation kind is unsupported.');
+    const state = enumValue(value.state, ['applied', 'not-applied', 'unknown'], 'state');
+    const resultStatus = requiredString(value.resultStatus, 'resultStatus');
+    const resultIdentity = requiredString(value.resultIdentity, 'resultIdentity');
+    const observedRevision = requiredString(value.observedRevision, 'observedRevision');
+    const createdAt = timestamp(value.createdAt, 'createdAt');
+    let result;
+    try { result = JSON.parse(resultIdentity); } catch { throw new CommandCenterMetadataError('invalid-value', 'Intake accounting result is invalid.'); }
+    if (!result || result.schemaVersion !== 1 || result.sourceKind !== match[2] || result.sourceVersion !== observedRevision) throw new CommandCenterMetadataError('invalid-value', 'Intake accounting result does not match its operation identity.');
+    return mutate(null, db => {
+      const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
+      if (existing) {
+        if (existing.operation_kind !== operationKind || existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Intake accounting identity was reused with a different result.');
+        return Object.freeze({ disposition: 'duplicate', operation: mapOperation(existing) });
+      }
+      if (match[1] === 'intake-outcome') {
+        const plans = db.prepare('SELECT * FROM operation_journal WHERE operation_kind = ? AND observed_revision = ? ORDER BY rowid').all(`intake-source.${result.sourceKind}.v1`, result.sourceVersion)
+          .filter(row => { try { const plan = JSON.parse(row.result_identity); return plan.sourceExternalId === result.sourceExternalId; } catch { return false; } });
+        if (plans.length !== 1) throw new CommandCenterMetadataError('conflict', 'The exact intake source plan is unavailable.');
+        const plan = JSON.parse(plans[0].result_identity);
+        const planned = plan.outcomes?.find(item => item.outcomeId === result.outcomeId);
+        if (!planned || planned.kind !== result.kind) throw new CommandCenterMetadataError('intent-mismatch', 'The intake outcome does not match its source plan.');
+        if (['applied', 'pending-decision'].includes(result.status)) {
+          const loop = db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(result.loopId);
+          const evidence = db.prepare(`SELECT 1 FROM open_loop_evidence e JOIN source_observations o ON o.observation_id = e.observation_id
+            WHERE e.loop_id = ? AND o.source_system = 'command-center-capture' AND o.source_kind = ? AND o.external_source_id = ?
+              AND json_extract(o.facts_json, '$.sourceVersion') = ? AND json_extract(o.facts_json, '$.obligationId') = ? LIMIT 1`).get(result.loopId, result.sourceKind, result.sourceExternalId, result.sourceVersion, result.outcomeId);
+          if (!loop || !evidence || result.status === 'pending-decision' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
+        } else if (result.status === 'quiet') {
+          const reference = db.prepare(`SELECT reference.*, locator.locator AS current_locator FROM source_references AS reference
+            LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+            WHERE reference.reference_id = ?`).get(result.sourceReferenceId);
+          const sourceNoteHex = createHash('sha256').update(['command-center.source-note.v1', result.topicId, result.sourceKind, result.sourceExternalId, result.sourceVersion].join('\0')).digest('hex');
+          const sourceNoteOperationId = `${sourceNoteHex.slice(0, 8)}-${sourceNoteHex.slice(8, 12)}-4${sourceNoteHex.slice(13, 16)}-${(Number.parseInt(sourceNoteHex[16], 16) & 3 | 8).toString(16)}${sourceNoteHex.slice(17, 20)}-${sourceNoteHex.slice(20, 32)}`;
+          const sourceNote = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(sourceNoteOperationId);
+          const existingNoteEvidence = result.sourceKind === 'note' && result.sourceReferenceId === result.sourceExternalId;
+          const createdNoteEvidence = sourceNote?.operation_kind === 'notes.create' && sourceNote.state === 'applied' && sourceNote.result_identity === reference?.external_source_id && sourceNote.observed_revision === result.sourceReferenceVersion;
+          const normalizedExternalPath = (reference?.current_locator ?? reference?.external_source_id)?.replaceAll('\\', '/').replace(/\/$/, '');
+          const normalizedSourcePath = result.sourcePath?.replaceAll('\\', '/').replace(/^\/+/, '');
+          const folders = db.prepare(`SELECT COALESCE(locator.locator, reference.external_source_id) AS effective_locator FROM source_references AS reference
+            LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+            WHERE reference.topic_id = ? AND reference.source_kind = 'note_folder'`).all(result.topicId);
+          const roots = folders.map(folder => folder.effective_locator).filter(Boolean).map(root => root.replaceAll('\\', '/').replace(/\/$/, ''));
+          const relativePaths = [...new Set(roots.filter(root => normalizedExternalPath?.startsWith(`${root}/`)).map(root => normalizedExternalPath.slice(root.length + 1)))];
+          const exactPath = folders.length === 1 && relativePaths.length === 1 && relativePaths[0] === normalizedSourcePath;
+          if (!reference || reference.topic_id !== result.topicId || !['note', 'document'].includes(reference.source_kind) || reference.last_observed_revision !== result.sourceReferenceVersion || !exactPath || !(existingNoteEvidence || createdNoteEvidence)) throw new CommandCenterMetadataError('conflict', 'The exact quiet intake evidence is unavailable.');
+        }
+      }
+      db.prepare(`INSERT INTO operation_journal
+        (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(logicalOperationId, logicalOperationId, intentDigest, operationKind, state, resultStatus, resultIdentity, observedRevision, createdAt, createdAt);
+      return Object.freeze({ disposition: 'recorded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
+    });
+  };
+
+  service.commitIntakeReceiptOperation = (input) => {
+    const value = objectValue(input, 'intake receipt operation');
+    allowedKeys(value, ['logicalOperationId', 'transportRequestId', 'intentDigest', 'operationKind', 'state', 'resultStatus', 'resultIdentity', 'observedRevision', 'createdAt', 'updatedAt'], 'intake receipt operation');
+    const logicalOperationId = requiredString(value.logicalOperationId, 'logicalOperationId');
+    const transportRequestId = requiredString(value.transportRequestId, 'transportRequestId');
+    const intentDigest = requiredString(value.intentDigest, 'intentDigest');
+    const operationKind = requiredString(value.operationKind, 'operationKind');
+    const match = /^intake-receipt\.(email|chat|note)\.v1$/u.exec(operationKind);
+    if (!match) throw new CommandCenterMetadataError('invalid-value', 'Intake receipt operation kind is unsupported.');
+    const state = enumValue(value.state, ['pending', 'applied', 'not-applied'], 'state');
+    const resultStatus = requiredString(value.resultStatus, 'resultStatus');
+    const resultIdentity = requiredString(value.resultIdentity, 'resultIdentity');
+    const observedRevision = requiredString(value.observedRevision, 'observedRevision');
+    const createdAt = timestamp(value.createdAt, 'createdAt');
+    const updatedAt = timestamp(value.updatedAt, 'updatedAt', createdAt);
+    let result;
+    try { result = JSON.parse(resultIdentity); } catch { throw new CommandCenterMetadataError('invalid-value', 'Intake receipt result is invalid.'); }
+    if (!result || result.schemaVersion !== 1 || result.sourceKind !== match[1] || !observedRevision.startsWith(`${result.runId}:`)) throw new CommandCenterMetadataError('invalid-value', 'Intake receipt result does not match its operation identity.');
+    return mutate(null, db => {
+      const existing = db.prepare('SELECT rowid, * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
+      if (existing && (existing.operation_kind !== operationKind || existing.intent_digest !== intentDigest)) throw new CommandCenterMetadataError('intent-mismatch', 'Intake receipt identity was reused with a different run.');
+      if (!existing) {
+        db.prepare(`INSERT INTO operation_journal
+          (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(logicalOperationId, transportRequestId, intentDigest, operationKind, state, resultStatus, resultIdentity, observedRevision, createdAt, updatedAt);
+        return Object.freeze({ disposition: 'recorded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
+      }
+      const latest = db.prepare('SELECT rowid FROM operation_journal WHERE operation_kind = ? ORDER BY rowid DESC LIMIT 1').get(operationKind);
+      if (existing.result_status !== 'pending') {
+        if (state === 'pending' || existing.result_identity === resultIdentity) return Object.freeze({ disposition: 'duplicate', operation: mapOperation(existing) });
+        throw new CommandCenterMetadataError('intent-mismatch', 'A terminal intake receipt cannot be replaced by a different result.');
+      }
+      if (state !== 'pending' && latest?.rowid !== existing.rowid) {
+        db.prepare("UPDATE operation_journal SET state = 'not-applied', result_status = 'superseded', updated_at = ? WHERE logical_operation_id = ?").run(updatedAt, logicalOperationId);
+        return Object.freeze({ disposition: 'superseded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
+      }
+      db.prepare(`UPDATE operation_journal SET transport_request_id = ?, state = ?, result_status = ?, result_identity = ?, observed_revision = ?, updated_at = ?
+        WHERE logical_operation_id = ?`).run(transportRequestId, state, resultStatus, resultIdentity, observedRevision, updatedAt, logicalOperationId);
+      return Object.freeze({ disposition: 'updated', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
+    });
+  };
+
   service.recordOperation = (input) => {
     const value = objectValue(input, 'operation journal record');
     allowedKeys(value, ['logicalOperationId', 'transportRequestId', 'intentDigest', 'operationKind', 'state', 'resultStatus', 'resultIdentity', 'observedRevision', 'createdAt', 'updatedAt'], 'operation journal record');
@@ -1205,6 +1309,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
       if (operationKind === RECONCILIATION_OPERATION || existing?.operation_kind === RECONCILIATION_OPERATION) throw new CommandCenterMetadataError('reconciliation-owner-required', 'Reconciliation receipts require their dedicated owner.');
       if (operationKind === PROVISIONING_PRIMARY_OPERATION || existing?.operation_kind === PROVISIONING_PRIMARY_OPERATION) throw new CommandCenterMetadataError('provisioning-owner-required', 'Conditional provisioning receipts require their dedicated owner.');
       if (operationKind === HISTORICAL_BACKFILL_STATE_OPERATION || existing?.operation_kind === HISTORICAL_BACKFILL_STATE_OPERATION) throw new CommandCenterMetadataError('historical-backfill-owner-required', 'Historical backfill state requires its dedicated owner.');
+      if (/^intake-(?:source|outcome)\./u.test(operationKind) || /^intake-(?:source|outcome)\./u.test(existing?.operation_kind ?? '')) throw new CommandCenterMetadataError('intake-accounting-owner-required', 'Intake accounting receipts require their dedicated owner.');
+      if (/^intake-receipt\./u.test(operationKind) || /^intake-receipt\./u.test(existing?.operation_kind ?? '')) throw new CommandCenterMetadataError('intake-receipt-owner-required', 'Intake run receipts require their dedicated owner.');
       reconciliationClaims.assertChildClaim(db, { logicalOperationId, operationKind, intentDigest }, true);
       if (existing && existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
       db.prepare(`INSERT INTO operation_journal
@@ -1220,6 +1326,45 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   };
   service.getOperation = (logicalOperationId) => readOne('SELECT * FROM operation_journal WHERE logical_operation_id = ?', [requiredString(logicalOperationId, 'logicalOperationId')], mapOperation) || null;
   service.listOperations = () => readMany('SELECT * FROM operation_journal ORDER BY created_at, logical_operation_id', [], mapOperation);
+
+  service.commitDailyWorkspaceOperation = (input) => {
+    const value = objectValue(input, 'daily workspace operation');
+    allowedKeys(value, ['logicalOperationId', 'intentDigest', 'operationKind', 'entityId', 'expectedRevision', 'result', 'createdAt'], 'daily workspace operation');
+    const logicalOperationId = requiredString(value.logicalOperationId, 'logicalOperationId');
+    const intentDigest = requiredString(value.intentDigest, 'intentDigest');
+    const operationKind = enumValue(value.operationKind, ['daily-workspace.briefing.publish', 'daily-workspace.briefing.read', 'daily-workspace.routine.decision'], 'operationKind');
+    const entityId = requiredString(value.entityId, 'entityId');
+    const createdAt = timestamp(value.createdAt, 'createdAt');
+    const requestedResult = objectValue(value.result, 'daily workspace result');
+    return mutate(null, (db) => {
+      const existingOperation = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
+      if (existingOperation) {
+        if (existingOperation.operation_kind !== operationKind || existingOperation.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
+        return mapOperation(existingOperation);
+      }
+      const prior = db.prepare('SELECT result_identity FROM operation_journal WHERE operation_kind = ? AND state = ? ORDER BY rowid').all(operationKind, 'applied').map(row => { try { return JSON.parse(row.result_identity); } catch { return null; } }).filter(Boolean);
+      let result = structuredClone(requestedResult);
+      if (operationKind === 'daily-workspace.briefing.publish') {
+        const bound = prior.find(item => item.editionId === entityId);
+        if (bound && JSON.stringify(bound) !== JSON.stringify(result)) throw new CommandCenterMetadataError('conflict', 'Briefing edition identity is already bound to different content.');
+        result = bound ?? result;
+      } else if (operationKind === 'daily-workspace.briefing.read') {
+        result.sequence = prior.filter(item => item.editionId === entityId).reduce((highest, item) => Math.max(highest, item.sequence ?? 0), 0) + 1;
+      } else {
+        const occurrenceDecisions = prior.filter(item => `${item.routineId}:${item.occurrenceDate}` === entityId);
+        const revision = occurrenceDecisions.reduce((highest, item) => Math.max(highest, item.revision ?? 0), 0);
+        if (value.expectedRevision !== revision) throw new CommandCenterMetadataError('conflict', 'Routine occurrence revision is stale.');
+        const latest = occurrenceDecisions.find(item => item.revision === revision);
+        if (latest?.action === 'complete') throw new CommandCenterMetadataError('conflict', 'A completed routine occurrence is terminal.');
+        if (latest?.action === 'defer' && Date.parse(latest.until) > Date.parse(result.decidedAt)) throw new CommandCenterMetadataError('conflict', 'The routine occurrence is not visible while its deferral is active.');
+        result.revision = revision + 1;
+      }
+      db.prepare(`INSERT INTO operation_journal
+        (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'applied', 'applied', ?, NULL, ?, ?)`).run(logicalOperationId, logicalOperationId, intentDigest, operationKind, JSON.stringify(result), createdAt, createdAt);
+      return mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId));
+    });
+  };
 
   const historicalBackfillStateId = (stateKey) => {
     const key = requiredString(stateKey, 'stateKey');

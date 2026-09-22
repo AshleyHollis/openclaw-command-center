@@ -1,18 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory } from '../src/open-loops/source-intake-tool.mjs';
+import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeSourceAccountToolFactory, intakeOutcomeToolFactory } from '../src/open-loops/source-intake-tool.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 
 function metadataOwner() {
   const operations = new Map();
   return {
     operations,
-    getSourceReference(id) { return id === 'note:fictional-email' ? { referenceId: id, topicId: 'topic-fictional-home', sourceKind: 'note' } : null; },
+    getSourceReference(id) { return ['note:fictional-email', 'note:fictional-reference'].includes(id) ? { referenceId: id, topicId: 'topic-fictional-home', sourceKind: 'note' } : null; },
     findOpenLoopBySubject() { return null; },
     applyOpenLoopChange(input) { return { disposition: 'applied', observation: input.observation, loop: input.loop }; },
     getOperation(id) { return operations.get(id) ?? null; },
     recordOperation(input) { operations.set(input.logicalOperationId, { ...input }); return input; },
+    commitIntakeAccountingOperation(input) {
+      const prior = operations.get(input.logicalOperationId);
+      if (prior && prior.intentDigest !== input.intentDigest) throw Object.assign(new Error('identity changed'), { code: 'intent-mismatch' });
+      if (!prior) operations.set(input.logicalOperationId, { ...input });
+      return { disposition: prior ? 'duplicate' : 'recorded', operation: prior ?? operations.get(input.logicalOperationId) };
+    },
+    commitIntakeReceiptOperation(input) {
+      const prior = operations.get(input.logicalOperationId);
+      operations.set(input.logicalOperationId, { ...input, createdAt: prior?.createdAt ?? input.createdAt });
+      return { disposition: prior ? 'updated' : 'recorded', operation: operations.get(input.logicalOperationId) };
+    },
     listOperations() { return [...operations.values()]; }
   };
 }
@@ -111,4 +122,38 @@ test('receipt tool records Chat coverage separately from Note processing', async
   const result = await tool.execute('chat-receipt', { sourceKind: 'chat', runId: 'fictional-chat-run', checkpoint: 'message-9', status: 'healthy-processed', observedAt: '2026-09-20T02:00:00.000Z', lastSuccessfulAt: '2026-09-20T02:00:00.000Z', nextExpectedAt: '2026-09-21T02:00:00.000Z', processedCount: 1, actionableCount: 1, noteCount: 0 });
   assert.equal(result.details.receipt.sourceKind, 'chat');
   assert.equal([...metadata.operations.values()][0].operationKind, 'intake-receipt.chat.v1');
+});
+
+test('receipt tool returns the exact durable continuation until a resumed run completes', async () => {
+  const metadata = metadataOwner();
+  const tool = intakeReceiptToolFactory({ getOwners: () => ({ metadata }) })();
+  const counts = { processedCount: 1, actionableCount: 0, noteCount: 0 };
+  await tool.execute('partial', { sourceKind: 'email', runId: 'email-partial', checkpoint: 'page-2', status: 'incomplete', observedAt: '2026-09-22T02:00:00.000Z', nextExpectedAt: '2026-09-22T02:05:00.000Z', ...counts, continuation: { scopeId: 'mailbox-fixture', cursor: 'page-3', remainingCount: 2, failedReadCount: 1, scanCapReached: true } });
+  const resumed = await tool.execute('resume', { sourceKind: 'email', runId: 'email-resume', checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T02:05:00.000Z', nextExpectedAt: '2026-09-22T02:10:00.000Z', ...counts });
+  assert.deepEqual(resumed.details.resumeFrom, { scopeId: 'mailbox-fixture', cursor: 'page-3', remainingCount: 2, failedReadCount: 1, scanCapReached: true });
+  await tool.execute('complete', { sourceKind: 'email', runId: 'email-resume', checkpoint: 'complete', status: 'healthy-processed', observedAt: '2026-09-22T02:06:00.000Z', lastSuccessfulAt: '2026-09-22T02:06:00.000Z', nextExpectedAt: '2026-09-23T02:06:00.000Z', ...counts });
+  const next = await tool.execute('next', { sourceKind: 'email', runId: 'email-next', checkpoint: 'start', status: 'pending', observedAt: '2026-09-23T02:06:00.000Z', nextExpectedAt: '2026-09-23T02:10:00.000Z', ...counts });
+  assert.equal(next.details.resumeFrom, undefined);
+});
+
+test('source-accounting tools retain a stable plan and each exact outcome', async () => {
+  const metadata = metadataOwner();
+  const planTool = intakeSourcePlanToolFactory({ getOwners: () => ({ metadata }) })();
+  const accountTool = intakeSourceAccountToolFactory({ getOwners: () => ({ metadata }) })();
+  const outcomeTool = intakeOutcomeToolFactory({ getOwners: () => ({ metadata }) })();
+  const source = { sourceKind: 'email', sourceExternalId: 'fictional-message-accounted', sourceVersion: 'v3' };
+  const extraction = { schemaVersion: 1, proposedTopic: 'Fictional Home', notePath: 'Inbox/fictional-reference.md', knowledgeMarkdown: '# Fictional reference\n', knowledgeOutcomeId: 'quiet-reference', obligations: [] };
+  const planned = await planTool.execute('plan', { ...source, checkpoint: 'page-2:message-7', observedAt: '2026-09-22T02:00:00.000Z', processorVersion: 'fictional-processor-v4', acceptedExtraction: extraction, outcomes: [{ outcomeId: 'quiet-reference', kind: 'information' }], enumeration: { scope: 'bounded', scannedCount: 10, remainingCount: 2, failedReadCount: 0, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-3' } });
+  const before = await accountTool.execute('load-before', source);
+  const outcome = await outcomeTool.execute('outcome', { ...source, outcomeId: 'quiet-reference', kind: 'information', status: 'quiet', summary: 'Fictional reference retained', topicId: 'topic-fictional-home', sourceReferenceId: 'note:fictional-reference', sourcePath: 'Inbox/fictional-reference.md', sourceReferenceVersion: 'note-v1', recordedAt: '2026-09-22T02:00:01.000Z' });
+  const after = await accountTool.execute('load-after', source);
+  assert.equal(planned.details.plan.outcomes.length, 1);
+  assert.equal(before.details.plan.processorVersion, 'fictional-processor-v4');
+  assert.deepEqual(before.details.plan.acceptedExtraction, extraction);
+  assert.equal(before.details.account.outcomes[0].status, 'missing');
+  assert.deepEqual(JSON.parse(before.content[0].text), { status: 'found', ...source, processorVersion: 'fictional-processor-v4', acceptedExtraction: extraction, outcomes: [{ outcomeId: 'quiet-reference', kind: 'information', status: 'missing' }] });
+  assert.equal(outcome.details.outcome.status, 'quiet');
+  assert.equal(after.details.account.outcomes[0].status, 'quiet');
+  assert.equal(JSON.parse(after.content[0].text).outcomes[0].sourceReferenceVersion, 'note-v1');
+  assert.deepEqual([...metadata.operations.values()].map(item => item.operationKind).sort(), ['intake-outcome.email.v1', 'intake-source.email.v1']);
 });
