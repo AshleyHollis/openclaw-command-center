@@ -1302,7 +1302,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const dashboardPage = page.locator('openclaw-plugin-page');
         await dashboardPage.getByRole('heading', { name: 'Command Center', exact: true }).waitFor({ timeout: 30_000 });
         milestone('dashboard-mounted');
-        const emailCard = dashboardPage.locator('.cc-coverage-card').filter({ has: dashboardPage.getByRole('heading', { name: 'Email intake', exact: true }) });
+        const emailCard = dashboardPage.locator('.cc-coverage-card').filter({ hasText: 'Email intake' });
         await emailCard.getByText('1 of 1 sources accounted for · 1 resolved · 4 of 4 outcomes accounted for', { exact: true }).waitFor();
         await emailCard.locator('details > summary').click();
         await emailCard.getByText('Choose fictional real-host delivery window: clarified', { exact: true }).waitFor();
