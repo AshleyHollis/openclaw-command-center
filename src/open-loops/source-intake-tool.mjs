@@ -1,8 +1,21 @@
 import { createHash } from 'node:crypto';
 import { createCommitmentCaptureService } from './commitment-capture.mjs';
 import { findIntakeContinuation, recordIntakeReceipt } from './intake-receipt.mjs';
-import { recordIntakeOutcome, recordIntakeSourcePlan } from './intake-accounting.mjs';
+import { loadIntakeSourceAccount, recordIntakeOutcome, recordIntakeSourcePlan } from './intake-accounting.mjs';
 import { sourceError } from '../sources/errors.mjs';
+
+const acceptedObligationSchema = Object.freeze({ type: 'object', additionalProperties: false, properties: {
+  obligationId: { type: 'string', minLength: 1 }, title: { type: 'string', minLength: 1 }, classification: { type: 'string', enum: ['obligation', 'decision'] },
+  provenance: { type: 'string', enum: ['explicit', 'inferred', 'idea', 'quoted'] }, correlationNamespace: { type: 'string', minLength: 1 }, correlationId: { type: 'string', minLength: 1 }, confidence: { type: 'number', minimum: 0, maximum: 1 },
+  dueAt: { type: 'string' }, reviewAt: { type: 'string' }, plannedAt: { type: 'string' }, importance: { type: 'string', enum: ['critical', 'high', 'normal', 'low'] }, importanceOrigin: { type: 'string', enum: ['source', 'processing'] },
+  effortMinutes: { type: 'integer', minimum: 1, maximum: 10080 }, contexts: { type: 'array', items: { type: 'string' }, maxItems: 8 }, dependencies: { type: 'array', items: { type: 'string' }, maxItems: 16 }
+}, required: ['obligationId', 'title', 'provenance'] });
+
+const acceptedExtractionSchema = Object.freeze({ type: 'object', additionalProperties: false, properties: {
+  schemaVersion: { type: 'integer', const: 1 }, proposedTopic: { type: ['string', 'null'], minLength: 1, maxLength: 200 }, notePath: { type: 'string', maxLength: 1000 }, knowledgeMarkdown: { type: 'string', maxLength: 262144 },
+  knowledgeOutcomeId: { type: 'string', minLength: 1 }, knowledgeSummary: { type: 'string', minLength: 1, maxLength: 300 }, obligations: { type: 'array', maxItems: 100, items: acceptedObligationSchema },
+  noAction: { type: 'object', additionalProperties: false, properties: { outcomeId: { type: 'string', minLength: 1 }, summary: { type: 'string', minLength: 1, maxLength: 300 } }, required: ['outcomeId', 'summary'] }
+}, required: ['schemaVersion', 'notePath', 'knowledgeMarkdown', 'obligations'] });
 
 function sourceCaptureOperationId(params) {
   const hex = createHash('sha256').update(['command-center.source-capture.v1', params.sourceKind, params.sourceExternalId, params.sourceVersion, params.obligationId].join('\0')).digest('hex');
@@ -119,15 +132,33 @@ export function intakeSourcePlanToolFactory({ getOwners } = {}) {
     name: 'command_center_plan_intake_source',
     description: 'Record the exact source revision and complete planned outcome identities before applying maintained intake effects. This makes partial work and safe replay visible without copying source content.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
-      sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, checkpoint: { type: 'string', minLength: 1 }, observedAt: { type: 'string' },
+      sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, checkpoint: { type: 'string', minLength: 1 }, observedAt: { type: 'string' }, processorVersion: { type: 'string', minLength: 1, maxLength: 300 },
+      acceptedExtraction: acceptedExtractionSchema,
       outcomes: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', additionalProperties: false, properties: { outcomeId: { type: 'string', minLength: 1 }, kind: { type: 'string', enum: ['obligation', 'decision', 'information', 'no-action'] } }, required: ['outcomeId', 'kind'] } },
       enumeration: { type: 'object', additionalProperties: false, properties: { scope: { type: 'string', enum: ['complete', 'bounded', 'partial'] }, scannedCount: { type: 'integer', minimum: 0 }, remainingCount: { type: 'integer', minimum: 0 }, failedReadCount: { type: 'integer', minimum: 0 }, scanCapReached: { type: 'boolean' }, scopeId: { type: 'string', minLength: 1 }, resumeCursor: { type: 'string', minLength: 1 } }, required: ['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached'] }
-    }, required: ['sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'outcomes', 'enumeration'] }),
+    }, required: ['sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'acceptedExtraction', 'outcomes', 'enumeration'] }),
     async execute(_toolCallId, params) {
       const { metadata } = getOwners() ?? {};
       if (!metadata) throw sourceError('capability-unavailable', 'Intake source accounting is not ready.');
       const result = recordIntakeSourcePlan(metadata, { schemaVersion: 1, ...params });
       return Object.freeze({ content: [{ type: 'text', text: JSON.stringify({ status: result.disposition, sourceKind: result.plan.sourceKind, checkpoint: result.plan.checkpoint, outcomeCount: result.plan.outcomes.length }) }], details: result });
+    }
+  });
+}
+
+export function intakeSourceAccountToolFactory({ getOwners } = {}) {
+  if (typeof getOwners !== 'function') throw new TypeError('Intake source accounting requires authoritative owners.');
+  return () => ({
+    name: 'command_center_get_intake_source_account',
+    description: 'Load the durable accepted extraction, processor version, outcome identities and current accounting states for one exact source revision before retrying effects.',
+    parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
+      sourceKind: { type: 'string', enum: ['email', 'chat', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }
+    }, required: ['sourceKind', 'sourceExternalId', 'sourceVersion'] }),
+    async execute(_toolCallId, params) {
+      const { metadata } = getOwners() ?? {};
+      if (!metadata) throw sourceError('capability-unavailable', 'Intake source accounting is not ready.');
+      const result = loadIntakeSourceAccount(metadata, params);
+      return Object.freeze({ content: [{ type: 'text', text: JSON.stringify(result ? { status: 'found', sourceKind: result.plan.sourceKind, processorVersion: result.plan.processorVersion, outcomeCount: result.plan.outcomes.length } : { status: 'not-found', sourceKind: params.sourceKind }) }], details: result });
     }
   });
 }

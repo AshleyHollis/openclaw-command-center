@@ -14,8 +14,6 @@ import { invokeBridgeMethod } from '../src/bridge/register.mjs';
 import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 import { build, distRoot } from '../src/build.mjs';
-import { planCommitmentCapture } from '../src/open-loops/commitment-capture.mjs';
-import { sourceNoteOperationId } from '../src/open-loops/source-intake-tool.mjs';
 
 const qualifyOpenLoop = (service, method, params) => invokeBridgeMethod(service, method, params, 'fictional-qualification-request', 'fictional-operator');
 const qualifyRegisteredOpenLoop = async (host, method, params) => (await host.authenticatedGatewayRequest(method, params)).result;
@@ -864,40 +862,53 @@ test('background notification reconciliation excludes a future Reminder and rout
   }
 });
 
-test('built package accounts for a mixed email through registered tools and the authenticated Dashboard route', { timeout: 120_000 }, async () => {
+test('built package processes a mixed email through registered Note-save, capture and accounting tools', { skip: process.platform !== 'linux' && 'descriptor-backed installed-package Note journey requires the supported Linux host', timeout: 120_000 }, async () => {
   await build();
   const { default: builtPlugin } = await import(`${pathToFileURL(path.join(distRoot, 'plugin.mjs')).href}?accounted=${Date.now()}`);
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-built-accounted-email-'));
-  const host = fakePublishedApi(stateDir);
+  const vault = await mkdtemp(path.join(os.tmpdir(), 'command-center-built-accounted-email-vault-'));
+  const host = fakePublishedApi(stateDir, { fileAccess: createHostFileAccessFixture() });
+  let seed;
   try {
+    seed = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    seed.createTopic({ topicId: 'topic-built-home', name: 'Fictional built home', paraCategory: 'project', lifecycle: 'active', createdAt: '2026-09-22T00:00:00.000Z', updatedAt: '2026-09-22T00:00:00.000Z' });
+    seed.createSourceReference({ version: 1, referenceId: 'folder:built-home', topicId: 'topic-built-home', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault });
+    const releaseEnrollmentAccess = installHostFileAccessFixture();
+    try { await enrollFixtureFolder(seed, 'folder:built-home', vault); } finally { releaseEnrollmentAccess(); }
+    seed.close(); seed = undefined;
     builtPlugin.register(host.api); const service = host.services[0]; await service.start();
-    const metadata = service.getTopicMaintenanceOwners().metadata;
-    metadata.createTopic({ topicId: 'topic-built-home', name: 'Fictional built home', paraCategory: 'project', lifecycle: 'active', createdAt: '2026-09-22T00:00:00.000Z', updatedAt: '2026-09-22T00:00:00.000Z' });
-    metadata.createSourceReference({ version: 1, referenceId: 'folder:built-home', topicId: 'topic-built-home', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional' });
-    const source = { sourceKind: 'email', sourceExternalId: 'fictional-built-message', sourceVersion: 'change-key-built' };
+    const source = { sourceKind: 'email', sourceExternalId: 'fictional-built-message', sourceVersion: 'change-key-built-19' };
+    const extraction = { schemaVersion: 1, proposedTopic: 'Fictional built home', notePath: 'Inbox/built-message.md', knowledgeMarkdown: '# Fictional built reference\n', knowledgeOutcomeId: 'reference-built', obligations: [{ obligationId: 'pay-built', title: 'Pay fictional built invoice', provenance: 'explicit' }, { obligationId: 'reply-built', title: 'Reply with fictional built reference', provenance: 'explicit' }, { obligationId: 'choose-built', title: 'Choose fictional built window', provenance: 'inferred', classification: 'decision' }] };
     const invokeTool = async (name, params) => host.tools.get(name)().execute(randomUUID(), params);
-    await invokeTool('command_center_plan_intake_source', { ...source, checkpoint: 'page-1:fictional-built-message', observedAt: '2026-09-22T01:00:00.000Z', outcomes: [{ outcomeId: 'pay-built', kind: 'obligation' }, { outcomeId: 'reply-built', kind: 'obligation' }, { outcomeId: 'choose-built', kind: 'decision' }, { outcomeId: 'reference-built', kind: 'information' }], enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } });
-    const capture = (obligationId, title, provenance = 'explicit') => {
-      const logicalOperationId = `built-${obligationId}`;
-      const planned = planCommitmentCapture({ schemaVersion: 1, logicalOperationId, ...source, topicId: 'topic-built-home', title, obligationId, provenance, occurredAt: '2026-09-22T01:00:00.000Z', observedAt: '2026-09-22T01:00:00.000Z', historicalBaseline: false });
-      return metadata.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId, operationKind: 'commitment.capture.v1', intent: planned.value, expectedRevision: 0, observation: planned.observation, loop: planned.loop, evidenceRoles: { [planned.observation.observationId]: 'origin' }, updatedAt: '2026-09-22T01:00:00.000Z' }).loop;
-    };
-    const payment = capture('pay-built', 'Pay fictional built invoice'); const reply = capture('reply-built', 'Reply with fictional built reference'); const decision = capture('choose-built', 'Choose fictional built window', 'inferred');
-    metadata.createSourceReference({ version: 1, referenceId: 'note:built-message', topicId: 'topic-built-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/Inbox/built-message.md', observedRevision: 'note-built-v1' });
-    const noteOperationId = sourceNoteOperationId({ topicId: 'topic-built-home', ...source });
-    metadata.recordOperation({ logicalOperationId: noteOperationId, transportRequestId: noteOperationId, intentDigest: 'sha256:fictional-built-note', operationKind: 'notes.create', state: 'applied', resultStatus: 'applied', resultIdentity: '/fictional/Inbox/built-message.md', observedRevision: 'note-built-v1', createdAt: '2026-09-22T01:00:00.000Z', updatedAt: '2026-09-22T01:00:00.000Z' });
+    const resolved = await invokeTool('command_center_resolve_source_topic', { topicName: extraction.proposedTopic });
+    await invokeTool('command_center_plan_intake_source', { ...source, checkpoint: 'page-1:fictional-built-message', observedAt: '2026-09-22T01:00:00.000Z', processorVersion: 'fictional-built-processor-v1', acceptedExtraction: extraction, outcomes: [{ outcomeId: 'pay-built', kind: 'obligation' }, { outcomeId: 'reply-built', kind: 'obligation' }, { outcomeId: 'choose-built', kind: 'decision' }, { outcomeId: 'reference-built', kind: 'information' }], enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } });
+    const saved = await invokeTool('command_center_save_source_note', { topicId: resolved.details.topicId, noteFolderReferenceId: resolved.details.noteFolderReferenceId, ...source, path: extraction.notePath, markdown: extraction.knowledgeMarkdown });
+    const noteRevision = saved.details.note.revision;
+    assert.notEqual(noteRevision, source.sourceVersion);
+    const evidence = { topicId: resolved.details.topicId, ...source, sourceReferenceId: saved.details.sourceReference.referenceId, sourcePath: saved.details.note.path };
+    const capture = async (obligationId, title, provenance = 'explicit') => (await invokeTool('command_center_capture_source_commitment', { ...evidence, obligationId, title, provenance })).details.loop;
+    const payment = await capture('pay-built', 'Pay fictional built invoice');
+    const reply = await capture('reply-built', 'Reply with fictional built reference');
+    const decision = await capture('choose-built', 'Choose fictional built window', 'inferred');
     const base = { ...source, recordedAt: '2026-09-22T01:01:00.000Z' };
     await invokeTool('command_center_record_intake_outcome', { ...base, outcomeId: 'pay-built', kind: 'obligation', status: 'applied', summary: 'Pay fictional built invoice', loopId: payment.loopId });
     await invokeTool('command_center_record_intake_outcome', { ...base, outcomeId: 'reply-built', kind: 'obligation', status: 'applied', summary: 'Reply with fictional built reference', loopId: reply.loopId });
     await invokeTool('command_center_record_intake_outcome', { ...base, outcomeId: 'choose-built', kind: 'decision', status: 'pending-decision', summary: 'Choose fictional built window', loopId: decision.loopId });
-    await invokeTool('command_center_record_intake_outcome', { ...base, outcomeId: 'reference-built', kind: 'information', status: 'quiet', summary: 'Retain fictional built reference', topicId: 'topic-built-home', sourceReferenceId: 'note:built-message', sourcePath: 'Inbox/built-message.md', sourceReferenceVersion: 'note-built-v1' });
+    await invokeTool('command_center_record_intake_outcome', { ...base, outcomeId: 'reference-built', kind: 'information', status: 'quiet', summary: 'Retain fictional built reference', topicId: evidence.topicId, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath, sourceReferenceVersion: noteRevision });
+    const account = await invokeTool('command_center_get_intake_source_account', source);
+    assert.equal(account.details.plan.processorVersion, 'fictional-built-processor-v1');
+    assert.deepEqual(account.details.plan.acceptedExtraction, extraction);
+    assert.deepEqual(account.details.account.outcomes.map(item => item.status), ['applied', 'applied', 'pending-decision', 'quiet']);
     await invokeTool('command_center_record_intake_receipt', { sourceKind: 'email', runId: 'built-email-run', checkpoint: 'complete', status: 'healthy-processed', observedAt: '2026-09-22T01:02:00.000Z', lastSuccessfulAt: '2026-09-22T01:02:00.000Z', nextExpectedAt: '2026-09-23T01:02:00.000Z', processedCount: 1, actionableCount: 3, noteCount: 1 });
     const dashboardResponse = await host.authenticatedGatewayRequest('command-center.v1.dashboard.get', { schemaVersion: 1, activityOffset: 0, activityLimit: 20 });
-    const dashboard = dashboardResponse.result ?? dashboardResponse;
-    const email = dashboard.intakeCoverage.find(item => item.sourceKind === 'email');
+    const email = (dashboardResponse.result ?? dashboardResponse).intakeCoverage.find(item => item.sourceKind === 'email');
     assert.deepEqual(email.sourceCounts, { observed: 1, accounted: 1, resolved: 0 });
     assert.deepEqual(email.outcomeCounts, { expected: 4, accounted: 4, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 });
     assert.equal(email.status, 'needs-review');
     assert.deepEqual(email.recentSources[0].outcomes.map(item => item.kind), ['obligation', 'obligation', 'decision', 'information']);
-  } finally { await host.services[0]?.stop?.(); await rm(stateDir, { recursive: true, force: true }); }
+  } finally {
+    seed?.close(); await host.services[0]?.stop?.();
+    await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(vault, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 });

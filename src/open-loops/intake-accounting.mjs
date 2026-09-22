@@ -15,6 +15,30 @@ const fail = (code, message = code) => { throw sourceError(code, message); };
 function text(value, name, limit = 500) { if (typeof value !== 'string' || !value.trim() || value.length > limit) fail('invalid-request', `${name} is invalid.`); return value.trim(); }
 function instant(value, name) { const result = text(value, name, 64); if (!Number.isFinite(Date.parse(result))) fail('invalid-request', `${name} is invalid.`); return new Date(result).toISOString(); }
 function count(value, name) { if (!Number.isSafeInteger(value) || value < 0) fail('invalid-request', `${name} is invalid.`); return value; }
+function jsonObject(value, name) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('invalid-request', `${name} is invalid.`);
+  let encoded;
+  try { encoded = JSON.stringify(value); } catch { fail('invalid-request', `${name} is invalid.`); }
+  if (!encoded || encoded.length > 262_144) fail('invalid-request', `${name} is invalid.`);
+  return Object.freeze(JSON.parse(encoded));
+}
+const extractionKeys = new Set(['schemaVersion', 'proposedTopic', 'notePath', 'knowledgeMarkdown', 'knowledgeOutcomeId', 'knowledgeSummary', 'obligations', 'noAction']);
+const obligationKeys = new Set(['obligationId', 'title', 'classification', 'provenance', 'correlationNamespace', 'correlationId', 'confidence', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies']);
+export function normalizeAcceptedExtraction(input) {
+  const value = jsonObject(input, 'acceptedExtraction');
+  if (value.schemaVersion !== 1 || Object.keys(value).some(key => !extractionKeys.has(key)) || !Array.isArray(value.obligations) || value.obligations.length > 100 || typeof value.notePath !== 'string' || value.notePath.length > 1000 || typeof value.knowledgeMarkdown !== 'string' || value.knowledgeMarkdown.length > 262_144) fail('invalid-request', 'acceptedExtraction is invalid.');
+  if (value.proposedTopic !== undefined && value.proposedTopic !== null && (typeof value.proposedTopic !== 'string' || !value.proposedTopic.trim() || value.proposedTopic.length > 200)) fail('invalid-request', 'acceptedExtraction.proposedTopic is invalid.');
+  for (const field of ['knowledgeOutcomeId', 'knowledgeSummary']) if (value[field] !== undefined) text(value[field], `acceptedExtraction.${field}`, field === 'knowledgeSummary' ? 300 : 500);
+  const obligations = value.obligations.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(key => !obligationKeys.has(key))) fail('invalid-request', `acceptedExtraction.obligations[${index}] is invalid.`);
+    const normalized = { ...item, obligationId: text(item.obligationId, `acceptedExtraction.obligations[${index}].obligationId`, 300), title: text(item.title, `acceptedExtraction.obligations[${index}].title`, 500), provenance: item.provenance, classification: item.classification ?? 'obligation' };
+    if (!['explicit', 'inferred', 'idea', 'quoted'].includes(normalized.provenance) || !['obligation', 'decision'].includes(normalized.classification)) fail('invalid-request', `acceptedExtraction.obligations[${index}] is invalid.`);
+    return Object.freeze(normalized);
+  });
+  if (value.noAction !== undefined && (!value.noAction || typeof value.noAction !== 'object' || Array.isArray(value.noAction) || Object.keys(value.noAction).some(key => !['outcomeId', 'summary'].includes(key)))) fail('invalid-request', 'acceptedExtraction.noAction is invalid.');
+  const noAction = value.noAction === undefined ? undefined : Object.freeze({ outcomeId: text(value.noAction.outcomeId, 'acceptedExtraction.noAction.outcomeId', 300), summary: text(value.noAction.summary, 'acceptedExtraction.noAction.summary', 300) });
+  return Object.freeze({ schemaVersion: 1, ...(value.proposedTopic !== undefined ? { proposedTopic: value.proposedTopic } : {}), notePath: value.notePath, knowledgeMarkdown: value.knowledgeMarkdown, ...(value.knowledgeOutcomeId !== undefined ? { knowledgeOutcomeId: value.knowledgeOutcomeId.trim() } : {}), ...(value.knowledgeSummary !== undefined ? { knowledgeSummary: value.knowledgeSummary.trim() } : {}), obligations: Object.freeze(obligations), ...(noAction ? { noAction } : {}) });
+}
 function sourceIdentity(input) {
   return Object.freeze({
     sourceKind: sourceKinds.has(input?.sourceKind) ? input.sourceKind : fail('invalid-request', 'sourceKind is invalid.'),
@@ -25,7 +49,7 @@ function sourceIdentity(input) {
 
 export function normalizeIntakeSourcePlan(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid-request', 'Intake source plan is invalid.');
-  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'outcomes', 'enumeration'];
+  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'checkpoint', 'observedAt', 'processorVersion', 'acceptedExtraction', 'outcomes', 'enumeration'];
   if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !Array.isArray(input.outcomes) || input.outcomes.length < 1 || input.outcomes.length > 100) fail('invalid-request', 'Intake source plan is invalid.');
   const source = sourceIdentity(input);
   const outcomes = input.outcomes.map((item, index) => {
@@ -37,19 +61,32 @@ export function normalizeIntakeSourcePlan(input) {
   if (!enumeration || typeof enumeration !== 'object' || Array.isArray(enumeration) || Object.keys(enumeration).some(key => !['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached', 'scopeId', 'resumeCursor'].includes(key)) || !['complete', 'bounded', 'partial'].includes(enumeration.scope) || typeof enumeration.scanCapReached !== 'boolean') fail('invalid-request', 'enumeration is invalid.');
   const incomplete = enumeration.scope !== 'complete' || enumeration.remainingCount > 0 || enumeration.failedReadCount > 0 || enumeration.scanCapReached;
   if (incomplete && (enumeration.scopeId === undefined || enumeration.resumeCursor === undefined)) fail('invalid-request', 'Incomplete enumeration requires an exact resume scope and cursor.');
-  return Object.freeze({ schemaVersion: 1, ...source, checkpoint: text(input.checkpoint, 'checkpoint'), observedAt: instant(input.observedAt, 'observedAt'), outcomes: Object.freeze(outcomes), enumeration: Object.freeze({ scope: enumeration.scope, scannedCount: count(enumeration.scannedCount, 'scannedCount'), remainingCount: count(enumeration.remainingCount, 'remainingCount'), failedReadCount: count(enumeration.failedReadCount, 'failedReadCount'), scanCapReached: enumeration.scanCapReached, ...(incomplete ? { scopeId: text(enumeration.scopeId, 'scopeId'), resumeCursor: text(enumeration.resumeCursor, 'resumeCursor') } : {}) }) });
+  return Object.freeze({ schemaVersion: 1, ...source, checkpoint: text(input.checkpoint, 'checkpoint'), observedAt: instant(input.observedAt, 'observedAt'), processorVersion: text(input.processorVersion, 'processorVersion', 300), acceptedExtraction: normalizeAcceptedExtraction(input.acceptedExtraction), outcomes: Object.freeze(outcomes), enumeration: Object.freeze({ scope: enumeration.scope, scannedCount: count(enumeration.scannedCount, 'scannedCount'), remainingCount: count(enumeration.remainingCount, 'remainingCount'), failedReadCount: count(enumeration.failedReadCount, 'failedReadCount'), scanCapReached: enumeration.scanCapReached, ...(incomplete ? { scopeId: text(enumeration.scopeId, 'scopeId'), resumeCursor: text(enumeration.resumeCursor, 'resumeCursor') } : {}) }) });
 }
 
 export function recordIntakeSourcePlan(metadata, input) {
   if (!metadata?.commitIntakeAccountingOperation) throw new TypeError('Intake accounting requires metadata ownership.');
   const plan = normalizeIntakeSourcePlan(input);
-  const identity = { schemaVersion: 1, sourceKind: plan.sourceKind, sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, checkpoint: plan.checkpoint, outcomes: plan.outcomes, enumeration: plan.enumeration };
+  const identity = { schemaVersion: 1, sourceKind: plan.sourceKind, sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, checkpoint: plan.checkpoint, processorVersion: plan.processorVersion, acceptedExtraction: plan.acceptedExtraction, outcomes: plan.outcomes, enumeration: plan.enumeration };
   const logicalOperationId = stableUuid(`command-center:intake-source:${plan.sourceKind}:${plan.sourceExternalId}:${plan.sourceVersion}`);
   const intentDigest = digest(identity);
   const committed = metadata.commitIntakeAccountingOperation({ logicalOperationId, intentDigest, operationKind: `intake-source.${plan.sourceKind}.v1`, state: 'applied', resultStatus: 'planned', resultIdentity: JSON.stringify(plan), observedRevision: plan.sourceVersion, createdAt: plan.observedAt });
   let durablePlan;
   try { durablePlan = JSON.parse(committed.operation.resultIdentity); } catch { fail('conflict', 'The durable intake source plan is unavailable.'); }
-  return Object.freeze({ schemaVersion: 1, disposition: committed.disposition, logicalOperationId, plan: Object.freeze(durablePlan) });
+  const account = projectIntakeAccounts(metadata, plan.sourceKind).find(item => item.sourceExternalId === plan.sourceExternalId && item.sourceVersion === plan.sourceVersion);
+  return Object.freeze({ schemaVersion: 1, disposition: committed.disposition, logicalOperationId, plan: Object.freeze(durablePlan), account });
+}
+
+export function loadIntakeSourceAccount(metadata, input) {
+  if (!metadata?.getOperation) throw new TypeError('Intake accounting requires metadata ownership.');
+  const source = sourceIdentity(input);
+  const logicalOperationId = stableUuid(`command-center:intake-source:${source.sourceKind}:${source.sourceExternalId}:${source.sourceVersion}`);
+  const operation = metadata.getOperation(logicalOperationId);
+  if (!operation) return null;
+  const plan = parsedResult(operation);
+  if (!plan || plan.sourceKind !== source.sourceKind || plan.sourceExternalId !== source.sourceExternalId || plan.sourceVersion !== source.sourceVersion) fail('conflict', 'The durable intake source plan is unavailable.');
+  const account = projectIntakeAccounts(metadata, source.sourceKind).find(item => item.sourceExternalId === source.sourceExternalId && item.sourceVersion === source.sourceVersion);
+  return Object.freeze({ schemaVersion: 1, logicalOperationId, plan: Object.freeze(plan), account });
 }
 
 export function normalizeIntakeOutcome(input) {

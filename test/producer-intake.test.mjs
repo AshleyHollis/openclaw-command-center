@@ -4,7 +4,14 @@ import { createProducerIntakeAdapter } from '../src/open-loops/producer-intake.m
 
 function harness({ failCapture = false } = {}) {
   const calls = { extract: [], save: [], source: [], chat: [], plans: [], outcomes: [], receipt: [] };
+  const plans = new Map(); const completed = new Map();
+  const keyFor = input => `${input.sourceKind}:${input.sourceExternalId}:${input.sourceVersion}`;
+  const durableFor = input => {
+    const plan = plans.get(keyFor(input));
+    return plan ? { plan, account: { outcomes: plan.outcomes.map(item => ({ ...item, status: completed.get(`${keyFor(input)}:${item.outcomeId}`) ?? 'missing' })) } } : null;
+  };
   const adapter = createProducerIntakeAdapter({
+    processorVersion: 'fictional-processor-v1',
     now: (() => { let tick = 0; return () => `2026-09-21T00:0${tick++}:00.000Z`; })(),
     async extract(input) {
       calls.extract.push(input);
@@ -17,12 +24,13 @@ function harness({ failCapture = false } = {}) {
         { obligationId: 'invoice-42:delivery-choice', title: 'Choose the fictional delivery window', classification: 'decision', provenance: 'inferred', importance: 'normal', importanceOrigin: 'processing' }
       ] };
     },
+    async loadIntakeSourceAccount(input) { return durableFor(input); },
     async resolveTopic({ proposedTopic }) { return proposedTopic ? { topicId: 'topic-home', noteFolderReferenceId: 'folder-home' } : null; },
-    async saveSourceNote(input) { calls.save.push(input); return { topicId: input.topicId, sourceReferenceId: 'note:fictional', sourcePath: input.path, sourceVersion: input.sourceVersion, replayed: calls.save.length > 1 }; },
+    async saveSourceNote(input) { calls.save.push(input); return { topicId: input.topicId, sourceReferenceId: 'note:fictional', sourcePath: input.path, sourceReferenceVersion: 'note-revision-3', replayed: calls.save.length > 1 }; },
     async captureSourceCommitment(input) { calls.source.push(input); if (failCapture && calls.source.length === 2) throw new Error('fictional-capture-failed'); return { status: 'applied', loop: { loopId: `loop:${input.obligationId}` } }; },
     async captureChatCommitment(input) { calls.chat.push(input); return { status: 'applied', loop: { loopId: `loop:${input.obligationId}` } }; },
-    async recordIntakeSourcePlan(input) { calls.plans.push(input); return { status: 'recorded' }; },
-    async recordIntakeOutcome(input) { calls.outcomes.push(input); return { status: 'recorded' }; },
+    async recordIntakeSourcePlan(input) { calls.plans.push(input); const plan = { schemaVersion: 1, ...input }; plans.set(keyFor(input), plan); return durableFor(input); },
+    async recordIntakeOutcome(input) { calls.outcomes.push(input); completed.set(`${keyFor(input)}:${input.outcomeId}`, input.status); return { status: 'recorded' }; },
     async recordIntakeReceipt(input) { calls.receipt.push(input); return { status: input.status }; }
   });
   return { adapter, calls };
@@ -35,6 +43,9 @@ test('email producer extracts natural-language input, saves evidence once and ca
   assert.equal(calls.extract.length, 1); assert.equal(calls.save.length, 1); assert.equal(calls.source.length, 3);
   assert.deepEqual(calls.source.map(call => call.obligationId), ['invoice-42:payment', 'invoice-42:reply', 'invoice-42:delivery-choice']);
   assert.equal(calls.source.every(call => call.sourceReferenceId === 'note:fictional'), true);
+  assert.equal(calls.source.every(call => call.topicId === 'topic-home' && call.sourceKind === 'email' && call.sourceExternalId === 'message-42' && call.sourcePath === 'Inbox/invoice.md'), true);
+  assert.equal(calls.source.every(call => call.sourceVersion === 'change-key-7'), true);
+  assert.equal(calls.outcomes.find(call => call.status === 'quiet').sourceReferenceVersion, 'note-revision-3');
   assert.equal(calls.source.every(call => call.classification === undefined), true);
   assert.deepEqual(calls.plans[0].outcomes, [{ outcomeId: 'invoice-42:payment', kind: 'obligation' }, { outcomeId: 'invoice-42:reply', kind: 'obligation' }, { outcomeId: 'invoice-42:delivery-choice', kind: 'decision' }, { outcomeId: 'invoice-42:information', kind: 'information' }]);
   assert.deepEqual(calls.outcomes.map(call => [call.outcomeId, call.status]), [['invoice-42:information', 'quiet'], ['invoice-42:payment', 'applied'], ['invoice-42:reply', 'applied'], ['invoice-42:delivery-choice', 'pending-decision']]);
@@ -43,9 +54,20 @@ test('email producer extracts natural-language input, saves evidence once and ca
 
 test('information-only input remains quiet and existing evidence is reused without manufacturing a Note', async () => {
   const { adapter, calls } = harness();
-  await adapter.process({ runId: 'note-run-1', nextExpectedAt: '2026-09-28T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'note', sourceExternalId: 'note-1', sourceVersion: 'v1', checkpoint: 'note-1', rawText: 'information only', existingEvidence: { topicId: 'topic-home', sourceReferenceId: 'note:existing', sourcePath: 'Reference/existing.md', sourceVersion: 'v1' } }] });
+  await adapter.process({ runId: 'note-run-1', nextExpectedAt: '2026-09-28T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'note', sourceExternalId: 'note-1', sourceVersion: 'v1', checkpoint: 'note-1', rawText: 'information only', existingEvidence: { topicId: 'topic-home', sourceReferenceId: 'note:existing', sourcePath: 'Reference/existing.md', sourceReferenceVersion: 'note-revision-1' } }] });
   assert.equal(calls.save.length, 0); assert.equal(calls.source.length, 0); assert.equal(calls.receipt.at(-1).actionableCount, 0);
   assert.equal(calls.outcomes[0].status, 'quiet');
+});
+
+test('accepted extraction cannot introduce fields that overwrite upstream or retained evidence identity', async () => {
+  const unsafe = createProducerIntakeAdapter({
+    processorVersion: 'fictional-processor-v1', now: () => '2026-09-21T00:00:00.000Z',
+    extract: async () => ({ schemaVersion: 1, proposedTopic: 'home', notePath: 'Inbox/invoice.md', knowledgeMarkdown: '# Fictional invoice\n', obligations: [{ obligationId: 'unsafe', title: 'Unsafe', provenance: 'explicit', sourceVersion: 'note-revision-should-not-overwrite' }] }),
+    loadIntakeSourceAccount: async () => null, resolveTopic: async () => ({ topicId: 'topic-home', noteFolderReferenceId: 'folder-home' }), saveSourceNote: async () => { throw new Error('must reject before effects'); },
+    captureSourceCommitment: async () => { throw new Error('must reject before effects'); }, captureChatCommitment: async () => { throw new Error('must reject before effects'); },
+    recordIntakeSourcePlan: async () => { throw new Error('must reject before planning'); }, recordIntakeOutcome: async () => { throw new Error('must reject before outcomes'); }, recordIntakeReceipt: async input => ({ receipt: input })
+  });
+  await assert.rejects(() => unsafe.process({ runId: 'unsafe-run', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'message-unsafe', sourceVersion: 'email-change-key', checkpoint: 'message-unsafe', rawText: 'Unsafe extraction' }] }), { code: 'producer-extraction-invalid' });
 });
 
 test('an explicit no-action result is durably planned and accounted without creating work', async () => {
@@ -65,7 +87,7 @@ test('ambiguous Topic ownership creates no Note or obligation and remains visibl
 
 test('Chat commitments use the supported Chat capture boundary with exact existing evidence', async () => {
   const { adapter, calls } = harness();
-  await adapter.process({ runId: 'chat-run-1', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'chat', sourceExternalId: 'session-1:message-9', sourceVersion: 'message-v1', checkpoint: 'message-9', rawText: 'Please pay the fictional invoice and reply.', existingEvidence: { topicId: 'topic-home', sourceReferenceId: 'session:1', sourcePath: 'message:9', sourceVersion: 'message-v1' } }] });
+  await adapter.process({ runId: 'chat-run-1', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'chat', sourceExternalId: 'session-1:message-9', sourceVersion: 'message-v1', checkpoint: 'message-9', rawText: 'Please pay the fictional invoice and reply.', existingEvidence: { topicId: 'topic-home', sourceReferenceId: 'session:1', sourcePath: 'message:9', sourceReferenceVersion: 'session-message-revision-9' } }] });
   assert.equal(calls.source.length, 0); assert.equal(calls.chat.length, 3); assert.equal(calls.chat.every(call => call.sourceReferenceId === 'session:1'), true);
 });
 
@@ -102,4 +124,35 @@ test('multiple record-level enumeration scopes are rejected before a receipt is 
   const base = { schemaVersion: 1, sourceKind: 'email', sourceVersion: 'v1', rawText: 'no action', enumeration: { scope: 'bounded', scannedCount: 1, remainingCount: 1, failedReadCount: 0, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'next' } };
   await assert.rejects(() => adapter.process({ runId: 'email-conflicting-enumeration', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ ...base, sourceExternalId: 'one', checkpoint: 'one' }, { ...base, sourceExternalId: 'two', checkpoint: 'two' }] }), error => error.code === 'producer-enumeration-scope-invalid');
   assert.equal(calls.receipt.length, 0);
+});
+
+test('retry loads the accepted extraction and resumes only missing outcomes', async () => {
+  const acceptedExtraction = { schemaVersion: 1, proposedTopic: 'home', notePath: 'Inbox/invoice.md', knowledgeMarkdown: '# Accepted reference\n', knowledgeOutcomeId: 'accepted-information', obligations: [
+    { obligationId: 'accepted-first', title: 'First accepted obligation', provenance: 'explicit' },
+    { obligationId: 'accepted-second', title: 'Second accepted obligation', provenance: 'explicit' },
+    { obligationId: 'accepted-choice', title: 'Accepted choice', classification: 'decision', provenance: 'inferred' }
+  ] };
+  const durablePlan = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'message-retry', sourceVersion: 'email-change-key-11', checkpoint: 'message-retry', observedAt: '2026-09-21T01:00:00.000Z', processorVersion: 'processor-v1', acceptedExtraction, outcomes: [
+    { outcomeId: 'accepted-first', kind: 'obligation' }, { outcomeId: 'accepted-second', kind: 'obligation' }, { outcomeId: 'accepted-choice', kind: 'decision' }, { outcomeId: 'accepted-information', kind: 'information' }
+  ], enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } };
+  const completed = new Map([['accepted-information', 'quiet'], ['accepted-first', 'applied'], ['accepted-choice', 'clarified']]);
+  const captures = []; const outcomes = []; let extracted = 0;
+  const adapter = createProducerIntakeAdapter({
+    processorVersion: 'processor-v2', now: () => '2026-09-21T02:00:00.000Z',
+    loadIntakeSourceAccount: async () => ({ plan: durablePlan, account: { outcomes: durablePlan.outcomes.map(item => ({ ...item, status: completed.get(item.outcomeId) ?? 'missing', ...(item.outcomeId === 'accepted-information' ? { topicId: 'topic-home', sourceReferenceId: 'note:accepted', sourcePath: 'Inbox/invoice.md', sourceReferenceVersion: 'note-revision-4' } : {}) })) } }),
+    extract: async () => { extracted += 1; throw new Error('retry must not re-extract an accepted source revision'); },
+    resolveTopic: async () => ({ topicId: 'topic-home', noteFolderReferenceId: 'folder-home' }),
+    saveSourceNote: async () => { throw new Error('completed quiet evidence must not be saved again'); },
+    captureSourceCommitment: async input => { captures.push(input); return { loop: { loopId: `loop:${input.obligationId}` } }; },
+    captureChatCommitment: async () => { throw new Error('unexpected Chat capture'); },
+    recordIntakeSourcePlan: async () => { throw new Error('accepted plan must not be replaced'); },
+    recordIntakeOutcome: async input => { outcomes.push(input); return { outcome: input }; },
+    recordIntakeReceipt: async input => ({ receipt: input })
+  });
+  await adapter.process({ runId: 'retry-run', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'message-retry', sourceVersion: 'email-change-key-11', checkpoint: 'message-retry', rawText: 'Changed extractor input must be ignored.' }] });
+  assert.equal(extracted, 0);
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].obligationId, 'accepted-second');
+  assert.equal(captures[0].sourceVersion, 'email-change-key-11');
+  assert.deepEqual(outcomes.map(item => item.outcomeId), ['accepted-second']);
 });

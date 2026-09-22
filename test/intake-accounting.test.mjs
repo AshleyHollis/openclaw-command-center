@@ -16,7 +16,7 @@ async function temporaryStateDir(prefix) {
 
 function sourcePlan() {
   return {
-    schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', checkpoint: 'page-1:message-42', observedAt: '2026-09-22T01:00:00.000Z',
+    schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', checkpoint: 'page-1:message-42', observedAt: '2026-09-22T01:00:00.000Z', processorVersion: 'fictional-processor-v1', acceptedExtraction: { schemaVersion: 1, proposedTopic: 'Fictional home', notePath: 'Inbox/reference.md', knowledgeMarkdown: '# Fictional reference\n', knowledgeOutcomeId: 'reference-details', obligations: [] },
     outcomes: [
       { outcomeId: 'pay-invoice', kind: 'obligation' },
       { outcomeId: 'send-reference', kind: 'obligation' },

@@ -14,7 +14,7 @@ import { assertAcceptanceReportPassed, createAcceptanceReport, RELEASE_ROW_IDS, 
 import { hasSuccessfulBrowserResponse, observeBrowserResponse, recordBounded } from '../src/browser-evidence.mjs';
 import { build, assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
-import { assertNoFatalHostOutput, assertRecordedChildTraffic, fetchJsonWithDeadline, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
+import { assertNoFatalHostOutput, assertRecordedChildTraffic, fetchJsonWithDeadline, HarnessFailure, launchPinnedHost, parseHostDescriptor, redact, restartPinnedHost, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { assertWebSocketDestination, TrafficGuard } from '../src/isolation.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
@@ -40,6 +40,7 @@ import { runNativeReleaseCapture, runNativeReleasePrerequisites } from './suppor
 import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVariant } from './support/first-live-native-degraded.mjs';
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
 import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
+import { startFictionalOpenAiModel } from './support/fictional-openai-model.mjs';
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
@@ -1160,7 +1161,14 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       } finally { activity.close(); }
       scaleProjectionRoot = path.join(path.dirname(resolveCommandCenterDatabasePath(stateDir)), 'projections');
     }
-    const scenarioHost = await withDeadline(`${kind} fresh host launch`, (signal) => launchPinnedHost({ descriptor, world: scenarioWorld, buildReceipt, signal }), 120_000);
+    let fictionalModel;
+    if (kind === 'accounted-email') {
+      fictionalModel = await startFictionalOpenAiModel();
+      const config = JSON.parse(await readFile(scenarioWorld.manifest.configPath, 'utf8'));
+      config.models.providers.fixture.baseUrl = fictionalModel.baseUrl;
+      await writeFile(scenarioWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
+    }
+    let scenarioHost = await withDeadline(`${kind} fresh host launch`, (signal) => launchPinnedHost({ descriptor, world: scenarioWorld, buildReceipt, signal }), 120_000);
     let managedBrowser;
     const abortCleanup = () => {
       void stopPinnedHost(scenarioHost.child);
@@ -1211,6 +1219,52 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       const authoritativeSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
       const authoritativeConversations = (authoritativeSessions?.result ?? authoritativeSessions)?.conversations ?? authoritativeSessions?.conversations ?? [];
       assert.ok(authoritativeConversations.some((item) => item.isPrimary) && authoritativeConversations.some((item) => item.displayName === journey.conversationName));
+      if (kind === 'accounted-email') {
+        ({ frame } = await nativeChatRoundTrip(frame, { page, topicId: journey.topicId, message: '[fixture:accounted-mixed-email-phase-1] Process the fictional mixed email through the registered Command Center intake commands.', width, keyboard: true }));
+        const firstDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
+        const firstEmail = firstDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
+        assert.deepEqual(firstEmail.outcomeCounts, { expected: 4, accounted: 1, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 });
+        const pendingDecision = firstEmail.recentSources[0].outcomes.find(item => item.kind === 'decision');
+        assert.equal(pendingDecision.status, 'pending-decision');
+        const detail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: pendingDecision.target.loopId }, signal });
+        const loop = (detail.result ?? detail).loop;
+        await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
+        const killed = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
+        scenarioHost.child.kill('SIGKILL');
+        assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
+        scenarioHost = await withDeadline('accounted email host restart', restartSignal => restartPinnedHost(scenarioHost, { signal: restartSignal }), 120_000);
+        await waitForConsecutiveReadiness(async probeSignal => (await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, 'accounted email restart readiness', 10_000)).ok, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
+        const pluginAfterRestart = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
+        await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        frame = (await mountedPluginFrame(page, await pluginAfterRestart)).frame;
+        await activate(frame.locator(`.topic-row[data-topic-id="${journey.topicId}"]`).getByRole('button', { name: 'Open Topic', exact: true }), true);
+        await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
+        ({ frame } = await nativeChatRoundTrip(frame, { page, topicId: journey.topicId, message: '[fixture:accounted-mixed-email-phase-2] Resume only unfinished outcomes from the durable accepted extraction.', width, keyboard: true }));
+        const dashboardDocument = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
+        await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        frame = (await mountedPluginFrame(page, await dashboardDocument)).frame;
+        await waitForDashboard(frame, 30_000);
+        const emailCard = frame.locator('.cc-coverage-card').filter({ has: frame.getByRole('heading', { name: 'Email intake', exact: true }) });
+        await emailCard.getByText('1 of 1 sources accounted for · 1 resolved · 4 of 4 outcomes accounted for', { exact: true }).waitFor();
+        await emailCard.locator('details > summary').click();
+        await emailCard.getByText('Choose fictional real-host delivery window: clarified', { exact: true }).waitFor();
+        await emailCard.getByText('Pay fictional real-host invoice: applied', { exact: true }).waitFor();
+        await emailCard.getByText('Reply with fictional real-host reference: applied', { exact: true }).waitFor();
+        await emailCard.getByText('Retain fictional real-host reference: quiet', { exact: true }).waitFor();
+        await emailCard.getByRole('button', { name: 'Review item', exact: true }).first().click();
+        await emailCard.locator('details[data-intake-outcome-evidence][open]').waitFor();
+        await retainNativeChatScreenshot(page, 'accounted-mixed-email-dashboard');
+        await emailCard.getByRole('button', { name: 'Open retained Note', exact: true }).click();
+        await frame.getByRole('region', { name: 'Note content', exact: true }).getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
+        const finalDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
+        const finalEmail = finalDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
+        const quiet = finalEmail.recentSources[0].outcomes.find(item => item.kind === 'information');
+        assert.notEqual(quiet.target.sourceVersion, 'email-change-key-real-host-52');
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-capture-choice').length, 1);
+        assert.equal(fictionalModel.requests.filter(item => ['accounted-capture-payment', 'accounted-capture-reply'].includes(item.action)).length, 2);
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-load').length, 1);
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true });
+      }
       if (kind === 'dashboard-payload') {
         await prepareExactActivityFixture({ stateDir: path.join(scenarioWorld.root, '.openclaw'), gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: journey.topicId });
         const referenceIds = [];
@@ -1399,6 +1453,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       signal?.removeEventListener('abort', abortCleanup);
       await closeManagedBrowser(managedBrowser).catch(() => {});
       await withDeadline(`${kind} fresh host stop`, async () => { await stopPinnedHost(scenarioHost.child); await scenarioHost.outputDrained; });
+      await fictionalModel?.close();
       assertNoFatalHostOutput(scenarioHost.diagnostics);
       await assertRecordedChildTraffic(scenarioWorld);
       browserGuard.assertClean();
@@ -2198,6 +2253,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   const isolatedRunPromises = new Map();
   // Diagnostic only: do not silently add a new release-matrix requirement.
   if (acceptancePlan.isolatedSliceIds?.includes('dashboard-mixed-payload')) isolatedSlices.set('dashboard-mixed-payload', startIsolatedSlice('dashboard-mixed-payload', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'dashboard-payload', width: 1440, signal })));
+  if (acceptancePlan.isolatedSliceIds?.includes('accounted-mixed-email')) isolatedSlices.set('accounted-mixed-email', startIsolatedSlice('accounted-mixed-email', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'accounted-email', width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('fresh-mobile')) isolatedSlices.set('fresh-mobile', startIsolatedSlice('fresh-mobile', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'mobile', width: 320, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('reminder-runtime-lifecycle')) isolatedSlices.set('reminder-runtime-lifecycle', startIsolatedSlice('reminder-runtime-lifecycle', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'reminder-lifecycle', width: 1440, signal })));
   const isolatedResult = async (id) => {

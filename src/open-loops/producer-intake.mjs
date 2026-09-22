@@ -1,3 +1,5 @@
+import { normalizeAcceptedExtraction } from './intake-accounting.mjs';
+
 const kinds = new Set(['email', 'chat', 'note']);
 const nonBlank = value => typeof value === 'string' && value.trim().length > 0;
 const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -6,10 +8,21 @@ function assertRecord(record) {
   if (!record || record.schemaVersion !== 1 || !kinds.has(record.sourceKind) || !nonBlank(record.sourceExternalId) || !nonBlank(record.sourceVersion) || !nonBlank(record.checkpoint) || !nonBlank(record.rawText)) fail('producer-record-invalid');
 }
 
-function exactEvidence(value, record) {
+function exactEvidence(value) {
   if (!value || !nonBlank(value.sourceReferenceId) || !nonBlank(value.sourcePath) || !nonBlank(value.topicId)) fail('producer-evidence-unavailable');
-  return { topicId: value.topicId, sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath, sourceVersion: value.sourceVersion ?? value.revision ?? record.sourceVersion };
+  const sourceReferenceVersion = value.sourceReferenceVersion ?? value.revision;
+  if (!nonBlank(sourceReferenceVersion)) fail('producer-evidence-unavailable');
+  return { topicId: value.topicId, sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath, sourceReferenceVersion };
 }
+
+function acceptedExtraction(value) {
+  try { return normalizeAcceptedExtraction(value); }
+  catch { fail('producer-extraction-invalid'); }
+}
+
+function accountingResult(value) { return value?.details ?? value; }
+function accountOutcome(account, outcomeId) { return account?.outcomes?.find(item => item.outcomeId === outcomeId); }
+function unfinished(account, outcomeId) { return !accountOutcome(account, outcomeId) || accountOutcome(account, outcomeId).status === 'missing'; }
 
 /**
  * Orchestrates a maintained producer without owning extraction or source storage.
@@ -17,8 +30,8 @@ function exactEvidence(value, record) {
  * producer retains its queue and advances its own checkpoint only after this
  * function returns a healthy receipt.
  */
-export function createProducerIntakeAdapter({ extract, resolveTopic, saveSourceNote, captureSourceCommitment, captureChatCommitment, recordIntakeSourcePlan, recordIntakeOutcome, recordIntakeReceipt, now = () => new Date().toISOString() } = {}) {
-  if (![extract, resolveTopic, saveSourceNote, captureSourceCommitment, captureChatCommitment, recordIntakeSourcePlan, recordIntakeOutcome, recordIntakeReceipt].every(value => typeof value === 'function')) fail('producer-adapter-invalid');
+export function createProducerIntakeAdapter({ processorVersion, extract, loadIntakeSourceAccount, resolveTopic, saveSourceNote, captureSourceCommitment, captureChatCommitment, recordIntakeSourcePlan, recordIntakeOutcome, recordIntakeReceipt, now = () => new Date().toISOString() } = {}) {
+  if (!nonBlank(processorVersion) || ![extract, loadIntakeSourceAccount, resolveTopic, saveSourceNote, captureSourceCommitment, captureChatCommitment, recordIntakeSourcePlan, recordIntakeOutcome, recordIntakeReceipt].every(value => typeof value === 'function')) fail('producer-adapter-invalid');
 
   return Object.freeze({
     async process({ runId, records, nextExpectedAt, enumeration }) {
@@ -41,50 +54,58 @@ export function createProducerIntakeAdapter({ extract, resolveTopic, saveSourceN
       try {
         for (const record of records) {
           assertRecord(record);
-          const extraction = await extract({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, rawText: record.rawText });
-          if (!extraction || extraction.schemaVersion !== 1 || !Array.isArray(extraction.obligations) || typeof extraction.knowledgeMarkdown !== 'string') fail('producer-extraction-invalid');
-          const obligations = extraction.obligations.map(obligation => ({ ...obligation, classification: obligation.classification ?? 'obligation' }));
-          if (obligations.some(obligation => !['obligation', 'decision'].includes(obligation.classification))) fail('producer-obligation-invalid');
-          const plannedOutcomes = obligations.map(obligation => ({ outcomeId: obligation.obligationId, kind: obligation.classification }));
-          const knowledgeOutcomeId = extraction.knowledgeMarkdown.trim() ? extraction.knowledgeOutcomeId ?? `${record.sourceExternalId}:information` : null;
-          if (knowledgeOutcomeId) plannedOutcomes.push({ outcomeId: knowledgeOutcomeId, kind: 'information' });
-          const noAction = extraction.noAction;
-          if (noAction !== undefined && (!noAction || !nonBlank(noAction.outcomeId) || !nonBlank(noAction.summary))) fail('producer-extraction-invalid');
-          if (noAction) plannedOutcomes.push({ outcomeId: noAction.outcomeId, kind: 'no-action' });
-          if (plannedOutcomes.length === 0) plannedOutcomes.push({ outcomeId: `${record.sourceExternalId}:no-action`, kind: 'no-action' });
           const enumerationValue = receiptEnumeration ?? { scope: 'complete', scannedCount: records.length, remainingCount: 0, failedReadCount: 0, scanCapReached: false };
-          await recordIntakeSourcePlan({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, checkpoint: record.checkpoint, observedAt, outcomes: plannedOutcomes, enumeration: enumerationValue });
+          let durable = accountingResult(await loadIntakeSourceAccount({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion }));
+          if (!durable) {
+            const proposed = acceptedExtraction(await extract({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, rawText: record.rawText }));
+            const proposedOutcomes = proposed.obligations.map(obligation => ({ outcomeId: obligation.obligationId, kind: obligation.classification }));
+            const proposedKnowledgeId = proposed.knowledgeMarkdown.trim() ? proposed.knowledgeOutcomeId ?? `${record.sourceExternalId}:information` : null;
+            if (proposedKnowledgeId) proposedOutcomes.push({ outcomeId: proposedKnowledgeId, kind: 'information' });
+            if (proposed.noAction) proposedOutcomes.push({ outcomeId: proposed.noAction.outcomeId, kind: 'no-action' });
+            if (proposedOutcomes.length === 0) proposedOutcomes.push({ outcomeId: `${record.sourceExternalId}:no-action`, kind: 'no-action' });
+            durable = accountingResult(await recordIntakeSourcePlan({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, checkpoint: record.checkpoint, observedAt, processorVersion, acceptedExtraction: proposed, outcomes: proposedOutcomes, enumeration: enumerationValue }));
+          }
+          if (!durable?.plan || durable.plan.sourceKind !== record.sourceKind || durable.plan.sourceExternalId !== record.sourceExternalId || durable.plan.sourceVersion !== record.sourceVersion || !nonBlank(durable.plan.processorVersion)) fail('producer-durable-plan-unavailable');
+          const extraction = acceptedExtraction(durable.plan.acceptedExtraction);
+          const plannedOutcomes = durable.plan.outcomes;
+          const account = durable.account;
+          const obligations = extraction.obligations;
+          const knowledgeOutcomeId = extraction.knowledgeMarkdown.trim() ? extraction.knowledgeOutcomeId ?? `${record.sourceExternalId}:information` : null;
+          const noAction = extraction.noAction;
           const topic = await resolveTopic({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, proposedTopic: extraction.proposedTopic });
           if (!topic || !nonBlank(topic.topicId)) {
-            for (const outcome of plannedOutcomes) await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind, status: 'unresolved-topic', summary: 'Topic ownership requires review', recordedAt: now() });
+            for (const outcome of plannedOutcomes.filter(item => unfinished(account, item.outcomeId))) await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind, status: 'unresolved-topic', summary: 'Topic ownership requires review', recordedAt: now() });
             counts.uncertainCount += 1; counts.processedCount += 1; checkpoint = record.checkpoint; continue;
           }
           let evidence;
-          if (record.existingEvidence) evidence = exactEvidence(record.existingEvidence, record);
+          const retainedKnowledge = knowledgeOutcomeId ? accountOutcome(account, knowledgeOutcomeId) : null;
+          if (retainedKnowledge?.status === 'quiet') evidence = exactEvidence(retainedKnowledge);
+          else if (record.existingEvidence) evidence = exactEvidence(record.existingEvidence);
           else if (extraction.knowledgeMarkdown.trim()) {
             if (!nonBlank(topic.noteFolderReferenceId) || !nonBlank(extraction.notePath)) fail('producer-note-destination-unavailable');
             const saved = await saveSourceNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, sourceKind: record.sourceKind === 'chat' ? 'note' : record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, path: extraction.notePath, markdown: extraction.knowledgeMarkdown });
-            evidence = exactEvidence({ ...saved, topicId: topic.topicId, sourceVersion: saved.sourceVersion ?? record.sourceVersion }, record);
+            evidence = exactEvidence({ ...saved, topicId: topic.topicId });
             counts.noteCount += saved.replayed === true ? 0 : 1;
           }
-          if (knowledgeOutcomeId) {
+          if (knowledgeOutcomeId && unfinished(account, knowledgeOutcomeId)) {
             if (!evidence) fail('producer-evidence-required');
-            await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: knowledgeOutcomeId, kind: 'information', status: 'quiet', summary: extraction.knowledgeSummary ?? 'Information retained in the Topic Note', topicId: evidence.topicId, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath, sourceReferenceVersion: evidence.sourceVersion, recordedAt: now() });
+            await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: knowledgeOutcomeId, kind: 'information', status: 'quiet', summary: extraction.knowledgeSummary ?? 'Information retained in the Topic Note', topicId: evidence.topicId, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath, sourceReferenceVersion: evidence.sourceReferenceVersion, recordedAt: now() });
           }
           if (obligations.length && !evidence) fail('producer-evidence-required');
           for (const obligation of obligations) {
             if (!obligation || !nonBlank(obligation.obligationId) || !nonBlank(obligation.title) || !['explicit', 'inferred', 'idea', 'quoted'].includes(obligation.provenance)) fail('producer-obligation-invalid');
+            if (!unfinished(account, obligation.obligationId)) continue;
             const { classification, ...captureObligation } = obligation;
-            const params = { topicId: topic.topicId, sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, ...evidence, ...captureObligation };
+            const params = { ...captureObligation, topicId: topic.topicId, sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath };
             const captured = record.sourceKind === 'chat' ? await captureChatCommitment(params) : await captureSourceCommitment(params);
             const loop = captured?.loop ?? captured?.details?.loop;
             if (!nonBlank(loop?.loopId)) fail('producer-outcome-evidence-required');
             await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: obligation.obligationId, kind: classification, status: classification === 'decision' ? 'pending-decision' : 'applied', summary: obligation.title, loopId: loop.loopId, recordedAt: now() });
             counts.actionableCount += 1;
           }
-          if (noAction || !extraction.knowledgeMarkdown.trim() && obligations.length === 0) {
-            const outcome = noAction ?? { outcomeId: `${record.sourceExternalId}:no-action`, summary: 'No action required' };
-            await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: outcome.outcomeId, kind: 'no-action', status: 'no-action', summary: outcome.summary, recordedAt: now() });
+          const noActionOutcome = noAction ?? { outcomeId: `${record.sourceExternalId}:no-action`, summary: 'No action required' };
+          if ((noAction || !extraction.knowledgeMarkdown.trim() && obligations.length === 0) && unfinished(account, noActionOutcome.outcomeId)) {
+            await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: noActionOutcome.outcomeId, kind: 'no-action', status: 'no-action', summary: noActionOutcome.summary, recordedAt: now() });
             counts.skippedCount += 1;
           }
           counts.processedCount += 1; checkpoint = record.checkpoint;
