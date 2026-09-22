@@ -31,7 +31,7 @@ async function withOwner(run, { assertCurrent = () => {}, wrapSource } = {}) {
   await enrollFixtureFolder(metadata, 'folder:fictional-home', vault);
   metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-invoice', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: `${vault}/Invoices/Fictional.md`, observedRevision: revisionForBytes(noteBytes) });
   const realSource = createAuthoritativeSourceService({ metadata, fsSafeRootFactory, capabilities: { notes: true } });
-  const sourceService = wrapSource ? wrapSource(realSource) : realSource;
+  const sourceService = wrapSource ? wrapSource(realSource, { vault, metadata }) : realSource;
   let effects = [];
   const owner = createHistoricalBackfillOperator({ metadata, sourceService, plan, assertCurrent, now: () => '2026-09-21T02:00:00.000Z', loadBackfillState: async () => ({ effects }) });
   try { return await run({ metadata, sourceService, owner, setEffects: value => { effects = value; } }); }
@@ -74,6 +74,55 @@ linuxTest('record authority rejects missing evidence, mismatched sources, and ou
       return owner.commandCenter.captureCommitment({ logicalOperationId: input.logicalOperationId, capture: capture({ sourceKind: 'note' }) });
     }), { code: 'backfill-capture-authority-mismatch' });
     await assert.rejects(() => owner.runWithRecordAuthority(input, () => owner.commandCenter.resolveTopic({ topicName: 'Other Topic' })), { code: 'backfill-topic-out-of-scope' });
+  });
+});
+
+linuxTest('record authority snapshots admitted source identity before an adapter can mutate its input', async () => {
+  await withOwner(async ({ metadata, owner }) => {
+    const input = recordInput();
+    await assert.rejects(() => owner.runWithRecordAuthority(input, async () => {
+      const topic = owner.commandCenter.resolveTopic({ topicName: 'Fictional Home' });
+      await owner.commandCenter.readNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, path: 'Invoices/Fictional.md' });
+      input.logicalOperationId = `sha256:${'b'.repeat(64)}`;
+      input.record.sourceExternalId = 'substituted-message';
+      input.record.sourceVersion = 'substituted-version';
+      return owner.commandCenter.captureCommitment({ logicalOperationId: input.logicalOperationId, capture: capture({ sourceExternalId: input.record.sourceExternalId, sourceVersion: input.record.sourceVersion }) });
+    }), { code: 'backfill-capture-authority-mismatch' });
+    assert.equal(metadata.listOpenLoops().length, 0);
+  });
+});
+
+linuxTest('a changed Note between acceptance and commit cannot create a historical commitment', async () => {
+  let reads = 0;
+  await withOwner(async ({ metadata, owner }) => {
+    await assert.rejects(() => admittedCapture(owner), { code: 'conflict' });
+    assert.equal(metadata.listOpenLoops().length, 0);
+  }, { wrapSource: (source, { vault }) => ({
+    async notesRead(input) {
+      const result = await source.notesRead(input);
+      reads += 1;
+      if (reads === 1) await writeFile(path.join(vault, 'Invoices', 'Fictional.md'), '# Replaced after acceptance\n');
+      return result;
+    }
+  }) });
+});
+
+linuxTest('reconciliation reports absent and rejects changed intent under an existing operation id', async () => {
+  await withOwner(async ({ metadata, owner }) => {
+    const input = recordInput();
+    const absent = await owner.runWithRecordAuthority(input, async () => {
+      const topic = owner.commandCenter.resolveTopic({ topicName: 'Fictional Home' });
+      await owner.commandCenter.readNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, path: 'Invoices/Fictional.md' });
+      return owner.commandCenter.reconcileCommitment({ logicalOperationId: input.logicalOperationId, capture: capture() });
+    });
+    assert.deepEqual(absent, { status: 'not-applied' });
+    await admittedCapture(owner, input);
+    await assert.rejects(() => owner.runWithRecordAuthority(input, async () => {
+      const topic = owner.commandCenter.resolveTopic({ topicName: 'Fictional Home' });
+      await owner.commandCenter.readNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, path: 'Invoices/Fictional.md' });
+      return owner.commandCenter.reconcileCommitment({ logicalOperationId: input.logicalOperationId, capture: capture({ title: 'A different obligation under the same operation id' }) });
+    }), { code: 'open-loop-intent-mismatch' });
+    assert.equal(metadata.listOpenLoops().length, 1);
   });
 });
 

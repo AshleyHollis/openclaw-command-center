@@ -18,6 +18,17 @@ function withdrawalIntent({ logicalOperationId, effectId, expectedRevision }) {
     loopId: exactText(effectId, 'effect-id', 300), expectedRevision, decision: 'dismiss', actorId: WITHDRAWAL_ACTOR,
     rationale: 'Withdraw an unchanged item created by this historical backfill.' });
 }
+function admittedRecordIdentity(input, sourceKind) {
+  if (!input || input.sourceKind !== sourceKind) fail('backfill-record-authority-invalid');
+  return Object.freeze({
+    backfillId: exactText(input.backfillId, 'backfill-id', 300),
+    logicalOperationId: exactText(input.logicalOperationId, 'logical-operation-id', 300),
+    sourceKind: exactText(input.sourceKind, 'source-kind', 100),
+    sourceExternalId: exactText(input.record?.sourceExternalId, 'source-external-id', 1000),
+    sourceVersion: exactText(input.record?.sourceVersion, 'source-version', 1000),
+    checkpoint: exactText(input.record?.checkpoint, 'checkpoint', 1000)
+  });
+}
 
 // The CLI retains the authority runners and passes only commandCenter to the
 // private module. Adapter reads and writes therefore require a per-callback
@@ -41,6 +52,23 @@ export function createHistoricalBackfillOperator({ metadata, sourceService, plan
   const assertTopicScope = (topicName, topicId) => {
     if (plan.scope.topicNames?.length && !plan.scope.topicNames.includes(topicName)) fail('backfill-topic-out-of-scope');
     if (plan.scope.topicIds?.length && !plan.scope.topicIds.includes(topicId)) fail('backfill-topic-out-of-scope');
+  };
+  const prepareCapture = ({ logicalOperationId, capture } = {}) => {
+    const current = requireRecord();
+    const admitted = current.admitted;
+    if (logicalOperationId !== admitted.logicalOperationId || capture?.sourceKind !== plan.sourceKind || capture.sourceKind !== admitted.sourceKind || capture.sourceExternalId !== admitted.sourceExternalId || capture.sourceVersion !== admitted.sourceVersion) fail('backfill-capture-authority-mismatch');
+    const evidence = current.evidence.get(capture.sourceReferenceId);
+    if (!evidence || evidence.topicId !== capture.topicId || evidence.path !== capture.sourcePath) fail('backfill-capture-evidence-required');
+    const value = normalizeCommitmentCapture({ ...capture, logicalOperationId, historicalBaseline: true });
+    return { current, evidence, value };
+  };
+  const verifyFreshEvidence = async ({ current, evidence }) => {
+    const reference = metadata.getSourceReference(evidence.sourceReferenceId);
+    if (!reference || reference.topicId !== evidence.topicId || reference.sourceSystem !== 'obsidian' || reference.sourceKind !== 'note' || reference.observedRevision !== evidence.revision) fail('backfill-note-evidence-changed');
+    const result = await sourceService.notesRead({ schemaVersion: 1, topicId: evidence.topicId, referenceId: evidence.sourceReferenceId, observedRevision: evidence.revision, path: evidence.path });
+    assertCurrent();
+    if (authority.getStore() !== current || current.active !== true) fail('backfill-record-authority-replaced');
+    if (result?.sourceReference?.referenceId !== evidence.sourceReferenceId || result.sourceReference.topicId !== evidence.topicId || result.sourceReference.sourceKind !== 'note' || result.path !== evidence.path || result.revision !== evidence.revision) fail('backfill-note-evidence-changed');
   };
 
   const commandCenter = Object.freeze({
@@ -81,21 +109,14 @@ export function createHistoricalBackfillOperator({ metadata, sourceService, plan
     },
 
     async captureCommitment({ logicalOperationId, capture } = {}) {
-      const current = requireRecord();
-      if (logicalOperationId !== current.input.logicalOperationId || capture?.sourceKind !== plan.sourceKind || capture.sourceKind !== current.input.sourceKind || capture.sourceExternalId !== current.input.record.sourceExternalId || capture.sourceVersion !== current.input.record.sourceVersion) fail('backfill-capture-authority-mismatch');
-      const evidence = current.evidence.get(capture.sourceReferenceId);
-      if (!evidence || evidence.topicId !== capture.topicId || evidence.path !== capture.sourcePath) fail('backfill-capture-evidence-required');
-      const value = normalizeCommitmentCapture({ ...capture, logicalOperationId, historicalBaseline: true });
+      const { current, evidence, value } = prepareCapture({ logicalOperationId, capture });
+      await verifyFreshEvidence({ current, evidence });
       assertCurrent();
       return publicEffect(await commitments.capture(value));
     },
 
     reconcileCommitment({ logicalOperationId, capture } = {}) {
-      const current = requireRecord();
-      if (logicalOperationId !== current.input.logicalOperationId || capture?.sourceKind !== plan.sourceKind || capture.sourceKind !== current.input.sourceKind || capture.sourceExternalId !== current.input.record.sourceExternalId || capture.sourceVersion !== current.input.record.sourceVersion) fail('backfill-capture-authority-mismatch');
-      const evidence = current.evidence.get(capture.sourceReferenceId);
-      if (!evidence || evidence.topicId !== capture.topicId || evidence.path !== capture.sourcePath) fail('backfill-capture-evidence-required');
-      const value = normalizeCommitmentCapture({ ...capture, logicalOperationId, historicalBaseline: true });
+      const { value } = prepareCapture({ logicalOperationId, capture });
       assertCurrent();
       const replay = metadata.replayOpenLoopChange({ schemaVersion: 1, logicalOperationId: value.logicalOperationId, operationKind: 'commitment.capture.v1', intent: value });
       return replay ? Object.freeze({ status: 'applied', result: publicEffect(replay) }) : Object.freeze({ status: 'not-applied' });
@@ -135,8 +156,10 @@ export function createHistoricalBackfillOperator({ metadata, sourceService, plan
     commandCenter,
     async runWithRecordAuthority(input, callback) {
       assertCurrent();
-      if (!input || input.sourceKind !== plan.sourceKind || typeof callback !== 'function') fail('backfill-record-authority-invalid');
-      const capability = { kind: 'record', input, evidence: new Map(), active: true };
+      if (typeof callback !== 'function') fail('backfill-record-authority-invalid');
+      const admitted = admittedRecordIdentity(input, plan.sourceKind);
+      if (admitted.backfillId !== plan.backfillId) fail('backfill-record-authority-invalid');
+      const capability = { kind: 'record', admitted, evidence: new Map(), active: true };
       try { return await authority.run(capability, callback); }
       finally { capability.active = false; capability.evidence.clear(); }
     },

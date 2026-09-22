@@ -85,10 +85,14 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
 
       const vault = world.paths.vault;
       const notePath = 'Inbox/Fictional packaged bill.md';
+      const retainedNotePath = 'Inbox/Fictional retained review.md';
       const noteFile = path.join(vault, ...notePath.split('/'));
+      const retainedNoteFile = path.join(vault, ...retainedNotePath.split('/'));
       const noteBytes = Buffer.from('# Fictional packaged bill\n\nPay the fictional test invoice.\n', 'utf8');
+      const retainedNoteBytes = Buffer.from('# Fictional retained review\n\nReview the fictional service renewal.\n', 'utf8');
       await mkdir(path.dirname(noteFile), { recursive: true });
       await writeFile(noteFile, noteBytes);
+      await writeFile(retainedNoteFile, retainedNoteBytes);
       await writeFile(path.join(vault, NOTE_FOLDER_IDENTITY_FILE), `${JSON.stringify({ version: 1, id: randomUUID() })}\n`, { flag: 'wx', mode: 0o600 });
       const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
       try {
@@ -96,18 +100,19 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
         metadata.createSourceReference({ version: 1, referenceId: 'folder:fictional-packaged-backfill', topicId: 'topic-fictional-packaged-backfill', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault });
         metadata.setSourceLocator({ referenceId: 'folder:fictional-packaged-backfill', locator: vault, observedRevision: await readHostNoteFolderIdentity(vault), ownership: 'external' });
         metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-packaged-backfill', topicId: 'topic-fictional-packaged-backfill', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: noteFile, observedRevision: revisionForBytes(noteBytes) });
+        metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-retained-review', topicId: 'topic-fictional-packaged-backfill', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: retainedNoteFile, observedRevision: revisionForBytes(retainedNoteBytes) });
       } finally { metadata.close(); }
 
-      const plan = { schemaVersion: 1, backfillId: 'fictional-packaged-backfill', sourceKind: 'email', scope: { topicIds: [], topicNames: ['Fictional Packaged Backfill'], maxRecords: 1 } };
+      const plan = { schemaVersion: 1, backfillId: 'fictional-packaged-backfill', sourceKind: 'email', scope: { topicIds: [], topicNames: ['Fictional Packaged Backfill'], maxRecords: 2 } };
       const planPath = path.join(world.tempRoot, 'fictional-backfill-plan.json');
       const adapterPath = path.join(world.tempRoot, 'fictional-backfill-adapter.mjs');
       const adapterSource = `export function createHistoricalBackfillAdapter({ commandCenter }) { return {
-  async readPage() { return { records: [{ schemaVersion: 1, sourceExternalId: 'fictional-packaged-message', sourceVersion: '1', checkpoint: '001' }], next: '001', done: true }; },
-  async classify() { return { schemaVersion: 1, disposition: 'actionable', obligationId: 'fictional-packaged-bill', title: 'Pay fictional packaged bill', topicName: 'Fictional Packaged Backfill', notePath: 'Inbox/Fictional packaged bill.md', provenance: 'explicit', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-21T00:00:00.000Z' }; },
-  async applyRecord(input) { const topic = commandCenter.resolveTopic({ topicName: input.classification.topicName }); const evidence = await commandCenter.readNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, path: input.classification.notePath }); await commandCenter.captureCommitment({ logicalOperationId: input.logicalOperationId, capture: { schemaVersion: 1, sourceKind: input.sourceKind, sourceExternalId: input.record.sourceExternalId, sourceVersion: input.record.sourceVersion, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.path, topicId: topic.topicId, title: input.classification.title, obligationId: input.classification.obligationId, provenance: input.classification.provenance, occurredAt: input.classification.occurredAt, observedAt: input.classification.observedAt } }); throw Object.assign(new Error('fictional-lost-reply'), { code: 'fictional-lost-reply' }); },
-  async reconcileRecord(input) { const topic = commandCenter.resolveTopic({ topicName: input.classification.topicName }); const evidence = await commandCenter.readNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, path: input.classification.notePath }); return commandCenter.reconcileCommitment({ logicalOperationId: input.logicalOperationId, capture: { schemaVersion: 1, sourceKind: input.sourceKind, sourceExternalId: input.record.sourceExternalId, sourceVersion: input.record.sourceVersion, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.path, topicId: topic.topicId, title: input.classification.title, obligationId: input.classification.obligationId, provenance: input.classification.provenance, occurredAt: input.classification.occurredAt, observedAt: input.classification.observedAt } }); },
+  async readPage() { return { records: [{ schemaVersion: 1, sourceExternalId: 'fictional-packaged-message', sourceVersion: 'message-v1', checkpoint: '001' }, { schemaVersion: 1, sourceExternalId: 'fictional-retained-message', sourceVersion: 'message-v2', checkpoint: '002' }], next: '002', done: true }; },
+  async classify({ record }) { return record.sourceExternalId === 'fictional-packaged-message' ? { schemaVersion: 1, disposition: 'actionable', obligationId: 'fictional-packaged-bill', title: 'Pay fictional packaged bill', topicName: 'Fictional Packaged Backfill', notePath: 'Inbox/Fictional packaged bill.md', provenance: 'explicit', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-21T00:00:00.000Z' } : { schemaVersion: 1, disposition: 'actionable', obligationId: 'fictional-retained-review', title: 'Review fictional retained renewal', topicName: 'Fictional Packaged Backfill', notePath: 'Inbox/Fictional retained review.md', provenance: 'explicit', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-21T01:00:00.000Z' }; },
+  async applyRecord(input) { const result = await capture(input, false); if (input.record.sourceExternalId === 'fictional-packaged-message') throw Object.assign(new Error('fictional-lost-reply'), { code: 'fictional-lost-reply' }); return result; },
+  async reconcileRecord(input) { return capture(input, true); },
   async inspectEffect(input) { return commandCenter.inspectEffect(input); }, async withdrawEffect(input) { return commandCenter.withdrawEffect(input); }, async reconcileWithdrawal(input) { return commandCenter.reconcileWithdrawal(input); }, async recordReceipt() {}
-}; }\n`;
+}; async function capture(input, reconcile) { const topic = commandCenter.resolveTopic({ topicName: input.classification.topicName }); const evidence = await commandCenter.readNote({ topicId: topic.topicId, noteFolderReferenceId: topic.noteFolderReferenceId, path: input.classification.notePath }); const value = { logicalOperationId: input.logicalOperationId, capture: { schemaVersion: 1, sourceKind: input.sourceKind, sourceExternalId: input.record.sourceExternalId, sourceVersion: input.record.sourceVersion, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.path, topicId: topic.topicId, title: input.classification.title, obligationId: input.classification.obligationId, provenance: input.classification.provenance, occurredAt: input.classification.occurredAt, observedAt: input.classification.observedAt } }; return reconcile ? commandCenter.reconcileCommitment(value) : commandCenter.captureCommitment(value); } }\n`;
       await writeFile(planPath, `${JSON.stringify(plan)}\n`);
       await writeFile(adapterPath, adapterSource);
       const packagedBackfill = await import(pathToFileURL(path.join(world.manifest.candidate.root, 'dist', 'open-loops', 'historical-backfill.mjs')).href);
@@ -117,26 +122,49 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
       try { assert.equal(verification.listOpenLoops().length, 0, 'preview must not create an effect'); }
       finally { verification.close(); }
       await assert.rejects(runPackagedBackfillCli({ ...cli, mode: 'apply' }), error => `${error.stdout}\n${error.stderr}`.includes('fictional-lost-reply'));
+      let firstCommit;
+      verification = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
+      try {
+        const loop = verification.listOpenLoops().find(item => item.title === 'Pay fictional packaged bill');
+        assert.ok(loop, 'lost reply must follow a durable first commitment');
+        firstCommit = { loopId: loop.loopId, revision: loop.revision, evidenceCount: loop.evidenceObservationIds.length,
+          observationCount: verification.listOpenLoopObservations().length,
+          captureOperationCount: verification.listOperations().filter(item => item.operationKind === 'commitment.capture.v1').length };
+      } finally { verification.close(); }
       await runPackagedBackfillCli({ ...cli, mode: 'apply' });
       verification = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
       try {
         const loops = verification.listOpenLoops();
-        assert.equal(loops.length, 1);
-        assert.equal(loops[0].title, 'Pay fictional packaged bill');
+        assert.equal(loops.length, 2);
+        const replayed = verification.getOpenLoop(firstCommit.loopId);
+        assert.equal(replayed.title, 'Pay fictional packaged bill');
+        assert.equal(replayed.revision, firstCommit.revision, 'retry must not revise the committed effect');
+        assert.equal(replayed.evidenceObservationIds.length, firstCommit.evidenceCount, 'retry must not append evidence');
+        assert.equal(verification.listOpenLoopObservations().length, firstCommit.observationCount + 1, 'only the second record may add evidence');
+        assert.equal(verification.listOperations().filter(item => item.operationKind === 'commitment.capture.v1').length, firstCommit.captureOperationCount + 1, 'only the second record may add a capture operation');
       } finally { verification.close(); }
 
       await restartHost();
       const dashboard = await readDashboardWhenReady(world, host, signal);
       assert.match(JSON.stringify(dashboard), /Pay fictional packaged bill/u);
+      assert.match(JSON.stringify(dashboard), /Review fictional retained renewal/u);
       await stopPinnedHost(host.child);
       await host.outputDrained;
       removeAbortCleanup();
+      verification = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
+      try {
+        const retained = verification.listOpenLoops().find(item => item.title === 'Review fictional retained renewal');
+        assert.ok(retained);
+        const decided = verification.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'fictional-retained-user-decision', loopId: retained.loopId, expectedRevision: retained.revision, decision: 'defer', reviewAt: '2026-09-28T00:00:00.000Z', actorId: 'fictional-operator', rationale: 'Keep this fictional review for the accepted date.', updatedAt: '2026-09-21T02:30:00.000Z' });
+        assert.equal(decided.loop.revision, retained.revision + 1);
+      } finally { verification.close(); }
       await runPackagedBackfillCli({ ...cli, mode: 'withdraw' });
 
       await restartHost();
       const afterWithdrawal = await readDashboardWhenReady(world, host, signal);
       assert.doesNotMatch(JSON.stringify(afterWithdrawal), /Pay fictional packaged bill/u);
-      return Object.freeze({ packaged: true, isolatedHost: true, previewed: true, lostReplyReconciled: true, visibleAfterRestart: true, withdrawn: true, absentAfterWithdrawalRestart: true });
+      assert.match(JSON.stringify(afterWithdrawal), /Review fictional retained renewal/u);
+      return Object.freeze({ packaged: true, isolatedHost: true, previewed: true, lostReplyReconciledWithoutDuplicate: true, visibleAfterRestart: true, withdrawn: true, userDecisionPreservedAfterRestart: true, absentAfterWithdrawalRestart: true });
     } finally {
       removeAbortCleanup();
       await stopPinnedHost(host.child);
