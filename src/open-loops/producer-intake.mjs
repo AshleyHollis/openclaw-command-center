@@ -81,6 +81,7 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
             for (const outcome of plannedOutcomes.filter(item => unfinished(account, item.outcomeId))) await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind, status: 'unresolved-topic', summary: 'Topic ownership requires review', recordedAt: now() });
             counts.uncertainCount += 1; counts.processedCount += 1; checkpoint = record.checkpoint; continue;
           }
+          if (record.retainedNoteRevision && !topic.evidence) fail('producer-evidence-unavailable');
           let evidence;
           const retainedKnowledge = knowledgeOutcomeId ? accountOutcome(account, knowledgeOutcomeId) : null;
           if (retainedKnowledge?.status === 'quiet') evidence = exactEvidence(retainedKnowledge);

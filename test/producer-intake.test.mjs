@@ -173,3 +173,19 @@ test('retry loads the accepted extraction and resumes only missing outcomes', as
   assert.equal(captures[0].sourceVersion, 'email-change-key-11');
   assert.deepEqual(outcomes.map(item => item.outcomeId), ['accepted-second']);
 });
+
+test('a pinned retained Note cannot fall through to creating replacement evidence', async () => {
+  let saves = 0;
+  const adapter = createProducerIntakeAdapter({
+    processorVersion: 'fixture-v1', extract: async () => { throw new Error('accepted extraction must be reused'); },
+    loadIntakeSourceAccount: async () => null,
+    resolveTopic: async () => ({ topicId: 'topic-fixture', noteFolderReferenceId: 'folder-fixture' }),
+    saveSourceNote: async () => { saves += 1; throw new Error('replacement Note must not be created'); },
+    captureSourceCommitment: async () => { throw new Error('capture must not run'); }, captureChatCommitment: async () => { throw new Error('capture must not run'); },
+    recordIntakeSourcePlan: async input => ({ plan: { schemaVersion: 1, ...input }, account: { outcomes: [] } }),
+    recordIntakeOutcome: async () => { throw new Error('outcome must not run'); }, recordIntakeReceipt: async input => ({ receipt: input })
+  });
+  const record = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'message-pinned-note', sourceVersion: 'change-key-1', retainedNoteRevision: `sha256:${'a'.repeat(64)}`, checkpoint: 'message-pinned-note', acceptedExtraction: { schemaVersion: 1, proposedTopic: 'Fictional Home', notePath: 'Inbox/Pinned.md', knowledgeMarkdown: 'Retained at source.', obligations: [{ obligationId: 'fictional-obligation', title: 'Review fictional item', provenance: 'explicit' }] } };
+  await assert.rejects(() => adapter.process({ runId: 'pinned-note-run', records: [record], nextExpectedAt: '2026-09-23T01:00:00.000Z' }), error => error.code === 'producer-evidence-unavailable');
+  assert.equal(saves, 0);
+});
