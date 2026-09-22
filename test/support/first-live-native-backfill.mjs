@@ -60,7 +60,7 @@ async function readDashboardWhenReady(world, host, signal) {
       return true;
     } catch (error) {
       probeSignal.throwIfAborted();
-      if (/Gateway (?:connection|challenge).*failed/iu.test(error?.message ?? '') || error?.category === 'transport-timeout') return false;
+      if (error?.startupPending === true || /Gateway (?:connect|connection|challenge).*failed/iu.test(error?.message ?? '') || error?.category === 'transport-timeout') return false;
       throw error;
     }
   }, host.earlyExit, { required: 2, deadlineMs: 60_000, delayMs: 100, signal });
