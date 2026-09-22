@@ -1224,18 +1224,20 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
               AND json_extract(o.facts_json, '$.sourceVersion') = ? AND json_extract(o.facts_json, '$.obligationId') = ? LIMIT 1`).get(result.loopId, result.sourceKind, result.sourceExternalId, result.sourceVersion, result.outcomeId);
           if (!loop || !evidence || result.status === 'pending-decision' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
         } else if (result.status === 'quiet') {
-          const reference = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(result.sourceReferenceId);
+          const reference = db.prepare(`SELECT reference.*, locator.locator AS current_locator FROM source_references AS reference
+            LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+            WHERE reference.reference_id = ?`).get(result.sourceReferenceId);
           const sourceNoteHex = createHash('sha256').update(['command-center.source-note.v1', result.topicId, result.sourceKind, result.sourceExternalId, result.sourceVersion].join('\0')).digest('hex');
           const sourceNoteOperationId = `${sourceNoteHex.slice(0, 8)}-${sourceNoteHex.slice(8, 12)}-4${sourceNoteHex.slice(13, 16)}-${(Number.parseInt(sourceNoteHex[16], 16) & 3 | 8).toString(16)}${sourceNoteHex.slice(17, 20)}-${sourceNoteHex.slice(20, 32)}`;
           const sourceNote = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(sourceNoteOperationId);
           const existingNoteEvidence = result.sourceKind === 'note' && result.sourceReferenceId === result.sourceExternalId;
           const createdNoteEvidence = sourceNote?.operation_kind === 'notes.create' && sourceNote.state === 'applied' && sourceNote.result_identity === reference?.external_source_id && sourceNote.observed_revision === result.sourceReferenceVersion;
-          const normalizedExternalPath = reference?.external_source_id?.replaceAll('\\', '/').replace(/\/$/, '');
+          const normalizedExternalPath = (reference?.current_locator ?? reference?.external_source_id)?.replaceAll('\\', '/').replace(/\/$/, '');
           const normalizedSourcePath = result.sourcePath?.replaceAll('\\', '/').replace(/^\/+/, '');
-          const folders = db.prepare(`SELECT reference.external_source_id, locator.locator FROM source_references AS reference
+          const folders = db.prepare(`SELECT COALESCE(locator.locator, reference.external_source_id) AS effective_locator FROM source_references AS reference
             LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
             WHERE reference.topic_id = ? AND reference.source_kind = 'note_folder'`).all(result.topicId);
-          const roots = folders.flatMap(folder => [folder.locator, folder.external_source_id]).filter(Boolean).map(root => root.replaceAll('\\', '/').replace(/\/$/, ''));
+          const roots = folders.map(folder => folder.effective_locator).filter(Boolean).map(root => root.replaceAll('\\', '/').replace(/\/$/, ''));
           const relativePaths = [...new Set(roots.filter(root => normalizedExternalPath?.startsWith(`${root}/`)).map(root => normalizedExternalPath.slice(root.length + 1)))];
           const exactPath = folders.length === 1 && relativePaths.length === 1 && relativePaths[0] === normalizedSourcePath;
           if (!reference || reference.topic_id !== result.topicId || !['note', 'document'].includes(reference.source_kind) || reference.last_observed_revision !== result.sourceReferenceVersion || !exactPath || !(existingNoteEvidence || createdNoteEvidence)) throw new CommandCenterMetadataError('conflict', 'The exact quiet intake evidence is unavailable.');

@@ -224,3 +224,15 @@ test('quiet intake rejects a basename suffix instead of the exact Topic-relative
     metadata.close();
   } finally { await temporary.cleanup(); }
 });
+
+test('quiet intake rejects a stale path after its Note is relocated', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-relocated-note-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata); recordIntakeSourcePlan(metadata, sourcePlan()); addEffects(metadata);
+    metadata.setSourceLocator({ referenceId: 'note:fictional-message-42', locator: '/fictional/Archive/reference.md', ownership: 'external', observedRevision: 'note-v1' });
+    const base = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Relocated evidence', topicId: 'topic-fictional-home', sourceReferenceId: 'note:fictional-message-42', sourceReferenceVersion: 'note-v1', recordedAt: '2026-09-22T02:00:00.000Z' };
+    assert.throws(() => recordIntakeOutcome(metadata, { ...base, sourcePath: 'Inbox/reference.md' }), { code: 'conflict' });
+    assert.equal(recordIntakeOutcome(metadata, { ...base, sourcePath: 'Archive/reference.md' }).outcome.sourcePath, 'Archive/reference.md');
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
