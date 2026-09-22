@@ -1272,8 +1272,22 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
         scenarioHost = await withDeadline('accounted email host restart', restartSignal => restartPinnedHost(scenarioHost, { signal: restartSignal }), 120_000);
         await waitForConsecutiveReadiness(async probeSignal => {
-          const catalog = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'plugins.controlUi.list', signal: probeSignal });
-          return Boolean(catalog?.plugins?.find(plugin => plugin.pluginId === 'command-center')?.revision);
+          try {
+            const response = await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, 'accounted email restart bootstrap', 10_000);
+            return response.ok && routeGrant(await response.json());
+          } catch (error) {
+            if (/fetch failed|timed out|ECONNREFUSED/iu.test(`${error?.message ?? ''} ${error?.cause?.message ?? ''}`)) return false;
+            throw error;
+          }
+        }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
+        await waitForConsecutiveReadiness(async probeSignal => {
+          try {
+            const catalog = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'plugins.controlUi.list', signal: probeSignal });
+            return Boolean(catalog?.plugins?.find(plugin => plugin.pluginId === 'command-center')?.revision);
+          } catch (error) {
+            if (/Gateway (?:challenge socket|connection) failed|timed out/iu.test(error?.message ?? '')) return false;
+            throw error;
+          }
         }, scenarioHost.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
         chatPane = await openNativeChat();
         await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-2] Resume only unfinished outcomes from the durable accepted extraction.', 'accounted-load-final');
