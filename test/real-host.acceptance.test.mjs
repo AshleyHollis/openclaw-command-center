@@ -2349,6 +2349,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     if (failures.length) throw new AggregateError(failures, 'Independent diagnostic slices failed');
     assert.equal(isolatedEvidence.size, acceptancePlan.isolatedSliceIds.length);
     if (acceptancePlan.isolatedSliceIds.includes('reminder-runtime-lifecycle')) testContext.diagnostic(`reminder-lifecycle-evidence=${JSON.stringify(isolatedEvidence.get('reminder-runtime-lifecycle'))}`);
+    if (acceptancePlan.isolatedSliceIds.includes('accounted-mixed-email')) testContext.diagnostic(`accounted-mixed-email-evidence=${JSON.stringify(isolatedEvidence.get('accounted-mixed-email'))}`);
     testContext.diagnostic(`acceptance-scenario-result=${JSON.stringify({ schemaVersion: 1, outcome: 'passed', scenario: process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO, isolatedSliceIds: [...isolatedEvidence.keys()], buildDigest: buildReceipt.digest, performanceQualified: false })}`);
     return;
   }
