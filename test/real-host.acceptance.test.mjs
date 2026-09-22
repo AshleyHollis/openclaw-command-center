@@ -20,6 +20,7 @@ import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
 import { COMMAND_CENTER_SCHEMA_VERSION, metadataSchemaV1Sql } from '../src/metadata/schema.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { loadIntakeSourceAccount } from '../src/open-loops/intake-accounting.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl, isControlUiPluginUrl } from '../src/acceptance-readiness.mjs';
@@ -1251,12 +1252,15 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         };
         let chatPane = await openNativeChat();
         await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-1] Process the fictional mixed email through the registered Command Center intake commands.', 'accounted-outcome-choice');
-        const firstDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
-        const firstEmail = firstDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
-        assert.deepEqual(firstEmail.outcomeCounts, { expected: 4, accounted: 1, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 });
-        const pendingDecision = firstEmail.recentSources[0].outcomes.find(item => item.kind === 'decision');
+        const metadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+        let durableBeforeRestart;
+        try { durableBeforeRestart = loadIntakeSourceAccount(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-real-host-mixed-message', sourceVersion: 'email-change-key-real-host-52' }); }
+        finally { metadata.close(); }
+        assert.equal(durableBeforeRestart.plan.processorVersion, 'fictional-real-host-processor-v1');
+        assert.deepEqual(durableBeforeRestart.account.counts, { expected: 4, accounted: 1, obligations: 2, decisionsPending: 1, quiet: 0, unresolvedTopics: 0, failed: 0 });
+        const pendingDecision = durableBeforeRestart.account.outcomes.find(item => item.kind === 'decision');
         assert.equal(pendingDecision.status, 'pending-decision');
-        const detail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: pendingDecision.target.loopId }, signal });
+        const detail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: pendingDecision.loopId }, signal });
         const loop = (detail.result ?? detail).loop;
         await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
         const killed = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
