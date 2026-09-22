@@ -713,7 +713,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
     const browserGuard = new TrafficGuard();
     const evidence = { requests: [], responses: [], console: [], errors: [] };
     let managedBrowser;
-    let evidencePage;
+    const evidencePages = [];
     const abortBrowser = () => { void managedBrowser?.server.kill().catch(() => {}); };
     signal.addEventListener('abort', abortBrowser, { once: true });
     let failure;
@@ -792,10 +792,6 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       }
       progress('browser-launch');
       managedBrowser = await withDeadline('native browser launch', () => launchManagedBrowser({ headless: true, timeout: 60_000 }), 60_000, signal);
-      const page = await managedBrowser.browser.newPage({ viewport: { width: 1440, height: 900 } });
-      if (keyboard) await page.emulateMedia({ forcedColors: 'active', reducedMotion: 'reduce' });
-      evidencePage = await configureEvidencePage(page, browserGuard, evidence);
-      if (scaleDiagnostic) page.setDefaultTimeout(10_000);
       let browserTopics;
       let browserNavigation;
       let browserNote;
@@ -805,9 +801,14 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const conversationLabel = scale ? 'Fictional Native Scale 100' : 'Fictional Native Follow-up';
       const messageText = 'Fictional native Conversation message for exact Session readback.';
       const attachmentMessageText = 'File this fictional native attachment into the exact Topic Documents folder.';
-      // Observe the existing real-server WebSocket route without substituting
-      // any request, response, authentication or activation report.
-      await page.routeWebSocket('**/*', (socket) => {
+      const createPage = async () => {
+        const nextPage = await managedBrowser.browser.newPage({ viewport: { width: 1440, height: 900 } });
+        if (keyboard) await nextPage.emulateMedia({ forcedColors: 'active', reducedMotion: 'reduce' });
+        evidencePages.push(await configureEvidencePage(nextPage, browserGuard, evidence));
+        if (scaleDiagnostic) nextPage.setDefaultTimeout(10_000);
+        // Observe the existing real-server WebSocket route without substituting
+        // any request, response, authentication or activation report.
+        await nextPage.routeWebSocket('**/*', (socket) => {
         try { assertWebSocketDestination(browserGuard, socket.url()); }
         catch (error) { recordBounded(evidence.errors, redactBrowserEvidence(error.message)); void socket.close(); return; }
         const server = socket.connectToServer();
@@ -842,7 +843,10 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
             else scaleResponses.rosterOverflow = true;
           }
         });
-      });
+        });
+        return nextPage;
+      };
+      const page = await createPage();
       const entryResponse = observeBrowserResponse(page.waitForResponse((candidate) => candidate.request().method() === 'GET' && candidate.url() === entryUrl.href, { timeout: 60_000 }), (error) => recordBounded(evidence.errors, redactBrowserEvidence(error.message)));
       // Navigate only through the real host router; its native loader imports
       // the revisioned entry and reports activation on its own live connection.
@@ -1374,7 +1378,19 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       result = { existingTopicVerified: true, authoritativeNoteRead: true, exactNativeChatHandoff: true,
         sessionKey: fixture.sessionKey, sessionId: fixture.sessionId, referenceId: fixture.sessionReferenceId };
       } else if (keyboard) {
-        result = await exerciseNativeKeyboardStates({ page, world, host, fixture, native, signal, restartHost, browserGuard });
+        // The host consumes the fragment credential during bootstrap. A fresh
+        // Playwright page owns a fresh browser context, so reconstruct the
+        // authenticated public route rather than copying the stripped URL.
+        const nativeUrl = controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topics',
+          fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential });
+        result = await exerciseNativeKeyboardStates({ page, world, host, fixture, native, signal, restartHost, browserGuard,
+          reopenPage: async previous => {
+            const next = await createPage();
+            await next.goto(nativeUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+            await previous.close();
+            return next;
+          }
+        });
       } else if (scale) {
         result = await exerciseNativeScaleStates({ page, world, host, signal, fixture, bootstrap, conversationLabel, messageText,
           startupReadinessMs, topicsStarted, measure: !scaleDiagnostic, onProgress: progress,
@@ -1704,7 +1720,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
       const cleanup = await finalizeAcceptanceJourney({
         closeBrowser: async (cleanupSignal) => {
           await closeManagedBrowser(managedBrowser, cleanupSignal);
-          await evidencePage?.drain();
+          for (const pageEvidence of evidencePages) await pageEvidence.drain();
         },
         stopHost: async () => {
           for (const generation of [...host.generations].reverse()) {
@@ -1713,7 +1729,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
           }
         },
         assertBrowserTraffic: () => {
-          evidencePage?.assertClean();
+          for (const pageEvidence of evidencePages) pageEvidence.assertClean();
           browserGuard.assertClean();
         },
         assertHostTraffic: () => {

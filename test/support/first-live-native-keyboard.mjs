@@ -82,7 +82,7 @@ async function requireExactFocus(page, target, label) {
 
 // Called only after the shared native owner admits the pinned host, imports the
 // exact revisioned entry and mounts its real page. It owns no alternate runtime.
-export async function exerciseNativeKeyboardStates({ page, world, host: initialHost, fixture, native, signal, restartHost, browserGuard }) {
+export async function exerciseNativeKeyboardStates({ page, world, host: initialHost, fixture, native, signal, restartHost, reopenPage, browserGuard }) {
   page.setDefaultTimeout(30_000);
   const progress = phase => console.log(`native-keyboard-progress=${JSON.stringify({ phase })}`);
   let host = initialHost;
@@ -90,8 +90,8 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   const audits = [];
   const announcements = [];
   let focusRestored = false;
-  const nativePage = page.locator('openclaw-plugin-page');
-  const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+  let nativePage = page.locator('openclaw-plugin-page');
+  let chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
   // Approved first-live scope exception, tracked in #228. Native OpenClaw
   // deliberately leaves this scrollable transcript without a focus outline.
   // Observe every traversal without calling that missing indicator a pass.
@@ -100,8 +100,16 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     record: () => console.log('keyboard-focus-deferral={"issue":228,"scope":"native-chat-transcript","indicator":"missing","status":"deferred"}')
   };
   const button = name => nativePage.getByRole('button', { name, exact: true });
-  const note = nativePage.getByRole('region', { name: 'Note content', exact: true });
-  const creation = nativePage.locator('form').filter({ has: page.getByRole('heading', { name: 'New Conversation', exact: true }) });
+  let note = nativePage.getByRole('region', { name: 'Note content', exact: true });
+  let creation = nativePage.locator('form').filter({ has: page.getByRole('heading', { name: 'New Conversation', exact: true }) });
+  const bindPage = nextPage => {
+    page = nextPage;
+    nativePage = page.locator('openclaw-plugin-page');
+    chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+    deferredIndicator.locator = chatPane.locator('.chat-thread[role="log"][tabindex="0"]');
+    note = nativePage.getByRole('region', { name: 'Note content', exact: true });
+    creation = nativePage.locator('form').filter({ has: page.getByRole('heading', { name: 'New Conversation', exact: true }) });
+  };
   const createButton = () => creation.getByRole('button', { name: 'Create Conversation', exact: true });
   const gatewayRead = async (method, params = { schemaVersion: 1 }) => unwrap(await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method, params, signal }));
   const ready = (predicate, deadlineMs = 30_000) => waitForConsecutiveReadiness(predicate, host.earlyExit, { deadlineMs, delayMs: 100, signal });
@@ -357,8 +365,8 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     assert.equal(status.mode, 'degraded');
     assert.equal(status.unavailableCapabilities.includes('sessions'), state === 'source-unavailable');
     assert.equal(status.unavailableCapabilities.includes('control-ui-grant'), state === 'permission-refused');
-    await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
-    progress(`${state}:page-reloaded`);
+    bindPage(await reopenPage(page));
+    progress(`${state}:page-reopened`);
     await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
     await announced(nativePage, /Degraded · some capabilities are unavailable/u);
     await openNotes(); await readNote();
