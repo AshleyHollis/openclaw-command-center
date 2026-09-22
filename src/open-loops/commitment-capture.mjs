@@ -21,14 +21,14 @@ function legacySubject(value) { return `commitment:${stable([value.sourceKind, v
 
 export function normalizeCommitmentCapture(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('capture must be an object');
-  const allowed = ['schemaVersion', 'logicalOperationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'topicId', 'title', 'obligationId', 'correlationNamespace', 'correlationId', 'provenance', 'confidence', 'occurredAt', 'observedAt', 'historicalBaseline', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies'];
+  const allowed = ['schemaVersion', 'logicalOperationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'topicId', 'title', 'obligationId', 'correlationNamespace', 'correlationId', 'provenance', 'confidence', 'occurredAt', 'observedAt', 'historicalBaseline', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies'];
   const extra = Object.keys(input).find(key => !allowed.includes(key));
   if (extra) fail(`capture contains unsupported field ${extra}`);
   if (input.schemaVersion !== 1 || !sourceKinds.has(input.sourceKind) || !provenanceKinds.has(input.provenance)) fail('capture vocabulary is unsupported');
   if (input.importance !== undefined && !importanceKinds.has(input.importance)) fail('importance is unsupported');
   if (input.importanceOrigin !== undefined && !['source', 'processing'].includes(input.importanceOrigin)) fail('capture cannot claim a user importance decision');
   if ((input.importance === undefined) !== (input.importanceOrigin === undefined)) fail('importance and importanceOrigin must be provided together');
-  if ((input.sourceReferenceId === undefined) !== (input.sourcePath === undefined)) fail('sourceReferenceId and sourcePath must be provided together');
+  if ((input.sourceReferenceId === undefined) !== (input.sourcePath === undefined) || input.sourceReferenceVersion !== undefined && input.sourceReferenceId === undefined) fail('sourceReferenceId, sourcePath and sourceReferenceVersion must identify one evidence revision');
   if ((input.correlationNamespace === undefined) !== (input.correlationId === undefined)) fail('correlationNamespace and correlationId must be provided together');
   const confidence = input.confidence === undefined ? undefined : Number(input.confidence);
   if (confidence !== undefined && (!Number.isFinite(confidence) || confidence < 0 || confidence > 1)) fail('confidence must be between 0 and 1');
@@ -49,6 +49,7 @@ export function normalizeCommitmentCapture(input) {
     sourceVersion: text(input.sourceVersion, 'sourceVersion', 300),
     ...(input.sourceReferenceId === undefined ? {} : { sourceReferenceId: text(input.sourceReferenceId, 'sourceReferenceId', 300) }),
     ...(input.sourcePath === undefined ? {} : { sourcePath: text(input.sourcePath, 'sourcePath', 500) }),
+    ...(input.sourceReferenceVersion === undefined ? {} : { sourceReferenceVersion: text(input.sourceReferenceVersion, 'sourceReferenceVersion', 300) }),
     topicId: text(input.topicId, 'topicId', 300),
     title: text(input.title, 'title', 300),
     obligationId: text(input.obligationId, 'obligationId', 300),
@@ -82,7 +83,7 @@ export function planCommitmentCapture(input, existingLoop = null) {
     historicalBaseline: value.historicalBaseline,
     topicId: value.topicId,
     entityRefs: [{ kind: 'obligation', id: value.obligationId }],
-    facts: { title: value.title, obligationId: value.obligationId, sourceVersion: value.sourceVersion, ...(value.correlationId === undefined ? {} : { correlationNamespace: value.correlationNamespace, correlationId: value.correlationId }), provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath }) }
+    facts: { title: value.title, obligationId: value.obligationId, sourceVersion: value.sourceVersion, ...(value.correlationId === undefined ? {} : { correlationNamespace: value.correlationNamespace, correlationId: value.correlationId }), provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath, ...(value.sourceReferenceVersion === undefined ? {} : { sourceReferenceVersion: value.sourceReferenceVersion }) }) }
   });
   const { digest: _digest, ...observation } = normalizedObservation;
   const stableSubjectId = subject(value);
@@ -128,7 +129,7 @@ export function createCommitmentCaptureService({ metadata, sourceService } = {})
       if (value.sourceReferenceId) {
         const reference = metadata.getSourceReference?.(value.sourceReferenceId);
         if (!reference || reference.topicId !== value.topicId || !['note', 'document'].includes(reference.sourceKind)) throw new TypeError('capture source reference is not exactly owned by the Topic');
-        if (sourceService?.notesRead && reference.sourceKind === 'note') await sourceService.notesRead({ schemaVersion: 1, topicId: value.topicId, referenceId: value.sourceReferenceId, path: value.sourcePath });
+        if (sourceService?.notesRead && reference.sourceKind === 'note') await sourceService.notesRead({ schemaVersion: 1, topicId: value.topicId, referenceId: value.sourceReferenceId, path: value.sourcePath, ...(value.sourceReferenceVersion === undefined ? {} : { observedRevision: value.sourceReferenceVersion }) });
       }
       const stableSubjectId = subject(value);
       const current = metadata.findOpenLoopBySubject('general', stableSubjectId);

@@ -11,6 +11,9 @@ import { inspectTopicDiscoverability } from '../topics/discoverability.mjs';
 import { createHistoricalBackfill, historicalBackfillPlanDigest, withdrawHistoricalBackfill } from '../open-loops/historical-backfill.mjs';
 import { createHistoricalBackfillStore } from '../open-loops/historical-backfill-store.mjs';
 import { createHistoricalBackfillOperator } from '../open-loops/historical-backfill-operator.mjs';
+import { createProducerIntakeAdapter } from '../open-loops/producer-intake.mjs';
+import { normalizeProducerIntakePlan, producerIntakePlanDigest } from '../open-loops/producer-intake-plan.mjs';
+import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeSourceAccountToolFactory, intakeOutcomeToolFactory } from '../open-loops/source-intake-tool.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const recoveryFailure = receipts => { throw Object.assign(new Error('note-folder-recovery-halted'), { code: 'note-folder-recovery-halted', receipts }); };
@@ -52,6 +55,23 @@ export async function readPinnedHistoricalBackfillPlan(filename, expectedDigest)
   const plan = await readPinnedJson(filename, 'backfill-plan-invalid', 'backfill-plan-unsafe', 'backfill-plan-changed');
   if (historicalBackfillPlanDigest(plan) !== expectedDigest) fail('backfill-plan-digest-mismatch');
   return plan;
+}
+
+export async function readPinnedProducerIntakePlan(filename, expectedDigest) {
+  if (!/^sha256:[a-f0-9]{64}$/u.test(expectedDigest)) fail('producer-plan-invalid');
+  const input = await readPinnedJson(filename, 'producer-plan-invalid', 'producer-plan-unsafe', 'producer-plan-changed');
+  if (producerIntakePlanDigest(input) !== expectedDigest) fail('producer-plan-digest-mismatch');
+  return normalizeProducerIntakePlan(input);
+}
+
+export async function readProducerIntakePlanDigest(filename) {
+  const input = await readPinnedJson(filename, 'producer-plan-invalid', 'producer-plan-unsafe', 'producer-plan-changed');
+  return producerIntakePlanDigest(input);
+}
+
+export function producerSourceExternalId(sourceNamespace, sourceExternalId) {
+  const digest = createHash('sha256').update(JSON.stringify([sourceNamespace, sourceExternalId])).digest('hex');
+  return `namespaced:v1:sha256:${digest}`;
 }
 
 async function importPinnedBackfillAdapter(filename, expectedDigest) {
@@ -122,6 +142,50 @@ export async function runConfiguredHistoricalBackfill({ mode, planPath, expected
     };
     if (mode === 'withdraw') return await withdrawHistoricalBackfill({ ...wrapped, ...store, backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent });
     return await createHistoricalBackfill({ ...wrapped, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
+  } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
+}
+
+export async function runConfiguredProducerIntake({ planPath, expectedDigest, config, signal, hostFileAccess }) {
+  const plan = await readPinnedProducerIntakePlan(planPath, expectedDigest);
+  const pluginConfig = structuredClone(config)?.plugins?.entries?.['command-center']?.config ?? {};
+  if (pluginConfig.sourceCapabilities?.notes === false) fail('capability-unavailable');
+  signal?.throwIfAborted();
+  const [{ resolveStateDir }, sdkFileAccess, sdkSqlite, { openCommandCenterMetadataService }, identity, filesystemOwner] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/file-access-runtime'), import('openclaw/plugin-sdk/sqlite-runtime'),
+    import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs'), import('../sources/note-filesystem-owner.mjs')
+  ]);
+  const fileAccess = hostFileAccess ?? sdkFileAccess;
+  const sqlite = hostFileAccess ?? sdkSqlite;
+  const releaseIdentityReader = identity.setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
+  const releaseCoordinator = filesystemOwner.setHostNoteFilesystemCoordinator(sqlite.tryAcquireExclusiveSqliteCoordinator);
+  let metadata; let sourceService;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
+    sourceService = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: false } });
+    const getOwners = () => ({ metadata, sourceService });
+    const tools = {
+      resolve: sourceTopicResolverToolFactory({ getOwners })(), save: sourceNoteCaptureToolFactory({ getOwners })(), capture: sourceCommitmentCaptureToolFactory({ getOwners })(),
+      receipt: intakeReceiptToolFactory({ getOwners })(), plan: intakeSourcePlanToolFactory({ getOwners })(), account: intakeSourceAccountToolFactory({ getOwners })(), outcome: intakeOutcomeToolFactory({ getOwners })()
+    };
+    const invoke = async (tool, params) => { signal?.throwIfAborted(); const result = await tool.execute('producer-intake-cli', params); signal?.throwIfAborted(); return result?.details; };
+    const adapter = createProducerIntakeAdapter({
+      processorVersion: plan.processorVersion,
+      async extract() { fail('producer-extractor-unavailable'); },
+      loadIntakeSourceAccount: params => invoke(tools.account, params),
+      async resolveTopic({ proposedTopic, notePath, expectedNoteRevision }) {
+        if (typeof proposedTopic !== 'string' || !proposedTopic.trim()) return null;
+        const result = await invoke(tools.resolve, { topicName: proposedTopic, ...(notePath ? { notePath } : {}), ...(expectedNoteRevision ? { expectedNoteRevision } : {}) });
+        return result?.status === 'resolved' ? result : null;
+      },
+      async saveSourceNote(params) {
+        const result = await invoke(tools.save, params); const note = result?.note; const reference = result?.sourceReference;
+        return { sourceReferenceId: reference?.referenceId, sourcePath: note?.path, sourceReferenceVersion: note?.revision, replayed: result?.result?.status === 'replayed' };
+      },
+      captureSourceCommitment: params => invoke(tools.capture, params),
+      async captureChatCommitment() { fail('producer-source-kind-invalid'); },
+      recordIntakeSourcePlan: params => invoke(tools.plan, params), recordIntakeOutcome: params => invoke(tools.outcome, params), recordIntakeReceipt: params => invoke(tools.receipt, params)
+    });
+    return await adapter.process({ runId: plan.runId, sourceKind: plan.sourceKind, records: plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, enumeration: plan.enumeration });
   } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
 }
 
@@ -314,6 +378,24 @@ export function registerReconciliationCli({ program, config, logger }) {
         } finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
       });
   }
+  const intake = group.command('intake').description('Digest or apply one explicitly pinned maintained-producer handoff');
+  intake.command('digest')
+    .requiredOption('--plan <absolute-path>', 'Private accepted-extraction batch JSON')
+    .action(async options => {
+      try { logger.info(await readProducerIntakePlanDigest(options.plan)); }
+      catch (error) { logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'producer-intake-failed'); process.exitCode = 1; }
+    });
+  intake.command('apply')
+    .requiredOption('--plan <absolute-path>', 'Private accepted-extraction batch JSON')
+    .requiredOption('--digest <sha256>', 'Approved canonical batch SHA-256')
+    .action(async options => {
+      const cancellation = new AbortController();
+      const abort = () => cancellation.abort(Object.assign(new Error('producer-intake-cancelled'), { code: 'producer-intake-cancelled' }));
+      process.once('SIGINT', abort); process.once('SIGTERM', abort);
+      try { logger.info(JSON.stringify(await runConfiguredProducerIntake({ planPath: options.plan, expectedDigest: options.digest, config, signal: cancellation.signal }))); }
+      catch (error) { logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'producer-intake-failed'); process.exitCode = 1; }
+      finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
+    });
   group.command('verify-discoverability').description('Verify active Topic and Primary Conversation discoverability').action(async () => {
     const cancellation = new AbortController();
     const abort = () => cancellation.abort(Object.assign(new Error('reconciliation-cancelled'), { code: 'reconciliation-cancelled' }));

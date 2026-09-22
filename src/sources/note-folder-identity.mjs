@@ -9,6 +9,19 @@ import { createNoteFolderIdentityV2 } from './note-folder-identity-format.mjs';
 export const NOTE_FOLDER_IDENTITY_FILE = '.command-center-folder-identity';
 let hostDurableStager;
 let hostFilesystemIdentityReader;
+const durableStagerBindings = [];
+const filesystemIdentityBindings = [];
+
+function installHostBinding(bindings, installed, assign) {
+  const binding = { installed, active: true };
+  bindings.push(binding); assign(installed);
+  return () => {
+    if (!binding.active) return;
+    binding.active = false;
+    while (bindings.at(-1)?.active === false) bindings.pop();
+    assign(bindings.at(-1)?.installed);
+  };
+}
 
 // The host injects this during plugin activation. Unit-only callers retain
 // the published SDK fallback below; a real host must supply the live runtime
@@ -16,8 +29,7 @@ let hostFilesystemIdentityReader;
 // durable publish operation.
 export function setHostDurableFolderStager(stager) {
   const installed = typeof stager === 'function' ? stager : undefined;
-  hostDurableStager = installed;
-  return () => { if (hostDurableStager === installed) hostDurableStager = undefined; };
+  return installHostBinding(durableStagerBindings, installed, value => { hostDurableStager = value; });
 }
 const physicalIdentity = (stat) => `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
 const sameIdentity = (left, right) => left && right && physicalIdentity(left) === physicalIdentity(right);
@@ -133,8 +145,7 @@ export async function inspectNoteFolderCandidate(root) {
 }
 export function setHostFilesystemIdentityReader(reader) {
   const installed = typeof reader === 'function' ? reader : undefined;
-  hostFilesystemIdentityReader = installed;
-  return () => { if (hostFilesystemIdentityReader === installed) hostFilesystemIdentityReader = undefined; };
+  return installHostBinding(filesystemIdentityBindings, installed, value => { hostFilesystemIdentityReader = value; });
 }
 
 export function withBootstrapNoteFolder(root, options, run) {

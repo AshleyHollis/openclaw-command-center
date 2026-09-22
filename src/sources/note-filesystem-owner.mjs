@@ -8,14 +8,21 @@ import { sourceError } from './errors.mjs';
 const ownership = new AsyncLocalStorage();
 const ownerKey = (metadata) => metadata?.databasePath ? path.resolve(metadata.databasePath) : null;
 let hostCoordinator;
+const hostCoordinatorBindings = [];
 
 // Plugin activation supplies the host-owned coordinator where available. This
 // narrow setter also lets isolated contract fixtures provide the same boundary
 // without importing an arbitrary SDK implementation from the plugin tree.
 export function setHostNoteFilesystemCoordinator(acquire) {
   const installed = typeof acquire === 'function' ? acquire : undefined;
-  hostCoordinator = installed;
-  return () => { if (hostCoordinator === installed) hostCoordinator = undefined; };
+  const binding = { installed, active: true };
+  hostCoordinatorBindings.push(binding); hostCoordinator = installed;
+  return () => {
+    if (!binding.active) return;
+    binding.active = false;
+    while (hostCoordinatorBindings.at(-1)?.active === false) hostCoordinatorBindings.pop();
+    hostCoordinator = hostCoordinatorBindings.at(-1)?.installed;
+  };
 }
 
 export function ownsNoteFilesystem(metadata) {

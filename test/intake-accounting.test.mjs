@@ -39,10 +39,10 @@ function addDecisionLoop(metadata) {
   return metadata.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: 'decision-capture', operationKind: 'commitment.capture.v1', intent: planned.value, expectedRevision: 0, observation: planned.observation, loop: planned.loop, evidenceRoles: { [planned.observation.observationId]: 'origin' }, updatedAt: '2026-09-22T01:00:00.000Z' }).loop;
 }
 
-function addObligationLoop(metadata, obligationId, title) {
+function addObligationLoop(metadata, obligationId, title, topicId = 'topic-fictional-home') {
   const logicalOperationId = `capture-${obligationId}`;
   const planned = planCommitmentCapture({
-    schemaVersion: 1, logicalOperationId, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', topicId: 'topic-fictional-home', title, obligationId, provenance: 'explicit', occurredAt: '2026-09-22T01:00:00.000Z', observedAt: '2026-09-22T01:00:00.000Z', historicalBaseline: false
+    schemaVersion: 1, logicalOperationId, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', topicId, title, obligationId, provenance: 'explicit', occurredAt: '2026-09-22T01:00:00.000Z', observedAt: '2026-09-22T01:00:00.000Z', historicalBaseline: false
   });
   return metadata.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId, operationKind: 'commitment.capture.v1', intent: planned.value, expectedRevision: 0, observation: planned.observation, loop: planned.loop, evidenceRoles: { [planned.observation.observationId]: 'origin' }, updatedAt: '2026-09-22T01:00:00.000Z' }).loop;
 }
@@ -79,6 +79,20 @@ test('mixed email accounting distinguishes accounted-for from resolved and retai
   } finally { await temporary.cleanup(); }
 });
 
+test('a pinned producer plan admits the exact externally retained Note without claiming it was created', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-admitted-note-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata);
+    const plan = sourcePlan(); plan.retainedNoteRevision = 'sha256:retained-note';
+    recordIntakeSourcePlan(metadata, plan);
+    metadata.createSourceReference({ version: 1, referenceId: 'note:externally-retained', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/Inbox/reference.md', observedRevision: 'sha256:retained-note' });
+    const outcome = recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Retained external producer Note', topicId: 'topic-fictional-home', sourceReferenceId: 'note:externally-retained', sourcePath: 'Inbox/reference.md', sourceReferenceVersion: 'sha256:retained-note', recordedAt: '2026-09-22T01:01:00.000Z' });
+    assert.equal(outcome.outcome.status, 'quiet');
+    assert.equal(metadata.listOperations().some(item => item.operationKind === 'notes.create'), false);
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
 test('a structured clarification resolves only its linked outcome and survives SQLite restart', async () => {
   const temporary = await temporaryStateDir('command-center-intake-clarification-');
   try {
@@ -106,6 +120,45 @@ test('missing and unresolved outcomes remain visible instead of advancing the so
     recordIntakeOutcome(metadata, { ...base, outcomeId: 'pay-invoice', kind: 'obligation', status: 'unresolved-topic', summary: 'Topic requires review' });
     const [account] = projectIntakeAccounts(metadata, 'email');
     assert.equal(account.accounted, false); assert.equal(account.resolved, false); assert.equal(account.counts.unresolvedTopics, 1); assert.equal(account.outcomes.filter(item => item.status === 'missing').length, 3);
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
+test('an unresolved outcome can become applied without replacing its durable history', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-resume-outcome-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata); recordIntakeSourcePlan(metadata, sourcePlan());
+    const base = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'pay-invoice', kind: 'obligation', summary: 'Pay fictional invoice' };
+    recordIntakeOutcome(metadata, { ...base, status: 'unresolved-topic', recordedAt: '2026-09-22T01:01:00.000Z' });
+    const { payment } = addEffects(metadata);
+    recordIntakeOutcome(metadata, { ...base, status: 'applied', loopId: payment.loopId, recordedAt: '2026-09-22T01:02:00.000Z' });
+    const [account] = projectIntakeAccounts(metadata, 'email');
+    assert.equal(account.outcomes.find(item => item.outcomeId === 'pay-invoice').status, 'applied');
+    assert.equal(metadata.listOperations().filter(item => item.operationKind === 'intake-outcome.email.v1').length, 2);
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
+test('an admitted external producer Note cannot be accounted under a different Topic', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-wrong-topic-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata);
+    const plan = sourcePlan(); plan.retainedNoteRevision = 'sha256:retained-note'; recordIntakeSourcePlan(metadata, plan);
+    metadata.createTopic({ topicId: 'topic-foreign', name: 'Fictional Foreign', paraCategory: 'area', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'folder:foreign', topicId: 'topic-foreign', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/foreign' });
+    metadata.createSourceReference({ version: 1, referenceId: 'note:foreign', topicId: 'topic-foreign', sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/foreign/Inbox/reference.md', observedRevision: 'sha256:retained-note' });
+    assert.throws(() => recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'reference-details', kind: 'information', status: 'quiet', summary: 'Wrong Topic', topicId: 'topic-foreign', sourceReferenceId: 'note:foreign', sourcePath: 'Inbox/reference.md', sourceReferenceVersion: 'sha256:retained-note', recordedAt: '2026-09-22T01:01:00.000Z' }), { code: 'conflict' });
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
+test('an applied obligation cannot be accounted under a different Topic', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-wrong-obligation-topic-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata); recordIntakeSourcePlan(metadata, sourcePlan());
+    metadata.createTopic({ topicId: 'topic-foreign', name: 'Fictional Foreign', paraCategory: 'area', lifecycle: 'active' });
+    const foreign = addObligationLoop(metadata, 'pay-invoice', 'Pay fictional invoice', 'topic-foreign');
+    assert.throws(() => recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'pay-invoice', kind: 'obligation', status: 'applied', summary: 'Pay fictional invoice', loopId: foreign.loopId, recordedAt: '2026-09-22T01:01:00.000Z' }), { code: 'conflict' });
     metadata.close();
   } finally { await temporary.cleanup(); }
 });

@@ -1219,10 +1219,13 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
         if (!planned || planned.kind !== result.kind) throw new CommandCenterMetadataError('intent-mismatch', 'The intake outcome does not match its source plan.');
         if (['applied', 'pending-decision'].includes(result.status)) {
           const loop = db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(result.loopId);
+          const plannedTopicName = plan.acceptedExtraction?.proposedTopic;
+          const matchingTopics = typeof plannedTopicName === 'string' ? db.prepare("SELECT topic_id FROM topics WHERE name = ? AND lifecycle = 'active'").all(plannedTopicName) : [];
+          const topicMatchesPlan = matchingTopics.length === 1 && matchingTopics[0].topic_id === loop?.topic_id;
           const evidence = db.prepare(`SELECT 1 FROM open_loop_evidence e JOIN source_observations o ON o.observation_id = e.observation_id
             WHERE e.loop_id = ? AND o.source_system = 'command-center-capture' AND o.source_kind = ? AND o.external_source_id = ?
               AND json_extract(o.facts_json, '$.sourceVersion') = ? AND json_extract(o.facts_json, '$.obligationId') = ? LIMIT 1`).get(result.loopId, result.sourceKind, result.sourceExternalId, result.sourceVersion, result.outcomeId);
-          if (!loop || !evidence || result.status === 'pending-decision' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
+          if (!loop || !topicMatchesPlan || !evidence || result.status === 'pending-decision' && !['suggested', 'decision-needed', 'uncertain'].includes(loop.state)) throw new CommandCenterMetadataError('conflict', 'The exact intake effect is unavailable.');
         } else if (result.status === 'quiet') {
           const reference = db.prepare(`SELECT reference.*, locator.locator AS current_locator FROM source_references AS reference
             LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
@@ -1230,8 +1233,17 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
           const sourceNoteHex = createHash('sha256').update(['command-center.source-note.v1', result.topicId, result.sourceKind, result.sourceExternalId, result.sourceVersion].join('\0')).digest('hex');
           const sourceNoteOperationId = `${sourceNoteHex.slice(0, 8)}-${sourceNoteHex.slice(8, 12)}-4${sourceNoteHex.slice(13, 16)}-${(Number.parseInt(sourceNoteHex[16], 16) & 3 | 8).toString(16)}${sourceNoteHex.slice(17, 20)}-${sourceNoteHex.slice(20, 32)}`;
           const sourceNote = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(sourceNoteOperationId);
+          const intakeSourceHex = createHash('sha256').update(`command-center:intake-source:${result.sourceKind}:${result.sourceExternalId}:${result.sourceVersion}`).digest('hex');
+          const intakeSourceOperationId = `${intakeSourceHex.slice(0, 8)}-${intakeSourceHex.slice(8, 12)}-4${intakeSourceHex.slice(13, 16)}-${(Number.parseInt(intakeSourceHex[16], 16) & 3 | 8).toString(16)}${intakeSourceHex.slice(17, 20)}-${intakeSourceHex.slice(20, 32)}`;
+          const intakeSource = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(intakeSourceOperationId);
+          let acceptedPlan;
+          try { acceptedPlan = JSON.parse(intakeSource?.result_identity ?? 'null'); } catch { acceptedPlan = null; }
+          const plannedTopicName = acceptedPlan?.acceptedExtraction?.proposedTopic;
+          const matchingTopics = typeof plannedTopicName === 'string' ? db.prepare("SELECT topic_id FROM topics WHERE name = ? AND lifecycle = 'active'").all(plannedTopicName) : [];
+          const topicMatchesPlan = matchingTopics.length === 1 && matchingTopics[0].topic_id === result.topicId;
           const existingNoteEvidence = result.sourceKind === 'note' && result.sourceReferenceId === result.sourceExternalId;
           const createdNoteEvidence = sourceNote?.operation_kind === 'notes.create' && sourceNote.state === 'applied' && sourceNote.result_identity === reference?.external_source_id && sourceNote.observed_revision === result.sourceReferenceVersion;
+          const admittedProducerEvidence = intakeSource?.operation_kind === `intake-source.${result.sourceKind}.v1` && intakeSource.state === 'applied' && topicMatchesPlan && acceptedPlan?.retainedNoteRevision === result.sourceReferenceVersion && acceptedPlan?.acceptedExtraction?.notePath === result.sourcePath;
           const normalizedExternalPath = (reference?.current_locator ?? reference?.external_source_id)?.replaceAll('\\', '/').replace(/\/$/, '');
           const normalizedSourcePath = result.sourcePath?.replaceAll('\\', '/').replace(/^\/+/, '');
           const folders = db.prepare(`SELECT COALESCE(locator.locator, reference.external_source_id) AS effective_locator FROM source_references AS reference
@@ -1240,7 +1252,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
           const roots = folders.map(folder => folder.effective_locator).filter(Boolean).map(root => root.replaceAll('\\', '/').replace(/\/$/, ''));
           const relativePaths = [...new Set(roots.filter(root => normalizedExternalPath?.startsWith(`${root}/`)).map(root => normalizedExternalPath.slice(root.length + 1)))];
           const exactPath = folders.length === 1 && relativePaths.length === 1 && relativePaths[0] === normalizedSourcePath;
-          if (!reference || reference.topic_id !== result.topicId || !['note', 'document'].includes(reference.source_kind) || reference.last_observed_revision !== result.sourceReferenceVersion || !exactPath || !(existingNoteEvidence || createdNoteEvidence)) throw new CommandCenterMetadataError('conflict', 'The exact quiet intake evidence is unavailable.');
+          if (!reference || reference.topic_id !== result.topicId || !['note', 'document'].includes(reference.source_kind) || reference.last_observed_revision !== result.sourceReferenceVersion || !exactPath || !(existingNoteEvidence || createdNoteEvidence || admittedProducerEvidence)) throw new CommandCenterMetadataError('conflict', 'The exact quiet intake evidence is unavailable.');
         }
       }
       db.prepare(`INSERT INTO operation_journal
