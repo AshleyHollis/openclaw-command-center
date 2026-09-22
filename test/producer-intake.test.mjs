@@ -174,6 +174,14 @@ test('retry loads the accepted extraction and resumes only missing outcomes', as
   assert.deepEqual(outcomes.map(item => item.outcomeId), ['accepted-second']);
 });
 
+test('an explicit no-action source needs no Topic or evidence', async () => {
+  const { adapter, calls } = harness();
+  const acceptedExtraction = { schemaVersion: 1, proposedTopic: null, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'ignored-email:no-action', summary: 'No durable value or action' } };
+  const result = await adapter.process({ runId: 'email-no-topic-no-action', sourceKind: 'email', nextExpectedAt: '2026-09-23T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'ignored-email', sourceVersion: 'change-key-ignore', checkpoint: 'ignored-email', acceptedExtraction }] });
+  assert.equal(result.status, 'healthy-processed'); assert.equal(result.skippedCount, 1); assert.equal(calls.save.length, 0); assert.equal(calls.source.length, 0);
+  assert.deepEqual(calls.outcomes.map(item => [item.outcomeId, item.status]), [['ignored-email:no-action', 'no-action']]);
+});
+
 test('a pinned retained Note cannot fall through to creating replacement evidence', async () => {
   let saves = 0;
   const adapter = createProducerIntakeAdapter({
