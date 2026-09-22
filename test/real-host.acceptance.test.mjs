@@ -1263,7 +1263,10 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const detail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: pendingDecision.loopId }, signal });
         const loop = (detail.result ?? detail).loop;
         const decisionDevice = createGatewayDeviceIdentity();
-        await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
+        const bootstrap = await fetchJsonWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal }, { label: 'accounted email authenticated build identity', timeoutMs: 10_000 });
+        assert.equal(bootstrap.response.ok, true);
+        assert.ok(typeof bootstrap.body.serverBuildId === 'string' && bootstrap.body.serverBuildId.trim());
+        await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId, method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
         const killed = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
         scenarioHost.child.kill('SIGKILL');
         assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
