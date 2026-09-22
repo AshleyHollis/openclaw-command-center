@@ -21,6 +21,7 @@ async function fixture(prefix, { failSecondCaptureOnce = false, loseFirstOutcome
   const stateDir = await mkdtemp(path.join(os.tmpdir(), prefix));
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
   metadata.createTopic({ topicId: 'topic-fictional-home', name: 'Fictional Home', paraCategory: 'project', lifecycle: 'active', createdAt: '2026-09-22T00:00:00.000Z', updatedAt: '2026-09-22T00:00:00.000Z' });
+  metadata.createSourceReference({ version: 1, referenceId: 'folder:fictional-home', topicId: 'topic-fictional-home', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional' });
   const noteReferenceId = 'note:fictional-mixed-message';
   let captureCalls = 0; let captureFailurePending = failSecondCaptureOnce; let lostResponsePending = loseFirstOutcomeResponseOnce; let tick = 0;
   const capture = createCommitmentCaptureService({ metadata, sourceService: { notesRead: async () => ({ revision: record.sourceVersion }) } });

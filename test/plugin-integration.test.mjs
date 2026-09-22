@@ -873,6 +873,7 @@ test('built package accounts for a mixed email through registered tools and the 
     builtPlugin.register(host.api); const service = host.services[0]; await service.start();
     const metadata = service.getTopicMaintenanceOwners().metadata;
     metadata.createTopic({ topicId: 'topic-built-home', name: 'Fictional built home', paraCategory: 'project', lifecycle: 'active', createdAt: '2026-09-22T00:00:00.000Z', updatedAt: '2026-09-22T00:00:00.000Z' });
+    metadata.createSourceReference({ version: 1, referenceId: 'folder:built-home', topicId: 'topic-built-home', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional' });
     const source = { sourceKind: 'email', sourceExternalId: 'fictional-built-message', sourceVersion: 'change-key-built' };
     const invokeTool = async (name, params) => host.tools.get(name)().execute(randomUUID(), params);
     await invokeTool('command_center_plan_intake_source', { ...source, checkpoint: 'page-1:fictional-built-message', observedAt: '2026-09-22T01:00:00.000Z', outcomes: [{ outcomeId: 'pay-built', kind: 'obligation' }, { outcomeId: 'reply-built', kind: 'obligation' }, { outcomeId: 'choose-built', kind: 'decision' }, { outcomeId: 'reference-built', kind: 'information' }], enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } });

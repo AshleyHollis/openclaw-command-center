@@ -1230,9 +1230,14 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
           const sourceNote = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(sourceNoteOperationId);
           const existingNoteEvidence = result.sourceKind === 'note' && result.sourceReferenceId === result.sourceExternalId;
           const createdNoteEvidence = sourceNote?.operation_kind === 'notes.create' && sourceNote.state === 'applied' && sourceNote.result_identity === reference?.external_source_id && sourceNote.observed_revision === result.sourceReferenceVersion;
-          const normalizedExternalPath = reference?.external_source_id?.replaceAll('\\', '/');
+          const normalizedExternalPath = reference?.external_source_id?.replaceAll('\\', '/').replace(/\/$/, '');
           const normalizedSourcePath = result.sourcePath?.replaceAll('\\', '/').replace(/^\/+/, '');
-          const exactPath = normalizedExternalPath === normalizedSourcePath || normalizedExternalPath?.endsWith(`/${normalizedSourcePath}`);
+          const folders = db.prepare(`SELECT reference.external_source_id, locator.locator FROM source_references AS reference
+            LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+            WHERE reference.topic_id = ? AND reference.source_kind = 'note_folder'`).all(result.topicId);
+          const roots = folders.flatMap(folder => [folder.locator, folder.external_source_id]).filter(Boolean).map(root => root.replaceAll('\\', '/').replace(/\/$/, ''));
+          const relativePaths = [...new Set(roots.filter(root => normalizedExternalPath?.startsWith(`${root}/`)).map(root => normalizedExternalPath.slice(root.length + 1)))];
+          const exactPath = folders.length === 1 && relativePaths.length === 1 && relativePaths[0] === normalizedSourcePath;
           if (!reference || reference.topic_id !== result.topicId || !['note', 'document'].includes(reference.source_kind) || reference.last_observed_revision !== result.sourceReferenceVersion || !exactPath || !(existingNoteEvidence || createdNoteEvidence)) throw new CommandCenterMetadataError('conflict', 'The exact quiet intake evidence is unavailable.');
         }
       }
