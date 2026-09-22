@@ -1194,10 +1194,17 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       };
       try {
         await waitForConsecutiveReadiness(async (probeSignal) => {
-          try { return (await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, `${kind} fresh readiness`, 10_000)).ok; }
+          try {
+            const response = await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, `${kind} fresh readiness`, 10_000);
+            if (!response.ok) return false;
+            return routeGrant(await response.json());
+          }
           catch (error) { if (error?.category === 'transport-timeout') { observeMigration(); return false; } throw error; }
         }, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
-      } catch (error) { observeMigration(); throw new Error(`Host transport readiness failed; durableStartupProgress=${JSON.stringify(readinessProgress)}`, { cause: error }); }
+      } catch (error) {
+        observeMigration();
+        throw new Error(`Host plugin readiness failed; durableStartupProgress=${JSON.stringify(readinessProgress)}; host=${JSON.stringify(boundedHostEvidence(scenarioHost.diagnostics))}`, { cause: error });
+      }
       if (kind === 'scale') {
         let lastMigrationStatus;
         try {
@@ -1218,7 +1225,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: width <= 320 ? 'active' : 'none' });
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      let { frame } = await mountedPluginFrame(page, await pluginDocument);
+      let { frame } = await mountedPluginFrame(page, await pluginDocument, evidence);
       const scenarioName = kind === 'review' ? 'Area: Fictional Fresh Review Topic' : kind === 'scale-analysis' ? 'Area: Fictional Fresh Scale Analysis Topic' : `Fictional Fresh ${kind} Topic`;
       const { frame: returnedFrame, ...journey } = await runUiJourney(frame, { page, width, name: scenarioName, category: 'project', keyboard: true });
       frame = returnedFrame;
