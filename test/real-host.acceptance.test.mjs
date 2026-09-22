@@ -1293,7 +1293,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-2] Resume only unfinished outcomes from the durable accepted extraction.', 'accounted-load-final');
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         const dashboardPage = page.locator('openclaw-plugin-page');
-        await dashboardPage.getByRole('heading', { name: 'Dashboard', exact: true }).waitFor({ timeout: 30_000 });
+        await dashboardPage.getByRole('heading', { name: 'Command Center', exact: true }).waitFor({ timeout: 30_000 });
         const emailCard = dashboardPage.locator('.cc-coverage-card').filter({ has: dashboardPage.getByRole('heading', { name: 'Email intake', exact: true }) });
         await emailCard.getByText('1 of 1 sources accounted for · 1 resolved · 4 of 4 outcomes accounted for', { exact: true }).waitFor();
         await emailCard.locator('details > summary').click();
