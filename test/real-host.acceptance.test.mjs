@@ -1166,6 +1166,12 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       fictionalModel = await startFictionalOpenAiModel();
       const config = JSON.parse(await readFile(scenarioWorld.manifest.configPath, 'utf8'));
       config.models.providers.fixture.baseUrl = fictionalModel.baseUrl;
+      config.models.providers.fixture.api = 'openai-completions';
+      config.models.providers.fixture.models[0].api = 'openai-completions';
+      config.models.providers.fixture.models[0].compat = { supportsTools: true };
+      config.models.providers.fixture.request = { allowPrivateNetwork: true };
+      config.agents.entries = { ...(config.agents.entries ?? {}), main: { model: 'fixture/fixture-model', modelPolicy: { allow: ['fixture/fixture-model'] } } };
+      config.tools = { ...(config.tools ?? {}), alsoAllow: [...new Set([...(config.tools?.alsoAllow ?? []), 'command_center_resolve_source_topic', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt'])] };
       await writeFile(scenarioWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
     }
     let scenarioHost = await withDeadline(`${kind} fresh host launch`, (signal) => launchPinnedHost({ descriptor, world: scenarioWorld, buildReceipt, signal }), 120_000);
