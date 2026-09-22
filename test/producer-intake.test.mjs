@@ -97,8 +97,8 @@ test('an explicit no-action result is durably planned and accounted without crea
 
 test('ambiguous Topic ownership creates no Note or obligation and remains visible in receipt counters', async () => {
   const { adapter, calls } = harness();
-  const result = await adapter.process({ runId: 'email-run-ambiguous', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'message-uncertain', sourceVersion: 'v1', checkpoint: 'message-uncertain', rawText: 'uncertain topic' }] });
-  assert.equal(result.uncertainCount, 1); assert.equal(calls.save.length, 0); assert.equal(calls.source.length, 0);
+  await assert.rejects(() => adapter.process({ runId: 'email-run-ambiguous', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'message-uncertain', sourceVersion: 'v1', checkpoint: 'message-uncertain', rawText: 'uncertain topic' }] }), error => error.code === 'producer-outcomes-unsettled' && error.counts.uncertainCount === 1);
+  assert.equal(calls.save.length, 0); assert.equal(calls.source.length, 0); assert.equal(calls.receipt.at(-1).status, 'failed');
   assert.equal(calls.outcomes[0].status, 'unresolved-topic');
 });
 

@@ -24,7 +24,7 @@ function acceptedExtraction(value) {
 
 function accountingResult(value) { return value?.details ?? value; }
 function accountOutcome(account, outcomeId) { return account?.outcomes?.find(item => item.outcomeId === outcomeId); }
-function unfinished(account, outcomeId) { return !accountOutcome(account, outcomeId) || accountOutcome(account, outcomeId).status === 'missing'; }
+function unfinished(account, outcomeId) { return !accountOutcome(account, outcomeId) || ['missing', 'unresolved-topic', 'failed'].includes(accountOutcome(account, outcomeId).status); }
 
 /**
  * Orchestrates a maintained producer without owning extraction or source storage.
@@ -119,6 +119,7 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
           }
           counts.processedCount += 1; checkpoint = record.checkpoint;
         }
+        if (counts.uncertainCount > 0) fail('producer-outcomes-unsettled');
         const completedAt = now();
         const status = incompleteEnumeration ? 'incomplete' : counts.processedCount === 0 && counts.uncertainCount === 0 ? 'healthy-empty' : 'healthy-processed';
         const receipt = await recordIntakeReceipt({ sourceKind, runId, checkpoint, status, observedAt: completedAt, ...(status === 'incomplete' ? { continuation } : { lastSuccessfulAt: completedAt }), nextExpectedAt, ...receiptCounts() });
