@@ -10,6 +10,7 @@ import { createAuthoritativeSourceService } from '../sources/service.mjs';
 import { inspectTopicDiscoverability } from '../topics/discoverability.mjs';
 import { createHistoricalBackfill, historicalBackfillPlanDigest, withdrawHistoricalBackfill } from '../open-loops/historical-backfill.mjs';
 import { createHistoricalBackfillStore } from '../open-loops/historical-backfill-store.mjs';
+import { createHistoricalBackfillOperator } from '../open-loops/historical-backfill-operator.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const recoveryFailure = receipts => { throw Object.assign(new Error('note-folder-recovery-halted'), { code: 'note-folder-recovery-halted', receipts }); };
@@ -82,24 +83,46 @@ async function importPinnedBackfillAdapter(filename, expectedDigest) {
   return module.createHistoricalBackfillAdapter;
 }
 
-export async function runConfiguredHistoricalBackfill({ mode, planPath, expectedDigest, adapterPath, expectedAdapterDigest, config, signal }) {
+export async function runConfiguredHistoricalBackfill({ mode, planPath, expectedDigest, adapterPath, expectedAdapterDigest, config, signal, hostFileAccess }) {
   if (!['preview', 'apply', 'withdraw'].includes(mode)) fail('backfill-mode-invalid');
   const plan = await readPinnedHistoricalBackfillPlan(planPath, expectedDigest);
   signal?.throwIfAborted();
   const createAdapter = await importPinnedBackfillAdapter(adapterPath, expectedAdapterDigest);
-  const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([
-    import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')
+  const [{ resolveStateDir }, sdkFileAccess, sdkSqlite, { openCommandCenterMetadataService }, identity, filesystemOwner] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/file-access-runtime'), import('openclaw/plugin-sdk/sqlite-runtime'),
+    import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs'), import('../sources/note-filesystem-owner.mjs')
   ]);
-  const metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
+  const fileAccess = hostFileAccess ?? sdkFileAccess;
+  const sqlite = hostFileAccess ?? sdkSqlite;
+  // CLI registration is intentionally lazy and does not run normal plugin
+  // activation, so install the published host identity reader for this bounded
+  // operator invocation. Exact Note reads still verify the enrolled folder and
+  // held filesystem witness before the adapter can commit an effect.
+  const releaseIdentityReader = identity.setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
+  const releaseCoordinator = filesystemOwner.setHostNoteFilesystemCoordinator(sqlite.tryAcquireExclusiveSqliteCoordinator);
+  let metadata; let sourceService;
   try {
+    metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
+    sourceService = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: false } });
     const adapterDigest = `sha256:${String(expectedAdapterDigest).replace(/^sha256:/u, '')}`;
-    const adapter = await createAdapter({ plan: structuredClone(plan), mode, config: structuredClone(config), signal });
-    if (!adapter || typeof adapter !== 'object') fail('backfill-adapter-invalid');
     const store = createHistoricalBackfillStore({ metadata });
     const assertCurrent = () => signal?.throwIfAborted();
-    if (mode === 'withdraw') return await withdrawHistoricalBackfill({ ...adapter, ...store, backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent });
-    return await createHistoricalBackfill({ ...adapter, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
-  } finally { metadata.close(); }
+    const owner = createHistoricalBackfillOperator({ metadata, sourceService, plan, assertCurrent,
+      loadBackfillState: () => store.loadState({ backfillId: plan.backfillId, mode: 'apply', stateKey: `${plan.backfillId}:apply` }) });
+    const adapter = await createAdapter({ plan: structuredClone(plan), mode, config: structuredClone(config), signal, commandCenter: owner.commandCenter });
+    assertCurrent();
+    if (!adapter || typeof adapter !== 'object') fail('backfill-adapter-invalid');
+    const wrapped = {
+      ...adapter,
+      ...(typeof adapter.applyRecord === 'function' ? { applyRecord: input => owner.runWithRecordAuthority(input, () => adapter.applyRecord(input)) } : {}),
+      ...(typeof adapter.reconcileRecord === 'function' ? { reconcileRecord: input => owner.runWithRecordAuthority(input, () => adapter.reconcileRecord(input)) } : {}),
+      ...(typeof adapter.inspectEffect === 'function' ? { inspectEffect: input => owner.runWithEffectAuthority(input, () => adapter.inspectEffect(input)) } : {}),
+      ...(typeof adapter.withdrawEffect === 'function' ? { withdrawEffect: input => owner.runWithEffectAuthority(input, () => adapter.withdrawEffect(input)) } : {}),
+      ...(typeof adapter.reconcileWithdrawal === 'function' ? { reconcileWithdrawal: input => owner.runWithEffectAuthority(input, () => adapter.reconcileWithdrawal(input)) } : {})
+    };
+    if (mode === 'withdraw') return await withdrawHistoricalBackfill({ ...wrapped, ...store, backfillId: plan.backfillId, expectedPlanDigest: historicalBackfillPlanDigest(plan), adapterDigest, assertCurrent });
+    return await createHistoricalBackfill({ ...wrapped, ...store, assertCurrent }).run({ mode, plan, adapterDigest });
+  } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
 }
 
 // Local operator CLI, not a Gateway RPC or startup importer. Host CLI admission

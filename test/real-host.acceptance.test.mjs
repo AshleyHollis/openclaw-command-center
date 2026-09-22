@@ -39,6 +39,7 @@ import { exerciseNativeControlUiActivation, exerciseNativeKeyboardJourney, exerc
 import { exerciseNativeScaleJourney } from './support/first-live-native-scale.mjs';
 import { runNativeReleaseCapture, runNativeReleasePrerequisites } from './support/first-live-native-release.mjs';
 import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVariant } from './support/first-live-native-degraded.mjs';
+import { exerciseNativeHistoricalBackfillJourney } from './support/first-live-native-backfill.mjs';
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
 import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
 import { startFictionalOpenAiModel } from './support/fictional-openai-model.mjs';
@@ -2161,7 +2162,7 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 2_400_000, concurrency: true }, async (testContext) => {
   let descriptor, buildReceipt, baseline, baselineSeed;
   const nativeDiagnostic = acceptancePlan.kind === 'focused' && acceptancePlan.scenarioIds?.length === 1
-    ? ['native-control-ui-activation', 'native-topic-chat-handoff', 'native-topic-notes-workspace', 'native-topic-files-workspace', 'topic-notes-visual', 'topic-document-tools', 'desktop-keyboard-journey', 'diagnostic-scale-startup', 'scale-performance'].find(id => acceptancePlan.scenarioIds[0] === id) : undefined;
+    ? ['native-control-ui-activation', 'native-topic-chat-handoff', 'native-topic-notes-workspace', 'native-topic-files-workspace', 'topic-notes-visual', 'topic-document-tools', 'desktop-keyboard-journey', 'diagnostic-scale-startup', 'scale-performance', 'historical-backfill-owner'].find(id => acceptancePlan.scenarioIds[0] === id) : undefined;
   await testContext.test('release preparation: candidate build and authenticated descriptor', async () => {
     reportProgress(testContext, 'build:started');
     descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
@@ -2180,14 +2181,14 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const scale = nativeDiagnostic === 'scale-performance';
     // Keep every focused slice below controller inactivity. Scale capture gets
     // additional bounded headroom because its elapsed actions remain recorded.
-    const journey = nativeDiagnostic === 'diagnostic-scale-startup' ? exerciseNativeScaleStartup : nativeDiagnostic === 'native-topic-chat-handoff' ? exerciseNativeTopicChatHandoffJourney : nativeDiagnostic === 'native-topic-notes-workspace' ? exerciseNativeTopicNotesWorkspaceJourney : nativeDiagnostic === 'native-topic-files-workspace' ? exerciseNativeTopicFilesWorkspaceJourney : nativeDiagnostic === 'topic-notes-visual' ? exerciseNativeTopicNotesVisualJourney : nativeDiagnostic === 'topic-document-tools' ? exerciseNativeTopicToolsJourney : scale ? exerciseNativeScaleJourney : keyboard ? exerciseNativeKeyboardJourney : exerciseNativeControlUiActivation;
+    const journey = nativeDiagnostic === 'historical-backfill-owner' ? exerciseNativeHistoricalBackfillJourney : nativeDiagnostic === 'diagnostic-scale-startup' ? exerciseNativeScaleStartup : nativeDiagnostic === 'native-topic-chat-handoff' ? exerciseNativeTopicChatHandoffJourney : nativeDiagnostic === 'native-topic-notes-workspace' ? exerciseNativeTopicNotesWorkspaceJourney : nativeDiagnostic === 'native-topic-files-workspace' ? exerciseNativeTopicFilesWorkspaceJourney : nativeDiagnostic === 'topic-notes-visual' ? exerciseNativeTopicNotesVisualJourney : nativeDiagnostic === 'topic-document-tools' ? exerciseNativeTopicToolsJourney : scale ? exerciseNativeScaleJourney : keyboard ? exerciseNativeKeyboardJourney : exerciseNativeControlUiActivation;
     let evidence;
     try {
       evidence = await runBoundedAcceptanceSlice(nativeDiagnostic, (signal) => journey({ descriptor, buildReceipt, signal,
         onDiagnostic: diagnostic => testContext.diagnostic(`acceptance-startup-diagnostic=${JSON.stringify(diagnostic)}`),
         onScaleProgress: progress => testContext.diagnostic(`acceptance-scale-progress=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...progress })}`),
         onFinalization: finalization => testContext.diagnostic(`acceptance-finalization=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...finalization })}`) }),
-      scale || keyboard || nativeDiagnostic === 'native-control-ui-activation'
+      scale || keyboard || nativeDiagnostic === 'native-control-ui-activation' || nativeDiagnostic === 'historical-backfill-owner'
         ? { timeoutMs: 285_000, cleanupTimeoutMs: 14_000 }
         : undefined);
     } catch (error) {

@@ -187,6 +187,12 @@ test('scale diagnosis selects the retained native corpus without deferred Activi
   assert.throws(() => resolveRealHostAcceptancePlan('scale-performance,desktop-keyboard-journey'), /Unsupported real-host acceptance scenario/u);
 });
 
+test('historical backfill diagnosis selects its sealed installed-host journey', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('historical-backfill-owner'), {
+    kind: 'focused', scenarioIds: ['historical-backfill-owner']
+  });
+});
+
 test('combined journey diagnostic retains dependent desktop, scale, Activity, keyboard and review checks', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('combined-journey'), {
     kind: 'focused',
