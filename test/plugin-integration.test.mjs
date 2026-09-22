@@ -259,7 +259,10 @@ test('authenticated quick capture uses the durable shared owner and survives res
     await service.stop(); service = undefined;
 
     host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
-    assert.equal(service.openLoopsGet({ loopId: first.loop.loopId }).loop.title, 'Book the fictional electrician');
+    const persisted = service.openLoopsGet({ loopId: first.loop.loopId });
+    assert.equal(persisted.loop.title, 'Book the fictional electrician');
+    assert.equal(persisted.evidence[0].sourceVersion, `quick-capture:${params.captureId}`);
+    assert.doesNotMatch(persisted.evidence[0].sourceVersion, /^commitment:/u);
     assert.equal(service.openLoopsList({ limit: 20 }).total, 1);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
 });
