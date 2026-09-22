@@ -165,7 +165,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
       if (completedToolAction === 'command_center_capture_source_commitment') accounted.captured = result;
     }
     const source = { sourceKind: 'email', sourceExternalId: 'fictional-real-host-mixed-message', sourceVersion: 'email-change-key-real-host-52' };
-    const acceptedExtraction = { schemaVersion: 1, proposedTopic: 'Fictional Fresh accounted-email Topic', notePath: 'Inbox/fictional-real-host-mixed-email.md', knowledgeMarkdown: '# Fictional retained real-host reference\n', knowledgeOutcomeId: 'real-host-reference', obligations: [{ obligationId: 'real-host-choice', title: 'Choose fictional real-host delivery window', provenance: 'inferred', classification: 'decision' }, { obligationId: 'real-host-payment', title: 'Pay fictional real-host invoice', provenance: 'explicit' }, { obligationId: 'real-host-reply', title: 'Reply with fictional real-host reference', provenance: 'explicit' }] };
+    const acceptedExtraction = { schemaVersion: 1, proposedTopic: 'Fictional Native Journey', notePath: 'Inbox/fictional-real-host-mixed-email.md', knowledgeMarkdown: '# Fictional retained real-host reference\n', knowledgeOutcomeId: 'real-host-reference', obligations: [{ obligationId: 'real-host-choice', title: 'Choose fictional real-host delivery window', provenance: 'inferred', classification: 'decision' }, { obligationId: 'real-host-payment', title: 'Pay fictional real-host invoice', provenance: 'explicit' }, { obligationId: 'real-host-reply', title: 'Reply with fictional real-host reference', provenance: 'explicit' }] };
     let frames;
     let action = 'final';
     if (accountedPhaseOne && accounted.phaseOneStep <= 4) {

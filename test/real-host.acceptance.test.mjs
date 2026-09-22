@@ -34,7 +34,7 @@ import { tabTo } from './support/keyboard-navigation.mjs';
 import { activate, enterText, chooseOption, auditDynamicAccessibilityState, assertNoFrameOverflow, assertResponsiveFrame, assertKeyboardAccessibility } from './support/keyboard-accessibility.mjs';
 import { closeOpenConversation } from './support/conversation-lifecycle.mjs';
 import { acceptanceSignalContext, EXTERNAL_OPERATION_TIMEOUT_MS, BRIDGE_UI_OPERATION_BUDGET_MS, createGatewayDeviceIdentity, withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory } from './support/real-host-runtime.mjs';
-import { exerciseNativeControlUiActivation, exerciseNativeKeyboardJourney, exerciseNativeScaleStartup, exerciseNativeTopicChatHandoffJourney, exerciseNativeTopicFilesWorkspaceJourney, exerciseNativeTopicNotesVisualJourney, exerciseNativeTopicNotesWorkspaceJourney, exerciseNativeTopicToolsJourney } from './support/first-live-native-journey.mjs';
+import { exerciseNativeControlUiActivation, exerciseNativeKeyboardJourney, exerciseNativeScaleStartup, exerciseNativeTopicChatHandoffJourney, exerciseNativeTopicFilesWorkspaceJourney, exerciseNativeTopicNotesVisualJourney, exerciseNativeTopicNotesWorkspaceJourney, exerciseNativeTopicToolsJourney, seedNativeExistingTopic } from './support/first-live-native-journey.mjs';
 import { exerciseNativeScaleJourney } from './support/first-live-native-scale.mjs';
 import { runNativeReleaseCapture, runNativeReleasePrerequisites } from './support/first-live-native-release.mjs';
 import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVariant } from './support/first-live-native-degraded.mjs';
@@ -1222,22 +1222,35 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         try { assert.ok(readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId: scaleTopicId }), 'verified scale migration must have a durable completion and exact Primary binding'); }
         finally { database.close(); }
       }
+      const nativeFixture = kind === 'accounted-email' ? await seedNativeExistingTopic({ world: scenarioWorld, host: scenarioHost, signal }) : null;
       managedBrowser = await withDeadline(`${kind} fresh browser launch`, () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       const page = await managedBrowser.browser.newPage({ viewport: { width, height: 900 } });
       const evidence = { console: [], errors: [], requests: [], responses: [] };
       await configureEvidencePage(page, browserGuard, evidence);
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: width <= 320 ? 'active' : 'none' });
-      const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
-      await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      let { frame } = await mountedPluginFrame(page, await pluginDocument, evidence);
-      const scenarioName = kind === 'review' ? 'Area: Fictional Fresh Review Topic' : kind === 'scale-analysis' ? 'Area: Fictional Fresh Scale Analysis Topic' : `Fictional Fresh ${kind} Topic`;
-      const { frame: returnedFrame, ...journey } = await runUiJourney(frame, { page, width, name: scenarioName, category: 'project', keyboard: true });
-      frame = returnedFrame;
-      const authoritativeSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
-      const authoritativeConversations = (authoritativeSessions?.result ?? authoritativeSessions)?.conversations ?? authoritativeSessions?.conversations ?? [];
-      assert.ok(authoritativeConversations.some((item) => item.isPrimary) && authoritativeConversations.some((item) => item.displayName === journey.conversationName));
       if (kind === 'accounted-email') {
-        ({ frame } = await nativeChatRoundTrip(frame, { page, topicId: journey.topicId, message: '[fixture:accounted-mixed-email-phase-1] Process the fictional mixed email through the registered Command Center intake commands.', width, keyboard: true }));
+        const openNativeChat = async () => {
+          await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'topics', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+          const nativePage = page.locator('openclaw-plugin-page');
+          await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor({ timeout: 30_000 });
+          await nativePage.getByRole('button', { name: `View Notes for ${nativeFixture.name}`, exact: true }).press('Enter');
+          await nativePage.getByRole('heading', { name: nativeFixture.name, exact: true }).waitFor({ timeout: 30_000 });
+          await nativePage.getByRole('button', { name: 'Open Topic in Chat', exact: true }).press('Enter');
+          const chatPane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+          await chatPane.waitFor({ timeout: 30_000 });
+          await page.waitForFunction(key => document.querySelector('openclaw-chat-pane[aria-hidden="false"]')?.sessionKey === key, nativeFixture.sessionKey, { timeout: 30_000 });
+          return chatPane;
+        };
+        const sendNativeTurn = async (chatPane, message, completedAction) => {
+          const requestCount = fictionalModel.requests.length;
+          await chatPane.locator('.agent-chat__composer-combobox textarea').fill(message);
+          await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
+          await waitForConsecutiveReadiness(() => fictionalModel.requests.slice(requestCount).some(entry => entry.action === 'final' && entry.completedCurrentTool && entry.currentToolResultId), scenarioHost.earlyExit, { required: 1, deadlineMs: 60_000, delayMs: 100, signal });
+          assert.ok(fictionalModel.requests.slice(requestCount).some(entry => entry.action === completedAction), `Native turn did not execute ${completedAction}`);
+          await chatPane.getByText(message, { exact: true }).waitFor({ timeout: 30_000 });
+        };
+        let chatPane = await openNativeChat();
+        await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-1] Process the fictional mixed email through the registered Command Center intake commands.', 'accounted-outcome-choice');
         const firstDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
         const firstEmail = firstDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
         assert.deepEqual(firstEmail.outcomeCounts, { expected: 4, accounted: 1, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 });
@@ -1250,18 +1263,16 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         scenarioHost.child.kill('SIGKILL');
         assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
         scenarioHost = await withDeadline('accounted email host restart', restartSignal => restartPinnedHost(scenarioHost, { signal: restartSignal }), 120_000);
-        await waitForConsecutiveReadiness(async probeSignal => (await fetchWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal: probeSignal }, 'accounted email restart readiness', 10_000)).ok, scenarioHost.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 100, signal });
-        const pluginAfterRestart = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
-        await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-        frame = (await mountedPluginFrame(page, await pluginAfterRestart)).frame;
-        await activate(frame.locator(`.topic-row[data-topic-id="${journey.topicId}"]`).getByRole('button', { name: 'Open Topic', exact: true }), true);
-        await waitForFrameText(frame, '#workspace-status', 'Topic workspace ready.');
-        ({ frame } = await nativeChatRoundTrip(frame, { page, topicId: journey.topicId, message: '[fixture:accounted-mixed-email-phase-2] Resume only unfinished outcomes from the durable accepted extraction.', width, keyboard: true }));
-        const dashboardDocument = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
+        await waitForConsecutiveReadiness(async probeSignal => {
+          const catalog = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'plugins.controlUi.list', signal: probeSignal });
+          return Boolean(catalog?.plugins?.find(plugin => plugin.pluginId === 'command-center')?.revision);
+        }, scenarioHost.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
+        chatPane = await openNativeChat();
+        await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-2] Resume only unfinished outcomes from the durable accepted extraction.', 'accounted-load-final');
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-        frame = (await mountedPluginFrame(page, await dashboardDocument)).frame;
-        await waitForDashboard(frame, 30_000);
-        const emailCard = frame.locator('.cc-coverage-card').filter({ has: frame.getByRole('heading', { name: 'Email intake', exact: true }) });
+        const dashboardPage = page.locator('openclaw-plugin-page');
+        await dashboardPage.getByRole('heading', { name: 'Dashboard', exact: true }).waitFor({ timeout: 30_000 });
+        const emailCard = dashboardPage.locator('.cc-coverage-card').filter({ has: dashboardPage.getByRole('heading', { name: 'Email intake', exact: true }) });
         await emailCard.getByText('1 of 1 sources accounted for · 1 resolved · 4 of 4 outcomes accounted for', { exact: true }).waitFor();
         await emailCard.locator('details > summary').click();
         await emailCard.getByText('Choose fictional real-host delivery window: clarified', { exact: true }).waitFor();
@@ -1272,7 +1283,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await emailCard.locator('details[data-intake-outcome-evidence][open]').waitFor();
         await retainNativeChatScreenshot(page, 'accounted-mixed-email-dashboard');
         await emailCard.getByRole('button', { name: 'Open retained Note', exact: true }).click();
-        await frame.getByRole('region', { name: 'Note content', exact: true }).getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
+        await page.locator('openclaw-plugin-page').getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
         const finalDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
         const finalEmail = finalDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
         const quiet = finalEmail.recentSources[0].outcomes.find(item => item.kind === 'information');
@@ -1283,8 +1294,17 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const durableResume = fictionalModel.requests.find(item => item.action === 'accounted-resolve' && item.loadedProcessorVersion);
         assert.equal(durableResume?.loadedProcessorVersion, 'fictional-real-host-processor-v1');
         assert.deepEqual(durableResume.loadedOutcomeStatuses, [['real-host-choice', 'clarified'], ['real-host-payment', 'missing'], ['real-host-reply', 'missing'], ['real-host-reference', 'missing']]);
-        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true });
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true });
       }
+      const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
+      await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      let { frame } = await mountedPluginFrame(page, await pluginDocument, evidence);
+      const scenarioName = kind === 'review' ? 'Area: Fictional Fresh Review Topic' : kind === 'scale-analysis' ? 'Area: Fictional Fresh Scale Analysis Topic' : `Fictional Fresh ${kind} Topic`;
+      const { frame: returnedFrame, ...journey } = await runUiJourney(frame, { page, width, name: scenarioName, category: 'project', keyboard: true });
+      frame = returnedFrame;
+      const authoritativeSessions = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.sessions.browse', params: { schemaVersion: 1, topicId: journey.topicId } });
+      const authoritativeConversations = (authoritativeSessions?.result ?? authoritativeSessions)?.conversations ?? authoritativeSessions?.conversations ?? [];
+      assert.ok(authoritativeConversations.some((item) => item.isPrimary) && authoritativeConversations.some((item) => item.displayName === journey.conversationName));
       if (kind === 'dashboard-payload') {
         await prepareExactActivityFixture({ stateDir: path.join(scenarioWorld.root, '.openclaw'), gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, topicId: journey.topicId });
         const referenceIds = [];
@@ -1472,12 +1492,11 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
     } finally {
       signal?.removeEventListener('abort', abortCleanup);
       await closeManagedBrowser(managedBrowser).catch(() => {});
-      await withDeadline(`${kind} fresh host stop`, async () => { await stopPinnedHost(scenarioHost.child); await scenarioHost.outputDrained; });
+      await withDeadline(`${kind} fresh host stop`, async () => { for (const generation of [...scenarioHost.generations].reverse()) { await stopPinnedHost(generation.child); await generation.outputDrained; } });
       await fictionalModel?.close();
-      assertNoFatalHostOutput(scenarioHost.diagnostics);
+      for (const generation of scenarioHost.generations) { assertNoFatalHostOutput(generation.diagnostics); generation.diagnostics.guard.assertClean(); }
       await assertRecordedChildTraffic(scenarioWorld);
       browserGuard.assertClean();
-      scenarioHost.diagnostics.guard.assertClean();
     }
   }, { candidateRoot: process.cwd() });
 }
@@ -2239,7 +2258,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const releaseLane = await acquireIsolatedLane();
     reportProgress(testContext, `isolated:${id}:started`);
     try {
-      const timeoutMs = id === 'destructive-migration-restoration' ? 284_000 : 240_000;
+      const timeoutMs = ['destructive-migration-restoration', 'accounted-mixed-email'].includes(id) ? 284_000 : 240_000;
       const evidence = await runBoundedAcceptanceSlice(id, run, { timeoutMs, cleanupTimeoutMs: 15_000 });
       isolatedEvidence.set(id, evidence);
       reportProgress(testContext, `isolated:${id}:passed`);
