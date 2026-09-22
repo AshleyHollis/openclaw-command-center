@@ -59,6 +59,7 @@ test('crash after the first effect resumes the exact mixed email without duplica
     const [account] = projectIntakeAccounts(f.metadata, 'email');
     assert.deepEqual({ accounted: account.accounted, resolved: account.resolved, outcomes: account.counts.expected, pending: account.counts.decisionsPending }, { accounted: true, resolved: false, outcomes: 4, pending: 1 });
     assert.equal(f.metadata.listOperations().filter(item => item.operationKind === 'intake-outcome.email.v1').length, 4);
+    f.metadata.observeSourceReference({ referenceId: 'note:fictional-mixed-message', observedRevision: 'note-v1', updatedAt: '2026-09-22T01:10:00.000Z' });
     await f.adapter.process({ runId: 'note-run-derived', records: [{ ...record, sourceKind: 'note', sourceExternalId: 'note:fictional-mixed-message', sourceVersion: 'note-v1', checkpoint: 'note:fictional-mixed-message', existingEvidence: { topicId: 'topic-fictional-home', sourceReferenceId: 'note:fictional-mixed-message', sourcePath: extraction.notePath, sourceVersion: 'note-v1' } }], nextExpectedAt: '2026-09-29T01:00:00.000Z' });
     assert.equal(f.metadata.listOpenLoops().length, 3, 'processing the derived Note must append provenance without duplicating obligations');
     const payLoop = f.metadata.findOpenLoopBySubject('general', f.metadata.listOpenLoops().find(loop => loop.title === 'Pay fictional invoice').stableSubjectId);

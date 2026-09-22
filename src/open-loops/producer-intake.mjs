@@ -8,7 +8,7 @@ function assertRecord(record) {
 
 function exactEvidence(value, record) {
   if (!value || !nonBlank(value.sourceReferenceId) || !nonBlank(value.sourcePath) || !nonBlank(value.topicId)) fail('producer-evidence-unavailable');
-  return { topicId: value.topicId, sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath, sourceVersion: value.sourceVersion ?? record.sourceVersion };
+  return { topicId: value.topicId, sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath, sourceVersion: value.sourceVersion ?? value.revision ?? record.sourceVersion };
 }
 
 /**
@@ -62,7 +62,7 @@ export function createProducerIntakeAdapter({ extract, resolveTopic, saveSourceN
           }
           if (knowledgeOutcomeId) {
             if (!evidence) fail('producer-evidence-required');
-            await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: knowledgeOutcomeId, kind: 'information', status: 'quiet', summary: extraction.knowledgeSummary ?? 'Information retained in the Topic Note', sourceReferenceId: evidence.sourceReferenceId, recordedAt: now() });
+            await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: knowledgeOutcomeId, kind: 'information', status: 'quiet', summary: extraction.knowledgeSummary ?? 'Information retained in the Topic Note', sourceReferenceId: evidence.sourceReferenceId, sourceReferenceVersion: evidence.sourceVersion, recordedAt: now() });
           }
           if (obligations.length && !evidence) fail('producer-evidence-required');
           for (const obligation of obligations) {

@@ -39,63 +39,52 @@ export function normalizeIntakeSourcePlan(input) {
 }
 
 export function recordIntakeSourcePlan(metadata, input) {
-  if (!metadata?.recordOperation) throw new TypeError('Intake accounting requires metadata ownership.');
+  if (!metadata?.commitIntakeAccountingOperation) throw new TypeError('Intake accounting requires metadata ownership.');
   const plan = normalizeIntakeSourcePlan(input);
-  const identity = { schemaVersion: 1, sourceKind: plan.sourceKind, sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, checkpoint: plan.checkpoint, outcomes: plan.outcomes };
+  const identity = { schemaVersion: 1, sourceKind: plan.sourceKind, sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, checkpoint: plan.checkpoint, outcomes: plan.outcomes, enumeration: plan.enumeration };
   const logicalOperationId = stableUuid(`command-center:intake-source:${plan.sourceKind}:${plan.sourceExternalId}:${plan.sourceVersion}`);
-  const prior = metadata.getOperation?.(logicalOperationId);
   const intentDigest = digest(identity);
-  if (prior && (prior.intentDigest !== intentDigest || prior.operationKind !== `intake-source.${plan.sourceKind}.v1`)) fail('intent-mismatch', 'The intake source plan changed for an existing source revision.');
-  if (!prior) metadata.recordOperation({ logicalOperationId, transportRequestId: logicalOperationId, intentDigest, operationKind: `intake-source.${plan.sourceKind}.v1`, state: 'applied', resultStatus: 'planned', resultIdentity: JSON.stringify(plan), observedRevision: plan.sourceVersion, createdAt: plan.observedAt, updatedAt: plan.observedAt });
-  return Object.freeze({ schemaVersion: 1, disposition: prior ? 'duplicate' : 'recorded', logicalOperationId, plan });
+  const committed = metadata.commitIntakeAccountingOperation({ logicalOperationId, intentDigest, operationKind: `intake-source.${plan.sourceKind}.v1`, state: 'applied', resultStatus: 'planned', resultIdentity: JSON.stringify(plan), observedRevision: plan.sourceVersion, createdAt: plan.observedAt });
+  let durablePlan;
+  try { durablePlan = JSON.parse(committed.operation.resultIdentity); } catch { fail('conflict', 'The durable intake source plan is unavailable.'); }
+  return Object.freeze({ schemaVersion: 1, disposition: committed.disposition, logicalOperationId, plan: Object.freeze(durablePlan) });
 }
 
 export function normalizeIntakeOutcome(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid-request', 'Intake outcome is invalid.');
-  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'kind', 'status', 'summary', 'loopId', 'sourceReferenceId', 'recordedAt', 'errorCode'];
+  const allowed = ['schemaVersion', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'kind', 'status', 'summary', 'loopId', 'sourceReferenceId', 'sourceReferenceVersion', 'recordedAt', 'errorCode'];
   if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !outcomeKinds.has(input.kind) || !outcomeStatuses.has(input.status)) fail('invalid-request', 'Intake outcome is invalid.');
   const source = sourceIdentity(input);
   const value = { schemaVersion: 1, ...source, outcomeId: text(input.outcomeId, 'outcomeId', 300), kind: input.kind, status: input.status, summary: text(input.summary, 'summary', 300), recordedAt: instant(input.recordedAt, 'recordedAt') };
   if (input.loopId !== undefined) value.loopId = text(input.loopId, 'loopId', 300);
   if (input.sourceReferenceId !== undefined) value.sourceReferenceId = text(input.sourceReferenceId, 'sourceReferenceId', 300);
+  if (input.sourceReferenceVersion !== undefined) value.sourceReferenceVersion = text(input.sourceReferenceVersion, 'sourceReferenceVersion', 300);
   if (input.errorCode !== undefined) value.errorCode = text(input.errorCode, 'errorCode', 100);
   if (['applied', 'pending-decision'].includes(value.status) && !value.loopId) fail('invalid-request', 'An actionable intake outcome requires loopId.');
-  if (value.status === 'quiet' && !value.sourceReferenceId) fail('invalid-request', 'A quiet intake outcome requires sourceReferenceId.');
+  if (value.status === 'quiet' && (!value.sourceReferenceId || !value.sourceReferenceVersion)) fail('invalid-request', 'A quiet intake outcome requires exact Source Reference evidence.');
   if (value.status === 'pending-decision' && value.kind !== 'decision') fail('invalid-request', 'Only a decision outcome can remain pending.');
   return Object.freeze(value);
 }
 
 export function recordIntakeOutcome(metadata, input) {
-  if (!metadata?.recordOperation) throw new TypeError('Intake accounting requires metadata ownership.');
+  if (!metadata?.commitIntakeAccountingOperation) throw new TypeError('Intake accounting requires metadata ownership.');
   const outcome = normalizeIntakeOutcome(input);
-  const sourceId = stableUuid(`command-center:intake-source:${outcome.sourceKind}:${outcome.sourceExternalId}:${outcome.sourceVersion}`);
-  const planOperation = metadata.getOperation?.(sourceId);
-  if (!planOperation) fail('conflict', 'The intake source plan must be recorded before its outcomes.');
-  let plan;
-  try { plan = JSON.parse(planOperation.resultIdentity); } catch { fail('conflict', 'The intake source plan is unavailable.'); }
-  const expected = plan?.outcomes?.find(item => item.outcomeId === outcome.outcomeId);
-  if (!expected || expected.kind !== outcome.kind) fail('intent-mismatch', 'The intake outcome does not match its source plan.');
   const logicalOperationId = stableUuid(`command-center:intake-outcome:${outcome.sourceKind}:${outcome.sourceExternalId}:${outcome.sourceVersion}:${outcome.outcomeId}`);
   const intent = { schemaVersion: 1, sourceKind: outcome.sourceKind, sourceExternalId: outcome.sourceExternalId, sourceVersion: outcome.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind };
-  const prior = metadata.getOperation?.(logicalOperationId);
-  const intentDigest = digest(intent);
-  if (prior && (prior.intentDigest !== intentDigest || prior.operationKind !== `intake-outcome.${outcome.sourceKind}.v1`)) fail('intent-mismatch', 'The intake outcome identity changed.');
-  if (prior) {
-    let priorOutcome;
-    try { priorOutcome = JSON.parse(prior.resultIdentity); } catch { fail('conflict', 'The intake outcome receipt is unavailable.'); }
-    const { recordedAt: _priorTime, ...priorResult } = priorOutcome;
-    const { recordedAt: _retryTime, ...retryResult } = outcome;
-    if (digest(priorResult) !== digest(retryResult)) fail('intent-mismatch', 'The intake outcome result changed under an existing identity.');
-    return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', logicalOperationId, outcome: Object.freeze(priorOutcome) });
-  } else metadata.recordOperation({ logicalOperationId, transportRequestId: logicalOperationId, intentDigest, operationKind: `intake-outcome.${outcome.sourceKind}.v1`, state: ['failed', 'unknown'].includes(outcome.status) ? 'not-applied' : 'applied', resultStatus: outcome.status, resultIdentity: JSON.stringify(outcome), observedRevision: outcome.sourceVersion, createdAt: outcome.recordedAt, updatedAt: outcome.recordedAt });
-  return Object.freeze({ schemaVersion: 1, disposition: 'recorded', logicalOperationId, outcome });
+  const { recordedAt: _recordedAt, ...semanticResult } = outcome;
+  const intentDigest = digest({ ...intent, result: semanticResult });
+  const committed = metadata.commitIntakeAccountingOperation({ logicalOperationId, intentDigest, operationKind: `intake-outcome.${outcome.sourceKind}.v1`, state: ['failed', 'unknown'].includes(outcome.status) ? 'not-applied' : 'applied', resultStatus: outcome.status, resultIdentity: JSON.stringify(outcome), observedRevision: outcome.sourceVersion, createdAt: outcome.recordedAt });
+  let durableOutcome;
+  try { durableOutcome = JSON.parse(committed.operation.resultIdentity); } catch { fail('conflict', 'The durable intake outcome is unavailable.'); }
+  return Object.freeze({ schemaVersion: 1, disposition: committed.disposition, logicalOperationId, outcome: Object.freeze(durableOutcome) });
 }
 
 function parsedResult(operation) { try { return JSON.parse(operation?.resultIdentity ?? 'null'); } catch { return null; } }
-export function projectIntakeAccounts(metadata, sourceKind, limit = 10) {
-  if (!sourceKinds.has(sourceKind) || !Number.isSafeInteger(limit) || limit < 1 || limit > 50) fail('invalid-request', 'Intake account projection is invalid.');
+export function projectIntakeAccounts(metadata, sourceKind, limit) {
+  if (!sourceKinds.has(sourceKind) || limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 50)) fail('invalid-request', 'Intake account projection is invalid.');
   const operations = metadata?.listOperations?.() ?? [];
-  const plans = operations.filter(item => item.operationKind === `intake-source.${sourceKind}.v1`).map(operation => ({ operation, plan: parsedResult(operation) })).filter(item => item.plan).slice(-limit).reverse();
+  const allPlans = operations.filter(item => item.operationKind === `intake-source.${sourceKind}.v1`).map(operation => ({ operation, plan: parsedResult(operation) })).filter(item => item.plan).reverse();
+  const plans = limit === undefined ? allPlans : allPlans.slice(0, limit);
   const outcomes = operations.filter(item => item.operationKind === `intake-outcome.${sourceKind}.v1`).map(parsedResult).filter(Boolean);
   return Object.freeze(plans.map(({ plan }) => {
     const matching = new Map(outcomes.filter(item => item.sourceExternalId === plan.sourceExternalId && item.sourceVersion === plan.sourceVersion).map(item => [item.outcomeId, item]));

@@ -217,7 +217,14 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
     counts: Object.freeze({ processed: receipt.processedCount, actionable: receipt.actionableCount, notes: receipt.noteCount }),
     sourceCounts: Object.freeze({ observed: accounts.length, accounted: accountedSources, resolved: resolvedSources }),
     outcomeCounts: Object.freeze({ expected: expectedOutcomes, accounted: accountedOutcomes, pendingDecisions, failed: failedOutcomes, unresolvedTopics }),
-    recentSources: accounts,
+    recentSources: Object.freeze(accounts.slice(0, 10).map(account => Object.freeze({
+      observedAt: account.observedAt,
+      accounted: account.accounted,
+      resolved: account.resolved,
+      counts: account.counts,
+      enumeration: account.enumeration,
+      outcomes: Object.freeze(account.outcomes.map(outcome => Object.freeze({ kind: outcome.kind, status: outcome.status, ...(outcome.summary ? { summary: outcome.summary } : {}) })))
+    }))),
     explanation: accountExplanation
   });
 }
