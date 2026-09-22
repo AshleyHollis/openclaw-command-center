@@ -104,3 +104,33 @@ test('missing and unresolved outcomes remain visible instead of advancing the so
     metadata.close();
   } finally { await temporary.cleanup(); }
 });
+
+test('the intake owner commits one durable result across simultaneous SQLite owners', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-concurrent-');
+  let first; let second;
+  try {
+    first = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    addTopic(first); recordIntakeSourcePlan(first, sourcePlan());
+    const { payment } = addEffects(first);
+    second = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    const input = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', outcomeId: 'pay-invoice', kind: 'obligation', status: 'applied', summary: 'Pay fictional invoice', loopId: payment.loopId, recordedAt: '2026-09-22T01:01:00.000Z' };
+    const recorded = recordIntakeOutcome(first, input);
+    const replay = recordIntakeOutcome(second, { ...input, recordedAt: '2026-09-22T01:02:00.000Z' });
+    assert.equal(recorded.disposition, 'recorded');
+    assert.equal(replay.disposition, 'duplicate');
+    assert.equal(replay.outcome.recordedAt, recorded.outcome.recordedAt);
+    assert.throws(() => recordIntakeOutcome(second, { ...input, summary: 'A different result', recordedAt: '2026-09-22T01:03:00.000Z' }), { code: 'intent-mismatch' });
+    assert.equal(projectIntakeAccounts(first, 'email')[0].outcomes.find(item => item.outcomeId === 'pay-invoice').summary, 'Pay fictional invoice');
+  } finally {
+    second?.close(); first?.close(); await temporary.cleanup();
+  }
+});
+
+test('generic operation writes cannot forge or replace intake accounting receipts', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-owner-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path });
+    assert.throws(() => metadata.recordOperation({ logicalOperationId: 'forged-intake', transportRequestId: 'forged-intake', intentDigest: 'sha256:forged', operationKind: 'intake-source.email.v1', state: 'applied', resultStatus: 'planned', resultIdentity: '{}', observedRevision: 'v1', createdAt: '2026-09-22T01:00:00.000Z', updatedAt: '2026-09-22T01:00:00.000Z' }), { code: 'intake-accounting-owner-required' });
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
