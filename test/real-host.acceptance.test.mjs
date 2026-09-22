@@ -1230,6 +1230,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       await configureEvidencePage(page, browserGuard, evidence);
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: width <= 320 ? 'active' : 'none' });
       if (kind === 'accounted-email') {
+        page.setDefaultTimeout(10_000);
+        const milestone = name => process.stdout.write(`accounted-email-milestone=${name}\n`);
         const openNativeChat = async () => {
           await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'topics', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
           const nativePage = page.locator('openclaw-plugin-page');
@@ -1252,6 +1254,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         };
         let chatPane = await openNativeChat();
         await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-1] Process the fictional mixed email through the registered Command Center intake commands.', 'accounted-outcome-choice');
+        milestone('phase-one-complete');
         const metadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
         let durableBeforeRestart;
         try { durableBeforeRestart = loadIntakeSourceAccount(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-real-host-mixed-message', sourceVersion: 'email-change-key-real-host-52' }); }
@@ -1267,9 +1270,11 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.equal(bootstrap.response.ok, true);
         assert.ok(typeof bootstrap.body.serverBuildId === 'string' && bootstrap.body.serverBuildId.trim());
         await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId, method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
+        milestone('decision-recorded');
         const killed = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
         scenarioHost.child.kill('SIGKILL');
         assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
+        milestone('host-killed');
         scenarioHost = await withDeadline('accounted email host restart', restartSignal => restartPinnedHost(scenarioHost, { signal: restartSignal }), 120_000);
         await waitForConsecutiveReadiness(async probeSignal => {
           try {
@@ -1289,11 +1294,14 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
             throw error;
           }
         }, scenarioHost.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
+        milestone('host-restarted');
         chatPane = await openNativeChat();
         await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-2] Resume only unfinished outcomes from the durable accepted extraction.', 'accounted-load-final');
+        milestone('phase-two-complete');
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         const dashboardPage = page.locator('openclaw-plugin-page');
         await dashboardPage.getByRole('heading', { name: 'Command Center', exact: true }).waitFor({ timeout: 30_000 });
+        milestone('dashboard-mounted');
         const emailCard = dashboardPage.locator('.cc-coverage-card').filter({ has: dashboardPage.getByRole('heading', { name: 'Email intake', exact: true }) });
         await emailCard.getByText('1 of 1 sources accounted for · 1 resolved · 4 of 4 outcomes accounted for', { exact: true }).waitFor();
         await emailCard.locator('details > summary').click();
@@ -1303,9 +1311,11 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await emailCard.getByText('Retain fictional real-host reference: quiet', { exact: true }).waitFor();
         await emailCard.getByRole('button', { name: 'Review item', exact: true }).first().click();
         await emailCard.locator('details[data-intake-outcome-evidence][open]').waitFor();
+        milestone('evidence-inspected');
         await retainNativeChatScreenshot(page, 'accounted-mixed-email-dashboard');
         await emailCard.getByRole('button', { name: 'Open retained Note', exact: true }).click();
         await page.locator('openclaw-plugin-page').getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
+        milestone('retained-note-inspected');
         const finalDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
         const finalEmail = finalDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
         const quiet = finalEmail.recentSources[0].outcomes.find(item => item.kind === 'information');
