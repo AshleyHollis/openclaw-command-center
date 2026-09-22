@@ -1268,6 +1268,9 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
         return Object.freeze({ disposition: 'recorded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
       }
       const latest = db.prepare('SELECT rowid FROM operation_journal WHERE operation_kind = ? ORDER BY rowid DESC LIMIT 1').get(operationKind);
+      if (state === 'pending' && existing.result_status !== 'pending') {
+        return Object.freeze({ disposition: 'duplicate', operation: mapOperation(existing) });
+      }
       if (state !== 'pending' && latest?.rowid !== existing.rowid) {
         db.prepare("UPDATE operation_journal SET state = 'not-applied', result_status = 'superseded', updated_at = ? WHERE logical_operation_id = ?").run(updatedAt, logicalOperationId);
         return Object.freeze({ disposition: 'superseded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });

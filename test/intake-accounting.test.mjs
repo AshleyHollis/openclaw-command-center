@@ -170,6 +170,20 @@ test('a late older run cannot restore its obsolete continuation after a newer ru
   } finally { await temporary.cleanup(); }
 });
 
+test('a completed run dominates a replayed pending receipt for the same run', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-terminal-dominates-');
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: temporary.path });
+    const base = { schemaVersion: 1, sourceKind: 'email', runId: 'completed-run', checkpoint: 'complete', observedAt: '2026-09-22T02:00:00.000Z', nextExpectedAt: '2026-09-23T02:00:00.000Z', processedCount: 1, actionableCount: 1, noteCount: 1 };
+    recordIntakeReceipt(metadata, { ...base, status: 'healthy-processed', lastSuccessfulAt: base.observedAt });
+    const replay = recordIntakeReceipt(metadata, { ...base, checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T02:01:00.000Z' });
+    assert.equal(replay.disposition, 'duplicate');
+    assert.equal(replay.receipt.status, 'healthy-processed');
+    assert.equal(metadata.listOperations().find(item => item.logicalOperationId === replay.logicalOperationId).resultStatus, 'healthy-processed');
+    metadata.close();
+  } finally { await temporary.cleanup(); }
+});
+
 test('quiet intake rejects an unrelated Note even when its revision matches', async () => {
   const temporary = await temporaryStateDir('command-center-intake-unrelated-note-');
   try {
