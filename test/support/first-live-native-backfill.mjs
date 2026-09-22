@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { fixtureEnvironment, withIsolatedWorld } from '../../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, launchPinnedHost, restartPinnedHost, stopPinnedHost, waitForConsecutiveReadiness } from '../../src/host-harness.mjs';
@@ -15,6 +16,12 @@ import { withDeadline, requestAuthenticatedGateway, stopHostOnAbort } from './re
 import { readHostNoteFolderIdentity } from './host-note-folder-identity.mjs';
 
 const sha256 = value => `sha256:${createHash('sha256').update(value).digest('hex')}`;
+
+function countDurableOpenLoopOperations(stateDir) {
+  const database = new DatabaseSync(resolveCommandCenterDatabasePath(stateDir), { readOnly: true });
+  try { return database.prepare('SELECT COUNT(*) AS count FROM open_loop_operations').get().count; }
+  finally { database.close(); }
+}
 
 async function runPackagedBackfillCli({ host, world, stateDir, mode, planPath, planDigest, adapterPath, adapterDigest, signal }) {
   const executable = host.host.runtimeExecutable || host.host.wrapper;
@@ -129,7 +136,7 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
         assert.ok(loop, 'lost reply must follow a durable first commitment');
         firstCommit = { loopId: loop.loopId, revision: loop.revision, evidenceCount: loop.evidenceObservationIds.length,
           observationCount: verification.listOpenLoopObservations().length,
-          captureOperationCount: verification.listOperations().filter(item => item.operationKind === 'commitment.capture.v1').length };
+          operationCount: countDurableOpenLoopOperations(stateDir) };
       } finally { verification.close(); }
       await runPackagedBackfillCli({ ...cli, mode: 'apply' });
       verification = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
@@ -141,7 +148,7 @@ export async function exerciseNativeHistoricalBackfillJourney({ descriptor, buil
         assert.equal(replayed.revision, firstCommit.revision, 'retry must not revise the committed effect');
         assert.equal(replayed.evidenceObservationIds.length, firstCommit.evidenceCount, 'retry must not append evidence');
         assert.equal(verification.listOpenLoopObservations().length, firstCommit.observationCount + 1, 'only the second record may add evidence');
-        assert.equal(verification.listOperations().filter(item => item.operationKind === 'commitment.capture.v1').length, firstCommit.captureOperationCount + 1, 'only the second record may add a capture operation');
+        assert.equal(countDurableOpenLoopOperations(stateDir), firstCommit.operationCount + 1, 'only the second record may add a durable open-loop operation');
       } finally { verification.close(); }
 
       await restartHost();
