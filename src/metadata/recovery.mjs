@@ -48,6 +48,12 @@ import { inspectSchema } from './schema.mjs';
 export const RECOVERY_FORMAT_VERSION = 1;
 export const RECOVERY_SNAPSHOT_SCHEMA_VERSION = 1;
 const recoverySnapshotSchemaVersions = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
+// Exact previously deployed 2026.9.5 host whose committed schema-9 recovery
+// material is retained in production. Extending this set requires Class 3
+// qualification; a syntactically valid commit is not compatibility evidence.
+const compatibleHistoricalHostReleases = new Map([
+  ['8e58ed3d14ac21b9046bf19c96c7eb86d858cdee', '=2026.9.5']
+]);
 
 const currentRelease = Object.freeze({
   package: canonical.package,
@@ -152,6 +158,14 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
+function releaseMatchesExceptHostCommit(actual, expected) {
+  const actualCommit = actual?.host?.commit;
+  const expectedCommit = expected?.host?.commit;
+  if (typeof actualCommit !== 'string' || !/^[a-f0-9]{40}$/u.test(actualCommit) || typeof expectedCommit !== 'string') return false;
+  if (actualCommit !== expectedCommit && compatibleHistoricalHostReleases.get(actualCommit) !== expected?.host?.range) return false;
+  return canonicalJson({ ...actual, host: { ...actual.host, commit: expectedCommit } }) === canonicalJson(expected);
+}
+
 function databaseFingerprint(database) {
   const candidates = ['topics', 'source_references', 'source_convention_state', 'presentation_preferences', 'attention_activity_links', 'proposal_states', 'policy_versions', 'projection_bookkeeping', 'operation_journal', 'session_state', 'activity_records'];
   const tables = candidates.filter((table) => database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(table));
@@ -199,10 +213,26 @@ function validateManifestShape(manifest) {
   const legacyContract = recoveryContractForSchema(manifest.snapshot.schemaVersion, { legacyTarget: true });
   if (!manifest.migration || canonicalJson(manifest.migration) !== canonicalJson(currentContract.migration)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest migration contract differs.');
   if (manifest.snapshotId !== manifest.snapshot.sha256) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery snapshot identity does not match its content digest.');
-  const releaseMatches = canonicalJson(manifest.sourceRelease) === canonicalJson(currentContract.sourceRelease)
-    && [currentContract.targetRelease, legacyContract.targetRelease, schemaFiveRelease, schemaFourRelease, schemaSixRelease, schemaSevenRelease, schemaEightRelease, ...(manifest.snapshot.schemaVersion === 1 ? [schemaTwoRelease] : [])].some((target) => canonicalJson(manifest.targetRelease) === canonicalJson(target));
-  if (!releaseMatches) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest compatibility facts differ.');
   if (!['prepared', 'committed'].includes(manifest.state)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest state is invalid.');
+  const acceptedTargets = [currentContract.targetRelease, legacyContract.targetRelease, schemaFiveRelease, schemaFourRelease, schemaSixRelease, schemaSevenRelease, schemaEightRelease, ...(manifest.snapshot.schemaVersion === 1 ? [schemaTwoRelease] : [])];
+  const exactReleaseMatches = canonicalJson(manifest.sourceRelease) === canonicalJson(currentContract.sourceRelease)
+    && acceptedTargets.some((target) => canonicalJson(manifest.targetRelease) === canonicalJson(target));
+  // A committed manifest records the exact host that performed the historical
+  // migration. A later host-only upgrade must not rewrite that evidence or
+  // make the already committed database unusable. Keep prepared recovery exact.
+  // Preserve a distinct historical source release exactly; when source and
+  // target originally shared one host, require their retained commits to agree.
+  const committedHistoricalHostMatches = manifest.state === 'committed'
+    && acceptedTargets.some((target) => {
+      if (!releaseMatchesExceptHostCommit(manifest.targetRelease, target)) return false;
+      const sourceAndTargetSharedHost = typeof currentContract.sourceRelease?.host?.commit === 'string'
+        && currentContract.sourceRelease.host.commit === target?.host?.commit;
+      if (!sourceAndTargetSharedHost) return canonicalJson(manifest.sourceRelease) === canonicalJson(currentContract.sourceRelease);
+      return manifest.sourceRelease?.host?.commit === manifest.targetRelease?.host?.commit
+        && releaseMatchesExceptHostCommit(manifest.sourceRelease, currentContract.sourceRelease);
+    });
+  const releaseMatches = exactReleaseMatches || committedHistoricalHostMatches;
+  if (!releaseMatches) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest compatibility facts differ.');
   return manifest;
 }
 
