@@ -13,6 +13,7 @@ import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { loadIntakeSourceAccount, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
+import { prepareAdmittedRetry } from '../src/open-loops/intake-retry.mjs';
 import { revisionForBytes } from '../src/sources/reference.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
