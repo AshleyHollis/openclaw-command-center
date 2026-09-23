@@ -179,6 +179,11 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
   let receipt;
   try { receipt = JSON.parse(latest.resultIdentity ?? 'null'); } catch { receipt = null; }
   if (!receipt || receipt.sourceKind !== sourceKind) return null;
+  const lastSuccessfulAt = operations.reduce((last, operation) => {
+    let candidate;
+    try { candidate = JSON.parse(operation.resultIdentity ?? 'null'); } catch { return last; }
+    return candidate?.sourceKind === sourceKind && ['healthy-empty', 'healthy-processed'].includes(candidate.status) && candidate.lastSuccessfulAt && (!last || Date.parse(candidate.lastSuccessfulAt) > Date.parse(last)) ? candidate.lastSuccessfulAt : last;
+  }, null);
   const overdue = receipt.nextExpectedAt && Date.parse(receipt.nextExpectedAt) < Date.parse(serverTime);
   const accounts = projectIntakeAccounts(metadata, sourceKind);
   const accountedSources = accounts.filter(item => item.accounted).length;
@@ -214,8 +219,10 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
   return Object.freeze({
     source: label, sourceKind, status, receiptStatus,
     lastObservedAt: receipt.observedAt,
-    ...(receipt.lastSuccessfulAt ? { lastSuccessfulAt: receipt.lastSuccessfulAt } : {}),
+    ...(lastSuccessfulAt ? { lastSuccessfulAt } : {}),
     ...(receipt.nextExpectedAt ? { nextExpectedAt: receipt.nextExpectedAt } : {}),
+    ...(receipt.scope ? { scope: Object.freeze({ folders: receipt.scope.folders, sinceUtc: receipt.scope.sinceUtc, beforeUtc: receipt.scope.beforeUtc, maxMessages: receipt.scope.maxMessages, batchKind: receipt.scope.batchKind }) } : {}),
+    discovery: receipt.enumeration ? Object.freeze({ ...receipt.enumeration, canResume: receipt.continuation !== undefined }) : Object.freeze({ scope: 'unknown' }),
     counts: Object.freeze({ processed: receipt.processedCount, actionable: receipt.actionableCount, notes: receipt.noteCount }),
     sourceCounts: Object.freeze({ observed: accounts.length, accounted: accountedSources, resolved: resolvedSources }),
     outcomeCounts: Object.freeze({ expected: expectedOutcomes, accounted: accountedOutcomes, pendingDecisions, failed: failedOutcomes, unresolvedTopics }),

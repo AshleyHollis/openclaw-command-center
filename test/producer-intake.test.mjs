@@ -65,8 +65,12 @@ test('a producer-supplied accepted extraction is durably planned without re-extr
 
 test('an empty bounded producer run records healthy coverage using the declared source kind', async () => {
   const { adapter, calls } = harness();
-  const result = await adapter.process({ runId: 'email-empty-1', sourceKind: 'email', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [] });
+  const scope = { accountBinding: 'sha256:fictional-account', folders: ['inbox'], sinceUtc: '2026-09-20T00:00:00.000Z', beforeUtc: '2026-09-21T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' };
+  const enumeration = { scope: 'complete', scannedCount: 0, remainingCount: 0, failedReadCount: 0, scanCapReached: false };
+  const result = await adapter.process({ runId: 'email-empty-1', sourceKind: 'email', nextExpectedAt: '2026-09-22T00:00:00.000Z', scope, enumeration, records: [] });
   assert.equal(result.status, 'healthy-empty'); assert.deepEqual(calls.receipt.map(item => item.status), ['pending', 'healthy-empty']);
+  assert.deepEqual(calls.receipt.at(-1).scope, scope);
+  assert.deepEqual(calls.receipt.at(-1).enumeration, enumeration);
 });
 
 test('information-only input remains quiet and existing evidence is reused without manufacturing a Note', async () => {

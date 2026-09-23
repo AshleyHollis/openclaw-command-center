@@ -36,7 +36,7 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
   if (!nonBlank(processorVersion) || ![extract, loadIntakeSourceAccount, resolveTopic, saveSourceNote, captureSourceCommitment, captureChatCommitment, recordIntakeSourcePlan, recordIntakeOutcome, recordIntakeReceipt].every(value => typeof value === 'function')) fail('producer-adapter-invalid');
 
   return Object.freeze({
-    async process({ runId, sourceKind: selectedSourceKind, records, nextExpectedAt, enumeration }) {
+    async process({ runId, sourceKind: selectedSourceKind, records, nextExpectedAt, enumeration, scope }) {
       if (!nonBlank(runId) || !Array.isArray(records) || records.length > 500 || !nonBlank(nextExpectedAt) || selectedSourceKind !== undefined && !kinds.has(selectedSourceKind)) fail('producer-batch-invalid');
       const counts = { processedCount: 0, actionableCount: 0, noteCount: 0, skippedCount: 0, uncertainCount: 0, failedCount: 0 };
       let checkpoint = 'start';
@@ -51,7 +51,8 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
       const incompleteEnumeration = receiptEnumeration && (receiptEnumeration.scope !== 'complete' || receiptEnumeration.remainingCount > 0 || receiptEnumeration.failedReadCount > 0 || receiptEnumeration.scanCapReached);
       if (incompleteEnumeration && (!nonBlank(receiptEnumeration.scopeId) || !nonBlank(receiptEnumeration.resumeCursor))) fail('producer-continuation-required');
       const continuation = incompleteEnumeration ? { scopeId: receiptEnumeration.scopeId, cursor: receiptEnumeration.resumeCursor, remainingCount: receiptEnumeration.remainingCount, failedReadCount: receiptEnumeration.failedReadCount, scanCapReached: receiptEnumeration.scanCapReached } : undefined;
-      const pending = await recordIntakeReceipt({ sourceKind, runId, checkpoint, status: 'pending', observedAt, nextExpectedAt, ...receiptCounts() });
+      const receiptContext = { ...(scope ? { scope: { accountBinding: scope.accountBinding, folders: scope.folders, sinceUtc: scope.sinceUtc, beforeUtc: scope.beforeUtc, maxMessages: scope.maxMessages, batchKind: scope.batchKind } } : {}), ...(receiptEnumeration ? { enumeration: { scope: receiptEnumeration.scope, scannedCount: receiptEnumeration.scannedCount, remainingCount: receiptEnumeration.remainingCount, failedReadCount: receiptEnumeration.failedReadCount, scanCapReached: receiptEnumeration.scanCapReached } } : {}) };
+      const pending = await recordIntakeReceipt({ sourceKind, runId, checkpoint, status: 'pending', observedAt, nextExpectedAt, ...receiptContext, ...receiptCounts() });
       if (pending?.receipt && pending.receipt.status !== 'pending') return Object.freeze({ schemaVersion: 1, checkpoint: pending.receipt.checkpoint, status: pending.receipt.status, processedCount: pending.receipt.processedCount, actionableCount: pending.receipt.actionableCount, noteCount: pending.receipt.noteCount, skippedCount: 0, uncertainCount: 0, failedCount: pending.receipt.status === 'failed' ? 1 : 0, ...(pending.receipt.continuation ? { continuation: pending.receipt.continuation } : {}), receipt: pending });
       try {
         for (const record of records) {
@@ -125,11 +126,11 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
         if (counts.uncertainCount > 0) fail('producer-outcomes-unsettled');
         const completedAt = now();
         const status = incompleteEnumeration ? 'incomplete' : counts.processedCount === 0 && counts.uncertainCount === 0 ? 'healthy-empty' : 'healthy-processed';
-        const receipt = await recordIntakeReceipt({ sourceKind, runId, checkpoint, status, observedAt: completedAt, ...(status === 'incomplete' ? { continuation } : { lastSuccessfulAt: completedAt }), nextExpectedAt, ...receiptCounts() });
+        const receipt = await recordIntakeReceipt({ sourceKind, runId, checkpoint, status, observedAt: completedAt, ...(status === 'incomplete' ? { continuation } : { lastSuccessfulAt: completedAt }), nextExpectedAt, ...receiptContext, ...receiptCounts() });
         return Object.freeze({ schemaVersion: 1, checkpoint, status, ...counts, ...(continuation ? { continuation: Object.freeze(continuation) } : {}), receipt });
       } catch (error) {
         counts.failedCount += 1;
-        await recordIntakeReceipt({ sourceKind, runId, checkpoint, status: 'failed', observedAt: now(), ...(continuation ? { continuation } : {}), ...receiptCounts() });
+        await recordIntakeReceipt({ sourceKind, runId, checkpoint, status: 'failed', observedAt: now(), ...(continuation ? { continuation } : {}), ...receiptContext, ...receiptCounts() });
         throw Object.assign(error instanceof Error ? error : new Error('producer-intake-failed'), { checkpoint, counts: Object.freeze({ ...counts }) });
       }
     }
