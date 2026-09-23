@@ -1353,11 +1353,12 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
         db.prepare("UPDATE operation_journal SET state = 'not-applied', result_status = 'superseded', updated_at = ? WHERE logical_operation_id = ?").run(updatedAt, logicalOperationId);
         return Object.freeze({ disposition: 'superseded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
       }
+      if (readerPlan && !existing) throw new CommandCenterMetadataError('conflict', 'Reader refresh completion requires its durable start.');
       if (readerPlan) for (const record of readerPlan.records) {
         const sourceExternalId = producerSourceExternalId(receipt.sourceNamespace, record.sourceExternalId);
         const locator = { schemaVersion: 1, sourceExternalId, sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt };
-        const latestLocator = db.prepare("SELECT * FROM operation_journal WHERE logical_operation_id LIKE ? AND operation_kind = 'email-reader.locator.v1' ORDER BY updated_at DESC, logical_operation_id DESC LIMIT 1").get(`${emailReaderLocatorOperationPrefix(sourceExternalId, record.sourceVersion)}%`);
-        if (!latestLocator || latestLocator.state !== 'applied' || latestLocator.logical_operation_id !== emailReaderLocatorOperationId(locator) || latestLocator.result_identity !== JSON.stringify(locator)) throw new CommandCenterMetadataError('conflict', 'The exact reader location effect is not durably applied.');
+        const latestLocator = db.prepare("SELECT rowid, * FROM operation_journal WHERE logical_operation_id LIKE ? AND operation_kind = 'email-reader.locator.v1' ORDER BY updated_at DESC, logical_operation_id DESC LIMIT 1").get(`${emailReaderLocatorOperationPrefix(sourceExternalId, record.sourceVersion)}%`);
+        if (!latestLocator || latestLocator.state !== 'applied' || latestLocator.rowid <= existing.rowid || latestLocator.created_at < existing.created_at || latestLocator.created_at > updatedAt || latestLocator.logical_operation_id !== emailReaderLocatorOperationId(locator) || latestLocator.result_identity !== JSON.stringify(locator)) throw new CommandCenterMetadataError('conflict', 'The exact reader location effect was not applied after this attempt began.');
       }
       if (existing) {
         if (updatedAt < existing.created_at) throw new CommandCenterMetadataError('conflict', 'Reader refresh completion predates its start.');

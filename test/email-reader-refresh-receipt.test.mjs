@@ -81,6 +81,22 @@ test('new reader attempt supersedes an unfinished older attempt and rejects its 
   } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('reader refresh cannot reuse locator effects from before its durable start', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-reader-refresh-causal-'));
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+  try {
+    acceptedCapture(metadata);
+    acceptedReaders(metadata);
+    recordEmailReaderRefreshReceipt(metadata, receipt(firstAttempt, 'pending', '2026-09-23T01:01:00.000Z'));
+    const beforeStart = receipt(firstAttempt, 'completed', '2026-09-23T01:02:00.000Z', { linkedCount: 1, unavailableCount: 1, readerPlanDigest: emailReaderPlanDigest(readerPlan) });
+    assert.throws(() => recordEmailReaderRefreshReceipt(metadata, beforeStart, readerPlan), /after this attempt began/);
+    const refreshedPlan = { ...readerPlan, records: readerPlan.records.map(record => ({ ...record, observedAt: '2026-09-23T01:01:30.000Z' })) };
+    for (const record of refreshedPlan.records) metadata.recordEmailReaderLocator({ sourceExternalId: producerSourceExternalId(namespace, record.sourceExternalId), sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt });
+    const afterStart = { ...beforeStart, readerPlanDigest: emailReaderPlanDigest(refreshedPlan) };
+    assert.equal(recordEmailReaderRefreshReceipt(metadata, afterStart, refreshedPlan).disposition, 'updated');
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('actual process termination after the pending effect leaves a recoverable receipt', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-reader-refresh-death-'));
   try {
@@ -112,15 +128,23 @@ test('two process owners racing the same attempt retain one durable start', asyn
     const seed = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     try { acceptedCapture(seed); } finally { seed.close(); }
     const pending = receipt(firstAttempt, 'pending', '2026-09-23T01:00:00.000Z');
-    const run = () => new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [fileURLToPath(new URL('./support/email-reader-refresh-crash-child.mjs', import.meta.url)), stateDir, JSON.stringify(pending), 'once'], { stdio: ['ignore', 'pipe', 'pipe'] });
-      let stdout = ''; let stderr = '';
-      const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('competing reader owner timed out')); }, 15_000);
-      child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
-      child.once('error', error => { clearTimeout(timeout); reject(error); });
-      child.once('exit', code => { clearTimeout(timeout); code === 0 ? resolve(stdout.trim()) : reject(new Error(`competing reader owner failed: ${stderr}`)); });
-    });
-    assert.deepEqual((await Promise.all([run(), run()])).sort(), ['duplicate', 'recorded']);
+    const openCompetitor = () => {
+      const child = spawn(process.execPath, [fileURLToPath(new URL('./support/email-reader-refresh-crash-child.mjs', import.meta.url)), stateDir, JSON.stringify(pending), 'barrier'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      let stdout = ''; let stderr = ''; let readyResolve; let readyReject;
+      const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+      const done = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('competing reader owner timed out')); }, 15_000);
+        child.stdout.on('data', chunk => { stdout += chunk; if (stdout.includes('ready\n')) readyResolve(); });
+        child.stderr.on('data', chunk => { stderr += chunk; });
+        child.once('error', error => { clearTimeout(timeout); readyReject(error); reject(error); });
+        child.once('exit', code => { clearTimeout(timeout); if (!stdout.includes('ready\n')) readyReject(new Error(`competing reader owner never opened: ${stderr}`)); code === 0 ? resolve(stdout.trim().split('\n').at(-1)) : reject(new Error(`competing reader owner failed: ${stderr}`)); });
+      });
+      return { child, ready, done };
+    };
+    const first = openCompetitor(); await first.ready;
+    const second = openCompetitor(); await second.ready;
+    first.child.stdin.write('go\n'); second.child.stdin.write('go\n');
+    assert.deepEqual((await Promise.all([first.done, second.done])).sort(), ['duplicate', 'recorded']);
     const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     try { assert.equal(metadata.listEmailReaderRefreshOperations(namespace).length, 1); }
     finally { metadata.close(); }

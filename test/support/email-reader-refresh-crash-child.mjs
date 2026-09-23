@@ -4,8 +4,14 @@ import { recordEmailReaderRefreshReceipt } from '../../src/open-loops/email-read
 const [stateDir, inputText, mode] = process.argv.slice(2);
 if (!stateDir || !inputText) throw new Error('fixture-input-required');
 const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
-const result = recordEmailReaderRefreshReceipt(metadata, JSON.parse(inputText));
-metadata.close();
-if (mode === 'once') { process.stdout.write(`${result.disposition}\n`); process.exit(0); }
-process.stdout.write('pending-persisted\n');
-setInterval(() => {}, 1000);
+const commit = () => {
+  const result = recordEmailReaderRefreshReceipt(metadata, JSON.parse(inputText));
+  metadata.close();
+  process.stdout.write(`${mode === 'barrier' || mode === 'once' ? result.disposition : 'pending-persisted'}\n`);
+  if (mode === 'barrier' || mode === 'once') process.exit(0);
+  setInterval(() => {}, 1000);
+};
+if (mode === 'barrier') {
+  process.stdout.write('ready\n');
+  process.stdin.once('data', commit);
+} else commit();
