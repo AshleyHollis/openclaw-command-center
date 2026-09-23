@@ -15,6 +15,7 @@ import { createProducerIntakeAdapter } from '../open-loops/producer-intake.mjs';
 import { prepareAdmittedRetry, reconcileAdmittedRetry, producerSourceExternalId } from '../open-loops/intake-retry.mjs';
 import { normalizeProducerIntakePlan, producerIntakePlanDigest } from '../open-loops/producer-intake-plan.mjs';
 import { normalizeEmailReaderPlan, emailReaderPlanDigest } from '../open-loops/email-reader-plan.mjs';
+import { recordEmailReaderRefreshReceipt } from '../open-loops/email-reader-refresh-receipt.mjs';
 import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeSourceAccountToolFactory, intakeOutcomeToolFactory } from '../open-loops/source-intake-tool.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -99,6 +100,15 @@ export async function runConfiguredEmailReaderPlan({ planPath, expectedDigest, s
     }
     return Object.freeze({ schemaVersion: 1, status: 'applied', count: dispositions.length, recorded: dispositions.filter(value => value === 'recorded').length, updated: dispositions.filter(value => value === 'updated').length, duplicate: dispositions.filter(value => value === 'duplicate').length, stale: dispositions.filter(value => value === 'stale').length });
   } finally { metadata.close(); }
+}
+
+export async function runConfiguredEmailReaderRefreshReceipt({ input, signal }) {
+  signal?.throwIfAborted();
+  const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')]);
+  signal?.throwIfAborted();
+  const metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
+  try { signal?.throwIfAborted(); return recordEmailReaderRefreshReceipt(metadata, input); }
+  finally { metadata.close(); }
 }
 
 async function importPinnedBackfillAdapter(filename, expectedDigest) {
@@ -452,6 +462,26 @@ export function registerReconciliationCli({ program, config, logger }) {
       process.once('SIGINT', abort); process.once('SIGTERM', abort);
       try { logger.info(JSON.stringify(await runConfiguredEmailReaderPlan({ planPath: options.plan, expectedDigest: options.digest, signal: cancellation.signal }))); }
       catch (error) { logger.error(error?.code ?? 'email-reader-plan-failed'); process.exitCode = 1; }
+      finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
+    });
+  intake.command('reader-status')
+    .description('Record one content-free original-email reader refresh attempt, independently of capture')
+    .requiredOption('--source-namespace <id>')
+    .requiredOption('--capture-run-id <id>')
+    .requiredOption('--batch-id <sha256>')
+    .requiredOption('--attempt-id <uuid>')
+    .requiredOption('--status <pending|completed|failed>')
+    .requiredOption('--observed-at <iso>')
+    .requiredOption('--selected <count>')
+    .requiredOption('--linked <count>')
+    .requiredOption('--unavailable <count>')
+    .option('--failure-code <code>')
+    .action(async options => {
+      const cancellation = new AbortController();
+      const abort = () => cancellation.abort(Object.assign(new Error('email-reader-cancelled'), { code: 'email-reader-cancelled' }));
+      process.once('SIGINT', abort); process.once('SIGTERM', abort);
+      try { logger.info(JSON.stringify(await runConfiguredEmailReaderRefreshReceipt({ input: { schemaVersion: 1, sourceNamespace: options.sourceNamespace, captureRunId: options.captureRunId, batchId: options.batchId, attemptId: options.attemptId, status: options.status, observedAt: options.observedAt, selectedCount: Number(options.selected), linkedCount: Number(options.linked), unavailableCount: Number(options.unavailable), ...(options.failureCode ? { failureCode: options.failureCode } : {}) }, signal: cancellation.signal }))); }
+      catch (error) { logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'email-reader-status-failed'); process.exitCode = 1; }
       finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
     });
   group.command('verify-discoverability').description('Verify active Topic and Primary Conversation discoverability').action(async () => {

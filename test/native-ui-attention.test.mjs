@@ -673,7 +673,7 @@ test('Dashboard labels admitted retry separately from a failed source scan', () 
 test('Dashboard keeps reader availability separate from successful email capture', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];
-    window.intakeCoverage = [{ source: 'Email intake', sourceKind: 'email', status: 'receipt-current', receiptStatus: 'receipt-current', lastSuccessfulAt: '2026-09-22T02:00:00.000Z', discovery: { scope: 'unknown' }, readerLocations: { status: 'unavailable', total: 3, available: 1, unavailable: 1, missing: 1, lookupFailed: 0, lastObservedAt: '2026-09-22T02:05:00.000Z' } }];
+    window.intakeCoverage = [{ source: 'Email intake', sourceKind: 'email', status: 'receipt-current', receiptStatus: 'receipt-current', lastSuccessfulAt: '2026-09-22T02:00:00.000Z', discovery: { scope: 'unknown' }, readerLocations: { status: 'unavailable', total: 3, available: 1, unavailable: 1, missing: 1, lookupFailed: 0, lastObservedAt: '2026-09-22T02:05:00.000Z' }, readerRefresh: { status: 'failed', observedAt: '2026-09-22T02:06:00.000Z', selectedCount: 3, linkedCount: 1, unavailableCount: 1, failureCode: 'reader-apply-failed', lastSuccessfulAt: '2026-09-21T02:00:00.000Z' } }];
     window.mountInbox();
   });
   const coverage = page.locator('section[data-dashboard-section="coverage"]');
@@ -681,6 +681,8 @@ test('Dashboard keeps reader availability separate from successful email capture
   await coverage.getByText(/receipt-current · Last successful/u).waitFor();
   await coverage.getByText(/Original-email reader links: unavailable · 1 location recorded · 1 explicitly unavailable · 1 without a reader receipt/u).waitFor();
   await coverage.getByText(/Capture can succeed while reader refresh is unconfirmed/u).waitFor();
+  await coverage.getByText(/Reader refresh run: failed.*reader-apply-failed.*1 confirmed linked.*1 confirmed unavailable of 3 selected/u).waitFor();
+  await coverage.getByText(/This status is separate from accepted email capture/u).waitFor();
 }));
 
 test('Dashboard states the accepted past deadline instead of fabricating a new date', () => fixture(async (page) => {

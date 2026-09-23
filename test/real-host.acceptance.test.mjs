@@ -44,7 +44,7 @@ import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVarian
 import { exerciseNativeHistoricalBackfillJourney } from './support/first-live-native-backfill.mjs';
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
 import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
-import { startFictionalOpenAiModel, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId, fictionalAccountedEmailPlan } from './support/fictional-openai-model.mjs';
+import { startFictionalOpenAiModel, fictionalAccountedEmailBinding, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId, fictionalAccountedEmailPlan } from './support/fictional-openai-model.mjs';
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
@@ -1328,6 +1328,25 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         }), 70_000);
         assert.match(retryOutput, /"retriedSources":1/u);
         milestone('installed-retry-complete');
+        const readerStatusAttempt = randomUUID();
+        const recordInstalledReaderStatus = async (status, observedAt, failureCode) => withDeadline(`installed reader ${status} status`, () => new Promise((resolve, reject) => {
+          execFile(process.execPath, [installedWrapper, 'command-center', 'intake', 'reader-status',
+            '--source-namespace', `microsoft-graph:${fictionalAccountedEmailBinding}`, '--batch-id', `sha256:${'b'.repeat(64)}`,
+            '--capture-run-id', 'fictional-real-host-resume',
+            '--attempt-id', readerStatusAttempt, '--status', status, '--observed-at', observedAt,
+            '--selected', '1', '--linked', '0', '--unavailable', '0', ...(failureCode ? ['--failure-code', failureCode] : [])], {
+            cwd: descriptor.checkout, timeout: 60_000, maxBuffer: 1_000_000,
+            env: { PATH: process.env.PATH, HOME: scenarioWorld.root, OPENCLAW_CONFIG_PATH: scenarioWorld.manifest.configPath, OPENCLAW_STATE_DIR: path.join(scenarioWorld.root, '.openclaw'), COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1' }
+          }, (error, stdout, stderr) => error ? reject(new Error(`Installed reader status failed: ${stderr.slice(0, 500)}`, { cause: error })) : resolve(stdout));
+        }), 70_000);
+        assert.match(await recordInstalledReaderStatus('pending', '2026-09-22T04:03:00.000Z'), /"disposition":"recorded"/u);
+        assert.match(await recordInstalledReaderStatus('failed', '2026-09-22T04:03:01.000Z', 'provider-read-failed'), /"disposition":"updated"/u);
+        const failedReaderDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
+        const failedReaderEmail = failedReaderDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
+        assert.equal(failedReaderEmail.receiptStatus, 'healthy-processed', 'a reader failure cannot replace accepted capture');
+        assert.equal(failedReaderEmail.readerRefresh.status, 'failed');
+        assert.equal(failedReaderEmail.readerRefresh.failureCode, 'provider-read-failed');
+        milestone('installed-reader-failure-visible');
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         const dashboardPage = page.locator('openclaw-plugin-page');
         await dashboardPage.getByRole('heading', { name: 'Command Center', exact: true }).waitFor({ timeout: 30_000 });
@@ -1336,6 +1355,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await emailCard.getByText('1 of 1 admitted sources accounted for · 1 resolved · 4 of 4 outcomes accounted for · 0 decisions pending · 0 failed outcomes', { exact: true }).waitFor();
         await emailCard.getByText(/Admitted-work retry healthy-processed.*This did not scan new mail/u).waitFor();
         await emailCard.getByText(/Original-email reader links: recorded · 1 location recorded · 0 explicitly unavailable · 0 without a reader receipt/u).waitFor();
+        await emailCard.getByText(/Reader refresh run: failed.*provider-read-failed.*separate from accepted email capture/u).waitFor();
         await emailCard.getByText('Upstream discovery in the recorded scope: 1 scanned · 0 remaining · 0 failed reads.', { exact: true }).waitFor();
         await emailCard.getByText(/Latest attempt scope: inbox · .* to .* · at most 50 scanned messages per bounded batch/u).waitFor();
         await emailCard.locator('details > summary').click();
@@ -1389,7 +1409,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           assert.equal(durable.plan.processorVersion, 'fictional-real-host-processor-v1');
           assert.deepEqual(durable.account.outcomes.map(item => item.status), ['clarified', 'applied', 'applied', 'quiet']);
         } finally { afterRetry.close(); }
-        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, mockedOutlookOpen: true });
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedReaderStatusCommand: true, installedRetryCommand: true, mockedOutlookOpen: true });
       }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
