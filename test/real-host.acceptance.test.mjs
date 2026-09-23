@@ -1323,7 +1323,9 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await dashboardPage.getByRole('heading', { name: 'Command Center', exact: true }).waitFor({ timeout: 30_000 });
         milestone('dashboard-mounted');
         const emailCard = dashboardPage.locator('.cc-coverage-card').filter({ hasText: 'Email intake' });
-        await emailCard.getByText('1 of 1 sources accounted for · 1 resolved · 4 of 4 outcomes accounted for', { exact: true }).waitFor();
+        await emailCard.getByText('1 of 1 admitted sources accounted for · 1 resolved · 4 of 4 outcomes accounted for · 0 decisions pending · 0 failed outcomes', { exact: true }).waitFor();
+        await emailCard.getByText('Upstream discovery in the recorded scope: 1 scanned · 0 remaining · 0 failed reads.', { exact: true }).waitFor();
+        await emailCard.getByText(/Latest attempt scope: inbox · .* to .* · at most 50 scanned messages per bounded batch/u).waitFor();
         await emailCard.locator('details > summary').click();
         await emailCard.getByText('Choose fictional real-host delivery window: clarified', { exact: true }).waitFor();
         await emailCard.getByText('Pay fictional real-host invoice: applied', { exact: true }).waitFor();

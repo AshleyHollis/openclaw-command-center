@@ -136,6 +136,23 @@ test('Dashboard coverage reports healthy, stale, pending, failed and never-conne
   metadata.listOperations = () => [operation('email', 'not-applied', { status: 'failed', observedAt: '2026-09-20T01:00:00.000Z' }, '2026-09-20T01:00:00.000Z')];
   result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
   assert.equal(result.intakeCoverage[0].status, 'failed');
+  metadata.listOperations = () => [
+    operation('email', 'applied', { status: 'healthy-processed', observedAt: '2026-09-18T01:00:00.000Z', lastSuccessfulAt: '2026-09-18T01:00:00.000Z', nextExpectedAt: '2026-09-19T01:00:00.000Z', scope: { accountBinding: 'fictional-account-a', folders: ['older-folder'], sinceUtc: '2026-09-17T00:00:00.000Z', beforeUtc: '2026-09-18T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' } }, '2026-09-18T01:00:00.000Z'),
+    operation('email', 'not-applied', { status: 'failed', observedAt: '2026-09-20T01:00:00.000Z', scope: { accountBinding: 'fictional-account-a', folders: ['inbox'], sinceUtc: '2026-09-19T00:00:00.000Z', beforeUtc: '2026-09-20T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' }, enumeration: { scope: 'partial', scannedCount: 50, remainingCount: 4, failedReadCount: 1, scanCapReached: true } }, '2026-09-20T01:00:00.000Z')
+  ];
+  result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
+  assert.equal(result.intakeCoverage[0].status, 'failed');
+  assert.equal(result.intakeCoverage[0].lastObservedAt, '2026-09-20T01:00:00.000Z');
+  assert.equal(result.intakeCoverage[0].lastSuccessfulAt, '2026-09-18T01:00:00.000Z');
+  assert.equal(result.intakeCoverage[0].discovery.failedReadCount, 1);
+  assert.deepEqual(result.intakeCoverage[0].attemptScope.folders, ['inbox']);
+  assert.deepEqual(result.intakeCoverage[0].lastSuccessfulScope.folders, ['older-folder']);
+  metadata.listOperations = () => [
+    operation('email', 'applied', { status: 'healthy-empty', observedAt: '2026-09-18T01:00:00.000Z', lastSuccessfulAt: '2026-09-18T01:00:00.000Z', scope: { accountBinding: 'fictional-account-b', folders: ['inbox'], sinceUtc: '2026-09-17T00:00:00.000Z', beforeUtc: '2026-09-18T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' } }, '2026-09-18T01:00:00.000Z'),
+    operation('email', 'not-applied', { status: 'failed', observedAt: '2026-09-20T01:00:00.000Z', scope: { accountBinding: 'fictional-account-a', folders: ['inbox'], sinceUtc: '2026-09-19T00:00:00.000Z', beforeUtc: '2026-09-20T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' } }, '2026-09-20T01:00:00.000Z')
+  ];
+  result = await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-20T02:00:00.000Z' });
+  assert.equal(result.intakeCoverage[0].lastSuccessfulAt, undefined, 'another bound account cannot supply this account’s success');
 });
 
 test('Dashboard distinguishes source accounting from outcome resolution and exposes bounded gaps', async () => {

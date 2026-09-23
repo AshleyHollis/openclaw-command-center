@@ -269,6 +269,24 @@ test('a failed page continuation survives SQLite restart and clears only after s
   } finally { metadata?.close(); await temporary.cleanup(); }
 });
 
+test('a bounded email receipt retains content-free source scope and discovery after SQLite restart', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-scope-');
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path });
+    const scope = { accountBinding: 'sha256:fictional-account', folders: ['inbox'], sinceUtc: '2026-09-20T00:00:00.000Z', beforeUtc: '2026-09-21T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' };
+    const enumeration = { scope: 'partial', scannedCount: 50, remainingCount: 4, failedReadCount: 1, scanCapReached: true };
+    recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: 'email-scope', checkpoint: 'page-1', status: 'failed', observedAt: '2026-09-21T01:00:00.000Z', processedCount: 2, actionableCount: 1, noteCount: 1, scope, enumeration });
+    metadata.close(); metadata = openCommandCenterMetadataService({ stateDir: temporary.path });
+    const operation = metadata.listOperations().find(item => item.operationKind === 'intake-receipt.email.v1');
+    const retained = JSON.parse(operation.resultIdentity);
+    assert.deepEqual(retained.scope, scope);
+    assert.deepEqual(retained.enumeration, enumeration);
+    assert.throws(() => recordIntakeReceipt(metadata, { ...retained, runId: 'invalid-scope', scope: { ...scope, sinceUtc: scope.beforeUtc } }), { code: 'invalid-request' });
+    assert.throws(() => recordIntakeReceipt(metadata, { ...retained, runId: 'invalid-enumeration', enumeration: { ...enumeration, scannedCount: 51 } }), { code: 'invalid-request' });
+  } finally { metadata?.close(); await temporary.cleanup(); }
+});
+
 test('a late older run cannot restore its obsolete continuation after a newer run succeeds', async () => {
   const temporary = await temporaryStateDir('command-center-intake-generation-');
   try {

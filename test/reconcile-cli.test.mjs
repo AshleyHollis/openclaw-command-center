@@ -92,6 +92,9 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
       assert.equal(observation.source.externalId, producerSourceExternalId('fictional-graph:account-one', 'fictional-message-id'));
       const account = verification.listOperations().find(item => item.operationKind === 'intake-source.email.v1');
       assert.equal(account.observedRevision, 'email-change-key-9');
+      const receipt = JSON.parse(verification.listOperations().find(item => item.operationKind === 'intake-receipt.email.v1').resultIdentity);
+      assert.deepEqual(receipt.scope, plan.scope);
+      assert.deepEqual(receipt.enumeration, plan.enumeration);
       assert.equal(verification.getEmailReaderLocator(observation.source.externalId, observation.facts.sourceVersion).webLink, readerPlan.records[0].webLink);
     } finally { verification.close(); }
   } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }

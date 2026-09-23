@@ -214,7 +214,7 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
       async captureChatCommitment() { fail('producer-source-kind-invalid'); },
       recordIntakeSourcePlan: params => invoke(tools.plan, params), recordIntakeOutcome: params => invoke(tools.outcome, params), recordIntakeReceipt: params => invoke(tools.receipt, params)
     });
-    return await adapter.process({ runId: plan.runId, sourceKind: plan.sourceKind, records: plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, enumeration: plan.enumeration });
+    return await adapter.process({ runId: plan.runId, sourceKind: plan.sourceKind, records: plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, enumeration: plan.enumeration, scope: plan.scope });
   } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
 }
 

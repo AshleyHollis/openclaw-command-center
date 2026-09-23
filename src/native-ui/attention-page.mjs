@@ -1061,10 +1061,15 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           const coverageRows = Array.isArray(dashboard.intakeCoverage) ? dashboard.intakeCoverage : [];
           if (!coverageRows.length) coverage.append(element('p', 'Coverage is unknown because this response contains no maintained processing receipts.'));
           for (const row of coverageRows) {
-            const article = element('article'); article.className = 'cc-coverage-card'; article.append(element('h4', row.source ?? row.sourceKind ?? 'Source'), element('p', `${row.status ?? 'unknown'}${row.lastSuccessfulAt ? ` · Last successful ${formatInstant(row.lastSuccessfulAt)}` : row.lastObservedAt ? ` · Last observed ${formatInstant(row.lastObservedAt)}` : ''}`));
+            const article = element('article'); article.className = 'cc-coverage-card'; article.append(element('h4', row.source ?? row.sourceKind ?? 'Source'), element('p', `${row.status ?? 'unknown'}${row.lastObservedAt ? ` · Last attempt ${formatInstant(row.lastObservedAt)} (${row.receiptStatus ?? 'unknown'})` : ''}${row.lastSuccessfulAt ? ` · Last successful ${formatInstant(row.lastSuccessfulAt)}` : ''}`));
+            if (row.nextExpectedAt) article.append(element('p', `Next expected checkpoint ${formatInstant(row.nextExpectedAt)}.`));
+            const scopeText = scope => `${scope.folders.join(', ')} · ${formatInstant(scope.sinceUtc)} to ${formatInstant(scope.beforeUtc)} · at most ${scope.maxMessages} scanned messages per ${scope.batchKind} batch`;
+            if (row.attemptScope) article.append(element('p', `Latest attempt scope: ${scopeText(row.attemptScope)}.`));
+            if (row.lastSuccessfulAt && (!row.lastSuccessfulScope || JSON.stringify(row.lastSuccessfulScope) !== JSON.stringify(row.attemptScope))) article.append(element('p', row.lastSuccessfulScope ? `Last successful scope: ${scopeText(row.lastSuccessfulScope)}.` : 'Last successful scope is unknown for an older receipt.'));
+            if (row.sourceKind === 'email') article.append(element('p', row.discovery?.scope === 'unknown' ? 'Upstream discovery scope is unknown for this receipt; accounted sources do not establish whole-mailbox coverage.' : `Upstream discovery in the recorded scope: ${row.discovery.scannedCount} scanned · ${row.discovery.remainingCount} remaining · ${row.discovery.failedReadCount} failed reads${row.discovery.scanCapReached ? ' · scan cap reached' : ''}${row.discovery.canResume ? ' · continuation retained' : ''}.`));
             if (row.explanation) article.append(element('p', row.explanation));
             if (row.sourceCounts || row.outcomeCounts) {
-              const summary = element('p', `${row.sourceCounts?.accounted ?? 0} of ${row.sourceCounts?.observed ?? 0} sources accounted for · ${row.sourceCounts?.resolved ?? 0} resolved · ${row.outcomeCounts?.accounted ?? 0} of ${row.outcomeCounts?.expected ?? 0} outcomes accounted for`);
+              const summary = element('p', `${row.sourceCounts?.accounted ?? 0} of ${row.sourceCounts?.observed ?? 0} admitted sources accounted for · ${row.sourceCounts?.resolved ?? 0} resolved · ${row.outcomeCounts?.accounted ?? 0} of ${row.outcomeCounts?.expected ?? 0} outcomes accounted for · ${row.outcomeCounts?.pendingDecisions ?? 0} decisions pending · ${row.outcomeCounts?.failed ?? 0} failed outcomes`);
               summary.className = 'cc-coverage-note'; article.append(summary);
             }
             const recentSources = Array.isArray(row.recentSources) ? row.recentSources : [];
