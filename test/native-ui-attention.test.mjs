@@ -389,6 +389,7 @@ test('Dashboard distinguishes disconnected intake from a healthy empty day', () 
   await page.getByRole('heading', { name: 'What needs you now' }).waitFor();
   await page.getByText('Nothing needs you today.', { exact: false }).waitFor();
   await page.getByRole('status').filter({ hasText: 'Intake coverage is shown in Dashboards.' }).waitFor();
+  await page.getByText('Upstream discovery scope is unknown for this receipt; accounted sources do not establish whole-mailbox coverage.', { exact: true }).waitFor();
 }));
 
 test('Dashboard reads a saved briefing and completes only the current routine occurrence', () => fixture(async (page) => {
@@ -529,8 +530,11 @@ test('Dashboard intake drill-through distinguishes accounted sources, pending de
     window.mountInbox();
   });
   const coverage = page.locator('section[data-dashboard-section="coverage"]');
-  await coverage.getByText('1 of 1 sources accounted for · 0 resolved · 4 of 4 outcomes accounted for', { exact: true }).waitFor();
+  await coverage.getByText('1 of 1 admitted sources accounted for · 0 resolved · 4 of 4 outcomes accounted for · 1 decisions pending · 0 failed outcomes', { exact: true }).waitFor();
   await coverage.getByText('Inspect 1 recent source', { exact: true }).click();
+  await coverage.getByText('Source 1', { exact: true }).waitFor();
+  assert.equal(await coverage.getByText('page-2:message-42', { exact: true }).isVisible(), false);
+  await coverage.getByText('Technical source checkpoint', { exact: true }).click();
   await coverage.getByText('page-2:message-42', { exact: true }).waitFor();
   await coverage.getByText('1 failed reads · 3 remaining · scan cap reached', { exact: true }).waitFor();
   await coverage.getByText('Choose fictional delivery window: pending-decision', { exact: true }).waitFor();
