@@ -9,7 +9,7 @@ test('accounted mixed email diagnosis selects its exact installed-host journey',
 });
 
 test('reader refresh diagnosis selects its bounded installed-host journey', () => {
-  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-reader-refresh').isolatedSliceIds, ['reader-refresh']);
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-reader-refresh').isolatedSliceIds, ['reader-refresh-failed', 'reader-refresh-completed']);
 });
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
