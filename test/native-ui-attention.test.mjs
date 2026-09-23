@@ -670,6 +670,19 @@ test('Dashboard labels admitted retry separately from a failed source scan', () 
   await coverage.getByText(/failed · Last attempt/u).waitFor();
 }));
 
+test('Dashboard keeps reader availability separate from successful email capture', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.intakeCoverage = [{ source: 'Email intake', sourceKind: 'email', status: 'receipt-current', receiptStatus: 'receipt-current', lastSuccessfulAt: '2026-09-22T02:00:00.000Z', discovery: { scope: 'unknown' }, readerLocations: { status: 'unavailable', total: 3, available: 1, unavailable: 1, missing: 1, lookupFailed: 0, lastObservedAt: '2026-09-22T02:05:00.000Z' } }];
+    window.mountInbox();
+  });
+  const coverage = page.locator('section[data-dashboard-section="coverage"]');
+  await coverage.getByRole('heading', { name: 'Email intake' }).waitFor();
+  await coverage.getByText(/receipt-current · Last successful/u).waitFor();
+  await coverage.getByText(/Original-email reader links: unavailable · 1 location recorded · 1 explicitly unavailable · 1 without a reader receipt/u).waitFor();
+  await coverage.getByText(/Capture can succeed while reader refresh is unconfirmed/u).waitFor();
+}));
+
 test('Dashboard states the accepted past deadline instead of fabricating a new date', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];

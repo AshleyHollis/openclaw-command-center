@@ -1335,6 +1335,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const emailCard = dashboardPage.locator('.cc-coverage-card').filter({ hasText: 'Email intake' });
         await emailCard.getByText('1 of 1 admitted sources accounted for · 1 resolved · 4 of 4 outcomes accounted for · 0 decisions pending · 0 failed outcomes', { exact: true }).waitFor();
         await emailCard.getByText(/Admitted-work retry healthy-processed.*This did not scan new mail/u).waitFor();
+        await emailCard.getByText(/Original-email reader links: recorded · 1 location recorded · 0 explicitly unavailable · 0 without a reader receipt/u).waitFor();
         await emailCard.getByText('Upstream discovery in the recorded scope: 1 scanned · 0 remaining · 0 failed reads.', { exact: true }).waitFor();
         await emailCard.getByText(/Latest attempt scope: inbox · .* to .* · at most 50 scanned messages per bounded batch/u).waitFor();
         await emailCard.locator('details > summary').click();

@@ -170,6 +170,28 @@ test('Dashboard reports an admitted retry without presenting it as a new source 
   assert.equal(row.lastAdmittedRetry, undefined, 'a later producer attempt must not inherit an old retry');
 });
 
+test('Dashboard reports original-email reader gaps independently of successful capture', async () => {
+  const source = version => ({ operationKind: 'intake-source.email.v1', state: 'applied', resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-source', sourceVersion: version, checkpoint: `fictional-${version}`, observedAt: '2026-09-22T01:00:00.000Z', outcomes: [], enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } }) });
+  const receipt = { operationKind: 'intake-receipt.email.v1', state: 'applied', resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind: 'email', runId: 'fictional-run', checkpoint: 'fictional-v2', status: 'healthy-processed', observedAt: '2026-09-22T02:00:00.000Z', lastSuccessfulAt: '2026-09-22T02:00:00.000Z', nextExpectedAt: '2026-09-23T02:00:00.000Z', processedCount: 1, actionableCount: 0, noteCount: 1 }) };
+  const metadata = {
+    listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [],
+    listOperations: () => [source('older'), source('v2'), receipt],
+    getEmailReaderLocator: (_sourceId, version) => version === 'v2' ? { status: 'unavailable', observedAt: '2026-09-22T02:05:00.000Z' } : { status: 'available', observedAt: '2026-09-21T02:05:00.000Z' }
+  };
+  const project = async () => (await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-22T03:00:00.000Z' })).intakeCoverage[0];
+  let row = await project();
+  assert.equal(row.status, 'receipt-current', 'reader failure cannot rewrite the capture receipt');
+  assert.deepEqual(row.readerLocations, { status: 'unavailable', total: 1, available: 0, unavailable: 1, missing: 0, lookupFailed: 0, lastObservedAt: '2026-09-22T02:05:00.000Z' });
+  metadata.getEmailReaderLocator = () => null;
+  row = await project();
+  assert.equal(row.status, 'receipt-current');
+  assert.deepEqual(row.readerLocations, { status: 'unconfirmed', total: 1, available: 0, unavailable: 0, missing: 1, lookupFailed: 0 });
+  metadata.getEmailReaderLocator = () => ({ status: 'available', observedAt: '2026-09-22T02:06:00.000Z' });
+  row = await project();
+  assert.equal(row.readerLocations.status, 'recorded');
+  assert.equal(row.readerLocations.available, 1);
+});
+
 test('Dashboard distinguishes source accounting from outcome resolution and exposes bounded gaps', async () => {
   const base = { listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
   const source = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'v7', checkpoint: 'page-2:message-42', observedAt: '2026-09-22T01:00:00.000Z', outcomes: [{ outcomeId: 'pay', kind: 'obligation' }, { outcomeId: 'choose', kind: 'decision' }, { outcomeId: 'reference', kind: 'information' }], enumeration: { scope: 'bounded', scannedCount: 25, remainingCount: 3, failedReadCount: 1, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-3' } };
