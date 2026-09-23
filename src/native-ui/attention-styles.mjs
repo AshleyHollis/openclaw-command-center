@@ -78,7 +78,7 @@ export const attentionStyles = `
   .cc-briefing-card, .cc-briefing-history { border-top:1px solid var(--cc-line); padding-block:.8rem; }
   .cc-briefing-card:first-of-type { border-top:0; }
   .cc-routine-card { border-inline-start:4px solid var(--cc-accent); }
-  .cc-coverage-card { display:grid; grid-template-columns:minmax(6rem,.7fr) minmax(0,1.3fr); gap:.25rem .75rem; align-items:baseline; }
+  .cc-coverage-card { display:grid; grid-template-columns:minmax(0,1fr); gap:.5rem; align-items:start; }
   .cc-coverage-card h4 { margin:0; }
   .cc-coverage-card p { margin:0; }
   .cc-coverage-note { font-size:.74rem; }
@@ -87,6 +87,8 @@ export const attentionStyles = `
   .cc-coverage-source { margin-top:.65rem; padding:.65rem; border:1px solid var(--cc-line); border-radius:.65rem; background:color-mix(in srgb, CanvasText 2%, Canvas); }
   .cc-coverage-source>p { margin:.25rem 0; }
   .cc-coverage-source ul { margin:.4rem 0 0; padding-inline-start:1.2rem; font-size:.76rem; color:var(--cc-muted); }
+  .cc-coverage-source li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:.45rem; align-items:center; margin-top:.35rem; }
+  .cc-coverage-source code { font-size:.72rem; overflow-wrap:anywhere; }
   .cc-planner-board { display:grid; grid-template-columns:repeat(5,minmax(15rem,1fr)); gap:.8rem; overflow-x:auto; padding:.75rem .15rem .35rem; scrollbar-gutter:stable; }
   .cc-planner-lane { min-width:0; min-height:16rem; max-height:68vh; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--cc-line); border-radius:.85rem; padding:.7rem; background:color-mix(in srgb, Canvas 94%, CanvasText 6%); scrollbar-gutter:stable; }
   .cc-planner-lane>h3 { position:sticky; top:0; z-index:1; margin:0; padding:.45rem; border-radius:.5rem; background:var(--cc-panel); font-size:.85rem; }
@@ -120,6 +122,7 @@ export const attentionStyles = `
     .cc-planner-controls { grid-template-columns:minmax(0,1fr); }
   }
   @media (max-width: 850px) { .cc-command-center-page { padding:1rem 1rem 1rem 3rem; } }
+  @media (max-width: 600px) { .cc-coverage-source li { grid-template-columns:minmax(0,1fr); } .cc-coverage-source li button { justify-self:start; } }
   @media (prefers-color-scheme: dark) {
     .cc-command-center-page { --cc-accent:#83b996; --cc-accent-strong:#9bcaaa; --cc-shadow:0 8px 28px #0004; }
     .cc-toolbar button:last-of-type, .cc-open-loop-card>button { color:#102418; }

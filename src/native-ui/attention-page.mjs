@@ -1069,7 +1069,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
             const scopeText = scope => `${scope.folders.join(', ')} · ${formatInstant(scope.sinceUtc)} to ${formatInstant(scope.beforeUtc)} · at most ${scope.maxMessages} scanned messages per ${scope.batchKind} batch`;
             if (row.attemptScope) article.append(element('p', `Latest attempt scope: ${scopeText(row.attemptScope)}.`));
             if (row.lastSuccessfulAt && (!row.lastSuccessfulScope || JSON.stringify(row.lastSuccessfulScope) !== JSON.stringify(row.attemptScope))) article.append(element('p', row.lastSuccessfulScope ? `Last successful scope: ${scopeText(row.lastSuccessfulScope)}.` : 'Last successful scope is unknown for an older receipt.'));
-            if (row.sourceKind === 'email') article.append(element('p', row.discovery?.scope === 'unknown' ? 'Upstream discovery scope is unknown for this receipt; accounted sources do not establish whole-mailbox coverage.' : `Upstream discovery in the recorded scope: ${row.discovery.scannedCount} scanned · ${row.discovery.remainingCount} remaining · ${row.discovery.failedReadCount} failed reads${row.discovery.scanCapReached ? ' · scan cap reached' : ''}${row.discovery.canResume ? ' · continuation retained' : ''}.`));
+            if (row.sourceKind === 'email') article.append(element('p', !row.discovery || row.discovery.scope === 'unknown' ? 'Upstream discovery scope is unknown for this receipt; accounted sources do not establish whole-mailbox coverage.' : `Upstream discovery in the recorded scope: ${row.discovery.scannedCount} scanned · ${row.discovery.remainingCount} remaining · ${row.discovery.failedReadCount} failed reads${row.discovery.scanCapReached ? ' · scan cap reached' : ''}${row.discovery.canResume ? ' · continuation retained' : ''}.`));
             if (row.explanation) article.append(element('p', row.explanation));
             if (row.sourceCounts || row.outcomeCounts) {
               const summary = element('p', `${row.sourceCounts?.accounted ?? 0} of ${row.sourceCounts?.observed ?? 0} admitted sources accounted for · ${row.sourceCounts?.resolved ?? 0} resolved · ${row.outcomeCounts?.accounted ?? 0} of ${row.outcomeCounts?.expected ?? 0} outcomes accounted for · ${row.outcomeCounts?.pendingDecisions ?? 0} decisions pending · ${row.outcomeCounts?.failed ?? 0} failed outcomes`);
@@ -1078,9 +1078,10 @@ export function mountAttentionPage(container, context, operations = new Map(), p
             const recentSources = Array.isArray(row.recentSources) ? row.recentSources : [];
             if (recentSources.length) {
               const details = element('details'); details.append(element('summary', `Inspect ${recentSources.length} recent source${recentSources.length === 1 ? '' : 's'}`));
-              for (const source of recentSources) {
+              for (const [index, source] of recentSources.entries()) {
                 const sourceRow = element('div'); sourceRow.className = 'cc-coverage-source';
-                sourceRow.append(element('strong', source.checkpoint ?? 'Source checkpoint'), element('p', `${source.accounted ? 'Accounted for' : 'Partially accounted for'} · ${source.resolved ? 'Resolved' : 'Still open'} · ${source.counts?.accounted ?? 0} of ${source.counts?.expected ?? 0} outcomes`));
+                sourceRow.append(element('strong', `Source ${index + 1}${source.observedAt ? ` · observed ${formatInstant(source.observedAt)}` : ''}`), element('p', `${source.accounted ? 'Accounted for' : 'Partially accounted for'} · ${source.resolved ? 'Resolved' : 'Still open'} · ${source.counts?.accounted ?? 0} of ${source.counts?.expected ?? 0} outcomes`));
+                if (nonBlank(source.checkpoint)) { const technical = element('details'); technical.append(element('summary', 'Technical source checkpoint'), element('code', source.checkpoint)); sourceRow.append(technical); }
                 if (source.enumeration?.failedReadCount || source.enumeration?.remainingCount || source.enumeration?.scanCapReached) sourceRow.append(element('p', `${source.enumeration.failedReadCount ?? 0} failed reads · ${source.enumeration.remainingCount ?? 0} remaining${source.enumeration.scanCapReached ? ' · scan cap reached' : ''}`));
                 const outcomes = element('ul');
                 for (const outcome of source.outcomes ?? []) {
