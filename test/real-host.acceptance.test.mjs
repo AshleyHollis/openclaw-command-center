@@ -46,7 +46,7 @@ import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVarian
 import { exerciseNativeHistoricalBackfillJourney } from './support/first-live-native-backfill.mjs';
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
 import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
-import { startFictionalOpenAiModel, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId, fictionalAccountedEmailPlan } from './support/fictional-openai-model.mjs';
+import { startFictionalOpenAiModel, fictionalAccountedEmailBinding, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId, fictionalAccountedEmailPlan } from './support/fictional-openai-model.mjs';
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
@@ -1173,7 +1173,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       const namespace = `microsoft-graph:${fictionalAccountedEmailBinding}`;
       const metadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), capabilities: READY_CAPABILITIES });
       try {
-        recordIntakeSourcePlan(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: producerSourceExternalId(namespace, 'fictional-reader-source'), sourceVersion: 'fictional-upstream-reader-v1', checkpoint: 'fictional-reader-checkpoint', observedAt: '2026-09-23T00:56:00.000Z', processorVersion: 'fictional-reader-processor-v1', acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'none', summary: 'Fictional information only' } }, outcomes: [{ outcomeId: 'none', kind: 'no-action' }] });
+        recordIntakeSourcePlan(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: producerSourceExternalId(namespace, 'fictional-reader-source'), sourceVersion: 'fictional-upstream-reader-v1', checkpoint: 'fictional-reader-checkpoint', observedAt: '2026-09-23T00:54:00.000Z', processorVersion: 'fictional-reader-processor-v1', acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'none', summary: 'Fictional information only' } }, outcomes: [{ outcomeId: 'none', kind: 'no-action' }] });
         recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: 'fictional-reader-accepted', checkpoint: 'fictional-reader-checkpoint', status: 'healthy-processed', observedAt: '2026-09-23T00:55:00.000Z', lastSuccessfulAt: '2026-09-23T00:55:00.000Z', nextExpectedAt: '2026-09-24T00:55:00.000Z', processedCount: 1, actionableCount: 0, noteCount: 1, scope: { accountBinding: fictionalAccountedEmailBinding, folders: ['inbox'], sinceUtc: '2026-09-22T00:00:00.000Z', beforeUtc: '2026-09-23T00:00:00.000Z', maxMessages: 1, batchKind: 'bounded' } });
       } finally { metadata.close(); }
     }
