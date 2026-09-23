@@ -1265,6 +1265,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           assert.equal(failed.lastSuccessfulAt, '2026-09-23T00:55:00.000Z');
           await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
           const emailCard = page.locator('openclaw-plugin-page .cc-coverage-card').filter({ hasText: 'Email intake' });
+          await emailCard.getByText('Upstream discovery scope is unknown for this receipt; accounted sources do not establish whole-mailbox coverage.', { exact: true }).waitFor({ timeout: 30_000 });
           await emailCard.getByText(/Reader refresh run: failed.*provider-read-failed.*separate from accepted email capture/u).waitFor({ timeout: 30_000 });
           await retainNativeChatScreenshot(page, 'reader-refresh-failed-dashboard');
           return Object.freeze({ kind, assertionsCompleted: true, seededAcceptedSourceFixture: true, installedReaderStatusCommand: true, failedDashboardInspected: true, liveGraphRead: false });
@@ -1283,6 +1284,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.equal(completed.lastSuccessfulAt, '2026-09-23T00:55:00.000Z');
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         const emailCard = page.locator('openclaw-plugin-page .cc-coverage-card').filter({ hasText: 'Email intake' });
+        await emailCard.getByText('Upstream discovery scope is unknown for this receipt; accounted sources do not establish whole-mailbox coverage.', { exact: true }).waitFor({ timeout: 30_000 });
         await emailCard.getByText(/Reader refresh run: completed.*1 confirmed linked.*separate from accepted email capture/u).waitFor({ timeout: 30_000 });
         await retainNativeChatScreenshot(page, 'reader-refresh-completed-dashboard');
         return Object.freeze({ kind, assertionsCompleted: true, seededAcceptedSourceFixture: true, installedReaderStatusCommand: true, installedTaggedReaderApply: true, completedDashboardInspected: true, liveGraphRead: false });
