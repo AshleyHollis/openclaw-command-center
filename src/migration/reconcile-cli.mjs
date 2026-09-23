@@ -181,6 +181,7 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
     import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/file-access-runtime'), import('openclaw/plugin-sdk/sqlite-runtime'),
     import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs'), import('../sources/note-filesystem-owner.mjs')
   ]);
+  signal?.throwIfAborted();
   const fileAccess = hostFileAccess ?? sdkFileAccess;
   const sqlite = hostFileAccess ?? sdkSqlite;
   const releaseIdentityReader = identity.setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
@@ -189,7 +190,7 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
   try {
     metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
     const retry = resumeAttemptId === undefined ? null : prepareAdmittedRetry(metadata, plan, expectedDigest, resumeAttemptId);
-    if (retry && retry.records.length === 0) return reconcileAdmittedRetry(metadata, plan, expectedDigest, resumeAttemptId);
+    if (retry && retry.records.length === 0) return reconcileAdmittedRetry(metadata, plan, expectedDigest, resumeAttemptId, () => signal?.throwIfAborted());
     sourceService = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: false } });
     const getOwners = () => ({ metadata, sourceService });
     const tools = {
@@ -214,8 +215,8 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
       async captureChatCommitment() { fail('producer-source-kind-invalid'); },
       recordIntakeSourcePlan: params => invoke(tools.plan, params), recordIntakeOutcome: params => invoke(tools.outcome, params), recordIntakeReceipt: params => invoke(tools.receipt, params)
     });
-    const result = await adapter.process({ runId: retry?.runId ?? plan.runId, sourceKind: plan.sourceKind, records: retry?.records ?? plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, planDigest: expectedDigest, ...(retry ? { purpose: 'admitted-retry', retryOfRunId: plan.runId } : { enumeration: plan.enumeration }), scope: plan.scope });
-    return retry ? Object.freeze({ ...result, retriedSources: retry.records.length, blockedOutcomeCount: retry.blockedOutcomeCount }) : result;
+    const result = await adapter.process({ runId: retry?.runId ?? plan.runId, sourceKind: plan.sourceKind, records: retry?.records ?? plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, planDigest: expectedDigest, ...(retry ? { purpose: 'admitted-retry', retryOfRunId: plan.runId, unadmittedSourceCount: retry.unadmittedSourceCount } : { enumeration: plan.enumeration }), scope: plan.scope });
+    return retry ? Object.freeze({ ...result, ...(retry.unadmittedSourceCount ? { status: 'unadmitted-sources-remain' } : {}), retriedSources: retry.records.length, blockedOutcomeCount: retry.blockedOutcomeCount, unadmittedSourceCount: retry.unadmittedSourceCount }) : result;
   } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
 }
 

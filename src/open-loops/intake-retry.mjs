@@ -29,25 +29,30 @@ export function prepareAdmittedRetry(metadata, plan, expectedDigest, attemptId) 
   if (!original || !['pending', 'failed'].includes(original.status) || original.planDigest !== expectedDigest || !isDeepStrictEqual(original.scope, plan.scope) || !isDeepStrictEqual(original.enumeration, enumeration)) fail('producer-retry-original-unavailable');
   if (priorRetry && (priorRetry.planDigest !== expectedDigest || priorRetry.retryOfRunId !== original.runId)) fail('producer-retry-intent-mismatch');
   let blockedOutcomeCount = 0;
+  let unadmittedSourceCount = 0;
   const records = [];
   for (const record of plan.records) {
     const sourceExternalId = producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId);
     const durable = loadIntakeSourceAccount(metadata, { sourceKind: plan.sourceKind, sourceExternalId, sourceVersion: record.sourceVersion });
+    // A crashed original run may have stopped before admitting later sources.
+    // Retrying must neither admit them nor strand earlier admitted work.
+    if (!durable) { unadmittedSourceCount += 1; continue; }
     const accepted = durable?.plan;
     if (!accepted || accepted.checkpoint !== record.checkpoint || accepted.processorVersion !== plan.processorVersion || accepted.retainedNoteRevision !== record.retainedNoteRevision || !isDeepStrictEqual(accepted.acceptedExtraction, record.acceptedExtraction) || !isDeepStrictEqual(accepted.enumeration, plan.enumeration)) fail('producer-retry-source-not-admitted');
     const outcomes = durable.account?.outcomes ?? [];
     blockedOutcomeCount += outcomes.filter(item => ['failed', 'unknown', 'unresolved-topic'].includes(item.status)).length;
     if (outcomes.some(item => item.status === 'missing')) records.push({ ...record, sourceKind: plan.sourceKind, sourceExternalId });
   }
-  return Object.freeze({ runId, records: Object.freeze(records), blockedOutcomeCount, priorRetry });
+  return Object.freeze({ runId, records: Object.freeze(records), blockedOutcomeCount, unadmittedSourceCount, priorRetry });
 }
 
-export function reconcileAdmittedRetry(metadata, plan, expectedDigest, attemptId) {
+export function reconcileAdmittedRetry(metadata, plan, expectedDigest, attemptId, assertCurrent = () => {}) {
   const state = prepareAdmittedRetry(metadata, plan, expectedDigest, attemptId);
   if (state.records.length !== 0) fail('producer-retry-work-remains');
-  if (state.priorRetry?.status !== 'pending') return Object.freeze({ schemaVersion: 1, status: state.priorRetry?.status === 'failed' ? 'retry-failed-new-attempt-required' : state.blockedOutcomeCount ? 'blocked-outcomes-remain' : 'nothing-to-retry', retriedSources: 0, blockedOutcomeCount: state.blockedOutcomeCount });
+  if (state.priorRetry?.status !== 'pending') return Object.freeze({ schemaVersion: 1, status: state.priorRetry?.status === 'failed' ? 'retry-failed-new-attempt-required' : state.blockedOutcomeCount ? 'blocked-outcomes-remain' : state.unadmittedSourceCount ? 'unadmitted-sources-remain' : 'nothing-to-retry', retriedSources: 0, blockedOutcomeCount: state.blockedOutcomeCount, unadmittedSourceCount: state.unadmittedSourceCount });
   const observedAt = new Date().toISOString();
   const status = state.blockedOutcomeCount ? 'failed' : 'healthy-processed';
-  const receipt = recordIntakeReceipt(metadata, { ...state.priorRetry, status, observedAt, ...(status === 'healthy-processed' ? { lastSuccessfulAt: observedAt } : {}) });
-  return Object.freeze({ schemaVersion: 1, status: state.blockedOutcomeCount ? 'blocked-outcomes-remain' : status, retriedSources: 0, blockedOutcomeCount: state.blockedOutcomeCount, recoveredPendingReceipt: true, receipt });
+  assertCurrent();
+  const receipt = recordIntakeReceipt(metadata, { ...state.priorRetry, status, observedAt, unadmittedSourceCount: state.unadmittedSourceCount, ...(status === 'healthy-processed' ? { lastSuccessfulAt: observedAt } : {}) });
+  return Object.freeze({ schemaVersion: 1, status: state.blockedOutcomeCount ? 'blocked-outcomes-remain' : state.unadmittedSourceCount ? 'unadmitted-sources-remain' : status, retriedSources: 0, blockedOutcomeCount: state.blockedOutcomeCount, unadmittedSourceCount: state.unadmittedSourceCount, recoveredPendingReceipt: true, receipt });
 }

@@ -159,12 +159,12 @@ test('Dashboard reports an admitted retry without presenting it as a new source 
   const base = { listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
   const receipt = value => ({ operationKind: 'intake-receipt.email.v1', state: 'applied', resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind: 'email', checkpoint: 'fictional-message', processedCount: 1, actionableCount: 1, noteCount: 0, ...value }) });
   const producer = receipt({ runId: 'original-run', status: 'failed', observedAt: '2026-09-22T01:00:00.000Z', nextExpectedAt: '2026-09-23T01:00:00.000Z', enumeration: { scope: 'partial', scannedCount: 1, remainingCount: 2, failedReadCount: 1, scanCapReached: true } });
-  const retry = receipt({ runId: 'original-run:retry:one', purpose: 'admitted-retry', retryOfRunId: 'original-run', status: 'healthy-processed', observedAt: '2026-09-22T02:00:00.000Z', lastSuccessfulAt: '2026-09-22T02:00:00.000Z' });
+  const retry = receipt({ runId: 'original-run:retry:one', purpose: 'admitted-retry', retryOfRunId: 'original-run', status: 'healthy-processed', observedAt: '2026-09-22T02:00:00.000Z', lastSuccessfulAt: '2026-09-22T02:00:00.000Z', unadmittedSourceCount: 1 });
   const metadata = { ...base, listOperations: () => [producer, retry] };
   let row = (await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-22T03:00:00.000Z' })).intakeCoverage[0];
   assert.equal(row.status, 'failed'); assert.equal(row.lastObservedAt, '2026-09-22T01:00:00.000Z');
   assert.equal(row.lastSuccessfulAt, undefined); assert.equal(row.discovery.failedReadCount, 1);
-  assert.deepEqual(row.lastAdmittedRetry, { observedAt: '2026-09-22T02:00:00.000Z', status: 'healthy-processed', processedCount: 1 });
+  assert.deepEqual(row.lastAdmittedRetry, { observedAt: '2026-09-22T02:00:00.000Z', status: 'healthy-processed', processedCount: 1, unadmittedSourceCount: 1 });
   metadata.listOperations = () => [producer, retry, receipt({ runId: 'new-run', status: 'healthy-empty', observedAt: '2026-09-22T04:00:00.000Z', lastSuccessfulAt: '2026-09-22T04:00:00.000Z', nextExpectedAt: '2026-09-23T04:00:00.000Z' })];
   row = (await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-22T05:00:00.000Z' })).intakeCoverage[0];
   assert.equal(row.lastAdmittedRetry, undefined, 'a later producer attempt must not inherit an old retry');

@@ -230,7 +230,7 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
     lastObservedAt: receipt.observedAt,
     ...(lastSuccess ? { lastSuccessfulAt: lastSuccess.at } : {}),
     ...(receipt.nextExpectedAt ? { nextExpectedAt: receipt.nextExpectedAt } : {}),
-    ...(retryReceipt ? { lastAdmittedRetry: Object.freeze({ observedAt: retryReceipt.observedAt, status: retryReceipt.status, processedCount: retryReceipt.processedCount }) } : {}),
+    ...(retryReceipt ? { lastAdmittedRetry: Object.freeze({ observedAt: retryReceipt.observedAt, status: retryReceipt.status, processedCount: retryReceipt.processedCount, unadmittedSourceCount: retryReceipt.unadmittedSourceCount ?? 0 }) } : {}),
     ...(receipt.scope ? { attemptScope: Object.freeze({ folders: receipt.scope.folders, sinceUtc: receipt.scope.sinceUtc, beforeUtc: receipt.scope.beforeUtc, maxMessages: receipt.scope.maxMessages, batchKind: receipt.scope.batchKind }) } : {}),
     ...(lastSuccess?.scope ? { lastSuccessfulScope: Object.freeze({ folders: lastSuccess.scope.folders, sinceUtc: lastSuccess.scope.sinceUtc, beforeUtc: lastSuccess.scope.beforeUtc, maxMessages: lastSuccess.scope.maxMessages, batchKind: lastSuccess.scope.batchKind }) } : {}),
     discovery: receipt.enumeration ? Object.freeze({ ...receipt.enumeration, canResume: receipt.continuation !== undefined }) : Object.freeze({ scope: 'unknown' }),
