@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { recordEmailReaderRefreshReceipt } from '../src/open-loops/email-reader-refresh-receipt.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
+import { recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
+import { producerSourceExternalId } from '../src/open-loops/intake-retry.mjs';
+import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 
 const namespace = `microsoft-graph:sha256:${'a'.repeat(64)}`;
 const batchId = `sha256:${'b'.repeat(64)}`;
@@ -23,6 +26,17 @@ const acceptedCapture = metadata => recordIntakeReceipt(metadata, {
   nextExpectedAt: '2026-09-24T00:55:00.000Z', processedCount: 2, actionableCount: 0, noteCount: 2,
   scope: { accountBinding: `sha256:${'a'.repeat(64)}`, folders: ['inbox'], sinceUtc: '2026-09-22T00:00:00.000Z', beforeUtc: '2026-09-23T00:00:00.000Z', maxMessages: 2, batchKind: 'bounded' }
 });
+const readerPlan = { schemaVersion: 1, purpose: 'command-center-email-reader-locators', sourceNamespace: namespace, records: [
+  { sourceExternalId: 'fictional-one', sourceVersion: 'upstream-one', messageId: 'message-one', status: 'available', webLink: 'https://outlook.office.com/mail/id/fictional-one', observedAt: '2026-09-23T01:00:30.000Z' },
+  { sourceExternalId: 'fictional-two', sourceVersion: 'upstream-two', messageId: 'message-two', status: 'unavailable', observedAt: '2026-09-23T01:00:30.000Z' }
+] };
+const acceptedReaders = metadata => {
+  for (const record of readerPlan.records) {
+    const sourceExternalId = producerSourceExternalId(namespace, record.sourceExternalId);
+    recordIntakeSourcePlan(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId, sourceVersion: record.sourceVersion, checkpoint: `fictional-${record.sourceExternalId}`, observedAt: '2026-09-23T00:56:00.000Z', processorVersion: 'fictional-v1', acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'none', summary: 'Fictional information only' } }, outcomes: [{ outcomeId: 'none', kind: 'no-action' }] });
+    metadata.recordEmailReaderLocator({ sourceExternalId, sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt });
+  }
+};
 
 test('reader refresh attempt survives reopen, completes once, and cannot change its terminal result', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-reader-refresh-'));
@@ -37,9 +51,13 @@ test('reader refresh attempt survives reopen, completes once, and cannot change 
     metadata.close();
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     assert.equal(metadata.listEmailReaderRefreshOperations(namespace)[0].resultStatus, 'pending');
-    const completed = receipt(firstAttempt, 'completed', '2026-09-23T01:01:00.000Z', { linkedCount: 1, unavailableCount: 1 });
-    assert.equal(recordEmailReaderRefreshReceipt(metadata, completed).disposition, 'updated');
-    assert.equal(recordEmailReaderRefreshReceipt(metadata, completed).disposition, 'duplicate');
+    const completed = receipt(firstAttempt, 'completed', '2026-09-23T01:01:00.000Z', { linkedCount: 1, unavailableCount: 1, readerPlanDigest: emailReaderPlanDigest(readerPlan) });
+    assert.throws(() => recordEmailReaderRefreshReceipt(metadata, completed, readerPlan), /exact reader location effect/);
+    acceptedReaders(metadata);
+    assert.equal(recordEmailReaderRefreshReceipt(metadata, completed, readerPlan).disposition, 'updated');
+    assert.equal(recordEmailReaderRefreshReceipt(metadata, completed, readerPlan).disposition, 'duplicate');
+    metadata.recordEmailReaderLocator({ sourceExternalId: producerSourceExternalId(namespace, 'fictional-one'), sourceVersion: 'upstream-one', messageId: 'newer-message', status: 'unavailable', observedAt: '2026-09-23T01:02:00.000Z' });
+    assert.equal(recordEmailReaderRefreshReceipt(metadata, completed, readerPlan).disposition, 'duplicate', 'replaying an accepted terminal result cannot require the locator to remain latest forever');
     assert.equal(metadata.listEmailReaderRefreshOperations(namespace)[0].resultStatus, 'completed');
     assert.throws(() => recordEmailReaderRefreshReceipt(metadata, receipt(firstAttempt, 'failed', '2026-09-23T01:02:00.000Z', { failureCode: 'provider-read-failed' })), /cannot be replaced/);
     assert.throws(() => metadata.recordOperation({ logicalOperationId: 'other', transportRequestId: 'other', intentDigest: 'sha256:other', operationKind: 'email-reader.refresh.v1', state: 'applied', resultStatus: 'completed', resultIdentity: '{}', observedRevision: batchId, createdAt: completed.observedAt, updatedAt: completed.observedAt }), /dedicated owner/);
@@ -53,7 +71,7 @@ test('new reader attempt supersedes an unfinished older attempt and rejects its 
     acceptedCapture(metadata);
     recordEmailReaderRefreshReceipt(metadata, receipt(firstAttempt, 'pending', '2026-09-23T01:00:00.000Z'));
     recordEmailReaderRefreshReceipt(metadata, receipt(secondAttempt, 'pending', '2026-09-23T01:02:00.000Z'));
-    const late = recordEmailReaderRefreshReceipt(metadata, receipt(firstAttempt, 'completed', '2026-09-23T01:03:00.000Z', { linkedCount: 2 }));
+    const late = recordEmailReaderRefreshReceipt(metadata, receipt(firstAttempt, 'failed', '2026-09-23T01:03:00.000Z', { failureCode: 'reader-apply-failed' }));
     assert.equal(late.disposition, 'superseded');
     const current = recordEmailReaderRefreshReceipt(metadata, receipt(secondAttempt, 'failed', '2026-09-23T01:04:00.000Z', { linkedCount: 1, failureCode: 'reader-apply-failed' }));
     assert.equal(current.disposition, 'updated');

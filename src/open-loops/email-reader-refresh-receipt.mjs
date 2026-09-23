@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
+import { emailReaderPlanDigest, normalizeEmailReaderPlan } from './email-reader-plan.mjs';
 
 const fail = () => { throw sourceError('invalid-request', 'Email reader refresh receipt is invalid.'); };
 const sha = value => `sha256:${createHash('sha256').update(value).digest('hex')}`;
@@ -10,14 +11,15 @@ const uuid = value => {
 };
 
 export function normalizeEmailReaderRefreshReceipt(input) {
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['schemaVersion', 'sourceNamespace', 'captureRunId', 'batchId', 'attemptId', 'status', 'observedAt', 'selectedCount', 'linkedCount', 'unavailableCount', 'failureCode'].includes(key)) || input.schemaVersion !== 1) fail();
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['schemaVersion', 'sourceNamespace', 'captureRunId', 'batchId', 'attemptId', 'status', 'observedAt', 'selectedCount', 'linkedCount', 'unavailableCount', 'failureCode', 'readerPlanDigest'].includes(key)) || input.schemaVersion !== 1) fail();
   if (typeof input.captureRunId !== 'string' || !input.captureRunId.trim() || input.captureRunId.length > 300) fail();
   if (typeof input.sourceNamespace !== 'string' || !/^microsoft-graph:sha256:[a-f0-9]{64}$/u.test(input.sourceNamespace) || typeof input.batchId !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(input.batchId) || typeof input.attemptId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(input.attemptId)) fail();
   if (!['pending', 'completed', 'failed'].includes(input.status) || typeof input.observedAt !== 'string' || input.observedAt.length > 64 || !Number.isFinite(Date.parse(input.observedAt))) fail();
   for (const key of ['selectedCount', 'linkedCount', 'unavailableCount']) if (!Number.isSafeInteger(input[key]) || input[key] < 0 || input[key] > 50) fail();
   if (input.linkedCount + input.unavailableCount > input.selectedCount || input.status === 'completed' && input.linkedCount + input.unavailableCount !== input.selectedCount || input.status === 'pending' && (input.linkedCount || input.unavailableCount)) fail();
   if (input.status === 'failed' ? !['source-read-failed', 'provider-read-failed', 'reader-plan-invalid', 'reader-apply-failed', 'reader-refresh-failed'].includes(input.failureCode) : input.failureCode !== undefined) fail();
-  return Object.freeze({ schemaVersion: 1, sourceNamespace: input.sourceNamespace, captureRunId: input.captureRunId.trim(), batchId: input.batchId, attemptId: input.attemptId.toLowerCase(), status: input.status, observedAt: new Date(input.observedAt).toISOString(), selectedCount: input.selectedCount, linkedCount: input.linkedCount, unavailableCount: input.unavailableCount, ...(input.failureCode ? { failureCode: input.failureCode } : {}) });
+  if (input.status === 'completed' ? !/^sha256:[a-f0-9]{64}$/u.test(input.readerPlanDigest) : input.readerPlanDigest !== undefined) fail();
+  return Object.freeze({ schemaVersion: 1, sourceNamespace: input.sourceNamespace, captureRunId: input.captureRunId.trim(), batchId: input.batchId, attemptId: input.attemptId.toLowerCase(), status: input.status, observedAt: new Date(input.observedAt).toISOString(), selectedCount: input.selectedCount, linkedCount: input.linkedCount, unavailableCount: input.unavailableCount, ...(input.failureCode ? { failureCode: input.failureCode } : {}), ...(input.readerPlanDigest ? { readerPlanDigest: input.readerPlanDigest } : {}) });
 }
 
 export function emailReaderRefreshOperationId(receipt) {
@@ -28,15 +30,21 @@ export function emailReaderRefreshIntentDigest(receipt) {
   return sha(JSON.stringify([receipt.sourceNamespace, receipt.captureRunId, receipt.batchId, receipt.attemptId]));
 }
 
-export function recordEmailReaderRefreshReceipt(metadata, input) {
+export function recordEmailReaderRefreshReceipt(metadata, input, readerPlan) {
   if (!metadata?.commitEmailReaderRefreshOperation) throw new TypeError('Email reader refresh receipts require metadata ownership.');
   const receipt = normalizeEmailReaderRefreshReceipt(input);
+  let normalizedReaderPlan;
+  if (receipt.status === 'completed') {
+    try { normalizedReaderPlan = normalizeEmailReaderPlan(readerPlan); }
+    catch { fail(); }
+    if (emailReaderPlanDigest(normalizedReaderPlan) !== receipt.readerPlanDigest || normalizedReaderPlan.sourceNamespace !== receipt.sourceNamespace) fail();
+  } else if (readerPlan !== undefined) fail();
   const logicalOperationId = emailReaderRefreshOperationId(receipt);
   const committed = metadata.commitEmailReaderRefreshOperation({
     logicalOperationId, intentDigest: emailReaderRefreshIntentDigest(receipt), operationKind: 'email-reader.refresh.v1',
     state: receipt.status === 'pending' ? 'pending' : receipt.status === 'completed' ? 'applied' : 'not-applied',
     resultStatus: receipt.status, resultIdentity: JSON.stringify(receipt), observedRevision: receipt.batchId,
-    createdAt: receipt.observedAt, updatedAt: receipt.observedAt
+    createdAt: receipt.observedAt, updatedAt: receipt.observedAt, ...(normalizedReaderPlan ? { readerPlan: normalizedReaderPlan } : {})
   });
   let durableReceipt;
   try { durableReceipt = JSON.parse(committed.operation.resultIdentity); }

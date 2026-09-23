@@ -683,6 +683,11 @@ test('Dashboard keeps reader availability separate from successful email capture
   await coverage.getByText(/Capture can succeed while reader refresh is unconfirmed/u).waitFor();
   await coverage.getByText(/Reader refresh run: failed.*reader-apply-failed.*1 confirmed linked.*1 confirmed unavailable of 3 selected/u).waitFor();
   await coverage.getByText(/This status is separate from accepted email capture/u).waitFor();
+  await page.evaluate(() => {
+    window.intakeCoverage[0].readerRefresh = { status: 'unknown', lastSuccessfulAt: '2026-09-21T02:00:00.000Z' };
+    window.mountInbox();
+  });
+  await coverage.getByText(/Reader refresh run status is unknown for this accepted capture.*Previous completed refresh/u).waitFor();
 }));
 
 test('Dashboard states the accepted past deadline instead of fabricating a new date', () => fixture(async (page) => {

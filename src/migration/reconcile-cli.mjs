@@ -102,12 +102,16 @@ export async function runConfiguredEmailReaderPlan({ planPath, expectedDigest, s
   } finally { metadata.close(); }
 }
 
-export async function runConfiguredEmailReaderRefreshReceipt({ input, signal }) {
+export async function runConfiguredEmailReaderRefreshReceipt({ input, readerPlanPath, readerPlanDigest, signal }) {
+  signal?.throwIfAborted();
+  if (input?.status === 'completed' ? !readerPlanPath || !readerPlanDigest : readerPlanPath !== undefined || readerPlanDigest !== undefined) fail('email-reader-status-plan-invalid');
+  const readerPlan = input?.status === 'completed' ? await readPinnedEmailReaderPlan(readerPlanPath, readerPlanDigest) : undefined;
+  if (readerPlan && input.readerPlanDigest !== readerPlanDigest) fail('email-reader-status-plan-invalid');
   signal?.throwIfAborted();
   const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')]);
   signal?.throwIfAborted();
   const metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
-  try { signal?.throwIfAborted(); return recordEmailReaderRefreshReceipt(metadata, input); }
+  try { signal?.throwIfAborted(); return recordEmailReaderRefreshReceipt(metadata, input, readerPlan); }
   finally { metadata.close(); }
 }
 
@@ -476,11 +480,13 @@ export function registerReconciliationCli({ program, config, logger }) {
     .requiredOption('--linked <count>')
     .requiredOption('--unavailable <count>')
     .option('--failure-code <code>')
+    .option('--plan <absolute-path>')
+    .option('--digest <sha256>')
     .action(async options => {
       const cancellation = new AbortController();
       const abort = () => cancellation.abort(Object.assign(new Error('email-reader-cancelled'), { code: 'email-reader-cancelled' }));
       process.once('SIGINT', abort); process.once('SIGTERM', abort);
-      try { logger.info(JSON.stringify(await runConfiguredEmailReaderRefreshReceipt({ input: { schemaVersion: 1, sourceNamespace: options.sourceNamespace, captureRunId: options.captureRunId, batchId: options.batchId, attemptId: options.attemptId, status: options.status, observedAt: options.observedAt, selectedCount: Number(options.selected), linkedCount: Number(options.linked), unavailableCount: Number(options.unavailable), ...(options.failureCode ? { failureCode: options.failureCode } : {}) }, signal: cancellation.signal }))); }
+      try { logger.info(JSON.stringify(await runConfiguredEmailReaderRefreshReceipt({ input: { schemaVersion: 1, sourceNamespace: options.sourceNamespace, captureRunId: options.captureRunId, batchId: options.batchId, attemptId: options.attemptId, status: options.status, observedAt: options.observedAt, selectedCount: Number(options.selected), linkedCount: Number(options.linked), unavailableCount: Number(options.unavailable), ...(options.failureCode ? { failureCode: options.failureCode } : {}), ...(options.digest ? { readerPlanDigest: options.digest } : {}) }, ...(options.plan ? { readerPlanPath: options.plan } : {}), ...(options.digest ? { readerPlanDigest: options.digest } : {}), signal: cancellation.signal }))); }
       catch (error) { logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'email-reader-status-failed'); process.exitCode = 1; }
       finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
     });

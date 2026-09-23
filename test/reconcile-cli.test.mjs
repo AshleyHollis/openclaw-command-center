@@ -73,9 +73,25 @@ test('registered reader-status CLI action binds the exact accepted capture run',
     const actions = new Map(); const output = [];
     const command = name => ({ command(child) { return command(`${name} ${child}`.trim()); }, description() { return this; }, requiredOption() { return this; }, option() { return this; }, action(callback) { actions.set(name, callback); return this; } });
     registerReconciliationCli({ program: command(''), config: {}, logger: { info: message => output.push(JSON.parse(message)), error: message => { throw new Error(message); } } });
-    await actions.get('command-center intake reader-status')({ sourceNamespace: `microsoft-graph:sha256:${'a'.repeat(64)}`, captureRunId: 'fictional-registered-run', batchId: `sha256:${'b'.repeat(64)}`, attemptId: randomUUID(), status: 'pending', observedAt: '2026-09-23T01:00:00.000Z', selected: '1', linked: '0', unavailable: '0' });
+    const attemptId = randomUUID();
+    const sourceNamespace = `microsoft-graph:sha256:${'a'.repeat(64)}`;
+    const batchId = `sha256:${'b'.repeat(64)}`;
+    await actions.get('command-center intake reader-status')({ sourceNamespace, captureRunId: 'fictional-registered-run', batchId, attemptId, status: 'pending', observedAt: '2026-09-23T01:00:00.000Z', selected: '1', linked: '0', unavailable: '0' });
     assert.equal(output[0].disposition, 'recorded');
     assert.equal(output[0].receipt.captureRunId, 'fictional-registered-run');
+    const sourceExternalId = producerSourceExternalId(sourceNamespace, 'fictional-original');
+    const readerPlan = { schemaVersion: 1, purpose: 'command-center-email-reader-locators', sourceNamespace, records: [{ sourceExternalId: 'fictional-original', sourceVersion: 'upstream-v1', messageId: 'fictional-message', status: 'unavailable', observedAt: '2026-09-23T01:01:00.000Z' }] };
+    const readerPlanPath = path.join(root, 'reader-plan.json');
+    await writeFile(readerPlanPath, JSON.stringify(readerPlan));
+    const digest = emailReaderPlanDigest(readerPlan);
+    await assert.rejects(() => runConfiguredEmailReaderRefreshReceipt({ input: { schemaVersion: 1, sourceNamespace, captureRunId: 'fictional-registered-run', batchId, attemptId, status: 'completed', observedAt: '2026-09-23T01:02:00.000Z', selectedCount: 1, linkedCount: 0, unavailableCount: 1, readerPlanDigest: digest }, readerPlanPath, readerPlanDigest: digest }), /exact reader location effect/);
+    const evidence = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
+    try {
+      recordIntakeSourcePlan(evidence, { schemaVersion: 1, sourceKind: 'email', sourceExternalId, sourceVersion: 'upstream-v1', checkpoint: 'fictional-message', observedAt: '2026-09-23T01:00:30.000Z', processorVersion: 'fictional-v1', acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'none', summary: 'Fictional information only' } }, outcomes: [{ outcomeId: 'none', kind: 'no-action' }] });
+      evidence.recordEmailReaderLocator({ sourceExternalId, sourceVersion: 'upstream-v1', messageId: 'fictional-message', status: 'unavailable', observedAt: '2026-09-23T01:01:00.000Z' });
+    } finally { evidence.close(); }
+    await actions.get('command-center intake reader-status')({ sourceNamespace, captureRunId: 'fictional-registered-run', batchId, attemptId, status: 'completed', observedAt: '2026-09-23T01:02:00.000Z', selected: '1', linked: '0', unavailable: '1', plan: readerPlanPath, digest });
+    assert.equal(output[1].disposition, 'updated');
   } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
 });
 

@@ -63,6 +63,8 @@ import { installEntityCorrections } from './entity-corrections.mjs';
 import { installSelectedSourceIntake } from './selected-source-intake.mjs';
 import { createRenovationFollowThrough } from './renovation-follow-through.mjs';
 import { emailReaderLocatorOperationId, emailReaderLocatorOperationPrefix, intakeSourceOperationId } from '../open-loops/email-reader-locator.mjs';
+import { producerSourceExternalId } from '../open-loops/intake-retry.mjs';
+import { emailReaderPlanDigest, normalizeEmailReaderPlan } from '../open-loops/email-reader-plan.mjs';
 import { emailReaderRefreshIntentDigest, emailReaderRefreshOperationId, normalizeEmailReaderRefreshReceipt } from '../open-loops/email-reader-refresh-receipt.mjs';
 import { validatedOutlookWebLink } from '../native-ui/outlook-web-link.mjs';
 
@@ -1309,7 +1311,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
 
   service.commitEmailReaderRefreshOperation = input => {
     const value = objectValue(input, 'email reader refresh operation');
-    allowedKeys(value, ['logicalOperationId', 'intentDigest', 'operationKind', 'state', 'resultStatus', 'resultIdentity', 'observedRevision', 'createdAt', 'updatedAt'], 'email reader refresh operation');
+    allowedKeys(value, ['logicalOperationId', 'intentDigest', 'operationKind', 'state', 'resultStatus', 'resultIdentity', 'observedRevision', 'createdAt', 'updatedAt', 'readerPlan'], 'email reader refresh operation');
     const logicalOperationId = requiredString(value.logicalOperationId, 'logicalOperationId');
     const intentDigest = requiredString(value.intentDigest, 'intentDigest');
     if (value.operationKind !== 'email-reader.refresh.v1') throw new CommandCenterMetadataError('invalid-value', 'Email reader refresh operation kind is unsupported.');
@@ -1322,6 +1324,12 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     let receipt;
     try { receipt = normalizeEmailReaderRefreshReceipt(JSON.parse(resultIdentity)); }
     catch { throw new CommandCenterMetadataError('invalid-value', 'Email reader refresh result is invalid.'); }
+    let readerPlan;
+    if (state === 'applied') {
+      try { readerPlan = normalizeEmailReaderPlan(value.readerPlan); }
+      catch { throw new CommandCenterMetadataError('invalid-value', 'Completed reader refresh requires its exact reader plan.'); }
+      if (emailReaderPlanDigest(readerPlan) !== receipt.readerPlanDigest || readerPlan.sourceNamespace !== receipt.sourceNamespace || receipt.selectedCount !== readerPlan.records.length || receipt.linkedCount !== readerPlan.records.filter(record => record.status === 'available').length || receipt.unavailableCount !== readerPlan.records.filter(record => record.status === 'unavailable').length) throw new CommandCenterMetadataError('intent-mismatch', 'Reader refresh counts differ from the pinned reader plan.');
+    } else if (value.readerPlan !== undefined) throw new CommandCenterMetadataError('invalid-value', 'A non-completed reader refresh cannot claim a reader plan.');
     if (receipt.status !== resultStatus || receipt.batchId !== observedRevision || emailReaderRefreshOperationId(receipt) !== logicalOperationId || emailReaderRefreshIntentDigest(receipt) !== intentDigest || (state === 'pending' ? resultStatus !== 'pending' : state === 'applied' ? resultStatus !== 'completed' : resultStatus !== 'failed') || receipt.observedAt !== updatedAt) throw new CommandCenterMetadataError('invalid-value', 'Email reader refresh identity differs.');
     return mutate(null, db => {
       const accountBinding = receipt.sourceNamespace.slice('microsoft-graph:'.length);
@@ -1344,6 +1352,12 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
       if (existing && latest?.rowid !== existing.rowid) {
         db.prepare("UPDATE operation_journal SET state = 'not-applied', result_status = 'superseded', updated_at = ? WHERE logical_operation_id = ?").run(updatedAt, logicalOperationId);
         return Object.freeze({ disposition: 'superseded', operation: mapOperation(db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId)) });
+      }
+      if (readerPlan) for (const record of readerPlan.records) {
+        const sourceExternalId = producerSourceExternalId(receipt.sourceNamespace, record.sourceExternalId);
+        const locator = { schemaVersion: 1, sourceExternalId, sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt };
+        const latestLocator = db.prepare("SELECT * FROM operation_journal WHERE logical_operation_id LIKE ? AND operation_kind = 'email-reader.locator.v1' ORDER BY updated_at DESC, logical_operation_id DESC LIMIT 1").get(`${emailReaderLocatorOperationPrefix(sourceExternalId, record.sourceVersion)}%`);
+        if (!latestLocator || latestLocator.state !== 'applied' || latestLocator.logical_operation_id !== emailReaderLocatorOperationId(locator) || latestLocator.result_identity !== JSON.stringify(locator)) throw new CommandCenterMetadataError('conflict', 'The exact reader location effect is not durably applied.');
       }
       if (existing) {
         if (updatedAt < existing.created_at) throw new CommandCenterMetadataError('conflict', 'Reader refresh completion predates its start.');
