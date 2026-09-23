@@ -74,7 +74,7 @@ test('selected-source intake bridge accepts one persisted document selection wit
 
 test('open-loop detail sanitization withholds raw source fields and attachment identifiers', async () => {
   const result = await invokeBridgeMethod({
-    openLoopsGet: () => ({ schemaVersion: 1, loop: { ...loop, secretLocator: 'private-source' }, evidence: [{ observationId: 'observation-fictional', type: 'bill', sourceSystem: 'fictional-mail', sourceKind: 'email', sourceVersion: 'v1', sourceReferenceVersion: 'retained-note-v9', originalEmailUrl: 'https://outlook.office.com/mail/id/fictional', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T01:00:00.000Z', historicalBaseline: false, summary: 'Fictional bill', invoiceId: 'INVOICE-FICTIONAL', attachmentIds: ['private-attachment'], rawBody: 'private-body' }] })
+    openLoopsGet: () => ({ schemaVersion: 1, loop: { ...loop, secretLocator: 'private-source' }, evidence: [{ observationId: 'observation-fictional', type: 'bill', sourceSystem: 'fictional-mail', sourceKind: 'email', sourceVersion: 'v1', sourceReferenceVersion: 'retained-note-v9', originalEmailStatus: 'available', originalEmailUrl: 'https://outlook.office.com/mail/id/fictional', occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T01:00:00.000Z', historicalBaseline: false, summary: 'Fictional bill', invoiceId: 'INVOICE-FICTIONAL', attachmentIds: ['private-attachment'], rawBody: 'private-body' }] })
   }, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: loop.loopId });
   assert.equal(result.loop.secretLocator, undefined);
   assert.equal(result.evidence[0].attachmentIds, undefined);
@@ -82,6 +82,7 @@ test('open-loop detail sanitization withholds raw source fields and attachment i
   assert.equal(result.evidence[0].sourceVersion, 'v1');
   assert.equal(result.evidence[0].sourceReferenceVersion, 'retained-note-v9');
   assert.equal(result.evidence[0].originalEmailUrl, 'https://outlook.office.com/mail/id/fictional');
+  assert.equal(result.evidence[0].originalEmailStatus, 'available');
   assert.equal(result.evidence[0].invoiceId, 'INVOICE-FICTIONAL');
 });
 

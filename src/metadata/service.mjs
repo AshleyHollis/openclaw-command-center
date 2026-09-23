@@ -62,7 +62,8 @@ import { installDecisionMemory } from './decision-memory.mjs';
 import { installEntityCorrections } from './entity-corrections.mjs';
 import { installSelectedSourceIntake } from './selected-source-intake.mjs';
 import { createRenovationFollowThrough } from './renovation-follow-through.mjs';
-import { emailReaderLocatorOperationId, intakeSourceOperationId, validatedOutlookWebLink } from '../open-loops/email-reader-locator.mjs';
+import { emailReaderLocatorOperationId, emailReaderLocatorOperationPrefix, intakeSourceOperationId } from '../open-loops/email-reader-locator.mjs';
+import { validatedOutlookWebLink } from '../native-ui/outlook-web-link.mjs';
 
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii');
 const diagnosticLimit = 300;
@@ -1344,48 +1345,49 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   // A reader location may change after an Outlook folder move. It is not an
   // intake outcome or an observation and must never reconcile an open loop.
   service.recordEmailReaderLocator = (input = {}) => {
-    allowedKeys(input, ['sourceExternalId', 'sourceVersion', 'messageId', 'webLink', 'observedAt'], 'Email reader locator');
+    allowedKeys(input, ['sourceExternalId', 'sourceVersion', 'messageId', 'webLink', 'status', 'observedAt'], 'Email reader locator');
     const sourceExternalId = requiredString(input.sourceExternalId, 'sourceExternalId');
     const sourceVersion = requiredString(input.sourceVersion, 'sourceVersion');
     const messageId = requiredString(input.messageId, 'messageId');
     if (sourceExternalId.length > 500 || sourceVersion.length > 300 || messageId.length > 1000) throw new CommandCenterMetadataError('invalid-value', 'Email reader identity is too long.');
-    const webLink = validatedOutlookWebLink(input.webLink);
+    if (!['available', 'unavailable'].includes(input.status)) throw new CommandCenterMetadataError('invalid-value', 'Email reader availability is invalid.');
+    const webLink = input.status === 'available' ? validatedOutlookWebLink(input.webLink) : undefined;
+    if (input.status === 'unavailable' && input.webLink !== undefined) throw new CommandCenterMetadataError('invalid-value', 'Unavailable email readers cannot retain a link.');
     const observedAtInput = requiredString(input.observedAt, 'observedAt');
     if (observedAtInput.length > 64 || !Number.isFinite(Date.parse(observedAtInput))) throw new CommandCenterMetadataError('invalid-value', 'Email reader observation time is invalid.');
     const observedAt = new Date(observedAtInput).toISOString();
-    const logicalOperationId = emailReaderLocatorOperationId(sourceExternalId, sourceVersion);
-    const intentDigest = `sha256:${createHash('sha256').update(JSON.stringify(['email-reader.locator.v1', sourceExternalId, sourceVersion])).digest('hex')}`;
-    const locator = { schemaVersion: 1, sourceExternalId, sourceVersion, messageId, webLink, observedAt };
+    const locator = { schemaVersion: 1, sourceExternalId, sourceVersion, messageId, status: input.status, ...(webLink ? { webLink } : {}), observedAt };
+    const logicalOperationId = emailReaderLocatorOperationId(locator);
+    const intentDigest = `sha256:${createHash('sha256').update(JSON.stringify(locator)).digest('hex')}`;
     return mutate(null, db => {
       const source = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(intakeSourceOperationId(sourceExternalId, sourceVersion));
       if (!source || source.operation_kind !== 'intake-source.email.v1' || source.state !== 'applied') throw new CommandCenterMetadataError('not-found', 'The accepted email source is unavailable.');
       let accepted;
       try { accepted = JSON.parse(source.result_identity); } catch { /* fail closed below */ }
       if (accepted?.sourceExternalId !== sourceExternalId || accepted?.sourceVersion !== sourceVersion) throw new CommandCenterMetadataError('conflict', 'The accepted email source identity differs.');
-      const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(logicalOperationId);
-      if (existing && (existing.operation_kind !== 'email-reader.locator.v1' || existing.intent_digest !== intentDigest)) throw new CommandCenterMetadataError('conflict', 'Email reader locator identity differs.');
+      const latest = db.prepare("SELECT * FROM operation_journal WHERE logical_operation_id LIKE ? AND operation_kind = 'email-reader.locator.v1' ORDER BY updated_at DESC, logical_operation_id DESC LIMIT 1").get(`${emailReaderLocatorOperationPrefix(sourceExternalId, sourceVersion)}%`);
       let prior;
-      try { prior = existing && JSON.parse(existing.result_identity); } catch { throw new CommandCenterMetadataError('conflict', 'The retained email reader locator is invalid.'); }
+      try { prior = latest && JSON.parse(latest.result_identity); } catch { throw new CommandCenterMetadataError('conflict', 'The retained email reader locator is invalid.'); }
       if (prior) {
-        if (prior.sourceExternalId !== sourceExternalId || prior.sourceVersion !== sourceVersion || typeof prior.messageId !== 'string' || typeof prior.observedAt !== 'string' || !Number.isFinite(Date.parse(prior.observedAt)) || validatedOutlookWebLink(prior.webLink) !== prior.webLink) throw new CommandCenterMetadataError('conflict', 'The retained email reader locator identity differs.');
+        if (prior.sourceExternalId !== sourceExternalId || prior.sourceVersion !== sourceVersion || typeof prior.messageId !== 'string' || typeof prior.observedAt !== 'string' || !Number.isFinite(Date.parse(prior.observedAt)) || !['available', 'unavailable'].includes(prior.status) || (prior.status === 'available' ? validatedOutlookWebLink(prior.webLink) !== prior.webLink : prior.webLink !== undefined)) throw new CommandCenterMetadataError('conflict', 'The retained email reader locator identity differs.');
         if (prior.observedAt > observedAt) return Object.freeze({ disposition: 'stale', locator: Object.freeze(prior) });
         if (prior.observedAt === observedAt) {
-          if (prior.messageId !== messageId || prior.webLink !== webLink) throw new CommandCenterMetadataError('conflict', 'The same locator observation changed under retry.');
+          if (JSON.stringify(prior) !== JSON.stringify(locator)) throw new CommandCenterMetadataError('conflict', 'The same locator observation changed under retry.');
           return Object.freeze({ disposition: 'duplicate', locator: Object.freeze(prior) });
         }
       }
       db.prepare(`INSERT INTO operation_journal (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
-        VALUES (?, ?, ?, 'email-reader.locator.v1', 'applied', 'unverified', ?, ?, ?, ?)
-        ON CONFLICT(logical_operation_id) DO UPDATE SET result_identity=excluded.result_identity, observed_revision=excluded.observed_revision, updated_at=excluded.updated_at`).run(logicalOperationId, logicalOperationId, intentDigest, JSON.stringify(locator), messageId, existing?.created_at ?? observedAt, observedAt);
-      return Object.freeze({ disposition: existing ? 'updated' : 'recorded', locator: Object.freeze(locator) });
+        VALUES (?, ?, ?, 'email-reader.locator.v1', 'applied', ?, ?, ?, ?, ?)`).run(logicalOperationId, logicalOperationId, intentDigest, input.status === 'available' ? 'unverified' : 'unavailable', JSON.stringify(locator), messageId, observedAt, observedAt);
+      return Object.freeze({ disposition: latest ? 'updated' : 'recorded', locator: Object.freeze(locator) });
     });
   };
   service.getEmailReaderLocator = (sourceExternalId, sourceVersion) => {
-    const row = service.getOperation(emailReaderLocatorOperationId(requiredString(sourceExternalId, 'sourceExternalId'), requiredString(sourceVersion, 'sourceVersion')));
-    if (!row || row.operationKind !== 'email-reader.locator.v1' || row.state !== 'applied') return null;
+    const prefix = emailReaderLocatorOperationPrefix(requiredString(sourceExternalId, 'sourceExternalId'), requiredString(sourceVersion, 'sourceVersion'));
+    const row = readOne("SELECT * FROM operation_journal WHERE logical_operation_id LIKE ? AND operation_kind = 'email-reader.locator.v1' ORDER BY updated_at DESC, logical_operation_id DESC LIMIT 1", [`${prefix}%`], mapOperation);
+    if (!row || row.state !== 'applied') return null;
     try {
       const locator = JSON.parse(row.resultIdentity);
-      if (locator.sourceExternalId !== sourceExternalId || locator.sourceVersion !== sourceVersion || typeof locator.messageId !== 'string' || typeof locator.observedAt !== 'string' || !Number.isFinite(Date.parse(locator.observedAt)) || validatedOutlookWebLink(locator.webLink) !== locator.webLink) return null;
+      if (locator.sourceExternalId !== sourceExternalId || locator.sourceVersion !== sourceVersion || typeof locator.messageId !== 'string' || typeof locator.observedAt !== 'string' || !Number.isFinite(Date.parse(locator.observedAt)) || !['available', 'unavailable'].includes(locator.status) || (locator.status === 'available' ? validatedOutlookWebLink(locator.webLink) !== locator.webLink : locator.webLink !== undefined)) return null;
       return Object.freeze(locator);
     } catch { return null; }
   };

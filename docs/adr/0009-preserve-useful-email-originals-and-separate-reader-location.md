@@ -17,6 +17,9 @@ and source revision used for extraction, the retained Topic Note reference and
 revision, and the current Outlook reader destination. A folder move can change
 the last one without creating another obligation or changing a user decision.
 The reader destination is recorded only for an already accepted source revision.
+Each exact lookup adds an immutable reader observation; the newest observation
+is the current-location projection and can also report that the original was
+unavailable at the last lookup. It never rewrites an accepted intake receipt.
 Command Center accepts a bounded, validated provider `webLink` and exposes it
 only through an operator-authorized Attention read. The browser opens Outlook in
 a separate tab; Outlook remains responsible for access. A link is explicitly

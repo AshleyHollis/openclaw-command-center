@@ -748,7 +748,7 @@ test('native Attention opens the Outlook destination and exact supporting Note i
   await page.context().route('https://outlook.office.com/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<title>Fictional Outlook</title>' }));
   await page.evaluate(url => {
     window.cards = [];
-    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'email-bill', kind: 'payment', topicId: 'topic-fictional-renovation', title: 'Fictional email bill', state: 'confirmed', paymentState: 'unpaid', evidenceCount: 1, revision: 1, evidence: { sourceKind: 'email', topicId: 'topic-fictional-renovation', sourceReferenceId: 'note:fictional-email', sourcePath: 'Inbox/fictional-email.md', sourceVersion: 'different-upstream-change-key', sourceReferenceVersion: 'sha256:retained-note-revision', originalEmailUrl: url } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'email-bill', kind: 'payment', topicId: 'topic-fictional-renovation', title: 'Fictional email bill', state: 'confirmed', paymentState: 'unpaid', evidenceCount: 1, revision: 1, evidence: { sourceKind: 'email', topicId: 'topic-fictional-renovation', sourceReferenceId: 'note:fictional-email', sourcePath: 'Inbox/fictional-email.md', sourceVersion: 'different-upstream-change-key', sourceReferenceVersion: 'sha256:retained-note-revision', originalEmailStatus: 'available', originalEmailUrl: url } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
     window.mountInbox();
   }, destination);
   const bill = page.locator('article[data-open-loop-id="email-bill"]');
@@ -769,13 +769,27 @@ test('native Attention opens the Outlook destination and exact supporting Note i
 test('native Attention keeps the Note action when an Outlook link is missing or unsafe', () => fixture(async page => {
   await page.evaluate(() => {
     window.cards = [];
-    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'email-bill', kind: 'payment', topicId: 'topic-fictional-renovation', title: 'Fictional email bill', state: 'confirmed', paymentState: 'unpaid', evidenceCount: 1, revision: 1, evidence: { sourceKind: 'email', topicId: 'topic-fictional-renovation', sourceReferenceId: 'note:fictional-email', sourcePath: 'Inbox/fictional-email.md', sourceVersion: 'upstream-v1', sourceReferenceVersion: 'retained-note-v1', originalEmailUrl: 'javascript:alert(1)' } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'email-bill', kind: 'payment', topicId: 'topic-fictional-renovation', title: 'Fictional email bill', state: 'confirmed', paymentState: 'unpaid', evidenceCount: 1, revision: 1, evidence: { sourceKind: 'email', topicId: 'topic-fictional-renovation', sourceReferenceId: 'note:fictional-email', sourcePath: 'Inbox/fictional-email.md', sourceVersion: 'upstream-v1', sourceReferenceVersion: 'retained-note-v1', originalEmailStatus: 'available', originalEmailUrl: 'javascript:alert(1)' } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
     window.mountInbox();
   });
   const bill = page.locator('article[data-open-loop-id="email-bill"]');
   await bill.getByRole('button', { name: 'Review evidence' }).click();
   assert.equal(await bill.getByRole('link', { name: 'Open original email in Outlook' }).count(), 0);
   await bill.getByText('Original Outlook email link unavailable.', { exact: false }).waitFor();
+  await bill.getByRole('button', { name: 'Open supporting Note' }).click();
+  assert.equal((await page.evaluate(() => window.opened.at(-1))).params.evidenceSourceVersion, 'retained-note-v1');
+}));
+
+test('native Attention distinguishes a known unavailable email from its retained Note', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'email-bill', kind: 'payment', topicId: 'topic-fictional-renovation', title: 'Fictional email bill', state: 'confirmed', paymentState: 'unpaid', evidenceCount: 1, revision: 1, evidence: { sourceKind: 'email', sourceAvailable: false, topicId: 'topic-fictional-renovation', sourceReferenceId: 'note:fictional-email', sourcePath: 'Inbox/fictional-email.md', sourceVersion: 'upstream-v1', sourceReferenceVersion: 'retained-note-v1', originalEmailStatus: 'unavailable' } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  const bill = page.locator('article[data-open-loop-id="email-bill"]');
+  await bill.getByRole('button', { name: 'Review evidence' }).click();
+  await bill.getByText('Original Outlook email was unavailable at the last exact lookup.', { exact: false }).waitFor();
+  assert.equal(await bill.getByRole('link', { name: 'Open original email in Outlook' }).count(), 0);
   await bill.getByRole('button', { name: 'Open supporting Note' }).click();
   assert.equal((await page.evaluate(() => window.opened.at(-1))).params.evidenceSourceVersion, 'retained-note-v1');
 }));

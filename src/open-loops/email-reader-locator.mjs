@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { sourceError } from '../sources/errors.mjs';
 
 function stableUuid(value) {
   const hex = createHash('sha256').update(value).digest('hex').slice(0, 32).split('');
@@ -11,16 +10,10 @@ export function intakeSourceOperationId(sourceExternalId, sourceVersion) {
   return stableUuid(`command-center:intake-source:email:${sourceExternalId}:${sourceVersion}`);
 }
 
-export function emailReaderLocatorOperationId(sourceExternalId, sourceVersion) {
-  return stableUuid(`command-center:email-reader-locator:${sourceExternalId}:${sourceVersion}`);
+export function emailReaderLocatorOperationPrefix(sourceExternalId, sourceVersion) {
+  return `email-reader.locator.v1:${createHash('sha256').update(JSON.stringify([sourceExternalId, sourceVersion])).digest('hex')}:`;
 }
 
-export function validatedOutlookWebLink(value) {
-  if (typeof value !== 'string' || value.length > 2048 || value.trim() !== value) throw sourceError('invalid-request', 'Outlook reader destination is invalid.');
-  let url;
-  try { url = new URL(value); } catch { throw sourceError('invalid-request', 'Outlook reader destination is invalid.'); }
-  const hosts = new Set(['outlook.office.com', 'outlook.office365.com', 'outlook.live.com']);
-  if (url.protocol !== 'https:' || !hosts.has(url.hostname.toLowerCase()) || url.username || url.password || url.port || url.hash || !/^\/(?:owa(?:\/|$)|mail(?:\/|$))/iu.test(url.pathname)) throw sourceError('invalid-request', 'Outlook reader destination is invalid.');
-  for (const key of url.searchParams.keys()) if (/(?:token|secret|password|credential|auth|code|sig|key)/iu.test(key)) throw sourceError('invalid-request', 'Outlook reader destination includes credential-like parameters.');
-  return url.href;
+export function emailReaderLocatorOperationId(locator) {
+  return `${emailReaderLocatorOperationPrefix(locator.sourceExternalId, locator.sourceVersion)}${createHash('sha256').update(JSON.stringify(locator)).digest('hex')}`;
 }

@@ -8,6 +8,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { sourceNoteOperationId } from '../src/open-loops/source-intake-tool.mjs';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 async function temporaryStateDir(prefix) {
   const value = await mkdtemp(path.join(os.tmpdir(), prefix));
@@ -66,13 +68,20 @@ test('email reader location changes after a move without changing accepted effec
     recordIntakeSourcePlan(metadata, sourcePlan());
     const decision = addDecisionLoop(metadata);
     const before = { plan: projectIntakeAccounts(metadata, 'email'), loop: metadata.getOpenLoop(decision.loopId) };
-    const first = { sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', messageId: 'fictional-inbox-id', webLink: 'https://outlook.office.com/mail/inbox/id/fictional-inbox-id', observedAt: '2026-09-22T01:02:00.000Z' };
+    const first = { sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', messageId: 'fictional-inbox-id', status: 'available', webLink: 'https://outlook.office.com/mail/inbox/id/fictional-inbox-id', observedAt: '2026-09-22T01:02:00.000Z' };
     assert.equal(metadata.recordEmailReaderLocator(first).disposition, 'recorded');
     assert.equal(metadata.recordEmailReaderLocator(first).disposition, 'duplicate');
     const moved = { ...first, messageId: 'fictional-moved-id', webLink: 'https://outlook.office.com/mail/archive/id/fictional-moved-id', observedAt: '2026-09-22T01:03:00.000Z' };
     assert.equal(metadata.recordEmailReaderLocator(moved).disposition, 'updated');
     assert.equal(metadata.recordEmailReaderLocator(first).disposition, 'stale');
     assert.equal(metadata.getEmailReaderLocator(first.sourceExternalId, first.sourceVersion).webLink, moved.webLink);
+    const unavailable = { ...moved, status: 'unavailable', webLink: undefined, observedAt: '2026-09-22T01:04:00.000Z' };
+    assert.equal(metadata.recordEmailReaderLocator(unavailable).disposition, 'updated');
+    assert.equal(metadata.getEmailReaderLocator(first.sourceExternalId, first.sourceVersion).status, 'unavailable');
+    assert.equal(metadata.getEmailReaderLocator(first.sourceExternalId, first.sourceVersion).webLink, undefined);
+    const recovered = { ...moved, observedAt: '2026-09-22T01:05:00.000Z' };
+    assert.equal(metadata.recordEmailReaderLocator(recovered).disposition, 'updated');
+    assert.equal(metadata.listOperations().filter(operation => operation.operationKind === 'email-reader.locator.v1').length, 4, 'each accepted location observation remains immutable');
     assert.deepEqual(projectIntakeAccounts(metadata, 'email'), before.plan);
     assert.deepEqual(metadata.getOpenLoop(decision.loopId), before.loop);
     assert.throws(() => metadata.recordEmailReaderLocator({ ...moved, webLink: 'https://evil.example/mail/fictional', observedAt: '2026-09-22T01:04:00.000Z' }), /Outlook reader destination/);
@@ -84,6 +93,28 @@ test('email reader location changes after a move without changing accepted effec
     assert.equal(reopened.getEmailReaderLocator(first.sourceExternalId, first.sourceVersion).webLink, moved.webLink);
     assert.deepEqual(reopened.getOpenLoop(decision.loopId), before.loop);
   } finally { metadata?.close(); await temporary.cleanup(); }
+});
+
+test('simultaneous email reader writers cannot publish different locations for one observation time', async () => {
+  const temporary = await temporaryStateDir('command-center-email-reader-race-');
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    try { recordIntakeSourcePlan(seed, sourcePlan()); } finally { seed.close(); }
+    const first = { sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', messageId: 'fictional-one', status: 'available', webLink: 'https://outlook.office.com/mail/id/fictional-one', observedAt: '2026-09-22T01:02:00.000Z' };
+    const second = { ...first, messageId: 'fictional-two', webLink: 'https://outlook.office.com/mail/id/fictional-two' };
+    const run = input => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [fileURLToPath(new URL('./support/email-reader-write-child.mjs', import.meta.url)), temporary.path, JSON.stringify(input)], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = ''; let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
+      child.once('error', reject); child.once('exit', code => resolve({ code, stdout, stderr }));
+    });
+    const outcomes = await Promise.all([run(first), run(second)]);
+    assert.deepEqual(outcomes.map(item => item.code).sort(), [0, 2]);
+    assert.ok(outcomes.some(item => /(?:conflict|recovery-only)/u.test(item.stderr)), JSON.stringify(outcomes));
+    const verification = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    try { assert.equal(verification.listOperations().filter(item => item.operationKind === 'email-reader.locator.v1').length, 1); }
+    finally { verification.close(); }
+  } finally { await temporary.cleanup(); }
 });
 
 test('mixed email accounting distinguishes accounted-for from resolved and retains bounded enumeration gaps', async () => {

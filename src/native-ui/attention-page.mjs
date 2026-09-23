@@ -1,4 +1,5 @@
 import { attentionStyles } from './attention-styles.mjs';
+import { validatedOutlookWebLink } from './outlook-web-link.mjs';
 
 const text = (value) => typeof value === 'string' ? value : JSON.stringify(value ?? null);
 const nonBlank = (value) => typeof value === 'string' && value.trim().length > 0;
@@ -142,7 +143,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       if (item.sourceAvailable === false) article.append(element('p', 'The original source is currently unavailable. This does not mean the open loop is complete.'));
       const exactNote = item.sourceKind === 'email' && nonBlank(item.sourceReferenceVersion);
       const evidenceRevision = exactNote ? item.sourceReferenceVersion : item.sourceVersion;
-      const navigableSource = (item.sourceKind === 'document' || exactNote) && item.sourceAvailable !== false && nonBlank(item.topicId) && item.topicId === loop?.topicId && nonBlank(item.sourceReferenceId) && nonBlank(item.sourcePath) && nonBlank(evidenceRevision);
+      const navigableSource = ((item.sourceKind === 'document' && item.sourceAvailable !== false) || exactNote) && nonBlank(item.topicId) && item.topicId === loop?.topicId && nonBlank(item.sourceReferenceId) && nonBlank(item.sourcePath) && nonBlank(evidenceRevision);
       if (navigableSource) {
         const open = element('button', exactNote ? 'Open supporting Note' : 'Open original'); open.type = 'button';
         open.addEventListener('click', async () => {
@@ -156,14 +157,13 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           finally { open.disabled = false; }
         }, { signal });
         article.append(open);
+        if (exactNote) article.append(element('p', 'The Topic reader checks the retained Note revision and reports if the Note is missing or has changed.'));
       }
       if (item.sourceKind === 'email') {
         let outlookUrl;
-        try {
-          const candidate = new URL(item.originalEmailUrl);
-          if (candidate.protocol === 'https:' && ['outlook.office.com', 'outlook.office365.com', 'outlook.live.com'].includes(candidate.hostname.toLowerCase()) && !candidate.username && !candidate.password && !candidate.port && !candidate.hash && /^\/(?:owa(?:\/|$)|mail(?:\/|$))/iu.test(candidate.pathname) && ![...candidate.searchParams.keys()].some(key => /(?:token|secret|password|credential|auth|code|sig|key)/iu.test(key))) outlookUrl = candidate.href;
-        } catch { /* absent or unsafe reader destination */ }
-        if (outlookUrl) {
+        try { outlookUrl = validatedOutlookWebLink(item.originalEmailUrl); } catch { /* absent or unsafe reader destination */ }
+        if (item.originalEmailStatus === 'unavailable') article.append(element('p', 'Original Outlook email was unavailable at the last exact lookup. The supporting Note can still be checked independently.'));
+        else if (outlookUrl && item.originalEmailStatus === 'available') {
           const openEmail = element('a', 'Open original email in Outlook');
           openEmail.href = outlookUrl; openEmail.target = '_blank'; openEmail.rel = 'noopener noreferrer';
           article.append(openEmail, element('p', 'Outlook will verify your access. This link has not been checked for current availability.'));
@@ -171,7 +171,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       }
       disclosure.append(article);
     }
-    if (!evidence.some(item => (item.sourceKind === 'document' || item.sourceKind === 'email') && item.sourceAvailable !== false && item.topicId === loop?.topicId && nonBlank(item.sourceReferenceId) && nonBlank(item.sourcePath) && nonBlank(item.sourceKind === 'email' ? item.sourceReferenceVersion : item.sourceVersion))) {
+    if (!evidence.some(item => ((item.sourceKind === 'document' && item.sourceAvailable !== false) || item.sourceKind === 'email') && item.topicId === loop?.topicId && nonBlank(item.sourceReferenceId) && nonBlank(item.sourcePath) && nonBlank(item.sourceKind === 'email' ? item.sourceReferenceVersion : item.sourceVersion))) {
       disclosure.append(element('p', 'This evidence has no currently authorized exact reader destination. Use the displayed source system, kind, and version to verify it in its source.'));
     }
   }

@@ -54,7 +54,7 @@ function publicOpenLoopEvidence(observation, metadata) {
     historicalBaseline: observation.historicalBaseline,
     ...(observation.topicId ? { topicId: observation.topicId } : {}),
     ...Object.fromEntries(publicEvidenceFields.filter(key => observation.facts[key] !== undefined).map(key => [key, observation.facts[key]])),
-    ...(emailReader ? { originalEmailUrl: emailReader.webLink } : {}),
+    ...(emailReader ? { originalEmailStatus: emailReader.status, ...(emailReader.webLink ? { originalEmailUrl: emailReader.webLink } : {}) } : {}),
     ...(typeof observation.facts.sourceAvailable === 'boolean'
       ? { sourceAvailable: observation.facts.sourceAvailable }
       : observation.facts.availability === 'available'

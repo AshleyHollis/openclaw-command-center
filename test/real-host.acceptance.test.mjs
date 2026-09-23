@@ -1276,7 +1276,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const readerPlanPath = path.join(scenarioWorld.root, 'fictional-email-reader-plan.json');
         const installedWrapper = path.join(descriptor.schemaVersion === 2 ? descriptor.runtimeRoot : descriptor.checkout, descriptor.executable);
         const applyReaderPlan = async (messageId, webLink, observedAt) => {
-          const readerPlan = { schemaVersion: 1, purpose: 'command-center-email-reader-locators', sourceNamespace: fictionalAccountedEmailSourceNamespace, records: [{ sourceExternalId: fictionalAccountedEmailRawId, sourceVersion: 'email-change-key-real-host-52', messageId, webLink, observedAt }] };
+          const readerPlan = { schemaVersion: 1, purpose: 'command-center-email-reader-locators', sourceNamespace: fictionalAccountedEmailSourceNamespace, records: [{ sourceExternalId: fictionalAccountedEmailRawId, sourceVersion: 'email-change-key-real-host-52', messageId, status: 'available', webLink, observedAt }] };
           await writeFile(readerPlanPath, JSON.stringify(readerPlan));
           await withDeadline('installed email reader command', () => new Promise((resolve, reject) => {
             execFile(process.execPath, [installedWrapper, 'command-center', 'intake', 'reader-apply', '--plan', readerPlanPath, '--digest', emailReaderPlanDigest(readerPlan)], {
@@ -1341,12 +1341,13 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const quiet = finalEmail.recentSources[0].outcomes.find(item => item.kind === 'information');
         assert.notEqual(quiet.target.sourceVersion, 'email-change-key-real-host-52');
         const paymentOutcome = finalEmail.recentSources[0].outcomes.find(item => item.outcomeId === 'real-host-payment');
-        assert.ok(paymentOutcome?.loopId);
+        assert.equal(paymentOutcome?.target?.kind, 'open-loop');
+        const paymentLoopId = paymentOutcome.target.loopId;
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         const attentionPage = page.locator('openclaw-plugin-page');
         await attentionPage.getByText(/Review all open loops \(/u).click();
         await attentionPage.getByRole('button', { name: 'Load open loops' }).click();
-        const paymentCard = attentionPage.locator(`article[data-open-loop-id="${paymentOutcome.loopId}"]`);
+        const paymentCard = attentionPage.locator(`article[data-open-loop-id="${paymentLoopId}"]`);
         await paymentCard.getByRole('button', { name: 'Review evidence' }).click();
         const originalEmail = paymentCard.getByRole('link', { name: 'Open original email in Outlook' });
         assert.equal(await originalEmail.getAttribute('href'), 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id');

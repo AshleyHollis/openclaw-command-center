@@ -96,7 +96,7 @@ export async function runConfiguredEmailReaderPlan({ planPath, expectedDigest, s
     const dispositions = [];
     for (const record of plan.records) {
       signal?.throwIfAborted();
-      const result = metadata.recordEmailReaderLocator({ sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId), sourceVersion: record.sourceVersion, messageId: record.messageId, webLink: record.webLink, observedAt: record.observedAt });
+      const result = metadata.recordEmailReaderLocator({ sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId), sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt });
       dispositions.push(result.disposition);
     }
     return Object.freeze({ schemaVersion: 1, status: 'applied', count: dispositions.length, recorded: dispositions.filter(value => value === 'recorded').length, updated: dispositions.filter(value => value === 'updated').length, duplicate: dispositions.filter(value => value === 'duplicate').length, stale: dispositions.filter(value => value === 'stale').length });
