@@ -2,8 +2,8 @@ import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { producerIntakePlanDigest } from '../../src/open-loops/producer-intake-plan.mjs';
 
-export const fictionalAccountedEmailSourceNamespace = 'fictional-graph:account-one';
 export const fictionalAccountedEmailBinding = `sha256:${'a'.repeat(64)}`;
+export const fictionalAccountedEmailSourceNamespace = `microsoft-graph:${fictionalAccountedEmailBinding}`;
 export const fictionalAccountedEmailRawId = 'fictional-real-host-mixed-message';
 export const fictionalAccountedEmailSourceId = `namespaced:v1:sha256:${createHash('sha256').update(JSON.stringify([fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId])).digest('hex')}`;
 export const fictionalAccountedEmailAcceptedExtraction = { schemaVersion: 1, proposedTopic: 'Fictional Native Journey', notePath: 'Inbox/fictional-real-host-mixed-email.md', knowledgeMarkdown: '# Fictional retained real-host reference\n', knowledgeOutcomeId: 'real-host-reference', obligations: [{ obligationId: 'real-host-choice', title: 'Choose fictional real-host delivery window', provenance: 'inferred', classification: 'decision' }, { obligationId: 'real-host-payment', title: 'Pay fictional real-host invoice', provenance: 'explicit' }, { obligationId: 'real-host-reply', title: 'Reply with fictional real-host reference', provenance: 'explicit' }] };
