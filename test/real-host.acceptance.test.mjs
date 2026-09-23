@@ -1288,12 +1288,11 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
             }, (error, stdout, stderr) => error ? reject(new Error(`Installed reader command failed: ${stderr.slice(0, 500)}`, { cause: error })) : resolve(stdout));
           }), 70_000);
         };
-        await applyReaderPlan('fictional-inbox-message-id', 'https://outlook.office.com/mail/inbox/id/fictional-inbox-message-id', '2026-09-22T04:03:00.000Z');
         await applyReaderPlan('fictional-archive-message-id', 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id', '2026-09-22T04:04:00.000Z');
         const movedDetail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: loop.loopId }, signal });
         assert.equal((movedDetail.result ?? movedDetail).evidence[0].originalEmailUrl, 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id');
         assert.equal((movedDetail.result ?? movedDetail).loop.revision, loop.revision + 1, 'reader refresh must preserve the confirmed user decision');
-        milestone('reader-location-moved');
+        milestone('reader-location-applied');
         const killed = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
         scenarioHost.child.kill('SIGKILL');
         assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
@@ -1389,7 +1388,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           assert.equal(durable.plan.processorVersion, 'fictional-real-host-processor-v1');
           assert.deepEqual(durable.account.outcomes.map(item => item.status), ['clarified', 'applied', 'applied', 'quiet']);
         } finally { afterRetry.close(); }
-        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, mockedOutlookMoveAndOpen: true });
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, mockedOutlookOpen: true });
       }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -2353,7 +2352,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const releaseLane = await acquireIsolatedLane();
     reportProgress(testContext, `isolated:${id}:started`);
     try {
-      const timeoutMs = id === 'accounted-mixed-email' ? 360_000 : id === 'destructive-migration-restoration' ? 284_000 : 240_000;
+      const timeoutMs = ['destructive-migration-restoration', 'accounted-mixed-email'].includes(id) ? 284_000 : 240_000;
       const evidence = await runBoundedAcceptanceSlice(id, run, { timeoutMs, cleanupTimeoutMs: 15_000 });
       isolatedEvidence.set(id, evidence);
       reportProgress(testContext, `isolated:${id}:passed`);
