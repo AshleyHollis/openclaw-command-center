@@ -1333,8 +1333,9 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         chatPane = await openNativeChat();
         await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-completion-receipt] Record the fictional accepted producer completion after admitted work was recovered.', 'accounted-completion-receipt');
         const acceptedReaderCapture = (await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential })).intakeCoverage.find(item => item.sourceKind === 'email');
-        assert.equal(acceptedReaderCapture.receiptStatus, 'healthy-processed');
+        assert.equal(acceptedReaderCapture.receiptStatus, 'stale', 'the fictional completion is accepted but its expected schedule is past');
         assert.equal(acceptedReaderCapture.lastObservedAt, '2026-09-22T04:02:30.000Z');
+        assert.equal(acceptedReaderCapture.lastSuccessfulAt, '2026-09-22T04:02:30.000Z');
         milestone('installed-producer-completion-recorded');
         const readerStatusBatchId = `sha256:${'b'.repeat(64)}`;
         const recordInstalledReaderStatus = async (status, observedAt, attemptId, { failureCode, digest } = {}) => withDeadline(`installed reader ${status} status`, () => new Promise((resolve, reject) => {
@@ -1352,7 +1353,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.match(await recordInstalledReaderStatus('failed', '2026-09-22T04:03:01.000Z', failedReaderAttempt, { failureCode: 'provider-read-failed' }), /"disposition":"updated"/u);
         const failedReaderDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
         const failedReaderEmail = failedReaderDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
-        assert.equal(failedReaderEmail.receiptStatus, 'healthy-processed', 'a reader failure cannot replace accepted capture');
+        assert.equal(failedReaderEmail.receiptStatus, 'stale', 'a reader failure cannot replace accepted capture or its truthful schedule');
+        assert.equal(failedReaderEmail.lastSuccessfulAt, '2026-09-22T04:02:30.000Z');
         assert.equal(failedReaderEmail.readerRefresh.status, 'failed');
         assert.equal(failedReaderEmail.readerRefresh.failureCode, 'provider-read-failed');
         milestone('installed-reader-failure-visible');
@@ -1371,7 +1373,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const completedReaderDigest = await applyReaderPlan('fictional-archive-message-id', 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id', '2026-09-22T04:06:00.000Z', completedReaderRefresh);
         assert.match(await recordInstalledReaderStatus('completed', '2026-09-22T04:07:00.000Z', completedReaderAttempt, { digest: completedReaderDigest }), /"disposition":"updated"/u);
         const completedReaderEmail = (await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential })).intakeCoverage.find(item => item.sourceKind === 'email');
-        assert.equal(completedReaderEmail.receiptStatus, 'healthy-processed');
+        assert.equal(completedReaderEmail.receiptStatus, 'stale');
         assert.equal(completedReaderEmail.readerRefresh.status, 'completed');
         assert.equal(completedReaderEmail.readerRefresh.linkedCount, 1);
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
