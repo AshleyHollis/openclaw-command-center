@@ -21,6 +21,7 @@ import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigration
 import { COMMAND_CENTER_SCHEMA_VERSION, metadataSchemaV1Sql } from '../src/metadata/schema.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { loadIntakeSourceAccount } from '../src/open-loops/intake-accounting.mjs';
+import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
 import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
@@ -43,7 +44,7 @@ import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVarian
 import { exerciseNativeHistoricalBackfillJourney } from './support/first-live-native-backfill.mjs';
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
 import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
-import { startFictionalOpenAiModel, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId } from './support/fictional-openai-model.mjs';
+import { startFictionalOpenAiModel, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId, fictionalAccountedEmailPlan } from './support/fictional-openai-model.mjs';
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
@@ -1255,13 +1256,15 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           await chatPane.getByText(message, { exact: true }).waitFor({ timeout: 30_000 });
         };
         let chatPane = await openNativeChat();
-        await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-1] Process the fictional mixed email through the registered Command Center intake commands.', 'accounted-outcome-choice');
+        await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-1] Process the fictional mixed email through the registered Command Center intake commands.', 'accounted-receipt-pending');
         milestone('phase-one-complete');
         const metadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
         let durableBeforeRestart;
         try { durableBeforeRestart = loadIntakeSourceAccount(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: fictionalAccountedEmailSourceId, sourceVersion: 'email-change-key-real-host-52' }); }
         finally { metadata.close(); }
         assert.equal(durableBeforeRestart.plan.processorVersion, 'fictional-real-host-processor-v1');
+        assert.match(durableBeforeRestart.plan.retainedNoteRevision, /^sha256:[a-f0-9]{64}$/u);
+        assert.notEqual(durableBeforeRestart.plan.retainedNoteRevision, durableBeforeRestart.plan.sourceVersion);
         assert.deepEqual(durableBeforeRestart.account.counts, { expected: 4, accounted: 2, obligations: 2, decisionsPending: 1, quiet: 1, unresolvedTopics: 0, failed: 0 });
         const pendingDecision = durableBeforeRestart.account.outcomes.find(item => item.kind === 'decision');
         assert.equal(pendingDecision.status, 'pending-decision');
@@ -1285,12 +1288,11 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
             }, (error, stdout, stderr) => error ? reject(new Error(`Installed reader command failed: ${stderr.slice(0, 500)}`, { cause: error })) : resolve(stdout));
           }), 70_000);
         };
-        await applyReaderPlan('fictional-inbox-message-id', 'https://outlook.office.com/mail/inbox/id/fictional-inbox-message-id', '2026-09-22T04:03:00.000Z');
         await applyReaderPlan('fictional-archive-message-id', 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id', '2026-09-22T04:04:00.000Z');
         const movedDetail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: loop.loopId }, signal });
         assert.equal((movedDetail.result ?? movedDetail).evidence[0].originalEmailUrl, 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id');
         assert.equal((movedDetail.result ?? movedDetail).loop.revision, loop.revision + 1, 'reader refresh must preserve the confirmed user decision');
-        milestone('reader-location-moved');
+        milestone('reader-location-applied');
         const killed = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
         scenarioHost.child.kill('SIGKILL');
         assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
@@ -1315,15 +1317,24 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           }
         }, scenarioHost.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
         milestone('host-restarted');
-        chatPane = await openNativeChat();
-        await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-phase-2] Resume only unfinished outcomes from the durable accepted extraction.', 'accounted-load-final');
-        milestone('phase-two-complete');
+        const retryPlan = fictionalAccountedEmailPlan(durableBeforeRestart.plan.retainedNoteRevision);
+        const retryPlanPath = path.join(scenarioWorld.root, 'fictional-admitted-retry-plan.json');
+        await writeFile(retryPlanPath, JSON.stringify(retryPlan));
+        const retryOutput = await withDeadline('installed admitted-work retry command', () => new Promise((resolve, reject) => {
+          execFile(process.execPath, [installedWrapper, 'command-center', 'intake', 'resume', '--plan', retryPlanPath, '--digest', producerIntakePlanDigest(retryPlan), '--attempt', 'after-real-sigkill'], {
+            cwd: descriptor.checkout, timeout: 60_000, maxBuffer: 1_000_000,
+            env: { PATH: process.env.PATH, HOME: scenarioWorld.root, OPENCLAW_CONFIG_PATH: scenarioWorld.manifest.configPath, OPENCLAW_STATE_DIR: path.join(scenarioWorld.root, '.openclaw'), COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1' }
+          }, (error, stdout, stderr) => error ? reject(new Error(`Installed retry command failed: ${stderr.slice(0, 500)}`, { cause: error })) : resolve(stdout));
+        }), 70_000);
+        assert.match(retryOutput, /"retriedSources":1/u);
+        milestone('installed-retry-complete');
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         const dashboardPage = page.locator('openclaw-plugin-page');
         await dashboardPage.getByRole('heading', { name: 'Command Center', exact: true }).waitFor({ timeout: 30_000 });
         milestone('dashboard-mounted');
         const emailCard = dashboardPage.locator('.cc-coverage-card').filter({ hasText: 'Email intake' });
         await emailCard.getByText('1 of 1 admitted sources accounted for · 1 resolved · 4 of 4 outcomes accounted for · 0 decisions pending · 0 failed outcomes', { exact: true }).waitFor();
+        await emailCard.getByText(/Admitted-work retry healthy-processed.*This did not scan new mail/u).waitFor();
         await emailCard.getByText('Upstream discovery in the recorded scope: 1 scanned · 0 remaining · 0 failed reads.', { exact: true }).waitFor();
         await emailCard.getByText(/Latest attempt scope: inbox · .* to .* · at most 50 scanned messages per bounded batch/u).waitFor();
         await emailCard.locator('details > summary').click();
@@ -1367,14 +1378,17 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await retainNativeChatScreenshot(page, 'accounted-email-reader-note-mobile');
         milestone('original-email-and-note-opened');
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-capture-choice').length, 1);
-        assert.equal(fictionalModel.requests.filter(item => ['accounted-capture-payment', 'accounted-capture-reply'].includes(item.action)).length, 2);
+        assert.equal(fictionalModel.requests.filter(item => ['accounted-capture-payment', 'accounted-capture-reply'].includes(item.action)).length, 0, 'installed CLI retry must not rerun the fictional model');
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-save').length, 1);
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-resolve').length, 1);
-        assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-load').length, 1);
-        const durableResume = fictionalModel.requests.find(item => item.action === 'accounted-capture-payment' && item.loadedProcessorVersion);
-        assert.equal(durableResume?.loadedProcessorVersion, 'fictional-real-host-processor-v1');
-        assert.deepEqual(durableResume.loadedOutcomeStatuses, [['real-host-choice', 'clarified'], ['real-host-payment', 'missing'], ['real-host-reply', 'missing'], ['real-host-reference', 'quiet']]);
-        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, mockedOutlookMoveAndOpen: true });
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-load').length, 0);
+        const afterRetry = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+        try {
+          const durable = loadIntakeSourceAccount(afterRetry, { sourceKind: 'email', sourceExternalId: fictionalAccountedEmailSourceId, sourceVersion: 'email-change-key-real-host-52' });
+          assert.equal(durable.plan.processorVersion, 'fictional-real-host-processor-v1');
+          assert.deepEqual(durable.account.outcomes.map(item => item.status), ['clarified', 'applied', 'applied', 'quiet']);
+        } finally { afterRetry.close(); }
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, mockedOutlookOpen: true });
       }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });

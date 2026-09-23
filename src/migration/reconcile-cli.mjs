@@ -12,6 +12,7 @@ import { createHistoricalBackfill, historicalBackfillPlanDigest, withdrawHistori
 import { createHistoricalBackfillStore } from '../open-loops/historical-backfill-store.mjs';
 import { createHistoricalBackfillOperator } from '../open-loops/historical-backfill-operator.mjs';
 import { createProducerIntakeAdapter } from '../open-loops/producer-intake.mjs';
+import { prepareAdmittedRetry, reconcileAdmittedRetry, producerSourceExternalId } from '../open-loops/intake-retry.mjs';
 import { normalizeProducerIntakePlan, producerIntakePlanDigest } from '../open-loops/producer-intake-plan.mjs';
 import { normalizeEmailReaderPlan, emailReaderPlanDigest } from '../open-loops/email-reader-plan.mjs';
 import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeSourceAccountToolFactory, intakeOutcomeToolFactory } from '../open-loops/source-intake-tool.mjs';
@@ -82,10 +83,7 @@ export async function readEmailReaderPlanDigest(filename) {
   return emailReaderPlanDigest(input);
 }
 
-export function producerSourceExternalId(sourceNamespace, sourceExternalId) {
-  const digest = createHash('sha256').update(JSON.stringify([sourceNamespace, sourceExternalId])).digest('hex');
-  return `namespaced:v1:sha256:${digest}`;
-}
+export { producerSourceExternalId } from '../open-loops/intake-retry.mjs';
 
 export async function runConfiguredEmailReaderPlan({ planPath, expectedDigest, signal }) {
   const plan = await readPinnedEmailReaderPlan(planPath, expectedDigest);
@@ -174,7 +172,7 @@ export async function runConfiguredHistoricalBackfill({ mode, planPath, expected
   } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
 }
 
-export async function runConfiguredProducerIntake({ planPath, expectedDigest, config, signal, hostFileAccess }) {
+export async function runConfiguredProducerIntake({ planPath, expectedDigest, config, signal, hostFileAccess, resumeAttemptId }) {
   const plan = await readPinnedProducerIntakePlan(planPath, expectedDigest);
   const pluginConfig = structuredClone(config)?.plugins?.entries?.['command-center']?.config ?? {};
   if (pluginConfig.sourceCapabilities?.notes === false) fail('capability-unavailable');
@@ -183,6 +181,7 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
     import('openclaw/plugin-sdk/state-paths'), import('openclaw/plugin-sdk/file-access-runtime'), import('openclaw/plugin-sdk/sqlite-runtime'),
     import('../metadata/service.mjs'), import('../sources/note-folder-identity.mjs'), import('../sources/note-filesystem-owner.mjs')
   ]);
+  signal?.throwIfAborted();
   const fileAccess = hostFileAccess ?? sdkFileAccess;
   const sqlite = hostFileAccess ?? sdkSqlite;
   const releaseIdentityReader = identity.setHostFilesystemIdentityReader(fileAccess.readDurableFilesystemIdentity);
@@ -190,6 +189,8 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
   let metadata; let sourceService;
   try {
     metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
+    const retry = resumeAttemptId === undefined ? null : prepareAdmittedRetry(metadata, plan, expectedDigest, resumeAttemptId);
+    if (retry && retry.records.length === 0) return reconcileAdmittedRetry(metadata, plan, expectedDigest, resumeAttemptId, () => signal?.throwIfAborted());
     sourceService = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: false } });
     const getOwners = () => ({ metadata, sourceService });
     const tools = {
@@ -214,7 +215,8 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
       async captureChatCommitment() { fail('producer-source-kind-invalid'); },
       recordIntakeSourcePlan: params => invoke(tools.plan, params), recordIntakeOutcome: params => invoke(tools.outcome, params), recordIntakeReceipt: params => invoke(tools.receipt, params)
     });
-    return await adapter.process({ runId: plan.runId, sourceKind: plan.sourceKind, records: plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, enumeration: plan.enumeration, scope: plan.scope });
+    const result = await adapter.process({ runId: retry?.runId ?? plan.runId, sourceKind: plan.sourceKind, records: retry?.records ?? plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, planDigest: expectedDigest, ...(retry ? { purpose: 'admitted-retry', retryOfRunId: plan.runId, unadmittedSourceCount: retry.unadmittedSourceCount } : { enumeration: plan.enumeration }), scope: plan.scope });
+    return retry ? Object.freeze({ ...result, retriedSources: retry.records.length, blockedOutcomeCount: retry.blockedOutcomeCount, unadmittedSourceCount: retry.unadmittedSourceCount }) : result;
   } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
 }
 
@@ -423,6 +425,19 @@ export function registerReconciliationCli({ program, config, logger }) {
       process.once('SIGINT', abort); process.once('SIGTERM', abort);
       try { logger.info(JSON.stringify(await runConfiguredProducerIntake({ planPath: options.plan, expectedDigest: options.digest, config, signal: cancellation.signal }))); }
       catch (error) { logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'producer-intake-failed'); process.exitCode = 1; }
+      finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
+    });
+  intake.command('resume')
+    .description('Retry missing effects only from an already admitted signed email batch; no source read or extraction')
+    .requiredOption('--plan <absolute-path>', 'Original private accepted-extraction batch JSON')
+    .requiredOption('--digest <sha256>', 'Original approved canonical batch SHA-256')
+    .requiredOption('--attempt <id>', 'Stable retry attempt ID; reuse it after a lost response')
+    .action(async options => {
+      const cancellation = new AbortController();
+      const abort = () => cancellation.abort(Object.assign(new Error('producer-intake-cancelled'), { code: 'producer-intake-cancelled' }));
+      process.once('SIGINT', abort); process.once('SIGTERM', abort);
+      try { logger.info(JSON.stringify(await runConfiguredProducerIntake({ planPath: options.plan, expectedDigest: options.digest, resumeAttemptId: options.attempt, config, signal: cancellation.signal }))); }
+      catch (error) { logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'producer-retry-failed'); process.exitCode = 1; }
       finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
     });
   intake.command('reader-digest')

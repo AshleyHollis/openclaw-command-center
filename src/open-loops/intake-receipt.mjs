@@ -16,15 +16,17 @@ function count(value, name) { if (!Number.isSafeInteger(value) || value < 0) thr
 
 export function normalizeIntakeReceipt(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw sourceError('invalid-request', 'Intake receipt is invalid.');
-  const allowed = ['schemaVersion', 'sourceKind', 'runId', 'checkpoint', 'status', 'observedAt', 'lastSuccessfulAt', 'nextExpectedAt', 'processedCount', 'actionableCount', 'noteCount', 'continuation', 'scope', 'enumeration'];
+  const allowed = ['schemaVersion', 'sourceKind', 'runId', 'checkpoint', 'status', 'observedAt', 'lastSuccessfulAt', 'nextExpectedAt', 'processedCount', 'actionableCount', 'noteCount', 'continuation', 'scope', 'enumeration', 'purpose', 'retryOfRunId', 'planDigest', 'unadmittedSourceCount'];
   if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !sourceKinds.has(input.sourceKind) || !statuses.has(input.status)) throw sourceError('invalid-request', 'Intake receipt is invalid.');
+  const purpose = input.purpose ?? 'producer';
+  if (!['producer', 'admitted-retry'].includes(purpose) || purpose === 'admitted-retry' && (input.sourceKind !== 'email' || input.retryOfRunId === undefined || input.planDigest === undefined || input.enumeration !== undefined || input.continuation !== undefined) || purpose === 'producer' && (input.retryOfRunId !== undefined || input.unadmittedSourceCount !== undefined) || input.planDigest !== undefined && (input.sourceKind !== 'email' || !/^sha256:[a-f0-9]{64}$/u.test(input.planDigest))) throw sourceError('invalid-request', 'Intake receipt purpose is invalid.');
   const healthy = input.status === 'healthy-empty' || input.status === 'healthy-processed';
   if (healthy && input.lastSuccessfulAt === undefined) throw sourceError('invalid-request', 'A healthy intake receipt requires lastSuccessfulAt.');
   const continuation = input.continuation;
   if (continuation !== undefined && (!continuation || typeof continuation !== 'object' || Array.isArray(continuation) || Object.keys(continuation).some(key => !['scopeId', 'cursor', 'remainingCount', 'failedReadCount', 'scanCapReached'].includes(key)) || typeof continuation.scanCapReached !== 'boolean')) throw sourceError('invalid-request', 'Intake continuation is invalid.');
   if (input.status === 'incomplete' && continuation === undefined) throw sourceError('invalid-request', 'Incomplete intake requires an exact continuation.');
   if (healthy && continuation !== undefined) throw sourceError('invalid-request', 'Healthy intake cannot retain a continuation.');
-  if (input.sourceKind !== 'chat' && !['failed', 'never-connected'].includes(input.status) && input.nextExpectedAt === undefined) throw sourceError('invalid-request', 'A scheduled intake receipt requires nextExpectedAt.');
+  if (purpose === 'producer' && input.sourceKind !== 'chat' && !['failed', 'never-connected'].includes(input.status) && input.nextExpectedAt === undefined) throw sourceError('invalid-request', 'A scheduled intake receipt requires nextExpectedAt.');
   const scope = input.scope;
   let normalizedScope;
   if (scope !== undefined) {
@@ -37,6 +39,8 @@ export function normalizeIntakeReceipt(input) {
   if (enumeration !== undefined && (enumeration.scope === 'complete' && (enumeration.remainingCount !== 0 || enumeration.failedReadCount !== 0 || enumeration.scanCapReached) || scope && enumeration.scannedCount > scope.maxMessages)) throw sourceError('invalid-request', 'Intake enumeration conflicts with its declared scope.');
   return Object.freeze({
     schemaVersion: 1, sourceKind: input.sourceKind, runId: text(input.runId, 'runId'), checkpoint: text(input.checkpoint, 'checkpoint'), status: input.status,
+    ...(purpose === 'admitted-retry' ? { purpose, retryOfRunId: text(input.retryOfRunId, 'retryOfRunId'), ...(input.unadmittedSourceCount === undefined ? {} : { unadmittedSourceCount: count(input.unadmittedSourceCount, 'unadmittedSourceCount') }) } : {}),
+    ...(input.planDigest === undefined ? {} : { planDigest: input.planDigest }),
     observedAt: instant(input.observedAt, 'observedAt'),
     ...(input.lastSuccessfulAt === undefined ? {} : { lastSuccessfulAt: instant(input.lastSuccessfulAt, 'lastSuccessfulAt') }),
     ...(input.nextExpectedAt === undefined ? {} : { nextExpectedAt: instant(input.nextExpectedAt, 'nextExpectedAt') }),
@@ -54,7 +58,7 @@ export function findIntakeContinuation(metadata, sourceKind) {
   const operations = (metadata?.listOperations?.() ?? []).filter(item => item.operationKind === `intake-receipt.${sourceKind}.v1` && item.resultStatus !== 'superseded').reverse();
   for (const operation of operations) {
     const receipt = parsedReceipt(operation);
-    if (!receipt || receipt.sourceKind !== sourceKind) continue;
+    if (!receipt || receipt.sourceKind !== sourceKind || receipt.purpose === 'admitted-retry') continue;
     if (['healthy-empty', 'healthy-processed', 'never-connected'].includes(receipt.status)) return null;
     if (['incomplete', 'failed'].includes(receipt.status) && receipt.continuation) return Object.freeze({ ...receipt.continuation });
   }
@@ -64,7 +68,7 @@ export function findIntakeContinuation(metadata, sourceKind) {
 export function recordIntakeReceipt(metadata, input) {
   if (!metadata?.commitIntakeReceiptOperation) throw new TypeError('Intake receipts require metadata ownership.');
   const receipt = normalizeIntakeReceipt(input);
-  const identity = { schemaVersion: 1, sourceKind: receipt.sourceKind, runId: receipt.runId };
+  const identity = { schemaVersion: 1, sourceKind: receipt.sourceKind, runId: receipt.runId, ...(receipt.planDigest ? { planDigest: receipt.planDigest } : {}) };
   const logicalOperationId = stableUuid(`command-center:intake-receipt:${receipt.sourceKind}:${receipt.runId}`);
   const committed = metadata.commitIntakeReceiptOperation({
     logicalOperationId, transportRequestId: logicalOperationId, intentDigest: digest(identity), operationKind: `intake-receipt.${receipt.sourceKind}.v1`,

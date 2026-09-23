@@ -11,6 +11,9 @@ import { historicalBackfillPlanDigest } from '../src/open-loops/historical-backf
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
 import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { loadIntakeSourceAccount, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
+import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
+import { prepareAdmittedRetry } from '../src/open-loops/intake-retry.mjs';
 import { revisionForBytes } from '../src/sources/reference.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
@@ -34,10 +37,10 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
     'command-center initialize-metadata execute', 'command-center initialize-metadata verify',
     ...['preflight', 'execute', 'verify'].map(mode => `command-center recover-note-folders ${mode}`),
     ...['preview', 'apply', 'withdraw'].map(mode => `command-center backfill ${mode}`),
-    'command-center intake digest', 'command-center intake apply', 'command-center intake reader-digest', 'command-center intake reader-apply',
+    'command-center intake digest', 'command-center intake apply', 'command-center intake resume', 'command-center intake reader-digest', 'command-center intake reader-apply',
     'command-center verify-discoverability'
   ]);
-  assert.equal(required.length, 44); assert.equal(actions.length, 21);
+  assert.equal(required.length, 47); assert.equal(actions.length, 22);
 });
 
 test('producer intake digest uses the package canonicalizer and rejects dishonest enumeration', async t => {
@@ -80,6 +83,7 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
     const first = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), config: {}, hostFileAccess });
     const replay = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), config: {}, hostFileAccess });
     assert.equal(first.status, 'healthy-processed'); assert.equal(replay.status, 'healthy-processed');
+    await assert.rejects(() => runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), resumeAttemptId: 'one', config: {}, hostFileAccess }), { code: 'producer-retry-original-unavailable' }, 'a healthy run cannot be reprocessed through the retry command');
     const readerPlan = { schemaVersion: 1, purpose: 'command-center-email-reader-locators', sourceNamespace: plan.sourceNamespace, records: [{ sourceExternalId: 'fictional-message-id', sourceVersion: 'email-change-key-9', messageId: 'fictional-moved-message-id', status: 'available', webLink: 'https://outlook.office.com/mail/archive/id/fictional-moved-message-id', observedAt: '2026-09-22T13:00:00.000Z' }] };
     const readerPath = path.join(root, 'reader-plan.json'); await writeFile(readerPath, JSON.stringify(readerPlan));
     assert.deepEqual(await runConfiguredEmailReaderPlan({ planPath: readerPath, expectedDigest: emailReaderPlanDigest(readerPlan) }), { schemaVersion: 1, status: 'applied', count: 1, recorded: 1, updated: 0, duplicate: 0, stale: 0 });
@@ -103,6 +107,57 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
 test('producer source namespace encoding cannot collide across ambiguous separators', () => {
   assert.notEqual(producerSourceExternalId('a:b', 'c'), producerSourceExternalId('a', 'b:c'));
   assert.match(producerSourceExternalId('a:b', 'c'), /^namespaced:v1:sha256:[a-f0-9]{64}$/u);
+});
+
+test('registered producer retry requires an admitted, digest-pinned source and reuses its outcome', { skip: process.platform !== 'linux' }, async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'producer-intake-retry-cli-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const plan = { schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-pending-run', sourceKind: 'email', sourceNamespace: 'fictional-graph:account-one', scope: { accountBinding: 'fictional-account-one', folders: ['inbox'], sinceUtc: '2026-09-15T00:00:00.000Z', beforeUtc: '2026-09-22T00:00:00.000Z', maxMessages: 5, batchKind: 'canary' }, processorVersion: 'fictional-processor-v1', nextExpectedAt: '2026-09-23T00:00:00.000Z', enumeration: { scope: 'complete', scannedCount: 2, remainingCount: 0, failedReadCount: 0, scanCapReached: false }, records: [{ schemaVersion: 1, sourceExternalId: 'fictional-message', sourceVersion: 'upstream-change-key-1', checkpoint: 'page-1', acceptedExtraction: { schemaVersion: 1, proposedTopic: null, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'fictional-message:no-action', summary: 'No action needed' } } }, { schemaVersion: 1, sourceExternalId: 'fictional-never-admitted', sourceVersion: 'upstream-change-key-2', checkpoint: 'page-2', acceptedExtraction: { schemaVersion: 1, proposedTopic: null, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'fictional-never-admitted:no-action', summary: 'No action needed' } } }] };
+  const planPath = path.join(root, 'plan.json'); await writeFile(planPath, JSON.stringify(plan));
+  const accepted = await readPinnedProducerIntakePlan(planPath, producerIntakePlanDigest(plan));
+  const record = accepted.records[0];
+  const sourceExternalId = producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId);
+  const saved = process.env.OPENCLAW_STATE_DIR; process.env.OPENCLAW_STATE_DIR = root;
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true, sessions: true } });
+    recordIntakeSourcePlan(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId, sourceVersion: record.sourceVersion, checkpoint: record.checkpoint, observedAt: '2026-09-22T01:00:00.000Z', processorVersion: plan.processorVersion, acceptedExtraction: record.acceptedExtraction, outcomes: [{ outcomeId: 'fictional-message:no-action', kind: 'no-action' }], enumeration: plan.enumeration });
+    recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: plan.runId, planDigest: producerIntakePlanDigest(plan), checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T01:00:00.000Z', nextExpectedAt: plan.nextExpectedAt, processedCount: 0, actionableCount: 0, noteCount: 0, scope: plan.scope, enumeration: plan.enumeration });
+    metadata.close();
+    const hostFileAccess = createHostFileAccessFixture();
+    const competitors = await Promise.allSettled([1, 2].map(() => runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), resumeAttemptId: 'stable-attempt', config: {}, hostFileAccess })));
+    assert.ok(competitors.some(item => item.status === 'fulfilled' && item.value.status === 'healthy-processed'), 'at least one owner finishes the admitted work');
+    const first = competitors.find(item => item.status === 'fulfilled' && item.value.status === 'healthy-processed').value;
+    const replay = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), resumeAttemptId: 'stable-attempt', config: {}, hostFileAccess });
+    assert.equal(first.status, 'healthy-processed'); assert.equal(replay.status, 'nothing-to-retry');
+    assert.equal(first.unadmittedSourceCount, 1); assert.equal(replay.unadmittedSourceCount, 1);
+    const crashState = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true, sessions: true } });
+    recordIntakeReceipt(crashState, { schemaVersion: 1, sourceKind: 'email', runId: `${plan.runId}:retry:crash-after-effect`, purpose: 'admitted-retry', retryOfRunId: plan.runId, planDigest: producerIntakePlanDigest(plan), checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T01:01:00.000Z', processedCount: 0, actionableCount: 0, noteCount: 0, scope: plan.scope });
+    crashState.close();
+    let authorityChecks = 0;
+    await assert.rejects(() => runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), resumeAttemptId: 'crash-after-effect', config: {}, hostFileAccess, signal: { throwIfAborted() { if (++authorityChecks === 2) throw Object.assign(new Error('operator-cancelled'), { code: 'operator-cancelled' }); } } }), { code: 'operator-cancelled' }, 'authority revoked during awaited setup must prevent receipt finalization');
+    assert.equal(authorityChecks, 2);
+    const afterRevocation = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true, sessions: true } });
+    assert.equal(prepareAdmittedRetry(afterRevocation, accepted, producerIntakePlanDigest(plan), 'crash-after-effect').priorRetry.status, 'pending');
+    afterRevocation.close();
+    const recovered = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), resumeAttemptId: 'crash-after-effect', config: {}, hostFileAccess });
+    assert.equal(recovered.status, 'healthy-processed'); assert.equal(recovered.recoveredPendingReceipt, true);
+    assert.equal(recovered.receipt.receipt.processedCount, 0, 'crash recovery must not invent sources processed before its missing receipt');
+    const verification = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true, sessions: true } });
+    try {
+      const account = loadIntakeSourceAccount(verification, { sourceKind: 'email', sourceExternalId, sourceVersion: record.sourceVersion });
+      assert.equal(account.account.outcomes[0].status, 'no-action');
+      assert.equal(verification.listOperations().filter(item => item.operationKind === 'intake-source.email.v1').length, 1, 'the CLI never admits the second source');
+      assert.equal(verification.listOperations().filter(item => item.operationKind === 'intake-outcome.email.v1').length, 1);
+      const receipts = verification.listOperations().filter(item => item.operationKind === 'intake-receipt.email.v1').map(item => JSON.parse(item.resultIdentity));
+      assert.equal(receipts.find(item => item.purpose === 'admitted-retry').retryOfRunId, plan.runId);
+      assert.equal(receipts.find(item => item.runId === plan.runId).status, 'pending');
+      assert.equal(receipts.find(item => item.runId.endsWith('crash-after-effect')).status, 'healthy-processed');
+    } finally { verification.close(); }
+    await assert.rejects(() => runConfiguredProducerIntake({ planPath, expectedDigest: `sha256:${'0'.repeat(64)}`, resumeAttemptId: 'new-attempt', config: {}, hostFileAccess }), { code: 'producer-plan-digest-mismatch' });
+    const changedPlan = { ...plan, records: [{ ...plan.records[0], acceptedExtraction: { ...plan.records[0].acceptedExtraction, noAction: { ...plan.records[0].acceptedExtraction.noAction, summary: 'Changed accepted outcome' } } }] };
+    const changedPath = path.join(root, 'changed-plan.json'); await writeFile(changedPath, JSON.stringify(changedPlan));
+    await assert.rejects(() => runConfiguredProducerIntake({ planPath: changedPath, expectedDigest: producerIntakePlanDigest(changedPlan), resumeAttemptId: 'stable-attempt', config: {}, hostFileAccess }), { code: 'producer-retry-original-unavailable' }, 'a self-digested changed plan must not borrow the original batch admission');
+  } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
 });
 
 test('historical backfill CLI runs a digest-pinned private adapter with durable metadata', { skip: process.platform !== 'linux' }, async t => {
