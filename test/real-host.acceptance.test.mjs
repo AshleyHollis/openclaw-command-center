@@ -23,6 +23,7 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { loadIntakeSourceAccount, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { producerSourceExternalId } from '../src/open-loops/intake-retry.mjs';
+import { openLoopReminderOperationId } from '../src/open-loops/reminder-coordinator.mjs';
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
 import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
@@ -1436,6 +1437,44 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await page.locator('openclaw-plugin-page').getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
         await retainNativeChatScreenshot(page, 'accounted-email-reader-note-mobile');
         milestone('original-email-and-note-opened');
+        const paymentBefore = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        const beforeDecision = (paymentBefore.result ?? paymentBefore).loop;
+        const scheduleDecisionId = randomUUID();
+        const scheduledResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: scheduleDecisionId,
+            loopId: paymentLoopId, expectedRevision: beforeDecision.revision,
+            decision: beforeDecision.state === 'suggested' ? 'confirm' : 'correct-date', dueAt: '2099-01-02T03:04:05.000Z',
+            rationale: 'Fictional due date accepted for installed follow-up qualification.' }, signal });
+        const scheduled = scheduledResponse.result ?? scheduledResponse;
+        assert.equal(scheduled.reminder.status, 'applied');
+        const nativeReminderId = openLoopReminderOperationId(scheduleDecisionId);
+        const nativeDatabase = new DatabaseSync(path.join(scenarioWorld.root, '.openclaw', 'state', 'openclaw.sqlite'), { readOnly: true });
+        try { assert.equal(nativeDatabase.prepare('SELECT enabled FROM cron_jobs WHERE job_id = ?').get(nativeReminderId)?.enabled, 1); }
+        finally { nativeDatabase.close(); }
+        const paidResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.payment-status', params: { schemaVersion: 1, logicalOperationId: randomUUID(),
+            loopId: paymentLoopId, expectedRevision: scheduled.loop.revision, paymentState: 'paid',
+            rationale: 'Fictional operator assertion; no payment was made.' }, signal });
+        assert.equal((paidResponse.result ?? paidResponse).reminder.status, 'applied');
+        const settledDetail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        assert.equal((settledDetail.result ?? settledDetail).loop.paymentState, 'paid');
+        assert.equal((settledDetail.result ?? settledDetail).followUp.status, 'completed');
+        const disabledDatabase = new DatabaseSync(path.join(scenarioWorld.root, '.openclaw', 'state', 'openclaw.sqlite'), { readOnly: true });
+        try { assert.equal(disabledDatabase.prepare('SELECT enabled FROM cron_jobs WHERE job_id = ?').get(nativeReminderId)?.enabled, 0); }
+        finally { disabledDatabase.close(); }
+        await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        const settledPage = page.locator('openclaw-plugin-page');
+        await settledPage.getByText(/Review all open loops \(/u).click();
+        await settledPage.getByRole('button', { name: 'Load open loops' }).click();
+        const settledCard = settledPage.locator(`article[data-open-loop-id="${paymentLoopId}"]`);
+        await settledCard.getByRole('button', { name: 'Review evidence' }).click();
+        await settledCard.getByText('Decision saved. Reminder follow-up is complete.', { exact: true }).waitFor();
+        await retainNativeChatScreenshot(page, 'accounted-email-paid-follow-up');
+        milestone('native-reminder-created-and-cancelled');
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-capture-choice').length, 1);
         assert.equal(fictionalModel.requests.filter(item => ['accounted-capture-payment', 'accounted-capture-reply'].includes(item.action)).length, 0, 'installed CLI retry must not rerun the fictional model');
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-save').length, 1);
@@ -1447,7 +1486,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           assert.equal(durable.plan.processorVersion, 'fictional-real-host-processor-v1');
           assert.deepEqual(durable.account.outcomes.map(item => item.status), ['clarified', 'applied', 'applied', 'quiet']);
         } finally { afterRetry.close(); }
-        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, mockedOutlookOpen: true });
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, nativeReminderCreatedAndCancelled: true, inspectedPaidFollowUp: true, mockedOutlookOpen: true });
       }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });

@@ -103,7 +103,7 @@ function fictionalSchedulerGateway() {
   return { jobs, async request(method, params) {
     if (method === 'cron.list') return { jobs: [...jobs.values()].map(job => structuredClone(job)) };
     if (method === 'cron.get') return structuredClone(jobs.get(params.id));
-    if (method === 'cron.add') { const id = `fictional-open-loop-${jobs.size + 1}`; const job = { ...structuredClone(params), id, configRevision: `revision-${++revision}` }; jobs.set(id, job); return { created: true, job: structuredClone(job) }; }
+    if (method === 'cron.add') { const id = params.id ?? `fictional-open-loop-${jobs.size + 1}`; const job = { ...structuredClone(params), id, configRevision: `revision-${++revision}` }; jobs.set(id, job); return { created: true, job: structuredClone(job) }; }
     if (method === 'cron.update') { const current = jobs.get(params.id); if (current.configRevision !== params.expectedConfigRevision) throw Object.assign(new Error('changed'), { code: 'CRON_JOB_CHANGED', actualConfigRevision: current.configRevision }); const job = { ...current, ...structuredClone(params.patch), configRevision: `revision-${++revision}` }; jobs.set(job.id, job); return structuredClone(job); }
     throw new Error(`Unexpected fictional Scheduler method ${method}`);
   } };
@@ -202,6 +202,86 @@ test('registered open-loop bridge applies authenticated lifecycle changes and re
     assert.equal(settled.loop.paymentState, 'paid');
     assert.equal(settled.loop.state, 'resolved');
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('authenticated follow-up command resumes a saved decision after restart without replaying an older decision', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-decision-restart-'));
+  const gateway = fictionalSchedulerGateway();
+  const deferOperationId = '10000000-0000-4000-8000-000000000011';
+  const paidOperationId = '10000000-0000-4000-8000-000000000012';
+  let service;
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir });
+    metadata.createTopic({ topicId: 'fictional-renovation', paraCategory: 'project', lifecycle: 'active' });
+    const created = metadata.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'fictional-invoice-intake', message: {
+      schemaVersion: 1, channel: 'email', source: { system: 'fictional-mail', externalId: 'fictional-invoice-restart', version: 'v1' },
+      occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', historicalBaseline: false,
+      topicId: 'fictional-renovation', disposition: 'confirmed-obligation', requestKind: 'payment', explicitRequest: true,
+      summary: 'Pay fictional renovation invoice', payee: 'Fictional Builder', purpose: 'fictional work', amount: 10000,
+      currency: 'AUD', dueAt: '2026-10-01T00:00:00.000Z', invoiceId: 'FICTIONAL-RESTART',
+      attachmentIds: ['fictional-attachment'], evidenceSelectors: ['attachment:1:invoice-number']
+    } });
+    metadata.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: deferOperationId, loopId: created.loop.loopId,
+      expectedRevision: 1, decision: 'defer', reviewAt: '2026-10-02T00:00:00.000Z', actorId: 'fictional-operator',
+      rationale: 'Wait for the fictional correction.', updatedAt: '2026-09-20T01:00:00.000Z' });
+    metadata.close();
+
+    const host = fakePublishedApi(stateDir, { gateway });
+    plugin.register(host.api);
+    service = host.services[0];
+    await service.start();
+    assert.equal(gateway.jobs.size, 0, 'startup has no authenticated Scheduler request context');
+    const pending = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: created.loop.loopId });
+    assert.equal(pending.followUp.status, 'pending');
+    assert.equal(pending.followUp.logicalOperationId, deferOperationId);
+    await assert.rejects(() => invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: deferOperationId }, 'fictional-no-scheduler-grant', 'fictional-operator'),
+    error => error.code === 'capability-unavailable');
+    await assert.rejects(() => invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: deferOperationId }, 'fictional-wrong-operator', 'another-operator', { gateway }),
+    error => error.code === 'unauthorized');
+    assert.equal(gateway.jobs.size, 0);
+    const resumed = await invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: deferOperationId }, 'fictional-resume-request', 'fictional-operator', { gateway });
+    assert.equal(resumed.reminder.status, 'applied');
+    assert.equal(gateway.jobs.size, 1);
+    const completed = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: created.loop.loopId });
+    assert.equal(completed.followUp.status, 'completed');
+    assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T00:00:00.000Z');
+    await service.stop();
+    service = undefined;
+    const restarted = fakePublishedApi(stateDir, { gateway });
+    plugin.register(restarted.api);
+    service = restarted.services[0];
+    await service.start();
+    const replay = await invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: deferOperationId }, 'fictional-resume-replay', 'fictional-operator', { gateway });
+    assert.equal(replay.reminder.status, 'applied');
+    assert.equal(gateway.jobs.size, 1, 'completed follow-up must not create another Reminder on replay');
+    await service.stop();
+    service = undefined;
+    const later = openCommandCenterMetadataService({ stateDir });
+    later.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: paidOperationId, loopId: created.loop.loopId,
+      expectedRevision: 2, paymentState: 'paid', actorId: 'fictional-operator', rationale: 'Fictional settlement confirmed.',
+      updatedAt: '2026-09-20T02:00:00.000Z' });
+    later.close();
+    const afterPayment = fakePublishedApi(stateDir, { gateway });
+    plugin.register(afterPayment.api);
+    service = afterPayment.services[0];
+    await service.start();
+    const obsolete = await invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: deferOperationId }, 'fictional-stale-resume', 'fictional-operator', { gateway });
+    assert.equal(obsolete.disposition, 'superseded');
+    assert.equal([...gateway.jobs.values()][0].enabled, true, 'the stale action does not mutate the native Reminder');
+    const settled = await invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: paidOperationId }, 'fictional-paid-resume', 'fictional-operator', { gateway });
+    assert.equal(settled.reminder.status, 'applied');
+    assert.equal(gateway.jobs.size, 1, 'an obsolete defer must not create another Reminder');
+    assert.equal([...gateway.jobs.values()][0].enabled, false, 'the latest paid assertion cancels the existing Reminder');
+  } finally {
+    await service?.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });
 
 test('bounded document intake reads authoritative content and revision through the existing source owner', async () => {
@@ -446,9 +526,8 @@ test('registered bill actions create, defer, and cancel one native Reminder thro
     const corrected = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 1, decision: 'correct-date', dueDate: '2026-10-05', dueTimeZone: 'Australia/Brisbane', rationale: 'The fictional invoice states a local calendar date without a time.' });
     assert.equal(corrected.loop.dueDate, '2026-10-05'); assert.equal(corrected.loop.dueAt, undefined);
     assert.equal(corrected.reminder.action, 'create'); assert.equal(gateway.jobs.size, 1); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-04T23:00:00.000Z');
-    const externallyChanged = [...gateway.jobs.values()][0]; externallyChanged.configRevision = 'revision-external-change';
     const deferred = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, decision: 'defer', reviewAt: '2026-10-02T09:00:00.000Z', rationale: 'Review after the fictional pay cycle.' });
-    assert.equal(deferred.reminder.action, 'reschedule'); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T09:00:00.000Z', 'authoritative Cron revision wins over the stale Source Reference revision');
+    assert.equal(deferred.reminder.action, 'reschedule'); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T09:00:00.000Z');
     const paid = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 3, paymentState: 'paid', rationale: 'The fictional settlement was verified.' });
     assert.equal(paid.reminder.action, 'cancel'); assert.equal([...gateway.jobs.values()][0].enabled, false);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }

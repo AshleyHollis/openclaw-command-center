@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { normalizeLoop, normalizeObservation } from '../open-loops/contracts.mjs';
+import { openLoopReminderOperationId, openLoopReminderReferenceId, planOpenLoopReminder } from '../open-loops/reminder-coordinator.mjs';
 import { projectQuietInbox } from '../open-loops/quiet-attention.mjs';
 
 const OBSERVE_OPERATION = 'open-loop.observe.v1';
@@ -121,6 +122,57 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       ON CONFLICT(loop_id, observation_id) DO UPDATE SET evidence_role=excluded.evidence_role`).run(loop.loopId, observationId, roles[observationId] ?? (existing ? 'update' : 'origin'), updatedAt);
     return { disposition: existing ? 'updated' : 'created', loop: mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(loop.loopId)) };
   }
+  function followUpIntent(db, logicalOperationId, operationKind, loop) {
+    if (!loop || !(operationKind.startsWith('decision-') || operationKind === 'payment-status')) return undefined;
+    const referenceId = openLoopReminderReferenceId(loop.loopId);
+    const row = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId);
+    const sourceReference = row ? { referenceId: row.reference_id, topicId: row.topic_id, sourceSystem: row.source_system,
+      sourceKind: row.source_kind, externalSourceId: row.external_source_id } : null;
+    const base = { schemaVersion: 1, logicalOperationId: openLoopReminderOperationId(logicalOperationId),
+      loopId: loop.loopId, loopRevision: loop.revision, referenceId,
+      ...(row?.last_observed_revision ? { expectedConfigRevision: row.last_observed_revision } : {}) };
+    try {
+      const plan = planOpenLoopReminder({ loop, sourceReference });
+      if (!row && ['none', 'create'].includes(plan.action)) {
+        const predecessorRow = db.prepare(`SELECT result_json FROM open_loop_operations
+          WHERE state = 'applied' AND json_extract(result_json, '$.loop.loopId') = ?
+            AND json_extract(result_json, '$.followUpIntent.action') = 'create'
+          ORDER BY json_extract(result_json, '$.loop.revision') DESC LIMIT 1`).get(loop.loopId);
+        const predecessor = predecessorRow && JSON.parse(predecessorRow.result_json)?.followUpIntent;
+        if (predecessor) {
+          return { ...base, action: plan.action === 'create' ? 'reschedule-pending-create' : 'cancel-pending-create',
+            topicId: predecessor.topicId, ...(plan.declaration ? { declaration: plan.declaration } : {}),
+            predecessor: { logicalOperationId: predecessor.logicalOperationId,
+              loopRevision: predecessor.loopRevision, declaration: predecessor.declaration } };
+        }
+      }
+      if (row && ['cancel', 'reschedule'].includes(plan.action)) {
+        const predecessorRow = db.prepare(`SELECT json_extract(op.result_json, '$.followUpIntent.logicalOperationId') AS native_operation_id,
+            json_extract(op.result_json, '$.followUpIntent.action') AS native_action, journal.state AS native_state
+          FROM open_loop_operations op
+          JOIN operation_journal journal ON journal.logical_operation_id = json_extract(op.result_json, '$.followUpIntent.logicalOperationId')
+          WHERE op.state = 'applied' AND json_extract(op.result_json, '$.loop.loopId') = ?
+            AND json_extract(op.result_json, '$.loop.revision') = ?
+          ORDER BY op.created_at DESC LIMIT 1`).get(loop.loopId, loop.revision - 1);
+        if (row.last_observed_revision && predecessorRow?.native_action === 'reschedule'
+          && ['pending', 'unknown', 'not-applied'].includes(predecessorRow.native_state)) {
+          return { ...base, action: plan.action === 'cancel' ? 'cancel-after-update' : 'reschedule-after-update',
+            topicId: plan.topicId, ...(plan.declaration ? { declaration: plan.declaration } : {}),
+            predecessor: { logicalOperationId: predecessorRow.native_operation_id,
+              expectedConfigRevision: row.last_observed_revision } };
+        }
+      }
+      if (['cancel', 'reschedule'].includes(plan.action) && !row?.last_observed_revision) {
+        return { ...base, action: 'conflict', reason: 'scheduler-revision-unavailable' };
+      }
+      return { ...base, action: plan.action, ...(plan.topicId ? { topicId: plan.topicId } : {}),
+        ...(plan.declaration ? { declaration: plan.declaration } : {}), ...(plan.reason ? { reason: plan.reason } : {}) };
+    } catch {
+      // A user decision must still commit when its existing native Reminder
+      // binding is inconsistent; follow-up remains a visible conflict.
+      return { ...base, action: 'conflict', reason: 'reminder-binding-conflict' };
+    }
+  }
 
   service.applyOpenLoopChange = input => {
     const value = closed(input, ['schemaVersion', 'logicalOperationId', 'operationKind', 'intent', 'expectedRevision', 'observation', 'loop', 'evidenceRoles', 'updatedAt']);
@@ -140,7 +192,9 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       if (replay) return replay;
       const stored = storeObservation(db, observation);
       const changed = loop ? storeLoop(db, loop, value.expectedRevision, roles, updatedAt) : null;
-      return receipt(db, logicalOperationId, CHANGE_OPERATION, intentDigest, { schemaVersion: 1, disposition: stored.existing && !changed ? 'duplicate' : changed?.disposition ?? 'inserted', observation: stored.observation, loop: changed?.loop ?? null }, updatedAt);
+      const pendingFollowUp = followUpIntent(db, logicalOperationId, operationKind, changed?.loop);
+      return receipt(db, logicalOperationId, CHANGE_OPERATION, intentDigest, { schemaVersion: 1, disposition: stored.existing && !changed ? 'duplicate' : changed?.disposition ?? 'inserted', observation: stored.observation, loop: changed?.loop ?? null,
+        ...(pendingFollowUp ? { followUpIntent: pendingFollowUp } : {}) }, updatedAt);
     });
   };
   service.replayOpenLoopChange = input => {
@@ -204,6 +258,67 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     return rows.map(mapObservation);
   });
   service.getOpenLoop = loopId => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(text(loopId, 'loopId'))));
+  // The decision owner commits this receipt with its loop revision. Enumerating
+  // those receipts after a restart identifies decisions whose follow-up needs
+  // inspection without accepting a stale earlier decision.
+  service.listOpenLoopUserActionReceiptsPage = (input = {}) => {
+    const value = closed(input, ['cursor', 'limit']);
+    const limit = value.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail('open-loop-intent-invalid');
+    const cursor = value.cursor === undefined ? '' : text(value.cursor, 'cursor');
+    return inspect(db => {
+      const rows = db.prepare(`SELECT op.logical_operation_id, op.result_json, l.revision AS current_revision
+        FROM open_loop_operations op
+        JOIN source_observations o ON o.source_system = 'command-center'
+          AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+          AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
+        LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
+        WHERE op.operation_kind = ? AND op.state = 'applied' AND op.logical_operation_id > ?
+        ORDER BY op.logical_operation_id LIMIT ?`).all(CHANGE_OPERATION, cursor, limit + 1);
+      const hasMore = rows.length > limit;
+      const actions = rows.slice(0, limit).map(row => {
+        let result;
+        try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
+        if (!result?.loop?.loopId || !Number.isSafeInteger(result.loop.revision)) fail('open-loop-receipt-invalid');
+        return { logicalOperationId: row.logical_operation_id, loop: result.loop,
+          current: row.current_revision === result.loop.revision };
+      });
+      return freeze({ schemaVersion: 1, actions, hasMore, nextCursor: hasMore ? actions.at(-1).logicalOperationId : null });
+    });
+  };
+  service.getOpenLoopUserActionReceipt = logicalOperationId => inspect(db => {
+    const row = db.prepare(`SELECT op.result_json, l.revision AS current_revision
+      FROM open_loop_operations op
+      JOIN source_observations o ON o.source_system = 'command-center'
+        AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+        AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
+      LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
+      WHERE op.logical_operation_id = ? AND op.operation_kind = ? AND op.state = 'applied'`).get(text(logicalOperationId, 'logicalOperationId'), CHANGE_OPERATION);
+    if (!row) return null;
+    let result;
+    try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
+    if (!result?.loop?.loopId || !Number.isSafeInteger(result.loop.revision) || !result.observation?.facts?.actorId) fail('open-loop-receipt-invalid');
+    return freeze({ schemaVersion: 1, logicalOperationId, loop: result.loop,
+      ...(result.followUpIntent ? { followUpIntent: result.followUpIntent } : {}),
+      actorId: result.observation.facts.actorId, current: row.current_revision === result.loop.revision });
+  });
+  service.getCurrentOpenLoopUserActionReceipt = loopId => inspect(db => {
+    const row = db.prepare(`SELECT op.logical_operation_id, op.result_json
+      FROM open_loops l
+      JOIN open_loop_operations op ON op.operation_kind = ? AND op.state = 'applied'
+        AND json_extract(op.result_json, '$.loop.loopId') = l.loop_id
+        AND json_extract(op.result_json, '$.loop.revision') = l.revision
+      JOIN source_observations o ON o.source_system = 'command-center'
+        AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+        AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
+      WHERE l.loop_id = ? ORDER BY op.created_at DESC, op.logical_operation_id DESC LIMIT 1`).get(CHANGE_OPERATION, text(loopId, 'loopId'));
+    if (!row) return null;
+    let result;
+    try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
+    if (!result?.loop?.loopId || !Number.isSafeInteger(result.loop.revision)) fail('open-loop-receipt-invalid');
+    return freeze({ schemaVersion: 1, logicalOperationId: row.logical_operation_id, loop: result.loop,
+      ...(result.followUpIntent ? { followUpIntent: result.followUpIntent } : {}) });
+  });
   service.findOpenLoopBySubject = (kind, stableSubjectId) => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(text(kind, 'kind', 80), text(stableSubjectId, 'stableSubjectId', 500))));
   service.findCommitmentLoopsByLegacyObligation = (topicId, obligationId) => inspect(db => {
     const rows = db.prepare(`SELECT DISTINCT l.* FROM source_observations o

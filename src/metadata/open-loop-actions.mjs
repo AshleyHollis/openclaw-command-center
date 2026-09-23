@@ -30,7 +30,7 @@ export function installOpenLoopActions(service, { ErrorType }) {
     const ids = identifiers(input, operationKind);
     const { updatedAt: _ownerTime, ...rootIntent } = input;
     const replay = service.replayOpenLoopChange({ schemaVersion: 1, logicalOperationId: ids.logicalOperationId, operationKind, intent: rootIntent });
-    if (replay) return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', loop: replay.loop });
+    if (replay) return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', loop: replay.loop, ...(replay.followUpIntent ? { followUpIntent: replay.followUpIntent } : {}) });
     const loop = service.getOpenLoop(text(input.loopId, 'loopId', 300));
     if (!loop) fail('open-loop-missing');
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision !== loop.revision) fail('open-loop-stale-revision');
@@ -53,7 +53,8 @@ export function installOpenLoopActions(service, { ErrorType }) {
       facts: { operationKind, actorId, rationale, ...facts }
     };
     const changed = service.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: ids.logicalOperationId, operationKind, intent: rootIntent, expectedRevision: loop.revision, observation, loop: { ...next, evidenceObservationIds: [...loop.evidenceObservationIds, ids.observationId], revision: loop.revision + 1 }, evidenceRoles: { [ids.observationId]: next.state === 'resolved' || next.state === 'cancelled' ? 'resolution' : 'update' }, updatedAt });
-    return Object.freeze({ schemaVersion: 1, disposition: changed.disposition === 'updated' ? 'applied' : changed.disposition, loop: changed.loop });
+    return Object.freeze({ schemaVersion: 1, disposition: changed.disposition === 'updated' ? 'applied' : changed.disposition, loop: changed.loop,
+      ...(changed.followUpIntent ? { followUpIntent: changed.followUpIntent } : {}) });
   }
 
   service.recordOpenLoopDecision = input => {

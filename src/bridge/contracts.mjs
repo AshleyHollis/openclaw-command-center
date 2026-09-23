@@ -86,6 +86,7 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.open-loops.intake-selected',
   'command-center.v1.open-loops.capture',
   'command-center.v1.open-loops.decide',
+  'command-center.v1.open-loops.resume-follow-up',
   'command-center.v1.open-loops.payment-status',
   'command-center.v1.open-loops.organize',
   'command-center.v1.open-loops.renovation-requirement',
@@ -113,6 +114,7 @@ export const ADMIN_METHODS = Object.freeze([
   'command-center.v1.attention.act',
   'command-center.v1.open-loops.intake-selected',
   'command-center.v1.open-loops.decide',
+  'command-center.v1.open-loops.resume-follow-up',
   'command-center.v1.open-loops.payment-status',
   'command-center.v1.open-loops.organize',
   'command-center.v1.open-loops.renovation-requirement',
@@ -178,8 +180,12 @@ function actionResultSchema(method) {
     }
     const evidence = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ observationId: { type: 'string' }, type: { type: 'string' }, sourceSystem: { type: 'string' }, sourceKind: { type: 'string' }, sourceVersion: { type: 'string' }, sourceAvailable: { type: 'boolean' }, topicId: { type: 'string' }, sourceReferenceId: { type: 'string' }, sourcePath: { type: 'string' }, sourceReferenceVersion: { type: 'string' }, originalEmailStatus: { type: 'string', enum: ['available', 'unavailable'] }, originalEmailUrl: { type: 'string' }, occurredAt: { type: 'string' }, observedAt: { type: 'string' }, historicalBaseline: { type: 'boolean' }, summary: { type: 'string' }, payee: { type: 'string' }, purpose: { type: 'string' }, amount: { type: 'integer' }, currency: { type: 'string' }, dueAt: { type: 'string' }, dueDate: { type: 'string' }, dueTimeZone: { type: 'string' }, extractionStatus: { type: 'string' }, pageCount: { type: 'integer' }, pageEvidence: { type: 'array', items: { type: 'integer' } }, authorityId: { type: 'string' }, invoiceId: { type: 'string' }, accountId: { type: 'string' }, eventKind: { type: 'string' }, subjectKind: { type: 'string' }, subjectNamespace: { type: 'string' }, subjectId: { type: 'string' }, requirementKind: { type: 'string' }, requirementNamespace: { type: 'string' }, requirementId: { type: 'string' }, purchaseNamespace: { type: 'string' }, purchaseId: { type: 'string' }, stageNamespace: { type: 'string' }, stageId: { type: 'string' }, fulfilledItemIds: { type: 'array', items: { type: 'string' } }, outstandingItemIds: { type: 'array', items: { type: 'string' } }, expectedAt: { type: 'string' }, note: { type: 'string' }, chosenOption: { type: 'string' }, recordedChoice: { type: 'string' }, observedChoice: { type: 'string' }, conflictKind: { type: 'string' }, rationale: { type: 'string' }, assumption: { type: 'string' }, assessment: { type: 'string' }, material: { type: 'boolean' }, decisionId: { type: 'string' }, status: { type: 'string' }, supersedesDecisionId: { type: 'string' }, supersededByDecisionId: { type: 'string' } }), required: ['observationId', 'type', 'sourceSystem', 'sourceKind', 'sourceVersion', 'occurredAt', 'observedAt', 'historicalBaseline'] });
     if (method.endsWith('.list')) return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loops: { type: 'array', items: loop }, total: { type: 'integer' }, offset: { type: 'integer' }, nextOffset: { type: ['integer', 'null'] }, nextCursor: { type: ['string', 'null'] }, hasMore: { type: 'boolean' } }), required: ['schemaVersion', 'loops', 'total', 'offset', 'nextOffset', 'nextCursor', 'hasMore'] });
-    if (method.endsWith('.get')) return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loop, evidence: { type: 'array', items: evidence } }), required: ['schemaVersion', 'loop', 'evidence'] });
-    const reminder = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ status: { type: 'string' }, action: { enum: ['create', 'reschedule', 'cancel', 'none', 'blocked'] }, referenceId: { type: 'string' }, reason: { type: 'string' } }), required: ['status', 'action', 'referenceId'] });
+    if (method.endsWith('.get')) {
+      const followUp = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ status: { enum: ['pending', 'completed', 'unknown', 'conflict', 'blocked', 'unavailable'] }, logicalOperationId: { type: 'string' }, action: { enum: ['create', 'reschedule', 'cancel', 'none', 'blocked', 'conflict'] }, reason: { type: 'string' } }), required: ['status', 'logicalOperationId'] });
+      return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loop, evidence: { type: 'array', items: evidence }, followUp }), required: ['schemaVersion', 'loop', 'evidence'] });
+    }
+    const reminder = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ status: { type: 'string' }, action: { enum: ['create', 'reschedule', 'cancel', 'none', 'blocked', 'conflict'] }, referenceId: { type: 'string' }, reason: { type: 'string' } }), required: ['status', 'action', 'referenceId'] });
+    if (method.endsWith('.resume-follow-up')) return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, disposition: { enum: ['duplicate', 'superseded'] }, loop, reminder }), required: ['schemaVersion', 'disposition', 'loop'] });
     return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, disposition: { enum: ['applied', 'duplicate'] }, loop, reminder }), required: ['schemaVersion', 'disposition', 'loop'] });
   }
   if (method === 'command-center.v1.sessions.group-preview') return Object.freeze({ type: 'object', additionalProperties: false, properties: {
@@ -464,6 +470,7 @@ const required = Object.freeze({
   'command-center.v1.open-loops.capture': ['topicId', 'captureId', 'captureKind', 'capturedAt', 'title', 'logicalOperationId'],
   'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'selections'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'rationale'],
+  'command-center.v1.open-loops.resume-follow-up': ['logicalOperationId'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'rationale'],
   'command-center.v1.open-loops.organize': ['loopId', 'expectedRevision', 'action'],
   'command-center.v1.open-loops.renovation-requirement': ['expectedRevision', 'requirement'],
@@ -557,6 +564,7 @@ const fields = Object.freeze({
   'command-center.v1.open-loops.capture': ['topicId', 'captureId', 'captureKind', 'capturedAt', 'title'],
   'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'selections', 'logicalOperationId'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'amount', 'currency', 'rationale', 'logicalOperationId'],
+  'command-center.v1.open-loops.resume-follow-up': ['logicalOperationId'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'paidAmount', 'currency', 'rationale', 'logicalOperationId'],
   'command-center.v1.open-loops.organize': ['loopId', 'expectedRevision', 'action', 'importance', 'plannedAt', 'reviewAt', 'effortMinutes', 'contexts', 'dependencies', 'logicalOperationId'],
   'command-center.v1.open-loops.renovation-requirement': ['expectedRevision', 'requirement', 'logicalOperationId'],

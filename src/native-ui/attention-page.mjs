@@ -111,6 +111,32 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   function renderEvidence(disclosure, detail) {
     disclosure.replaceChildren(element('summary', 'Source evidence'));
     const loop = detail?.loop;
+    const followUp = detail?.followUp;
+    if (followUp) {
+      const wording = {
+        pending: 'Decision saved. Reminder follow-up is still pending.',
+        completed: 'Decision saved. Reminder follow-up is complete.',
+        unknown: 'Decision saved. The Reminder outcome is uncertain and needs reconciliation.',
+        conflict: 'Decision saved. Reminder follow-up conflicts with the current schedule.',
+        blocked: 'Decision saved. Reminder follow-up needs more information before scheduling.',
+        unavailable: 'Decision saved. Reminder scheduling is currently unavailable.'
+      };
+      disclosure.append(element('p', wording[followUp.status] ?? 'Decision saved. Follow-up status is unavailable.'));
+      if (followUp.status === 'pending' && nonBlank(followUp.logicalOperationId)) {
+        const resume = element('button', 'Resume saved follow-up'); resume.type = 'button';
+        resume.addEventListener('click', async () => {
+          if (!writable() || resume.disabled) return;
+          resume.disabled = true;
+          try {
+            await host.request('command-center.v1.open-loops.resume-follow-up', { schemaVersion: 1, logicalOperationId: followUp.logicalOperationId });
+            const refreshed = unwrap(await host.request('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: loop.loopId }));
+            if (refreshed?.loop?.loopId === loop.loopId) renderEvidence(disclosure, refreshed);
+          } catch (error) { report(error?.message || 'Saved follow-up could not be resumed.'); }
+          finally { resume.disabled = false; }
+        }, { signal });
+        disclosure.append(resume);
+      }
+    }
     if (nonBlank(loop?.expectedEvent)) disclosure.append(element('p', `Expected next event: ${loop.expectedEvent}`));
     if (nonBlank(loop?.reviewAt)) disclosure.append(element('p', `Review after ${formatInstant(loop.reviewAt)}`));
     const evidence = Array.isArray(detail?.evidence) ? detail.evidence : [];

@@ -10,7 +10,7 @@ import { createTopicService } from './topics/service.mjs';
 import { inspectTopicDiscoverability } from './topics/discoverability.mjs';
 import { SourceServiceError } from './sources/errors.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
-import { createOpenLoopReminderCoordinator } from './open-loops/reminder-coordinator.mjs';
+import { createOpenLoopReminderCoordinator, openLoopReminderOperationId } from './open-loops/reminder-coordinator.mjs';
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
@@ -124,22 +124,20 @@ export function createMetadataService(api) {
     if (!operatorId) throw new SourceServiceError('unauthenticated', `Authenticated operator identity is required for ${action}.`);
     return operatorId;
   };
-  const reminderOperationId = parentId => {
-    const bytes = createHash('sha256').update(`${parentId}\u0000open-loop-reminder`).digest();
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = bytes.subarray(0, 16).toString('hex');
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-  };
   const reminderSummary = (status, plan) => Object.freeze({ status, action: plan.action, referenceId: plan.referenceId, ...(plan.reason ? { reason: plan.reason } : {}) });
   function reconcileOpenLoopReminder(result, parentOperationId, runtime = {}) {
     const reminderCoordinator = runtime?.gateway?.request
       ? createOpenLoopReminderCoordinator({ api, gateway: runtime.gateway, metadata: metadataService })
       : openLoopReminders;
-    if (!reminderCoordinator) return result;
+    const { followUpIntent, ...publicResult } = result;
+    if (!reminderCoordinator) return Object.freeze(publicResult);
+    if (result.followUpIntent) {
+      return reminderCoordinator.reconcileAccepted({ loop: result.loop, followUpIntent })
+        .then(receipt => Object.freeze({ ...publicResult, reminder: reminderSummary(receipt.status, receipt.plan) }));
+    }
     const plan = reminderCoordinator.plan({ loop: result.loop });
     if (['none', 'blocked'].includes(plan.action)) return Object.freeze({ ...result, reminder: reminderSummary(plan.action, plan) });
-    const logicalOperationId = reminderOperationId(parentOperationId);
+    const logicalOperationId = openLoopReminderOperationId(parentOperationId);
     const prior = metadataService.getOperation(logicalOperationId);
     if (prior) {
       if (prior.state === 'unknown') throw new SourceServiceError('unknown', 'The native Reminder outcome is unknown. Retry the unchanged open-loop action to reconcile it.');
@@ -350,7 +348,22 @@ export function createMetadataService(api) {
       requireOperational();
       const loop = metadataService.getOpenLoop(input.loopId);
       if (!loop) throw new SourceServiceError('not-found', 'The exact open loop is unavailable.');
-      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id), metadataService))) });
+      const accepted = metadataService.getCurrentOpenLoopUserActionReceipt(loop.loopId);
+      let followUp;
+      if (accepted) {
+        let plan;
+        let planningConflict = false;
+        try { plan = accepted.followUpIntent ?? openLoopReminders?.plan({ loop: accepted.loop }); }
+        catch { planningConflict = true; }
+        const operation = metadataService.getOperation(openLoopReminderOperationId(accepted.logicalOperationId));
+        const status = operation?.state === 'applied' ? 'completed' : !openLoopReminders ? 'unavailable'
+          : planningConflict || plan?.action === 'conflict' ? 'conflict' : !plan ? 'unavailable'
+          : operation?.state === 'unknown' ? 'unknown' : operation ? 'conflict'
+            : plan.action === 'none' ? 'completed' : plan.action === 'blocked' ? 'blocked' : 'pending';
+        followUp = Object.freeze({ status, logicalOperationId: accepted.logicalOperationId,
+          ...(plan ? { action: plan.action, ...(plan.reason ? { reason: plan.reason } : {}) } : {}) });
+      }
+      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id), metadataService))), ...(followUp ? { followUp } : {}) });
     },
     async openLoopsCapture(input = {}) {
       requireOperational();
@@ -461,6 +474,19 @@ export function createMetadataService(api) {
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for open-loop decisions.');
       const result = metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }), ...(input.amount === undefined ? {} : { amount: input.amount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
       return reconcileOpenLoopReminder(result, input.logicalOperationId, runtime);
+    },
+    openLoopsResumeFollowUp(input = {}, runtime = {}) {
+      requireOperational();
+      const actorId = requireOperator(input, 'open-loop follow-up recovery');
+      if (typeof runtime?.gateway?.request !== 'function') throw new SourceServiceError('capability-unavailable', 'An authenticated Scheduler request is required to resume follow-up.');
+      const accepted = metadataService.getOpenLoopUserActionReceipt(input.logicalOperationId);
+      if (!accepted) throw new SourceServiceError('not-found', 'The exact saved user decision is unavailable.');
+      if (accepted.actorId !== actorId) throw new SourceServiceError('unauthorized', 'The saved decision belongs to another operator.');
+      if (!accepted.current || metadataService.getOpenLoop(accepted.loop.loopId)?.revision !== accepted.loop.revision) {
+        return Object.freeze({ schemaVersion: 1, disposition: 'superseded', loop: metadataService.getOpenLoop(accepted.loop.loopId) });
+      }
+      return reconcileOpenLoopReminder({ schemaVersion: 1, disposition: 'duplicate', loop: accepted.loop,
+        ...(accepted.followUpIntent ? { followUpIntent: accepted.followUpIntent } : {}) }, accepted.logicalOperationId, runtime);
     },
     openLoopsPaymentStatus(input = {}, runtime = {}) {
       requireOperational();
