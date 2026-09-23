@@ -1,9 +1,14 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { producerIntakePlanDigest } from '../../src/open-loops/producer-intake-plan.mjs';
 
 export const fictionalAccountedEmailSourceNamespace = 'fictional-graph:account-one';
 export const fictionalAccountedEmailRawId = 'fictional-real-host-mixed-message';
 export const fictionalAccountedEmailSourceId = `namespaced:v1:sha256:${createHash('sha256').update(JSON.stringify([fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId])).digest('hex')}`;
+export const fictionalAccountedEmailAcceptedExtraction = { schemaVersion: 1, proposedTopic: 'Fictional Native Journey', notePath: 'Inbox/fictional-real-host-mixed-email.md', knowledgeMarkdown: '# Fictional retained real-host reference\n', knowledgeOutcomeId: 'real-host-reference', obligations: [{ obligationId: 'real-host-choice', title: 'Choose fictional real-host delivery window', provenance: 'inferred', classification: 'decision' }, { obligationId: 'real-host-payment', title: 'Pay fictional real-host invoice', provenance: 'explicit' }, { obligationId: 'real-host-reply', title: 'Reply with fictional real-host reference', provenance: 'explicit' }] };
+export const fictionalAccountedEmailPlan = { schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-real-host-original', sourceKind: 'email', sourceNamespace: fictionalAccountedEmailSourceNamespace,
+  scope: { accountBinding: 'sha256:fictional-account', folders: ['inbox'], sinceUtc: '2026-09-21T00:00:00.000Z', beforeUtc: '2026-09-22T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' }, processorVersion: 'fictional-real-host-processor-v1', nextExpectedAt: '2026-09-23T04:02:00.000Z',
+  enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false }, records: [{ schemaVersion: 1, sourceExternalId: fictionalAccountedEmailRawId, sourceVersion: 'email-change-key-real-host-52', checkpoint: 'page-1:fictional-real-host-mixed-message', acceptedExtraction: fictionalAccountedEmailAcceptedExtraction }] };
 
 function readJson(request) {
   return new Promise((resolve, reject) => {
@@ -170,7 +175,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
       if (completedToolAction === 'command_center_capture_source_commitment') accounted.captured = result;
     }
     const source = { sourceKind: 'email', sourceExternalId: fictionalAccountedEmailSourceId, sourceVersion: 'email-change-key-real-host-52' };
-    const acceptedExtraction = { schemaVersion: 1, proposedTopic: 'Fictional Native Journey', notePath: 'Inbox/fictional-real-host-mixed-email.md', knowledgeMarkdown: '# Fictional retained real-host reference\n', knowledgeOutcomeId: 'real-host-reference', obligations: [{ obligationId: 'real-host-choice', title: 'Choose fictional real-host delivery window', provenance: 'inferred', classification: 'decision' }, { obligationId: 'real-host-payment', title: 'Pay fictional real-host invoice', provenance: 'explicit' }, { obligationId: 'real-host-reply', title: 'Reply with fictional real-host reference', provenance: 'explicit' }] };
+    const acceptedExtraction = fictionalAccountedEmailAcceptedExtraction;
     let frames;
     let action = 'final';
     if (accountedPhaseOne && accounted.phaseOneStep <= 6) {
@@ -181,7 +186,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
       else if (step === 3) { action = 'accounted-outcome-reference'; frames = toolCall({ id, model, name: 'command_center_record_intake_outcome', arguments: { ...source, outcomeId: 'real-host-reference', kind: 'information', status: 'quiet', summary: 'Retain fictional real-host reference', topicId: accounted.resolved?.topicId, sourceReferenceId: accounted.saved?.sourceReferenceId, sourcePath: accounted.saved?.path, sourceReferenceVersion: accounted.saved?.revision, recordedAt: '2026-09-22T04:00:05.000Z' } }); }
       else if (step === 4) { action = 'accounted-capture-choice'; frames = toolCall({ id, model, name: 'command_center_capture_source_commitment', arguments: { topicId: accounted.resolved?.topicId, ...source, sourceReferenceId: accounted.saved?.sourceReferenceId, sourcePath: accounted.saved?.path, sourceReferenceVersion: accounted.saved?.revision, title: 'Choose fictional real-host delivery window', obligationId: 'real-host-choice', provenance: 'inferred' } }); }
       else if (step === 5) { action = 'accounted-outcome-choice'; frames = toolCall({ id, model, name: 'command_center_record_intake_outcome', arguments: { ...source, outcomeId: 'real-host-choice', kind: 'decision', status: 'pending-decision', summary: 'Choose fictional real-host delivery window', loopId: accounted.captured?.loopId, recordedAt: '2026-09-22T04:00:10.000Z' } }); }
-      else { action = 'accounted-receipt-pending'; frames = toolCall({ id, model, name: 'command_center_record_intake_receipt', arguments: { sourceKind: 'email', runId: 'fictional-real-host-original', checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T04:00:11.000Z', nextExpectedAt: '2026-09-23T04:02:00.000Z', processedCount: 0, actionableCount: 0, noteCount: 0, scope: { accountBinding: 'sha256:fictional-account', folders: ['inbox'], sinceUtc: '2026-09-21T00:00:00.000Z', beforeUtc: '2026-09-22T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' }, enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } } }); }
+      else { action = 'accounted-receipt-pending'; frames = toolCall({ id, model, name: 'command_center_record_intake_receipt', arguments: { sourceKind: 'email', runId: fictionalAccountedEmailPlan.runId, planDigest: producerIntakePlanDigest(fictionalAccountedEmailPlan), checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T04:00:11.000Z', nextExpectedAt: fictionalAccountedEmailPlan.nextExpectedAt, processedCount: 0, actionableCount: 0, noteCount: 0, scope: fictionalAccountedEmailPlan.scope, enumeration: fictionalAccountedEmailPlan.enumeration } }); }
     } else if (accountedPhaseTwo && accounted.phaseTwoStep <= 6) {
       const step = accounted.phaseTwoStep++;
       const durableExtraction = accounted.loaded?.acceptedExtraction;

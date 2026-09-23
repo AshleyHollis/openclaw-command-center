@@ -120,12 +120,17 @@ test('registered producer retry requires an admitted, digest-pinned source and r
   try {
     const metadata = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true, sessions: true } });
     recordIntakeSourcePlan(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId, sourceVersion: record.sourceVersion, checkpoint: record.checkpoint, observedAt: '2026-09-22T01:00:00.000Z', processorVersion: plan.processorVersion, acceptedExtraction: record.acceptedExtraction, outcomes: [{ outcomeId: 'fictional-message:no-action', kind: 'no-action' }], enumeration: plan.enumeration });
-    recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: plan.runId, checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T01:00:00.000Z', nextExpectedAt: plan.nextExpectedAt, processedCount: 0, actionableCount: 0, noteCount: 0, scope: plan.scope, enumeration: plan.enumeration });
+    recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: plan.runId, planDigest: producerIntakePlanDigest(plan), checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T01:00:00.000Z', nextExpectedAt: plan.nextExpectedAt, processedCount: 0, actionableCount: 0, noteCount: 0, scope: plan.scope, enumeration: plan.enumeration });
     metadata.close();
     const hostFileAccess = createHostFileAccessFixture();
     const first = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), resumeAttemptId: 'stable-attempt', config: {}, hostFileAccess });
     const replay = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), resumeAttemptId: 'stable-attempt', config: {}, hostFileAccess });
     assert.equal(first.status, 'healthy-processed'); assert.equal(replay.status, 'nothing-to-retry');
+    const crashState = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true, sessions: true } });
+    recordIntakeReceipt(crashState, { schemaVersion: 1, sourceKind: 'email', runId: `${plan.runId}:retry:crash-after-effect`, purpose: 'admitted-retry', retryOfRunId: plan.runId, planDigest: producerIntakePlanDigest(plan), checkpoint: 'start', status: 'pending', observedAt: '2026-09-22T01:01:00.000Z', processedCount: 0, actionableCount: 0, noteCount: 0, scope: plan.scope });
+    crashState.close();
+    const recovered = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), resumeAttemptId: 'crash-after-effect', config: {}, hostFileAccess });
+    assert.equal(recovered.status, 'healthy-processed'); assert.equal(recovered.recoveredPendingReceipt, true);
     const verification = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true, sessions: true } });
     try {
       const account = loadIntakeSourceAccount(verification, { sourceKind: 'email', sourceExternalId, sourceVersion: record.sourceVersion });
@@ -134,8 +139,12 @@ test('registered producer retry requires an admitted, digest-pinned source and r
       const receipts = verification.listOperations().filter(item => item.operationKind === 'intake-receipt.email.v1').map(item => JSON.parse(item.resultIdentity));
       assert.equal(receipts.find(item => item.purpose === 'admitted-retry').retryOfRunId, plan.runId);
       assert.equal(receipts.find(item => item.runId === plan.runId).status, 'pending');
+      assert.equal(receipts.find(item => item.runId.endsWith('crash-after-effect')).status, 'healthy-processed');
     } finally { verification.close(); }
     await assert.rejects(() => runConfiguredProducerIntake({ planPath, expectedDigest: `sha256:${'0'.repeat(64)}`, resumeAttemptId: 'new-attempt', config: {}, hostFileAccess }), { code: 'producer-plan-digest-mismatch' });
+    const changedPlan = { ...plan, records: [{ ...plan.records[0], acceptedExtraction: { ...plan.records[0].acceptedExtraction, noAction: { ...plan.records[0].acceptedExtraction.noAction, summary: 'Changed accepted outcome' } } }] };
+    const changedPath = path.join(root, 'changed-plan.json'); await writeFile(changedPath, JSON.stringify(changedPlan));
+    await assert.rejects(() => runConfiguredProducerIntake({ planPath: changedPath, expectedDigest: producerIntakePlanDigest(changedPlan), resumeAttemptId: 'stable-attempt', config: {}, hostFileAccess }), { code: 'producer-retry-original-unavailable' }, 'a self-digested changed plan must not borrow the original batch admission');
   } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
 });
 

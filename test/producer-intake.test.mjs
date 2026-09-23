@@ -124,7 +124,7 @@ test('admitted retry executes only missing outcomes from the durable extraction'
   const record = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'message-42', sourceVersion: 'upstream-change-7', checkpoint: 'message-42', rawText: 'Please pay the fictional invoice and reply.' };
   await assert.rejects(() => adapter.process({ runId: 'original-run', sourceKind: 'email', records: [record], nextExpectedAt: '2026-09-22T00:00:00.000Z' }), { message: 'fictional-capture-failed' });
   const originalCaptureCount = calls.source.length;
-  const result = await adapter.process({ runId: 'original-run:retry:one', sourceKind: 'email', purpose: 'admitted-retry', retryOfRunId: 'original-run', records: [{ ...record, rawText: 'changed words must not run extraction' }], nextExpectedAt: '2026-09-22T00:00:00.000Z' });
+  const result = await adapter.process({ runId: 'original-run:retry:one', sourceKind: 'email', purpose: 'admitted-retry', retryOfRunId: 'original-run', planDigest: `sha256:${'a'.repeat(64)}`, records: [{ ...record, rawText: 'changed words must not run extraction' }], nextExpectedAt: '2026-09-22T00:00:00.000Z' });
   assert.equal(result.status, 'healthy-processed');
   assert.equal(calls.extract.length, 1, 'retry must not invoke the extractor');
   assert.equal(calls.plans.length, 1, 'retry must not replace accepted extraction');

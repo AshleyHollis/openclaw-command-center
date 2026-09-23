@@ -44,7 +44,7 @@ import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVarian
 import { exerciseNativeHistoricalBackfillJourney } from './support/first-live-native-backfill.mjs';
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
 import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
-import { startFictionalOpenAiModel, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId } from './support/fictional-openai-model.mjs';
+import { startFictionalOpenAiModel, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId, fictionalAccountedEmailPlan } from './support/fictional-openai-model.mjs';
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
@@ -1316,9 +1316,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           }
         }, scenarioHost.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
         milestone('host-restarted');
-        const retryPlan = { schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-real-host-original', sourceKind: 'email', sourceNamespace: fictionalAccountedEmailSourceNamespace,
-          scope: { accountBinding: 'sha256:fictional-account', folders: ['inbox'], sinceUtc: '2026-09-21T00:00:00.000Z', beforeUtc: '2026-09-22T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' }, processorVersion: durableBeforeRestart.plan.processorVersion, nextExpectedAt: '2026-09-23T04:02:00.000Z',
-          enumeration: durableBeforeRestart.plan.enumeration, records: [{ schemaVersion: 1, sourceExternalId: fictionalAccountedEmailRawId, sourceVersion: durableBeforeRestart.plan.sourceVersion, checkpoint: durableBeforeRestart.plan.checkpoint, acceptedExtraction: durableBeforeRestart.plan.acceptedExtraction }] };
+        const retryPlan = fictionalAccountedEmailPlan;
         const retryPlanPath = path.join(scenarioWorld.root, 'fictional-admitted-retry-plan.json');
         await writeFile(retryPlanPath, JSON.stringify(retryPlan));
         const retryOutput = await withDeadline('installed admitted-work retry command', () => new Promise((resolve, reject) => {

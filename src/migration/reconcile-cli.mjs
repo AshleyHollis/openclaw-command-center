@@ -75,11 +75,14 @@ function admittedRetry(metadata, plan, attemptId) {
   if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(attemptId)) fail('producer-retry-attempt-invalid');
   const runId = `${plan.runId}:retry:${attemptId}`;
   if (runId.length > 300) fail('producer-retry-attempt-invalid');
-  const original = metadata.listOperations().filter(item => item.operationKind === `intake-receipt.${plan.sourceKind}.v1` && item.resultStatus !== 'superseded').map(item => {
+  const receipts = metadata.listOperations().filter(item => item.operationKind === `intake-receipt.${plan.sourceKind}.v1` && item.resultStatus !== 'superseded').map(item => {
     try { return JSON.parse(item.resultIdentity ?? 'null'); } catch { return null; }
-  }).find(item => item?.runId === plan.runId && item.purpose !== 'admitted-retry');
+  });
+  const original = receipts.find(item => item?.runId === plan.runId && item.purpose !== 'admitted-retry');
+  const priorRetry = receipts.find(item => item?.runId === runId && item.purpose === 'admitted-retry');
   const enumeration = { scope: plan.enumeration.scope, scannedCount: plan.enumeration.scannedCount, remainingCount: plan.enumeration.remainingCount, failedReadCount: plan.enumeration.failedReadCount, scanCapReached: plan.enumeration.scanCapReached };
-  if (!original || !['pending', 'failed'].includes(original.status) || !isDeepStrictEqual(original.scope, plan.scope) || !isDeepStrictEqual(original.enumeration, enumeration)) fail('producer-retry-original-unavailable');
+  if (!original || !['pending', 'failed'].includes(original.status) || original.planDigest !== producerIntakePlanDigest(plan) || !isDeepStrictEqual(original.scope, plan.scope) || !isDeepStrictEqual(original.enumeration, enumeration)) fail('producer-retry-original-unavailable');
+  if (priorRetry && (priorRetry.planDigest !== original.planDigest || priorRetry.retryOfRunId !== original.runId)) fail('producer-retry-intent-mismatch');
   let blockedOutcomeCount = 0;
   const records = [];
   for (const record of plan.records) {
@@ -91,7 +94,7 @@ function admittedRetry(metadata, plan, attemptId) {
     blockedOutcomeCount += outcomes.filter(item => ['failed', 'unknown', 'unresolved-topic'].includes(item.status)).length;
     if (outcomes.some(item => item.status === 'missing')) records.push({ ...record, sourceKind: plan.sourceKind, sourceExternalId });
   }
-  return Object.freeze({ runId, records: Object.freeze(records), blockedOutcomeCount });
+  return Object.freeze({ runId, records: Object.freeze(records), blockedOutcomeCount, priorRetry });
 }
 
 export async function readPinnedEmailReaderPlan(filename, expectedDigest) {
@@ -215,7 +218,6 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
   try {
     metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
     const retry = resumeAttemptId === undefined ? null : admittedRetry(metadata, plan, resumeAttemptId);
-    if (retry && retry.records.length === 0) return Object.freeze({ schemaVersion: 1, status: retry.blockedOutcomeCount ? 'blocked-outcomes-remain' : 'nothing-to-retry', retriedSources: 0, blockedOutcomeCount: retry.blockedOutcomeCount });
     sourceService = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: false } });
     const getOwners = () => ({ metadata, sourceService });
     const tools = {
@@ -223,6 +225,14 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
       receipt: intakeReceiptToolFactory({ getOwners })(), plan: intakeSourcePlanToolFactory({ getOwners })(), account: intakeSourceAccountToolFactory({ getOwners })(), outcome: intakeOutcomeToolFactory({ getOwners })()
     };
     const invoke = async (tool, params) => { signal?.throwIfAborted(); const result = await tool.execute('producer-intake-cli', params); signal?.throwIfAborted(); return result?.details; };
+    if (retry && retry.records.length === 0) {
+      if (retry.priorRetry?.status === 'pending') {
+        const completedAt = new Date().toISOString();
+        const receipt = await invoke(tools.receipt, { ...retry.priorRetry, status: 'healthy-processed', observedAt: completedAt, lastSuccessfulAt: completedAt, processedCount: Math.max(retry.priorRetry.processedCount, plan.records.length) });
+        return Object.freeze({ schemaVersion: 1, status: 'healthy-processed', retriedSources: 0, blockedOutcomeCount: retry.blockedOutcomeCount, recoveredPendingReceipt: true, receipt });
+      }
+      return Object.freeze({ schemaVersion: 1, status: retry.priorRetry?.status === 'failed' ? 'retry-failed-new-attempt-required' : retry.blockedOutcomeCount ? 'blocked-outcomes-remain' : 'nothing-to-retry', retriedSources: 0, blockedOutcomeCount: retry.blockedOutcomeCount });
+    }
     const adapter = createProducerIntakeAdapter({
       processorVersion: plan.processorVersion,
       async extract() { fail('producer-extractor-unavailable'); },
@@ -240,7 +250,7 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
       async captureChatCommitment() { fail('producer-source-kind-invalid'); },
       recordIntakeSourcePlan: params => invoke(tools.plan, params), recordIntakeOutcome: params => invoke(tools.outcome, params), recordIntakeReceipt: params => invoke(tools.receipt, params)
     });
-    const result = await adapter.process({ runId: retry?.runId ?? plan.runId, sourceKind: plan.sourceKind, records: retry?.records ?? plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, ...(retry ? { purpose: 'admitted-retry', retryOfRunId: plan.runId } : { enumeration: plan.enumeration }), scope: plan.scope });
+    const result = await adapter.process({ runId: retry?.runId ?? plan.runId, sourceKind: plan.sourceKind, records: retry?.records ?? plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, planDigest: expectedDigest, ...(retry ? { purpose: 'admitted-retry', retryOfRunId: plan.runId } : { enumeration: plan.enumeration }), scope: plan.scope });
     return retry ? Object.freeze({ ...result, retriedSources: retry.records.length, blockedOutcomeCount: retry.blockedOutcomeCount }) : result;
   } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
 }

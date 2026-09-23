@@ -16,10 +16,10 @@ function count(value, name) { if (!Number.isSafeInteger(value) || value < 0) thr
 
 export function normalizeIntakeReceipt(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw sourceError('invalid-request', 'Intake receipt is invalid.');
-  const allowed = ['schemaVersion', 'sourceKind', 'runId', 'checkpoint', 'status', 'observedAt', 'lastSuccessfulAt', 'nextExpectedAt', 'processedCount', 'actionableCount', 'noteCount', 'continuation', 'scope', 'enumeration', 'purpose', 'retryOfRunId'];
+  const allowed = ['schemaVersion', 'sourceKind', 'runId', 'checkpoint', 'status', 'observedAt', 'lastSuccessfulAt', 'nextExpectedAt', 'processedCount', 'actionableCount', 'noteCount', 'continuation', 'scope', 'enumeration', 'purpose', 'retryOfRunId', 'planDigest'];
   if (input.schemaVersion !== 1 || Object.keys(input).some(key => !allowed.includes(key)) || !sourceKinds.has(input.sourceKind) || !statuses.has(input.status)) throw sourceError('invalid-request', 'Intake receipt is invalid.');
   const purpose = input.purpose ?? 'producer';
-  if (!['producer', 'admitted-retry'].includes(purpose) || purpose === 'admitted-retry' && (input.sourceKind !== 'email' || input.retryOfRunId === undefined || input.enumeration !== undefined || input.continuation !== undefined) || purpose === 'producer' && input.retryOfRunId !== undefined) throw sourceError('invalid-request', 'Intake receipt purpose is invalid.');
+  if (!['producer', 'admitted-retry'].includes(purpose) || purpose === 'admitted-retry' && (input.sourceKind !== 'email' || input.retryOfRunId === undefined || input.planDigest === undefined || input.enumeration !== undefined || input.continuation !== undefined) || purpose === 'producer' && input.retryOfRunId !== undefined || input.planDigest !== undefined && (input.sourceKind !== 'email' || !/^sha256:[a-f0-9]{64}$/u.test(input.planDigest))) throw sourceError('invalid-request', 'Intake receipt purpose is invalid.');
   const healthy = input.status === 'healthy-empty' || input.status === 'healthy-processed';
   if (healthy && input.lastSuccessfulAt === undefined) throw sourceError('invalid-request', 'A healthy intake receipt requires lastSuccessfulAt.');
   const continuation = input.continuation;
@@ -40,6 +40,7 @@ export function normalizeIntakeReceipt(input) {
   return Object.freeze({
     schemaVersion: 1, sourceKind: input.sourceKind, runId: text(input.runId, 'runId'), checkpoint: text(input.checkpoint, 'checkpoint'), status: input.status,
     ...(purpose === 'admitted-retry' ? { purpose, retryOfRunId: text(input.retryOfRunId, 'retryOfRunId') } : {}),
+    ...(input.planDigest === undefined ? {} : { planDigest: input.planDigest }),
     observedAt: instant(input.observedAt, 'observedAt'),
     ...(input.lastSuccessfulAt === undefined ? {} : { lastSuccessfulAt: instant(input.lastSuccessfulAt, 'lastSuccessfulAt') }),
     ...(input.nextExpectedAt === undefined ? {} : { nextExpectedAt: instant(input.nextExpectedAt, 'nextExpectedAt') }),
@@ -67,7 +68,7 @@ export function findIntakeContinuation(metadata, sourceKind) {
 export function recordIntakeReceipt(metadata, input) {
   if (!metadata?.commitIntakeReceiptOperation) throw new TypeError('Intake receipts require metadata ownership.');
   const receipt = normalizeIntakeReceipt(input);
-  const identity = { schemaVersion: 1, sourceKind: receipt.sourceKind, runId: receipt.runId };
+  const identity = { schemaVersion: 1, sourceKind: receipt.sourceKind, runId: receipt.runId, ...(receipt.planDigest ? { planDigest: receipt.planDigest } : {}) };
   const logicalOperationId = stableUuid(`command-center:intake-receipt:${receipt.sourceKind}:${receipt.runId}`);
   const committed = metadata.commitIntakeReceiptOperation({
     logicalOperationId, transportRequestId: logicalOperationId, intentDigest: digest(identity), operationKind: `intake-receipt.${receipt.sourceKind}.v1`,
