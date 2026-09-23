@@ -743,6 +743,43 @@ test('native Attention opens exact authorized document evidence and carries its 
   assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'topic-fictional-renovation', sourceReferenceId: 'document-fictional-progress-invoice', sourcePath: 'invoices/fictional-progress-invoice.pdf', evidenceSourceVersion: 'sha256:evidence-version' } });
 }));
 
+test('native Attention opens the Outlook destination and exact supporting Note independently', () => fixture(async page => {
+  const destination = 'https://outlook.office.com/mail/archive/id/fictional-moved-id';
+  await page.context().route('https://outlook.office.com/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<title>Fictional Outlook</title>' }));
+  await page.evaluate(url => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'email-bill', kind: 'payment', topicId: 'topic-fictional-renovation', title: 'Fictional email bill', state: 'confirmed', paymentState: 'unpaid', evidenceCount: 1, revision: 1, evidence: { sourceKind: 'email', topicId: 'topic-fictional-renovation', sourceReferenceId: 'note:fictional-email', sourcePath: 'Inbox/fictional-email.md', sourceVersion: 'different-upstream-change-key', sourceReferenceVersion: 'sha256:retained-note-revision', originalEmailUrl: url } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  }, destination);
+  const bill = page.locator('article[data-open-loop-id="email-bill"]');
+  await bill.getByRole('button', { name: 'Review evidence' }).click();
+  const link = bill.getByRole('link', { name: 'Open original email in Outlook' });
+  assert.equal(await link.getAttribute('href'), destination);
+  assert.equal(await link.getAttribute('rel'), 'noopener noreferrer');
+  const popupPromise = page.waitForEvent('popup');
+  await link.click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState();
+  assert.equal(popup.url(), destination);
+  await popup.close();
+  await bill.getByRole('button', { name: 'Open supporting Note' }).click();
+  assert.deepEqual(await page.evaluate(() => window.opened.at(-1)), { id: 'topic', params: { topicId: 'topic-fictional-renovation', sourceReferenceId: 'note:fictional-email', sourcePath: 'Inbox/fictional-email.md', evidenceSourceVersion: 'sha256:retained-note-revision' } });
+}));
+
+test('native Attention keeps the Note action when an Outlook link is missing or unsafe', () => fixture(async page => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'email-bill', kind: 'payment', topicId: 'topic-fictional-renovation', title: 'Fictional email bill', state: 'confirmed', paymentState: 'unpaid', evidenceCount: 1, revision: 1, evidence: { sourceKind: 'email', topicId: 'topic-fictional-renovation', sourceReferenceId: 'note:fictional-email', sourcePath: 'Inbox/fictional-email.md', sourceVersion: 'upstream-v1', sourceReferenceVersion: 'retained-note-v1', originalEmailUrl: 'javascript:alert(1)' } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  const bill = page.locator('article[data-open-loop-id="email-bill"]');
+  await bill.getByRole('button', { name: 'Review evidence' }).click();
+  assert.equal(await bill.getByRole('link', { name: 'Open original email in Outlook' }).count(), 0);
+  await bill.getByText('Original Outlook email link unavailable.', { exact: false }).waitFor();
+  await bill.getByRole('button', { name: 'Open supporting Note' }).click();
+  assert.equal((await page.evaluate(() => window.opened.at(-1))).params.evidenceSourceVersion, 'retained-note-v1');
+}));
+
 test('native Attention retrieves the complete authorized document catalog before selection', () => fixture(async (page) => {
   await page.evaluate(() => { window.paginatedDocuments = true; window.mountInbox(); });
   await page.getByText('Import one selected document', { exact: true }).click();

@@ -57,6 +57,35 @@ function addEffects(metadata) {
   return { payment, response, decision };
 }
 
+test('email reader location changes after a move without changing accepted effects or decisions', async () => {
+  const temporary = await temporaryStateDir('command-center-email-reader-');
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    addTopic(metadata);
+    recordIntakeSourcePlan(metadata, sourcePlan());
+    const decision = addDecisionLoop(metadata);
+    const before = { plan: projectIntakeAccounts(metadata, 'email'), loop: metadata.getOpenLoop(decision.loopId) };
+    const first = { sourceExternalId: 'fictional-message-42', sourceVersion: 'change-key-7', messageId: 'fictional-inbox-id', webLink: 'https://outlook.office.com/mail/inbox/id/fictional-inbox-id', observedAt: '2026-09-22T01:02:00.000Z' };
+    assert.equal(metadata.recordEmailReaderLocator(first).disposition, 'recorded');
+    assert.equal(metadata.recordEmailReaderLocator(first).disposition, 'duplicate');
+    const moved = { ...first, messageId: 'fictional-moved-id', webLink: 'https://outlook.office.com/mail/archive/id/fictional-moved-id', observedAt: '2026-09-22T01:03:00.000Z' };
+    assert.equal(metadata.recordEmailReaderLocator(moved).disposition, 'updated');
+    assert.equal(metadata.recordEmailReaderLocator(first).disposition, 'stale');
+    assert.equal(metadata.getEmailReaderLocator(first.sourceExternalId, first.sourceVersion).webLink, moved.webLink);
+    assert.deepEqual(projectIntakeAccounts(metadata, 'email'), before.plan);
+    assert.deepEqual(metadata.getOpenLoop(decision.loopId), before.loop);
+    assert.throws(() => metadata.recordEmailReaderLocator({ ...moved, webLink: 'https://evil.example/mail/fictional', observedAt: '2026-09-22T01:04:00.000Z' }), /Outlook reader destination/);
+    assert.throws(() => metadata.recordEmailReaderLocator({ ...moved, webLink: 'https://outlook.office.com/mail/?access_token=fictional', observedAt: '2026-09-22T01:04:00.000Z' }), /credential-like/);
+    assert.throws(() => metadata.recordEmailReaderLocator({ ...moved, sourceExternalId: 'unaccepted-source' }), /accepted email source/);
+    metadata.close(); metadata = null;
+    const reopened = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    metadata = reopened;
+    assert.equal(reopened.getEmailReaderLocator(first.sourceExternalId, first.sourceVersion).webLink, moved.webLink);
+    assert.deepEqual(reopened.getOpenLoop(decision.loopId), before.loop);
+  } finally { metadata?.close(); await temporary.cleanup(); }
+});
+
 test('mixed email accounting distinguishes accounted-for from resolved and retains bounded enumeration gaps', async () => {
   const temporary = await temporaryStateDir('command-center-intake-accounting-');
   try {
