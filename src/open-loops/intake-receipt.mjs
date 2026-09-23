@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
+import { normalizeProducerIntakeScope } from './producer-intake-plan.mjs';
 
 const sourceKinds = new Set(['email', 'chat', 'note']);
 const statuses = new Set(['healthy-empty', 'healthy-processed', 'incomplete', 'pending', 'failed', 'never-connected']);
@@ -25,9 +26,15 @@ export function normalizeIntakeReceipt(input) {
   if (healthy && continuation !== undefined) throw sourceError('invalid-request', 'Healthy intake cannot retain a continuation.');
   if (input.sourceKind !== 'chat' && !['failed', 'never-connected'].includes(input.status) && input.nextExpectedAt === undefined) throw sourceError('invalid-request', 'A scheduled intake receipt requires nextExpectedAt.');
   const scope = input.scope;
-  if (scope !== undefined && (input.sourceKind !== 'email' || !scope || typeof scope !== 'object' || Array.isArray(scope) || Object.keys(scope).some(key => !['accountBinding', 'folders', 'sinceUtc', 'beforeUtc', 'maxMessages', 'batchKind'].includes(key)) || typeof scope.accountBinding !== 'string' || !scope.accountBinding.trim() || !Array.isArray(scope.folders) || scope.folders.length < 1 || scope.folders.length > 10 || !scope.folders.every(folder => typeof folder === 'string' && folder.trim()) || !Number.isSafeInteger(scope.maxMessages) || scope.maxMessages < 1 || scope.maxMessages > 50 || !['canary', 'bounded'].includes(scope.batchKind) || scope.batchKind === 'canary' && scope.maxMessages > 5 || !Number.isFinite(Date.parse(scope.sinceUtc)) || !Number.isFinite(Date.parse(scope.beforeUtc)) || Date.parse(scope.sinceUtc) >= Date.parse(scope.beforeUtc))) throw sourceError('invalid-request', 'Intake scope is invalid.');
+  let normalizedScope;
+  if (scope !== undefined) {
+    if (input.sourceKind !== 'email') throw sourceError('invalid-request', 'Intake scope is invalid.');
+    try { normalizedScope = normalizeProducerIntakeScope(scope); }
+    catch { throw sourceError('invalid-request', 'Intake scope is invalid.'); }
+  }
   const enumeration = input.enumeration;
   if (enumeration !== undefined && (!enumeration || typeof enumeration !== 'object' || Array.isArray(enumeration) || Object.keys(enumeration).some(key => !['scope', 'scannedCount', 'remainingCount', 'failedReadCount', 'scanCapReached'].includes(key)) || !['complete', 'bounded', 'partial'].includes(enumeration.scope) || typeof enumeration.scanCapReached !== 'boolean')) throw sourceError('invalid-request', 'Intake enumeration is invalid.');
+  if (enumeration !== undefined && (enumeration.scope === 'complete' && (enumeration.remainingCount !== 0 || enumeration.failedReadCount !== 0 || enumeration.scanCapReached) || scope && enumeration.scannedCount > scope.maxMessages)) throw sourceError('invalid-request', 'Intake enumeration conflicts with its declared scope.');
   return Object.freeze({
     schemaVersion: 1, sourceKind: input.sourceKind, runId: text(input.runId, 'runId'), checkpoint: text(input.checkpoint, 'checkpoint'), status: input.status,
     observedAt: instant(input.observedAt, 'observedAt'),
@@ -35,7 +42,7 @@ export function normalizeIntakeReceipt(input) {
     ...(input.nextExpectedAt === undefined ? {} : { nextExpectedAt: instant(input.nextExpectedAt, 'nextExpectedAt') }),
     processedCount: count(input.processedCount, 'processedCount'), actionableCount: count(input.actionableCount, 'actionableCount'), noteCount: count(input.noteCount, 'noteCount'),
     ...(continuation === undefined ? {} : { continuation: Object.freeze({ scopeId: text(continuation.scopeId, 'continuation.scopeId'), cursor: text(continuation.cursor, 'continuation.cursor'), remainingCount: count(continuation.remainingCount, 'continuation.remainingCount'), failedReadCount: count(continuation.failedReadCount, 'continuation.failedReadCount'), scanCapReached: continuation.scanCapReached }) }),
-    ...(scope === undefined ? {} : { scope: Object.freeze({ accountBinding: text(scope.accountBinding, 'scope.accountBinding', 300), folders: Object.freeze(scope.folders.map(folder => text(folder, 'scope.folder', 100))), sinceUtc: instant(scope.sinceUtc, 'scope.sinceUtc'), beforeUtc: instant(scope.beforeUtc, 'scope.beforeUtc'), maxMessages: count(scope.maxMessages, 'scope.maxMessages'), batchKind: scope.batchKind }) }),
+    ...(normalizedScope === undefined ? {} : { scope: normalizedScope }),
     ...(enumeration === undefined ? {} : { enumeration: Object.freeze({ scope: enumeration.scope, scannedCount: count(enumeration.scannedCount, 'enumeration.scannedCount'), remainingCount: count(enumeration.remainingCount, 'enumeration.remainingCount'), failedReadCount: count(enumeration.failedReadCount, 'enumeration.failedReadCount'), scanCapReached: enumeration.scanCapReached }) })
   });
 }

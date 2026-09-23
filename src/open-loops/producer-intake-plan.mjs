@@ -16,7 +16,7 @@ function instant(value) {
   return new Date(selected).toISOString();
 }
 function count(value) { if (!Number.isSafeInteger(value) || value < 0) fail('producer-plan-invalid'); return value; }
-function boundedScope(value, recordCount) {
+export function normalizeProducerIntakeScope(value, recordCount = 0) {
   const keys = ['accountBinding', 'folders', 'sinceUtc', 'beforeUtc', 'maxMessages', 'batchKind'];
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key)) || !Array.isArray(value.folders) || value.folders.length < 1 || value.folders.length > 10 || !['canary', 'bounded'].includes(value.batchKind)) fail('producer-plan-invalid');
   const folders = value.folders.map(folder => text(folder, 200));
@@ -51,7 +51,7 @@ export function normalizeProducerIntakePlan(input) {
     } catch (error) { if (error?.code === 'producer-plan-invalid') throw error; fail('producer-plan-invalid'); }
   });
   if (new Set(records.map(record => `${record.sourceExternalId}\0${record.sourceVersion}`)).size !== records.length) fail('producer-plan-invalid');
-  const scope = boundedScope(input.scope, records.length);
+  const scope = normalizeProducerIntakeScope(input.scope, records.length);
   return Object.freeze({ schemaVersion: 1, purpose: input.purpose, runId: text(input.runId, 300), sourceKind: input.sourceKind, sourceNamespace: text(input.sourceNamespace, 300), scope,
     processorVersion: text(input.processorVersion, 300), nextExpectedAt: instant(input.nextExpectedAt), enumeration: enumeration(input.enumeration, records.length, scope.maxMessages), records: Object.freeze(records) });
 }

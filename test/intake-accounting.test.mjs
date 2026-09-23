@@ -283,6 +283,7 @@ test('a bounded email receipt retains content-free source scope and discovery af
     assert.deepEqual(retained.scope, scope);
     assert.deepEqual(retained.enumeration, enumeration);
     assert.throws(() => recordIntakeReceipt(metadata, { ...retained, runId: 'invalid-scope', scope: { ...scope, sinceUtc: scope.beforeUtc } }), { code: 'invalid-request' });
+    assert.throws(() => recordIntakeReceipt(metadata, { ...retained, runId: 'invalid-enumeration', enumeration: { ...enumeration, scannedCount: 51 } }), { code: 'invalid-request' });
   } finally { metadata?.close(); await temporary.cleanup(); }
 });
 
