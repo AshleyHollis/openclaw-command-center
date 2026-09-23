@@ -1340,7 +1340,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const finalEmail = finalDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
         const quiet = finalEmail.recentSources[0].outcomes.find(item => item.kind === 'information');
         assert.notEqual(quiet.target.sourceVersion, 'email-change-key-real-host-52');
-        const paymentOutcome = finalEmail.recentSources[0].outcomes.find(item => item.outcomeId === 'real-host-payment');
+        const paymentOutcome = finalEmail.recentSources[0].outcomes.find(item => item.summary === 'Pay fictional real-host invoice');
         assert.equal(paymentOutcome?.target?.kind, 'open-loop');
         const paymentLoopId = paymentOutcome.target.loopId;
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
