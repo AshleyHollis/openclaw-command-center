@@ -21,6 +21,7 @@ import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigration
 import { COMMAND_CENTER_SCHEMA_VERSION, metadataSchemaV1Sql } from '../src/metadata/schema.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { loadIntakeSourceAccount } from '../src/open-loops/intake-accounting.mjs';
+import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
 import { importedProvenance } from '../src/migration/transcript.mjs';
 import { controlUiPluginUrl, isCommandCenterMetadataReady, isControlUiBootstrapUrl, isControlUiPluginUrl } from '../src/acceptance-readiness.mjs';
@@ -42,7 +43,7 @@ import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVarian
 import { exerciseNativeHistoricalBackfillJourney } from './support/first-live-native-backfill.mjs';
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
 import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
-import { startFictionalOpenAiModel } from './support/fictional-openai-model.mjs';
+import { startFictionalOpenAiModel, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId } from './support/fictional-openai-model.mjs';
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
@@ -1258,7 +1259,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         milestone('phase-one-complete');
         const metadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
         let durableBeforeRestart;
-        try { durableBeforeRestart = loadIntakeSourceAccount(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-real-host-mixed-message', sourceVersion: 'email-change-key-real-host-52' }); }
+        try { durableBeforeRestart = loadIntakeSourceAccount(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: fictionalAccountedEmailSourceId, sourceVersion: 'email-change-key-real-host-52' }); }
         finally { metadata.close(); }
         assert.equal(durableBeforeRestart.plan.processorVersion, 'fictional-real-host-processor-v1');
         assert.deepEqual(durableBeforeRestart.account.counts, { expected: 4, accounted: 2, obligations: 2, decisionsPending: 1, quiet: 1, unresolvedTopics: 0, failed: 0 });
@@ -1272,6 +1273,24 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.ok(typeof bootstrap.body.serverBuildId === 'string' && bootstrap.body.serverBuildId.trim());
         await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId, method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
         milestone('decision-recorded');
+        const readerPlanPath = path.join(scenarioWorld.root, 'fictional-email-reader-plan.json');
+        const installedWrapper = path.join(descriptor.schemaVersion === 2 ? descriptor.runtimeRoot : descriptor.checkout, descriptor.executable);
+        const applyReaderPlan = async (messageId, webLink, observedAt) => {
+          const readerPlan = { schemaVersion: 1, purpose: 'command-center-email-reader-locators', sourceNamespace: fictionalAccountedEmailSourceNamespace, records: [{ sourceExternalId: fictionalAccountedEmailRawId, sourceVersion: 'email-change-key-real-host-52', messageId, status: 'available', webLink, observedAt }] };
+          await writeFile(readerPlanPath, JSON.stringify(readerPlan));
+          await withDeadline('installed email reader command', () => new Promise((resolve, reject) => {
+            execFile(process.execPath, [installedWrapper, 'command-center', 'intake', 'reader-apply', '--plan', readerPlanPath, '--digest', emailReaderPlanDigest(readerPlan)], {
+              cwd: descriptor.checkout, timeout: 60_000, maxBuffer: 1_000_000,
+              env: { PATH: process.env.PATH, HOME: scenarioWorld.root, OPENCLAW_CONFIG_PATH: scenarioWorld.manifest.configPath, OPENCLAW_STATE_DIR: path.join(scenarioWorld.root, '.openclaw'), COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1' }
+            }, (error, stdout, stderr) => error ? reject(new Error(`Installed reader command failed: ${stderr.slice(0, 500)}`, { cause: error })) : resolve(stdout));
+          }), 70_000);
+        };
+        await applyReaderPlan('fictional-inbox-message-id', 'https://outlook.office.com/mail/inbox/id/fictional-inbox-message-id', '2026-09-22T04:03:00.000Z');
+        await applyReaderPlan('fictional-archive-message-id', 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id', '2026-09-22T04:04:00.000Z');
+        const movedDetail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: loop.loopId }, signal });
+        assert.equal((movedDetail.result ?? movedDetail).evidence[0].originalEmailUrl, 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id');
+        assert.equal((movedDetail.result ?? movedDetail).loop.revision, loop.revision + 1, 'reader refresh must preserve the confirmed user decision');
+        milestone('reader-location-moved');
         const killed = new Promise(resolve => scenarioHost.child.once('exit', (code, terminationSignal) => resolve({ code, signal: terminationSignal })));
         scenarioHost.child.kill('SIGKILL');
         assert.deepEqual(await killed, { code: null, signal: 'SIGKILL' });
@@ -1321,6 +1340,30 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const finalEmail = finalDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
         const quiet = finalEmail.recentSources[0].outcomes.find(item => item.kind === 'information');
         assert.notEqual(quiet.target.sourceVersion, 'email-change-key-real-host-52');
+        const paymentOutcome = finalEmail.recentSources[0].outcomes.find(item => item.summary === 'Pay fictional real-host invoice');
+        assert.equal(paymentOutcome?.target?.kind, 'open-loop');
+        const paymentLoopId = paymentOutcome.target.loopId;
+        await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        const attentionPage = page.locator('openclaw-plugin-page');
+        await attentionPage.getByText(/Review all open loops \(/u).click();
+        await attentionPage.getByRole('button', { name: 'Load open loops' }).click();
+        const paymentCard = attentionPage.locator(`article[data-open-loop-id="${paymentLoopId}"]`);
+        await paymentCard.getByRole('button', { name: 'Review evidence' }).click();
+        const originalEmail = paymentCard.getByRole('link', { name: 'Open original email in Outlook' });
+        assert.equal(await originalEmail.getAttribute('href'), 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id');
+        assert.equal(await originalEmail.getAttribute('rel'), 'noopener noreferrer');
+        await page.context().route('https://outlook.office.com/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<title>Fictional Outlook</title>' }));
+        const popupPromise = page.waitForEvent('popup');
+        await originalEmail.focus(); await originalEmail.press('Enter');
+        const outlookPopup = await popupPromise;
+        await outlookPopup.waitForLoadState();
+        assert.equal(outlookPopup.url(), 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id');
+        await outlookPopup.close();
+        await page.setViewportSize({ width: 390, height: 900 });
+        await paymentCard.getByRole('button', { name: 'Open supporting Note' }).click();
+        await page.locator('openclaw-plugin-page').getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
+        await retainNativeChatScreenshot(page, 'accounted-email-reader-note-mobile');
+        milestone('original-email-and-note-opened');
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-capture-choice').length, 1);
         assert.equal(fictionalModel.requests.filter(item => ['accounted-capture-payment', 'accounted-capture-reply'].includes(item.action)).length, 2);
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-save').length, 1);
@@ -1329,7 +1372,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const durableResume = fictionalModel.requests.find(item => item.action === 'accounted-capture-payment' && item.loadedProcessorVersion);
         assert.equal(durableResume?.loadedProcessorVersion, 'fictional-real-host-processor-v1');
         assert.deepEqual(durableResume.loadedOutcomeStatuses, [['real-host-choice', 'clarified'], ['real-host-payment', 'missing'], ['real-host-reply', 'missing'], ['real-host-reference', 'quiet']]);
-        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true });
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, mockedOutlookMoveAndOpen: true });
       }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });

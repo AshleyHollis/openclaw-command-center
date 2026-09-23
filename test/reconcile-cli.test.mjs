@@ -5,10 +5,11 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
-import { producerSourceExternalId, readPinnedProducerIntakePlan, readProducerIntakePlanDigest, readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredProducerIntake, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
+import { producerSourceExternalId, readPinnedProducerIntakePlan, readProducerIntakePlanDigest, readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredProducerIntake, runConfiguredEmailReaderPlan, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
 import { reconciliationPlanDigest } from '../src/migration/reconcile.mjs';
 import { historicalBackfillPlanDigest } from '../src/open-loops/historical-backfill.mjs';
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
+import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { revisionForBytes } from '../src/sources/reference.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
@@ -33,10 +34,10 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
     'command-center initialize-metadata execute', 'command-center initialize-metadata verify',
     ...['preflight', 'execute', 'verify'].map(mode => `command-center recover-note-folders ${mode}`),
     ...['preview', 'apply', 'withdraw'].map(mode => `command-center backfill ${mode}`),
-    'command-center intake digest', 'command-center intake apply',
+    'command-center intake digest', 'command-center intake apply', 'command-center intake reader-digest', 'command-center intake reader-apply',
     'command-center verify-discoverability'
   ]);
-  assert.equal(required.length, 41); assert.equal(actions.length, 19);
+  assert.equal(required.length, 44); assert.equal(actions.length, 21);
 });
 
 test('producer intake digest uses the package canonicalizer and rejects dishonest enumeration', async t => {
@@ -79,6 +80,10 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
     const first = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), config: {}, hostFileAccess });
     const replay = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), config: {}, hostFileAccess });
     assert.equal(first.status, 'healthy-processed'); assert.equal(replay.status, 'healthy-processed');
+    const readerPlan = { schemaVersion: 1, purpose: 'command-center-email-reader-locators', sourceNamespace: plan.sourceNamespace, records: [{ sourceExternalId: 'fictional-message-id', sourceVersion: 'email-change-key-9', messageId: 'fictional-moved-message-id', status: 'available', webLink: 'https://outlook.office.com/mail/archive/id/fictional-moved-message-id', observedAt: '2026-09-22T13:00:00.000Z' }] };
+    const readerPath = path.join(root, 'reader-plan.json'); await writeFile(readerPath, JSON.stringify(readerPlan));
+    assert.deepEqual(await runConfiguredEmailReaderPlan({ planPath: readerPath, expectedDigest: emailReaderPlanDigest(readerPlan) }), { schemaVersion: 1, status: 'applied', count: 1, recorded: 1, updated: 0, duplicate: 0, stale: 0 });
+    assert.deepEqual(await runConfiguredEmailReaderPlan({ planPath: readerPath, expectedDigest: emailReaderPlanDigest(readerPlan) }), { schemaVersion: 1, status: 'applied', count: 1, recorded: 0, updated: 0, duplicate: 1, stale: 0 });
     const verification = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
     try {
       const loops = verification.listOpenLoops(); assert.equal(loops.length, 1); assert.equal(loops[0].title, 'Pay fictional accepted invoice'); assert.equal(loops[0].revision, 1);
@@ -87,6 +92,7 @@ test('producer intake CLI consumes accepted extraction with distinct upstream an
       assert.equal(observation.source.externalId, producerSourceExternalId('fictional-graph:account-one', 'fictional-message-id'));
       const account = verification.listOperations().find(item => item.operationKind === 'intake-source.email.v1');
       assert.equal(account.observedRevision, 'email-change-key-9');
+      assert.equal(verification.getEmailReaderLocator(observation.source.externalId, observation.facts.sourceVersion).webLink, readerPlan.records[0].webLink);
     } finally { verification.close(); }
   } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
 });

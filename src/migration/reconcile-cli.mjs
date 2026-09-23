@@ -13,6 +13,7 @@ import { createHistoricalBackfillStore } from '../open-loops/historical-backfill
 import { createHistoricalBackfillOperator } from '../open-loops/historical-backfill-operator.mjs';
 import { createProducerIntakeAdapter } from '../open-loops/producer-intake.mjs';
 import { normalizeProducerIntakePlan, producerIntakePlanDigest } from '../open-loops/producer-intake-plan.mjs';
+import { normalizeEmailReaderPlan, emailReaderPlanDigest } from '../open-loops/email-reader-plan.mjs';
 import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeSourceAccountToolFactory, intakeOutcomeToolFactory } from '../open-loops/source-intake-tool.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -69,9 +70,37 @@ export async function readProducerIntakePlanDigest(filename) {
   return producerIntakePlanDigest(input);
 }
 
+export async function readPinnedEmailReaderPlan(filename, expectedDigest) {
+  if (!/^sha256:[a-f0-9]{64}$/u.test(expectedDigest)) fail('email-reader-plan-invalid');
+  const input = await readPinnedJson(filename, 'email-reader-plan-invalid', 'email-reader-plan-unsafe', 'email-reader-plan-changed');
+  if (emailReaderPlanDigest(input) !== expectedDigest) fail('email-reader-plan-digest-mismatch');
+  return normalizeEmailReaderPlan(input);
+}
+
+export async function readEmailReaderPlanDigest(filename) {
+  const input = await readPinnedJson(filename, 'email-reader-plan-invalid', 'email-reader-plan-unsafe', 'email-reader-plan-changed');
+  return emailReaderPlanDigest(input);
+}
+
 export function producerSourceExternalId(sourceNamespace, sourceExternalId) {
   const digest = createHash('sha256').update(JSON.stringify([sourceNamespace, sourceExternalId])).digest('hex');
   return `namespaced:v1:sha256:${digest}`;
+}
+
+export async function runConfiguredEmailReaderPlan({ planPath, expectedDigest, signal }) {
+  const plan = await readPinnedEmailReaderPlan(planPath, expectedDigest);
+  signal?.throwIfAborted();
+  const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')]);
+  const metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
+  try {
+    const dispositions = [];
+    for (const record of plan.records) {
+      signal?.throwIfAborted();
+      const result = metadata.recordEmailReaderLocator({ sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId), sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt });
+      dispositions.push(result.disposition);
+    }
+    return Object.freeze({ schemaVersion: 1, status: 'applied', count: dispositions.length, recorded: dispositions.filter(value => value === 'recorded').length, updated: dispositions.filter(value => value === 'updated').length, duplicate: dispositions.filter(value => value === 'duplicate').length, stale: dispositions.filter(value => value === 'stale').length });
+  } finally { metadata.close(); }
 }
 
 async function importPinnedBackfillAdapter(filename, expectedDigest) {
@@ -394,6 +423,20 @@ export function registerReconciliationCli({ program, config, logger }) {
       process.once('SIGINT', abort); process.once('SIGTERM', abort);
       try { logger.info(JSON.stringify(await runConfiguredProducerIntake({ planPath: options.plan, expectedDigest: options.digest, config, signal: cancellation.signal }))); }
       catch (error) { logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'producer-intake-failed'); process.exitCode = 1; }
+      finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
+    });
+  intake.command('reader-digest')
+    .requiredOption('--plan <absolute-path>', 'Private bounded email reader locator plan JSON')
+    .action(async options => { try { logger.info(await readEmailReaderPlanDigest(options.plan)); } catch (error) { logger.error(error?.code ?? 'email-reader-plan-invalid'); process.exitCode = 1; } });
+  intake.command('reader-apply')
+    .requiredOption('--plan <absolute-path>', 'Private bounded email reader locator plan JSON')
+    .requiredOption('--digest <sha256>', 'Pinned canonical reader plan SHA-256')
+    .action(async options => {
+      const cancellation = new AbortController();
+      const abort = () => cancellation.abort(Object.assign(new Error('email-reader-cancelled'), { code: 'email-reader-cancelled' }));
+      process.once('SIGINT', abort); process.once('SIGTERM', abort);
+      try { logger.info(JSON.stringify(await runConfiguredEmailReaderPlan({ planPath: options.plan, expectedDigest: options.digest, signal: cancellation.signal }))); }
+      catch (error) { logger.error(error?.code ?? 'email-reader-plan-failed'); process.exitCode = 1; }
       finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
     });
   group.command('verify-discoverability').description('Verify active Topic and Primary Conversation discoverability').action(async () => {

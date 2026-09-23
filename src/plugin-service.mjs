@@ -34,12 +34,15 @@ function unavailable(feature) {
   throw new SourceServiceError('capability-unavailable', `Command Center ${feature} ${reason}.`);
 }
 
-const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'purchaseNamespace', 'purchaseId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'fulfilledItemIds', 'outstandingItemIds', 'expectedAt', 'note', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId', 'sourceReferenceId', 'sourcePath', 'extractionStatus', 'pageCount', 'pageEvidence']);
+const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'purchaseNamespace', 'purchaseId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'fulfilledItemIds', 'outstandingItemIds', 'expectedAt', 'note', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'extractionStatus', 'pageCount', 'pageEvidence']);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)]))
   : value;
 const operationDigest = value => `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}`;
-function publicOpenLoopEvidence(observation) {
+function publicOpenLoopEvidence(observation, metadata) {
+  const emailReader = observation.source.kind === 'email' && observation.source.system === 'command-center-capture'
+    ? metadata.getEmailReaderLocator?.(observation.source.externalId, observation.facts.sourceVersion)
+    : null;
   return Object.freeze({
     observationId: observation.observationId,
     type: observation.type,
@@ -51,6 +54,7 @@ function publicOpenLoopEvidence(observation) {
     historicalBaseline: observation.historicalBaseline,
     ...(observation.topicId ? { topicId: observation.topicId } : {}),
     ...Object.fromEntries(publicEvidenceFields.filter(key => observation.facts[key] !== undefined).map(key => [key, observation.facts[key]])),
+    ...(emailReader ? { originalEmailStatus: emailReader.status, ...(emailReader.webLink ? { originalEmailUrl: emailReader.webLink } : {}) } : {}),
     ...(typeof observation.facts.sourceAvailable === 'boolean'
       ? { sourceAvailable: observation.facts.sourceAvailable }
       : observation.facts.availability === 'available'
@@ -346,7 +350,7 @@ export function createMetadataService(api) {
       requireOperational();
       const loop = metadataService.getOpenLoop(input.loopId);
       if (!loop) throw new SourceServiceError('not-found', 'The exact open loop is unavailable.');
-      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id)))) });
+      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id), metadataService))) });
     },
     async openLoopsCapture(input = {}) {
       requireOperational();

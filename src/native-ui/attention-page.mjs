@@ -1,4 +1,5 @@
 import { attentionStyles } from './attention-styles.mjs';
+import { validatedOutlookWebLink } from './outlook-web-link.mjs';
 
 const text = (value) => typeof value === 'string' ? value : JSON.stringify(value ?? null);
 const nonBlank = (value) => typeof value === 'string' && value.trim().length > 0;
@@ -140,24 +141,37 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       }
       if (item.extractionStatus === 'pdf-text-extracted') article.append(element('p', 'PDF text extraction is a suggestion. Verify the original before confirming or correcting the obligation.'));
       if (item.sourceAvailable === false) article.append(element('p', 'The original source is currently unavailable. This does not mean the open loop is complete.'));
-      const navigableDocument = item.sourceKind === 'document' && item.sourceAvailable !== false && nonBlank(item.topicId) && item.topicId === loop?.topicId && nonBlank(item.sourceReferenceId) && nonBlank(item.sourcePath) && nonBlank(item.sourceVersion);
-      if (navigableDocument) {
-        const open = element('button', 'Open original'); open.type = 'button';
+      const exactNote = item.sourceKind === 'email' && nonBlank(item.sourceReferenceVersion);
+      const evidenceRevision = exactNote ? item.sourceReferenceVersion : item.sourceVersion;
+      const navigableSource = ((item.sourceKind === 'document' && item.sourceAvailable !== false) || exactNote) && nonBlank(item.topicId) && item.topicId === loop?.topicId && nonBlank(item.sourceReferenceId) && nonBlank(item.sourcePath) && nonBlank(evidenceRevision);
+      if (navigableSource) {
+        const open = element('button', exactNote ? 'Open supporting Note' : 'Open original'); open.type = 'button';
         open.addEventListener('click', async () => {
           if (!readable() || open.disabled) return;
           open.disabled = true;
           try {
             const response = await host.request('command-center.v1.topics.get', { schemaVersion: 1, topicId: item.topicId });
             if (!readable() || unwrap(response)?.topic?.topicId !== item.topicId) throw new Error('The exact source Topic is unavailable.');
-            host.navigation.openPage({ id: 'topic', params: { topicId: item.topicId, sourceReferenceId: item.sourceReferenceId, sourcePath: item.sourcePath, evidenceSourceVersion: item.sourceVersion } });
+            host.navigation.openPage({ id: 'topic', params: { topicId: item.topicId, sourceReferenceId: item.sourceReferenceId, sourcePath: item.sourcePath, evidenceSourceVersion: evidenceRevision } });
           } catch (error) { report(error?.message || 'The original source is unavailable.'); }
           finally { open.disabled = false; }
         }, { signal });
         article.append(open);
+        if (exactNote) article.append(element('p', 'The Topic reader checks the retained Note revision and reports if the Note is missing or has changed.'));
+      }
+      if (item.sourceKind === 'email') {
+        let outlookUrl;
+        try { outlookUrl = validatedOutlookWebLink(item.originalEmailUrl); } catch { /* absent or unsafe reader destination */ }
+        if (item.originalEmailStatus === 'unavailable') article.append(element('p', 'Original Outlook email was unavailable at the last exact lookup. The supporting Note can still be checked independently.'));
+        else if (outlookUrl && item.originalEmailStatus === 'available') {
+          const openEmail = element('a', 'Open original email in Outlook');
+          openEmail.href = outlookUrl; openEmail.target = '_blank'; openEmail.rel = 'noopener noreferrer';
+          article.append(openEmail, element('p', 'Outlook will verify your access. This link has not been checked for current availability.'));
+        } else article.append(element('p', 'Original Outlook email link unavailable. The supporting Note remains available when its exact revision can be verified.'));
       }
       disclosure.append(article);
     }
-    if (!evidence.some(item => item.sourceKind === 'document' && item.sourceAvailable !== false && item.topicId === loop?.topicId && nonBlank(item.sourceReferenceId) && nonBlank(item.sourcePath) && nonBlank(item.sourceVersion))) {
+    if (!evidence.some(item => ((item.sourceKind === 'document' && item.sourceAvailable !== false) || item.sourceKind === 'email') && item.topicId === loop?.topicId && nonBlank(item.sourceReferenceId) && nonBlank(item.sourcePath) && nonBlank(item.sourceKind === 'email' ? item.sourceReferenceVersion : item.sourceVersion))) {
       disclosure.append(element('p', 'This evidence has no currently authorized exact reader destination. Use the displayed source system, kind, and version to verify it in its source.'));
     }
   }
