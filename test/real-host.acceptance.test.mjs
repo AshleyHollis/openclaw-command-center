@@ -1394,6 +1394,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await emailCard.getByText('Upstream discovery in the recorded scope: 1 scanned · 0 remaining · 0 failed reads.', { exact: true }).waitFor();
         await emailCard.getByText(/Latest attempt scope: inbox · .* to .* · at most 50 scanned messages per bounded batch/u).waitFor();
         await emailCard.locator('details > summary').click();
+        await emailCard.getByText(/Source 1 · observed /u).waitFor();
         await emailCard.getByText('Choose fictional real-host delivery window: clarified', { exact: true }).waitFor();
         await emailCard.getByText('Pay fictional real-host invoice: applied', { exact: true }).waitFor();
         await emailCard.getByText('Reply with fictional real-host reference: applied', { exact: true }).waitFor();
