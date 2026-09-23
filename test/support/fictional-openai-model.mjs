@@ -131,7 +131,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
   const pendingToolCalls = new Set();
   const pendingToolActions = new Map();
   const usedMediaReferences = new Set();
-  const accounted = { phaseOneStep: 0, phaseTwoStep: 0, resolved: null, saved: null, captured: null };
+  const accounted = { phaseOneStep: 0, phaseTwoStep: 0, completedReceiptSent: false, resolved: null, saved: null, captured: null };
   let sequence = 0;
   let initialTurnCompleted = false;
   const server = createServer(async (request, response) => {
@@ -168,6 +168,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     const vagueFixtureTurn = serializedMessages.includes('[fixture:capture-vague]');
     const accountedPhaseOne = serializedMessages.includes('[fixture:accounted-mixed-email-phase-1]');
     const accountedPhaseTwo = serializedMessages.includes('[fixture:accounted-mixed-email-phase-2]');
+    const accountedCompletionTurn = serializedMessages.includes('[fixture:accounted-mixed-email-completion-receipt]');
     if (completedCurrentTool && (accountedPhaseOne || accountedPhaseTwo)) {
       const result = latestToolResult(messages);
       if (completedToolAction === 'command_center_get_intake_source_account') accounted.loaded = result;
@@ -198,6 +199,10 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
       else if (step === 1 || step === 3) { const payment = step === 1; const obligation = durableExtraction?.obligations?.find(item => item.obligationId === (payment ? 'real-host-payment' : 'real-host-reply')); action = payment ? 'accounted-capture-payment' : 'accounted-capture-reply'; frames = toolCall({ id, model, name: 'command_center_capture_source_commitment', arguments: { ...obligation, classification: undefined, topicId: retained?.topicId, ...source, sourceReferenceId: retained?.sourceReferenceId, sourcePath: retained?.sourcePath, sourceReferenceVersion: retained?.sourceReferenceVersion } }); }
       else if (step === 2 || step === 4) { const payment = step === 2; const outcome = durableOutcome(payment ? 'real-host-payment' : 'real-host-reply'); const obligation = durableExtraction?.obligations?.find(item => item.obligationId === outcome?.outcomeId); action = payment ? 'accounted-outcome-payment' : 'accounted-outcome-reply'; frames = toolCall({ id, model, name: 'command_center_record_intake_outcome', arguments: { ...source, outcomeId: outcome?.outcomeId, kind: outcome?.kind, status: 'applied', summary: obligation?.title, loopId: accounted.captured?.loopId, recordedAt: payment ? '2026-09-22T04:01:10.000Z' : '2026-09-22T04:01:20.000Z' } }); }
       else { action = 'accounted-receipt'; frames = toolCall({ id, model, name: 'command_center_record_intake_receipt', arguments: { sourceKind: 'email', runId: 'fictional-real-host-resume', checkpoint: 'page-1:fictional-real-host-mixed-message', status: 'healthy-processed', observedAt: '2026-09-22T04:02:00.000Z', lastSuccessfulAt: '2026-09-22T04:02:00.000Z', nextExpectedAt: '2026-09-23T04:02:00.000Z', processedCount: 1, actionableCount: 2, noteCount: 0, scope: { accountBinding: fictionalAccountedEmailBinding, folders: ['inbox'], sinceUtc: '2026-09-21T00:00:00.000Z', beforeUtc: '2026-09-22T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' }, enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } } }); }
+    } else if (accountedCompletionTurn && !accounted.completedReceiptSent && tools.has('command_center_record_intake_receipt')) {
+      accounted.completedReceiptSent = true;
+      action = 'accounted-completion-receipt';
+      frames = toolCall({ id, model, name: 'command_center_record_intake_receipt', arguments: { sourceKind: 'email', runId: 'fictional-real-host-completed', checkpoint: 'page-1:fictional-real-host-mixed-message', status: 'healthy-processed', observedAt: '2026-09-22T04:02:30.000Z', lastSuccessfulAt: '2026-09-22T04:02:30.000Z', nextExpectedAt: '2026-09-23T04:02:30.000Z', processedCount: 1, actionableCount: 2, noteCount: 0, scope: fictionalAccountedEmailPlan(accounted.saved?.revision).scope, enumeration: fictionalAccountedEmailPlan(accounted.saved?.revision).enumeration } });
     } else if (completedCurrentTool) {
       frames = textCompletion({ id, model, text: 'Fictional native tool action completed.' });
     } else if (firstTurnFinal && !initialTurnCompleted) {

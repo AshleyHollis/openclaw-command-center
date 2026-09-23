@@ -1330,11 +1330,17 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         }), 70_000);
         assert.match(retryOutput, /"retriedSources":1/u);
         milestone('installed-retry-complete');
+        chatPane = await openNativeChat();
+        await sendNativeTurn(chatPane, '[fixture:accounted-mixed-email-completion-receipt] Record the fictional accepted producer completion after admitted work was recovered.', 'accounted-completion-receipt');
+        const acceptedReaderCapture = (await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential })).intakeCoverage.find(item => item.sourceKind === 'email');
+        assert.equal(acceptedReaderCapture.receiptStatus, 'healthy-processed');
+        assert.equal(acceptedReaderCapture.lastObservedAt, '2026-09-22T04:02:30.000Z');
+        milestone('installed-producer-completion-recorded');
         const readerStatusBatchId = `sha256:${'b'.repeat(64)}`;
         const recordInstalledReaderStatus = async (status, observedAt, attemptId, { failureCode, digest } = {}) => withDeadline(`installed reader ${status} status`, () => new Promise((resolve, reject) => {
           execFile(process.execPath, [installedWrapper, 'command-center', 'intake', 'reader-status',
             '--source-namespace', `microsoft-graph:${fictionalAccountedEmailBinding}`, '--batch-id', readerStatusBatchId,
-            '--capture-run-id', 'fictional-real-host-resume',
+            '--capture-run-id', 'fictional-real-host-completed',
             '--attempt-id', attemptId, '--status', status, '--observed-at', observedAt,
             '--selected', '1', '--linked', digest ? '1' : '0', '--unavailable', '0', ...(failureCode ? ['--failure-code', failureCode] : []), ...(digest ? ['--plan', readerPlanPath, '--digest', digest] : [])], {
             cwd: descriptor.checkout, timeout: 60_000, maxBuffer: 1_000_000,
@@ -1360,7 +1366,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await emailCard.getByText(/Original-email reader links: recorded · 1 location recorded · 0 explicitly unavailable · 0 without a reader receipt/u).waitFor();
         await emailCard.getByText(/Reader refresh run: failed.*provider-read-failed.*separate from accepted email capture/u).waitFor();
         const completedReaderAttempt = randomUUID();
-        const completedReaderRefresh = { captureRunId: 'fictional-real-host-resume', batchId: readerStatusBatchId, attemptId: completedReaderAttempt };
+        const completedReaderRefresh = { captureRunId: 'fictional-real-host-completed', batchId: readerStatusBatchId, attemptId: completedReaderAttempt };
         assert.match(await recordInstalledReaderStatus('pending', '2026-09-22T04:05:00.000Z', completedReaderAttempt), /"disposition":"recorded"/u);
         const completedReaderDigest = await applyReaderPlan('fictional-archive-message-id', 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id', '2026-09-22T04:06:00.000Z', completedReaderRefresh);
         assert.match(await recordInstalledReaderStatus('completed', '2026-09-22T04:07:00.000Z', completedReaderAttempt, { digest: completedReaderDigest }), /"disposition":"updated"/u);
