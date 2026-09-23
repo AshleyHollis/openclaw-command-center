@@ -1278,15 +1278,17 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         milestone('decision-recorded');
         const readerPlanPath = path.join(scenarioWorld.root, 'fictional-email-reader-plan.json');
         const installedWrapper = path.join(descriptor.schemaVersion === 2 ? descriptor.runtimeRoot : descriptor.checkout, descriptor.executable);
-        const applyReaderPlan = async (messageId, webLink, observedAt) => {
+        const applyReaderPlan = async (messageId, webLink, observedAt, refresh) => {
           const readerPlan = { schemaVersion: 1, purpose: 'command-center-email-reader-locators', sourceNamespace: fictionalAccountedEmailSourceNamespace, records: [{ sourceExternalId: fictionalAccountedEmailRawId, sourceVersion: 'email-change-key-real-host-52', messageId, status: 'available', webLink, observedAt }] };
           await writeFile(readerPlanPath, JSON.stringify(readerPlan));
+          const digest = emailReaderPlanDigest(readerPlan);
           await withDeadline('installed email reader command', () => new Promise((resolve, reject) => {
-            execFile(process.execPath, [installedWrapper, 'command-center', 'intake', 'reader-apply', '--plan', readerPlanPath, '--digest', emailReaderPlanDigest(readerPlan)], {
+            execFile(process.execPath, [installedWrapper, 'command-center', 'intake', 'reader-apply', '--plan', readerPlanPath, '--digest', digest, ...(refresh ? ['--capture-run-id', refresh.captureRunId, '--batch-id', refresh.batchId, '--attempt-id', refresh.attemptId] : [])], {
               cwd: descriptor.checkout, timeout: 60_000, maxBuffer: 1_000_000,
               env: { PATH: process.env.PATH, HOME: scenarioWorld.root, OPENCLAW_CONFIG_PATH: scenarioWorld.manifest.configPath, OPENCLAW_STATE_DIR: path.join(scenarioWorld.root, '.openclaw'), COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1' }
             }, (error, stdout, stderr) => error ? reject(new Error(`Installed reader command failed: ${stderr.slice(0, 500)}`, { cause: error })) : resolve(stdout));
           }), 70_000);
+          return digest;
         };
         await applyReaderPlan('fictional-archive-message-id', 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id', '2026-09-22T04:04:00.000Z');
         const movedDetail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: loop.loopId }, signal });
@@ -1328,19 +1330,20 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         }), 70_000);
         assert.match(retryOutput, /"retriedSources":1/u);
         milestone('installed-retry-complete');
-        const readerStatusAttempt = randomUUID();
-        const recordInstalledReaderStatus = async (status, observedAt, failureCode) => withDeadline(`installed reader ${status} status`, () => new Promise((resolve, reject) => {
+        const readerStatusBatchId = `sha256:${'b'.repeat(64)}`;
+        const recordInstalledReaderStatus = async (status, observedAt, attemptId, { failureCode, digest } = {}) => withDeadline(`installed reader ${status} status`, () => new Promise((resolve, reject) => {
           execFile(process.execPath, [installedWrapper, 'command-center', 'intake', 'reader-status',
-            '--source-namespace', `microsoft-graph:${fictionalAccountedEmailBinding}`, '--batch-id', `sha256:${'b'.repeat(64)}`,
+            '--source-namespace', `microsoft-graph:${fictionalAccountedEmailBinding}`, '--batch-id', readerStatusBatchId,
             '--capture-run-id', 'fictional-real-host-resume',
-            '--attempt-id', readerStatusAttempt, '--status', status, '--observed-at', observedAt,
-            '--selected', '1', '--linked', '0', '--unavailable', '0', ...(failureCode ? ['--failure-code', failureCode] : [])], {
+            '--attempt-id', attemptId, '--status', status, '--observed-at', observedAt,
+            '--selected', '1', '--linked', digest ? '1' : '0', '--unavailable', '0', ...(failureCode ? ['--failure-code', failureCode] : []), ...(digest ? ['--plan', readerPlanPath, '--digest', digest] : [])], {
             cwd: descriptor.checkout, timeout: 60_000, maxBuffer: 1_000_000,
             env: { PATH: process.env.PATH, HOME: scenarioWorld.root, OPENCLAW_CONFIG_PATH: scenarioWorld.manifest.configPath, OPENCLAW_STATE_DIR: path.join(scenarioWorld.root, '.openclaw'), COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1' }
           }, (error, stdout, stderr) => error ? reject(new Error(`Installed reader status failed: ${stderr.slice(0, 500)}`, { cause: error })) : resolve(stdout));
         }), 70_000);
-        assert.match(await recordInstalledReaderStatus('pending', '2026-09-22T04:03:00.000Z'), /"disposition":"recorded"/u);
-        assert.match(await recordInstalledReaderStatus('failed', '2026-09-22T04:03:01.000Z', 'provider-read-failed'), /"disposition":"updated"/u);
+        const failedReaderAttempt = randomUUID();
+        assert.match(await recordInstalledReaderStatus('pending', '2026-09-22T04:03:00.000Z', failedReaderAttempt), /"disposition":"recorded"/u);
+        assert.match(await recordInstalledReaderStatus('failed', '2026-09-22T04:03:01.000Z', failedReaderAttempt, { failureCode: 'provider-read-failed' }), /"disposition":"updated"/u);
         const failedReaderDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
         const failedReaderEmail = failedReaderDashboard.intakeCoverage.find(item => item.sourceKind === 'email');
         assert.equal(failedReaderEmail.receiptStatus, 'healthy-processed', 'a reader failure cannot replace accepted capture');
@@ -1356,6 +1359,18 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await emailCard.getByText(/Admitted-work retry healthy-processed.*This did not scan new mail/u).waitFor();
         await emailCard.getByText(/Original-email reader links: recorded · 1 location recorded · 0 explicitly unavailable · 0 without a reader receipt/u).waitFor();
         await emailCard.getByText(/Reader refresh run: failed.*provider-read-failed.*separate from accepted email capture/u).waitFor();
+        const completedReaderAttempt = randomUUID();
+        const completedReaderRefresh = { captureRunId: 'fictional-real-host-resume', batchId: readerStatusBatchId, attemptId: completedReaderAttempt };
+        assert.match(await recordInstalledReaderStatus('pending', '2026-09-22T04:05:00.000Z', completedReaderAttempt), /"disposition":"recorded"/u);
+        const completedReaderDigest = await applyReaderPlan('fictional-archive-message-id', 'https://outlook.office.com/mail/archive/id/fictional-archive-message-id', '2026-09-22T04:06:00.000Z', completedReaderRefresh);
+        assert.match(await recordInstalledReaderStatus('completed', '2026-09-22T04:07:00.000Z', completedReaderAttempt, { digest: completedReaderDigest }), /"disposition":"updated"/u);
+        const completedReaderEmail = (await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential })).intakeCoverage.find(item => item.sourceKind === 'email');
+        assert.equal(completedReaderEmail.receiptStatus, 'healthy-processed');
+        assert.equal(completedReaderEmail.readerRefresh.status, 'completed');
+        assert.equal(completedReaderEmail.readerRefresh.linkedCount, 1);
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
+        await emailCard.getByText(/Reader refresh run: completed.*1 confirmed linked.*separate from accepted email capture/u).waitFor();
+        milestone('installed-reader-completion-visible');
         await emailCard.getByText('Upstream discovery in the recorded scope: 1 scanned · 0 remaining · 0 failed reads.', { exact: true }).waitFor();
         await emailCard.getByText(/Latest attempt scope: inbox · .* to .* · at most 50 scanned messages per bounded batch/u).waitFor();
         await emailCard.locator('details > summary').click();
@@ -1409,7 +1424,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           assert.equal(durable.plan.processorVersion, 'fictional-real-host-processor-v1');
           assert.deepEqual(durable.account.outcomes.map(item => item.status), ['clarified', 'applied', 'applied', 'quiet']);
         } finally { afterRetry.close(); }
-        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedReaderStatusCommand: true, installedRetryCommand: true, mockedOutlookOpen: true });
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedReaderStatusCommand: true, installedReaderCompletionVerified: true, installedRetryCommand: true, mockedOutlookOpen: true });
       }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
