@@ -7,6 +7,10 @@ test('Topic Review diagnosis reuses its exact independent real-host fixture', ()
 test('accounted mixed email diagnosis selects its exact installed-host journey', () => {
   assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-accounted-mixed-email').isolatedSliceIds, ['accounted-mixed-email']);
 });
+
+test('reader refresh diagnosis selects its bounded installed-host journey', () => {
+  assert.deepEqual(resolveRealHostAcceptancePlan('diagnostic-reader-refresh').isolatedSliceIds, ['reader-refresh']);
+});
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 import { ordinaryTestArgv, ordinaryTestLanes, resolveRealHostAcceptancePlan, selectIssue32TicketTestFiles, selectOrdinaryTestFiles, selectReaderMvpTestFiles, selectTopicPageTicketTestFiles } from '../src/test-selection.mjs';
