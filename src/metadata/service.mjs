@@ -1358,7 +1358,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
         const sourceExternalId = producerSourceExternalId(receipt.sourceNamespace, record.sourceExternalId);
         const locator = { schemaVersion: 1, sourceExternalId, sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt };
         const latestLocator = db.prepare("SELECT rowid, * FROM operation_journal WHERE logical_operation_id LIKE ? AND operation_kind = 'email-reader.locator.v1' ORDER BY updated_at DESC, logical_operation_id DESC LIMIT 1").get(`${emailReaderLocatorOperationPrefix(sourceExternalId, record.sourceVersion)}%`);
-        if (!latestLocator || latestLocator.state !== 'applied' || latestLocator.rowid <= existing.rowid || latestLocator.created_at < existing.created_at || latestLocator.created_at > updatedAt || latestLocator.logical_operation_id !== emailReaderLocatorOperationId(locator) || latestLocator.result_identity !== JSON.stringify(locator)) throw new CommandCenterMetadataError('conflict', 'The exact reader location effect was not applied after this attempt began.');
+        if (!latestLocator || latestLocator.state !== 'applied' || latestLocator.transport_request_id !== logicalOperationId || latestLocator.rowid <= existing.rowid || latestLocator.created_at < existing.created_at || latestLocator.created_at > updatedAt || latestLocator.logical_operation_id !== emailReaderLocatorOperationId(locator) || latestLocator.result_identity !== JSON.stringify(locator)) throw new CommandCenterMetadataError('conflict', 'The exact reader location effect was not applied by this attempt.');
       }
       if (existing) {
         if (updatedAt < existing.created_at) throw new CommandCenterMetadataError('conflict', 'Reader refresh completion predates its start.');
@@ -1418,7 +1418,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   // A reader location may change after an Outlook folder move. It is not an
   // intake outcome or an observation and must never reconcile an open loop.
   service.recordEmailReaderLocator = (input = {}) => {
-    allowedKeys(input, ['sourceExternalId', 'sourceVersion', 'messageId', 'webLink', 'status', 'observedAt'], 'Email reader locator');
+    allowedKeys(input, ['sourceExternalId', 'sourceVersion', 'messageId', 'webLink', 'status', 'observedAt', 'refreshOperationId'], 'Email reader locator');
     const sourceExternalId = requiredString(input.sourceExternalId, 'sourceExternalId');
     const sourceVersion = requiredString(input.sourceVersion, 'sourceVersion');
     const messageId = requiredString(input.messageId, 'messageId');
@@ -1429,10 +1429,16 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
     const observedAtInput = requiredString(input.observedAt, 'observedAt');
     if (observedAtInput.length > 64 || !Number.isFinite(Date.parse(observedAtInput))) throw new CommandCenterMetadataError('invalid-value', 'Email reader observation time is invalid.');
     const observedAt = new Date(observedAtInput).toISOString();
+    const refreshOperationId = input.refreshOperationId === undefined ? undefined : requiredString(input.refreshOperationId, 'refreshOperationId');
+    if (refreshOperationId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(refreshOperationId)) throw new CommandCenterMetadataError('invalid-value', 'Reader refresh operation identity is invalid.');
     const locator = { schemaVersion: 1, sourceExternalId, sourceVersion, messageId, status: input.status, ...(webLink ? { webLink } : {}), observedAt };
     const logicalOperationId = emailReaderLocatorOperationId(locator);
     const intentDigest = `sha256:${createHash('sha256').update(JSON.stringify(locator)).digest('hex')}`;
     return mutate(null, db => {
+      if (refreshOperationId) {
+        const refresh = db.prepare("SELECT state, created_at FROM operation_journal WHERE logical_operation_id = ? AND operation_kind = 'email-reader.refresh.v1'").get(refreshOperationId);
+        if (!refresh || refresh.state !== 'pending' || refresh.created_at > observedAt) throw new CommandCenterMetadataError('conflict', 'Reader location requires its active refresh attempt.');
+      }
       const source = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(intakeSourceOperationId(sourceExternalId, sourceVersion));
       if (!source || source.operation_kind !== 'intake-source.email.v1' || source.state !== 'applied') throw new CommandCenterMetadataError('not-found', 'The accepted email source is unavailable.');
       let accepted;
@@ -1450,7 +1456,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
         }
       }
       db.prepare(`INSERT INTO operation_journal (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
-        VALUES (?, ?, ?, 'email-reader.locator.v1', 'applied', ?, ?, ?, ?, ?)`).run(logicalOperationId, logicalOperationId, intentDigest, input.status === 'available' ? 'unverified' : 'unavailable', JSON.stringify(locator), messageId, observedAt, observedAt);
+        VALUES (?, ?, ?, 'email-reader.locator.v1', 'applied', ?, ?, ?, ?, ?)`).run(logicalOperationId, refreshOperationId ?? logicalOperationId, intentDigest, input.status === 'available' ? 'unverified' : 'unavailable', JSON.stringify(locator), messageId, observedAt, observedAt);
       return Object.freeze({ disposition: latest ? 'updated' : 'recorded', locator: Object.freeze(locator) });
     });
   };

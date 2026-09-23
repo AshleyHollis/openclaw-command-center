@@ -15,7 +15,7 @@ import { createProducerIntakeAdapter } from '../open-loops/producer-intake.mjs';
 import { prepareAdmittedRetry, reconcileAdmittedRetry, producerSourceExternalId } from '../open-loops/intake-retry.mjs';
 import { normalizeProducerIntakePlan, producerIntakePlanDigest } from '../open-loops/producer-intake-plan.mjs';
 import { normalizeEmailReaderPlan, emailReaderPlanDigest } from '../open-loops/email-reader-plan.mjs';
-import { recordEmailReaderRefreshReceipt } from '../open-loops/email-reader-refresh-receipt.mjs';
+import { emailReaderRefreshOperationId, recordEmailReaderRefreshReceipt } from '../open-loops/email-reader-refresh-receipt.mjs';
 import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeSourceAccountToolFactory, intakeOutcomeToolFactory } from '../open-loops/source-intake-tool.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -86,16 +86,24 @@ export async function readEmailReaderPlanDigest(filename) {
 
 export { producerSourceExternalId } from '../open-loops/intake-retry.mjs';
 
-export async function runConfiguredEmailReaderPlan({ planPath, expectedDigest, signal }) {
+export async function runConfiguredEmailReaderPlan({ planPath, expectedDigest, refresh, signal }) {
   const plan = await readPinnedEmailReaderPlan(planPath, expectedDigest);
+  if (refresh !== undefined && (!refresh || typeof refresh !== 'object' || Array.isArray(refresh) || Object.keys(refresh).sort().join(',') !== 'attemptId,batchId,captureRunId' || typeof refresh.captureRunId !== 'string' || !refresh.captureRunId.trim() || refresh.captureRunId.length > 300 || !/^sha256:[a-f0-9]{64}$/u.test(refresh.batchId) || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(refresh.attemptId))) fail('email-reader-refresh-invalid');
+  const refreshOperationId = refresh && emailReaderRefreshOperationId({ sourceNamespace: plan.sourceNamespace, ...refresh });
   signal?.throwIfAborted();
   const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')]);
   const metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
   try {
+    if (refreshOperationId) {
+      const operation = metadata.getOperation(refreshOperationId);
+      let pending;
+      try { pending = JSON.parse(operation?.resultIdentity ?? 'null'); } catch { /* fail closed */ }
+      if (operation?.operationKind !== 'email-reader.refresh.v1' || operation.state !== 'pending' || pending?.sourceNamespace !== plan.sourceNamespace || pending?.captureRunId !== refresh.captureRunId || pending?.batchId !== refresh.batchId || pending?.attemptId !== refresh.attemptId || pending?.status !== 'pending') fail('email-reader-refresh-not-pending');
+    }
     const dispositions = [];
     for (const record of plan.records) {
       signal?.throwIfAborted();
-      const result = metadata.recordEmailReaderLocator({ sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId), sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt });
+      const result = metadata.recordEmailReaderLocator({ sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId), sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt, ...(refreshOperationId ? { refreshOperationId } : {}) });
       dispositions.push(result.disposition);
     }
     return Object.freeze({ schemaVersion: 1, status: 'applied', count: dispositions.length, recorded: dispositions.filter(value => value === 'recorded').length, updated: dispositions.filter(value => value === 'updated').length, duplicate: dispositions.filter(value => value === 'duplicate').length, stale: dispositions.filter(value => value === 'stale').length });
@@ -460,11 +468,14 @@ export function registerReconciliationCli({ program, config, logger }) {
   intake.command('reader-apply')
     .requiredOption('--plan <absolute-path>', 'Private bounded email reader locator plan JSON')
     .requiredOption('--digest <sha256>', 'Pinned canonical reader plan SHA-256')
+    .option('--capture-run-id <id>')
+    .option('--batch-id <sha256>')
+    .option('--attempt-id <uuid>')
     .action(async options => {
       const cancellation = new AbortController();
       const abort = () => cancellation.abort(Object.assign(new Error('email-reader-cancelled'), { code: 'email-reader-cancelled' }));
       process.once('SIGINT', abort); process.once('SIGTERM', abort);
-      try { logger.info(JSON.stringify(await runConfiguredEmailReaderPlan({ planPath: options.plan, expectedDigest: options.digest, signal: cancellation.signal }))); }
+      try { logger.info(JSON.stringify(await runConfiguredEmailReaderPlan({ planPath: options.plan, expectedDigest: options.digest, ...(options.captureRunId || options.batchId || options.attemptId ? { refresh: { captureRunId: options.captureRunId, batchId: options.batchId, attemptId: options.attemptId } } : {}), signal: cancellation.signal }))); }
       catch (error) { logger.error(error?.code ?? 'email-reader-plan-failed'); process.exitCode = 1; }
       finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
     });

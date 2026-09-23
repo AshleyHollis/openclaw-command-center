@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { recordEmailReaderRefreshReceipt } from '../src/open-loops/email-reader-refresh-receipt.mjs';
+import { emailReaderRefreshOperationId, recordEmailReaderRefreshReceipt } from '../src/open-loops/email-reader-refresh-receipt.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
 import { producerSourceExternalId } from '../src/open-loops/intake-retry.mjs';
@@ -30,11 +30,11 @@ const readerPlan = { schemaVersion: 1, purpose: 'command-center-email-reader-loc
   { sourceExternalId: 'fictional-one', sourceVersion: 'upstream-one', messageId: 'message-one', status: 'available', webLink: 'https://outlook.office.com/mail/id/fictional-one', observedAt: '2026-09-23T01:00:30.000Z' },
   { sourceExternalId: 'fictional-two', sourceVersion: 'upstream-two', messageId: 'message-two', status: 'unavailable', observedAt: '2026-09-23T01:00:30.000Z' }
 ] };
-const acceptedReaders = metadata => {
+const acceptedReaders = (metadata, refreshOperationId) => {
   for (const record of readerPlan.records) {
     const sourceExternalId = producerSourceExternalId(namespace, record.sourceExternalId);
     recordIntakeSourcePlan(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId, sourceVersion: record.sourceVersion, checkpoint: `fictional-${record.sourceExternalId}`, observedAt: '2026-09-23T00:56:00.000Z', processorVersion: 'fictional-v1', acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'none', summary: 'Fictional information only' } }, outcomes: [{ outcomeId: 'none', kind: 'no-action' }] });
-    metadata.recordEmailReaderLocator({ sourceExternalId, sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt });
+    metadata.recordEmailReaderLocator({ sourceExternalId, sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt, ...(refreshOperationId ? { refreshOperationId } : {}) });
   }
 };
 
@@ -53,7 +53,7 @@ test('reader refresh attempt survives reopen, completes once, and cannot change 
     assert.equal(metadata.listEmailReaderRefreshOperations(namespace)[0].resultStatus, 'pending');
     const completed = receipt(firstAttempt, 'completed', '2026-09-23T01:01:00.000Z', { linkedCount: 1, unavailableCount: 1, readerPlanDigest: emailReaderPlanDigest(readerPlan) });
     assert.throws(() => recordEmailReaderRefreshReceipt(metadata, completed, readerPlan), /exact reader location effect/);
-    acceptedReaders(metadata);
+    acceptedReaders(metadata, emailReaderRefreshOperationId(pending));
     assert.equal(recordEmailReaderRefreshReceipt(metadata, completed, readerPlan).disposition, 'updated');
     assert.equal(recordEmailReaderRefreshReceipt(metadata, completed, readerPlan).disposition, 'duplicate');
     metadata.recordEmailReaderLocator({ sourceExternalId: producerSourceExternalId(namespace, 'fictional-one'), sourceVersion: 'upstream-one', messageId: 'newer-message', status: 'unavailable', observedAt: '2026-09-23T01:02:00.000Z' });
@@ -89,11 +89,28 @@ test('reader refresh cannot reuse locator effects from before its durable start'
     acceptedReaders(metadata);
     recordEmailReaderRefreshReceipt(metadata, receipt(firstAttempt, 'pending', '2026-09-23T01:01:00.000Z'));
     const beforeStart = receipt(firstAttempt, 'completed', '2026-09-23T01:02:00.000Z', { linkedCount: 1, unavailableCount: 1, readerPlanDigest: emailReaderPlanDigest(readerPlan) });
-    assert.throws(() => recordEmailReaderRefreshReceipt(metadata, beforeStart, readerPlan), /after this attempt began/);
+    assert.throws(() => recordEmailReaderRefreshReceipt(metadata, beforeStart, readerPlan), /not applied by this attempt/);
     const refreshedPlan = { ...readerPlan, records: readerPlan.records.map(record => ({ ...record, observedAt: '2026-09-23T01:01:30.000Z' })) };
-    for (const record of refreshedPlan.records) metadata.recordEmailReaderLocator({ sourceExternalId: producerSourceExternalId(namespace, record.sourceExternalId), sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt });
+    for (const record of refreshedPlan.records) metadata.recordEmailReaderLocator({ sourceExternalId: producerSourceExternalId(namespace, record.sourceExternalId), sourceVersion: record.sourceVersion, messageId: record.messageId, status: record.status, ...(record.webLink ? { webLink: record.webLink } : {}), observedAt: record.observedAt, refreshOperationId: emailReaderRefreshOperationId(receipt(firstAttempt, 'pending', '2026-09-23T01:01:00.000Z')) });
     const afterStart = { ...beforeStart, readerPlanDigest: emailReaderPlanDigest(refreshedPlan) };
     assert.equal(recordEmailReaderRefreshReceipt(metadata, afterStart, refreshedPlan).disposition, 'updated');
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('overlapping refresh batches cannot claim another attempt’s locator effects', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-reader-refresh-overlap-'));
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+  try {
+    acceptedCapture(metadata);
+    const first = receipt(firstAttempt, 'pending', '2026-09-23T01:00:00.000Z');
+    const second = receipt(secondAttempt, 'pending', '2026-09-23T01:00:10.000Z', { batchId: `sha256:${'c'.repeat(64)}` });
+    recordEmailReaderRefreshReceipt(metadata, first);
+    recordEmailReaderRefreshReceipt(metadata, second);
+    acceptedReaders(metadata, emailReaderRefreshOperationId(first));
+    const claim = receipt(secondAttempt, 'completed', '2026-09-23T01:01:00.000Z', { batchId: second.batchId, linkedCount: 1, unavailableCount: 1, readerPlanDigest: emailReaderPlanDigest(readerPlan) });
+    assert.throws(() => recordEmailReaderRefreshReceipt(metadata, claim, readerPlan), /not applied by this attempt/);
+    const correct = receipt(firstAttempt, 'completed', '2026-09-23T01:01:00.000Z', { linkedCount: 1, unavailableCount: 1, readerPlanDigest: emailReaderPlanDigest(readerPlan) });
+    assert.equal(recordEmailReaderRefreshReceipt(metadata, correct, readerPlan).disposition, 'updated');
   } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

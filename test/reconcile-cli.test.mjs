@@ -88,8 +88,10 @@ test('registered reader-status CLI action binds the exact accepted capture run',
     const evidence = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
     try {
       recordIntakeSourcePlan(evidence, { schemaVersion: 1, sourceKind: 'email', sourceExternalId, sourceVersion: 'upstream-v1', checkpoint: 'fictional-message', observedAt: '2026-09-23T01:00:30.000Z', processorVersion: 'fictional-v1', acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'none', summary: 'Fictional information only' } }, outcomes: [{ outcomeId: 'none', kind: 'no-action' }] });
-      evidence.recordEmailReaderLocator({ sourceExternalId, sourceVersion: 'upstream-v1', messageId: 'fictional-message', status: 'unavailable', observedAt: '2026-09-23T01:01:00.000Z' });
     } finally { evidence.close(); }
+    const refresh = { captureRunId: 'fictional-registered-run', batchId, attemptId };
+    await assert.rejects(() => runConfiguredEmailReaderPlan({ planPath: readerPlanPath, expectedDigest: digest, refresh: { ...refresh, attemptId: randomUUID() } }), error => error.code === 'email-reader-refresh-not-pending');
+    assert.equal((await runConfiguredEmailReaderPlan({ planPath: readerPlanPath, expectedDigest: digest, refresh })).recorded, 1);
     await actions.get('command-center intake reader-status')({ sourceNamespace, captureRunId: 'fictional-registered-run', batchId, attemptId, status: 'completed', observedAt: '2026-09-23T01:02:00.000Z', selected: '1', linked: '0', unavailable: '1', plan: readerPlanPath, digest });
     assert.equal(output[1].disposition, 'updated');
   } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
