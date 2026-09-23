@@ -5,7 +5,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import plugin from '../src/plugin.mjs';
-import { producerSourceExternalId, readPinnedProducerIntakePlan, readProducerIntakePlanDigest, readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredProducerIntake, runConfiguredEmailReaderPlan, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
+import { producerSourceExternalId, readPinnedProducerIntakePlan, readProducerIntakePlanDigest, readPinnedReconciliationPlan, registerReconciliationCli, runConfiguredHistoricalBackfill, runConfiguredNoteFolderRecovery, runConfiguredProducerIntake, runConfiguredEmailReaderPlan, runConfiguredEmailReaderRefreshReceipt, runConfiguredReconciliation, runConfiguredTopicPreparation } from '../src/migration/reconcile-cli.mjs';
 import { reconciliationPlanDigest } from '../src/migration/reconcile.mjs';
 import { historicalBackfillPlanDigest } from '../src/open-loops/historical-backfill.mjs';
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
@@ -30,17 +30,71 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
   assert.deepEqual(manifest.cliCommands, declaration.descriptors, 'native command ownership must be discoverable before runtime registration');
   const paths = []; const actions = []; const required = [];
   const command = name => ({ command(child) { return command(`${name} ${child}`.trim()); }, description() { return this; },
-    requiredOption(option) { required.push([name, option]); return this; }, action(callback) { paths.push(name); actions.push(callback); return this; } });
+    requiredOption(option) { required.push([name, option]); return this; }, option() { return this; }, action(callback) { paths.push(name); actions.push(callback); return this; } });
   await registration({ program: command(''), config: {}, logger: {} });
   assert.deepEqual(paths, [
     ...['reconcile', 'prepare-topic'].flatMap(command => ['preflight', 'execute', 'resume', 'verify'].map(mode => `command-center ${command} ${mode}`)),
     'command-center initialize-metadata execute', 'command-center initialize-metadata verify',
     ...['preflight', 'execute', 'verify'].map(mode => `command-center recover-note-folders ${mode}`),
     ...['preview', 'apply', 'withdraw'].map(mode => `command-center backfill ${mode}`),
-    'command-center intake digest', 'command-center intake apply', 'command-center intake resume', 'command-center intake reader-digest', 'command-center intake reader-apply',
+    'command-center intake digest', 'command-center intake apply', 'command-center intake resume', 'command-center intake reader-digest', 'command-center intake reader-apply', 'command-center intake reader-status',
     'command-center verify-discoverability'
   ]);
-  assert.equal(required.length, 47); assert.equal(actions.length, 22);
+  assert.equal(required.length, 56); assert.equal(actions.length, 23);
+  assert.ok(required.some(([name, option]) => name === 'command-center intake reader-status' && option === '--capture-run-id <id>'));
+});
+
+test('reader-status command owner persists a bounded attempt in the selected state directory', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'reader-status-cli-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const saved = process.env.OPENCLAW_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = root;
+  try {
+    const input = { schemaVersion: 1, sourceNamespace: `microsoft-graph:sha256:${'a'.repeat(64)}`, captureRunId: 'fictional-reader-run', batchId: `sha256:${'b'.repeat(64)}`, attemptId: randomUUID(), status: 'pending', observedAt: '2026-09-23T01:00:00.000Z', selectedCount: 2, linkedCount: 0, unavailableCount: 0 };
+    const seed = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
+    try { recordIntakeReceipt(seed, { schemaVersion: 1, sourceKind: 'email', runId: 'fictional-reader-run', checkpoint: 'fictional-checkpoint', status: 'healthy-processed', observedAt: '2026-09-23T00:55:00.000Z', lastSuccessfulAt: '2026-09-23T00:55:00.000Z', nextExpectedAt: '2026-09-24T00:55:00.000Z', processedCount: 2, actionableCount: 0, noteCount: 2, scope: { accountBinding: `sha256:${'a'.repeat(64)}`, folders: ['inbox'], sinceUtc: '2026-09-22T00:00:00.000Z', beforeUtc: '2026-09-23T00:00:00.000Z', maxMessages: 2, batchKind: 'bounded' } }); }
+    finally { seed.close(); }
+    assert.equal((await runConfiguredEmailReaderRefreshReceipt({ input })).disposition, 'recorded');
+    const metadata = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
+    try { assert.equal(metadata.listEmailReaderRefreshOperations(input.sourceNamespace)[0].resultStatus, 'pending'); }
+    finally { metadata.close(); }
+  } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
+});
+
+test('registered reader-status CLI action binds the exact accepted capture run', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'reader-status-registered-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const saved = process.env.OPENCLAW_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = root;
+  try {
+    const seed = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
+    try { recordIntakeReceipt(seed, { schemaVersion: 1, sourceKind: 'email', runId: 'fictional-registered-run', checkpoint: 'fictional-checkpoint', status: 'healthy-processed', observedAt: '2026-09-23T00:55:00.000Z', lastSuccessfulAt: '2026-09-23T00:55:00.000Z', nextExpectedAt: '2026-09-24T00:55:00.000Z', processedCount: 1, actionableCount: 0, noteCount: 1, scope: { accountBinding: `sha256:${'a'.repeat(64)}`, folders: ['inbox'], sinceUtc: '2026-09-22T00:00:00.000Z', beforeUtc: '2026-09-23T00:00:00.000Z', maxMessages: 1, batchKind: 'bounded' } }); }
+    finally { seed.close(); }
+    const actions = new Map(); const output = [];
+    const command = name => ({ command(child) { return command(`${name} ${child}`.trim()); }, description() { return this; }, requiredOption() { return this; }, option() { return this; }, action(callback) { actions.set(name, callback); return this; } });
+    registerReconciliationCli({ program: command(''), config: {}, logger: { info: message => output.push(JSON.parse(message)), error: message => { throw new Error(message); } } });
+    const attemptId = randomUUID();
+    const sourceNamespace = `microsoft-graph:sha256:${'a'.repeat(64)}`;
+    const batchId = `sha256:${'b'.repeat(64)}`;
+    await actions.get('command-center intake reader-status')({ sourceNamespace, captureRunId: 'fictional-registered-run', batchId, attemptId, status: 'pending', observedAt: '2026-09-23T01:00:00.000Z', selected: '1', linked: '0', unavailable: '0' });
+    assert.equal(output[0].disposition, 'recorded');
+    assert.equal(output[0].receipt.captureRunId, 'fictional-registered-run');
+    const sourceExternalId = producerSourceExternalId(sourceNamespace, 'fictional-original');
+    const readerPlan = { schemaVersion: 1, purpose: 'command-center-email-reader-locators', sourceNamespace, records: [{ sourceExternalId: 'fictional-original', sourceVersion: 'upstream-v1', messageId: 'fictional-message', status: 'unavailable', observedAt: '2026-09-23T01:01:00.000Z' }] };
+    const readerPlanPath = path.join(root, 'reader-plan.json');
+    await writeFile(readerPlanPath, JSON.stringify(readerPlan));
+    const digest = emailReaderPlanDigest(readerPlan);
+    await assert.rejects(() => runConfiguredEmailReaderRefreshReceipt({ input: { schemaVersion: 1, sourceNamespace, captureRunId: 'fictional-registered-run', batchId, attemptId, status: 'completed', observedAt: '2026-09-23T01:02:00.000Z', selectedCount: 1, linkedCount: 0, unavailableCount: 1, readerPlanDigest: digest }, readerPlanPath, readerPlanDigest: digest }), /exact reader location effect/);
+    const evidence = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true } });
+    try {
+      recordIntakeSourcePlan(evidence, { schemaVersion: 1, sourceKind: 'email', sourceExternalId, sourceVersion: 'upstream-v1', checkpoint: 'fictional-message', observedAt: '2026-09-23T01:00:30.000Z', processorVersion: 'fictional-v1', acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'none', summary: 'Fictional information only' } }, outcomes: [{ outcomeId: 'none', kind: 'no-action' }] });
+    } finally { evidence.close(); }
+    const refresh = { captureRunId: 'fictional-registered-run', batchId, attemptId };
+    await assert.rejects(() => runConfiguredEmailReaderPlan({ planPath: readerPlanPath, expectedDigest: digest, refresh: { ...refresh, attemptId: randomUUID() } }), error => error.code === 'email-reader-refresh-not-pending');
+    assert.equal((await runConfiguredEmailReaderPlan({ planPath: readerPlanPath, expectedDigest: digest, refresh })).recorded, 1);
+    await actions.get('command-center intake reader-status')({ sourceNamespace, captureRunId: 'fictional-registered-run', batchId, attemptId, status: 'completed', observedAt: '2026-09-23T01:02:00.000Z', selected: '1', linked: '0', unavailable: '1', plan: readerPlanPath, digest });
+    assert.equal(output[1].disposition, 'updated');
+  } finally { if (saved === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = saved; }
 });
 
 test('producer intake digest uses the package canonicalizer and rejects dishonest enumeration', async t => {

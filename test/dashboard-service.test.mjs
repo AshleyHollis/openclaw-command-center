@@ -192,6 +192,20 @@ test('Dashboard reports original-email reader gaps independently of successful c
   assert.equal(row.readerLocations.available, 1);
 });
 
+test('Dashboard keeps accepted capture while reporting a failed bound reader refresh run', async () => {
+  const binding = `sha256:${'a'.repeat(64)}`;
+  const capture = { operationKind: 'intake-receipt.email.v1', state: 'applied', resultIdentity: JSON.stringify({ schemaVersion: 1, sourceKind: 'email', runId: 'fictional-run', checkpoint: 'fictional-checkpoint', status: 'healthy-processed', observedAt: '2026-09-23T01:00:00.000Z', lastSuccessfulAt: '2026-09-23T01:00:00.000Z', processedCount: 1, actionableCount: 0, noteCount: 1, scope: { accountBinding: binding, folders: ['inbox'], sinceUtc: '2026-09-22T00:00:00.000Z', beforeUtc: '2026-09-23T00:00:00.000Z', maxMessages: 2, batchKind: 'bounded' } }) };
+  const run = (captureRunId, status, observedAt, failureCode) => ({ resultStatus: status, resultIdentity: JSON.stringify({ captureRunId, status, observedAt, selectedCount: 2, linkedCount: status === 'completed' ? 2 : 0, unavailableCount: 0, ...(failureCode ? { failureCode } : {}) }) });
+  const operations = [run('older-run', 'completed', '2026-09-22T01:00:00.000Z'), run('fictional-run', 'failed', '2026-09-23T01:01:00.000Z', 'provider-read-failed')];
+  const metadata = { listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [], listOperations: () => [capture], listEmailReaderRefreshOperations: namespace => { assert.equal(namespace, `microsoft-graph:${binding}`); return operations; } };
+  const row = (await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-23T02:00:00.000Z' })).intakeCoverage[0];
+  assert.equal(row.status, 'receipt-current');
+  assert.deepEqual(row.readerRefresh, { status: 'failed', observedAt: '2026-09-23T01:01:00.000Z', selectedCount: 2, linkedCount: 0, unavailableCount: 0, failureCode: 'provider-read-failed', lastSuccessfulAt: '2026-09-22T01:00:00.000Z' });
+  operations.push(run('unrelated-run', 'completed', '2026-09-23T01:02:00.000Z'));
+  const afterUnrelated = (await projectDashboard({ metadata, sourceService: {}, now: () => '2026-09-23T02:00:00.000Z' })).intakeCoverage[0];
+  assert.equal(afterUnrelated.readerRefresh.status, 'failed', 'a different capture run cannot replace the current run status');
+});
+
 test('Dashboard distinguishes source accounting from outcome resolution and exposes bounded gaps', async () => {
   const base = { listUsableTopics: () => [], listOpenLoops: () => [], getQuietAttentionInbox: () => ({ attention: [], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }), projectActiveRenovationStagePrerequisites: () => [] };
   const source = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'fictional-message-42', sourceVersion: 'v7', checkpoint: 'page-2:message-42', observedAt: '2026-09-22T01:00:00.000Z', outcomes: [{ outcomeId: 'pay', kind: 'obligation' }, { outcomeId: 'choose', kind: 'decision' }, { outcomeId: 'reference', kind: 'information' }], enumeration: { scope: 'bounded', scannedCount: 25, remainingCount: 3, failedReadCount: 1, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-3' } };

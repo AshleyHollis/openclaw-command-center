@@ -195,6 +195,22 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
   }, null);
   const overdue = receipt.nextExpectedAt && Date.parse(receipt.nextExpectedAt) < Date.parse(serverTime);
   const accounts = projectIntakeAccounts(metadata, sourceKind);
+  const readerRefresh = sourceKind === 'email' && receipt.scope?.accountBinding && typeof metadata?.listEmailReaderRefreshOperations === 'function'
+    ? (() => {
+      let operations;
+      try { operations = metadata.listEmailReaderRefreshOperations(`microsoft-graph:${receipt.scope.accountBinding}`); }
+      catch { return Object.freeze({ status: 'unknown' }); }
+      const receipts = operations.filter(item => item.resultStatus !== 'superseded').map(item => {
+        try { return JSON.parse(item.resultIdentity ?? 'null'); } catch { return null; }
+      }).filter(Boolean);
+      const latestReader = receipts.filter(item => item.captureRunId === receipt.runId).at(-1);
+      const lastReaderSuccess = receipts.findLast(item => item.status === 'completed');
+      if (!latestReader) return Object.freeze({ status: 'unknown', ...(lastReaderSuccess ? { lastSuccessfulAt: lastReaderSuccess.observedAt } : {}) });
+      return Object.freeze({ status: latestReader.status, observedAt: latestReader.observedAt,
+        selectedCount: latestReader.selectedCount, linkedCount: latestReader.linkedCount, unavailableCount: latestReader.unavailableCount,
+        ...(latestReader.failureCode ? { failureCode: latestReader.failureCode } : {}),
+        ...(lastReaderSuccess ? { lastSuccessfulAt: lastReaderSuccess.observedAt } : {}) });
+    })() : undefined;
   const readerLocations = sourceKind === 'email' && typeof metadata?.getEmailReaderLocator === 'function'
     ? (() => {
       const latestBySource = new Map();
@@ -250,6 +266,7 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
     ...(receipt.nextExpectedAt ? { nextExpectedAt: receipt.nextExpectedAt } : {}),
     ...(retryReceipt ? { lastAdmittedRetry: Object.freeze({ observedAt: retryReceipt.observedAt, status: retryReceipt.status, processedCount: retryReceipt.processedCount, unadmittedSourceCount: retryReceipt.unadmittedSourceCount ?? 0 }) } : {}),
     ...(readerLocations ? { readerLocations } : {}),
+    ...(readerRefresh ? { readerRefresh } : {}),
     ...(receipt.scope ? { attemptScope: Object.freeze({ folders: receipt.scope.folders, sinceUtc: receipt.scope.sinceUtc, beforeUtc: receipt.scope.beforeUtc, maxMessages: receipt.scope.maxMessages, batchKind: receipt.scope.batchKind }) } : {}),
     ...(lastSuccess?.scope ? { lastSuccessfulScope: Object.freeze({ folders: lastSuccess.scope.folders, sinceUtc: lastSuccess.scope.sinceUtc, beforeUtc: lastSuccess.scope.beforeUtc, maxMessages: lastSuccess.scope.maxMessages, batchKind: lastSuccess.scope.batchKind }) } : {}),
     discovery: receipt.enumeration ? Object.freeze({ ...receipt.enumeration, canResume: receipt.continuation !== undefined }) : Object.freeze({ scope: 'unknown' }),

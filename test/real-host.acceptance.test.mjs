@@ -20,7 +20,9 @@ import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
 import { COMMAND_CENTER_SCHEMA_VERSION, metadataSchemaV1Sql } from '../src/metadata/schema.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
-import { loadIntakeSourceAccount } from '../src/open-loops/intake-accounting.mjs';
+import { loadIntakeSourceAccount, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
+import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
+import { producerSourceExternalId } from '../src/open-loops/intake-retry.mjs';
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
 import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
@@ -44,7 +46,7 @@ import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVarian
 import { exerciseNativeHistoricalBackfillJourney } from './support/first-live-native-backfill.mjs';
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
 import { exerciseNativeBindingMismatchHostVariant, exerciseNativeForeignDatabaseRestorationVariant, exerciseNativeReleaseMismatchVariant, exerciseNativePluginApiMismatchVariant } from './support/first-live-native-compatibility.mjs';
-import { startFictionalOpenAiModel, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId, fictionalAccountedEmailPlan } from './support/fictional-openai-model.mjs';
+import { startFictionalOpenAiModel, fictionalAccountedEmailBinding, fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId, fictionalAccountedEmailSourceId, fictionalAccountedEmailPlan } from './support/fictional-openai-model.mjs';
 const RELEASE_ALPHA_TOPIC_ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE_SCALE_TOPIC_ID = '22222222-2222-4222-8222-222222222222';
 const RELEASE_ACTIVITY_TOPIC_ID = '33333333-3333-4333-8333-333333333333';
@@ -1165,6 +1167,16 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       } finally { activity.close(); }
       scaleProjectionRoot = path.join(path.dirname(resolveCommandCenterDatabasePath(stateDir)), 'projections');
     }
+    if (kind === 'reader-refresh-failed' || kind === 'reader-refresh-completed') {
+      // Fictional accepted-source setup is deliberately separate from the
+      // maintained producer journey qualified by accounted-mixed-email.
+      const namespace = `microsoft-graph:${fictionalAccountedEmailBinding}`;
+      const metadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), capabilities: READY_CAPABILITIES });
+      try {
+        recordIntakeSourcePlan(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: producerSourceExternalId(namespace, 'fictional-reader-source'), sourceVersion: 'fictional-upstream-reader-v1', checkpoint: 'fictional-reader-checkpoint', observedAt: '2026-09-23T00:54:00.000Z', processorVersion: 'fictional-reader-processor-v1', acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [], noAction: { outcomeId: 'none', summary: 'Fictional information only' } }, outcomes: [{ outcomeId: 'none', kind: 'no-action' }] });
+        recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: 'fictional-reader-accepted', checkpoint: 'fictional-reader-checkpoint', status: 'healthy-processed', observedAt: '2026-09-23T00:55:00.000Z', lastSuccessfulAt: '2026-09-23T00:55:00.000Z', nextExpectedAt: '2026-09-24T00:55:00.000Z', processedCount: 1, actionableCount: 0, noteCount: 1, scope: { accountBinding: fictionalAccountedEmailBinding, folders: ['inbox'], sinceUtc: '2026-09-22T00:00:00.000Z', beforeUtc: '2026-09-23T00:00:00.000Z', maxMessages: 1, batchKind: 'bounded' } });
+      } finally { metadata.close(); }
+    }
     let fictionalModel;
     if (kind === 'accounted-email') {
       fictionalModel = await startFictionalOpenAiModel();
@@ -1232,6 +1244,49 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       const evidence = { console: [], errors: [], requests: [], responses: [] };
       await configureEvidencePage(page, browserGuard, evidence);
       await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: width <= 320 ? 'active' : 'none' });
+      if (kind === 'reader-refresh-failed' || kind === 'reader-refresh-completed') {
+        const installedWrapper = path.join(descriptor.schemaVersion === 2 ? descriptor.runtimeRoot : descriptor.checkout, descriptor.executable);
+        const namespace = `microsoft-graph:${fictionalAccountedEmailBinding}`;
+        const batchId = `sha256:${'b'.repeat(64)}`;
+        const runCli = (label, args) => withDeadline(label, () => new Promise((resolve, reject) => {
+          execFile(process.execPath, [installedWrapper, 'command-center', 'intake', ...args], {
+            cwd: descriptor.checkout, timeout: 60_000, maxBuffer: 1_000_000,
+            env: { PATH: process.env.PATH, HOME: scenarioWorld.root, OPENCLAW_CONFIG_PATH: scenarioWorld.manifest.configPath, OPENCLAW_STATE_DIR: path.join(scenarioWorld.root, '.openclaw'), COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1' }
+          }, (error, stdout, stderr) => error ? reject(new Error(`${label} failed: ${stderr.slice(0, 500)}`, { cause: error })) : resolve(stdout));
+        }), 70_000);
+        const status = (attemptId, value, observedAt, extras = []) => runCli(`installed reader ${value}`, ['reader-status', '--source-namespace', namespace, '--capture-run-id', 'fictional-reader-accepted', '--batch-id', batchId, '--attempt-id', attemptId, '--status', value, '--observed-at', observedAt, '--selected', '1', '--linked', value === 'completed' ? '1' : '0', '--unavailable', '0', ...extras]);
+        if (kind === 'reader-refresh-failed') {
+          const failedAttempt = randomUUID();
+          assert.match(await status(failedAttempt, 'pending', '2026-09-23T01:00:00.000Z'), /"disposition":"recorded"/u);
+          assert.match(await status(failedAttempt, 'failed', '2026-09-23T01:01:00.000Z', ['--failure-code', 'provider-read-failed']), /"disposition":"updated"/u);
+          const failed = (await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential })).intakeCoverage.find(item => item.sourceKind === 'email');
+          assert.equal(failed.readerRefresh.status, 'failed');
+          assert.equal(failed.readerRefresh.failureCode, 'provider-read-failed');
+          assert.equal(failed.lastSuccessfulAt, '2026-09-23T00:55:00.000Z');
+          await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+          const emailCard = page.locator('openclaw-plugin-page .cc-coverage-card').filter({ hasText: 'Email intake' });
+          await emailCard.getByText(/Reader refresh run: failed.*provider-read-failed.*separate from accepted email capture/u).waitFor({ timeout: 30_000 });
+          await retainNativeChatScreenshot(page, 'reader-refresh-failed-dashboard');
+          return Object.freeze({ kind, assertionsCompleted: true, seededAcceptedSourceFixture: true, installedReaderStatusCommand: true, failedDashboardInspected: true, liveGraphRead: false });
+        }
+        const completedAttempt = randomUUID();
+        assert.match(await status(completedAttempt, 'pending', '2026-09-23T01:02:00.000Z'), /"disposition":"recorded"/u);
+        const plan = { schemaVersion: 1, purpose: 'command-center-email-reader-locators', sourceNamespace: namespace, records: [{ sourceExternalId: 'fictional-reader-source', sourceVersion: 'fictional-upstream-reader-v1', messageId: 'fictional-archived-reader-id', status: 'available', webLink: 'https://outlook.office.com/mail/archive/id/fictional-archived-reader-id', observedAt: '2026-09-23T01:03:00.000Z' }] };
+        const planPath = path.join(scenarioWorld.root, 'fictional-reader-refresh-plan.json');
+        const digest = emailReaderPlanDigest(plan);
+        await writeFile(planPath, JSON.stringify(plan));
+        assert.match(await runCli('installed tagged reader apply', ['reader-apply', '--plan', planPath, '--digest', digest, '--capture-run-id', 'fictional-reader-accepted', '--batch-id', batchId, '--attempt-id', completedAttempt]), /"recorded":1/u);
+        assert.match(await status(completedAttempt, 'completed', '2026-09-23T01:04:00.000Z', ['--plan', planPath, '--digest', digest]), /"disposition":"updated"/u);
+        const completed = (await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential })).intakeCoverage.find(item => item.sourceKind === 'email');
+        assert.equal(completed.readerRefresh.status, 'completed');
+        assert.equal(completed.readerRefresh.linkedCount, 1);
+        assert.equal(completed.lastSuccessfulAt, '2026-09-23T00:55:00.000Z');
+        await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        const emailCard = page.locator('openclaw-plugin-page .cc-coverage-card').filter({ hasText: 'Email intake' });
+        await emailCard.getByText(/Reader refresh run: completed.*1 confirmed linked.*separate from accepted email capture/u).waitFor({ timeout: 30_000 });
+        await retainNativeChatScreenshot(page, 'reader-refresh-completed-dashboard');
+        return Object.freeze({ kind, assertionsCompleted: true, seededAcceptedSourceFixture: true, installedReaderStatusCommand: true, installedTaggedReaderApply: true, completedDashboardInspected: true, liveGraphRead: false });
+      }
       if (kind === 'accounted-email') {
         page.setDefaultTimeout(10_000);
         const milestone = name => process.stdout.write(`accounted-email-milestone=${name}\n`);
@@ -2388,6 +2443,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   // Diagnostic only: do not silently add a new release-matrix requirement.
   if (acceptancePlan.isolatedSliceIds?.includes('dashboard-mixed-payload')) isolatedSlices.set('dashboard-mixed-payload', startIsolatedSlice('dashboard-mixed-payload', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'dashboard-payload', width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('accounted-mixed-email')) isolatedSlices.set('accounted-mixed-email', startIsolatedSlice('accounted-mixed-email', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'accounted-email', width: 1440, signal })));
+  for (const kind of ['reader-refresh-failed', 'reader-refresh-completed']) if (acceptancePlan.isolatedSliceIds?.includes(kind)) isolatedSlices.set(kind, startIsolatedSlice(kind, (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('fresh-mobile')) isolatedSlices.set('fresh-mobile', startIsolatedSlice('fresh-mobile', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'mobile', width: 320, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('reminder-runtime-lifecycle')) isolatedSlices.set('reminder-runtime-lifecycle', startIsolatedSlice('reminder-runtime-lifecycle', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'reminder-lifecycle', width: 1440, signal })));
   const isolatedResult = async (id) => {
@@ -2411,6 +2467,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     assert.equal(isolatedEvidence.size, acceptancePlan.isolatedSliceIds.length);
     if (acceptancePlan.isolatedSliceIds.includes('reminder-runtime-lifecycle')) testContext.diagnostic(`reminder-lifecycle-evidence=${JSON.stringify(isolatedEvidence.get('reminder-runtime-lifecycle'))}`);
     if (acceptancePlan.isolatedSliceIds.includes('accounted-mixed-email')) testContext.diagnostic(`accounted-mixed-email-evidence=${JSON.stringify(isolatedEvidence.get('accounted-mixed-email'))}`);
+    for (const kind of ['reader-refresh-failed', 'reader-refresh-completed']) if (acceptancePlan.isolatedSliceIds.includes(kind)) testContext.diagnostic(`${kind}-evidence=${JSON.stringify(isolatedEvidence.get(kind))}`);
     testContext.diagnostic(`acceptance-scenario-result=${JSON.stringify({ schemaVersion: 1, outcome: 'passed', scenario: process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO, isolatedSliceIds: [...isolatedEvidence.keys()], buildDigest: buildReceipt.digest, performanceQualified: false })}`);
     return;
   }
