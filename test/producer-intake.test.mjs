@@ -8,7 +8,7 @@ function harness({ failCapture = false } = {}) {
   const keyFor = input => `${input.sourceKind}:${input.sourceExternalId}:${input.sourceVersion}`;
   const durableFor = input => {
     const plan = plans.get(keyFor(input));
-    return plan ? { plan, account: { outcomes: plan.outcomes.map(item => ({ ...item, status: completed.get(`${keyFor(input)}:${item.outcomeId}`) ?? 'missing' })) } } : null;
+    return plan ? { plan, account: { outcomes: plan.outcomes.map(item => ({ ...item, ...(completed.get(`${keyFor(input)}:${item.outcomeId}`) ?? { status: 'missing' }) })) } } : null;
   };
   const adapter = createProducerIntakeAdapter({
     processorVersion: 'fictional-processor-v1',
@@ -30,7 +30,7 @@ function harness({ failCapture = false } = {}) {
     async captureSourceCommitment(input) { calls.source.push(input); if (failCapture && calls.source.length === 2) throw new Error('fictional-capture-failed'); return { status: 'applied', loop: { loopId: `loop:${input.obligationId}` } }; },
     async captureChatCommitment(input) { calls.chat.push(input); return { status: 'applied', loop: { loopId: `loop:${input.obligationId}` } }; },
     async recordIntakeSourcePlan(input) { calls.plans.push(input); const plan = { schemaVersion: 1, ...input }; plans.set(keyFor(input), plan); return durableFor(input); },
-    async recordIntakeOutcome(input) { calls.outcomes.push(input); completed.set(`${keyFor(input)}:${input.outcomeId}`, input.status); return { status: 'recorded' }; },
+    async recordIntakeOutcome(input) { calls.outcomes.push(input); completed.set(`${keyFor(input)}:${input.outcomeId}`, input); return { status: 'recorded' }; },
     async recordIntakeReceipt(input) { calls.receipt.push(input); return { status: input.status }; }
   });
   return { adapter, calls };
@@ -117,6 +117,21 @@ test('partial failure reports the last acknowledged checkpoint and never publish
   await assert.rejects(() => adapter.process({ runId: 'email-run-failure', nextExpectedAt: '2026-09-22T00:00:00.000Z', records: [{ schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'message-42', sourceVersion: 'v1', checkpoint: 'message-42', rawText: 'Please pay the fictional invoice and reply.' }] }), error => error.message === 'fictional-capture-failed' && error.checkpoint === 'start' && error.counts.failedCount === 1);
   assert.deepEqual(calls.receipt.map(call => call.status), ['pending', 'failed']);
   assert.equal(calls.receipt.at(-1).checkpoint, 'start');
+});
+
+test('admitted retry executes only missing outcomes from the durable extraction', async () => {
+  const { adapter, calls } = harness({ failCapture: true });
+  const record = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: 'message-42', sourceVersion: 'upstream-change-7', checkpoint: 'message-42', rawText: 'Please pay the fictional invoice and reply.' };
+  await assert.rejects(() => adapter.process({ runId: 'original-run', sourceKind: 'email', records: [record], nextExpectedAt: '2026-09-22T00:00:00.000Z' }), { message: 'fictional-capture-failed' });
+  const originalCaptureCount = calls.source.length;
+  const result = await adapter.process({ runId: 'original-run:retry:one', sourceKind: 'email', purpose: 'admitted-retry', retryOfRunId: 'original-run', records: [{ ...record, rawText: 'changed words must not run extraction' }], nextExpectedAt: '2026-09-22T00:00:00.000Z' });
+  assert.equal(result.status, 'healthy-processed');
+  assert.equal(calls.extract.length, 1, 'retry must not invoke the extractor');
+  assert.equal(calls.plans.length, 1, 'retry must not replace accepted extraction');
+  assert.deepEqual(calls.source.slice(originalCaptureCount).map(item => item.obligationId), ['invoice-42:reply', 'invoice-42:delivery-choice']);
+  assert.equal(calls.receipt.at(-1).purpose, 'admitted-retry');
+  assert.equal(calls.receipt.at(-1).retryOfRunId, 'original-run');
+  assert.equal(calls.receipt.at(-1).enumeration, undefined, 'retry is not a fresh source scan');
 });
 
 test('a bounded page records and returns an exact resumable continuation', async () => {

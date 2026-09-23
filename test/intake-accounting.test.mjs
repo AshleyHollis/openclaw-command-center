@@ -269,6 +269,23 @@ test('a failed page continuation survives SQLite restart and clears only after s
   } finally { metadata?.close(); await temporary.cleanup(); }
 });
 
+test('an admitted retry receipt survives restart without replacing producer coverage or continuation', async () => {
+  const temporary = await temporaryStateDir('command-center-intake-retry-receipt-');
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path });
+    const counts = { processedCount: 1, actionableCount: 0, noteCount: 0 };
+    const continuation = { scopeId: 'fictional-mailbox', cursor: 'next-page', remainingCount: 2, failedReadCount: 0, scanCapReached: true };
+    recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: 'source-run', checkpoint: 'page-1', status: 'incomplete', observedAt: '2026-09-22T02:00:00.000Z', nextExpectedAt: '2026-09-22T03:00:00.000Z', ...counts, continuation });
+    const retry = recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: 'source-run:retry:one', purpose: 'admitted-retry', retryOfRunId: 'source-run', checkpoint: 'page-1', status: 'healthy-processed', observedAt: '2026-09-22T02:01:00.000Z', lastSuccessfulAt: '2026-09-22T02:01:00.000Z', ...counts });
+    metadata.close(); metadata = openCommandCenterMetadataService({ stateDir: temporary.path });
+    assert.equal(retry.receipt.purpose, 'admitted-retry');
+    assert.deepEqual(findIntakeContinuation(metadata, 'email'), continuation);
+    assert.throws(() => recordIntakeReceipt(metadata, { ...retry.receipt, runId: 'unsafe-retry', enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } }), { code: 'invalid-request' });
+    assert.throws(() => recordIntakeReceipt(metadata, { ...retry.receipt, runId: 'unsafe-chat', sourceKind: 'chat' }), { code: 'invalid-request' });
+  } finally { metadata?.close(); await temporary.cleanup(); }
+});
+
 test('a bounded email receipt retains content-free source scope and discovery after SQLite restart', async () => {
   const temporary = await temporaryStateDir('command-center-intake-scope-');
   let metadata;

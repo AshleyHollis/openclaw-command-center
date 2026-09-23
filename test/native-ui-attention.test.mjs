@@ -656,6 +656,19 @@ test('Dashboard shows receipt-backed document coverage separately from unknown e
   assert.equal(await page.locator('#mount').evaluate(node => parseFloat(getComputedStyle(node).paddingInlineStart) >= 48), true);
 }));
 
+test('Dashboard labels admitted retry separately from a failed source scan', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.intakeCoverage = [{ source: 'Email intake', sourceKind: 'email', status: 'failed', receiptStatus: 'failed', lastObservedAt: '2026-09-22T01:00:00.000Z', lastAdmittedRetry: { status: 'healthy-processed', observedAt: '2026-09-22T02:00:00.000Z', processedCount: 1 }, discovery: { scope: 'partial', scannedCount: 1, remainingCount: 2, failedReadCount: 1, scanCapReached: true } }];
+    window.mountInbox();
+  });
+  const coverage = page.locator('section[data-dashboard-section="coverage"]');
+  await coverage.getByRole('heading', { name: 'Email intake' }).waitFor();
+  await coverage.getByText(/Admitted-work retry healthy-processed/u).waitFor();
+  await coverage.getByText(/This did not scan new mail/u).waitFor();
+  await coverage.getByText(/failed · Last attempt/u).waitFor();
+}));
+
 test('Dashboard states the accepted past deadline instead of fabricating a new date', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];

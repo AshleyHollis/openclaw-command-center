@@ -171,14 +171,22 @@ async function activityPage({ sourceService, attentionService, metadata, offset,
 }
 
 function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
-  const operations = typeof metadata?.listOperations === 'function'
+  const allReceipts = typeof metadata?.listOperations === 'function'
     ? metadata.listOperations().filter(item => item.operationKind === `intake-receipt.${sourceKind}.v1` && item.resultStatus !== 'superseded')
     : [];
+  const operations = allReceipts.filter(item => {
+    try { return JSON.parse(item.resultIdentity ?? 'null')?.purpose !== 'admitted-retry'; } catch { return true; }
+  });
   const latest = operations.at(-1);
   if (!latest) return null;
   let receipt;
   try { receipt = JSON.parse(latest.resultIdentity ?? 'null'); } catch { receipt = null; }
   if (!receipt || receipt.sourceKind !== sourceKind) return null;
+  const retryOperation = allReceipts.filter(item => {
+    try { const candidate = JSON.parse(item.resultIdentity ?? 'null'); return candidate?.purpose === 'admitted-retry' && candidate.retryOfRunId === receipt.runId; } catch { return false; }
+  }).at(-1);
+  let retryReceipt;
+  try { retryReceipt = JSON.parse(retryOperation?.resultIdentity ?? 'null'); } catch { retryReceipt = null; }
   const lastSuccess = operations.reduce((last, operation) => {
     let candidate;
     try { candidate = JSON.parse(operation.resultIdentity ?? 'null'); } catch { return last; }
@@ -222,6 +230,7 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
     lastObservedAt: receipt.observedAt,
     ...(lastSuccess ? { lastSuccessfulAt: lastSuccess.at } : {}),
     ...(receipt.nextExpectedAt ? { nextExpectedAt: receipt.nextExpectedAt } : {}),
+    ...(retryReceipt ? { lastAdmittedRetry: Object.freeze({ observedAt: retryReceipt.observedAt, status: retryReceipt.status, processedCount: retryReceipt.processedCount }) } : {}),
     ...(receipt.scope ? { attemptScope: Object.freeze({ folders: receipt.scope.folders, sinceUtc: receipt.scope.sinceUtc, beforeUtc: receipt.scope.beforeUtc, maxMessages: receipt.scope.maxMessages, batchKind: receipt.scope.batchKind }) } : {}),
     ...(lastSuccess?.scope ? { lastSuccessfulScope: Object.freeze({ folders: lastSuccess.scope.folders, sinceUtc: lastSuccess.scope.sinceUtc, beforeUtc: lastSuccess.scope.beforeUtc, maxMessages: lastSuccess.scope.maxMessages, batchKind: lastSuccess.scope.batchKind }) } : {}),
     discovery: receipt.enumeration ? Object.freeze({ ...receipt.enumeration, canResume: receipt.continuation !== undefined }) : Object.freeze({ scope: 'unknown' }),

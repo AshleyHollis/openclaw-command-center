@@ -36,8 +36,9 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
   if (!nonBlank(processorVersion) || ![extract, loadIntakeSourceAccount, resolveTopic, saveSourceNote, captureSourceCommitment, captureChatCommitment, recordIntakeSourcePlan, recordIntakeOutcome, recordIntakeReceipt].every(value => typeof value === 'function')) fail('producer-adapter-invalid');
 
   return Object.freeze({
-    async process({ runId, sourceKind: selectedSourceKind, records, nextExpectedAt, enumeration, scope }) {
+    async process({ runId, sourceKind: selectedSourceKind, records, nextExpectedAt, enumeration, scope, purpose = 'producer', retryOfRunId }) {
       if (!nonBlank(runId) || !Array.isArray(records) || records.length > 500 || !nonBlank(nextExpectedAt) || selectedSourceKind !== undefined && !kinds.has(selectedSourceKind)) fail('producer-batch-invalid');
+      if (!['producer', 'admitted-retry'].includes(purpose) || purpose === 'admitted-retry' && (!nonBlank(retryOfRunId) || enumeration !== undefined || selectedSourceKind !== 'email') || purpose === 'producer' && retryOfRunId !== undefined) fail('producer-batch-invalid');
       const counts = { processedCount: 0, actionableCount: 0, noteCount: 0, skippedCount: 0, uncertainCount: 0, failedCount: 0 };
       let checkpoint = 'start';
       const observedAt = now();
@@ -51,7 +52,7 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
       const incompleteEnumeration = receiptEnumeration && (receiptEnumeration.scope !== 'complete' || receiptEnumeration.remainingCount > 0 || receiptEnumeration.failedReadCount > 0 || receiptEnumeration.scanCapReached);
       if (incompleteEnumeration && (!nonBlank(receiptEnumeration.scopeId) || !nonBlank(receiptEnumeration.resumeCursor))) fail('producer-continuation-required');
       const continuation = incompleteEnumeration ? { scopeId: receiptEnumeration.scopeId, cursor: receiptEnumeration.resumeCursor, remainingCount: receiptEnumeration.remainingCount, failedReadCount: receiptEnumeration.failedReadCount, scanCapReached: receiptEnumeration.scanCapReached } : undefined;
-      const receiptContext = { ...(scope ? { scope } : {}), ...(receiptEnumeration ? { enumeration: { scope: receiptEnumeration.scope, scannedCount: receiptEnumeration.scannedCount, remainingCount: receiptEnumeration.remainingCount, failedReadCount: receiptEnumeration.failedReadCount, scanCapReached: receiptEnumeration.scanCapReached } } : {}) };
+      const receiptContext = { ...(purpose === 'admitted-retry' ? { purpose, retryOfRunId } : {}), ...(scope ? { scope } : {}), ...(receiptEnumeration ? { enumeration: { scope: receiptEnumeration.scope, scannedCount: receiptEnumeration.scannedCount, remainingCount: receiptEnumeration.remainingCount, failedReadCount: receiptEnumeration.failedReadCount, scanCapReached: receiptEnumeration.scanCapReached } } : {}) };
       const pending = await recordIntakeReceipt({ sourceKind, runId, checkpoint, status: 'pending', observedAt, nextExpectedAt, ...receiptContext, ...receiptCounts() });
       if (pending?.receipt && pending.receipt.status !== 'pending') return Object.freeze({ schemaVersion: 1, checkpoint: pending.receipt.checkpoint, status: pending.receipt.status, processedCount: pending.receipt.processedCount, actionableCount: pending.receipt.actionableCount, noteCount: pending.receipt.noteCount, skippedCount: 0, uncertainCount: 0, failedCount: pending.receipt.status === 'failed' ? 1 : 0, ...(pending.receipt.continuation ? { continuation: pending.receipt.continuation } : {}), receipt: pending });
       try {
@@ -59,6 +60,7 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
           assertRecord(record);
           const enumerationValue = receiptEnumeration ?? { scope: 'complete', scannedCount: records.length, remainingCount: 0, failedReadCount: 0, scanCapReached: false };
           let durable = accountingResult(await loadIntakeSourceAccount({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion }));
+          if (purpose === 'admitted-retry' && !durable) fail('producer-retry-source-not-admitted');
           if (!durable) {
             const proposed = record.acceptedExtraction === undefined
               ? acceptedExtraction(await extract({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, rawText: record.rawText }))
@@ -74,16 +76,17 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
           const extraction = acceptedExtraction(durable.plan.acceptedExtraction);
           const plannedOutcomes = durable.plan.outcomes;
           const account = durable.account;
+          const shouldProcess = outcomeId => purpose === 'admitted-retry' ? accountOutcome(account, outcomeId)?.status === 'missing' : unfinished(account, outcomeId);
           const obligations = extraction.obligations;
           const knowledgeOutcomeId = extraction.knowledgeMarkdown.trim() ? extraction.knowledgeOutcomeId ?? `${record.sourceExternalId}:information` : null;
           const noAction = extraction.noAction;
           if (noAction && obligations.length === 0 && !knowledgeOutcomeId) {
-            if (unfinished(account, noAction.outcomeId)) await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: noAction.outcomeId, kind: 'no-action', status: 'no-action', summary: noAction.summary, recordedAt: now() });
+            if (shouldProcess(noAction.outcomeId)) await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: noAction.outcomeId, kind: 'no-action', status: 'no-action', summary: noAction.summary, recordedAt: now() });
             counts.skippedCount += 1; counts.processedCount += 1; checkpoint = record.checkpoint; continue;
           }
           const topic = await resolveTopic({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, proposedTopic: extraction.proposedTopic, notePath: extraction.notePath, expectedNoteRevision: record.retainedNoteRevision });
           if (!topic || !nonBlank(topic.topicId)) {
-            for (const outcome of plannedOutcomes.filter(item => unfinished(account, item.outcomeId))) await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind, status: 'unresolved-topic', summary: 'Topic ownership requires review', recordedAt: now() });
+            for (const outcome of plannedOutcomes.filter(item => shouldProcess(item.outcomeId))) await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: outcome.outcomeId, kind: outcome.kind, status: 'unresolved-topic', summary: 'Topic ownership requires review', recordedAt: now() });
             counts.uncertainCount += 1; counts.processedCount += 1; checkpoint = record.checkpoint; continue;
           }
           if (record.retainedNoteRevision && !topic.evidence) fail('producer-evidence-unavailable');
@@ -100,14 +103,14 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
             evidence = exactEvidence({ ...saved, topicId: topic.topicId });
             counts.noteCount += saved.replayed === true ? 0 : 1;
           }
-          if (knowledgeOutcomeId && unfinished(account, knowledgeOutcomeId)) {
+          if (knowledgeOutcomeId && shouldProcess(knowledgeOutcomeId)) {
             if (!evidence) fail('producer-evidence-required');
             await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: knowledgeOutcomeId, kind: 'information', status: 'quiet', summary: extraction.knowledgeSummary ?? 'Information retained in the Topic Note', topicId: evidence.topicId, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath, sourceReferenceVersion: evidence.sourceReferenceVersion, recordedAt: now() });
           }
           if (obligations.length && !evidence) fail('producer-evidence-required');
           for (const obligation of obligations) {
             if (!obligation || !nonBlank(obligation.obligationId) || !nonBlank(obligation.title) || !['explicit', 'inferred', 'idea', 'quoted'].includes(obligation.provenance)) fail('producer-obligation-invalid');
-            if (!unfinished(account, obligation.obligationId)) continue;
+            if (!shouldProcess(obligation.obligationId)) continue;
             const { classification, ...captureObligation } = obligation;
             const params = { ...captureObligation, topicId: topic.topicId, sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, sourceReferenceId: evidence.sourceReferenceId, sourcePath: evidence.sourcePath, sourceReferenceVersion: evidence.sourceReferenceVersion };
             const captured = record.sourceKind === 'chat' ? await captureChatCommitment(params) : await captureSourceCommitment(params);
@@ -117,7 +120,7 @@ export function createProducerIntakeAdapter({ processorVersion, extract, loadInt
             counts.actionableCount += 1;
           }
           const noActionOutcome = noAction ?? { outcomeId: `${record.sourceExternalId}:no-action`, summary: 'No action required' };
-          if ((noAction || !extraction.knowledgeMarkdown.trim() && obligations.length === 0) && unfinished(account, noActionOutcome.outcomeId)) {
+          if ((noAction || !extraction.knowledgeMarkdown.trim() && obligations.length === 0) && shouldProcess(noActionOutcome.outcomeId)) {
             await recordIntakeOutcome({ sourceKind: record.sourceKind, sourceExternalId: record.sourceExternalId, sourceVersion: record.sourceVersion, outcomeId: noActionOutcome.outcomeId, kind: 'no-action', status: 'no-action', summary: noActionOutcome.summary, recordedAt: now() });
             counts.skippedCount += 1;
           }
