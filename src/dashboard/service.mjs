@@ -182,7 +182,8 @@ function intakeReceiptCoverage(metadata, sourceKind, serverTime) {
   const lastSuccess = operations.reduce((last, operation) => {
     let candidate;
     try { candidate = JSON.parse(operation.resultIdentity ?? 'null'); } catch { return last; }
-    return candidate?.sourceKind === sourceKind && ['healthy-empty', 'healthy-processed'].includes(candidate.status) && candidate.lastSuccessfulAt && (!last || Date.parse(candidate.lastSuccessfulAt) > Date.parse(last.at)) ? { at: candidate.lastSuccessfulAt, scope: candidate.scope } : last;
+    const sameBoundAccount = !receipt.scope?.accountBinding || candidate?.scope?.accountBinding === receipt.scope.accountBinding;
+    return sameBoundAccount && candidate?.sourceKind === sourceKind && ['healthy-empty', 'healthy-processed'].includes(candidate.status) && candidate.lastSuccessfulAt && (!last || Date.parse(candidate.lastSuccessfulAt) > Date.parse(last.at)) ? { at: candidate.lastSuccessfulAt, scope: candidate.scope } : last;
   }, null);
   const overdue = receipt.nextExpectedAt && Date.parse(receipt.nextExpectedAt) < Date.parse(serverTime);
   const accounts = projectIntakeAccounts(metadata, sourceKind);
