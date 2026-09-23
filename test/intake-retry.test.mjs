@@ -54,7 +54,7 @@ test('retry selects admitted missing work when a later source was never admitted
     recordIntakeReceipt(metadata, { schemaVersion: 1, sourceKind: 'email', runId: `${plan.runId}:retry:partial`, purpose: 'admitted-retry', retryOfRunId: plan.runId, planDigest: digest, unadmittedSourceCount: 1, checkpoint: 'start', status: 'pending', observedAt: '2026-09-21T01:00:30.000Z', processedCount: 0, actionableCount: 0, noteCount: 0, scope: plan.scope });
     recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: producerSourceExternalId(plan.sourceNamespace, first.sourceExternalId), sourceVersion: first.sourceVersion, outcomeId: 'first:no-action', kind: 'no-action', status: 'no-action', summary: 'Fictional source needs no action', recordedAt: '2026-09-21T01:01:00.000Z' });
     const remaining = reconcileAdmittedRetry(metadata, plan, digest, 'partial');
-    assert.equal(remaining.status, 'unadmitted-sources-remain');
+    assert.equal(remaining.status, 'healthy-processed', 'the admitted repair succeeded, while the unadmitted count keeps the original coverage pending');
     assert.equal(remaining.unadmittedSourceCount, 1);
     assert.equal(remaining.receipt.receipt.unadmittedSourceCount, 1);
     assert.equal(metadata.listOperations().filter(item => item.operationKind === 'intake-source.email.v1').length, 1);

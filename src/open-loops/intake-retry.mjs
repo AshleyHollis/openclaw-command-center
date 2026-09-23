@@ -49,10 +49,10 @@ export function prepareAdmittedRetry(metadata, plan, expectedDigest, attemptId) 
 export function reconcileAdmittedRetry(metadata, plan, expectedDigest, attemptId, assertCurrent = () => {}) {
   const state = prepareAdmittedRetry(metadata, plan, expectedDigest, attemptId);
   if (state.records.length !== 0) fail('producer-retry-work-remains');
-  if (state.priorRetry?.status !== 'pending') return Object.freeze({ schemaVersion: 1, status: state.priorRetry?.status === 'failed' ? 'retry-failed-new-attempt-required' : state.blockedOutcomeCount ? 'blocked-outcomes-remain' : state.unadmittedSourceCount ? 'unadmitted-sources-remain' : 'nothing-to-retry', retriedSources: 0, blockedOutcomeCount: state.blockedOutcomeCount, unadmittedSourceCount: state.unadmittedSourceCount });
+  if (state.priorRetry?.status !== 'pending') return Object.freeze({ schemaVersion: 1, status: state.priorRetry?.status === 'failed' ? 'retry-failed-new-attempt-required' : state.blockedOutcomeCount ? 'blocked-outcomes-remain' : 'nothing-to-retry', retriedSources: 0, blockedOutcomeCount: state.blockedOutcomeCount, unadmittedSourceCount: state.unadmittedSourceCount });
   const observedAt = new Date().toISOString();
   const status = state.blockedOutcomeCount ? 'failed' : 'healthy-processed';
   assertCurrent();
   const receipt = recordIntakeReceipt(metadata, { ...state.priorRetry, status, observedAt, unadmittedSourceCount: state.unadmittedSourceCount, ...(status === 'healthy-processed' ? { lastSuccessfulAt: observedAt } : {}) });
-  return Object.freeze({ schemaVersion: 1, status: state.blockedOutcomeCount ? 'blocked-outcomes-remain' : state.unadmittedSourceCount ? 'unadmitted-sources-remain' : status, retriedSources: 0, blockedOutcomeCount: state.blockedOutcomeCount, unadmittedSourceCount: state.unadmittedSourceCount, recoveredPendingReceipt: true, receipt });
+  return Object.freeze({ schemaVersion: 1, status: state.blockedOutcomeCount ? 'blocked-outcomes-remain' : status, retriedSources: 0, blockedOutcomeCount: state.blockedOutcomeCount, unadmittedSourceCount: state.unadmittedSourceCount, recoveredPendingReceipt: true, receipt });
 }

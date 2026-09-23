@@ -216,7 +216,7 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
       recordIntakeSourcePlan: params => invoke(tools.plan, params), recordIntakeOutcome: params => invoke(tools.outcome, params), recordIntakeReceipt: params => invoke(tools.receipt, params)
     });
     const result = await adapter.process({ runId: retry?.runId ?? plan.runId, sourceKind: plan.sourceKind, records: retry?.records ?? plan.records.map(record => ({ ...record, sourceKind: plan.sourceKind, sourceExternalId: producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId) })), nextExpectedAt: plan.nextExpectedAt, planDigest: expectedDigest, ...(retry ? { purpose: 'admitted-retry', retryOfRunId: plan.runId, unadmittedSourceCount: retry.unadmittedSourceCount } : { enumeration: plan.enumeration }), scope: plan.scope });
-    return retry ? Object.freeze({ ...result, ...(retry.unadmittedSourceCount ? { status: 'unadmitted-sources-remain' } : {}), retriedSources: retry.records.length, blockedOutcomeCount: retry.blockedOutcomeCount, unadmittedSourceCount: retry.unadmittedSourceCount }) : result;
+    return retry ? Object.freeze({ ...result, retriedSources: retry.records.length, blockedOutcomeCount: retry.blockedOutcomeCount, unadmittedSourceCount: retry.unadmittedSourceCount }) : result;
   } finally { sourceService?.close(); metadata?.close(); releaseCoordinator(); releaseIdentityReader(); }
 }
 
