@@ -131,6 +131,7 @@ test('registered producer retry requires an admitted, digest-pinned source and r
     crashState.close();
     const recovered = await runConfiguredProducerIntake({ planPath, expectedDigest: producerIntakePlanDigest(plan), resumeAttemptId: 'crash-after-effect', config: {}, hostFileAccess });
     assert.equal(recovered.status, 'healthy-processed'); assert.equal(recovered.recoveredPendingReceipt, true);
+    assert.equal(recovered.receipt.receipt.processedCount, 0, 'crash recovery must not invent sources processed before its missing receipt');
     const verification = openCommandCenterMetadataService({ stateDir: root, capabilities: { notes: true, sessions: true } });
     try {
       const account = loadIntakeSourceAccount(verification, { sourceKind: 'email', sourceExternalId, sourceVersion: record.sourceVersion });

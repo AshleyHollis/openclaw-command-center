@@ -1263,6 +1263,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         try { durableBeforeRestart = loadIntakeSourceAccount(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: fictionalAccountedEmailSourceId, sourceVersion: 'email-change-key-real-host-52' }); }
         finally { metadata.close(); }
         assert.equal(durableBeforeRestart.plan.processorVersion, 'fictional-real-host-processor-v1');
+        assert.match(durableBeforeRestart.plan.retainedNoteRevision, /^sha256:[a-f0-9]{64}$/u);
+        assert.notEqual(durableBeforeRestart.plan.retainedNoteRevision, durableBeforeRestart.plan.sourceVersion);
         assert.deepEqual(durableBeforeRestart.account.counts, { expected: 4, accounted: 2, obligations: 2, decisionsPending: 1, quiet: 1, unresolvedTopics: 0, failed: 0 });
         const pendingDecision = durableBeforeRestart.account.outcomes.find(item => item.kind === 'decision');
         assert.equal(pendingDecision.status, 'pending-decision');
@@ -1316,7 +1318,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           }
         }, scenarioHost.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250, signal });
         milestone('host-restarted');
-        const retryPlan = fictionalAccountedEmailPlan;
+        const retryPlan = fictionalAccountedEmailPlan(durableBeforeRestart.plan.retainedNoteRevision);
         const retryPlanPath = path.join(scenarioWorld.root, 'fictional-admitted-retry-plan.json');
         await writeFile(retryPlanPath, JSON.stringify(retryPlan));
         const retryOutput = await withDeadline('installed admitted-work retry command', () => new Promise((resolve, reject) => {

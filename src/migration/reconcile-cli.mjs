@@ -12,7 +12,7 @@ import { createHistoricalBackfill, historicalBackfillPlanDigest, withdrawHistori
 import { createHistoricalBackfillStore } from '../open-loops/historical-backfill-store.mjs';
 import { createHistoricalBackfillOperator } from '../open-loops/historical-backfill-operator.mjs';
 import { createProducerIntakeAdapter } from '../open-loops/producer-intake.mjs';
-import { loadIntakeSourceAccount } from '../open-loops/intake-accounting.mjs';
+import { prepareAdmittedRetry, reconcileAdmittedRetry, producerSourceExternalId } from '../open-loops/intake-retry.mjs';
 import { normalizeProducerIntakePlan, producerIntakePlanDigest } from '../open-loops/producer-intake-plan.mjs';
 import { normalizeEmailReaderPlan, emailReaderPlanDigest } from '../open-loops/email-reader-plan.mjs';
 import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeSourceAccountToolFactory, intakeOutcomeToolFactory } from '../open-loops/source-intake-tool.mjs';
@@ -71,32 +71,6 @@ export async function readProducerIntakePlanDigest(filename) {
   return producerIntakePlanDigest(input);
 }
 
-function admittedRetry(metadata, plan, attemptId) {
-  if (typeof attemptId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(attemptId)) fail('producer-retry-attempt-invalid');
-  const runId = `${plan.runId}:retry:${attemptId}`;
-  if (runId.length > 300) fail('producer-retry-attempt-invalid');
-  const receipts = metadata.listOperations().filter(item => item.operationKind === `intake-receipt.${plan.sourceKind}.v1` && item.resultStatus !== 'superseded').map(item => {
-    try { return JSON.parse(item.resultIdentity ?? 'null'); } catch { return null; }
-  });
-  const original = receipts.find(item => item?.runId === plan.runId && item.purpose !== 'admitted-retry');
-  const priorRetry = receipts.find(item => item?.runId === runId && item.purpose === 'admitted-retry');
-  const enumeration = { scope: plan.enumeration.scope, scannedCount: plan.enumeration.scannedCount, remainingCount: plan.enumeration.remainingCount, failedReadCount: plan.enumeration.failedReadCount, scanCapReached: plan.enumeration.scanCapReached };
-  if (!original || !['pending', 'failed'].includes(original.status) || original.planDigest !== producerIntakePlanDigest(plan) || !isDeepStrictEqual(original.scope, plan.scope) || !isDeepStrictEqual(original.enumeration, enumeration)) fail('producer-retry-original-unavailable');
-  if (priorRetry && (priorRetry.planDigest !== original.planDigest || priorRetry.retryOfRunId !== original.runId)) fail('producer-retry-intent-mismatch');
-  let blockedOutcomeCount = 0;
-  const records = [];
-  for (const record of plan.records) {
-    const sourceExternalId = producerSourceExternalId(plan.sourceNamespace, record.sourceExternalId);
-    const durable = loadIntakeSourceAccount(metadata, { sourceKind: plan.sourceKind, sourceExternalId, sourceVersion: record.sourceVersion });
-    const accepted = durable?.plan;
-    if (!accepted || accepted.checkpoint !== record.checkpoint || accepted.processorVersion !== plan.processorVersion || accepted.retainedNoteRevision !== record.retainedNoteRevision || !isDeepStrictEqual(accepted.acceptedExtraction, record.acceptedExtraction) || !isDeepStrictEqual(accepted.enumeration, plan.enumeration)) fail('producer-retry-source-not-admitted');
-    const outcomes = durable.account?.outcomes ?? [];
-    blockedOutcomeCount += outcomes.filter(item => ['failed', 'unknown', 'unresolved-topic'].includes(item.status)).length;
-    if (outcomes.some(item => item.status === 'missing')) records.push({ ...record, sourceKind: plan.sourceKind, sourceExternalId });
-  }
-  return Object.freeze({ runId, records: Object.freeze(records), blockedOutcomeCount, priorRetry });
-}
-
 export async function readPinnedEmailReaderPlan(filename, expectedDigest) {
   if (!/^sha256:[a-f0-9]{64}$/u.test(expectedDigest)) fail('email-reader-plan-invalid');
   const input = await readPinnedJson(filename, 'email-reader-plan-invalid', 'email-reader-plan-unsafe', 'email-reader-plan-changed');
@@ -109,10 +83,7 @@ export async function readEmailReaderPlanDigest(filename) {
   return emailReaderPlanDigest(input);
 }
 
-export function producerSourceExternalId(sourceNamespace, sourceExternalId) {
-  const digest = createHash('sha256').update(JSON.stringify([sourceNamespace, sourceExternalId])).digest('hex');
-  return `namespaced:v1:sha256:${digest}`;
-}
+export { producerSourceExternalId } from '../open-loops/intake-retry.mjs';
 
 export async function runConfiguredEmailReaderPlan({ planPath, expectedDigest, signal }) {
   const plan = await readPinnedEmailReaderPlan(planPath, expectedDigest);
@@ -217,7 +188,8 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
   let metadata; let sourceService;
   try {
     metadata = openCommandCenterMetadataService({ stateDir: resolveStateDir({ ...process.env }), capabilities: { notes: true, sessions: true } });
-    const retry = resumeAttemptId === undefined ? null : admittedRetry(metadata, plan, resumeAttemptId);
+    const retry = resumeAttemptId === undefined ? null : prepareAdmittedRetry(metadata, plan, expectedDigest, resumeAttemptId);
+    if (retry && retry.records.length === 0) return reconcileAdmittedRetry(metadata, plan, expectedDigest, resumeAttemptId);
     sourceService = createAuthoritativeSourceService({ metadata, capabilities: { notes: true, sessions: false } });
     const getOwners = () => ({ metadata, sourceService });
     const tools = {
@@ -225,14 +197,6 @@ export async function runConfiguredProducerIntake({ planPath, expectedDigest, co
       receipt: intakeReceiptToolFactory({ getOwners })(), plan: intakeSourcePlanToolFactory({ getOwners })(), account: intakeSourceAccountToolFactory({ getOwners })(), outcome: intakeOutcomeToolFactory({ getOwners })()
     };
     const invoke = async (tool, params) => { signal?.throwIfAborted(); const result = await tool.execute('producer-intake-cli', params); signal?.throwIfAborted(); return result?.details; };
-    if (retry && retry.records.length === 0) {
-      if (retry.priorRetry?.status === 'pending') {
-        const completedAt = new Date().toISOString();
-        const receipt = await invoke(tools.receipt, { ...retry.priorRetry, status: 'healthy-processed', observedAt: completedAt, lastSuccessfulAt: completedAt, processedCount: Math.max(retry.priorRetry.processedCount, plan.records.length) });
-        return Object.freeze({ schemaVersion: 1, status: 'healthy-processed', retriedSources: 0, blockedOutcomeCount: retry.blockedOutcomeCount, recoveredPendingReceipt: true, receipt });
-      }
-      return Object.freeze({ schemaVersion: 1, status: retry.priorRetry?.status === 'failed' ? 'retry-failed-new-attempt-required' : retry.blockedOutcomeCount ? 'blocked-outcomes-remain' : 'nothing-to-retry', retriedSources: 0, blockedOutcomeCount: retry.blockedOutcomeCount });
-    }
     const adapter = createProducerIntakeAdapter({
       processorVersion: plan.processorVersion,
       async extract() { fail('producer-extractor-unavailable'); },
