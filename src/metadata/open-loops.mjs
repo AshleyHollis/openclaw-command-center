@@ -271,6 +271,10 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     return rows.map(mapObservation);
   });
   service.getOpenLoop = loopId => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(text(loopId, 'loopId'))));
+  service.previewOpenLoopSupportingNoteTarget = loopId => inspect(db => {
+    const loop = mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(text(loopId, 'loopId')));
+    return loop ? supportingNoteTarget(db, 'payment-status', loop) ?? freeze({ schemaVersion: 1, status: 'none' }) : null;
+  });
   // The decision owner commits this receipt with its loop revision. Enumerating
   // those receipts after a restart identifies decisions whose follow-up needs
   // inspection without accepting a stale earlier decision.

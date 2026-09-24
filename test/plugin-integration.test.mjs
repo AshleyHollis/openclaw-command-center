@@ -12,6 +12,8 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
 import { invokeBridgeMethod } from '../src/bridge/register.mjs';
 import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+import { withNoteFilesystemOwner } from '../src/sources/note-filesystem-owner.mjs';
+import { createCommitmentCaptureService } from '../src/open-loops/commitment-capture.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 import { build, distRoot } from '../src/build.mjs';
 
@@ -202,6 +204,50 @@ test('registered open-loop bridge applies authenticated lifecycle changes and re
     assert.equal(settled.loop.paymentState, 'paid');
     assert.equal(settled.loop.state, 'resolved');
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('a Note-backed decision waits for the Note owner before its durable user-decision commit', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-note-decision-fence-'));
+  const fileAccess = createHostFileAccessFixture();
+  let service; let metadata; let release; let held;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    metadata.createTopic({ topicId: 'fictional-home', paraCategory: 'area', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-bill', topicId: 'fictional-home',
+      sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/bill.md',
+      observedRevision: 'sha256:fictional-note-revision' });
+    const captured = await createCommitmentCaptureService({ metadata }).capture({ schemaVersion: 1,
+      logicalOperationId: '10000000-0000-4000-8000-000000000091', sourceKind: 'email',
+      sourceExternalId: 'fictional-email', sourceVersion: 'upstream-v1',
+      sourceReferenceId: 'note:fictional-bill', sourcePath: 'bill.md',
+      sourceReferenceVersion: 'sha256:fictional-note-revision', topicId: 'fictional-home',
+      title: 'Pay fictional bill', obligationId: 'fictional-payment', obligationKind: 'payment',
+      provenance: 'explicit', occurredAt: '2026-09-24T01:00:00.000Z',
+      observedAt: '2026-09-24T01:01:00.000Z', historicalBaseline: false });
+    const host = fakePublishedApi(stateDir, { fileAccess });
+    plugin.register(host.api); service = host.services[0]; await service.start();
+    let acquired;
+    const acquiredPromise = new Promise(resolve => { acquired = resolve; });
+    const releasePromise = new Promise(resolve => { release = resolve; });
+    held = withNoteFilesystemOwner(metadata, async () => { acquired(); await releasePromise; },
+      { acquire: fileAccess.tryAcquireExclusiveSqliteCoordinator });
+    await acquiredPromise;
+    let settled = false;
+    const decision = service.openLoopsPaymentStatus({ schemaVersion: 1,
+      logicalOperationId: '20000000-0000-4000-8000-000000000092',
+      loopId: captured.loop.loopId, expectedRevision: captured.loop.revision,
+      paymentState: 'paid', rationale: 'Fictional paid assertion only.',
+      authenticatedOperatorId: 'fictional-operator' }).then(result => { settled = true; return result; });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(settled, false);
+    assert.equal(metadata.getOpenLoop(captured.loop.loopId).revision, captured.loop.revision);
+    release(); await held;
+    assert.equal((await decision).loop.paymentState, 'paid');
+    assert.equal(metadata.getOpenLoop(captured.loop.loopId).revision, captured.loop.revision + 1);
+  } finally {
+    release?.(); await held?.catch(() => {});
+    await service?.stop(); metadata?.close(); await rm(stateDir, { recursive: true, force: true });
+  }
 });
 
 test('authenticated follow-up command resumes a saved decision after restart without replaying an older decision', async () => {

@@ -9,6 +9,7 @@ import { createAuthoritativeSourceService } from './sources/service.mjs';
 import { createTopicService } from './topics/service.mjs';
 import { inspectTopicDiscoverability } from './topics/discoverability.mjs';
 import { SourceServiceError } from './sources/errors.mjs';
+import { withNoteFilesystemOwner } from './sources/note-filesystem-owner.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { createOpenLoopReminderCoordinator, openLoopReminderOperationId } from './open-loops/reminder-coordinator.mjs';
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
@@ -125,6 +126,18 @@ export function createMetadataService(api) {
     return operatorId;
   };
   const reminderSummary = (status, plan) => Object.freeze({ status, action: plan.action, referenceId: plan.referenceId, ...(plan.reason ? { reason: plan.reason } : {}) });
+  function commitDecisionWithNoteFence(input, commit) {
+    const loop = metadataService.getOpenLoop(input.loopId);
+    // The owner checks expectedRevision again at the actual SQLite commit.
+    // A Note-backed decision also shares the Note owner's cross-process lock
+    // so an older Note effect cannot publish across a newer user decision.
+    const note = loop?.revision === input.expectedRevision
+      ? metadataService.previewOpenLoopSupportingNoteTarget(loop.loopId) : null;
+    return note && note.status !== 'none' ? withNoteFilesystemOwner(metadataService, commit) : commit();
+  }
+  const afterDecisionCommit = (committed, logicalOperationId, runtime) => committed && typeof committed.then === 'function'
+    ? committed.then(result => reconcileOpenLoopReminder(result, logicalOperationId, runtime))
+    : reconcileOpenLoopReminder(committed, logicalOperationId, runtime);
   function reconcileOpenLoopReminder(result, parentOperationId, runtime = {}) {
     const reminderCoordinator = runtime?.gateway?.request
       ? createOpenLoopReminderCoordinator({ api, gateway: runtime.gateway, metadata: metadataService })
@@ -472,8 +485,8 @@ export function createMetadataService(api) {
     openLoopsDecide(input = {}, runtime = {}) {
       requireOperational();
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for open-loop decisions.');
-      const result = metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }), ...(input.amount === undefined ? {} : { amount: input.amount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
-      return reconcileOpenLoopReminder(result, input.logicalOperationId, runtime);
+      const committed = commitDecisionWithNoteFence(input, () => metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }), ...(input.amount === undefined ? {} : { amount: input.amount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() }));
+      return afterDecisionCommit(committed, input.logicalOperationId, runtime);
     },
     openLoopsResumeFollowUp(input = {}, runtime = {}) {
       requireOperational();
@@ -491,8 +504,8 @@ export function createMetadataService(api) {
     openLoopsPaymentStatus(input = {}, runtime = {}) {
       requireOperational();
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for payment status records.');
-      const result = metadataService.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, paymentState: input.paymentState, ...(input.paidAmount === undefined ? {} : { paidAmount: input.paidAmount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
-      return reconcileOpenLoopReminder(result, input.logicalOperationId, runtime);
+      const committed = commitDecisionWithNoteFence(input, () => metadataService.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, paymentState: input.paymentState, ...(input.paidAmount === undefined ? {} : { paidAmount: input.paidAmount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() }));
+      return afterDecisionCommit(committed, input.logicalOperationId, runtime);
     },
     openLoopsOrganize(input = {}, runtime = {}) {
       requireOperational();
