@@ -24,6 +24,7 @@ import { loadIntakeSourceAccount, recordIntakeSourcePlan } from '../src/open-loo
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { producerSourceExternalId } from '../src/open-loops/intake-retry.mjs';
 import { openLoopReminderOperationId } from '../src/open-loops/reminder-coordinator.mjs';
+import { buildTargetedClarificationPrompt } from '../src/open-loops/clarification-prompt.mjs';
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
 import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
@@ -1188,7 +1189,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       config.models.providers.fixture.models[0].compat = { supportsTools: true };
       config.models.providers.fixture.request = { allowPrivateNetwork: true };
       config.agents.entries = { ...(config.agents.entries ?? {}), main: { model: 'fixture/fixture-model', modelPolicy: { allow: ['fixture/fixture-model'] } } };
-      config.tools = { ...(config.tools ?? {}), alsoAllow: [...new Set([...(config.tools?.alsoAllow ?? []), 'command_center_resolve_source_topic', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt'])] };
+      config.tools = { ...(config.tools ?? {}), alsoAllow: [...new Set([...(config.tools?.alsoAllow ?? []), 'command_center_resolve_source_topic', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_get_pending_clarification', 'command_center_interpret_clarification'])] };
       await writeFile(scenarioWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
     }
     let scenarioHost = await withDeadline(`${kind} fresh host launch`, (signal) => launchPinnedHost({ descriptor, world: scenarioWorld, buildReceipt, signal }), 120_000);
@@ -1309,7 +1310,13 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           const requestCount = fictionalModel.requests.length;
           await chatPane.locator('.agent-chat__composer-combobox textarea').fill(message);
           await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
-          await waitForConsecutiveReadiness(() => fictionalModel.requests.slice(requestCount).some(entry => entry.action === 'final' && entry.completedCurrentTool && entry.currentToolResultId), scenarioHost.earlyExit, { required: 1, deadlineMs: 60_000, delayMs: 100, signal });
+          try {
+            await waitForConsecutiveReadiness(() => fictionalModel.requests.slice(requestCount).some(entry => entry.action === 'final' && entry.completedCurrentTool && entry.currentToolResultId), scenarioHost.earlyExit, { required: 1, deadlineMs: completedAction === 'targeted-interpret' ? 30_000 : 60_000, delayMs: 100, signal });
+          } catch (error) {
+            const actions = fictionalModel.requests.slice(requestCount).map(entry => ({ action: entry.action, completedCurrentTool: entry.completedCurrentTool,
+              currentToolResultId: entry.currentToolResultId, tools: entry.tools.filter(name => name.includes('clarification')) }));
+            throw new Error(`Fictional native turn did not settle: ${JSON.stringify(actions)}`, { cause: error });
+          }
           assert.ok(fictionalModel.requests.slice(requestCount).some(entry => entry.action === completedAction), `Native turn did not execute ${completedAction}`);
           await chatPane.getByText(message, { exact: true }).waitFor({ timeout: 30_000 });
         };
@@ -1498,7 +1505,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
           method: 'command-center.v1.open-loops.clarify', params: { schemaVersion: 1, logicalOperationId: randomUUID(),
             loopId: paymentLoopId, expectedRevision: scheduled.loop.revision,
-            rationale: 'Check the fictional payee name while retaining the accepted reminder.' }, signal });
+            rationale: 'I paid the fictional invoice in full. Keep this statement on this bill only.' }, signal });
         const review = reviewResponse.result ?? reviewResponse;
         const reviewDetailResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
           method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
@@ -1512,14 +1519,24 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await reviewedCard.getByRole('button', { name: 'Review evidence' }).click();
         await reviewedCard.getByText('Earlier decision: Decision saved. Reminder follow-up is complete.', { exact: true }).waitFor();
         await reviewedCard.getByText('Earlier decision: The supporting Note recorded this decision.', { exact: true }).waitFor();
-        const paidDecisionId = randomUUID();
-        const paidResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
-          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
-          method: 'command-center.v1.open-loops.payment-status', params: { schemaVersion: 1, logicalOperationId: paidDecisionId,
-            loopId: paymentLoopId, expectedRevision: review.loop.revision, paymentState: 'paid',
-            rationale: 'Fictional operator assertion; no payment was made.' }, signal });
-        assert.equal((paidResponse.result ?? paidResponse).reminder.status, 'applied');
-        assert.equal((paidResponse.result ?? paidResponse).supportingNote.status, 'completed');
+        const clarificationTarget = { loopId: paymentLoopId, expectedRevision: review.loop.revision,
+          clarificationObservationId: review.loop.attention.pendingClarificationId };
+        const paidDecisionId = `clarification-interpretation:${createHash('sha256').update(clarificationTarget.clarificationObservationId).digest('hex')}`;
+        chatPane = await openNativeChat();
+        await sendNativeTurn(chatPane,
+          `${buildTargetedClarificationPrompt(clarificationTarget)}\n[fixture:targeted-clarification:${Buffer.from(JSON.stringify(clarificationTarget)).toString('base64url')}]`,
+          'targeted-interpret');
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'targeted-load').length, 1);
+        assert.equal(fictionalModel.requests.filter(item => item.action === 'targeted-interpret').length, 1);
+        const interpretedResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        const interpreted = interpretedResponse.result ?? interpretedResponse;
+        assert.equal(interpreted.loop.paymentState, 'paid', `the registered model tool records only an interpreted user assertion: ${JSON.stringify(
+          fictionalModel.requests.findLast(item => item.targetedToolText !== undefined)?.targetedToolText ?? null)}`);
+        assert.ok(interpreted.evidence.some(item => item.sourceKind === 'processor-interpretation'
+          && item.interpretationOf === clarificationTarget.clarificationObservationId));
+        assert.equal(interpreted.supportingNote.status, 'completed');
+        milestone('registered-clarification-tools-applied');
         const noteTargetMetadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
         try {
           const scheduledNote = noteTargetMetadata.getOpenLoopSupportingNoteIntent(scheduleDecisionId);

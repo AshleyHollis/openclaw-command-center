@@ -251,7 +251,7 @@ export function createMetadataService(api) {
       logicalOperationId
     }).then(receipt => Object.freeze({ ...publicResult, reminder: reminderSummary(receipt.status, receipt.plan) }));
   }
-  return {
+  const service = {
     id: 'command-center-metadata',
     async start(context = {}) {
       stopPromise = undefined;
@@ -357,7 +357,8 @@ export function createMetadataService(api) {
       } catch (error) {
         api.logger?.error?.(`Command Center discoverability ${JSON.stringify({ code: error?.code ?? 'topic-discoverability-check-failed', ...(error?.summary ? { summary: error.summary } : {}) })}`);
       }
-      releaseTopicMaintenanceOwners = publishTopicMaintenanceOwners(Object.freeze({ sourceService, metadata: metadataService, capacityReview, dailyWorkspace }));
+      releaseTopicMaintenanceOwners = publishTopicMaintenanceOwners(Object.freeze({ sourceService, metadata: metadataService, capacityReview, dailyWorkspace,
+        interpretClarification: (input, runtime) => service.openLoopsInterpretClarification(input, runtime) }));
       if (FIRST_LIVE_FEATURES.dashboard) {
         try { await sourceService.refreshReminderAttention(); }
         catch { api.logger?.warn?.('Command Center could not refresh Reminder attention during startup.'); }
@@ -606,6 +607,11 @@ export function createMetadataService(api) {
     },
     openLoopsInterpretClarification(input = {}, runtime = {}) {
       requireOperational();
+      if (!metadataService) {
+        const active = readTopicMaintenanceOwners()?.interpretClarification;
+        if (typeof active !== 'function') throw new SourceServiceError('capability-unavailable', 'Active clarification owner is unavailable.');
+        return active(input, runtime);
+      }
       if (typeof input.clarificationObservationId !== 'string' || !input.clarificationObservationId.trim())
         throw new SourceServiceError('invalid-request', 'An exact saved clarification is required.');
       const logicalOperationId = `clarification-interpretation:${createHash('sha256').update(input.clarificationObservationId).digest('hex')}`;
@@ -728,4 +734,5 @@ export function createMetadataService(api) {
     async searchRebuild() { return refuseDeferred('search'); },
     async searchPrepareRebuild() { return refuseDeferred('search'); }
   };
+  return service;
 }

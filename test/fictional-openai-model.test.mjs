@@ -91,3 +91,31 @@ test('fictional model exercises explicit and vague natural-language capture thro
     assert.match(vague, /provenance\\\":\\\"idea/);
   } finally { await model.close(); }
 });
+
+test('fictional targeted clarification calls exact read and interpretation tools across normalized native messages', async () => {
+  const model = await startFictionalOpenAiModel();
+  try {
+    const target = { loopId: 'fictional-loop', expectedRevision: 4, clarificationObservationId: 'fictional-clarification' };
+    const prompt = `Process one item.\n[fixture:targeted-clarification:${Buffer.from(JSON.stringify(target)).toString('base64url')}]`;
+    const read = await completion(model, [{ role: 'user', content: prompt }], []);
+    assert.equal(model.requests.at(-1).action, 'targeted-load');
+    assert.match(read, /command_center_get_pending_clarification/u);
+    const readId = model.requests.at(-1).issuedToolCallId;
+    const interpreted = await completion(model, [
+      { role: 'user', content: prompt },
+      { role: 'assistant', tool_calls: [{ id: readId }] },
+      { role: 'tool', tool_call_id: readId, content: JSON.stringify({ ...target, status: 'pending', processorVersion: 'fictional-v1', userWords: 'I paid the fictional bill in full.' }) },
+      { role: 'user', content: 'Normalized current user record.' }
+    ], []);
+    assert.equal(model.requests.at(-1).action, 'targeted-interpret');
+    assert.match(interpreted, /command_center_interpret_clarification/u);
+    const interpretationId = model.requests.at(-1).issuedToolCallId;
+    await completion(model, [
+      { role: 'user', content: prompt },
+      { role: 'assistant', tool_calls: [{ id: interpretationId }] },
+      { role: 'tool', tool_call_id: interpretationId, content: '{"status":"applied"}' },
+      { role: 'user', content: 'Normalized current user record.' }
+    ], []);
+    assert.equal(model.requests.at(-1).action, 'final');
+  } finally { await model.close(); }
+});

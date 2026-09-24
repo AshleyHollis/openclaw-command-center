@@ -4,9 +4,30 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { createMetadataService } from '../src/plugin-service.mjs';
 import { projectQuietAttention } from '../src/open-loops/quiet-attention.mjs';
 
 const now = '2026-09-24T03:00:00.000Z';
+
+test('inactive agent-tool registration delegates interpretation to the active owner', () => {
+  const key = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');
+  const previous = globalThis[key];
+  const inactive = createMetadataService({});
+  const input = { clarificationObservationId: 'fictional-saved-clarification', outcome: 'clear', paymentState: 'paid' };
+  const expected = { schemaVersion: 1, disposition: 'applied' };
+  try {
+    globalThis[key] = { interpretClarification: received => {
+      assert.deepEqual(received, input);
+      return expected;
+    } };
+    assert.equal(inactive.openLoopsInterpretClarification(input), expected);
+    delete globalThis[key];
+    assert.throws(() => inactive.openLoopsInterpretClarification(input), { code: 'capability-unavailable' });
+  } finally {
+    if (previous === undefined) delete globalThis[key]; else globalThis[key] = previous;
+  }
+});
+
 const message = (id, invoiceId) => ({
   schemaVersion: 1, channel: 'email', source: { system: 'fictional-mail', externalId: id, version: 'v1' },
   occurredAt: now, observedAt: now, historicalBaseline: false, disposition: 'confirmed-obligation',
