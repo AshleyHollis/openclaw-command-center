@@ -1532,32 +1532,28 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const interpretedResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
           method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
         const interpreted = interpretedResponse.result ?? interpretedResponse;
-        assert.equal(interpreted.loop.paymentState, 'paid', `the registered model tool records only an interpreted user assertion: ${JSON.stringify(
-          fictionalModel.requests.findLast(item => item.targetedToolText !== undefined)?.targetedToolText ?? null)}`);
+        assert.equal(interpreted.loop.paymentState, 'paid', 'the registered model tool records only an interpreted user assertion');
         assert.ok(interpreted.evidence.some(item => item.sourceKind === 'processor-interpretation'
           && item.interpretationOf === clarificationTarget.clarificationObservationId),
         `interpreted evidence identities: ${JSON.stringify(interpreted.evidence.map(item => ({ sourceKind: item.sourceKind,
           interpretationOf: item.interpretationOf, observationId: item.observationId })))}`);
-        assert.ok(['pending', 'completed'].includes(interpreted.supportingNote.status),
-          `interpreted Note follow-up: ${JSON.stringify({ detail: interpreted.supportingNote,
-            tool: fictionalModel.requests.findLast(item => item.targetedToolResult !== undefined)?.targetedToolResult })}`);
+        assert.equal(interpreted.followUp.status, 'pending');
+        assert.equal(interpreted.supportingNote.status, 'pending');
         const interpretationInspection = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
         try {
           const accepted = interpretationInspection.getOpenLoopUserActionReceipt(paidDecisionId);
-          const reminderOperation = interpretationInspection.getOperation(openLoopReminderOperationId(paidDecisionId));
           const note = interpretationInspection.getOpenLoopSupportingNoteIntent(paidDecisionId);
-          console.log(`targeted-interpretation-follow-up=${JSON.stringify({
-            tool: fictionalModel.requests.findLast(item => item.targetedToolText !== undefined)?.targetedToolText,
-            detail: interpreted.followUp, supportingNote: interpreted.supportingNote,
-            reminderOperation: reminderOperation ? { state: reminderOperation.state, operationKind: reminderOperation.operationKind } : null,
-            note: note ? { current: note.current, targetStatus: note.target?.status, outcomeStatus: note.outcome?.status, intentPresent: Boolean(note.intent) } : null,
-            accepted: accepted ? { current: accepted.current, loopRevision: accepted.loop.revision, followUpAction: accepted.followUpIntent?.action } : null
-          })}`);
+          assert.equal(accepted.current, true);
+          assert.equal(accepted.followUpIntent.action, 'cancel');
+          assert.equal(interpretationInspection.getOperation(openLoopReminderOperationId(paidDecisionId)), null);
+          assert.equal(note.target.status, 'ready');
+          assert.equal(note.intent, undefined);
         } finally { interpretationInspection.close(); }
         const resumedInterpretationResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
           scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
           method: 'command-center.v1.open-loops.resume-follow-up', params: { schemaVersion: 1, logicalOperationId: paidDecisionId }, signal });
         const resumedInterpretation = resumedInterpretationResponse.result ?? resumedInterpretationResponse;
+        assert.equal(resumedInterpretation.reminder.status, 'applied');
         assert.equal(resumedInterpretation.supportingNote.status, 'completed');
         milestone('registered-clarification-tools-applied');
         const noteTargetMetadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });

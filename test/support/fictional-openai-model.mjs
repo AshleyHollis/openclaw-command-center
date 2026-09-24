@@ -177,7 +177,6 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
       if (completedToolAction === 'command_center_save_source_note') accounted.saved = result;
       if (completedToolAction === 'command_center_capture_source_commitment') accounted.captured = result;
       if (completedToolAction === 'command_center_get_pending_clarification') accounted.clarification = result;
-      if (completedToolAction === 'command_center_interpret_clarification') accounted.interpretation = result;
     }
     const source = { sourceKind: 'email', sourceExternalId: fictionalAccountedEmailSourceId, sourceVersion: 'email-change-key-real-host-52' };
     const acceptedExtraction = fictionalAccountedEmailAcceptedExtraction;
@@ -243,9 +242,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     const issuedToolCallId = action === 'final' ? null : stableToolCallId(id);
     if (issuedToolCallId) { pendingToolCalls.add(issuedToolCallId); pendingToolActions.set(issuedToolCallId, frames[0].choices[0].delta.tool_calls[0].function.name); }
     if (action === 'file' && mediaRef) usedMediaReferences.add(mediaRef);
-    requests.push(Object.freeze({ id, action, mediaRef, tools: [...tools].sort(), messageCount: messages.length, currentRole: currentMessage?.role ?? null, currentToolResultId, currentToolStatus: toolResultStatus(currentMessage), completedCurrentTool, issuedToolCallId, transcriptShape: transcriptShape(messages), loadedProcessorVersion: accounted.loaded?.processorVersion ?? null, loadedOutcomeStatuses: accounted.loaded?.outcomes?.map(outcome => [outcome.outcomeId, outcome.status]) ?? [],
-      ...(completedToolAction === 'command_center_interpret_clarification' ? { targetedToolResult: accounted.interpretation,
-        targetedToolText: JSON.stringify([...messages].reverse().find(item => item?.role === 'tool')?.content ?? null).slice(0, 700) } : {}) }));
+    requests.push(Object.freeze({ id, action, mediaRef, tools: [...tools].sort(), messageCount: messages.length, currentRole: currentMessage?.role ?? null, currentToolResultId, currentToolStatus: toolResultStatus(currentMessage), completedCurrentTool, issuedToolCallId, transcriptShape: transcriptShape(messages), loadedProcessorVersion: accounted.loaded?.processorVersion ?? null, loadedOutcomeStatuses: accounted.loaded?.outcomes?.map(outcome => [outcome.outcomeId, outcome.status]) ?? [] }));
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     for (const frame of frames) response.write(`data: ${JSON.stringify(frame)}\n\n`);
     response.end('data: [DONE]\n\n');
