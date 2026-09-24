@@ -314,7 +314,7 @@ test('reports bounded source and destination evidence for prohibited child traff
   const trafficLog = path.join(root, 'traffic.jsonl');
   try {
     await writeFile(trafficLog, [
-      JSON.stringify({ source: 'dns', destination: 'catalog.example.invalid', permitted: false }),
+      JSON.stringify({ source: 'dns', destination: 'catalog.example.invalid', permitted: false, origin: 'probe@module.js:12' }),
       JSON.stringify({ source: 'https', destination: 'catalog.example.invalid', permitted: false })
     ].join('\n'));
     let caught;
@@ -326,6 +326,7 @@ test('reports bounded source and destination evidence for prohibited child traff
     assert.ok(caught instanceof HarnessFailure);
     assert.equal(caught.category, 'isolation-violation');
     assert.match(caught.message, /dns -> catalog\.example\.invalid/);
+    assert.match(caught.message, /probe@module\.js:12/u);
     assert.deepEqual(caught.diagnostics.childTraffic, [
       { source: 'dns', destination: 'catalog.example.invalid' },
       { source: 'https', destination: 'catalog.example.invalid' }

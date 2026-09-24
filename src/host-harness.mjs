@@ -355,7 +355,8 @@ export async function assertRecordedChildTraffic(world) {
     .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const prohibited = entries.filter((entry) => !entry.permitted);
   if (prohibited.length) {
-    const error = new HarnessFailure('isolation-violation', `Host attempted ${prohibited.length} prohibited destination(s): ${describeTrafficEvidence(prohibited)}`);
+    const origins = prohibited.slice(0, 2).map(entry => typeof entry.origin === 'string' ? redact(entry.origin, 240) : '').filter(Boolean);
+    const error = new HarnessFailure('isolation-violation', `Host attempted ${prohibited.length} prohibited destination(s): ${describeTrafficEvidence(prohibited)}${origins.length ? `; origins: ${origins.join('; ')}` : ''}`);
     error.diagnostics = Object.freeze({ childTraffic: boundedTrafficEvidence(prohibited) });
     throw error;
   }
