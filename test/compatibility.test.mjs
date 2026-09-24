@@ -3,6 +3,7 @@ import test from 'node:test';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
 import packageJson from '../package.json' with { type: 'json' };
 import packageLock from '../package-lock.json' with { type: 'json' };
+import deployedTuple from './fixtures/deployed-0.4.0-compatibility-tuple.json' with { type: 'json' };
 import { assertCapabilityBridgeDeclaration, assertDeclarativeMirror, validateCompatibility } from '../src/compatibility.mjs';
 import { pinnedHost } from '../src/host-harness.mjs';
 
@@ -10,6 +11,7 @@ const supportedOpenClaw = Object.freeze({
   version: '2026.9.5',
   commit: '21f1ca697532a9bd9e9cc46322a598a31435de15'
 });
+const schemaFiveHost = Object.freeze({ version: '2026.8.1-beta.3', commit: '30f2924e437857935f034ac349bae8cc22ef9fb0' });
 const controllerIntegrationCommit = '2b222e394d823814b8c08684841ad38beaf265da';
 const upstreamCompatibilityCommit = controllerIntegrationCommit;
 const controllerPackageVersion = '2026.9.6';
@@ -28,8 +30,10 @@ test('accepts the exact canonical compatibility tuple', () => {
 });
 
 test('pins product compatibility and the controller to the exact stable source boundary', () => {
-  assert.equal(canonical.priorRelease.host.range, `=${supportedOpenClaw.version}`);
-  assert.equal(canonical.priorRelease.host.commit, supportedOpenClaw.commit);
+  assert.equal(canonical.priorRelease.host.range, `=${schemaFiveHost.version}`);
+  assert.equal(canonical.priorRelease.host.commit, schemaFiveHost.commit);
+  assert.equal(deployedTuple.host.range, `=${supportedOpenClaw.version}`);
+  assert.equal(deployedTuple.host.commit, supportedOpenClaw.commit);
   assert.equal(canonical.host.range, `=${controllerPackageVersion}`);
   assert.equal(canonical.host.commit, upstreamCompatibilityCommit);
   assert.equal(canonical.pluginApi.range, `=${controllerPackageVersion}`);

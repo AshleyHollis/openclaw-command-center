@@ -2,8 +2,8 @@
   "formatVersion": 1,
   "package": {
     "name": "openclaw-command-center",
-    "version": "0.4.1",
-    "build": "0.4.1"
+    "version": "0.4.0",
+    "build": "0.4.0"
   },
   "priorRelease": {
     "package": {
@@ -39,26 +39,17 @@
     }
   },
   "host": {
-    "range": "=2026.9.6",
-    "commit": "2b222e394d823814b8c08684841ad38beaf265da"
+    "range": "=2026.9.5",
+    "commit": "21f1ca697532a9bd9e9cc46322a598a31435de15"
   },
   "pluginApi": {
     "package": "openclaw",
-    "range": "=2026.9.6"
+    "range": "=2026.9.5"
   },
   "commandCenterSchema": {
-    "readable": {
-      "min": 1,
-      "max": 9
-    },
-    "migratable": {
-      "min": 1,
-      "max": 8
-    },
-    "writable": {
-      "min": 9,
-      "max": 9
-    }
+    "readable": { "min": 1, "max": 9 },
+    "migratable": { "min": 1, "max": 8 },
+    "writable": { "min": 9, "max": 9 }
   },
   "capabilityBridgeProtocol": {
     "min": 1,
