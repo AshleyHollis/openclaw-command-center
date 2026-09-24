@@ -1413,6 +1413,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         milestone('evidence-inspected');
         await retainNativeChatScreenshot(page, 'accounted-mixed-email-dashboard');
         await emailCard.getByRole('button', { name: 'Open retained Note', exact: true }).click();
+        await page.locator('openclaw-plugin-page').getByText(/The evidence used source version .*the current original is /u).waitFor({ timeout: 30_000 });
+        await page.locator('openclaw-plugin-page').getByRole('button', { name: 'Open current Note', exact: true }).click();
         await page.locator('openclaw-plugin-page').getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
         milestone('retained-note-inspected');
         const finalDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
@@ -1440,6 +1442,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await outlookPopup.close();
         await page.setViewportSize({ width: 390, height: 900 });
         await paymentCard.getByRole('button', { name: 'Open supporting Note' }).click();
+        await page.locator('openclaw-plugin-page').getByText(/The evidence used source version .*the current original is /u).waitFor({ timeout: 30_000 });
+        await page.locator('openclaw-plugin-page').getByRole('button', { name: 'Open current Note', exact: true }).click();
         await page.locator('openclaw-plugin-page').getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
         await retainNativeChatScreenshot(page, 'accounted-email-reader-note-mobile');
         milestone('original-email-and-note-opened');
