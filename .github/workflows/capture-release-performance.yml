@@ -27,9 +27,9 @@ jobs:
       matrix:
         scenario: ${{ fromJSON(inputs.scenario == '' && '["native-release-prerequisites","scale-performance"]' || format('[{0}]', toJSON(inputs.scenario))) }}
     env:
-      IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:714d71199e498398a75e519b4ef3e19154eb48950a9185391b89aa34896d5980
-      OPENCLAW_COMMIT: 21f1ca697532a9bd9e9cc46322a598a31435de15
-      OPENCLAW_VERSION: 2026.9.5
+      IMAGE: ghcr.io/ashleyhollis/openclaw@sha256:ec5fe0dc7a9de20702c7bdbad993649d073b982963184f0258815c7537163244
+      OPENCLAW_COMMIT: 2b222e394d823814b8c08684841ad38beaf265da
+      OPENCLAW_VERSION: 2026.9.6
       COMMAND_CENTER_CONTROLLER_SOURCE_ROOT: ${{ github.workspace }}/_openclaw-source
       COMMAND_CENTER_ACCEPTANCE_SCENARIO: ${{ matrix.scenario }}
     steps:
@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: AshleyHollis/openclaw
-          ref: 21f1ca697532a9bd9e9cc46322a598a31435de15
+          ref: 2b222e394d823814b8c08684841ad38beaf265da
           fetch-depth: 1
           persist-credentials: false
           path: _openclaw-source
