@@ -37,11 +37,15 @@ export function loadPendingClarificationContext(metadata, { loopId, expectedRevi
     item.sourceExternalId === source.sourceExternalId && item.sourceVersion !== source.sourceVersion
     && Date.parse(item.observedAt) >= Date.parse(accepted.plan.observedAt));
   if (later) return Object.freeze({ status: 'review-required', reason: 'source-revision-changed' });
+  const acceptedObligation = Object.freeze(Object.fromEntries([
+    'obligationId', 'title', 'classification', 'obligationKind', 'provenance',
+    'dueAt', 'reviewAt', 'plannedAt'
+  ].filter(key => obligation[key] !== undefined).map(key => [key, obligation[key]])));
   return Object.freeze({
     status: 'pending', loopId, expectedRevision, clarificationObservationId: clarificationId,
     userWords: clarification.facts.rationale, source, outcomeId,
     processorVersion: accepted.plan.processorVersion,
     ...(accepted.plan.retainedNoteRevision ? { retainedNoteRevision: accepted.plan.retainedNoteRevision } : {}),
-    acceptedObligation: obligation
+    acceptedObligation
   });
 }

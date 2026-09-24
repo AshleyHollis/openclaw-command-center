@@ -26,7 +26,7 @@ export function installOpenLoopActions(service, { ErrorType }) {
       observationId: `${sourceKind}:${hash(`${operationKind}\u0000${logicalOperationId}`).slice(0, 40)}`
     };
   }
-  function record({ input, operationKind, facts, transition, sourceKind = 'user-decision', resolveClarification = false }) {
+  function record({ input, operationKind, facts, transition, sourceKind = 'user-decision', resolveClarification = false, interpretationFence }) {
     const ids = identifiers(input, operationKind, sourceKind);
     const { updatedAt: _ownerTime, ...rootIntent } = input;
     const replay = service.replayOpenLoopChange({ schemaVersion: 1, logicalOperationId: ids.logicalOperationId, operationKind, intent: rootIntent });
@@ -62,13 +62,17 @@ export function installOpenLoopActions(service, { ErrorType }) {
       facts: { operationKind, actorId, rationale, ...facts,
         ...(resolvesClarification ? { resolvesClarificationId: pendingClarificationId } : {}) }
     };
-    const changed = service.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: ids.logicalOperationId, operationKind, intent: rootIntent, expectedRevision: loop.revision, observation, loop: { ...next, evidenceObservationIds: [...loop.evidenceObservationIds, ids.observationId], revision: loop.revision + 1 }, evidenceRoles: { [ids.observationId]: next.state === 'resolved' || next.state === 'cancelled' ? 'resolution' : 'update' }, updatedAt });
+    const changed = service.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: ids.logicalOperationId, operationKind, intent: rootIntent, expectedRevision: loop.revision, observation, loop: { ...next, evidenceObservationIds: [...loop.evidenceObservationIds, ids.observationId], revision: loop.revision + 1 }, evidenceRoles: { [ids.observationId]: next.state === 'resolved' || next.state === 'cancelled' ? 'resolution' : 'update' }, updatedAt,
+      ...(interpretationFence ? { interpretationFence } : {}) });
     return Object.freeze({ schemaVersion: 1, disposition: changed.disposition === 'updated' ? 'applied' : changed.disposition, loop: changed.loop,
       ...(changed.followUpIntent ? { followUpIntent: changed.followUpIntent } : {}), ...(changed.supportingNoteTarget ? { supportingNoteTarget: changed.supportingNoteTarget } : {}) });
   }
 
   service.recordOpenLoopDecision = input => {
-    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'amount', 'currency', 'actorId', 'rationale', 'updatedAt']);
+    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'amount', 'currency', 'actorId', 'rationale', 'updatedAt', 'interpretationFence']);
+    const interpretationFence = value.interpretationFence === undefined ? undefined : closed(value.interpretationFence,
+      ['clarificationObservationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'processorVersion']);
+    if (interpretationFence) for (const key of ['clarificationObservationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'processorVersion']) text(interpretationFence[key], key);
     if (value.schemaVersion !== 1 || !decisions.has(value.decision)) fail('open-loop-action-invalid');
     if ((value.decision === 'defer') !== (value.reviewAt !== undefined)) fail('open-loop-action-invalid', 'Only defer requires reviewAt.');
     const dateOnly = value.dueDate !== undefined || value.dueTimeZone !== undefined;
@@ -88,8 +92,11 @@ export function installOpenLoopActions(service, { ErrorType }) {
     return record({
       input: value,
       operationKind: `decision-${value.decision}`,
-      resolveClarification: value.decision !== 'defer',
-      facts: { decision: value.decision, ...(reviewAt === undefined ? {} : { reviewAt }), ...(dueAt === undefined ? {} : { dueAt }), ...(dueDate === undefined ? {} : { dueDate, dueTimeZone }), ...(amount === undefined ? {} : { amount, currency }) },
+      sourceKind: interpretationFence ? 'processor-interpretation' : 'user-decision',
+      interpretationFence,
+      resolveClarification: Boolean(interpretationFence) || value.decision !== 'defer',
+      facts: { decision: value.decision, ...(reviewAt === undefined ? {} : { reviewAt }), ...(dueAt === undefined ? {} : { dueAt }), ...(dueDate === undefined ? {} : { dueDate, dueTimeZone }), ...(amount === undefined ? {} : { amount, currency }),
+        ...(interpretationFence ? { provenance: 'targeted-interpretation', interpretationOf: interpretationFence.clarificationObservationId, processorVersion: interpretationFence.processorVersion, interpretationFence } : {}) },
       transition(loop) {
         if (['resolved', 'cancelled'].includes(loop.state) && value.decision !== 'resolve') fail('open-loop-terminal');
         if (value.decision === 'confirm') {
@@ -119,7 +126,10 @@ export function installOpenLoopActions(service, { ErrorType }) {
   };
 
   service.recordOpenLoopPaymentStatus = input => {
-    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'paymentState', 'paidAmount', 'currency', 'actorId', 'rationale', 'updatedAt']);
+    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'paymentState', 'paidAmount', 'currency', 'actorId', 'rationale', 'updatedAt', 'interpretationFence']);
+    const interpretationFence = value.interpretationFence === undefined ? undefined : closed(value.interpretationFence,
+      ['clarificationObservationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'processorVersion']);
+    if (interpretationFence) for (const key of ['clarificationObservationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'processorVersion']) text(interpretationFence[key], key);
     if (value.schemaVersion !== 1 || !paymentStates.has(value.paymentState)) fail('open-loop-action-invalid');
     const paidAmount = value.paidAmount === undefined ? undefined : Number(value.paidAmount);
     if (paidAmount !== undefined && (!Number.isSafeInteger(paidAmount) || paidAmount < 0)) fail('open-loop-action-invalid');
@@ -128,8 +138,12 @@ export function installOpenLoopActions(service, { ErrorType }) {
     return record({
       input: value,
       operationKind: 'payment-status',
+      sourceKind: interpretationFence ? 'processor-interpretation' : 'user-decision',
+      interpretationFence,
       resolveClarification: true,
-      facts: { paymentState: value.paymentState, ...(paidAmount === undefined ? {} : { paidAmount, currency }), provenance: 'explicit-user-assertion' },
+      facts: { paymentState: value.paymentState, ...(paidAmount === undefined ? {} : { paidAmount, currency }),
+        provenance: interpretationFence ? 'interpreted-user-assertion' : 'explicit-user-assertion',
+        ...(interpretationFence ? { interpretationOf: interpretationFence.clarificationObservationId, processorVersion: interpretationFence.processorVersion, interpretationFence } : {}) },
       transition(loop) {
         if (loop.kind !== 'payment') fail('open-loop-not-payment');
         if (paidAmount !== undefined && loop.currency !== undefined && currency !== loop.currency) fail('open-loop-currency-conflict');

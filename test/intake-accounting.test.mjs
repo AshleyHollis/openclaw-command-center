@@ -10,6 +10,9 @@ import path from 'node:path';
 import { sourceNoteOperationId } from '../src/open-loops/source-intake-tool.mjs';
 import { loadPendingClarificationContext } from '../src/open-loops/clarification-context.mjs';
 import { pendingClarificationToolFactory } from '../src/open-loops/clarification-tool.mjs';
+import { interpretClarificationToolFactory } from '../src/open-loops/clarification-tool.mjs';
+import { createMetadataService } from '../src/plugin-service.mjs';
+import { setHostNoteFilesystemCoordinator } from '../src/sources/note-filesystem-owner.mjs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -190,7 +193,7 @@ test('pending clarification loads only its accepted outcome after SQLite restart
     plan.acceptedExtraction.obligations = [
       { obligationId: 'pay-invoice', title: 'Pay fictional invoice', provenance: 'explicit', obligationKind: 'payment' },
       { obligationId: 'send-reference', title: 'Send fictional reference', provenance: 'explicit' },
-      { obligationId: 'choose-delivery', title: 'Choose fictional delivery window', provenance: 'inferred', classification: 'decision' }
+      { obligationId: 'choose-delivery', title: 'Choose fictional delivery window', provenance: 'inferred', classification: 'decision', contexts: ['private-source-context'] }
     ];
     recordIntakeSourcePlan(metadata, plan);
     const { payment, response, decision } = addEffects(metadata);
@@ -210,13 +213,128 @@ test('pending clarification loads only its accepted outcome after SQLite restart
     assert.equal(loaded.outcomeId, 'choose-delivery');
     assert.equal(loaded.acceptedObligation.title, 'Choose fictional delivery window');
     assert.equal(JSON.stringify(loaded).includes('Pay fictional invoice'), false, 'clear siblings are not sent for reinterpretation');
+    assert.equal(JSON.stringify(loaded).includes('private-source-context'), false, 'unneeded source context is not sent to the interpreter');
+    assert.equal(JSON.stringify(loaded).includes('Fictional reference'), false, 'retained Note content is not sent to the interpreter');
     assert.equal(loadPendingClarificationContext(metadata, { ...expected, expectedRevision: decision.revision }).status, 'superseded');
     const newer = { ...plan, sourceVersion: 'change-key-8', observedAt: plan.observedAt, checkpoint: 'page-2:message-42' };
     recordIntakeSourcePlan(metadata, newer);
     assert.deepEqual(loadPendingClarificationContext(metadata, expected), { status: 'review-required', reason: 'source-revision-changed' });
+    assert.throws(() => metadata.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'stale-source-interpretation', loopId: decision.loopId,
+      expectedRevision: clarified.loop.revision, decision: 'confirm', actorId: 'operator-fixture', rationale: loaded.userWords,
+      updatedAt: '2026-09-22T01:04:00.000Z', interpretationFence: { clarificationObservationId: loaded.clarificationObservationId,
+        ...loaded.source, outcomeId: loaded.outcomeId, processorVersion: loaded.processorVersion } }), { code: 'open-loop-interpretation-source-conflict' });
+    assert.equal(metadata.getOpenLoop(decision.loopId).revision, clarified.loop.revision);
     assert.equal(metadata.getOpenLoop(payment.loopId).revision, payment.revision);
     assert.equal(metadata.getOpenLoop(response.loopId).revision, response.revision);
   } finally { metadata?.close(); await temporary.cleanup(); }
+});
+
+test('interpreted clarification commits one fenced decision and leaves mixed-source siblings unchanged', async () => {
+  const temporary = await temporaryStateDir('command-center-interpreted-clarification-');
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } }); addTopic(metadata);
+    const plan = sourcePlan();
+    plan.acceptedExtraction.obligations = [
+      { obligationId: 'pay-invoice', title: 'Pay fictional invoice', provenance: 'explicit', obligationKind: 'payment' },
+      { obligationId: 'send-reference', title: 'Send fictional reference', provenance: 'explicit' },
+      { obligationId: 'choose-delivery', title: 'Choose fictional delivery window', provenance: 'inferred', classification: 'decision' }
+    ];
+    recordIntakeSourcePlan(metadata, plan);
+    const { payment, response, decision } = addEffects(metadata);
+    const base = { schemaVersion: 1, sourceKind: 'email', sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion, recordedAt: '2026-09-22T01:01:00.000Z' };
+    recordIntakeOutcome(metadata, { ...base, outcomeId: 'pay-invoice', kind: 'obligation', status: 'applied', summary: 'Pay fictional invoice', loopId: payment.loopId });
+    recordIntakeOutcome(metadata, { ...base, outcomeId: 'send-reference', kind: 'obligation', status: 'applied', summary: 'Send fictional reference', loopId: response.loopId });
+    recordIntakeOutcome(metadata, { ...base, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision', summary: 'Choose fictional delivery window', loopId: decision.loopId });
+    const clarified = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'fictional-words-for-interpretation', loopId: decision.loopId, expectedRevision: decision.revision, actorId: 'operator-fixture', rationale: 'Use the morning delivery window for this one.', updatedAt: '2026-09-22T01:02:00.000Z' });
+    const context = loadPendingClarificationContext(metadata, { loopId: decision.loopId, expectedRevision: clarified.loop.revision });
+    const interpretationFence = { clarificationObservationId: context.clarificationObservationId, ...context.source, outcomeId: context.outcomeId, processorVersion: context.processorVersion };
+    const input = { schemaVersion: 1, logicalOperationId: 'fictional-targeted-interpretation', loopId: decision.loopId, expectedRevision: clarified.loop.revision, decision: 'confirm', actorId: 'operator-fixture', rationale: context.userWords, updatedAt: '2026-09-22T01:03:00.000Z', interpretationFence };
+    assert.throws(() => metadata.recordOpenLoopDecision({ ...input, logicalOperationId: 'forged-interpretation', rationale: 'A different instruction.' }), { code: 'open-loop-interpretation-source-conflict' });
+    assert.equal(metadata.getOpenLoop(decision.loopId).revision, clarified.loop.revision);
+    const interpreted = metadata.recordOpenLoopDecision(input);
+    assert.equal(interpreted.disposition, 'applied');
+    const evidence = interpreted.loop.evidenceObservationIds.map(id => metadata.getOpenLoopObservation(id)).find(item => item.source.kind === 'processor-interpretation');
+    assert.equal(evidence.source.kind, 'processor-interpretation');
+    assert.equal(evidence.facts.interpretationOf, context.clarificationObservationId);
+    assert.equal(metadata.getOpenLoopUserActionReceipt(input.logicalOperationId).current, true);
+    assert.equal(metadata.recordOpenLoopDecision(input).disposition, 'duplicate');
+    assert.equal(loadPendingClarificationContext(metadata, { loopId: decision.loopId, expectedRevision: interpreted.loop.revision }).status, 'not-pending');
+    assert.equal(metadata.getOpenLoop(payment.loopId).revision, payment.revision);
+    assert.equal(metadata.getOpenLoop(response.loopId).revision, response.revision);
+    assert.throws(() => metadata.recordOpenLoopDecision({ ...input, logicalOperationId: 'fictional-stale-interpretation' }), { code: 'open-loop-stale-revision' });
+    metadata.close(); metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    assert.equal(metadata.getOpenLoopUserActionReceipt(input.logicalOperationId).current, true);
+  } finally { metadata?.close(); await temporary.cleanup(); }
+});
+
+test('registered interpretation tool applies a saved clarification once and refuses changed retry intent', async () => {
+  const temporary = await temporaryStateDir('command-center-interpretation-tool-');
+  const service = createMetadataService({ runtime: { state: { resolveStateDir: () => temporary.path } }, logger: {}, pluginConfig: {} });
+  let restoreCoordinator;
+  try {
+    await service.start();
+    restoreCoordinator = setHostNoteFilesystemCoordinator(() => ({ release() {} }));
+    const metadata = service.getTopicMaintenanceOwners().metadata;
+    metadata.createTopic({ topicId: 'topic-fictional-home', name: 'Fictional home', paraCategory: 'project', lifecycle: 'active', createdAt: '2026-09-22T00:00:00.000Z', updatedAt: '2026-09-22T00:00:00.000Z' });
+    const plan = sourcePlan();
+    plan.acceptedExtraction.obligations = [
+      { obligationId: 'choose-delivery', title: 'Choose fictional delivery window', provenance: 'inferred', classification: 'decision' },
+      { obligationId: 'pay-invoice', title: 'Pay fictional invoice', provenance: 'explicit', obligationKind: 'payment' }
+    ];
+    recordIntakeSourcePlan(metadata, plan);
+    const decision = addDecisionLoop(metadata);
+    recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: plan.sourceExternalId,
+      sourceVersion: plan.sourceVersion, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision',
+      summary: 'Choose fictional delivery window', loopId: decision.loopId, recordedAt: '2026-09-22T01:01:00.000Z' });
+    const paymentCapture = planCommitmentCapture({ schemaVersion: 1, logicalOperationId: 'fictional-payment-tool-capture',
+      sourceKind: 'email', sourceExternalId: plan.sourceExternalId, sourceVersion: plan.sourceVersion,
+      topicId: 'topic-fictional-home', title: 'Pay fictional invoice', obligationId: 'pay-invoice',
+      obligationKind: 'payment', provenance: 'explicit', occurredAt: '2026-09-22T01:00:00.000Z',
+      observedAt: '2026-09-22T01:00:00.000Z', historicalBaseline: false });
+    const payment = metadata.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: 'fictional-payment-tool-capture',
+      operationKind: 'commitment.capture.v1', intent: paymentCapture.value, expectedRevision: 0,
+      observation: paymentCapture.observation, loop: paymentCapture.loop,
+      evidenceRoles: { [paymentCapture.observation.observationId]: 'origin' }, updatedAt: '2026-09-22T01:00:00.000Z' }).loop;
+    recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: plan.sourceExternalId,
+      sourceVersion: plan.sourceVersion, outcomeId: 'pay-invoice', kind: 'obligation', status: 'applied',
+      summary: 'Pay fictional invoice', loopId: payment.loopId, recordedAt: '2026-09-22T01:01:00.000Z' });
+    const clarified = await service.openLoopsClarify({ loopId: decision.loopId, expectedRevision: decision.revision,
+      logicalOperationId: 'fictional-service-words', authenticatedOperatorId: 'operator-fixture',
+      rationale: 'Please use the morning window for this one.' });
+    const pendingTool = pendingClarificationToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() })();
+    const pending = (await pendingTool.execute('fictional-read', { loopId: decision.loopId, expectedRevision: clarified.loop.revision })).details;
+    assert.equal(pending.status, 'pending');
+    const tool = interpretClarificationToolFactory({ interpret: input => service.openLoopsInterpretClarification(input) })();
+    const input = { loopId: decision.loopId, expectedRevision: clarified.loop.revision,
+      clarificationObservationId: pending.clarificationObservationId, processorVersion: pending.processorVersion,
+      outcome: 'clear', decision: 'confirm' };
+    assert.equal((await tool.execute('fictional-ambiguous', { ...input, outcome: 'ambiguous', decision: undefined })).details.status, 'review-required');
+    assert.equal(metadata.getOpenLoop(decision.loopId).revision, clarified.loop.revision, 'ambiguous words remain unresolved');
+    const first = (await tool.execute('fictional-interpret', input)).details;
+    assert.equal(first.disposition, 'applied');
+    assert.equal(first.loop.state, 'confirmed');
+    assert.ok(service.openLoopsGet({ loopId: decision.loopId }).evidence.some(item =>
+      item.sourceKind === 'processor-interpretation' && item.interpretationOf === pending.clarificationObservationId));
+    assert.equal((await tool.execute('fictional-retry', input)).details.disposition, 'duplicate');
+    await assert.rejects(() => tool.execute('fictional-changed-retry', { ...input, decision: 'dismiss' }),
+      error => error.code === 'open-loop-intent-mismatch');
+    assert.equal(metadata.getOpenLoop(decision.loopId).revision, first.loop.revision);
+    const billWords = await service.openLoopsClarify({ loopId: payment.loopId, expectedRevision: payment.revision,
+      logicalOperationId: 'fictional-bill-words', authenticatedOperatorId: 'operator-fixture',
+      rationale: 'I paid this fictional invoice today.' });
+    const billContext = (await pendingTool.execute('fictional-bill-read', { loopId: payment.loopId, expectedRevision: billWords.loop.revision })).details;
+    const billInput = { loopId: payment.loopId, expectedRevision: billWords.loop.revision,
+      clarificationObservationId: billContext.clarificationObservationId, processorVersion: billContext.processorVersion,
+      outcome: 'clear', paymentState: 'paid' };
+    const paid = (await tool.execute('fictional-bill-interpret', billInput)).details;
+    assert.equal(paid.loop.paymentState, 'paid');
+    assert.equal(paid.loop.state, 'resolved');
+    assert.equal((await tool.execute('fictional-bill-retry', billInput)).details.disposition, 'duplicate');
+    assert.ok(service.openLoopsGet({ loopId: payment.loopId }).evidence.some(item =>
+      item.sourceKind === 'processor-interpretation' && item.provenance === 'interpreted-user-assertion'));
+    assert.equal(metadata.getOpenLoop(decision.loopId).revision, first.loop.revision, 'bill interpretation does not reopen the delivery choice');
+  } finally { restoreCoordinator?.(); await service.stop(); await temporary.cleanup(); }
 });
 
 test('missing and unresolved outcomes remain visible instead of advancing the source to resolved', async () => {

@@ -17,3 +17,24 @@ export function pendingClarificationToolFactory({ getOwners } = {}) {
     }
   });
 }
+
+export function interpretClarificationToolFactory({ interpret } = {}) {
+  if (typeof interpret !== 'function') throw new TypeError('Targeted clarification requires its owning command.');
+  return () => ({
+    name: 'command_center_interpret_clarification',
+    description: 'Apply one clear item-specific decision or payment assertion to the exact saved clarification, or leave ambiguous words for review. Call only after loading the pending clarification; never reprocess siblings. A paid status is the user’s assertion, not independent payment evidence.',
+    parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
+      loopId: { type: 'string', minLength: 1 }, expectedRevision: { type: 'integer', minimum: 1 },
+      clarificationObservationId: { type: 'string', minLength: 1 }, processorVersion: { type: 'string', minLength: 1 },
+      outcome: { type: 'string', enum: ['clear', 'ambiguous'] },
+      decision: { type: 'string', enum: ['confirm', 'defer', 'dismiss', 'resolve', 'correct-date'] },
+      paymentState: { type: 'string', enum: ['partially-paid', 'payment-pending', 'paid', 'disputed', 'cancelled', 'uncertain'] },
+      paidAmount: { type: 'integer', minimum: 0 }, currency: { type: 'string', minLength: 3, maxLength: 3 },
+      reviewAt: { type: 'string' }, dueAt: { type: 'string' }, dueDate: { type: 'string' }, dueTimeZone: { type: 'string' }
+    }, required: ['loopId', 'expectedRevision', 'clarificationObservationId', 'processorVersion', 'outcome'] }),
+    async execute(_toolCallId, params) {
+      const result = await interpret(params);
+      return Object.freeze({ content: [{ type: 'text', text: JSON.stringify(result) }], details: result });
+    }
+  });
+}

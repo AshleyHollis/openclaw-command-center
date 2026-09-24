@@ -16,6 +16,7 @@ import { createOpenLoopReminderCoordinator, openLoopReminderOperationId } from '
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
 import { loadIntakeSourceAccount } from './open-loops/intake-accounting.mjs';
+import { loadPendingClarificationContext } from './open-loops/clarification-context.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
 
@@ -37,7 +38,7 @@ function unavailable(feature) {
   throw new SourceServiceError('capability-unavailable', `Command Center ${feature} ${reason}.`);
 }
 
-const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'purchaseNamespace', 'purchaseId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'fulfilledItemIds', 'outstandingItemIds', 'expectedAt', 'note', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'resolvesClarificationId', 'supersedesDecisionId', 'supersededByDecisionId', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'extractionStatus', 'pageCount', 'pageEvidence']);
+const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'purchaseNamespace', 'purchaseId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'fulfilledItemIds', 'outstandingItemIds', 'expectedAt', 'note', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'paymentState', 'resolvesClarificationId', 'interpretationOf', 'provenance', 'processorVersion', 'supersedesDecisionId', 'supersededByDecisionId', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'extractionStatus', 'pageCount', 'pageEvidence']);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)]))
   : value;
@@ -602,6 +603,42 @@ export function createMetadataService(api) {
         expectedRevision: input.expectedRevision, actorId, rationale: input.rationale,
         updatedAt: new Date().toISOString()
       }));
+    },
+    openLoopsInterpretClarification(input = {}, runtime = {}) {
+      requireOperational();
+      if (typeof input.clarificationObservationId !== 'string' || !input.clarificationObservationId.trim())
+        throw new SourceServiceError('invalid-request', 'An exact saved clarification is required.');
+      const logicalOperationId = `clarification-interpretation:${createHash('sha256').update(input.clarificationObservationId).digest('hex')}`;
+      const prior = metadataService.getOpenLoopUserActionReceipt(logicalOperationId);
+      if (prior && input.outcome !== 'clear') throw new SourceServiceError('conflict', 'The clarification already has a clear interpretation.');
+      const context = prior ? null : loadPendingClarificationContext(metadataService, { loopId: input.loopId, expectedRevision: input.expectedRevision });
+      if (context && context.status !== 'pending') return Object.freeze({ schemaVersion: 1, ...context });
+      if (context && (input.clarificationObservationId !== context.clarificationObservationId || input.processorVersion !== context.processorVersion))
+        throw new SourceServiceError('conflict', 'The targeted clarification identity changed.');
+      if (!prior && input.outcome === 'ambiguous') return Object.freeze({ schemaVersion: 1, status: 'review-required', reason: 'clarification-ambiguous', loopId: context.loopId });
+      const decision = ['confirm', 'defer', 'dismiss', 'resolve', 'correct-date'].includes(input.decision);
+      const payment = ['partially-paid', 'payment-pending', 'paid', 'disputed', 'cancelled', 'uncertain'].includes(input.paymentState);
+      if (input.outcome !== 'clear' || decision === payment)
+        throw new SourceServiceError('invalid-request', 'A clear interpretation requires one supported decision or payment status.');
+      const priorEvidence = prior?.loop.evidenceObservationIds.map(id => metadataService.getOpenLoopObservation(id))
+        .find(item => item?.source?.kind === 'processor-interpretation' && item.source.externalId === logicalOperationId);
+      if (prior && (!priorEvidence || priorEvidence.facts.interpretationOf !== input.clarificationObservationId
+        || priorEvidence.facts.processorVersion !== input.processorVersion || !priorEvidence.facts.interpretationFence))
+        throw new SourceServiceError('conflict', 'The saved interpretation identity differs.');
+      const clarification = prior ? null : metadataService.getOpenLoopObservation(context.clarificationObservationId);
+      const interpretationFence = priorEvidence?.facts.interpretationFence ?? { clarificationObservationId: context.clarificationObservationId,
+        ...context.source, outcomeId: context.outcomeId, processorVersion: context.processorVersion };
+      const common = { schemaVersion: 1, logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision,
+        actorId: priorEvidence?.facts.actorId ?? clarification.facts.actorId,
+        rationale: priorEvidence?.facts.rationale ?? context.userWords, updatedAt: new Date().toISOString(), interpretationFence };
+      const committed = commitDecisionWithNoteFence(input, () => payment
+        ? metadataService.recordOpenLoopPaymentStatus({ ...common, paymentState: input.paymentState,
+          ...(input.paidAmount === undefined ? {} : { paidAmount: input.paidAmount, currency: input.currency }) })
+        : metadataService.recordOpenLoopDecision({ ...common, decision: input.decision,
+          ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }),
+          ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }),
+          ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }) }));
+      return afterDecisionCommit(committed, logicalOperationId, runtime);
     },
     openLoopsResumeFollowUp(input = {}, runtime = {}) {
       requireOperational();

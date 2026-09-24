@@ -14,7 +14,7 @@ import { topicNoteMaintenanceToolFactory } from './maintenance/tool.mjs';
 import { commitmentCaptureToolFactory } from './open-loops/commitment-tool.mjs';
 import { capacityReviewToolFactory } from './open-loops/capacity-review-tool.mjs';
 import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeSourceAccountToolFactory, intakeOutcomeToolFactory } from './open-loops/source-intake-tool.mjs';
-import { pendingClarificationToolFactory } from './open-loops/clarification-tool.mjs';
+import { pendingClarificationToolFactory, interpretClarificationToolFactory } from './open-loops/clarification-tool.mjs';
 import { briefingPublishToolFactory } from './daily-workspace/briefing-tool.mjs';
 import { registerConversationCaptureHook } from './open-loops/conversation-capture-hook.mjs';
 import { createTopicMaintenanceCompletionSubscription } from './maintenance/completion.mjs';
@@ -230,6 +230,7 @@ export default definePluginEntry({
     api.registerTool(intakeSourcePlanToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_plan_intake_source', optional: true });
     api.registerTool(intakeSourceAccountToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_intake_source_account', optional: true });
     api.registerTool(pendingClarificationToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_pending_clarification', optional: true });
+    api.registerTool(interpretClarificationToolFactory({ interpret: input => service.openLoopsInterpretClarification(input) }), { name: 'command_center_interpret_clarification', optional: true });
     api.registerTool(intakeOutcomeToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_outcome', optional: true });
     api.registerTool(intakeReceiptToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_receipt', optional: true });
     api.registerTool(briefingPublishToolFactory({
