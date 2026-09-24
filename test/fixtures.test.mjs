@@ -53,6 +53,7 @@ test('fixture manifest supplies the built candidate to the isolated host seam', 
     assert.equal(config.gateway.auth.token, world.gatewayCredential);
     assert.equal(config.gateway.port, world.gateway.port);
     assert.equal(config.gateway.controlUi?.experimental?.customPlugins, true);
+    assert.equal(config.gateway.controlUi?.automaticallyFetchFavicons, false);
     assert.equal(config.models.catalogRefresh.enabled, false);
     assert.equal(config.models.providers.fixture.baseUrl, 'http://127.0.0.1:9/v1');
     assert.equal(config.agents.defaults.model.primary, 'fixture/fixture-model');
