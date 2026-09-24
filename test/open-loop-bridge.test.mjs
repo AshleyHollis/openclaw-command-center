@@ -96,7 +96,7 @@ test('open-loop detail retains public interpretation evidence without its intern
       type: 'payment-evidence', sourceSystem: 'command-center', sourceKind: 'processor-interpretation', sourceVersion: 'v1',
       occurredAt: '2026-09-24T00:00:00.000Z', observedAt: '2026-09-24T00:00:00.000Z', historicalBaseline: false,
       paymentState: 'paid', provenance: 'interpreted-user-assertion', interpretationOf, processorVersion: 'fictional-v1',
-      interpretationFence: { secret: 'internal-source-identity' } }] })
+      interpretationFence: { internalMarker: 'fictional-source-identity' } }] })
   }, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: loop.loopId });
   assert.deepEqual({ paymentState: result.evidence[0].paymentState, provenance: result.evidence[0].provenance,
     interpretationOf: result.evidence[0].interpretationOf, processorVersion: result.evidence[0].processorVersion },
