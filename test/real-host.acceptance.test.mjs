@@ -1181,7 +1181,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       } finally { metadata.close(); }
     }
     let fictionalModel;
-    if (kind === 'accounted-email') {
+    const workerVariant = kind === 'accounted-email-worker';
+    if (kind === 'accounted-email' || workerVariant) {
       fictionalModel = await startFictionalOpenAiModel();
       const config = JSON.parse(await readFile(scenarioWorld.manifest.configPath, 'utf8'));
       config.models.providers.fixture.baseUrl = fictionalModel.baseUrl;
@@ -1190,6 +1191,10 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       config.models.providers.fixture.models[0].compat = { supportsTools: true };
       config.models.providers.fixture.request = { allowPrivateNetwork: true };
       config.agents.entries = { ...(config.agents.entries ?? {}), main: { model: 'fixture/fixture-model', modelPolicy: { allow: ['fixture/fixture-model'] } } };
+      if (workerVariant) config.plugins.entries['command-center'].config = {
+        ...(config.plugins.entries['command-center'].config ?? {}),
+        clarificationWorker: { enabled: true, notBefore: '2026-09-24T00:00:00.000Z', intervalSeconds: 30 }
+      };
       config.tools = { ...(config.tools ?? {}), alsoAllow: [...new Set([...(config.tools?.alsoAllow ?? []), 'command_center_resolve_source_topic', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_get_pending_clarification', 'command_center_interpret_clarification'])] };
       await writeFile(scenarioWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
     }
@@ -1241,7 +1246,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         try { assert.ok(readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId: scaleTopicId }), 'verified scale migration must have a durable completion and exact Primary binding'); }
         finally { database.close(); }
       }
-      const nativeFixture = kind === 'accounted-email' ? await seedNativeExistingTopic({ world: scenarioWorld, host: scenarioHost, signal }) : null;
+      const nativeFixture = kind === 'accounted-email' || workerVariant ? await seedNativeExistingTopic({ world: scenarioWorld, host: scenarioHost, signal }) : null;
       managedBrowser = await withDeadline(`${kind} fresh browser launch`, () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       const page = await managedBrowser.browser.newPage({ viewport: { width, height: 900 } });
       const evidence = { console: [], errors: [], requests: [], responses: [] };
@@ -1292,7 +1297,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await retainNativeChatScreenshot(page, 'reader-refresh-completed-dashboard');
         return Object.freeze({ kind, assertionsCompleted: true, seededAcceptedSourceFixture: true, installedReaderStatusCommand: true, installedTaggedReaderApply: true, completedDashboardInspected: true, liveGraphRead: false });
       }
-      if (kind === 'accounted-email') {
+      if (kind === 'accounted-email' || workerVariant) {
         page.setDefaultTimeout(10_000);
         const milestone = name => process.stdout.write(`accounted-email-milestone=${name}\n`);
         const openNativeChat = async () => {
@@ -1480,7 +1485,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await clarificationPage.getByText(/Review all open loops \(/u).click();
         await clarificationPage.getByRole('button', { name: 'Load open loops' }).click();
         const clarificationCard = clarificationPage.locator(`article[data-open-loop-id="${paymentLoopId}"]`).first();
-        await clarificationCard.getByText('Clarification saved · interpretation pending', { exact: true }).waitFor();
+        await clarificationCard.getByText(/Clarification saved · interpretation pending|Clarification needs your review/u).waitFor();
         await clarificationCard.getByRole('button', { name: 'Review evidence' }).click();
         const clarificationEvidence = clarificationCard.locator('details[data-open-loop-evidence][open]');
         await clarificationEvidence.waitFor();
@@ -1523,25 +1528,42 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const clarificationTarget = { loopId: paymentLoopId, expectedRevision: review.loop.revision,
           clarificationObservationId: review.loop.attention.pendingClarificationId };
         const paidDecisionId = clarificationInterpretationOperationId(clarificationTarget.clarificationObservationId);
-        chatPane = await openNativeChat();
-        await sendNativeTurn(chatPane,
-          `${buildTargetedClarificationPrompt(clarificationTarget)}\n[fixture:targeted-clarification:${Buffer.from(JSON.stringify(clarificationTarget)).toString('base64url')}]`,
-          'targeted-interpret');
-        assert.equal(fictionalModel.requests.filter(item => item.action === 'targeted-load').length, 1);
-        assert.equal(fictionalModel.requests.filter(item => item.action === 'targeted-interpret').length, 1);
-        const untrustedResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
-          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
-        assert.equal((untrustedResponse.result ?? untrustedResponse).loop.paymentState, 'unpaid', 'native Chat without trusted owner scope must not write a payment assertion');
-        const pendingInspection = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
-        let exactClarification;
-        try { exactClarification = loadPendingClarificationContext(pendingInspection, { loopId: paymentLoopId, expectedRevision: review.loop.revision }); }
-        finally { pendingInspection.close(); }
-        assert.equal(exactClarification.status, 'pending');
-        const interpretedCommit = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
-          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
-          method: 'command-center.v1.open-loops.interpret-clarification', params: { schemaVersion: 1, logicalOperationId: paidDecisionId,
-            ...clarificationTarget, processorVersion: exactClarification.processorVersion, outcome: 'clear', paymentState: 'paid' }, signal });
-        assert.equal((interpretedCommit.result ?? interpretedCommit).loop.paymentState, 'paid');
+        if (workerVariant) {
+          await waitForConsecutiveReadiness(async probeSignal => {
+            const current = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+              method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal: probeSignal });
+            return (current.result ?? current).loop.paymentState === 'paid';
+          }, scenarioHost.earlyExit, { required: 1, deadlineMs: 90_000, delayMs: 500, signal });
+          const acceptedProposal = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+          try {
+            const proposal = acceptedProposal.getClarificationProposal(clarificationTarget.clarificationObservationId);
+            assert.equal(proposal?.proposal.paymentState, 'paid');
+            assert.equal(proposal.model, 'fixture-model');
+          } finally { acceptedProposal.close(); }
+          assert.ok(fictionalModel.requests.some(item => item.isolatedClarificationProposal && item.tools.length === 0),
+            'the installed worker must use one zero-tool isolated model call');
+          milestone('maintained-worker-interpretation-applied');
+        } else {
+          chatPane = await openNativeChat();
+          await sendNativeTurn(chatPane,
+            `${buildTargetedClarificationPrompt(clarificationTarget)}\n[fixture:targeted-clarification:${Buffer.from(JSON.stringify(clarificationTarget)).toString('base64url')}]`,
+            'targeted-interpret');
+          assert.equal(fictionalModel.requests.filter(item => item.action === 'targeted-load').length, 1);
+          assert.equal(fictionalModel.requests.filter(item => item.action === 'targeted-interpret').length, 1);
+          const untrustedResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+            method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+          assert.equal((untrustedResponse.result ?? untrustedResponse).loop.paymentState, 'unpaid', 'native Chat without trusted owner scope must not write a payment assertion');
+          const pendingInspection = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+          let exactClarification;
+          try { exactClarification = loadPendingClarificationContext(pendingInspection, { loopId: paymentLoopId, expectedRevision: review.loop.revision }); }
+          finally { pendingInspection.close(); }
+          assert.equal(exactClarification.status, 'pending');
+          const interpretedCommit = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+            scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+            method: 'command-center.v1.open-loops.interpret-clarification', params: { schemaVersion: 1, logicalOperationId: paidDecisionId,
+              ...clarificationTarget, processorVersion: exactClarification.processorVersion, outcome: 'clear', paymentState: 'paid' }, signal });
+          assert.equal((interpretedCommit.result ?? interpretedCommit).loop.paymentState, 'paid');
+        }
         const interpretedResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
           method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
         const interpreted = interpretedResponse.result ?? interpretedResponse;
@@ -2615,6 +2637,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   // Diagnostic only: do not silently add a new release-matrix requirement.
   if (acceptancePlan.isolatedSliceIds?.includes('dashboard-mixed-payload')) isolatedSlices.set('dashboard-mixed-payload', startIsolatedSlice('dashboard-mixed-payload', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'dashboard-payload', width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('accounted-mixed-email')) isolatedSlices.set('accounted-mixed-email', startIsolatedSlice('accounted-mixed-email', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'accounted-email', width: 1440, signal })));
+  if (acceptancePlan.isolatedSliceIds?.includes('accounted-mixed-email-worker')) isolatedSlices.set('accounted-mixed-email-worker', startIsolatedSlice('accounted-mixed-email-worker', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'accounted-email-worker', width: 1440, signal })));
   for (const kind of ['reader-refresh-failed', 'reader-refresh-completed']) if (acceptancePlan.isolatedSliceIds?.includes(kind)) isolatedSlices.set(kind, startIsolatedSlice(kind, (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('fresh-mobile')) isolatedSlices.set('fresh-mobile', startIsolatedSlice('fresh-mobile', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'mobile', width: 320, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('reminder-runtime-lifecycle')) isolatedSlices.set('reminder-runtime-lifecycle', startIsolatedSlice('reminder-runtime-lifecycle', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'reminder-lifecycle', width: 1440, signal })));

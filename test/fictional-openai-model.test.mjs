@@ -44,6 +44,18 @@ test('fictional model binds a response to the current exact tool result, not his
   } finally { await model.close(); }
 });
 
+test('fictional isolated clarification proposal uses zero tools and only exact saved words', async () => {
+  const model = await startFictionalOpenAiModel();
+  try {
+    const words = 'I paid the fictional invoice in full. Keep this statement on this bill only.';
+    const response = await completion(model, [{ role: 'user', content: JSON.stringify({ userWords: words,
+      acceptedObligation: { title: 'Pay fictional invoice' } }) }], []);
+    assert.match(response, /paymentState/u);
+    assert.equal(model.requests.at(-1).isolatedClarificationProposal, true);
+    assert.deepEqual(model.requests.at(-1).tools, []);
+  } finally { await model.close(); }
+});
+
 test('fictional model can complete an explicit no-Note fixture turn without invoking an available maintenance tool', async () => {
   const model = await startFictionalOpenAiModel();
   try {
