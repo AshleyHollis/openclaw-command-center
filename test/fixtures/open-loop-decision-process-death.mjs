@@ -12,11 +12,11 @@ let metadata;
 try {
   metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
   if (mode === 'commit-interpreted') {
-    metadata.createTopic({ topicId: 'fictional-process-renovation', paraCategory: 'project', lifecycle: 'active' });
+    metadata.createTopic({ topicId: 'fictional-process-renovation', name: 'Fictional process renovation', paraCategory: 'project', lifecycle: 'active' });
     const source = { sourceKind: 'email', sourceExternalId: 'fictional-process-mixed-message', sourceVersion: 'upstream-v7' };
     recordIntakeSourcePlan(metadata, { schemaVersion: 1, ...source, checkpoint: 'fictional-page-1',
       observedAt: '2026-09-20T00:00:00.000Z', processorVersion: 'fictional-v1',
-      acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [
+      acceptedExtraction: { schemaVersion: 1, proposedTopic: 'Fictional process renovation', notePath: '', knowledgeMarkdown: '', obligations: [
         { obligationId: 'choose-window', title: 'Choose fictional work window', classification: 'decision', provenance: 'inferred' },
         { obligationId: 'send-confirmation', title: 'Send fictional confirmation', classification: 'obligation', provenance: 'explicit' }
       ] }, outcomes: [{ outcomeId: 'choose-window', kind: 'decision' }, { outcomeId: 'send-confirmation', kind: 'obligation' }],
