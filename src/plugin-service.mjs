@@ -199,9 +199,14 @@ export function createMetadataService(api) {
             target, text: annotation.text });
         }
         if (!metadataService.getOpenLoopSupportingNoteIntent(decisionOperationId)?.current) return Object.freeze({ status: 'superseded' });
-        await sourceService.notesEdit({ schemaVersion: 1, logicalOperationId: prepared.logicalOperationId,
+        const noteEffect = { schemaVersion: 1, logicalOperationId: prepared.logicalOperationId,
           topicId: target.topicId, referenceId: target.referenceId, path: target.path,
-          expectedRevision: target.expectedRevision, text: prepared.text });
+          expectedRevision: target.expectedRevision, text: prepared.text };
+        if (saved.intent) {
+          const verified = await sourceService.notesEditReconcile(noteEffect);
+          if (verified.status === 'not-applied') await sourceService.notesEdit(noteEffect);
+          else if (verified.status !== 'applied') throw new SourceServiceError('unknown', 'The supporting Note effect is not yet verified.');
+        } else await sourceService.notesEdit(noteEffect);
         const sourceOperation = metadataService.getOperation(prepared.logicalOperationId);
         if (sourceOperation?.state !== 'applied' || !sourceOperation.observedRevision) throw new SourceServiceError('unknown', 'The supporting Note effect lacks an applied operation receipt.');
         const outcome = metadataService.recordOpenLoopSupportingNoteOutcome({ schemaVersion: 1,
