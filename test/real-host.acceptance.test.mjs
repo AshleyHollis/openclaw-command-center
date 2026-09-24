@@ -1541,6 +1541,19 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.ok(['pending', 'completed'].includes(interpreted.supportingNote.status),
           `interpreted Note follow-up: ${JSON.stringify({ detail: interpreted.supportingNote,
             tool: fictionalModel.requests.findLast(item => item.targetedToolResult !== undefined)?.targetedToolResult })}`);
+        const interpretationInspection = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+        try {
+          const accepted = interpretationInspection.getOpenLoopUserActionReceipt(paidDecisionId);
+          const reminderOperation = interpretationInspection.getOperation(openLoopReminderOperationId(paidDecisionId));
+          const note = interpretationInspection.getOpenLoopSupportingNoteIntent(paidDecisionId);
+          console.log(`targeted-interpretation-follow-up=${JSON.stringify({
+            tool: fictionalModel.requests.findLast(item => item.targetedToolText !== undefined)?.targetedToolText,
+            detail: interpreted.followUp, supportingNote: interpreted.supportingNote,
+            reminderOperation: reminderOperation ? { state: reminderOperation.state, operationKind: reminderOperation.operationKind } : null,
+            note: note ? { current: note.current, targetStatus: note.target?.status, outcomeStatus: note.outcome?.status, intentPresent: Boolean(note.intent) } : null,
+            accepted: accepted ? { current: accepted.current, loopRevision: accepted.loop.revision, followUpAction: accepted.followUpIntent?.action } : null
+          })}`);
+        } finally { interpretationInspection.close(); }
         const resumedInterpretationResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
           scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
           method: 'command-center.v1.open-loops.resume-follow-up', params: { schemaVersion: 1, logicalOperationId: paidDecisionId }, signal });

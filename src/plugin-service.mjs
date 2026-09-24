@@ -139,6 +139,16 @@ export function createMetadataService(api) {
     return note && note.status !== 'none' ? withNoteFilesystemOwner(metadataService, commit) : commit();
   }
   function afterDecisionCommit(committed, logicalOperationId, runtime) {
+    if (runtime?.deferFollowUp === true) {
+      const pending = result => {
+        const { followUpIntent, supportingNoteTarget, ...publicResult } = result;
+        return Object.freeze({ ...publicResult,
+          ...(followUpIntent ? { reminder: reminderSummary('pending', followUpIntent) } : {}),
+          ...(supportingNoteTarget && supportingNoteTarget.status !== 'none'
+            ? { supportingNote: Object.freeze({ status: supportingNoteTarget.status === 'ready' ? 'pending' : supportingNoteTarget.status }) } : {}) });
+      };
+      return committed && typeof committed.then === 'function' ? committed.then(pending) : pending(committed);
+    }
     const withReminder = committed && typeof committed.then === 'function'
       ? committed.then(result => reconcileOpenLoopReminder(result, logicalOperationId, runtime))
       : reconcileOpenLoopReminder(committed, logicalOperationId, runtime);

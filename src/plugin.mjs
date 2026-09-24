@@ -230,7 +230,7 @@ export default definePluginEntry({
     api.registerTool(intakeSourcePlanToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_plan_intake_source', optional: true });
     api.registerTool(intakeSourceAccountToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_intake_source_account', optional: true });
     api.registerTool(pendingClarificationToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_get_pending_clarification', optional: true });
-    api.registerTool(interpretClarificationToolFactory({ interpret: input => service.openLoopsInterpretClarification(input) }), { name: 'command_center_interpret_clarification', optional: true });
+    api.registerTool(interpretClarificationToolFactory({ interpret: input => service.openLoopsInterpretClarification(input, { deferFollowUp: true }) }), { name: 'command_center_interpret_clarification', optional: true });
     api.registerTool(intakeOutcomeToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_outcome', optional: true });
     api.registerTool(intakeReceiptToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() }), { name: 'command_center_record_intake_receipt', optional: true });
     api.registerTool(briefingPublishToolFactory({
