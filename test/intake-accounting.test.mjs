@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { planCommitmentCapture } from '../src/open-loops/commitment-capture.mjs';
-import { projectIntakeAccounts, recordIntakeOutcome, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
+import { normalizeAcceptedExtraction, projectIntakeAccounts, recordIntakeOutcome, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
 import { findIntakeContinuation, recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -28,6 +28,12 @@ function sourcePlan() {
     enumeration: { scope: 'bounded', scannedCount: 25, remainingCount: 4, failedReadCount: 1, scanCapReached: true, scopeId: 'mailbox-fixture', resumeCursor: 'page-2' }
   };
 }
+
+test('accepted extraction retains an explicit payment kind and rejects payment typed as a decision', () => {
+  const extraction = { schemaVersion: 1, proposedTopic: 'Fictional home', notePath: 'Inbox/bill.md', knowledgeMarkdown: '# Fictional bill\n', obligations: [{ obligationId: 'bill-1', title: 'Pay fictional bill', classification: 'obligation', obligationKind: 'payment', provenance: 'explicit' }] };
+  assert.equal(normalizeAcceptedExtraction(extraction).obligations[0].obligationKind, 'payment');
+  assert.throws(() => normalizeAcceptedExtraction({ ...extraction, obligations: [{ ...extraction.obligations[0], classification: 'decision' }] }), error => error.code === 'invalid-request');
+});
 
 function addTopic(metadata) {
   metadata.createTopic({ topicId: 'topic-fictional-home', name: 'Fictional home', paraCategory: 'project', lifecycle: 'active', createdAt: '2026-09-22T00:00:00.000Z', updatedAt: '2026-09-22T00:00:00.000Z' });

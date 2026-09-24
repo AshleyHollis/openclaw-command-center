@@ -1441,11 +1441,12 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
         const beforeDecision = (paymentBefore.result ?? paymentBefore).loop;
         const scheduleDecisionId = randomUUID();
+        const fictionalDueAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
         const scheduledResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
           scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
           method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: scheduleDecisionId,
             loopId: paymentLoopId, expectedRevision: beforeDecision.revision,
-            decision: beforeDecision.state === 'suggested' ? 'confirm' : 'correct-date', dueAt: '2099-01-02T03:04:05.000Z',
+            decision: beforeDecision.state === 'suggested' ? 'confirm' : 'correct-date', dueAt: fictionalDueAt,
             rationale: 'Fictional due date accepted for installed follow-up qualification.' }, signal });
         const scheduled = scheduledResponse.result ?? scheduledResponse;
         assert.equal(scheduled.reminder.status, 'applied');
