@@ -129,25 +129,25 @@ export function createMetadataService(api) {
     const reminderCoordinator = runtime?.gateway?.request
       ? createOpenLoopReminderCoordinator({ api, gateway: runtime.gateway, metadata: metadataService })
       : openLoopReminders;
-    const { followUpIntent, ...publicResult } = result;
+    const { followUpIntent, supportingNoteTarget: _supportingNoteTarget, ...publicResult } = result;
     if (!reminderCoordinator) return Object.freeze(publicResult);
     if (result.followUpIntent) {
       return reminderCoordinator.reconcileAccepted({ loop: result.loop, followUpIntent })
         .then(receipt => Object.freeze({ ...publicResult, reminder: reminderSummary(receipt.status, receipt.plan) }));
     }
     const plan = reminderCoordinator.plan({ loop: result.loop });
-    if (['none', 'blocked'].includes(plan.action)) return Object.freeze({ ...result, reminder: reminderSummary(plan.action, plan) });
+    if (['none', 'blocked'].includes(plan.action)) return Object.freeze({ ...publicResult, reminder: reminderSummary(plan.action, plan) });
     const logicalOperationId = openLoopReminderOperationId(parentOperationId);
     const prior = metadataService.getOperation(logicalOperationId);
     if (prior) {
       if (prior.state === 'unknown') throw new SourceServiceError('unknown', 'The native Reminder outcome is unknown. Retry the unchanged open-loop action to reconcile it.');
       if (prior.state !== 'applied') throw new SourceServiceError('conflict', 'The native Reminder was not changed. Refresh the open loop and retry with a new action.');
-      return Object.freeze({ ...result, reminder: reminderSummary(prior.state, plan) });
+      return Object.freeze({ ...publicResult, reminder: reminderSummary(prior.state, plan) });
     }
     return reminderCoordinator.reconcile({
       loop: result.loop,
       logicalOperationId
-    }).then(receipt => Object.freeze({ ...result, reminder: reminderSummary(receipt.status, receipt.plan) }));
+    }).then(receipt => Object.freeze({ ...publicResult, reminder: reminderSummary(receipt.status, receipt.plan) }));
   }
   return {
     id: 'command-center-metadata',

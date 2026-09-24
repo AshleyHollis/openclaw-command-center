@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { normalizeLoop, normalizeObservation } from '../open-loops/contracts.mjs';
 import { openLoopReminderOperationId, openLoopReminderReferenceId, planOpenLoopReminder } from '../open-loops/reminder-coordinator.mjs';
+import { selectSupportingNoteTarget } from '../open-loops/supporting-note-target.mjs';
 import { projectQuietInbox } from '../open-loops/quiet-attention.mjs';
 
 const OBSERVE_OPERATION = 'open-loop.observe.v1';
@@ -173,6 +174,17 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       return { ...base, action: 'conflict', reason: 'reminder-binding-conflict' };
     }
   }
+  function supportingNoteTarget(db, operationKind, loop) {
+    if (!loop || !(operationKind.startsWith('decision-') || operationKind === 'payment-status')) return undefined;
+    const selected = selectSupportingNoteTarget({ loop,
+      observations: loop.evidenceObservationIds.map(id => mapObservation(db.prepare('SELECT * FROM source_observations WHERE observation_id = ?').get(id))),
+      getSourceReference: id => {
+        const row = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(id);
+        return row && { referenceId: row.reference_id, topicId: row.topic_id, sourceSystem: row.source_system,
+          sourceKind: row.source_kind, observedRevision: row.last_observed_revision };
+      } });
+    return selected.status === 'none' ? undefined : selected;
+  }
 
   service.applyOpenLoopChange = input => {
     const value = closed(input, ['schemaVersion', 'logicalOperationId', 'operationKind', 'intent', 'expectedRevision', 'observation', 'loop', 'evidenceRoles', 'updatedAt']);
@@ -193,8 +205,9 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       const stored = storeObservation(db, observation);
       const changed = loop ? storeLoop(db, loop, value.expectedRevision, roles, updatedAt) : null;
       const pendingFollowUp = followUpIntent(db, logicalOperationId, operationKind, changed?.loop);
+      const noteTarget = supportingNoteTarget(db, operationKind, changed?.loop);
       return receipt(db, logicalOperationId, CHANGE_OPERATION, intentDigest, { schemaVersion: 1, disposition: stored.existing && !changed ? 'duplicate' : changed?.disposition ?? 'inserted', observation: stored.observation, loop: changed?.loop ?? null,
-        ...(pendingFollowUp ? { followUpIntent: pendingFollowUp } : {}) }, updatedAt);
+        ...(pendingFollowUp ? { followUpIntent: pendingFollowUp } : {}), ...(noteTarget ? { supportingNoteTarget: noteTarget } : {}) }, updatedAt);
     });
   };
   service.replayOpenLoopChange = input => {
@@ -300,6 +313,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     if (!result?.loop?.loopId || !Number.isSafeInteger(result.loop.revision) || !result.observation?.facts?.actorId) fail('open-loop-receipt-invalid');
     return freeze({ schemaVersion: 1, logicalOperationId, loop: result.loop,
       ...(result.followUpIntent ? { followUpIntent: result.followUpIntent } : {}),
+      ...(result.supportingNoteTarget ? { supportingNoteTarget: result.supportingNoteTarget } : {}),
       actorId: result.observation.facts.actorId, current: row.current_revision === result.loop.revision });
   });
   service.getCurrentOpenLoopUserActionReceipt = loopId => inspect(db => {
@@ -317,7 +331,8 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
     if (!result?.loop?.loopId || !Number.isSafeInteger(result.loop.revision)) fail('open-loop-receipt-invalid');
     return freeze({ schemaVersion: 1, logicalOperationId: row.logical_operation_id, loop: result.loop,
-      ...(result.followUpIntent ? { followUpIntent: result.followUpIntent } : {}) });
+      ...(result.followUpIntent ? { followUpIntent: result.followUpIntent } : {}),
+      ...(result.supportingNoteTarget ? { supportingNoteTarget: result.supportingNoteTarget } : {}) });
   });
   service.findOpenLoopBySubject = (kind, stableSubjectId) => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(text(kind, 'kind', 80), text(stableSubjectId, 'stableSubjectId', 500))));
   service.findCommitmentLoopsByLegacyObligation = (topicId, obligationId) => inspect(db => {
