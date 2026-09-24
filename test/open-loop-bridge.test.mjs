@@ -23,6 +23,9 @@ test('open-loop bridge contracts use read and native-Reminder admin scopes with 
   assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.list'].scope, 'operator.read');
   assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.capture'].scope, 'operator.write');
   assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.payment-status'].scope, 'operator.admin');
+  assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.clarify'].scope, 'operator.admin');
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.clarify', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, rationale: 'Please check this one fictional invoice.' }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.clarify', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, rationale: 'Please check this one fictional invoice.', globalPreference: true }), /Unsupported bridge request field/);
   const decisionId = randomUUID();
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: decisionId, loopId: loop.loopId, expectedRevision: 1, decision: 'defer', reviewAt: '2026-09-30T00:00:00.000Z', rationale: 'Wait for the fictional corrected invoice.' }));
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: decisionId, loopId: loop.loopId, expectedRevision: 1, decision: 'defer', rationale: 'Missing review time.' }), /reviewAt/);

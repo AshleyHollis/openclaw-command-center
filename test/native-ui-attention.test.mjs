@@ -85,6 +85,17 @@ async function fixture(run) {
             Object.assign(card, { paymentState: params.paymentState, state: params.paymentState === 'paid' ? 'resolved' : params.paymentState === 'payment-pending' ? 'monitoring' : card.state, revision: card.revision + 1 });
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
+          if (method.endsWith('open-loops.clarify')) {
+            if (window.openLoopActionMode === 'unknown') throw new Error('The transport outcome is unknown.');
+            const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
+            Object.assign(card, { state: card.state === 'resolved' ? 'uncertain' : 'decision-needed', revision: card.revision + 1,
+              clarificationPending: true, attention: { pendingClarificationId: 'fictional-clarification-observation' },
+              additionalEvidence: [{ observationId: 'fictional-clarification-observation', type: 'decision-evidence',
+                sourceSystem: 'command-center', sourceKind: 'user-clarification', sourceVersion: 'v1',
+                occurredAt: '2026-09-24T00:00:00.000Z', observedAt: '2026-09-24T00:00:00.000Z',
+                historicalBaseline: false, rationale: params.rationale, status: 'submitted' }] });
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
           if (method.endsWith('open-loops.decide')) {
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             Object.assign(card, { state: params.decision === 'confirm' ? 'confirmed' : params.decision === 'defer' ? 'waiting' : params.decision === 'dismiss' ? 'cancelled' : 'resolved', ...(params.reviewAt ? { reviewAt: params.reviewAt } : {}), revision: card.revision + 1 });
@@ -288,6 +299,42 @@ test('an uncertain payment decision cannot silently replay different form values
   const requests = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.payment-status')).map(request => request.params));
   assert.equal(requests.length, 2);
   assert.deepEqual(requests[0], requests[1]);
+}));
+
+test('item clarification preserves exact words on retry without claiming a payment outcome', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoopActionMode = 'unknown';
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'clarify-bill', kind: 'payment', title: 'Fictional invoice needs correction', state: 'confirmed', paymentState: 'unpaid', actions: ['Open bill'], evidenceCount: 1, revision: 1 }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.followUps = { 'clarify-bill': { status: 'pending', logicalOperationId: 'fictional-earlier-decision', priorDecision: true } };
+    window.supportingNotes = { 'clarify-bill': { status: 'unknown', priorDecision: true } };
+    window.mountInbox();
+  });
+  const bill = page.locator('article[data-open-loop-id="clarify-bill"]');
+  await bill.getByText('Clarify this item', { exact: true }).click();
+  const words = bill.getByLabel('What needs correcting?');
+  await words.fill('The fictional attachment appears to show a later date.');
+  await bill.getByRole('button', { name: 'Save clarification' }).click();
+  await page.getByRole('status').filter({ hasText: 'transport outcome is unknown' }).waitFor();
+  await words.fill('This is a different correction.');
+  await page.evaluate(() => { window.openLoopActionMode = 'success'; });
+  await bill.getByRole('button', { name: 'Save clarification' }).click();
+  await page.getByRole('status').filter({ hasText: 'Restore its original choices' }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.clarify')).length), 1);
+  await words.fill('The fictional attachment appears to show a later date.');
+  await bill.getByRole('button', { name: 'Save clarification' }).click();
+  await page.getByRole('status').filter({ hasText: 'Its outcome still needs review' }).waitFor();
+  await page.getByText('Clarification saved · interpretation pending').waitFor();
+  await page.locator('article[data-open-loop-id="clarify-bill"]').getByRole('button', { name: 'Review evidence' }).click();
+  await page.getByText('Your exact clarification is saved for this item.', { exact: false }).waitFor();
+  await page.getByText('An earlier Reminder effect is unresolved and may still finish. Check its outcome before a new correction; it is not queued for retry from this clarification.', { exact: true }).waitFor();
+  await page.getByText('An earlier supporting Note outcome is unknown. Check the exact Note before a new correction; it cannot be resumed from this clarification.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Resume saved follow-up' }).count(), 0);
+  await page.getByText('The fictional attachment appears to show a later date.', { exact: true }).waitFor();
+  const requests = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.clarify')).map(request => request.params));
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0], requests[1]);
+  assert.equal(await page.evaluate(() => window.openLoops.highlighted[0].paymentState), 'unpaid');
 }));
 
 test('native on-demand inventory pages through every quiet open loop', () => fixture(async (page) => {

@@ -229,6 +229,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.open-loops.capture': (service, params) => service.openLoopsCapture(params),
   'command-center.v1.open-loops.intake-selected': (service, params) => service.openLoopsIngestSelected(params),
   'command-center.v1.open-loops.decide': (service, params, runtime) => service.openLoopsDecide(params, runtime),
+  'command-center.v1.open-loops.clarify': (service, params) => service.openLoopsClarify(params),
   'command-center.v1.open-loops.resume-follow-up': (service, params, runtime) => service.openLoopsResumeFollowUp(params, runtime),
   'command-center.v1.open-loops.payment-status': (service, params, runtime) => service.openLoopsPaymentStatus(params, runtime),
   'command-center.v1.open-loops.organize': (service, params, runtime) => service.openLoopsOrganize(params, runtime),
