@@ -1332,7 +1332,9 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const bootstrap = await fetchJsonWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal }, { label: 'accounted email authenticated build identity', timeoutMs: 10_000 });
         assert.equal(bootstrap.response.ok, true);
         assert.ok(typeof bootstrap.body.serverBuildId === 'string' && bootstrap.body.serverBuildId.trim());
-        await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId, method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
+        const deliveryDecisionId = randomUUID();
+        const deliveryDecisionResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId, method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: deliveryDecisionId, loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
+        assert.equal((deliveryDecisionResponse.result ?? deliveryDecisionResponse).supportingNote.status, 'pending', 'the original Note evidence stays unchanged while admitted siblings are missing');
         milestone('decision-recorded');
         const readerPlanPath = path.join(scenarioWorld.root, 'fictional-email-reader-plan.json');
         const installedWrapper = path.join(descriptor.schemaVersion === 2 ? descriptor.runtimeRoot : descriptor.checkout, descriptor.executable);
@@ -1386,6 +1388,10 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         }), 70_000);
         assert.match(retryOutput, /"retriedSources":1/u);
         milestone('installed-retry-complete');
+        const resumedDecisionResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.resume-follow-up', params: { schemaVersion: 1, logicalOperationId: deliveryDecisionId }, signal });
+        assert.equal((resumedDecisionResponse.result ?? resumedDecisionResponse).supportingNote.status, 'completed', 'the exact saved decision annotates the Note after admitted retry settles');
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         const dashboardPage = page.locator('openclaw-plugin-page');
         await dashboardPage.getByRole('heading', { name: 'Command Center', exact: true }).waitFor({ timeout: 30_000 });

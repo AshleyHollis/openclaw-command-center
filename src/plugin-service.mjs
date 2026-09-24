@@ -15,6 +15,7 @@ import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { createOpenLoopReminderCoordinator, openLoopReminderOperationId } from './open-loops/reminder-coordinator.mjs';
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
+import { loadIntakeSourceAccount } from './open-loops/intake-accounting.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
 
@@ -163,6 +164,28 @@ export function createMetadataService(api) {
       const target = saved.target.target;
       let prepared = saved.intent;
       try {
+        // A retained producer Note is also the exact evidence for sibling
+        // outcomes in the accepted source plan. Keep its admitted revision
+        // stable until those effects finish; otherwise a crash retry cannot
+        // verify the original evidence without silently adopting new bytes.
+        const capture = metadataService.getOpenLoopObservation(target.captureObservationId);
+        if (capture?.source?.system === 'command-center-capture' && capture.source.kind === 'email') {
+          if (capture.facts?.sourceVersion !== target.upstreamSourceVersion
+            || capture.facts?.sourceReferenceId !== target.referenceId
+            || capture.facts?.sourcePath !== target.path
+            || capture.facts?.sourceReferenceVersion !== target.retainedNoteRevision) {
+            throw new SourceServiceError('conflict', 'The supporting Note no longer matches its accepted source evidence.');
+          }
+          const admitted = loadIntakeSourceAccount(metadataService, { sourceKind: 'email',
+            sourceExternalId: capture.source.externalId, sourceVersion: capture.facts.sourceVersion });
+          if (admitted?.plan.retainedNoteRevision !== undefined
+            && admitted.plan.retainedNoteRevision !== target.retainedNoteRevision) {
+            throw new SourceServiceError('conflict', 'The retained source Note revision differs from the accepted plan.');
+          }
+          if (admitted && !admitted.account?.accounted) {
+            return Object.freeze({ status: 'pending', reason: 'source-outcomes-pending' });
+          }
+        }
         if (!prepared) {
           const current = await sourceService.notesRead({ schemaVersion: 1, topicId: target.topicId,
             referenceId: target.referenceId, path: target.path, sourceKind: 'note' });
