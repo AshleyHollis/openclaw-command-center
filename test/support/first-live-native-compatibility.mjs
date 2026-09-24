@@ -16,7 +16,7 @@ import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs
 import { runtimeCapability } from '../../src/runtime-capability.mjs';
 import { scanPublicEvidence } from '../../src/safety.mjs';
 import { prepareNativeRestoredRuntimeState } from './first-live-native-restoration.mjs';
-import { boundedHostEvidence, closeManagedBrowser, configureEvidencePage, launchManagedBrowser, redactBrowserEvidence, requestAuthenticatedGateway, stopHostOnAbort, withDeadline } from './real-host-runtime.mjs';
+import { boundedHostEvidence, closeManagedBrowser, configureEvidencePage, isGatewayStartupPending, launchManagedBrowser, redactBrowserEvidence, requestAuthenticatedGateway, stopHostOnAbort, withDeadline } from './real-host-runtime.mjs';
 
 const actionPath = '/plugins/command-center/api/topic/actions';
 const unwrap = response => response?.result ?? response;
@@ -260,7 +260,17 @@ async function observeNativePluginApiRefusal({ world, host, signal, topicId, exp
   }
   assert.equal(bootstrap.parseError, undefined);
   assert.equal(bootstrap.body.pluginFrameGrants?.some(grant => grant.pluginId === 'command-center') ?? false, false);
-  const catalog = await gatewayRead('plugins.controlUi.list', {});
+  let catalog;
+  await waitForConsecutiveReadiness(async () => {
+    try {
+      catalog = await gatewayRead('plugins.controlUi.list', {});
+      return Array.isArray(catalog?.plugins);
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (isGatewayStartupPending(error)) return false;
+      throw error;
+    }
+  }, host.earlyExit, { deadlineMs: 30_000, delayMs: 250, signal });
   assert.ok(Array.isArray(catalog.plugins));
   assert.equal(catalog.plugins.some(plugin => plugin.pluginId === 'command-center'), false);
   const sessions = await nativeSessionIdentities(gatewayRead);

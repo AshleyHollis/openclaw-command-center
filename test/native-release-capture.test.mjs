@@ -202,6 +202,8 @@ test('pure orchestration: safe ordinary failures collect independent diagnostics
     assert.equal(error.outcomes.length, 14);
     assert.equal(new Set(error.outcomes.map(entry => entry.id)).size, 14);
     assert.deepEqual(error.outcomes.find(entry => entry.id === 'primary'), { id: 'primary', status: 'failed' });
+    assert.deepEqual(error.failureDiagnostics.find(entry => entry.id === 'primary')?.causes,
+      [{ name: 'Error', category: null, message: 'fictional primary refusal' }]);
     return /primary/u.test(error.message);
   });
   assert.equal(state.events.includes('stop:schemaMismatch'), true);

@@ -113,7 +113,8 @@ async function fixture(run) {
             result = { action: body.action, topicId: body.topicId, referenceId: body.referenceId, path: body.path, revision: note.revision };
           } else if (body.action === 'create') result = { value: { status: 'applied', topicId: body.topicId } };
           else {
-            result = { action: body.action, topicId: body.topicId, referenceId: 'session:new' };
+            result = { action: body.action, topicId: body.topicId, referenceId: 'session:new',
+              ...(body.action === 'conversations.create' ? { sessionId: 'new-session' } : {}) };
             window.recovery = { ...window.recovery, status: 'applied', result: { ...window.recovery.result, referenceId: result.referenceId } };
           }
           return { status: 200, body: JSON.stringify({ schemaVersion: 1, status: 'applied', logicalOperationId: body.logicalOperationId, result }) };
@@ -287,6 +288,7 @@ test('native Note saves use the authoritative revision and preserve edits typed 
 }));
 
 test('native Conversation creation uses authenticated Session dispatch and its exact domain receipt before opening Chat', { timeout: 30000 }, () => fixture(async (page) => {
+  const browsesBefore = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('sessions.browse')).length);
   await page.getByRole('textbox', { name: 'Conversation label' }).fill('Fictional discussion');
   await page.getByRole('button', { name: 'Create Conversation' }).focus();
   await page.keyboard.press('Enter');
@@ -298,6 +300,8 @@ test('native Conversation creation uses authenticated Session dispatch and its e
   assert.equal(posts[1].body.authoritativeSession, undefined);
   const dispatches = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('sessions.create')));
   assert.equal(dispatches.length, 1);
+  assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('sessions.browse')).length), browsesBefore);
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('sessions.resolve-native')).map(request => request.params.expectedSessionId)), ['new-session']);
   assert.deepEqual(dispatches[0].params, { schemaVersion: 1, logicalOperationId: posts[1].body.logicalOperationId,
     topicId: posts[1].body.topicId, expectedRevision: 4, label: 'Fictional discussion', isPrimary: false });
 }));

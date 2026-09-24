@@ -153,12 +153,16 @@ function assertRequestBounds(body, bytes) {
   if (bytes > MAX_REQUEST_BYTES) throw invalid('Topic Page mutations exceed the bounded envelope.');
 }
 
-function mutationValue(value) {
+function mutationValue(value, { includeCreatedSessionId = false } = {}) {
   const result = value?.value ?? value?.result ?? value ?? {};
   const note = result?.note ?? result;
   const publicReferenceId = result?.sourceReference?.referenceId ?? note?.sourceReference?.referenceId ?? result?.referenceId;
   return {
     ...(typeof publicReferenceId === 'string' ? { referenceId: publicReferenceId } : {}),
+    // The creation owner already verified this ID against authoritative
+    // readback. Return it only for the authenticated creation receipt so the
+    // native page can take it straight to the exact resolver.
+    ...(includeCreatedSessionId && typeof result?.sessionId === 'string' && result.sessionId.trim() ? { sessionId: result.sessionId } : {}),
     ...(typeof note?.path === 'string' ? { path: note.path } : {}),
     ...(typeof note?.previousPath === 'string' ? { previousPath: note.previousPath } : {}),
     ...(typeof note?.revision === 'string' ? { revision: note.revision } : {}),
@@ -229,7 +233,7 @@ export function createTopicPageActionsHandler(service, { assertAction, createCon
             ...(result.referenceId === undefined ? {} : { referenceId: result.referenceId }) } });
         return true;
       }
-      sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...(reconcilesNote(body.action) ? { path: body.path } : {}), ...mutationValue(result) } });
+      sendJson(res, 200, { schemaVersion: 1, status: result?.status ?? result?.value?.status ?? 'applied', logicalOperationId: body.logicalOperationId, result: { action: body.action, topicId: body.topicId, referenceId: body.referenceId ?? null, ...(reconcilesNote(body.action) ? { path: body.path } : {}), ...mutationValue(result, { includeCreatedSessionId: body.action === 'conversations.create' }) } });
     } catch (error) {
       const code = String(error?.code ?? 'invalid-request');
       if (code === 'feature-unavailable') {

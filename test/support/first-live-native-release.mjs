@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createAcceptanceReport, assertAcceptanceReportPassed, assertNonPerformanceAcceptanceEvidence, NON_PERFORMANCE_ROW_IDS, FINALIZATION_PHASES, RELEASE_ROW_IDS } from '../../src/acceptance-report.mjs';
 import { runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices } from '../../src/acceptance-scenario-coordinator.mjs';
+import { redact } from '../../src/host-harness.mjs';
 import { captureFirstReleasePerformanceBaseline, validateReleasePerformanceBaseline, deriveReleasePerformanceBudget, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../../src/performance-baseline.mjs';
 
 // Two fixed subsystem lanes, not an extensible workflow registry. Each pair
@@ -60,6 +61,18 @@ function validateSupplementalEvidence(results) {
 function captureFailure(failures, outcomes) {
   const error = new AggregateError(failures.map(entry => entry.error), `Native release capture failed: ${failures.map(entry => entry.id).join(', ')}`);
   error.outcomes = Object.freeze([...outcomes].map(([id, status]) => Object.freeze({ id, status })));
+  // Node's test reporter collapses nested AggregateError causes to [Array].
+  // Keep a bounded, redacted chain per participant so a failed exact-host run
+  // can be repaired from its immutable CI log without repeating it blind.
+  error.failureDiagnostics = Object.freeze(failures.map(({ id, error: failure }) => {
+    const causes = [];
+    let current = failure;
+    for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+      causes.push(Object.freeze({ name: current.name, category: current.category ?? null, message: redact(current.message, 180) }));
+      current = current instanceof AggregateError ? current.errors[0] : current.cause;
+    }
+    return Object.freeze({ id, causes: Object.freeze(causes) });
+  }));
   if (failures.some(entry => entry.error?.fatalAcceptanceCleanup === true)) error.fatalAcceptanceCleanup = true;
   return error;
 }

@@ -1003,13 +1003,23 @@ async function exerciseSecureHostVariant({ descriptor, buildReceipt, signal, onF
         failure.diagnostics = { readinessAttempts: readinessAttempts.map((entry) => ({ ...entry })) };
         throw failure;
       }
+      // The HTTPS bootstrap can answer before native plugin sidecars finish.
+      // Keep the real browser asset assertion, but wait for the host's own
+      // bounded readiness marker before asking that browser to fetch it.
+      await waitForConsecutiveReadiness(() => secureHost.diagnostics.stdout.includes('[gateway] ready'),
+        secureHost.earlyExit, { deadlineMs: 60_000, delayMs: 250, signal });
       const grantPrefix = '/__openclaw__/plugins/control-ui/command-center/';
       const pluginEntry = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'GET'
         && new URL(response.url()).origin === secureUrl && new URL(response.url()).pathname.startsWith(grantPrefix)
         && new URL(response.url()).pathname.endsWith('/entry.mjs'), { timeout: 60_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: secureUrl, pluginId: 'command-center', routeId: 'topics', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: secureWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       const loaded = await pluginEntry;
-      assert.equal(hasSuccessfulBrowserResponse(loaded), true);
+      assert.equal(hasSuccessfulBrowserResponse(loaded), true, `Secure native entry failed: ${JSON.stringify({
+        observed: loaded.observed,
+        status: loaded.value?.status(),
+        path: loaded.value ? new URL(loaded.value.url()).pathname : null,
+        errors: evidence.errors.slice(-5)
+      })}`);
       assert.deepEqual(await loaded.value.body(), await readFile(path.join(process.cwd(), 'dist/native-ui/entry.mjs')));
       const nativePage = page.locator('openclaw-plugin-page');
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
