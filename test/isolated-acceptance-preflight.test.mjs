@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -17,6 +18,19 @@ const files = new Map([
   [path.join('/fixture/runtime', 'node_modules/openclaw/package.json'), { name: 'openclaw', version: pinnedHost.packageVersion }]
 ]);
 const read = async file => JSON.stringify(files.get(file));
+
+test('the exact draft-host profile is limited to its diagnostic', () => {
+  const command = ['--input-type=module', '-e', "import {pinnedHost} from './src/host-harness.mjs'; console.log(pinnedHost.commit)"];
+  const env = { ...process.env, COMMAND_CENTER_DIAGNOSTIC_HOST_PROFILE: 'conditional-cron-id-pr53',
+    COMMAND_CENTER_ACCEPTANCE_SCENARIO: 'diagnostic-clarification-worker' };
+  const allowed = spawnSync(process.execPath, command, { cwd: path.resolve('.'), env, encoding: 'utf8' });
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(allowed.stdout.trim(), 'e603f08382dfb3cbe8245b673fcbd793bad9ce9d');
+  const release = spawnSync(process.execPath, command, { cwd: path.resolve('.'),
+    env: { ...env, COMMAND_CENTER_ACCEPTANCE_SCENARIO: 'release' }, encoding: 'utf8' });
+  assert.notEqual(release.status, 0);
+  assert.match(release.stderr, /limited to the clarification-worker diagnostic/u);
+});
 
 test('preflight rejects a mismatched installed host before starting the Gateway', async () => {
   const options = { read, readCommit: async () => pinnedHost.commit, loadCronValidator: async () => () => true };

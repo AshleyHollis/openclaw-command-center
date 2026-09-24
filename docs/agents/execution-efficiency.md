@@ -12,10 +12,11 @@ After packaging, run the read-only admission gate from the candidate root with t
 COMMAND_CENTER_ISOLATED_HOST="$(cat /path/to/isolated-host/descriptor.json)" \
 COMMAND_CENTER_SEALED_CANDIDATE=1 \
 COMMAND_CENTER_ACCEPTANCE_SCENARIO=diagnostic-clarification-worker \
+COMMAND_CENTER_DIAGNOSTIC_HOST_PROFILE=conditional-cron-id-pr53 \
 node scripts/preflight-isolated-acceptance.mjs
 ```
 
-The gate checks the exact harness host pin, checkout/receipt/installed-build identity, candidate file permissions, sealed plugin build receipt, and the installed `cron.add` schema when the journey needs a bound Reminder ID. It makes no Gateway request and does not read a mailbox or mutate state. It is a fast rejection gate, not full host-integrity verification or installed-package proof. The acceptance harness repeats the gate and stops before starting a slice if preparation fails.
+The named profile selects only the exact OpenClaw #53 candidate host for this one diagnostic; omit it for the normal release pin. The gate checks the exact harness host pin, checkout/receipt/installed-build identity, candidate file permissions, sealed plugin build receipt, and the installed `cron.add` schema when the journey needs a bound Reminder ID. It makes no Gateway request and does not read a mailbox or mutate state. It is a fast rejection gate, not full host-integrity verification or installed-package proof. The acceptance harness repeats the gate and stops before starting a slice if preparation fails.
 
 Use the smallest relevant scenario after admission. Run focused tests while the code changes; run an installed journey when the package is stable; run the selected release-policy qualification on the final candidate. Do not repeat an unaffected expensive suite merely to refresh its timestamp. A dependency on an unmerged OpenClaw capability must be tested on its exact pinned candidate host and reported separately from the deployed host.
 
