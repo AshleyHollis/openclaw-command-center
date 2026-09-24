@@ -30,9 +30,9 @@ test('inactive agent-tool registration delegates interpretation to the active ow
       assert.deepEqual(received, input);
       return expected;
     } };
-    assert.equal(inactive.openLoopsInterpretClarification(input, { authenticatedRequesterId: 'owner-fixture' }), expected);
+    assert.equal(inactive.openLoopsInterpretClarification(input, { authenticatedRequesterId: 'owner-fixture', assertCurrent() {} }), expected);
     delete globalThis[key];
-    assert.throws(() => inactive.openLoopsInterpretClarification(input, { authenticatedRequesterId: 'owner-fixture' }), { code: 'capability-unavailable' });
+    assert.throws(() => inactive.openLoopsInterpretClarification(input, { authenticatedRequesterId: 'owner-fixture', assertCurrent() {} }), { code: 'capability-unavailable' });
   } finally {
     if (previous === undefined) delete globalThis[key]; else globalThis[key] = previous;
   }

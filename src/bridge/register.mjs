@@ -322,6 +322,11 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         if (schedulerRuntimeMethods.has(method) && client?.connect) {
           runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
         }
+        if (method === 'command-center.v1.open-loops.interpret-clarification') {
+          const authority = captureAuthenticatedConversationAuthority({ client, context, signal });
+          if (authority.principalId !== authenticatedOperatorId) throw new SourceServiceError('unauthenticated', 'Interpretation operator identity changed.');
+          runtime = { ...runtime, assertCurrent: authority.assertCurrent };
+        }
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;
         if (method === 'command-center.v1.sessions.send' && client && typeof coreSessionSend === 'function') {
           runtime = {

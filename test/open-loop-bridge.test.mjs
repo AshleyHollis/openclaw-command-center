@@ -148,13 +148,18 @@ test('targeted interpretation is routed through a current authenticated operator
   assert.equal(refused.ok, false);
   assert.equal(call, undefined);
   let accepted;
-  await method({ req: { id: 'authenticated-interpretation' }, params, client: { authenticatedUserProfile: { profileId: 'fictional-operator' } },
-    context: { authenticated: true }, respond: (ok, result, error) => { accepted = { ok, result, error }; } });
-  assert.equal(accepted.ok, true);
+  const client = { authenticatedUserProfile: { profileId: 'fictional-operator' }, connId: 'fictional-connection', connect: { role: 'operator', scopes: ['operator.admin'] } };
+  const context = { authenticated: true, getClientConnIds: predicate => predicate(client) ? new Set([client.connId]) : new Set() };
+  await method({ req: { id: 'authenticated-interpretation' }, params, client,
+    context, respond: (ok, result, error) => { accepted = { ok, result, error }; } });
+  assert.equal(accepted.ok, true, JSON.stringify(accepted.error));
   assert.equal(call.input.authenticatedOperatorId, 'fictional-operator');
   assert.equal(call.runtime.authenticatedRequesterId, 'fictional-operator');
   assert.equal(call.runtime.deferFollowUp, true);
+  assert.doesNotThrow(() => call.runtime.assertCurrent());
   assert.equal(accepted.result.result.loop.paymentState, 'paid');
+  client.connect.scopes = [];
+  assert.throws(() => call.runtime.assertCurrent(), { code: 'unauthenticated' });
 });
 
 test('open-loop bridge handler forwards its authenticated Scheduler runtime', async () => {

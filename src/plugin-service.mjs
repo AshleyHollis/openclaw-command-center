@@ -619,6 +619,9 @@ export function createMetadataService(api) {
       requireOperational();
       if (typeof runtime.authenticatedRequesterId !== 'string' || !runtime.authenticatedRequesterId.trim())
         throw new SourceServiceError('unauthenticated', 'Targeted interpretation requires a trusted owner request.');
+      if (typeof runtime.assertCurrent !== 'function')
+        throw new SourceServiceError('unauthenticated', 'Targeted interpretation requires a live authority check.');
+      runtime.assertCurrent();
       if (!metadataService) {
         const active = readTopicMaintenanceOwners()?.interpretClarification;
         if (typeof active !== 'function') throw new SourceServiceError('capability-unavailable', 'Active clarification owner is unavailable.');
@@ -654,13 +657,16 @@ export function createMetadataService(api) {
       const common = { schemaVersion: 1, logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision,
         actorId: clarificationActorId,
         rationale: priorEvidence?.facts.rationale ?? context.userWords, updatedAt: new Date().toISOString(), interpretationFence };
-      const committed = commitDecisionWithNoteFence(input, () => payment
+      const committed = commitDecisionWithNoteFence(input, () => {
+        runtime.assertCurrent();
+        return payment
         ? metadataService.recordOpenLoopPaymentStatus({ ...common, paymentState: input.paymentState,
           ...(input.paidAmount === undefined ? {} : { paidAmount: input.paidAmount, currency: input.currency }) })
         : metadataService.recordOpenLoopDecision({ ...common, decision: input.decision,
           ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }),
           ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }),
-          ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }) }));
+          ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }) });
+      });
       return afterDecisionCommit(committed, logicalOperationId, runtime);
     },
     openLoopsResumeFollowUp(input = {}, runtime = {}) {

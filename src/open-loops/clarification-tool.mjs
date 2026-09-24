@@ -22,7 +22,7 @@ export function interpretClarificationToolFactory({ interpret } = {}) {
   if (typeof interpret !== 'function') throw new TypeError('Targeted clarification requires its owning command.');
   return (context = {}) => ({
     name: 'command_center_interpret_clarification',
-    description: 'Apply one clear item-specific decision or payment assertion to the exact saved clarification, or leave ambiguous words for review. Call only after loading the pending clarification; never reprocess siblings. A paid status is the user’s assertion, not independent payment evidence.',
+    description: 'Apply one clear item-specific decision or payment assertion only when the run has a live operator authority binding; otherwise use the authenticated Gateway command. Call after loading the pending clarification. A paid status is the user’s assertion, not independent payment evidence.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
       loopId: { type: 'string', minLength: 1 }, expectedRevision: { type: 'integer', minimum: 1 },
       clarificationObservationId: { type: 'string', minLength: 1 }, processorVersion: { type: 'string', minLength: 1 },
@@ -35,7 +35,11 @@ export function interpretClarificationToolFactory({ interpret } = {}) {
     async execute(_toolCallId, params) {
       if (context.senderIsOwner !== true || typeof context.requesterSenderId !== 'string' || !context.requesterSenderId.trim())
         throw sourceError('unauthenticated', 'Targeted interpretation requires a trusted owner request.');
-      const result = await interpret(params, { authenticatedRequesterId: context.requesterSenderId });
+      const authority = context.toolBindings?.commandCenterInterpretationAuthority;
+      if (authority?.operatorId !== context.requesterSenderId || typeof authority.assertCurrent !== 'function')
+        throw sourceError('unauthenticated', 'Targeted interpretation requires a live operator authority binding.');
+      authority.assertCurrent();
+      const result = await interpret(params, { authenticatedRequesterId: context.requesterSenderId, assertCurrent: authority.assertCurrent });
       return Object.freeze({ content: [{ type: 'text', text: JSON.stringify(result) }], details: result });
     }
   });
