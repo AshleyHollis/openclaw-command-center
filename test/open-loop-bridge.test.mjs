@@ -24,6 +24,12 @@ test('open-loop bridge contracts use read and native-Reminder admin scopes with 
   assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.capture'].scope, 'operator.write');
   assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.payment-status'].scope, 'operator.admin');
   assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.clarify'].scope, 'operator.admin');
+  assert.equal(BRIDGE_CONTRACTS['command-center.v1.open-loops.interpret-clarification'].scope, 'operator.admin');
+  const interpretation = { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1,
+    clarificationObservationId: 'clarification-fictional', processorVersion: 'processor-fictional-v1', outcome: 'clear', paymentState: 'paid' };
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.interpret-clarification', interpretation));
+  assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.interpret-clarification', { ...interpretation, paymentState: undefined }), /exactly one clear/);
+  assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.interpret-clarification', { ...interpretation, sourceVersion: 'forged' }), /Unsupported bridge request field/);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.open-loops.clarify', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, rationale: 'Please check this one fictional invoice.' }));
   assert.throws(() => validateBridgeRequest('command-center.v1.open-loops.clarify', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1, rationale: 'Please check this one fictional invoice.', globalPreference: true }), /Unsupported bridge request field/);
   const decisionId = randomUUID();
@@ -121,6 +127,34 @@ test('admitted open-loop mutations require an authenticated operator before acqu
   assert.equal(authenticated.ok, true);
   assert.equal(authenticated.result.result.loop.paymentState, 'payment-pending');
   assert.equal(received.authenticatedOperatorId, 'fictional-operator');
+});
+
+test('targeted interpretation is routed through a current authenticated operator and defers follow-up', async () => {
+  const methods = new Map();
+  let call;
+  registerBridgeMethods({ registerGatewayMethod: (name, handler) => methods.set(name, handler) }, {
+    openLoopsInterpretClarification(input, runtime) {
+      call = { input, runtime };
+      return { schemaVersion: 1, disposition: 'applied', loop: { ...loop, paymentState: 'paid', state: 'resolved', revision: 2 },
+        reminder: { status: 'pending', action: 'cancel', referenceId: 'fictional-reminder' } };
+    }
+  });
+  const method = methods.get('command-center.v1.open-loops.interpret-clarification');
+  const params = { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: 1,
+    clarificationObservationId: 'clarification-fictional', processorVersion: 'processor-fictional-v1', outcome: 'clear', paymentState: 'paid' };
+  let refused;
+  await method({ req: { id: 'unauthenticated-interpretation' }, params, context: { authenticated: true },
+    respond: (ok, result, error) => { refused = { ok, result, error }; } });
+  assert.equal(refused.ok, false);
+  assert.equal(call, undefined);
+  let accepted;
+  await method({ req: { id: 'authenticated-interpretation' }, params, client: { authenticatedUserProfile: { profileId: 'fictional-operator' } },
+    context: { authenticated: true }, respond: (ok, result, error) => { accepted = { ok, result, error }; } });
+  assert.equal(accepted.ok, true);
+  assert.equal(call.input.authenticatedOperatorId, 'fictional-operator');
+  assert.equal(call.runtime.authenticatedRequesterId, 'fictional-operator');
+  assert.equal(call.runtime.deferFollowUp, true);
+  assert.equal(accepted.result.result.loop.paymentState, 'paid');
 });
 
 test('open-loop bridge handler forwards its authenticated Scheduler runtime', async () => {

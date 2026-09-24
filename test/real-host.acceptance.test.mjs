@@ -25,7 +25,7 @@ import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { producerSourceExternalId } from '../src/open-loops/intake-retry.mjs';
 import { openLoopReminderOperationId } from '../src/open-loops/reminder-coordinator.mjs';
 import { buildTargetedClarificationPrompt } from '../src/open-loops/clarification-prompt.mjs';
-import { clarificationInterpretationOperationId } from '../src/open-loops/clarification-context.mjs';
+import { clarificationInterpretationOperationId, loadPendingClarificationContext } from '../src/open-loops/clarification-context.mjs';
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
 import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
@@ -1529,10 +1529,23 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           'targeted-interpret');
         assert.equal(fictionalModel.requests.filter(item => item.action === 'targeted-load').length, 1);
         assert.equal(fictionalModel.requests.filter(item => item.action === 'targeted-interpret').length, 1);
+        const untrustedResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        assert.equal((untrustedResponse.result ?? untrustedResponse).loop.paymentState, 'unpaid', 'native Chat without trusted owner scope must not write a payment assertion');
+        const pendingInspection = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+        let exactClarification;
+        try { exactClarification = loadPendingClarificationContext(pendingInspection, { loopId: paymentLoopId, expectedRevision: review.loop.revision }); }
+        finally { pendingInspection.close(); }
+        assert.equal(exactClarification.status, 'pending');
+        const interpretedCommit = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.interpret-clarification', params: { schemaVersion: 1, logicalOperationId: paidDecisionId,
+            ...clarificationTarget, processorVersion: exactClarification.processorVersion, outcome: 'clear', paymentState: 'paid' }, signal });
+        assert.equal((interpretedCommit.result ?? interpretedCommit).loop.paymentState, 'paid');
         const interpretedResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
           method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
         const interpreted = interpretedResponse.result ?? interpretedResponse;
-        assert.equal(interpreted.loop.paymentState, 'paid', 'the registered model tool records only an interpreted user assertion');
+        assert.equal(interpreted.loop.paymentState, 'paid', 'the authenticated Gateway command records only an interpreted user assertion');
         assert.ok(interpreted.evidence.some(item => item.sourceKind === 'processor-interpretation'
           && item.interpretationOf === clarificationTarget.clarificationObservationId),
         `interpreted evidence identities: ${JSON.stringify(interpreted.evidence.map(item => ({ sourceKind: item.sourceKind,
@@ -1555,7 +1568,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const resumedInterpretation = resumedInterpretationResponse.result ?? resumedInterpretationResponse;
         assert.equal(resumedInterpretation.reminder.status, 'applied');
         assert.equal(resumedInterpretation.supportingNote.status, 'completed');
-        milestone('registered-clarification-tools-applied');
+        milestone('authenticated-clarification-interpretation-applied');
         const noteTargetMetadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
         try {
           const scheduledNote = noteTargetMetadata.getOpenLoopSupportingNoteIntent(scheduleDecisionId);

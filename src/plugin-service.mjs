@@ -627,6 +627,8 @@ export function createMetadataService(api) {
       if (typeof input.clarificationObservationId !== 'string' || !input.clarificationObservationId.trim())
         throw new SourceServiceError('invalid-request', 'An exact saved clarification is required.');
       const logicalOperationId = clarificationInterpretationOperationId(input.clarificationObservationId);
+      if (input.logicalOperationId !== undefined && input.logicalOperationId !== logicalOperationId)
+        throw new SourceServiceError('conflict', 'Interpretation operation identity does not match the saved clarification.');
       const prior = metadataService.getOpenLoopUserActionReceipt(logicalOperationId);
       if (prior && input.outcome !== 'clear') throw new SourceServiceError('conflict', 'The clarification already has a clear interpretation.');
       const context = prior ? null : loadPendingClarificationContext(metadataService, { loopId: input.loopId, expectedRevision: input.expectedRevision });
@@ -644,10 +646,13 @@ export function createMetadataService(api) {
         || priorEvidence.facts.processorVersion !== input.processorVersion || !priorEvidence.facts.interpretationFence))
         throw new SourceServiceError('conflict', 'The saved interpretation identity differs.');
       const clarification = prior ? null : metadataService.getOpenLoopObservation(context.clarificationObservationId);
+      const clarificationActorId = priorEvidence?.facts.actorId ?? clarification?.facts.actorId;
+      if (clarificationActorId !== runtime.authenticatedRequesterId)
+        throw new SourceServiceError('unauthorized', 'The saved clarification belongs to another operator.');
       const interpretationFence = priorEvidence?.facts.interpretationFence ?? { clarificationObservationId: context.clarificationObservationId,
         ...context.source, outcomeId: context.outcomeId, processorVersion: context.processorVersion };
       const common = { schemaVersion: 1, logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision,
-        actorId: priorEvidence?.facts.actorId ?? clarification.facts.actorId,
+        actorId: clarificationActorId,
         rationale: priorEvidence?.facts.rationale ?? context.userWords, updatedAt: new Date().toISOString(), interpretationFence };
       const committed = commitDecisionWithNoteFence(input, () => payment
         ? metadataService.recordOpenLoopPaymentStatus({ ...common, paymentState: input.paymentState,

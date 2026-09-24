@@ -87,6 +87,7 @@ export const WRITE_METHODS = Object.freeze([
   'command-center.v1.open-loops.capture',
   'command-center.v1.open-loops.decide',
   'command-center.v1.open-loops.clarify',
+  'command-center.v1.open-loops.interpret-clarification',
   'command-center.v1.open-loops.resume-follow-up',
   'command-center.v1.open-loops.payment-status',
   'command-center.v1.open-loops.organize',
@@ -116,6 +117,7 @@ export const ADMIN_METHODS = Object.freeze([
   'command-center.v1.open-loops.intake-selected',
   'command-center.v1.open-loops.decide',
   'command-center.v1.open-loops.clarify',
+  'command-center.v1.open-loops.interpret-clarification',
   'command-center.v1.open-loops.resume-follow-up',
   'command-center.v1.open-loops.payment-status',
   'command-center.v1.open-loops.organize',
@@ -127,7 +129,7 @@ export const ADMIN_METHODS = Object.freeze([
 ]);
 
 const common = ['schemaVersion'];
-const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'reviewAt', 'plannedAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption', 'captureId', 'capturedAt', 'title', 'editionId', 'routineId', 'occurrenceDate', 'until']);
+const stringFields = new Set(['topicId', 'referenceId', 'sourceReferenceId', 'sessionReferenceId', 'scheduleReferenceId', 'path', 'notePath', 'sourcePath', 'newPath', 'destinationPath', 'text', 'content', 'expectedConfigRevision', 'expectedSourceRevision', 'logicalOperationId', 'structuralChangeId', 'message', 'attentionId', 'episodeId', 'activityId', 'actionId', 'approvalId', 'query', 'operation', 'cursor', 'sourceCapabilityId', 'stableSubjectId', 'name', 'paraCategory', 'previewDigest', 'digest', 'kind', 'replacementLocator', 'sessionKey', 'sessionId', 'loopId', 'clarificationObservationId', 'processorVersion', 'reviewAt', 'plannedAt', 'dueAt', 'dueDate', 'dueTimeZone', 'decidedAt', 'baselineThrough', 'rationale', 'currency', 'chosenOption', 'captureId', 'capturedAt', 'title', 'editionId', 'routineId', 'occurrenceDate', 'until']);
 const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview', 'authoritativeSession', 'authorization', 'checkpoint', 'window', 'requirement', 'reconciliation', 'correction', 'replacement', 'fulfilment', 'activation', 'stage', 'conflict']);
 const arrayFields = new Set(['expectedRevisions', 'selections', 'contexts', 'dependencies']);
 
@@ -144,6 +146,7 @@ function parameterSchema(field, method) {
   if (field === 'decision') return Object.freeze({ type: 'string', enum: ['confirm', 'defer', 'dismiss', 'resolve', 'correct-date'] });
   if (field === 'captureKind') return Object.freeze({ type: 'string', enum: ['task', 'idea'] });
   if (field === 'paymentState') return Object.freeze({ type: 'string', enum: ['partially-paid', 'payment-pending', 'paid', 'disputed', 'cancelled', 'uncertain'] });
+  if (field === 'outcome') return Object.freeze({ type: 'string', enum: ['clear', 'ambiguous'] });
   if (field === 'action' && method.endsWith('.open-loops.organize')) return Object.freeze({ type: 'string', enum: ['plan', 'keep', 'review-later', 'someday', 'drop', 'start', 'wait', 'reopen', 'complete', 'set-priority'] });
   if (field === 'action' && method.endsWith('.routines.decide')) return Object.freeze({ type: 'string', enum: ['complete', 'defer'] });
   if (field === 'read') return Object.freeze({ type: 'boolean' });
@@ -190,6 +193,8 @@ function actionResultSchema(method) {
       return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, loop, evidence: { type: 'array', items: evidence }, followUp, supportingNote }), required: ['schemaVersion', 'loop', 'evidence'] });
     }
     const reminder = Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ status: { type: 'string' }, action: { enum: ['create', 'reschedule', 'cancel', 'none', 'blocked', 'conflict'] }, referenceId: { type: 'string' }, reason: { type: 'string' } }), required: ['status', 'action', 'referenceId'] });
+    if (method.endsWith('.interpret-clarification')) return Object.freeze({ type: 'object', additionalProperties: false,
+      properties: Object.freeze({ schemaVersion: { const: 1 }, status: { type: 'string' }, reason: { type: 'string' }, loopId: { type: 'string' }, disposition: { enum: ['applied', 'duplicate'] }, loop, reminder, supportingNote }), required: ['schemaVersion'] });
     if (method.endsWith('.resume-follow-up')) return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, disposition: { enum: ['duplicate', 'superseded'] }, loop, reminder, supportingNote }), required: ['schemaVersion', 'disposition', 'loop'] });
     return Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ schemaVersion: { const: 1 }, disposition: { enum: ['applied', 'duplicate'] }, loop, reminder, supportingNote }), required: ['schemaVersion', 'disposition', 'loop'] });
   }
@@ -476,6 +481,7 @@ const required = Object.freeze({
   'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'selections'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'rationale'],
   'command-center.v1.open-loops.clarify': ['loopId', 'expectedRevision', 'rationale'],
+  'command-center.v1.open-loops.interpret-clarification': ['loopId', 'expectedRevision', 'clarificationObservationId', 'processorVersion', 'outcome'],
   'command-center.v1.open-loops.resume-follow-up': ['logicalOperationId'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'rationale'],
   'command-center.v1.open-loops.organize': ['loopId', 'expectedRevision', 'action'],
@@ -571,6 +577,7 @@ const fields = Object.freeze({
   'command-center.v1.open-loops.intake-selected': ['authorization', 'baselineThrough', 'selections', 'logicalOperationId'],
   'command-center.v1.open-loops.decide': ['loopId', 'expectedRevision', 'decision', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone', 'amount', 'currency', 'rationale', 'logicalOperationId'],
   'command-center.v1.open-loops.clarify': ['loopId', 'expectedRevision', 'rationale', 'logicalOperationId'],
+  'command-center.v1.open-loops.interpret-clarification': ['loopId', 'expectedRevision', 'clarificationObservationId', 'processorVersion', 'outcome', 'decision', 'paymentState', 'paidAmount', 'currency', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone'],
   'command-center.v1.open-loops.resume-follow-up': ['logicalOperationId'],
   'command-center.v1.open-loops.payment-status': ['loopId', 'expectedRevision', 'paymentState', 'paidAmount', 'currency', 'rationale', 'logicalOperationId'],
   'command-center.v1.open-loops.organize': ['loopId', 'expectedRevision', 'action', 'importance', 'plannedAt', 'reviewAt', 'effortMinutes', 'contexts', 'dependencies', 'logicalOperationId'],
@@ -675,6 +682,14 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
     if ((params.amount === undefined) !== (params.currency === undefined) || params.amount !== undefined && params.decision !== 'confirm') throw sourceError('invalid-request', 'Corrected amount and currency are only accepted together while confirming a suggestion.');
   }
   if (method.endsWith('.open-loops.payment-status') && ((params.paidAmount === undefined) !== (params.currency === undefined))) throw sourceError('invalid-request', 'paidAmount and currency must be provided together.');
+  if (method.endsWith('.open-loops.interpret-clarification')) {
+    const decision = params.decision !== undefined;
+    const payment = params.paymentState !== undefined;
+    if (params.outcome === 'clear' && decision === payment || params.outcome === 'ambiguous' && (decision || payment)) throw sourceError('invalid-request', 'Interpretation requires exactly one clear decision or payment status, or an ambiguous result without either.');
+    if ((params.paidAmount === undefined) !== (params.currency === undefined) || params.paidAmount !== undefined && !payment) throw sourceError('invalid-request', 'Interpreted payment amount and currency must accompany a payment status.');
+    const dateOnly = params.dueDate !== undefined || params.dueTimeZone !== undefined;
+    if ((params.dueDate === undefined) !== (params.dueTimeZone === undefined) || params.dueAt !== undefined && dateOnly) throw sourceError('invalid-request', 'Interpreted timing must be one instant or one calendar date with timezone.');
+  }
   if (method.endsWith('.open-loops.organize')) {
     if ((params.action === 'plan') !== (params.plannedAt !== undefined)) throw sourceError('invalid-request', 'Only plan requires plannedAt.');
     if ((params.action === 'review-later') !== (params.reviewAt !== undefined)) throw sourceError('invalid-request', 'Only review-later requires reviewAt.');

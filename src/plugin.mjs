@@ -127,6 +127,7 @@ export default definePluginEntry({
         if (property === 'openLoopsIngestSelected') return (input) => service.openLoopsIngestSelected(input);
         if (property === 'openLoopsDecide') return (input, runtime) => service.openLoopsDecide(input, runtime);
         if (property === 'openLoopsClarify') return (input) => service.openLoopsClarify(input);
+        if (property === 'openLoopsInterpretClarification') return (input, runtime) => service.openLoopsInterpretClarification(input, runtime);
         if (property === 'openLoopsResumeFollowUp') return (input, runtime) => service.openLoopsResumeFollowUp(input, runtime);
         if (property === 'openLoopsPaymentStatus') return (input, runtime) => service.openLoopsPaymentStatus(input, runtime);
         if (property === 'openLoopsOrganize') return (input, runtime) => service.openLoopsOrganize(input, runtime);

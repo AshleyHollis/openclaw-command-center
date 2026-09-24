@@ -317,13 +317,14 @@ test('registered interpretation tool applies a saved clarification once and refu
     const pendingTool = pendingClarificationToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() })();
     const pending = (await pendingTool.execute('fictional-read', { loopId: decision.loopId, expectedRevision: clarified.loop.revision })).details;
     assert.equal(pending.status, 'pending');
-    const tool = interpretClarificationToolFactory({ interpret: (input, authority) => service.openLoopsInterpretClarification(input, authority) })({ senderIsOwner: true, requesterSenderId: 'owner-fixture' });
+    const tool = interpretClarificationToolFactory({ interpret: (input, authority) => service.openLoopsInterpretClarification(input, authority) })({ senderIsOwner: true, requesterSenderId: 'operator-fixture' });
     const input = { loopId: decision.loopId, expectedRevision: clarified.loop.revision,
       clarificationObservationId: pending.clarificationObservationId, processorVersion: pending.processorVersion,
       outcome: 'clear', decision: 'confirm' };
     await assert.rejects(() => interpretClarificationToolFactory({ interpret: () => { throw new Error('must not call'); } })().execute('unauthorized', input),
       error => error.code === 'unauthenticated');
     assert.throws(() => service.openLoopsInterpretClarification(input), { code: 'unauthenticated' });
+    assert.throws(() => service.openLoopsInterpretClarification(input, { authenticatedRequesterId: 'another-operator' }), { code: 'unauthorized' });
     assert.equal((await tool.execute('fictional-ambiguous', { ...input, outcome: 'ambiguous', decision: undefined })).details.status, 'review-required');
     assert.equal(metadata.getOpenLoop(decision.loopId).revision, clarified.loop.revision, 'ambiguous words remain unresolved');
     const first = (await tool.execute('fictional-interpret', input)).details;

@@ -168,6 +168,7 @@ test('first-live admission names the exact source-backed Attention surface', () 
     'command-center.v1.open-loops.intake-selected',
     'command-center.v1.open-loops.decide',
     'command-center.v1.open-loops.clarify',
+    'command-center.v1.open-loops.interpret-clarification',
     'command-center.v1.open-loops.resume-follow-up',
     'command-center.v1.open-loops.payment-status',
     'command-center.v1.open-loops.organize',
