@@ -334,6 +334,7 @@ test('SIGKILL after targeted interpretation commit resumes only its follow-up an
         const evidence = receipt.loop.evidenceObservationIds.map(id => inspection.getOpenLoopObservation(id))
           .find(item => item.source.kind === 'processor-interpretation');
         assert.equal(evidence.facts.provenance, 'targeted-interpretation');
+        assert.equal(evidence.facts.interpretationOf, evidence.facts.resolvesClarificationId);
       } finally { inspection.close(); }
       resumed = launch('resume');
       const completed = await message(resumed.child, 'completed');

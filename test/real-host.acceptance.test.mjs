@@ -1534,7 +1534,9 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         assert.equal(interpreted.loop.paymentState, 'paid', `the registered model tool records only an interpreted user assertion: ${JSON.stringify(
           fictionalModel.requests.findLast(item => item.targetedToolText !== undefined)?.targetedToolText ?? null)}`);
         assert.ok(interpreted.evidence.some(item => item.sourceKind === 'processor-interpretation'
-          && item.interpretationOf === clarificationTarget.clarificationObservationId));
+          && item.interpretationOf === clarificationTarget.clarificationObservationId),
+        `interpreted evidence identities: ${JSON.stringify(interpreted.evidence.map(item => ({ sourceKind: item.sourceKind,
+          interpretationOf: item.interpretationOf, observationId: item.observationId })))}`);
         assert.equal(interpreted.supportingNote.status, 'completed');
         milestone('registered-clarification-tools-applied');
         const noteTargetMetadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });

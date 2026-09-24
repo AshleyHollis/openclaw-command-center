@@ -89,6 +89,21 @@ test('open-loop detail sanitization withholds raw source fields and attachment i
   assert.equal(result.evidence[0].invoiceId, 'INVOICE-FICTIONAL');
 });
 
+test('open-loop detail retains public interpretation evidence without its internal fence', async () => {
+  const interpretationOf = 'fictional-user-clarification';
+  const result = await invokeBridgeMethod({
+    openLoopsGet: () => ({ schemaVersion: 1, loop, evidence: [{ observationId: 'fictional-interpretation',
+      type: 'payment-evidence', sourceSystem: 'command-center', sourceKind: 'processor-interpretation', sourceVersion: 'v1',
+      occurredAt: '2026-09-24T00:00:00.000Z', observedAt: '2026-09-24T00:00:00.000Z', historicalBaseline: false,
+      paymentState: 'paid', provenance: 'interpreted-user-assertion', interpretationOf, processorVersion: 'fictional-v1',
+      interpretationFence: { secret: 'internal-source-identity' } }] })
+  }, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: loop.loopId });
+  assert.deepEqual({ paymentState: result.evidence[0].paymentState, provenance: result.evidence[0].provenance,
+    interpretationOf: result.evidence[0].interpretationOf, processorVersion: result.evidence[0].processorVersion },
+  { paymentState: 'paid', provenance: 'interpreted-user-assertion', interpretationOf, processorVersion: 'fictional-v1' });
+  assert.equal(result.evidence[0].interpretationFence, undefined);
+});
+
 test('admitted open-loop mutations require an authenticated operator before acquiring service authority', async () => {
   const methods = new Map();
   let received;
