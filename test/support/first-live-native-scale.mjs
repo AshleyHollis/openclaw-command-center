@@ -213,6 +213,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }, conversationLabel);
   started = now();
+  const createTiming = {};
   await contentHandle.evaluate(node => {
     const form = [...node.getRootNode().querySelectorAll('form')]
       .find(candidate => candidate.querySelector('h2')?.textContent === 'New Conversation');
@@ -220,7 +221,9 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     if (!submit || submit.textContent !== 'Create Conversation') throw new Error('Create Conversation is unavailable');
     submit.click();
   });
+  createTiming.submitMs = now() - started;
   const response = await creationResponse;
+  createTiming.responseMs = now() - started;
   assert.equal(hasSuccessfulBrowserResponse(response), true);
   const input = response.value.request().postDataJSON();
   assert.equal(input.topicId, fixture.topicId);
@@ -234,6 +237,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   assert.equal(receipt.result.topicId, fixture.topicId);
   assert.equal(receipt.result.action, 'conversations.create');
   assert.equal(typeof receipt.result.referenceId, 'string');
+  createTiming.receiptMs = now() - started;
   onProgress('conversation-open');
   // Successful creation already calls the verified onCreated navigation.
   // The retained button is a recovery action; clicking it while that route is
@@ -252,6 +256,7 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
     throw error;
   }
   const resolved = observed().navigation;
+  createTiming.navigationMs = now() - started;
   const target = { sessionKey: resolved.value.sessionKey, sessionId: resolved.input.expectedSessionId };
   assert.equal(resolved.input.topicId, fixture.topicId);
   assert.equal(resolved.input.referenceId, receipt.result.referenceId);
@@ -274,6 +279,8 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   await chat.waitFor({ state: 'visible', timeout: 5_000 });
   onProgress('chat-pane-ready');
   observations.conversationCreateMs = now() - started;
+  createTiming.visibleMs = observations.conversationCreateMs;
+  if (measure) onProgress(`diagnostic-conversation-timing:${JSON.stringify(createTiming)}`);
   assert.notEqual(target.sessionId, fixture.sessionId);
   const catalog = await request(world, signal, 'sessions.browse', { topicId: fixture.topicId, includeClosed: false });
   assert.equal(catalog.conversations.length, 101);
@@ -342,16 +349,21 @@ export async function exerciseNativeScaleStates({ page, world, host, signal, fix
   const keysOnPage = () => roster.locator('tr.session-data-row input[type="checkbox"]').evaluateAll(inputs => inputs.map(input => input.getAttribute('aria-label').replace(/^Select session: /, '')));
   const allKeys = [];
   const pageCounts = [];
+  let firstPageClickMs;
   for (let pageIndex = 0; pageIndex < 3; pageIndex += 1) {
     onProgress(`roster-page-${pageIndex}`);
     const expectedPage = expectedKeys.slice(pageIndex * 50, (pageIndex + 1) * 50);
     await ready(async () => JSON.stringify(await keysOnPage()) === JSON.stringify(expectedPage));
-    if (pageIndex === 1) observations.conversationNextPageMs = now() - started;
+    if (pageIndex === 1) {
+      observations.conversationNextPageMs = now() - started;
+      if (measure) onProgress(`diagnostic-roster-next:${JSON.stringify({ clickMs: firstPageClickMs, visibleMs: observations.conversationNextPageMs })}`);
+    }
     const actual = await keysOnPage();
     pageCounts.push(actual.length); allKeys.push(...actual);
     if (pageIndex < 2) {
       started = now();
       await roster.getByRole('button', { name: 'Next', exact: true }).click();
+      if (pageIndex === 0) firstPageClickMs = now() - started;
     }
   }
   assert.deepEqual(pageCounts, [50, 50, 1]);
