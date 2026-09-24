@@ -193,6 +193,16 @@ test('configured service worker applies one accepted fictional clarification wit
     const clarified = await service.openLoopsClarify({ loopId: decision.loopId, expectedRevision: decision.revision,
       logicalOperationId: 'configured-worker-words', authenticatedOperatorId: 'operator-fixture',
       rationale: 'Use the morning delivery window for this one.' });
+    assert.equal(service.openLoopsGet({ loopId: decision.loopId }).interpretation.status, 'pending');
+    const ambiguousContext = loadPendingClarificationContext(metadata, { loopId: decision.loopId, expectedRevision: clarified.loop.revision });
+    metadata.recordClarificationProposal({ loopId: ambiguousContext.loopId, expectedRevision: ambiguousContext.expectedRevision,
+      clarificationObservationId: ambiguousContext.clarificationObservationId, processorVersion: ambiguousContext.processorVersion,
+      source: ambiguousContext.source, outcomeId: ambiguousContext.outcomeId, proposal: { outcome: 'ambiguous' },
+      model: 'fictional/model', createdAt: '2026-09-22T01:03:00.000Z' });
+    assert.equal(service.openLoopsGet({ loopId: decision.loopId }).interpretation.status, 'review-required');
+    const renewed = await service.openLoopsClarify({ loopId: decision.loopId, expectedRevision: clarified.loop.revision,
+      logicalOperationId: 'configured-worker-renewed-words', authenticatedOperatorId: 'operator-fixture',
+      rationale: 'Use the morning delivery window for this one.' });
     const page = await service.runClarificationWorkerOnce();
     assert.equal(page.results[0].status, 'applied');
     assert.equal(modelCalls, 1);
@@ -203,7 +213,7 @@ test('configured service worker applies one accepted fictional clarification wit
       .find(item => item.source.kind === 'processor-interpretation');
     assert.equal(interpretation.facts.actorId, 'operator-fixture');
     assert.equal(interpretation.facts.rationale, 'Use the morning delivery window for this one.');
-    assert.equal(metadata.getClarificationProposal(clarified.loop.attention.pendingClarificationId).proposal.decision, 'confirm');
+    assert.equal(metadata.getClarificationProposal(renewed.loop.attention.pendingClarificationId).proposal.decision, 'confirm');
     assert.deepEqual((await service.runClarificationWorkerOnce()).results, []);
     assert.equal(modelCalls, 1);
   } finally { restoreCoordinator?.(); await service.stop(); await temporary.cleanup(); }

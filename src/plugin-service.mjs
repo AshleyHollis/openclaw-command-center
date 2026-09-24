@@ -18,6 +18,7 @@ import { createCommitmentCaptureService } from './open-loops/commitment-capture.
 import { loadIntakeSourceAccount } from './open-loops/intake-accounting.mjs';
 import { clarificationInterpretationOperationId, loadPendingClarificationContext } from './open-loops/clarification-context.mjs';
 import { createClarificationWorker } from './open-loops/clarification-worker.mjs';
+import { clarificationInterpretationStatus } from './open-loops/clarification-status.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
 
@@ -547,7 +548,10 @@ export function createMetadataService(api) {
             ...(note.intent ? { logicalOperationId: note.intent.logicalOperationId } : {}) });
         }
       }
-      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id), metadataService))), ...(followUp ? { followUp } : {}), ...(supportingNote ? { supportingNote } : {}) });
+      const interpretationStatus = clarificationInterpretationStatus(metadataService, loop);
+      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id), metadataService))),
+        ...(interpretationStatus ? { interpretation: { status: interpretationStatus } } : {}),
+        ...(followUp ? { followUp } : {}), ...(supportingNote ? { supportingNote } : {}) });
     },
     async openLoopsCapture(input = {}) {
       requireOperational();

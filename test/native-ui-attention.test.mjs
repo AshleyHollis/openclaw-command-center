@@ -59,7 +59,10 @@ async function fixture(run) {
             const evidence = [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }];
             if (card.purchaseId) evidence.push({ observationId: `purchase-${card.loopId}`, type: 'order', sourceSystem: 'fictional-source', sourceKind: 'receipt', sourceVersion: 'v1', occurredAt: '2026-09-20T02:00:00.000Z', observedAt: '2026-09-20T02:01:00.000Z', historicalBaseline: false, eventKind: 'item-purchased', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId, purchaseNamespace: 'fictional-home-project', purchaseId: card.purchaseId });
             if (Array.isArray(card.additionalEvidence)) evidence.push(...structuredClone(card.additionalEvidence));
-            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence, ...(window.followUps?.[card.loopId] ? { followUp: structuredClone(window.followUps[card.loopId]) } : {}), ...(window.supportingNotes?.[card.loopId] ? { supportingNote: structuredClone(window.supportingNotes[card.loopId]) } : {}) } };
+            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence,
+              ...(card.clarificationStatus ? { interpretation: { status: card.clarificationStatus } } : {}),
+              ...(window.followUps?.[card.loopId] ? { followUp: structuredClone(window.followUps[card.loopId]) } : {}),
+              ...(window.supportingNotes?.[card.loopId] ? { supportingNote: structuredClone(window.supportingNotes[card.loopId]) } : {}) } };
           }
           if (method.endsWith('open-loops.resume-follow-up')) {
             const entry = Object.entries(window.followUps ?? {}).find(([, followUp]) => followUp.logicalOperationId === params.logicalOperationId);
@@ -335,6 +338,10 @@ test('item clarification preserves exact words on retry without claiming a payme
   assert.equal(requests.length, 2);
   assert.deepEqual(requests[0], requests[1]);
   assert.equal(await page.evaluate(() => window.openLoops.highlighted[0].paymentState), 'unpaid');
+  await page.evaluate(() => { window.openLoops.highlighted[0].clarificationStatus = 'review-required'; window.mountInbox(); });
+  await page.getByText('Clarification needs your review').waitFor();
+  await page.locator('article[data-open-loop-id="clarify-bill"]').getByRole('button', { name: 'Review evidence' }).click();
+  await page.getByText('Your clarification was reviewed, but it did not support one safe action.', { exact: false }).waitFor();
 }));
 
 test('native on-demand inventory pages through every quiet open loop', () => fixture(async (page) => {
