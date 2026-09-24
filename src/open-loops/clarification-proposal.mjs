@@ -46,6 +46,13 @@ export function parseClarificationProposal(text, userWords) {
   if (value.outcome !== 'clear' || Object.keys(value).some(key => !clearFields.has(key))) reject('The result is not a supported clear interpretation.');
   if (typeof value.evidenceQuote !== 'string' || value.evidenceQuote.trim().length < 3
     || !userWords.includes(value.evidenceQuote)) reject('A clear result needs an exact supporting quote from the saved words.');
+  if (value.paymentState === 'paid') {
+    // A model may select a positive substring from a negated or hypothetical
+    // sentence. Keep those cases for review instead of recording a paid claim.
+    const uncertain = /\b(?:not|never|unpaid|haven't|hasn't|hadn't|didn't|wasn't|weren't|won't|would|will|might|maybe|perhaps|if|reversed|failed|pending|uncertain)\b/iu;
+    const positive = /\b(?:i|we|it|the bill|the invoice|the payment)\s+(?:(?:have|has|was|were|is|already|just)\s+)*paid\b/iu;
+    if (uncertain.test(userWords) || !positive.test(value.evidenceQuote)) reject('The paid assertion needs unambiguous positive user words.');
+  }
   const decision = decisions.has(value.decision);
   const payment = paymentStates.has(value.paymentState);
   if (decision === payment) reject('A clear result must choose exactly one supported action.');

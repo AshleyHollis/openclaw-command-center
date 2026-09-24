@@ -46,3 +46,11 @@ test('malformed, ungrounded and overbroad responses fail closed', () => {
     assert.throws(() => parseClarificationProposal(output, words), { code: 'invalid-proposal' });
   }
 });
+
+test('a negated or hypothetical paid phrase stays for review even if the model selects a positive substring', () => {
+  for (const words of ['I paid the bill, but the bank reversed it.', 'I will pay the bill.', 'I paid the bill? Maybe not.']) {
+    assert.throws(() => parseClarificationProposal(JSON.stringify({ outcome: 'clear', paymentState: 'paid',
+      evidenceQuote: words.slice(0, words.indexOf(',') > 0 ? words.indexOf(',') : words.indexOf('.') > 0 ? words.indexOf('.') : words.length) }), words),
+    { code: 'invalid-proposal' });
+  }
+});

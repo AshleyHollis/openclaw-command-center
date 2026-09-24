@@ -17,6 +17,7 @@ import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
 import { loadIntakeSourceAccount } from './open-loops/intake-accounting.mjs';
 import { clarificationInterpretationOperationId, loadPendingClarificationContext } from './open-loops/clarification-context.mjs';
+import { createClarificationWorker } from './open-loops/clarification-worker.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
 
@@ -94,12 +95,22 @@ export function createMetadataService(api) {
   let dailyWorkspace;
   let topicService;
   let stopPromise;
+  let clarificationWorker;
+  let clarificationWorkerTimer;
+  let clarificationWorkerCursor;
+  let clarificationWorkerRun;
+  const processorCapability = Symbol('command-center-clarification-processor');
   let releaseDurableFolderStager;
   let releaseFilesystemIdentityReader;
   let releaseNoteFilesystemCoordinator;
   let releaseTopicMaintenanceOwners;
   let recoveryOnly = false;
   const closeActivation = () => {
+    if (clarificationWorkerTimer) clearTimeout(clarificationWorkerTimer);
+    clarificationWorkerTimer = undefined;
+    clarificationWorker = undefined;
+    clarificationWorkerCursor = undefined;
+    clarificationWorkerRun = undefined;
     releaseDurableFolderStager?.();
     releaseDurableFolderStager = undefined;
     releaseFilesystemIdentityReader?.();
@@ -398,6 +409,44 @@ export function createMetadataService(api) {
       // Existing-data bootstrap and its durable recovery remain required.
       // Native Cron is acquired only by an authenticated Reminder/Schedule
       // request; startup itself touches no job or optional background owner.
+      const workerConfig = api.pluginConfig?.clarificationWorker;
+      if (workerConfig?.enabled === true) {
+        if (typeof api.runtime?.llm?.complete !== 'function' || typeof workerConfig.notBefore !== 'string'
+          || !Number.isFinite(Date.parse(workerConfig.notBefore)))
+          throw new SourceServiceError('capability-unavailable', 'The configured clarification worker needs an isolated model completion capability and valid admission time.');
+        const admissionTime = workerConfig.notBefore;
+        const assertCurrent = () => {
+          if (stopPromise || metadataService !== activatedMetadata || api.pluginConfig?.clarificationWorker !== workerConfig
+            || workerConfig.enabled !== true || workerConfig.notBefore !== admissionTime)
+            throw new SourceServiceError('capability-unavailable', 'The clarification worker activation has ended.');
+        };
+        clarificationWorker = createClarificationWorker({ metadata: activatedMetadata,
+          complete: request => api.runtime.llm.complete(request),
+          interpret: input => service.openLoopsInterpretClarification(input, { processorCapability, assertCurrent, deferFollowUp: true }),
+          assertCurrent, notBefore: admissionTime });
+        const intervalMs = (workerConfig.intervalSeconds ?? 300) * 1000;
+        const tick = async () => {
+          assertCurrent();
+          if (clarificationWorkerRun) return;
+          const run = clarificationWorker.runPage({ ...(clarificationWorkerCursor ? { cursor: clarificationWorkerCursor } : {}) })
+            .then(page => { assertCurrent(); clarificationWorkerCursor = page.nextCursor; })
+            .catch(error => { api.logger?.warn?.(`Command Center clarification worker ${typeof error?.code === 'string' ? error.code : 'failed'}`); })
+            .finally(() => { if (clarificationWorkerRun === run) clarificationWorkerRun = undefined; });
+          clarificationWorkerRun = run;
+          await clarificationWorkerRun;
+        };
+        const schedule = () => {
+          clarificationWorkerTimer = setTimeout(async () => {
+            try { await tick(); }
+            catch (error) { if (!stopPromise) api.logger?.warn?.(`Command Center clarification worker ${typeof error?.code === 'string' ? error.code : 'failed'}`); }
+            finally {
+              if (!stopPromise && metadataService === activatedMetadata) schedule();
+            }
+          }, intervalMs);
+          clarificationWorkerTimer.unref?.();
+        };
+        schedule();
+      }
       return migrationResult;
       } catch (error) {
         closeActivation();
@@ -424,6 +473,10 @@ export function createMetadataService(api) {
     },
     get capacityReview() { return capacityReview ?? readTopicMaintenanceOwners()?.capacityReview; },
     get dailyWorkspace() { return dailyWorkspace ?? readTopicMaintenanceOwners()?.dailyWorkspace; },
+    async runClarificationWorkerOnce(input = {}) {
+      if (!clarificationWorker) throw new SourceServiceError('capability-unavailable', 'The clarification worker is not enabled.');
+      return clarificationWorker.runPage(input);
+    },
     get attentionService() { return attentionService; },
     get maintenanceService() { return undefined; },
     get searchService() { return undefined; },
@@ -617,7 +670,8 @@ export function createMetadataService(api) {
     },
     openLoopsInterpretClarification(input = {}, runtime = {}) {
       requireOperational();
-      if (typeof runtime.authenticatedRequesterId !== 'string' || !runtime.authenticatedRequesterId.trim())
+      const processorRun = runtime.processorCapability === processorCapability;
+      if (!processorRun && (typeof runtime.authenticatedRequesterId !== 'string' || !runtime.authenticatedRequesterId.trim()))
         throw new SourceServiceError('unauthenticated', 'Targeted interpretation requires a trusted owner request.');
       if (typeof runtime.assertCurrent !== 'function')
         throw new SourceServiceError('unauthenticated', 'Targeted interpretation requires a live authority check.');
@@ -650,8 +704,17 @@ export function createMetadataService(api) {
         throw new SourceServiceError('conflict', 'The saved interpretation identity differs.');
       const clarification = prior ? null : metadataService.getOpenLoopObservation(context.clarificationObservationId);
       const clarificationActorId = priorEvidence?.facts.actorId ?? clarification?.facts.actorId;
-      if (clarificationActorId !== runtime.authenticatedRequesterId)
+      if (!processorRun && clarificationActorId !== runtime.authenticatedRequesterId)
         throw new SourceServiceError('unauthorized', 'The saved clarification belongs to another operator.');
+      if (processorRun) {
+        const saved = metadataService.getClarificationProposal(input.clarificationObservationId);
+        const requested = Object.fromEntries(['outcome', 'decision', 'paymentState', 'paidAmount', 'currency', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone']
+          .filter(key => input[key] !== undefined).map(key => [key, input[key]]));
+        const accepted = saved?.proposal && Object.fromEntries(Object.entries(saved.proposal).filter(([key]) => key !== 'evidenceQuote'));
+        if (!saved || saved.loopId !== input.loopId || saved.expectedRevision !== input.expectedRevision
+          || saved.processorVersion !== input.processorVersion || JSON.stringify(requested) !== JSON.stringify(accepted))
+          throw new SourceServiceError('conflict', 'The processor action differs from the accepted proposal.');
+      }
       const interpretationFence = priorEvidence?.facts.interpretationFence ?? { clarificationObservationId: context.clarificationObservationId,
         ...context.source, outcomeId: context.outcomeId, processorVersion: context.processorVersion };
       const common = { schemaVersion: 1, logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision,

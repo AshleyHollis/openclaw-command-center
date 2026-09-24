@@ -10,6 +10,7 @@ import path from 'node:path';
 import { sourceNoteOperationId } from '../src/open-loops/source-intake-tool.mjs';
 import { loadPendingClarificationContext } from '../src/open-loops/clarification-context.mjs';
 import { CLARIFICATION_PROPOSAL_OPERATION, clarificationProposalOperationId } from '../src/metadata/clarification-proposals.mjs';
+import { createClarificationWorker } from '../src/open-loops/clarification-worker.mjs';
 import { pendingClarificationToolFactory } from '../src/open-loops/clarification-tool.mjs';
 import { interpretClarificationToolFactory } from '../src/open-loops/clarification-tool.mjs';
 import { createMetadataService } from '../src/plugin-service.mjs';
@@ -117,6 +118,134 @@ test('accepted clarification proposal survives restart and cannot be replaced by
       proposal: { outcome: 'clear', decision: 'dismiss', evidenceQuote: 'Actually leave it for later.' } }),
       { code: 'clarification-proposal-superseded' });
   } finally { metadata?.close(); await temporary.cleanup(); }
+});
+
+test('clarification worker resumes the accepted proposal after an interrupted effect without a model rerun', async () => {
+  const temporary = await temporaryStateDir('command-center-clarification-worker-');
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    addTopic(metadata);
+    const plan = sourcePlan();
+    plan.acceptedExtraction.obligations = [{ obligationId: 'choose-delivery', title: 'Choose fictional delivery window', provenance: 'inferred', classification: 'decision' }];
+    recordIntakeSourcePlan(metadata, plan);
+    const decision = addDecisionLoop(metadata);
+    recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: plan.sourceExternalId,
+      sourceVersion: plan.sourceVersion, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision',
+      summary: 'Choose fictional delivery window', loopId: decision.loopId, recordedAt: '2026-09-22T01:01:00.000Z' });
+    const clarified = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'worker-words',
+      loopId: decision.loopId, expectedRevision: decision.revision, actorId: 'operator-fixture',
+      rationale: 'Use the morning delivery window for this one.', updatedAt: '2026-09-22T01:02:00.000Z' });
+    const item = { loopId: decision.loopId, expectedRevision: clarified.loop.revision,
+      clarificationObservationId: clarified.loop.attention.pendingClarificationId };
+    let modelCalls = 0;
+    const first = createClarificationWorker({ metadata, notBefore: '2026-09-22T00:00:00.000Z', assertCurrent() {},
+      now: () => '2026-09-22T01:03:00.000Z', complete: async request => {
+        modelCalls += 1;
+        assert.equal(request.execution.mode, 'isolated-agent-runtime');
+        return { model: 'fictional/model', text: JSON.stringify({ outcome: 'clear', decision: 'confirm',
+          evidenceQuote: 'Use the morning delivery window for this one.' }) };
+      }, interpret: async () => { throw Object.assign(new Error('interrupted'), { code: 'effect-interrupted' }); } });
+    assert.equal((await first.runPage()).results[0].code, 'effect-interrupted');
+    assert.equal(modelCalls, 1);
+    metadata.close(); metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    const second = createClarificationWorker({ metadata, notBefore: '2026-09-22T00:00:00.000Z', assertCurrent() {},
+      complete: async () => { throw new Error('accepted proposal must be reused'); },
+      interpret: async input => {
+        assert.equal(input.clarificationObservationId, item.clarificationObservationId);
+        assert.equal(input.processorVersion, plan.processorVersion);
+        assert.equal(input.decision, 'confirm');
+        return { disposition: 'applied' };
+      } });
+    assert.equal((await second.processOne(item)).status, 'applied');
+    assert.equal(modelCalls, 1);
+    const outside = createClarificationWorker({ metadata, notBefore: '2026-09-23T00:00:00.000Z', assertCurrent() {},
+      complete: async () => { throw new Error('outside admission window'); }, interpret: async () => { throw new Error('outside admission window'); } });
+    assert.equal((await outside.processOne(item)).status, 'outside-admission-window');
+  } finally { metadata?.close(); await temporary.cleanup(); }
+});
+
+test('configured service worker applies one accepted fictional clarification without borrowing operator identity', async () => {
+  const temporary = await temporaryStateDir('command-center-configured-clarification-worker-');
+  let modelCalls = 0;
+  const service = createMetadataService({ runtime: { state: { resolveStateDir: () => temporary.path },
+    llm: { complete: async request => {
+      modelCalls += 1;
+      assert.equal(request.execution.mode, 'isolated-agent-runtime');
+      return { model: 'fictional/model', text: JSON.stringify({ outcome: 'clear', decision: 'confirm',
+        evidenceQuote: 'Use the morning delivery window for this one.' }) };
+    } } }, logger: {}, pluginConfig: { clarificationWorker: { enabled: true,
+      notBefore: '2026-09-22T00:00:00.000Z', intervalSeconds: 300 } } });
+  let restoreCoordinator;
+  try {
+    await service.start();
+    restoreCoordinator = setHostNoteFilesystemCoordinator(() => ({ release() {} }));
+    const metadata = service.getTopicMaintenanceOwners().metadata;
+    addTopic(metadata);
+    const plan = sourcePlan();
+    plan.acceptedExtraction.obligations = [{ obligationId: 'choose-delivery', title: 'Choose fictional delivery window',
+      provenance: 'inferred', classification: 'decision' }];
+    recordIntakeSourcePlan(metadata, plan);
+    const decision = addDecisionLoop(metadata);
+    recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: plan.sourceExternalId,
+      sourceVersion: plan.sourceVersion, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision',
+      summary: 'Choose fictional delivery window', loopId: decision.loopId, recordedAt: '2026-09-22T01:01:00.000Z' });
+    const clarified = await service.openLoopsClarify({ loopId: decision.loopId, expectedRevision: decision.revision,
+      logicalOperationId: 'configured-worker-words', authenticatedOperatorId: 'operator-fixture',
+      rationale: 'Use the morning delivery window for this one.' });
+    const page = await service.runClarificationWorkerOnce();
+    assert.equal(page.results[0].status, 'applied');
+    assert.equal(modelCalls, 1);
+    const resolved = metadata.getOpenLoop(decision.loopId);
+    assert.equal(resolved.state, 'confirmed');
+    assert.equal(resolved.attention?.pendingClarificationId, undefined);
+    const interpretation = resolved.evidenceObservationIds.map(id => metadata.getOpenLoopObservation(id))
+      .find(item => item.source.kind === 'processor-interpretation');
+    assert.equal(interpretation.facts.actorId, 'operator-fixture');
+    assert.equal(interpretation.facts.rationale, 'Use the morning delivery window for this one.');
+    assert.equal(metadata.getClarificationProposal(clarified.loop.attention.pendingClarificationId).proposal.decision, 'confirm');
+    assert.deepEqual((await service.runClarificationWorkerOnce()).results, []);
+    assert.equal(modelCalls, 1);
+  } finally { restoreCoordinator?.(); await service.stop(); await temporary.cleanup(); }
+});
+
+test('actual child process death after proposal persistence resumes without a model rerun', async () => {
+  const temporary = await temporaryStateDir('command-center-clarification-worker-death-');
+  let metadata;
+  let child;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    addTopic(metadata);
+    const plan = sourcePlan();
+    plan.acceptedExtraction.obligations = [{ obligationId: 'choose-delivery', title: 'Choose fictional delivery window', provenance: 'inferred', classification: 'decision' }];
+    recordIntakeSourcePlan(metadata, plan);
+    const decision = addDecisionLoop(metadata);
+    recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: plan.sourceExternalId,
+      sourceVersion: plan.sourceVersion, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision',
+      summary: 'Choose fictional delivery window', loopId: decision.loopId, recordedAt: '2026-09-22T01:01:00.000Z' });
+    const clarified = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'crash-words',
+      loopId: decision.loopId, expectedRevision: decision.revision, actorId: 'operator-fixture',
+      rationale: 'Use the morning delivery window for this one.', updatedAt: '2026-09-22T01:02:00.000Z' });
+    const item = { loopId: decision.loopId, expectedRevision: clarified.loop.revision,
+      clarificationObservationId: clarified.loop.attention.pendingClarificationId };
+    metadata.close(); metadata = null;
+    child = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/clarification-worker-crash-child.mjs', import.meta.url))],
+      { env: { ...process.env, COMMAND_CENTER_FIXTURE_STATE_DIR: temporary.path }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    const phase = await Promise.race([new Promise((resolve, reject) => {
+      child.once('message', resolve); child.once('error', reject); child.once('exit', code => reject(new Error(`Child exited before proposal boundary: ${code}`)));
+    }), delay(10_000, undefined, { ref: false }).then(() => { throw new Error('Child did not reach proposal boundary.'); })]);
+    assert.equal(phase.phase, 'proposal-persisted');
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    child.kill('SIGKILL');
+    await exited;
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    assert.equal(metadata.getClarificationProposal(item.clarificationObservationId).proposal.decision, 'confirm');
+    assert.equal(metadata.getOpenLoop(decision.loopId).revision, item.expectedRevision);
+    const resumed = createClarificationWorker({ metadata, notBefore: '2026-09-22T00:00:00.000Z', assertCurrent() {},
+      complete: async () => { throw new Error('The model must not run again.'); },
+      interpret: async input => { assert.equal(input.clarificationObservationId, item.clarificationObservationId); return { disposition: 'applied' }; } });
+    assert.equal((await resumed.processOne(item)).status, 'applied');
+  } finally { if (child?.exitCode === null) child.kill('SIGKILL'); metadata?.close(); await temporary.cleanup(); }
 });
 
 test('email reader location changes after a move without changing accepted effects or decisions', async () => {
