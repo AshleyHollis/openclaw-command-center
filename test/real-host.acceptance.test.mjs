@@ -38,6 +38,7 @@ import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, ru
 import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence, verifiedMigrationStatusReady } from '../src/acceptance-migration.mjs';
 import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet, verifyMissingSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
+import { assertCandidatePluginPermissions, assertFastHostAdmission } from './support/isolated-acceptance-preflight.mjs';
 import { tabTo } from './support/keyboard-navigation.mjs';
 import { activate, enterText, chooseOption, auditDynamicAccessibilityState, assertNoFrameOverflow, assertResponsiveFrame, assertKeyboardAccessibility } from './support/keyboard-accessibility.mjs';
 import { closeOpenConversation } from './support/conversation-lifecycle.mjs';
@@ -2469,20 +2470,27 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
 // retains a 285-second slice bound, so the outer owner must outlive the closed
 // matrix plus preparation and final evidence scanning.
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 2_400_000, concurrency: true }, async (testContext) => {
-  let descriptor, buildReceipt, baseline, baselineSeed;
+  let descriptor, buildReceipt, baseline, baselineSeed, preparationError;
   const nativeDiagnostic = acceptancePlan.kind === 'focused' && acceptancePlan.scenarioIds?.length === 1
     ? ['native-control-ui-activation', 'native-topic-chat-handoff', 'native-topic-notes-workspace', 'native-topic-files-workspace', 'topic-notes-visual', 'topic-document-tools', 'desktop-keyboard-journey', 'diagnostic-scale-startup', 'scale-performance', 'historical-backfill-owner'].find(id => acceptancePlan.scenarioIds[0] === id) : undefined;
   await testContext.test('release preparation: candidate build and authenticated descriptor', async () => {
-    reportProgress(testContext, 'build:started');
-    descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
-    if ((nativeDiagnostic || ['release', 'prerequisites'].includes(acceptancePlan.kind)) && process.env.COMMAND_CENTER_SEALED_CANDIDATE !== '1') throw new Error('Native acceptance requires a sealed candidate receipt.');
-    buildReceipt = await withDeadline('candidate build', () => process.env.COMMAND_CENTER_SEALED_CANDIDATE === '1' ? readBuiltReceipt() : build(), 120_000);
-    await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
-    if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
-      baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(capturedPerformanceBaselinePath, 'utf8')));
-    }
-    reportProgress(testContext, 'build:passed');
+    try {
+      reportProgress(testContext, 'build:started');
+      descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
+      if ((nativeDiagnostic || ['release', 'prerequisites'].includes(acceptancePlan.kind)) && process.env.COMMAND_CENTER_SEALED_CANDIDATE !== '1') throw new Error('Native acceptance requires a sealed candidate receipt.');
+      const requiresBoundCron = acceptancePlan.kind === 'release'
+        || acceptancePlan.isolatedSliceIds?.some(id => ['accounted-mixed-email', 'accounted-mixed-email-worker'].includes(id));
+      await assertFastHostAdmission(descriptor, { requireBoundCron: Boolean(requiresBoundCron) });
+      buildReceipt = await withDeadline('candidate build', () => process.env.COMMAND_CENTER_SEALED_CANDIDATE === '1' ? readBuiltReceipt() : build(), 120_000);
+      await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
+      await assertCandidatePluginPermissions(process.cwd());
+      if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
+        baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(capturedPerformanceBaselinePath, 'utf8')));
+      }
+      reportProgress(testContext, 'build:passed');
+    } catch (error) { preparationError = error; throw error; }
   });
+  if (preparationError || !descriptor || !buildReceipt) throw new Error('Acceptance preparation failed; no isolated slice was started.', { cause: preparationError });
   if (nativeDiagnostic) {
     assert.ok(descriptor && buildReceipt, 'Native diagnosis requires successful descriptor and sealed receipt admission');
     if (capturePerformanceBaseline) assertPerformanceHostIdentity(descriptor);
