@@ -1569,6 +1569,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         if (await loadSettled.count()) await loadSettled.click();
         const settledCard = settledInventory.locator(`article[data-open-loop-id="${paymentLoopId}"]`);
         await settledCard.getByRole('button', { name: 'Review evidence' }).click();
+        await settledCard.getByText('Interpreted payment assertion', { exact: true }).waitFor();
+        await settledCard.getByText('This payment status came from your saved words. Payment has not been independently verified.', { exact: true }).waitFor();
         await settledCard.getByText('Decision saved. Reminder follow-up is complete.', { exact: true }).waitFor();
         await settledCard.getByText('The supporting Note recorded this decision.', { exact: true }).waitFor();
         await retainNativeChatScreenshot(page, 'accounted-email-paid-follow-up');

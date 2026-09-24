@@ -173,9 +173,14 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     }
     for (const item of evidence) {
       const article = element('article');
-      article.append(element('h5', item.sourceKind === 'user-clarification' ? 'Your item clarification' : nonBlank(item.summary) ? item.summary : `${item.type ?? 'Evidence'} from ${item.sourceKind ?? item.sourceSystem ?? 'source'}`));
+      const interpretedPayment = item.sourceKind === 'processor-interpretation' && item.provenance === 'interpreted-user-assertion';
+      article.append(element('h5', item.sourceKind === 'user-clarification' ? 'Your item clarification'
+        : interpretedPayment ? 'Interpreted payment assertion'
+          : item.sourceKind === 'processor-interpretation' ? 'Interpreted item decision'
+            : nonBlank(item.summary) ? item.summary : `${item.type ?? 'Evidence'} from ${item.sourceKind ?? item.sourceSystem ?? 'source'}`));
       const source = [item.sourceSystem, item.sourceKind, item.sourceVersion].filter(nonBlank).join(' · ');
       if (source) article.append(element('p', `Source: ${source}`));
+      if (interpretedPayment) article.append(element('p', 'This payment status came from your saved words. Payment has not been independently verified.'));
       const timing = [nonBlank(item.occurredAt) ? `Occurred ${formatInstant(item.occurredAt)}` : null, nonBlank(item.observedAt) ? `Observed ${formatInstant(item.observedAt)}` : null, item.historicalBaseline === true ? 'Historical baseline' : null].filter(Boolean);
       if (timing.length) article.append(element('p', timing.join(' · ')));
       const facts = [
@@ -185,7 +190,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         ['Requirement', nonBlank(item.requirementKind) && nonBlank(item.requirementId) ? `${item.requirementKind}: ${item.requirementId}` : null],
         ['Stage', nonBlank(item.stageId) ? item.stageId : null], ['Choice', item.chosenOption],
         ['Recorded choice', item.recordedChoice], ['Observed choice', item.observedChoice], ['Rationale', item.rationale], ['Assumption', item.assumption],
-        ['Assessment', item.assessment], ['Delivered items', Array.isArray(item.fulfilledItemIds) ? item.fulfilledItemIds.join(', ') : null], ['Outstanding items', Array.isArray(item.outstandingItemIds) ? item.outstandingItemIds.join(', ') : null], ['Expected update', item.expectedAt ? formatInstant(item.expectedAt) : null], ['Operator note', item.note], ['Status', item.status]
+        ['Assessment', item.assessment], ['Delivered items', Array.isArray(item.fulfilledItemIds) ? item.fulfilledItemIds.join(', ') : null], ['Outstanding items', Array.isArray(item.outstandingItemIds) ? item.outstandingItemIds.join(', ') : null], ['Expected update', item.expectedAt ? formatInstant(item.expectedAt) : null], ['Operator note', item.note], ['Payment status', item.paymentState], ['Status', item.status]
       ].filter(([, value]) => value !== undefined && value !== null && value !== '');
       if (facts.length) {
         const list = element('dl');
