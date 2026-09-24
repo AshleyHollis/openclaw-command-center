@@ -203,7 +203,15 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   }
 
   async function submitOpenLoopOperation({ key, method, params, card, pending, success, includeLoopId = true }) {
-    const operation = operations.get(key) ?? { method, params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), ...(includeLoopId ? { loopId: card.loopId } : {}), expectedRevision: card.revision, ...params } };
+    const proposed = { schemaVersion: 1, ...(includeLoopId ? { loopId: card.loopId } : {}), expectedRevision: card.revision, ...params };
+    const prior = operations.get(key);
+    if (prior && ['command-center.v1.open-loops.decide', 'command-center.v1.open-loops.payment-status'].includes(method)) {
+      const { logicalOperationId: _savedId, ...savedIntent } = prior.params;
+      if (prior.method !== method || JSON.stringify(savedIntent) !== JSON.stringify(proposed)) {
+        throw new Error('An earlier decision has an uncertain outcome. Restore its original choices and retry before making a different decision.');
+      }
+    }
+    const operation = prior ?? { method, params: { logicalOperationId: crypto.randomUUID(), ...proposed } };
     operations.set(key, operation);
     const envelope = await host.request(operation.method, operation.params);
     const response = unwrap(envelope);

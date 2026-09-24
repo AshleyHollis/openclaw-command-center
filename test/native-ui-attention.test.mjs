@@ -263,6 +263,32 @@ test('native open-loop retry reconciles the same logical operation after an unkn
   assert.equal(ids[0], ids[1]);
 }));
 
+test('an uncertain payment decision cannot silently replay different form values', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoopActionMode = 'unknown';
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'uncertain-bill', kind: 'payment', title: 'Fictional bill with an uncertain response.', state: 'confirmed', paymentState: 'unpaid', actions: ['Record payment status'], evidenceCount: 1, revision: 1 }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  const bill = page.locator('article[data-open-loop-id="uncertain-bill"]');
+  await bill.getByText('Record payment status', { exact: true }).click();
+  const rationale = bill.getByLabel('Evidence or rationale');
+  await rationale.fill('The fictional transfer was initiated.');
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  await page.getByRole('status').filter({ hasText: 'transport outcome is unknown' }).waitFor();
+  await rationale.fill('The fictional transfer has settled.');
+  await page.evaluate(() => { window.openLoopActionMode = 'success'; });
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  await page.getByRole('status').filter({ hasText: 'Restore its original choices' }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.payment-status')).length), 1);
+  await rationale.fill('The fictional transfer was initiated.');
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  await page.getByRole('status').filter({ hasText: 'No payment was submitted.' }).waitFor();
+  const requests = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.payment-status')).map(request => request.params));
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0], requests[1]);
+}));
+
 test('native on-demand inventory pages through every quiet open loop', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];
