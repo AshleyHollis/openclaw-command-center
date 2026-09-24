@@ -6,6 +6,7 @@ import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createCommitmentCaptureService } from '../src/open-loops/commitment-capture.mjs';
 import { selectSupportingNoteTarget } from '../src/open-loops/supporting-note-target.mjs';
+import { prepareSupportingNoteAnnotation, supportingNoteOperationId } from '../src/open-loops/supporting-note-annotation.mjs';
 
 const loop = { loopId: 'fictional-bill', topicId: 'fictional-home', evidenceObservationIds: ['capture-bill', 'decision-paid'] };
 const capture = { observationId: 'capture-bill', source: { system: 'command-center-capture', kind: 'email' }, topicId: loop.topicId,
@@ -61,10 +62,26 @@ test('an accepted bill decision retains its exact supporting Note target across 
     assert.equal(paid.supportingNoteTarget.status, 'ready');
     assert.equal(paid.supportingNoteTarget.target.expectedRevision, reference.observedRevision);
     assert.equal(paid.supportingNoteTarget.target.upstreamSourceVersion, capture.facts.sourceVersion);
+    const accepted = metadata.getOpenLoopSupportingNoteIntent(paidInput.logicalOperationId);
+    assert.equal(accepted.current, true);
+    assert.equal(accepted.intent, undefined);
+    const desired = prepareSupportingNoteAnnotation({ text: '# Fictional invoice\n', loopId: created.loop.loopId,
+      observation: accepted.observation }).text;
+    const preparedInput = { schemaVersion: 1, decisionOperationId: paidInput.logicalOperationId,
+      expectedLoopRevision: paid.loop.revision, target: paid.supportingNoteTarget.target, text: desired };
+    const prepared = metadata.prepareOpenLoopSupportingNoteIntent(preparedInput);
+    assert.equal(prepared.logicalOperationId, supportingNoteOperationId(paidInput.logicalOperationId));
+    assert.equal(prepared.text, desired);
     metadata.close();
     metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     assert.deepEqual(metadata.getOpenLoopUserActionReceipt(paidInput.logicalOperationId).supportingNoteTarget, paid.supportingNoteTarget);
     assert.deepEqual(metadata.recordOpenLoopPaymentStatus(paidInput).supportingNoteTarget, paid.supportingNoteTarget);
+    assert.equal(metadata.recordOpenLoopPaymentStatus(paidInput).supportingNoteIntent, undefined,
+      'unchanged user-decision replay must not return private full Note bytes');
+    assert.deepEqual(metadata.getOpenLoopSupportingNoteIntent(paidInput.logicalOperationId).intent, prepared);
+    assert.deepEqual(metadata.prepareOpenLoopSupportingNoteIntent(preparedInput), prepared);
+    assert.throws(() => metadata.prepareOpenLoopSupportingNoteIntent({ ...preparedInput, text: `${desired}changed` }),
+      error => error.code === 'open-loop-note-intent-mismatch');
     assert.equal(metadata.getCurrentOpenLoopUserActionReceipt(created.loop.loopId).supportingNoteTarget.status, 'ready');
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });

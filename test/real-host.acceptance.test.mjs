@@ -1450,6 +1450,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
             rationale: 'Fictional due date accepted for installed follow-up qualification.' }, signal });
         const scheduled = scheduledResponse.result ?? scheduledResponse;
         assert.equal(scheduled.reminder.status, 'applied');
+        assert.equal(scheduled.supportingNote.status, 'completed');
         const nativeReminderId = openLoopReminderOperationId(scheduleDecisionId);
         const nativeDatabase = new DatabaseSync(path.join(scenarioWorld.root, '.openclaw', 'state', 'openclaw.sqlite'), { readOnly: true });
         try { assert.equal(nativeDatabase.prepare('SELECT enabled FROM cron_jobs WHERE job_id = ?').get(nativeReminderId)?.enabled, 1); }
@@ -1461,11 +1462,15 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
             loopId: paymentLoopId, expectedRevision: scheduled.loop.revision, paymentState: 'paid',
             rationale: 'Fictional operator assertion; no payment was made.' }, signal });
         assert.equal((paidResponse.result ?? paidResponse).reminder.status, 'applied');
+        assert.equal((paidResponse.result ?? paidResponse).supportingNote.status, 'completed');
         const noteTargetMetadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
         try {
+          const scheduledNote = noteTargetMetadata.getOpenLoopSupportingNoteIntent(scheduleDecisionId);
+          assert.equal(scheduledNote.outcome?.status, 'completed');
+          assert.ok(scheduledNote.intent?.textDigest);
           const selected = noteTargetMetadata.getOpenLoopUserActionReceipt(paidDecisionId)?.supportingNoteTarget;
           assert.equal(selected?.status, 'ready');
-          assert.equal(selected.target.expectedRevision, durableBeforeRestart.plan.retainedNoteRevision);
+          assert.equal(selected.target.expectedRevision, scheduledNote.outcome.observedRevision);
           assert.equal(selected.target.retainedNoteRevision, durableBeforeRestart.plan.retainedNoteRevision);
           assert.equal(selected.target.upstreamSourceVersion, 'email-change-key-real-host-52');
           assert.notEqual(selected.target.upstreamSourceVersion, selected.target.retainedNoteRevision);
@@ -1474,6 +1479,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
         assert.equal((settledDetail.result ?? settledDetail).loop.paymentState, 'paid');
         assert.equal((settledDetail.result ?? settledDetail).followUp.status, 'completed');
+        assert.equal((settledDetail.result ?? settledDetail).supportingNote.status, 'completed');
         const disabledDatabase = new DatabaseSync(path.join(scenarioWorld.root, '.openclaw', 'state', 'openclaw.sqlite'), { readOnly: true });
         try { assert.equal(disabledDatabase.prepare('SELECT enabled FROM cron_jobs WHERE job_id = ?').get(nativeReminderId)?.enabled, 0); }
         finally { disabledDatabase.close(); }
@@ -1484,6 +1490,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const settledCard = settledPage.locator(`article[data-open-loop-id="${paymentLoopId}"]`);
         await settledCard.getByRole('button', { name: 'Review evidence' }).click();
         await settledCard.getByText('Decision saved. Reminder follow-up is complete.', { exact: true }).waitFor();
+        await settledCard.getByText('The supporting Note recorded this decision.', { exact: true }).waitFor();
         await retainNativeChatScreenshot(page, 'accounted-email-paid-follow-up');
         milestone('native-reminder-created-and-cancelled');
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-capture-choice').length, 1);
@@ -1497,7 +1504,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           assert.equal(durable.plan.processorVersion, 'fictional-real-host-processor-v1');
           assert.deepEqual(durable.account.outcomes.map(item => item.status), ['clarified', 'applied', 'applied', 'quiet']);
         } finally { afterRetry.close(); }
-        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, nativeReminderCreatedAndCancelled: true, supportingNoteTargetRetained: true, inspectedPaidFollowUp: true, mockedOutlookOpen: true });
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, nativeReminderCreatedAndCancelled: true, supportingNoteTargetRetained: true, supportingNoteUpdated: true, inspectedPaidFollowUp: true, mockedOutlookOpen: true });
       }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });

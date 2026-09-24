@@ -1003,16 +1003,16 @@ test('built package processes a mixed email through registered Note-save, captur
     seed.close(); seed = undefined;
     builtPlugin.register(host.api); const service = host.services[0]; await service.start();
     const source = { sourceKind: 'email', sourceExternalId: 'fictional-built-message', sourceVersion: 'change-key-built-19' };
-    const extraction = { schemaVersion: 1, proposedTopic: 'Fictional built home', notePath: 'Inbox/built-message.md', knowledgeMarkdown: '# Fictional built reference\n', knowledgeOutcomeId: 'reference-built', obligations: [{ obligationId: 'pay-built', title: 'Pay fictional built invoice', provenance: 'explicit' }, { obligationId: 'reply-built', title: 'Reply with fictional built reference', provenance: 'explicit' }, { obligationId: 'choose-built', title: 'Choose fictional built window', provenance: 'inferred', classification: 'decision' }] };
+    const extraction = { schemaVersion: 1, proposedTopic: 'Fictional built home', notePath: 'Inbox/built-message.md', knowledgeMarkdown: '# Fictional built reference\n', knowledgeOutcomeId: 'reference-built', obligations: [{ obligationId: 'pay-built', title: 'Pay fictional built invoice', provenance: 'explicit', classification: 'obligation' }, { obligationId: 'reply-built', title: 'Reply with fictional built reference', provenance: 'explicit', classification: 'obligation' }, { obligationId: 'choose-built', title: 'Choose fictional built window', provenance: 'inferred', classification: 'decision' }] };
     const invokeTool = async (name, params) => host.tools.get(name)().execute(randomUUID(), params);
     const resolved = await invokeTool('command_center_resolve_source_topic', { topicName: extraction.proposedTopic });
     await invokeTool('command_center_plan_intake_source', { ...source, checkpoint: 'page-1:fictional-built-message', observedAt: '2026-09-22T01:00:00.000Z', processorVersion: 'fictional-built-processor-v1', acceptedExtraction: extraction, outcomes: [{ outcomeId: 'pay-built', kind: 'obligation' }, { outcomeId: 'reply-built', kind: 'obligation' }, { outcomeId: 'choose-built', kind: 'decision' }, { outcomeId: 'reference-built', kind: 'information' }], enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } });
     const saved = await invokeTool('command_center_save_source_note', { topicId: resolved.details.topicId, noteFolderReferenceId: resolved.details.noteFolderReferenceId, ...source, path: extraction.notePath, markdown: extraction.knowledgeMarkdown });
     const noteRevision = saved.details.note.revision;
     assert.notEqual(noteRevision, source.sourceVersion);
-    const evidence = { topicId: resolved.details.topicId, ...source, sourceReferenceId: saved.details.sourceReference.referenceId, sourcePath: saved.details.note.path };
-    const capture = async (obligationId, title, provenance = 'explicit') => (await invokeTool('command_center_capture_source_commitment', { ...evidence, obligationId, title, provenance })).details.loop;
-    const payment = await capture('pay-built', 'Pay fictional built invoice');
+    const evidence = { topicId: resolved.details.topicId, ...source, sourceReferenceId: saved.details.sourceReference.referenceId, sourcePath: saved.details.note.path, sourceReferenceVersion: noteRevision };
+    const capture = async (obligationId, title, provenance = 'explicit', obligationKind) => (await invokeTool('command_center_capture_source_commitment', { ...evidence, obligationId, title, provenance, ...(obligationKind ? { obligationKind } : {}) })).details.loop;
+    const payment = await capture('pay-built', 'Pay fictional built invoice', 'explicit', 'payment');
     const reply = await capture('reply-built', 'Reply with fictional built reference');
     const decision = await capture('choose-built', 'Choose fictional built window', 'inferred');
     const base = { ...source, recordedAt: '2026-09-22T01:01:00.000Z' };
@@ -1031,6 +1031,48 @@ test('built package processes a mixed email through registered Note-save, captur
     assert.deepEqual(email.outcomeCounts, { expected: 4, accounted: 4, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 });
     assert.equal(email.status, 'needs-review');
     assert.deepEqual(email.recentSources[0].outcomes.map(item => item.kind), ['obligation', 'obligation', 'decision', 'information']);
+    const preview = service.getTopicMaintenanceOwners().metadata.previewOpenLoopSupportingNoteTarget(payment.loopId);
+    assert.equal(preview.status, 'ready', JSON.stringify(preview));
+    const paidDecisionId = randomUUID();
+    const paidInput = { schemaVersion: 1, logicalOperationId: paidDecisionId, loopId: payment.loopId,
+      expectedRevision: payment.revision, paymentState: 'paid', rationale: 'Fictional user assertion; no payment occurred.'
+    };
+    const paid = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.payment-status', paidInput);
+    assert.ok(paid.supportingNote, JSON.stringify(paid));
+    assert.equal(paid.supportingNote.status, 'completed', JSON.stringify(paid.supportingNote));
+    const storedNoteIntent = service.getTopicMaintenanceOwners().metadata.getOpenLoopSupportingNoteIntent(paidDecisionId);
+    assert.equal(storedNoteIntent.outcome.status, 'completed');
+    assert.equal(storedNoteIntent.intent.text, undefined, 'the full Note copy is removed after verified completion');
+    assert.match(storedNoteIntent.intent.textDigest, /^sha256:[a-f0-9]{64}$/u);
+    const noteAfter = await service.sourceService.notesRead({ schemaVersion: 1, topicId: evidence.topicId,
+      referenceId: evidence.sourceReferenceId, path: evidence.sourcePath, sourceKind: 'note' });
+    assert.match(noteAfter.text, /Payment status: paid \(your assertion; Command Center made no payment\)/u);
+    assert.match(noteAfter.text, /# Fictional built reference/u);
+    const replay = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.payment-status', paidInput);
+    assert.equal(replay.disposition, 'duplicate');
+    assert.equal(replay.supportingNote.status, 'completed');
+    const afterReplay = await service.sourceService.notesRead({ schemaVersion: 1, topicId: evidence.topicId,
+      referenceId: evidence.sourceReferenceId, path: evidence.sourcePath, sourceKind: 'note' });
+    assert.equal(afterReplay.text, noteAfter.text, 'replay does not duplicate the managed block');
+    const detail = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.get', {
+      schemaVersion: 1, loopId: payment.loopId });
+    assert.equal(detail.supportingNote.status, 'completed');
+    assert.equal(JSON.stringify(detail).includes(noteAfter.text), false, 'the public item must not return stored full Note text');
+    const userEditedText = noteAfter.text.replace('Payment status: paid', 'Payment status: manually checked');
+    assert.notEqual(userEditedText, noteAfter.text);
+    await service.sourceService.notesEdit({ schemaVersion: 1, logicalOperationId: randomUUID(),
+      topicId: evidence.topicId, referenceId: evidence.sourceReferenceId, path: evidence.sourcePath,
+      expectedRevision: noteAfter.revision, text: userEditedText });
+    const uncertain = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.payment-status', {
+      schemaVersion: 1, logicalOperationId: randomUUID(), loopId: payment.loopId,
+      expectedRevision: paid.loop.revision, paymentState: 'uncertain',
+      rationale: 'Fictional correction after the supporting Note was manually edited.'
+    });
+    assert.equal(uncertain.loop.paymentState, 'uncertain', 'the user decision stays saved');
+    assert.equal(uncertain.supportingNote.status, 'conflict', 'the managed Note edit is not overwritten');
+    const afterConflict = await service.sourceService.notesRead({ schemaVersion: 1, topicId: evidence.topicId,
+      referenceId: evidence.sourceReferenceId, path: evidence.sourcePath, sourceKind: 'note' });
+    assert.equal(afterConflict.text, userEditedText);
   } finally {
     seed?.close(); await host.services[0]?.stop?.();
     await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

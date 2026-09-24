@@ -59,12 +59,13 @@ async function fixture(run) {
             const evidence = [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }];
             if (card.purchaseId) evidence.push({ observationId: `purchase-${card.loopId}`, type: 'order', sourceSystem: 'fictional-source', sourceKind: 'receipt', sourceVersion: 'v1', occurredAt: '2026-09-20T02:00:00.000Z', observedAt: '2026-09-20T02:01:00.000Z', historicalBaseline: false, eventKind: 'item-purchased', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId, purchaseNamespace: 'fictional-home-project', purchaseId: card.purchaseId });
             if (Array.isArray(card.additionalEvidence)) evidence.push(...structuredClone(card.additionalEvidence));
-            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence, ...(window.followUps?.[card.loopId] ? { followUp: structuredClone(window.followUps[card.loopId]) } : {}) } };
+            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence, ...(window.followUps?.[card.loopId] ? { followUp: structuredClone(window.followUps[card.loopId]) } : {}), ...(window.supportingNotes?.[card.loopId] ? { supportingNote: structuredClone(window.supportingNotes[card.loopId]) } : {}) } };
           }
           if (method.endsWith('open-loops.resume-follow-up')) {
             const entry = Object.entries(window.followUps ?? {}).find(([, followUp]) => followUp.logicalOperationId === params.logicalOperationId);
             if (!entry) throw new Error('The exact fictional saved decision is unavailable.');
             entry[1].status = 'completed';
+            if (window.supportingNotes?.[entry[0]]?.status === 'pending') window.supportingNotes[entry[0]].status = 'completed';
             return { result: { schemaVersion: 1, disposition: 'duplicate', loop: { loopId: entry[0] }, reminder: { status: 'applied', action: 'create', referenceId: 'fictional-reminder' } } };
           }
           if (method.endsWith('open-loops.list')) {
@@ -352,13 +353,16 @@ test('item evidence shows a saved decision with pending follow-up and resumes it
     window.cards = [];
     window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'bill-follow-up', kind: 'payment', title: 'Fictional renovation invoice', state: 'confirmed', paymentState: 'unpaid', reason: 'due-window', whyNow: 'The accepted date is approaching.', actions: ['Open bill'], evidenceCount: 1, revision: 2 }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
     window.followUps = { 'bill-follow-up': { status: 'pending', logicalOperationId: id, action: 'create' } };
+    window.supportingNotes = { 'bill-follow-up': { status: 'pending' } };
     window.mountInbox();
   }, operationId);
   const bill = page.locator('article[data-open-loop-id="bill-follow-up"]');
   await bill.getByRole('button', { name: 'Review evidence' }).click();
   await bill.getByText('Decision saved. Reminder follow-up is still pending.').waitFor();
+  await bill.getByText('Supporting Note update is pending.').waitFor();
   await bill.getByRole('button', { name: 'Resume saved follow-up' }).click();
   await bill.getByText('Decision saved. Reminder follow-up is complete.').waitFor();
+  await bill.getByText('The supporting Note recorded this decision.').waitFor();
   assert.equal(await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.resume-follow-up'))?.params.logicalOperationId), operationId);
 }));
 

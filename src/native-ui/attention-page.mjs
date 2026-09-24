@@ -112,6 +112,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     disclosure.replaceChildren(element('summary', 'Source evidence'));
     const loop = detail?.loop;
     const followUp = detail?.followUp;
+    const supportingNote = detail?.supportingNote;
     if (followUp) {
       const wording = {
         pending: 'Decision saved. Reminder follow-up is still pending.',
@@ -122,7 +123,17 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         unavailable: 'Decision saved. Reminder scheduling is currently unavailable.'
       };
       disclosure.append(element('p', wording[followUp.status] ?? 'Decision saved. Follow-up status is unavailable.'));
-      if (followUp.status === 'pending' && nonBlank(followUp.logicalOperationId)) {
+      if (supportingNote) {
+        const noteWording = {
+          pending: 'Supporting Note update is pending.',
+          completed: 'The supporting Note recorded this decision.',
+          unknown: 'The supporting Note update outcome is uncertain.',
+          conflict: 'The supporting Note changed; review it before recording this decision there.',
+          unavailable: 'The supporting Note update is unavailable; your decision remains saved.'
+        };
+        disclosure.append(element('p', noteWording[supportingNote.status] ?? 'Supporting Note status is unavailable.'));
+      }
+      if ((followUp.status === 'pending' || ['pending', 'unknown', 'unavailable'].includes(supportingNote?.status)) && nonBlank(followUp.logicalOperationId)) {
         const resume = element('button', 'Resume saved follow-up'); resume.type = 'button';
         resume.addEventListener('click', async () => {
           if (!writable() || resume.disabled) return;
