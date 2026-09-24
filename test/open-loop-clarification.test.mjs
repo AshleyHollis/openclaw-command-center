@@ -5,9 +5,19 @@ import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createMetadataService } from '../src/plugin-service.mjs';
+import { clarificationInterpretationOperationId } from '../src/open-loops/clarification-context.mjs';
+import { isCanonicalUuid } from '../src/sources/operation-journal.mjs';
 import { projectQuietAttention } from '../src/open-loops/quiet-attention.mjs';
 
 const now = '2026-09-24T03:00:00.000Z';
+
+test('one saved clarification has one public-route-compatible interpretation identity', () => {
+  const first = clarificationInterpretationOperationId('fictional-clarification-one');
+  assert.ok(isCanonicalUuid(first));
+  assert.equal(first, clarificationInterpretationOperationId('fictional-clarification-one'));
+  assert.notEqual(first, clarificationInterpretationOperationId('fictional-clarification-two'));
+  assert.throws(() => clarificationInterpretationOperationId(''), { code: 'invalid-request' });
+});
 
 test('inactive agent-tool registration delegates interpretation to the active owner', () => {
   const key = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');

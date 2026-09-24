@@ -1,7 +1,15 @@
+import { createHash } from 'node:crypto';
 import { loadIntakeSourceAccount, projectIntakeAccounts } from './intake-accounting.mjs';
 import { sourceError } from '../sources/errors.mjs';
 
 const captureKinds = new Set(['email', 'chat', 'note']);
+
+export function clarificationInterpretationOperationId(clarificationObservationId) {
+  if (typeof clarificationObservationId !== 'string' || !clarificationObservationId.trim())
+    throw sourceError('invalid-request', 'A saved clarification identity is required.');
+  const digest = createHash('sha256').update('command-center-targeted-interpretation:v1\0').update(clarificationObservationId).digest('hex');
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
 
 // A pending clarification is the durable queue marker. Resolve its source from
 // the capture evidence instead of trusting a caller-supplied source identity.

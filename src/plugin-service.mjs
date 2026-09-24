@@ -16,7 +16,7 @@ import { createOpenLoopReminderCoordinator, openLoopReminderOperationId } from '
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
 import { loadIntakeSourceAccount } from './open-loops/intake-accounting.mjs';
-import { loadPendingClarificationContext } from './open-loops/clarification-context.mjs';
+import { clarificationInterpretationOperationId, loadPendingClarificationContext } from './open-loops/clarification-context.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
 
@@ -614,7 +614,7 @@ export function createMetadataService(api) {
       }
       if (typeof input.clarificationObservationId !== 'string' || !input.clarificationObservationId.trim())
         throw new SourceServiceError('invalid-request', 'An exact saved clarification is required.');
-      const logicalOperationId = `clarification-interpretation:${createHash('sha256').update(input.clarificationObservationId).digest('hex')}`;
+      const logicalOperationId = clarificationInterpretationOperationId(input.clarificationObservationId);
       const prior = metadataService.getOpenLoopUserActionReceipt(logicalOperationId);
       if (prior && input.outcome !== 'clear') throw new SourceServiceError('conflict', 'The clarification already has a clear interpretation.');
       const context = prior ? null : loadPendingClarificationContext(metadataService, { loopId: input.loopId, expectedRevision: input.expectedRevision });

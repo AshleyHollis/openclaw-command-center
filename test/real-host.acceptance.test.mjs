@@ -25,6 +25,7 @@ import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { producerSourceExternalId } from '../src/open-loops/intake-retry.mjs';
 import { openLoopReminderOperationId } from '../src/open-loops/reminder-coordinator.mjs';
 import { buildTargetedClarificationPrompt } from '../src/open-loops/clarification-prompt.mjs';
+import { clarificationInterpretationOperationId } from '../src/open-loops/clarification-context.mjs';
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
 import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
@@ -1521,7 +1522,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await reviewedCard.getByText('Earlier decision: The supporting Note recorded this decision.', { exact: true }).waitFor();
         const clarificationTarget = { loopId: paymentLoopId, expectedRevision: review.loop.revision,
           clarificationObservationId: review.loop.attention.pendingClarificationId };
-        const paidDecisionId = `clarification-interpretation:${createHash('sha256').update(clarificationTarget.clarificationObservationId).digest('hex')}`;
+        const paidDecisionId = clarificationInterpretationOperationId(clarificationTarget.clarificationObservationId);
         chatPane = await openNativeChat();
         await sendNativeTurn(chatPane,
           `${buildTargetedClarificationPrompt(clarificationTarget)}\n[fixture:targeted-clarification:${Buffer.from(JSON.stringify(clarificationTarget)).toString('base64url')}]`,
@@ -1537,7 +1538,14 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           && item.interpretationOf === clarificationTarget.clarificationObservationId),
         `interpreted evidence identities: ${JSON.stringify(interpreted.evidence.map(item => ({ sourceKind: item.sourceKind,
           interpretationOf: item.interpretationOf, observationId: item.observationId })))}`);
-        assert.equal(interpreted.supportingNote.status, 'completed');
+        assert.ok(['pending', 'completed'].includes(interpreted.supportingNote.status),
+          `interpreted Note follow-up: ${JSON.stringify({ detail: interpreted.supportingNote,
+            tool: fictionalModel.requests.findLast(item => item.targetedToolResult !== undefined)?.targetedToolResult })}`);
+        const resumedInterpretationResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.resume-follow-up', params: { schemaVersion: 1, logicalOperationId: paidDecisionId }, signal });
+        const resumedInterpretation = resumedInterpretationResponse.result ?? resumedInterpretationResponse;
+        assert.equal(resumedInterpretation.supportingNote.status, 'completed');
         milestone('registered-clarification-tools-applied');
         const noteTargetMetadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
         try {
