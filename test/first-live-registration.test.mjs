@@ -167,6 +167,8 @@ test('first-live admission names the exact source-backed Attention surface', () 
     'command-center.v1.open-loops.capture',
     'command-center.v1.open-loops.intake-selected',
     'command-center.v1.open-loops.decide',
+    'command-center.v1.open-loops.clarify',
+    'command-center.v1.open-loops.resume-follow-up',
     'command-center.v1.open-loops.payment-status',
     'command-center.v1.open-loops.organize',
     'command-center.v1.open-loops.renovation-requirement',
@@ -201,10 +203,10 @@ test('deferred HTTP actions are non-retryable and cannot reach services before s
 
 test('the milestone manifest admits scoped capture and capacity review while keeping filing/maintenance triggers unavailable', async () => {
   const manifest = JSON.parse(await readFile(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
-  assert.deepEqual(manifest.contracts.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
+  assert.deepEqual(manifest.contracts.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_get_pending_clarification', 'command_center_interpret_clarification', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
   assert.deepEqual(manifest.contracts.workspaceSessionTurnScheduling, []);
   const h = host(); plugin.register(h.api);
-  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
+  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_get_pending_clarification', 'command_center_interpret_clarification', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
   assert.equal(h.agentEventSubscriptions.length, 0);
   for (const suffix of ['', '/app.js', '/styles.css', '/markdown.js']) {
     const route = h.routes.find(value => value.path === `/plugins/command-center${suffix}`);
@@ -233,7 +235,7 @@ test('host workflow primitives admit capture and configured review without activ
   plugin.register(h.api);
   assert.equal(FIRST_LIVE_FEATURES.noteMaintenance, false);
   assert.equal(FIRST_LIVE_FEATURES.analysis, false);
-  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
+  assert.deepEqual(h.tools, ['command_center_capture_commitment', 'command_center_open_capacity_review', 'command_center_resolve_source_topic', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_get_pending_clarification', 'command_center_interpret_clarification', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_publish_briefing']);
   assert.equal(h.agentEventSubscriptions.length, 0);
 });
 

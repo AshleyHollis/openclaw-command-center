@@ -13,6 +13,7 @@ import { pendingClarificationToolFactory } from '../src/open-loops/clarification
 import { interpretClarificationToolFactory } from '../src/open-loops/clarification-tool.mjs';
 import { createMetadataService } from '../src/plugin-service.mjs';
 import { setHostNoteFilesystemCoordinator } from '../src/sources/note-filesystem-owner.mjs';
+import { runPendingClarifications, runPendingClarificationPrompt } from '../src/migration/reconcile-cli.mjs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -302,6 +303,17 @@ test('registered interpretation tool applies a saved clarification once and refu
     const clarified = await service.openLoopsClarify({ loopId: decision.loopId, expectedRevision: decision.revision,
       logicalOperationId: 'fictional-service-words', authenticatedOperatorId: 'operator-fixture',
       rationale: 'Please use the morning window for this one.' });
+    assert.deepEqual(metadata.listPendingOpenLoopClarificationsPage({ limit: 1 }).items,
+      [{ loopId: decision.loopId, expectedRevision: clarified.loop.revision,
+        clarificationObservationId: clarified.loop.attention.pendingClarificationId }]);
+    assert.deepEqual((await runPendingClarifications({ stateDir: temporary.path, limit: 1 })).items,
+      metadata.listPendingOpenLoopClarificationsPage({ limit: 1 }).items);
+    const promptInput = { stateDir: temporary.path, loopId: decision.loopId, expectedRevision: clarified.loop.revision,
+      clarificationObservationId: clarified.loop.attention.pendingClarificationId };
+    const prompt = await runPendingClarificationPrompt(promptInput);
+    assert.ok(prompt.includes('command_center_get_pending_clarification'));
+    assert.ok(prompt.includes('command_center_interpret_clarification'));
+    assert.equal(prompt.includes('Please use the morning window'), false, 'queue/prompt output is content-free');
     const pendingTool = pendingClarificationToolFactory({ getOwners: () => service.getTopicMaintenanceOwners() })();
     const pending = (await pendingTool.execute('fictional-read', { loopId: decision.loopId, expectedRevision: clarified.loop.revision })).details;
     assert.equal(pending.status, 'pending');
@@ -320,6 +332,7 @@ test('registered interpretation tool applies a saved clarification once and refu
     await assert.rejects(() => tool.execute('fictional-changed-retry', { ...input, decision: 'dismiss' }),
       error => error.code === 'open-loop-intent-mismatch');
     assert.equal(metadata.getOpenLoop(decision.loopId).revision, first.loop.revision);
+    await assert.rejects(() => runPendingClarificationPrompt(promptInput), error => error.code === 'clarification-superseded');
     const billWords = await service.openLoopsClarify({ loopId: payment.loopId, expectedRevision: payment.revision,
       logicalOperationId: 'fictional-bill-words', authenticatedOperatorId: 'operator-fixture',
       rationale: 'I paid this fictional invoice today.' });
@@ -334,6 +347,8 @@ test('registered interpretation tool applies a saved clarification once and refu
     assert.ok(service.openLoopsGet({ loopId: payment.loopId }).evidence.some(item =>
       item.sourceKind === 'processor-interpretation' && item.provenance === 'interpreted-user-assertion'));
     assert.equal(metadata.getOpenLoop(decision.loopId).revision, first.loop.revision, 'bill interpretation does not reopen the delivery choice');
+    assert.deepEqual(metadata.listPendingOpenLoopClarificationsPage().items, []);
+    assert.deepEqual((await runPendingClarifications({ stateDir: temporary.path })).items, []);
   } finally { restoreCoordinator?.(); await service.stop(); await temporary.cleanup(); }
 });
 

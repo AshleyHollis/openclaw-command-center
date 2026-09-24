@@ -495,6 +495,19 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       ORDER BY l.loop_id LIMIT ?`).all(text(system, 'source.system', 80), text(kind, 'source.kind', 80), text(externalId, 'source.externalId', 500), boundedLimit).map(row => mapLoop(db, row)));
   };
   service.listOpenLoops = () => inspect(db => db.prepare('SELECT * FROM open_loops ORDER BY updated_at, loop_id').all().map(row => mapLoop(db, row)));
+  service.listPendingOpenLoopClarificationsPage = ({ cursor, limit = 10 } = {}) => {
+    if (cursor !== undefined && (typeof cursor !== 'string' || !cursor.trim())
+      || !Number.isSafeInteger(limit) || limit < 1 || limit > 20) fail('open-loop-intent-invalid');
+    return inspect(db => {
+      const rows = db.prepare(`SELECT loop_id, revision, json_extract(attention_json, '$.pendingClarificationId') AS clarification_id
+        FROM open_loops WHERE json_type(attention_json, '$.pendingClarificationId') = 'text'
+          AND (? IS NULL OR loop_id > ?) ORDER BY loop_id LIMIT ?`).all(cursor ?? null, cursor ?? null, limit + 1);
+      const items = rows.slice(0, limit).map(row => freeze({ loopId: row.loop_id, expectedRevision: row.revision,
+        clarificationObservationId: row.clarification_id }));
+      return freeze({ schemaVersion: 1, items, hasMore: rows.length > limit,
+        nextCursor: rows.length > limit ? items.at(-1).loopId : null });
+    });
+  };
   service.listOpenLoopsPage = ({ offset = 0, limit = 50, cursor } = {}) => {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || cursor !== undefined && (typeof cursor !== 'string' || cursor.trim() === '')) fail('open-loop-intent-invalid');
     return inspect(db => {
