@@ -73,6 +73,9 @@ function captureFailure(failures, outcomes) {
     }
     return Object.freeze({ id, causes: Object.freeze(causes) });
   }));
+  // Node's reporter also truncates custom nested properties. Print only the
+  // bounded, redacted diagnostic summary so CI retains the actual cause.
+  console.error(`native-release-failure-diagnostics=${JSON.stringify(error.failureDiagnostics)}`);
   if (failures.some(entry => entry.error?.fatalAcceptanceCleanup === true)) error.fatalAcceptanceCleanup = true;
   return error;
 }
