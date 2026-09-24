@@ -1,5 +1,7 @@
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { createOpenLoopReminderCoordinator } from '../../src/open-loops/reminder-coordinator.mjs';
+import { planCommitmentCapture } from '../../src/open-loops/commitment-capture.mjs';
+import { recordIntakeSourcePlan, recordIntakeOutcome } from '../../src/open-loops/intake-accounting.mjs';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -9,7 +11,44 @@ const nativeFile = path.join(stateDir, 'fictional-native-cron.json');
 let metadata;
 try {
   metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
-  if (mode === 'commit') {
+  if (mode === 'commit-interpreted') {
+    metadata.createTopic({ topicId: 'fictional-process-renovation', paraCategory: 'project', lifecycle: 'active' });
+    const source = { sourceKind: 'email', sourceExternalId: 'fictional-process-mixed-message', sourceVersion: 'upstream-v7' };
+    recordIntakeSourcePlan(metadata, { schemaVersion: 1, ...source, checkpoint: 'fictional-page-1',
+      observedAt: '2026-09-20T00:00:00.000Z', processorVersion: 'fictional-v1',
+      acceptedExtraction: { schemaVersion: 1, notePath: '', knowledgeMarkdown: '', obligations: [
+        { obligationId: 'choose-window', title: 'Choose fictional work window', classification: 'decision', provenance: 'inferred' },
+        { obligationId: 'send-confirmation', title: 'Send fictional confirmation', classification: 'obligation', provenance: 'explicit' }
+      ] }, outcomes: [{ outcomeId: 'choose-window', kind: 'decision' }, { outcomeId: 'send-confirmation', kind: 'obligation' }],
+      enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } });
+    const capture = (obligationId, title, provenance) => {
+      const planned = planCommitmentCapture({ schemaVersion: 1, logicalOperationId: `fictional-capture-${obligationId}`,
+        ...source, topicId: 'fictional-process-renovation', title, obligationId, provenance,
+        occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:00:00.000Z', historicalBaseline: false });
+      return metadata.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: `fictional-capture-${obligationId}`,
+        operationKind: 'commitment.capture.v1', intent: planned.value, expectedRevision: 0,
+        observation: planned.observation, loop: planned.loop,
+        evidenceRoles: { [planned.observation.observationId]: 'origin' }, updatedAt: '2026-09-20T00:00:00.000Z' }).loop;
+    };
+    const choice = capture('choose-window', 'Choose fictional work window', 'inferred');
+    const sibling = capture('send-confirmation', 'Send fictional confirmation', 'explicit');
+    for (const [outcomeId, kind, loop] of [['choose-window', 'decision', choice], ['send-confirmation', 'obligation', sibling]]) {
+      recordIntakeOutcome(metadata, { schemaVersion: 1, ...source, outcomeId, kind,
+        status: kind === 'decision' ? 'pending-decision' : 'applied', summary: loop.title,
+        loopId: loop.loopId, recordedAt: '2026-09-20T00:01:00.000Z' });
+    }
+    const words = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'fictional-process-clarification',
+      loopId: choice.loopId, expectedRevision: choice.revision, actorId: 'fictional-operator',
+      rationale: 'Ask me again on 2 October for this one.', updatedAt: '2026-09-20T00:02:00.000Z' });
+    const fence = { clarificationObservationId: words.loop.attention.pendingClarificationId,
+      ...source, outcomeId: 'choose-window', processorVersion: 'fictional-v1' };
+    metadata.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: operationId,
+      loopId: choice.loopId, expectedRevision: words.loop.revision, decision: 'defer',
+      reviewAt: '2026-10-02T00:00:00.000Z', actorId: 'fictional-operator',
+      rationale: 'Ask me again on 2 October for this one.', updatedAt: '2026-09-20T00:03:00.000Z', interpretationFence: fence });
+    process.send?.({ type: 'accepted', loopId: choice.loopId, siblingId: sibling.loopId, siblingRevision: sibling.revision, operationId });
+    setInterval(() => {}, 60_000);
+  } else if (mode === 'commit') {
     metadata.createTopic({ topicId: 'fictional-process-renovation', paraCategory: 'project', lifecycle: 'active' });
     const created = metadata.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'fictional-process-bill', message: {
       schemaVersion: 1, channel: 'email', source: { system: 'fictional-mail', externalId: 'fictional-process-invoice', version: 'v1' },
