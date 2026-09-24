@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { sourceNoteOperationId } from '../src/open-loops/source-intake-tool.mjs';
 import { loadPendingClarificationContext } from '../src/open-loops/clarification-context.mjs';
+import { CLARIFICATION_PROPOSAL_OPERATION, clarificationProposalOperationId } from '../src/metadata/clarification-proposals.mjs';
 import { pendingClarificationToolFactory } from '../src/open-loops/clarification-tool.mjs';
 import { interpretClarificationToolFactory } from '../src/open-loops/clarification-tool.mjs';
 import { createMetadataService } from '../src/plugin-service.mjs';
@@ -71,6 +72,52 @@ function addEffects(metadata) {
   metadata.recordOperation({ logicalOperationId, transportRequestId: logicalOperationId, intentDigest: 'sha256:fictional-source-note', operationKind: 'notes.create', state: 'applied', resultStatus: 'applied', resultIdentity: '/fictional/Inbox/reference.md', observedRevision: 'note-v1', createdAt: '2026-09-22T01:00:00.000Z', updatedAt: '2026-09-22T01:00:00.000Z' });
   return { payment, response, decision };
 }
+
+test('accepted clarification proposal survives restart and cannot be replaced by a changed model answer', async () => {
+  const temporary = await temporaryStateDir('command-center-clarification-proposal-');
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    addTopic(metadata);
+    const plan = sourcePlan();
+    plan.acceptedExtraction.obligations = [{ obligationId: 'choose-delivery', title: 'Choose fictional delivery window', provenance: 'inferred', classification: 'decision' }];
+    recordIntakeSourcePlan(metadata, plan);
+    const decision = addDecisionLoop(metadata);
+    recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: plan.sourceExternalId,
+      sourceVersion: plan.sourceVersion, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision',
+      summary: 'Choose fictional delivery window', loopId: decision.loopId, recordedAt: '2026-09-22T01:01:00.000Z' });
+    const clarified = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'proposal-words',
+      loopId: decision.loopId, expectedRevision: decision.revision, actorId: 'operator-fixture',
+      rationale: 'Use the morning delivery window for this one.', updatedAt: '2026-09-22T01:02:00.000Z' });
+    const context = loadPendingClarificationContext(metadata, { loopId: decision.loopId, expectedRevision: clarified.loop.revision });
+    const input = { loopId: context.loopId, expectedRevision: context.expectedRevision,
+      clarificationObservationId: context.clarificationObservationId, processorVersion: context.processorVersion,
+      source: context.source, outcomeId: context.outcomeId,
+      proposal: { outcome: 'clear', decision: 'confirm', evidenceQuote: context.userWords },
+      model: 'fictional/model', createdAt: '2026-09-22T01:03:00.000Z' };
+    assert.equal(metadata.recordClarificationProposal(input).disposition, 'recorded');
+    assert.equal(metadata.recordClarificationProposal(input).disposition, 'duplicate');
+    assert.deepEqual(metadata.getClarificationProposal(context.clarificationObservationId).proposal, input.proposal);
+    assert.throws(() => metadata.recordClarificationProposal({ ...input, proposal: { outcome: 'ambiguous' } }),
+      { code: 'clarification-proposal-conflict' });
+    assert.throws(() => metadata.recordClarificationProposal({ ...input, proposal: { outcome: 'clear', decision: 'dismiss', evidenceQuote: 'invented' } }),
+      { code: 'invalid-proposal' });
+    const id = clarificationProposalOperationId(context.clarificationObservationId);
+    const journal = metadata.getOperation(id);
+    assert.equal(journal.operationKind, CLARIFICATION_PROPOSAL_OPERATION);
+    assert.throws(() => metadata.recordOperation({ ...journal, state: 'not-applied' }), { code: 'clarification-proposal-owner-required' });
+    metadata.close(); metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    assert.deepEqual(metadata.getClarificationProposal(context.clarificationObservationId).proposal, input.proposal);
+    assert.equal(metadata.recordClarificationProposal(input).disposition, 'duplicate');
+    const later = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'proposal-newer-words',
+      loopId: decision.loopId, expectedRevision: clarified.loop.revision, actorId: 'operator-fixture',
+      rationale: 'Actually leave it for later.', updatedAt: '2026-09-22T01:04:00.000Z' });
+    assert.equal(later.loop.revision, clarified.loop.revision + 1);
+    assert.throws(() => metadata.recordClarificationProposal({ ...input, clarificationObservationId: later.loop.attention.pendingClarificationId,
+      proposal: { outcome: 'clear', decision: 'dismiss', evidenceQuote: 'Actually leave it for later.' } }),
+      { code: 'clarification-proposal-superseded' });
+  } finally { metadata?.close(); await temporary.cleanup(); }
+});
 
 test('email reader location changes after a move without changing accepted effects or decisions', async () => {
   const temporary = await temporaryStateDir('command-center-email-reader-');
