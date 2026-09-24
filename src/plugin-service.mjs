@@ -617,6 +617,8 @@ export function createMetadataService(api) {
     },
     openLoopsInterpretClarification(input = {}, runtime = {}) {
       requireOperational();
+      if (typeof runtime.authenticatedRequesterId !== 'string' || !runtime.authenticatedRequesterId.trim())
+        throw new SourceServiceError('unauthenticated', 'Targeted interpretation requires a trusted owner request.');
       if (!metadataService) {
         const active = readTopicMaintenanceOwners()?.interpretClarification;
         if (typeof active !== 'function') throw new SourceServiceError('capability-unavailable', 'Active clarification owner is unavailable.');

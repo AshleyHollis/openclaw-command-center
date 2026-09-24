@@ -20,7 +20,7 @@ export function pendingClarificationToolFactory({ getOwners } = {}) {
 
 export function interpretClarificationToolFactory({ interpret } = {}) {
   if (typeof interpret !== 'function') throw new TypeError('Targeted clarification requires its owning command.');
-  return () => ({
+  return (context = {}) => ({
     name: 'command_center_interpret_clarification',
     description: 'Apply one clear item-specific decision or payment assertion to the exact saved clarification, or leave ambiguous words for review. Call only after loading the pending clarification; never reprocess siblings. A paid status is the user’s assertion, not independent payment evidence.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
@@ -33,7 +33,9 @@ export function interpretClarificationToolFactory({ interpret } = {}) {
       reviewAt: { type: 'string' }, dueAt: { type: 'string' }, dueDate: { type: 'string' }, dueTimeZone: { type: 'string' }
     }, required: ['loopId', 'expectedRevision', 'clarificationObservationId', 'processorVersion', 'outcome'] }),
     async execute(_toolCallId, params) {
-      const result = await interpret(params);
+      if (context.senderIsOwner !== true || typeof context.requesterSenderId !== 'string' || !context.requesterSenderId.trim())
+        throw sourceError('unauthenticated', 'Targeted interpretation requires a trusted owner request.');
+      const result = await interpret(params, { authenticatedRequesterId: context.requesterSenderId });
       return Object.freeze({ content: [{ type: 'text', text: JSON.stringify(result) }], details: result });
     }
   });
