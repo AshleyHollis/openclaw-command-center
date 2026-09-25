@@ -484,6 +484,40 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
   });
 });
 
+test('schema-9 state from the deployed 0.4.0 build stays ready without rewriting its ledger', async () => {
+  await withState(async (stateDir) => {
+    const databasePath = await seedMigratableSchema(stateDir, 8);
+    const migrated = open({ stateDir });
+    assert.equal(migrated.getOperatingStatus().mode, 'ready');
+    migrated.close();
+
+    const database = new DatabaseSync(databasePath);
+    try {
+      database.prepare('UPDATE schema_migrations SET applied_build = ? WHERE from_version = 8 AND to_version = 9').run('0.4.0');
+      assert.equal(validateMigrationLedger(database).valid, true);
+    } finally { database.close(); }
+
+    const reopened = open({ stateDir });
+    assert.equal(reopened.getOperatingStatus().mode, 'ready', JSON.stringify(reopened.getOperatingStatus()));
+    reopened.close();
+
+    const retained = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      assert.deepEqual(retained.prepare('SELECT from_version, to_version, applied_build FROM schema_migrations').all().map(row => ({ ...row })), [
+        { from_version: 8, to_version: 9, applied_build: '0.4.0' }
+      ]);
+    } finally { retained.close(); }
+
+    const altered = new DatabaseSync(databasePath);
+    try {
+      altered.prepare('UPDATE schema_migrations SET migration_digest = ?').run('wrong-digest');
+      assert.equal(validateMigrationLedger(altered).valid, false);
+      altered.prepare('UPDATE schema_migrations SET migration_digest = ?, applied_build = ?').run(V8_TO_V9_MIGRATION_DIGEST, 'unrelated-build');
+      assert.equal(validateMigrationLedger(altered).valid, false);
+    } finally { altered.close(); }
+  });
+});
+
 test('transactional migration failure leaves schema-v1 durable and retry reuses the published snapshot', async () => {
   await withState(async (stateDir) => {
     const databasePath = await seedV1(stateDir);

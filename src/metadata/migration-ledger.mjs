@@ -60,15 +60,17 @@ function invokeHook(hooks, name, context) { if (typeof hooks?.[name] === 'functi
 export function validateMigrationLedger(database, { snapshotId, allowEmpty = false } = {}) {
   const rows = inspectMigrationLedger(database);
   const problems = [];
+  // 0.4.0 applied these same digest-pinned migrations on the live predecessor.
+  // A package upgrade must preserve that provenance rather than rewrite rows.
   const definitions = [
     { id: V1_TO_V2_MIGRATION_ID, digest: V1_TO_V2_MIGRATION_DIGEST, from: 1, to: 2, builds: ['0.2.0', '0.3.0', CURRENT_BUILD] },
     { id: V2_TO_V3_MIGRATION_ID, digest: V2_TO_V3_MIGRATION_DIGEST, from: 2, to: 3, builds: ['0.2.0', '0.3.0', CURRENT_BUILD] },
     { id: V3_TO_V4_MIGRATION_ID, digest: V3_TO_V4_MIGRATION_DIGEST, from: 3, to: 4, builds: ['0.3.0', CURRENT_BUILD] },
     { id: V4_TO_V5_MIGRATION_ID, digest: V4_TO_V5_MIGRATION_DIGEST, from: 4, to: 5, builds: ['0.3.0', CURRENT_BUILD] },
-    { id: V5_TO_V6_MIGRATION_ID, digest: MIGRATION_DIGEST, from: 5, to: 6, builds: [CURRENT_BUILD] },
-    { id: V6_TO_V7_MIGRATION_ID, digest: V6_TO_V7_MIGRATION_DIGEST, from: 6, to: 7, builds: [CURRENT_BUILD] },
-    { id: V7_TO_V8_MIGRATION_ID, digest: V7_TO_V8_MIGRATION_DIGEST, from: 7, to: 8, builds: [CURRENT_BUILD] },
-    { id: V8_TO_V9_MIGRATION_ID, digest: V8_TO_V9_MIGRATION_DIGEST, from: 8, to: 9, builds: [CURRENT_BUILD] }
+    { id: V5_TO_V6_MIGRATION_ID, digest: MIGRATION_DIGEST, from: 5, to: 6, builds: ['0.4.0', CURRENT_BUILD] },
+    { id: V6_TO_V7_MIGRATION_ID, digest: V6_TO_V7_MIGRATION_DIGEST, from: 6, to: 7, builds: ['0.4.0', CURRENT_BUILD] },
+    { id: V7_TO_V8_MIGRATION_ID, digest: V7_TO_V8_MIGRATION_DIGEST, from: 7, to: 8, builds: ['0.4.0', CURRENT_BUILD] },
+    { id: V8_TO_V9_MIGRATION_ID, digest: V8_TO_V9_MIGRATION_DIGEST, from: 8, to: 9, builds: ['0.4.0', CURRENT_BUILD] }
   ];
   const targetVersion = Number(database.prepare('PRAGMA user_version').get().user_version);
   const firstFrom = rows[0]?.from_version;
