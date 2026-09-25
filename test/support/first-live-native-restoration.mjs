@@ -16,7 +16,7 @@ import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs
 import { expectedRollbackRelease } from '../../src/metadata/recovery.mjs';
 import { controlUiPluginUrl } from '../../src/acceptance-readiness.mjs';
 import { scanPublicEvidence } from '../../src/safety.mjs';
-import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory } from './real-host-runtime.mjs';
+import { withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, boundedHostEvidence, configureEvidencePage, isGatewayStartupPending, requestAuthenticatedGateway, readAuthenticatedHistory } from './real-host-runtime.mjs';
 import { seedNativeExistingTopic } from './first-live-native-journey.mjs';
 import { assertNativeFormattedNote, assertNativeNoteSource, openNativeTopicConversation, openNativeTopicFiles } from './native-topic-workspace.mjs';
 
@@ -197,7 +197,18 @@ async function exerciseNativeRestoredSurface({ world, descriptor, buildReceipt, 
       const response = await fetchJsonWithDeadline(`${world.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${world.gatewayCredential}` }, signal }, { label: 'native restoration bootstrap', timeoutMs: 10_000 });
       return response.response.ok;
     }, host.earlyExit, { deadlineMs: 120_000, delayMs: 250, signal });
-    catalog = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'plugins.controlUi.list', signal });
+    // HTTP bootstrap is available before authenticated Gateway admission has
+    // finished the exact startup-sidecar phase. Poll only that retryable state.
+    await waitForConsecutiveReadiness(async () => {
+      try {
+        catalog = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url, credential: world.gatewayCredential, method: 'plugins.controlUi.list', signal });
+        return Array.isArray(catalog?.plugins);
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (isGatewayStartupPending(error)) return false;
+        throw error;
+      }
+    }, host.earlyExit, { deadlineMs: 30_000, delayMs: 250, signal });
     const plugins = catalog?.plugins?.filter(plugin => plugin.pluginId === 'command-center') ?? [];
     assert.equal(plugins.length, 1, 'The actual host must expose one native Command Center contribution');
     const native = plugins[0];

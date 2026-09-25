@@ -62,20 +62,29 @@ const currentRelease = Object.freeze({
   commandCenterSchema: canonical.commandCenterSchema,
   capabilityBridgeProtocol: canonical.capabilityBridgeProtocol
 });
+// The 0.4.0 schema-9 release is still the deployed rollback reader. Keep its
+// exact identity alongside older schema owners; priorRelease names schema 5.
+const previousDeployedRelease = Object.freeze({
+  package: Object.freeze({ name: canonical.package.name, version: '0.4.0', build: '0.4.0' }),
+  host: Object.freeze({ range: '=2026.9.5', commit: '21f1ca697532a9bd9e9cc46322a598a31435de15' }),
+  pluginApi: Object.freeze({ package: 'openclaw', range: '=2026.9.5' }),
+  commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 9 }), migratable: Object.freeze({ min: 1, max: 8 }), writable: Object.freeze({ min: 9, max: 9 }) }),
+  capabilityBridgeProtocol: canonical.capabilityBridgeProtocol
+});
 const schemaFiveRelease = Object.freeze(canonical.priorRelease);
 const schemaFourRelease = Object.freeze({ ...schemaFiveRelease, commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 4 }), migratable: Object.freeze({ min: 1, max: 3 }), writable: Object.freeze({ min: 4, max: 4 }) }) });
 const schemaThreeRelease = Object.freeze({ ...schemaFourRelease, package: Object.freeze({ name: canonical.package.name, version: '0.2.0', build: '0.2.0' }), commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 3 }), migratable: Object.freeze({ min: 1, max: 2 }), writable: Object.freeze({ min: 3, max: 3 }) }) });
 const schemaTwoRelease = Object.freeze({ ...schemaThreeRelease, commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 2 }), migratable: Object.freeze({ min: 1, max: 1 }), writable: Object.freeze({ min: 2, max: 2 }) }) });
 const schemaSixRelease = Object.freeze({
-  ...currentRelease,
+  ...previousDeployedRelease,
   commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 6 }), migratable: Object.freeze({ min: 1, max: 5 }), writable: Object.freeze({ min: 6, max: 6 }) })
 });
 const schemaSevenRelease = Object.freeze({
-  ...currentRelease,
+  ...previousDeployedRelease,
   commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 7 }), migratable: Object.freeze({ min: 1, max: 6 }), writable: Object.freeze({ min: 7, max: 7 }) })
 });
 const schemaEightRelease = Object.freeze({
-  ...currentRelease,
+  ...previousDeployedRelease,
   commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 8 }), migratable: Object.freeze({ min: 1, max: 7 }), writable: Object.freeze({ min: 8, max: 8 }) })
 });
 const schemaOneRelease = Object.freeze({
@@ -214,7 +223,7 @@ function validateManifestShape(manifest) {
   if (!manifest.migration || canonicalJson(manifest.migration) !== canonicalJson(currentContract.migration)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest migration contract differs.');
   if (manifest.snapshotId !== manifest.snapshot.sha256) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery snapshot identity does not match its content digest.');
   if (!['prepared', 'committed'].includes(manifest.state)) throw new RecoveryMaterialError('recovery-manifest-invalid', 'Recovery manifest state is invalid.');
-  const acceptedTargets = [currentContract.targetRelease, legacyContract.targetRelease, schemaFiveRelease, schemaFourRelease, schemaSixRelease, schemaSevenRelease, schemaEightRelease, ...(manifest.snapshot.schemaVersion === 1 ? [schemaTwoRelease] : [])];
+  const acceptedTargets = [currentContract.targetRelease, legacyContract.targetRelease, previousDeployedRelease, schemaFiveRelease, schemaFourRelease, schemaSixRelease, schemaSevenRelease, schemaEightRelease, ...(manifest.snapshot.schemaVersion === 1 ? [schemaTwoRelease] : [])];
   const exactReleaseMatches = canonicalJson(manifest.sourceRelease) === canonicalJson(currentContract.sourceRelease)
     && acceptedTargets.some((target) => canonicalJson(manifest.targetRelease) === canonicalJson(target));
   // A committed manifest records the exact host that performed the historical

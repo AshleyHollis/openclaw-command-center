@@ -39,9 +39,9 @@ import { tabTo } from './support/keyboard-navigation.mjs';
 import { activate, enterText, chooseOption, auditDynamicAccessibilityState, assertNoFrameOverflow, assertResponsiveFrame, assertKeyboardAccessibility } from './support/keyboard-accessibility.mjs';
 import { closeOpenConversation } from './support/conversation-lifecycle.mjs';
 import { acceptanceSignalContext, EXTERNAL_OPERATION_TIMEOUT_MS, BRIDGE_UI_OPERATION_BUDGET_MS, createGatewayDeviceIdentity, withDeadline, stopHostOnAbort, launchManagedBrowser, closeManagedBrowser, redactBrowserEvidence, boundedHostEvidence, configureEvidencePage, requestAuthenticatedGateway, readAuthenticatedHistory } from './support/real-host-runtime.mjs';
-import { exerciseNativeControlUiActivation, exerciseNativeKeyboardJourney, exerciseNativeScaleStartup, exerciseNativeTopicChatHandoffJourney, exerciseNativeTopicFilesWorkspaceJourney, exerciseNativeTopicNotesVisualJourney, exerciseNativeTopicNotesWorkspaceJourney, exerciseNativeTopicToolsJourney, seedNativeExistingTopic } from './support/first-live-native-journey.mjs';
+import { exerciseNativeControlUiActivation, exerciseNativeKeyboardJourney, exerciseNativeKeyboardPermissionJourney, exerciseNativeScaleStartup, exerciseNativeTopicChatHandoffJourney, exerciseNativeTopicFilesWorkspaceJourney, exerciseNativeTopicNotesVisualJourney, exerciseNativeTopicNotesWorkspaceJourney, exerciseNativeTopicToolsJourney, seedNativeExistingTopic } from './support/first-live-native-journey.mjs';
 import { exerciseNativeScaleJourney } from './support/first-live-native-scale.mjs';
-import { runNativeReleaseCapture, runNativeReleasePrerequisites } from './support/first-live-native-release.mjs';
+import { combineNativeKeyboardEvidence, runNativeReleaseCapture, runNativeReleasePrerequisites } from './support/first-live-native-release.mjs';
 import { exerciseNativeDegradedSourceRow, exerciseNativeDegradedBridgeHostVariant } from './support/first-live-native-degraded.mjs';
 import { exerciseNativeHistoricalBackfillJourney } from './support/first-live-native-backfill.mjs';
 import { exerciseNativeRestorationMatrix, exerciseNativeRecoveryOnlyHostVariant } from './support/first-live-native-restoration.mjs';
@@ -873,7 +873,7 @@ async function exerciseRecoveryOnlyHostVariant({ descriptor, buildReceipt, signa
       assert.ok(safeRead && typeof safeRead === 'object');
       const blockedRecoveryOperationId = randomUUID();
       await assert.rejects(() => requestAuthenticatedGateway({ gatewayUrl: recoveryWorld.gateway.url, credential: recoveryWorld.gatewayCredential, scopes: ['operator.read', 'operator.write'], method: 'command-center.v1.topics.create', params: { schemaVersion: 1, topicId: randomUUID(), name: 'Blocked Recovery Topic', paraCategory: 'resource', logicalOperationId: blockedRecoveryOperationId, authoritativeSession: { key: 'agent:main:blocked-recovery', sessionId: 'blocked-recovery-session', revision: '1', idempotencyKey: blockedRecoveryOperationId, label: 'Blocked Recovery Topic' } } }), /recovery-only/iu);
-      assert.equal(releasePerformanceIdentity.hostReceipt.commit, '21f1ca697532a9bd9e9cc46322a598a31435de15', 'the launched runtime must match the exact authenticated compatibility tuple');
+      assert.equal(releasePerformanceIdentity.hostReceipt.commit, '2b222e394d823814b8c08684841ad38beaf265da', 'the launched runtime must match the exact authenticated compatibility tuple');
       assert.equal(runtimeCapability.schemaVersion, 1, 'the active bootstrap must expose the supported bridge protocol');
       const recoveryDatabase = new DatabaseSync(databasePath, { readOnly: true });
       try { assert.equal(recoveryDatabase.prepare('PRAGMA user_version').get().user_version, 99); }
@@ -1003,13 +1003,23 @@ async function exerciseSecureHostVariant({ descriptor, buildReceipt, signal, onF
         failure.diagnostics = { readinessAttempts: readinessAttempts.map((entry) => ({ ...entry })) };
         throw failure;
       }
+      // The HTTPS bootstrap can answer before native plugin sidecars finish.
+      // Keep the real browser asset assertion, but wait for the host's own
+      // bounded readiness marker before asking that browser to fetch it.
+      await waitForConsecutiveReadiness(() => secureHost.diagnostics.stdout.includes('[gateway] ready'),
+        secureHost.earlyExit, { deadlineMs: 60_000, delayMs: 250, signal });
       const grantPrefix = '/__openclaw__/plugins/control-ui/command-center/';
       const pluginEntry = observeBrowserResponse(page.waitForResponse(response => response.request().method() === 'GET'
         && new URL(response.url()).origin === secureUrl && new URL(response.url()).pathname.startsWith(grantPrefix)
         && new URL(response.url()).pathname.endsWith('/entry.mjs'), { timeout: 60_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: secureUrl, pluginId: 'command-center', routeId: 'topics', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: secureWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       const loaded = await pluginEntry;
-      assert.equal(hasSuccessfulBrowserResponse(loaded), true);
+      assert.equal(hasSuccessfulBrowserResponse(loaded), true, `Secure native entry failed: ${JSON.stringify({
+        observed: loaded.observed,
+        status: loaded.value?.status(),
+        path: loaded.value ? new URL(loaded.value.url()).pathname : null,
+        errors: evidence.errors.slice(-5)
+      })}`);
       assert.deepEqual(await loaded.value.body(), await readFile(path.join(process.cwd(), 'dist/native-ui/entry.mjs')));
       const nativePage = page.locator('openclaw-plugin-page');
       await nativePage.getByRole('heading', { name: 'Topics', exact: true }).waitFor();
@@ -2274,9 +2284,9 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
   return Object.freeze(measurements);
 }
 
-// Complete qualification owns seven sequential participant pairs. Each pair
-// retains a 285-second slice bound, so the outer owner must outlive the closed
-// matrix plus preparation and final evidence scanning.
+// Complete qualification owns seven participant pairs and one final native
+// participant. Each slice retains a 285-second bound, so the outer owner must
+// outlive the closed matrix plus preparation and final evidence scanning.
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 2_400_000, concurrency: true }, async (testContext) => {
   let descriptor, buildReceipt, baseline, baselineSeed;
   const nativeDiagnostic = acceptancePlan.kind === 'focused' && acceptancePlan.scenarioIds?.length === 1
@@ -2299,16 +2309,25 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     const scale = nativeDiagnostic === 'scale-performance';
     // Keep every focused slice below controller inactivity. Scale capture gets
     // additional bounded headroom because its elapsed actions remain recorded.
-    const journey = nativeDiagnostic === 'historical-backfill-owner' ? exerciseNativeHistoricalBackfillJourney : nativeDiagnostic === 'diagnostic-scale-startup' ? exerciseNativeScaleStartup : nativeDiagnostic === 'native-topic-chat-handoff' ? exerciseNativeTopicChatHandoffJourney : nativeDiagnostic === 'native-topic-notes-workspace' ? exerciseNativeTopicNotesWorkspaceJourney : nativeDiagnostic === 'native-topic-files-workspace' ? exerciseNativeTopicFilesWorkspaceJourney : nativeDiagnostic === 'topic-notes-visual' ? exerciseNativeTopicNotesVisualJourney : nativeDiagnostic === 'topic-document-tools' ? exerciseNativeTopicToolsJourney : scale ? exerciseNativeScaleJourney : keyboard ? exerciseNativeKeyboardJourney : exerciseNativeControlUiActivation;
+    const journey = nativeDiagnostic === 'historical-backfill-owner' ? exerciseNativeHistoricalBackfillJourney : nativeDiagnostic === 'diagnostic-scale-startup' ? exerciseNativeScaleStartup : nativeDiagnostic === 'native-topic-chat-handoff' ? exerciseNativeTopicChatHandoffJourney : nativeDiagnostic === 'native-topic-notes-workspace' ? exerciseNativeTopicNotesWorkspaceJourney : nativeDiagnostic === 'native-topic-files-workspace' ? exerciseNativeTopicFilesWorkspaceJourney : nativeDiagnostic === 'topic-notes-visual' ? exerciseNativeTopicNotesVisualJourney : nativeDiagnostic === 'topic-document-tools' ? exerciseNativeTopicToolsJourney : scale ? exerciseNativeScaleJourney : exerciseNativeControlUiActivation;
     let evidence;
     try {
-      evidence = await runBoundedAcceptanceSlice(nativeDiagnostic, (signal) => journey({ descriptor, buildReceipt, signal,
-        onDiagnostic: diagnostic => testContext.diagnostic(`acceptance-startup-diagnostic=${JSON.stringify(diagnostic)}`),
-        onScaleProgress: progress => testContext.diagnostic(`acceptance-scale-progress=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...progress })}`),
-        onFinalization: finalization => testContext.diagnostic(`acceptance-finalization=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...finalization })}`) }),
-      scale || keyboard || nativeDiagnostic === 'native-control-ui-activation' || nativeDiagnostic === 'historical-backfill-owner'
-        ? { timeoutMs: 285_000, cleanupTimeoutMs: 14_000 }
-        : undefined);
+      const bounded = { timeoutMs: 285_000, cleanupTimeoutMs: 14_000 };
+      const finalization = (variant) => (event) => testContext.diagnostic(`acceptance-finalization=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...(variant ? { variant } : {}), ...event })}`);
+      if (keyboard) {
+        // Both degraded variants retain the real keyboard and host restart
+        // assertions. Independent worlds keep each full proof below the
+        // controller's 300-second slice limit.
+        const source = await runBoundedAcceptanceSlice('keyboard-source-unavailable', signal => exerciseNativeKeyboardJourney({ descriptor, buildReceipt, signal, onFinalization: finalization('source-unavailable') }), bounded);
+        const permission = await runBoundedAcceptanceSlice('keyboard-permission-refused', signal => exerciseNativeKeyboardPermissionJourney({ descriptor, buildReceipt, signal, onFinalization: finalization('permission-refused') }), bounded);
+        evidence = combineNativeKeyboardEvidence(source, permission);
+      } else {
+        evidence = await runBoundedAcceptanceSlice(nativeDiagnostic, (signal) => journey({ descriptor, buildReceipt, signal,
+          onDiagnostic: diagnostic => testContext.diagnostic(`acceptance-startup-diagnostic=${JSON.stringify(diagnostic)}`),
+          onScaleProgress: progress => testContext.diagnostic(`acceptance-scale-progress=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, ...progress })}`),
+          onFinalization: finalization() }),
+        scale || nativeDiagnostic === 'native-control-ui-activation' || nativeDiagnostic === 'historical-backfill-owner' ? bounded : undefined);
+      }
     } catch (error) {
       testContext.diagnostic(`acceptance-scenario-failure=${JSON.stringify({ schemaVersion: 1, scenario: nativeDiagnostic, errors: boundedAcceptanceErrors(error) })}`);
       throw error;
@@ -2348,6 +2367,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       runners: {
         primary: bind(exerciseNativeControlUiActivation),
         keyboard: bind(exerciseNativeKeyboardJourney),
+        keyboardPermission: bind(exerciseNativeKeyboardPermissionJourney),
         secure: bind(exerciseSecureHostVariant),
         bridgeDenied: bind(exerciseNativeDegradedBridgeHostVariant),
         sourceUnavailable: bind(exerciseNativeDegradedSourceRow),

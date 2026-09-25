@@ -580,6 +580,16 @@ export function mountTopicPage(container, context, state = createNativeState(), 
         captureNavigation: () => { const selection = generation; return () => current(selection); },
         onCreated: async (result, input) => {
           reading.abort(); navigation.cancel(); const selection = ++generation;
+          if (typeof result.sessionId === 'string' && result.sessionId.trim()) {
+            // The authenticated mutation owner checked this ID against the
+            // authoritative Session catalog before issuing the receipt. The
+            // resolver below independently rechecks the persisted Topic link.
+            if (!current(selection)) return;
+            await navigation.open({ topicId: input.topicId, referenceId: result.referenceId, expectedSessionId: result.sessionId });
+            return;
+          }
+          // Older reconciled receipts expose only the reference. Retain the
+          // catalog read for that recovery path.
           const response = await host.request('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: input.topicId, includeClosed: false });
           if (!current(selection)) return;
           const catalog = response?.result ?? response;

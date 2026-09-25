@@ -18,6 +18,16 @@ const isolatedIpcRoot = typeof manifest.tempRoot === 'string' ? realpathSync(man
 function record(entry) {
   appendFileSync(manifest.trafficLog, `${JSON.stringify(entry)}\n`);
 }
+function deniedCallsite() {
+  // Only module basenames and line numbers enter the isolated traffic log.
+  // They identify the owner of a refused attempt without retaining fixture
+  // paths, URLs, request payloads, or credentials.
+  return (new Error().stack?.split('\n').slice(4, 7) ?? []).map((frame) => {
+    const location = frame.match(/([^/\\()\s]+):(\d+):(\d+)\)?$/u);
+    const caller = frame.match(/^\s*at\s+([^(]+?)\s*\(/u)?.[1]?.trim() ?? '<anonymous>';
+    return location ? `${caller}@${path.basename(location[1])}:${location[2]}` : null;
+  }).filter(Boolean).join(' > ').slice(0, 240);
+}
 function guard(value, source) {
   const target = destinationFromConnectionArguments(value);
   let containedIpc = false;
@@ -28,7 +38,7 @@ function guard(value, source) {
     } catch { /* missing or inaccessible parents remain prohibited */ }
   }
   const permitted = isLoopbackDestination(target) || containedIpc;
-  record({ destination: target, source, permitted });
+  record({ destination: target, source, permitted, ...(!permitted ? { origin: deniedCallsite() } : {}) });
   if (!permitted) throw new Error(`Prohibited isolated child ${source} destination`);
 }
 

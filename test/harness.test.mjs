@@ -101,7 +101,7 @@ test('categorizes absent and malformed host descriptors', () => {
 });
 
 test('runtime checkout identity remains distinct from the compatibility and performance receipt identities', () => {
-  assert.equal(pinnedHost.commit, '21f1ca697532a9bd9e9cc46322a598a31435de15');
+  assert.equal(pinnedHost.commit, '2b222e394d823814b8c08684841ad38beaf265da');
   assert.doesNotThrow(() => parseHostDescriptor(hostDescriptor()));
   assert.throws(() => parseHostDescriptor(hostDescriptor({ commit: '19686a23834910173df0fd1f77bd762ffcda2afd' })), (error) => error.category === 'invalid-commit');
 });
@@ -314,7 +314,7 @@ test('reports bounded source and destination evidence for prohibited child traff
   const trafficLog = path.join(root, 'traffic.jsonl');
   try {
     await writeFile(trafficLog, [
-      JSON.stringify({ source: 'dns', destination: 'catalog.example.invalid', permitted: false }),
+      JSON.stringify({ source: 'dns', destination: 'catalog.example.invalid', permitted: false, origin: 'probe@module.js:12' }),
       JSON.stringify({ source: 'https', destination: 'catalog.example.invalid', permitted: false })
     ].join('\n'));
     let caught;
@@ -326,6 +326,7 @@ test('reports bounded source and destination evidence for prohibited child traff
     assert.ok(caught instanceof HarnessFailure);
     assert.equal(caught.category, 'isolation-violation');
     assert.match(caught.message, /dns -> catalog\.example\.invalid/);
+    assert.match(caught.message, /probe@module\.js:12/u);
     assert.deepEqual(caught.diagnostics.childTraffic, [
       { source: 'dns', destination: 'catalog.example.invalid' },
       { source: 'https', destination: 'catalog.example.invalid' }

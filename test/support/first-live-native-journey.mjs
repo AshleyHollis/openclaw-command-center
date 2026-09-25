@@ -684,10 +684,14 @@ async function exerciseNativeStartup({ descriptor, buildReceipt, signal, onFinal
 // diagnostic's deadline. The dispatcher owns its total row budget; stage and
 // resource deadlines remain bounded here. Runtime duration is not yet measured.
 export async function exerciseNativeKeyboardJourney({ descriptor, buildReceipt, signal, onFinalization }) {
-  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, keyboard: true });
+  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, keyboard: true, keyboardState: 'source-unavailable' });
 }
 
-export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, scale = false, catalog: catalogJourney = false, chatHandoffOnly = false, notesWorkspaceOnly = false, nativeFilesWorkspace = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
+export async function exerciseNativeKeyboardPermissionJourney({ descriptor, buildReceipt, signal, onFinalization }) {
+  return exerciseNativeJourney({ descriptor, buildReceipt, signal, onFinalization, keyboard: true, keyboardState: 'permission-refused' });
+}
+
+export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, keyboard = false, keyboardState, scale = false, catalog: catalogJourney = false, chatHandoffOnly = false, notesWorkspaceOnly = false, nativeFilesWorkspace = false, onFinalization, scaleDiagnostic = false, onScaleProgress, diagnosticBoundary }) {
   if (scaleDiagnostic) assert.equal(process.env.COMMAND_CENTER_CAPTURE_PERFORMANCE_BASELINE, undefined);
   const scaleNow = scaleDiagnostic ? () => 0 : () => performance.now();
   const progressStarted = performance.now();
@@ -1383,7 +1387,7 @@ export async function exerciseNativeJourney({ descriptor, buildReceipt, signal, 
         // authenticated public route rather than copying the stripped URL.
         const nativeUrl = controlUiPluginUrl({ gatewayUrl: world.gateway.url, pluginId: 'command-center', routeId: 'topics',
           fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: world.gatewayCredential });
-        result = await exerciseNativeKeyboardStates({ page, world, host, fixture, native, signal, restartHost, browserGuard,
+        result = await exerciseNativeKeyboardStates({ page, world, host, fixture, native, signal, restartHost, browserGuard, degradedState: keyboardState,
           reopenPage: async previous => {
             const next = await createPage();
             await next.goto(nativeUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });

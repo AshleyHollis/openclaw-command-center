@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import { createAcceptanceReport, assertAcceptanceReportPassed, assertNonPerformanceAcceptanceEvidence, NON_PERFORMANCE_ROW_IDS, FINALIZATION_PHASES, RELEASE_ROW_IDS } from '../../src/acceptance-report.mjs';
 import { runBoundedAcceptanceSlice, runIsolatedAcceptanceSlices } from '../../src/acceptance-scenario-coordinator.mjs';
+import { redact } from '../../src/host-harness.mjs';
 import { captureFirstReleasePerformanceBaseline, validateReleasePerformanceBaseline, deriveReleasePerformanceBudget, RELEASE_PERFORMANCE_BASELINE_VERSION, RELEASE_FIXTURE_IDENTITY, RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../../src/performance-baseline.mjs';
 
 // Two fixed subsystem lanes, not an extensible workflow registry. Each pair
-// settles before the next is admitted; scale never shares their resources.
-const NATIVE_LANE = Object.freeze(['primary', 'keyboard', 'secure', 'bridgeDenied', 'sourceUnavailable', 'combinedDegraded', 'restoration']);
+// settles before the next is admitted; one final native participant runs alone
+// and scale never shares their resources.
+// Each keyboard degradation gets its own bounded isolated host journey so
+// both retained restarts retain every assertion below the 300-second limit.
+const NATIVE_LANE = Object.freeze(['primary', 'keyboard', 'keyboardPermission', 'secure', 'bridgeDenied', 'sourceUnavailable', 'combinedDegraded', 'restoration']);
 const COMPATIBILITY_LANE = Object.freeze(['hostMismatch', 'buildMismatch', 'pluginApiMismatch', 'bridgeProtocolMismatch', 'bindingMismatch', 'foreignRestoration', 'schemaMismatch']);
 const PARTICIPANTS = Object.freeze([...NATIVE_LANE, ...COMPATIBILITY_LANE, 'scale']);
 const PREREQUISITE_PARTICIPANTS = Object.freeze([...NATIVE_LANE, ...COMPATIBILITY_LANE]);
@@ -18,6 +22,26 @@ function requireNativeRecovery(value, mode, label) {
   assert.equal(value?.mode, mode, `${label}.mode`);
   requireFacts(value, ['safeReadObserved', 'mountedUiObserved', 'unsupportedControlsAbsent', 'nativeActivationObserved'], label);
   assert.ok(typeof value.revision === 'string' && value.revision.trim(), `${label}.revision`);
+}
+
+const KEYBOARD_BASE_STATES = Object.freeze(['topics-navigation', 'notes-list', 'note-reader', 'native-chat-handoff', 'conversation-create', 'unknown-creation']);
+
+export function combineNativeKeyboardEvidence(source, permission) {
+  for (const [value, state] of [[source, 'source-unavailable'], [permission, 'permission-refused']]) {
+    assert.equal(value?.schemaVersion, 2);
+    assert.equal(value.keyboardOnly, true);
+    assert.deepEqual(value.states, [...KEYBOARD_BASE_STATES, state]);
+    for (const key of ['forcedColors', 'reducedMotion', 'focusRestored', 'announcements', 'colorIndependent', 'noPageOverflow']) {
+      assert.equal(value[key], true, `${state}.${key}`);
+    }
+    assert.ok(Number.isInteger(value.announcementCount) && value.announcementCount >= 8, `${state}.announcementCount`);
+  }
+  assert.deepEqual(source.viewport, permission.viewport, 'Both keyboard variants must use the same real desktop viewport');
+  assert.ok(source.announcementCount + permission.announcementCount >= 8, 'Combined keyboard announcements must cover both variants');
+  return Object.freeze({ schemaVersion: 2, viewport: structuredClone(source.viewport), keyboardOnly: true,
+    forcedColors: true, reducedMotion: true, focusRestored: true, announcements: true,
+    colorIndependent: true, noPageOverflow: true,
+    states: [...KEYBOARD_BASE_STATES, 'source-unavailable', 'permission-refused'] });
 }
 
 function validateSupplementalEvidence(results) {
@@ -60,6 +84,21 @@ function validateSupplementalEvidence(results) {
 function captureFailure(failures, outcomes) {
   const error = new AggregateError(failures.map(entry => entry.error), `Native release capture failed: ${failures.map(entry => entry.id).join(', ')}`);
   error.outcomes = Object.freeze([...outcomes].map(([id, status]) => Object.freeze({ id, status })));
+  // Node's test reporter collapses nested AggregateError causes to [Array].
+  // Keep a bounded, redacted chain per participant so a failed exact-host run
+  // can be repaired from its immutable CI log without repeating it blind.
+  error.failureDiagnostics = Object.freeze(failures.map(({ id, error: failure }) => {
+    const causes = [];
+    let current = failure;
+    for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+      causes.push(Object.freeze({ name: current.name, category: current.category ?? null, message: redact(current.message, 180) }));
+      current = current instanceof AggregateError ? current.errors[0] : current.cause;
+    }
+    return Object.freeze({ id, causes: Object.freeze(causes) });
+  }));
+  // Node's reporter also truncates custom nested properties. Print only the
+  // bounded, redacted diagnostic summary so CI retains the actual cause.
+  console.error(`native-release-failure-diagnostics=${JSON.stringify(error.failureDiagnostics)}`);
   if (failures.some(entry => entry.error?.fatalAcceptanceCleanup === true)) error.fatalAcceptanceCleanup = true;
   return error;
 }
@@ -89,7 +128,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
   assert.match(buildReceipt?.digest ?? '', /^[a-f0-9]{64}$/u, 'An exact sealed build receipt is required');
   assert.equal(typeof descriptor?.integrity, 'object', 'The verified host descriptor integrity is required');
   const participants = prerequisitesOnly ? PREREQUISITE_PARTICIPANTS : PARTICIPANTS;
-  assert.deepEqual(Object.keys(runners ?? {}).sort(), [...participants].sort(), prerequisitesOnly ? 'Exactly fourteen non-performance participants are required' : 'All fifteen closed native participants are required');
+  assert.deepEqual(Object.keys(runners ?? {}).sort(), [...participants].sort(), prerequisitesOnly ? 'Exactly fifteen non-performance participants are required' : 'All sixteen closed native participants are required');
   for (const id of participants) assert.equal(typeof runners[id], 'function', `${id} runner is required`);
   assert.equal(typeof scanArtifacts, 'function', 'The final artifact scanner is required');
   assert.equal(typeof onProgress, 'function');
@@ -142,7 +181,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
     return structuredClone(result);
   };
   for (let index = 0; index < NATIVE_LANE.length; index += 1) {
-    const pair = [NATIVE_LANE[index], COMPATIBILITY_LANE[index]];
+    const pair = [NATIVE_LANE[index], COMPATIBILITY_LANE[index]].filter(Boolean);
     const batch = await runIsolatedAcceptanceSlices(pair.map(id => ({ id, run: execute(id) })), { ...bounds, maxConcurrency, onProgress: progress });
     for (const [id, result] of batch.results) results.set(id, result);
     failures.push(...batch.failures);
@@ -173,7 +212,7 @@ async function runNativeRelease({ buildReceipt, descriptor, runners, capturePerf
       startupMigrationVerified: primary.startup.startupMigrationVerified, routeGrantObserved: primary.startup.routeGrantObserved,
       secureOrigin: { protocol: origin.protocol, hostname: origin.hostname, loopbackOnly: secure.loopbackResolution === '127.0.0.1' }, nativeUi: primary.startup.nativeUi },
     primary.primary,
-    results.get('keyboard'),
+    combineNativeKeyboardEvidence(results.get('keyboard'), results.get('keyboardPermission')),
     results.get('bridgeDenied'),
     results.get('sourceUnavailable'),
     { schemaVersion: 2, mode: schema.mode, safeReadObserved: schema.safeReadObserved, mutationsRejected: schema.mutationsRejected,

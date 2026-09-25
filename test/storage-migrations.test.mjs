@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
+import deployedTuple from './fixtures/deployed-0.4.0-compatibility-tuple.json' with { type: 'json' };
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { metadataSchemaV1Sql, metadataSchemaV2Sql, metadataSchemaV3Sql, metadataSchemaV4Sql, metadataSchemaV5Sql, metadataSchemaV6Sql, metadataSchemaV7Sql, metadataSchemaV8Sql } from '../src/metadata/schema.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
@@ -119,7 +120,15 @@ test('schema-5 to schema-9 preserves Topic Search bookkeeping and backfills exac
   });
 });
 
-for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) test(`a committed schema-${schemaVersion} migration manifest remains valid after a compatible host-only upgrade`, async () => {
+const deployedRelease = Object.freeze({
+  package: deployedTuple.package,
+  host: deployedTuple.host,
+  pluginApi: deployedTuple.pluginApi,
+  commandCenterSchema: deployedTuple.commandCenterSchema,
+  capabilityBridgeProtocol: deployedTuple.capabilityBridgeProtocol
+});
+
+for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) for (const historicalHost of [false, true]) test(`a committed schema-${schemaVersion} migration manifest from deployed 0.4.0 remains valid${historicalHost ? ' after its compatible host-only upgrade' : ''}`, async () => {
   await withState(async (stateDir) => {
     await seedMigratableSchema(stateDir, schemaVersion, `topic-compatible-host-upgrade-${schemaVersion}`);
     const migrated = open({ stateDir });
@@ -128,9 +137,12 @@ for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) test(`a committed schema-$
 
     const manifestPath = path.join(resolveCommandCenterRecoveryMigrationPath(stateDir), 'manifest.json');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    const historicalCommit = '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee';
-    if (manifest.sourceRelease.host.commit === manifest.targetRelease.host.commit) manifest.sourceRelease.host.commit = historicalCommit;
-    manifest.targetRelease.host.commit = historicalCommit;
+    manifest.targetRelease = structuredClone(deployedRelease);
+    if (historicalHost) {
+      const historicalCommit = '8e58ed3d14ac21b9046bf19c96c7eb86d858cdee';
+      if (manifest.sourceRelease.host.commit === manifest.targetRelease.host.commit) manifest.sourceRelease.host.commit = historicalCommit;
+      manifest.targetRelease.host.commit = historicalCommit;
+    }
     const historicalBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
     await writeFile(manifestPath, historicalBytes);
 
@@ -252,12 +264,12 @@ test('published schema-3 recovery material and historical ledger migrate to sche
       assert.deepEqual(database.prepare('SELECT from_version, to_version, applied_build FROM schema_migrations ORDER BY sequence').all().map((row) => ({ ...row })), [
         { from_version: 1, to_version: 2, applied_build: '0.2.0' },
         { from_version: 2, to_version: 3, applied_build: '0.2.0' },
-        { from_version: 3, to_version: 4, applied_build: '0.4.0' },
-        { from_version: 4, to_version: 5, applied_build: '0.4.0' },
-        { from_version: 5, to_version: 6, applied_build: '0.4.0' },
-        { from_version: 6, to_version: 7, applied_build: '0.4.0' },
-        { from_version: 7, to_version: 8, applied_build: '0.4.0' },
-        { from_version: 8, to_version: 9, applied_build: '0.4.0' }
+        { from_version: 3, to_version: 4, applied_build: '0.4.1' },
+        { from_version: 4, to_version: 5, applied_build: '0.4.1' },
+        { from_version: 5, to_version: 6, applied_build: '0.4.1' },
+        { from_version: 6, to_version: 7, applied_build: '0.4.1' },
+        { from_version: 7, to_version: 8, applied_build: '0.4.1' },
+        { from_version: 8, to_version: 9, applied_build: '0.4.1' }
       ]);
     } finally { database.close(); }
   });
@@ -385,7 +397,7 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
         from_version: 1,
         to_version: 2,
         snapshot_id: undefined,
-        applied_build: '0.4.0'
+        applied_build: '0.4.1'
       });
       assert.deepEqual({ ...ledgerRows[1], snapshot_id: undefined }, {
         sequence: 2,
@@ -394,7 +406,7 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
         from_version: 2,
         to_version: 3,
         snapshot_id: undefined,
-        applied_build: '0.4.0'
+        applied_build: '0.4.1'
       });
       assert.deepEqual({ ...ledgerRows[2], snapshot_id: undefined }, {
         sequence: 3,
@@ -403,7 +415,7 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
         from_version: 3,
         to_version: 4,
         snapshot_id: undefined,
-        applied_build: '0.4.0'
+        applied_build: '0.4.1'
       });
       assert.deepEqual({ ...ledgerRows[3], snapshot_id: undefined }, {
         sequence: 4,
@@ -412,7 +424,7 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
         from_version: 4,
         to_version: 5,
         snapshot_id: undefined,
-        applied_build: '0.4.0'
+        applied_build: '0.4.1'
       });
       assert.deepEqual({ ...ledgerRows[4], snapshot_id: undefined }, {
         sequence: 5,
@@ -421,7 +433,7 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
         from_version: 5,
         to_version: 6,
         snapshot_id: undefined,
-        applied_build: '0.4.0'
+        applied_build: '0.4.1'
       });
       assert.deepEqual({ ...ledgerRows[5], snapshot_id: undefined }, {
         sequence: 6,
@@ -430,7 +442,7 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
         from_version: 6,
         to_version: 7,
         snapshot_id: undefined,
-        applied_build: '0.4.0'
+        applied_build: '0.4.1'
       });
       assert.deepEqual({ ...ledgerRows[6], snapshot_id: undefined }, {
         sequence: 7,
@@ -439,7 +451,7 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
         from_version: 7,
         to_version: 8,
         snapshot_id: undefined,
-        applied_build: '0.4.0'
+        applied_build: '0.4.1'
       });
       assert.deepEqual({ ...ledgerRows[7], snapshot_id: undefined }, {
         sequence: 8,
@@ -448,7 +460,7 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
         from_version: 8,
         to_version: 9,
         snapshot_id: undefined,
-        applied_build: '0.4.0'
+        applied_build: '0.4.1'
       });
     } finally { database.close(); }
 
@@ -461,7 +473,7 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
     assert.equal(manifest.snapshotId, manifest.snapshot.sha256);
     assert.equal(manifest.snapshotFile, 'metadata.sqlite.snapshot');
     assert.equal(manifest.sourceRelease.package.version, '0.1.0');
-    assert.equal(manifest.targetRelease.package.version, '0.4.0');
+    assert.equal(manifest.targetRelease.package.version, '0.4.1');
     const snapshotBytes = await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot'));
 
     const reopened = open({ stateDir });

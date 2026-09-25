@@ -9,7 +9,7 @@ import { RELEASE_MEASUREMENTS, releasePerformanceIdentity } from '../src/perform
 // neither launch OpenClaw nor qualify any native/runtime acceptance frontier.
 const digest = 'a'.repeat(64);
 const revision = 'fictional-native-revision';
-const names = ['primary', 'keyboard', 'secure', 'bridgeDenied', 'sourceUnavailable', 'combinedDegraded', 'hostMismatch', 'buildMismatch', 'pluginApiMismatch', 'bridgeProtocolMismatch', 'bindingMismatch', 'foreignRestoration', 'schemaMismatch', 'restoration', 'scale'];
+const names = ['primary', 'keyboard', 'keyboardPermission', 'secure', 'bridgeDenied', 'sourceUnavailable', 'combinedDegraded', 'hostMismatch', 'buildMismatch', 'pluginApiMismatch', 'bridgeProtocolMismatch', 'bindingMismatch', 'foreignRestoration', 'schemaMismatch', 'restoration', 'scale'];
 const bridge = { protocolVersion: 1, writeGrant: false, observedFromAuthenticatedAction: true, action: 'conversations.create', httpStatus: 422, errorCode: 'capability-unavailable' };
 const source = { capability: 'sessions', available: false, bindingObserved: true };
 const runtime = { mode: 'recovery-only', safeReadObserved: true, mutationRejected: true, mountedUiObserved: true, unsupportedControlsAbsent: true, nativeActivationObserved: true, revision };
@@ -23,8 +23,10 @@ function fixtures() {
       primary: { schemaVersion: 2, topicId: 'fictional-topic', authoritativeReadback: { existingTopics: true, primarySession: true, conversation: true, note: true, chatSend: true, conversationAfterRestart: true },
         actions: ['existing-topic-open', 'note-read', 'native-chat-open', 'native-chat-send', 'conversation-create', 'conversation-replay', 'conversation-refresh', 'native-return'] }
     },
-    keyboard: { schemaVersion: 2, viewport: { width: 1440, height: 900 }, keyboardOnly: true, forcedColors: true, reducedMotion: true, focusRestored: true, announcements: true, colorIndependent: true, noPageOverflow: true,
-      states: ['topics-navigation', 'notes-list', 'note-reader', 'native-chat-handoff', 'conversation-create', 'unknown-creation', 'source-unavailable', 'permission-refused'] },
+    keyboard: { schemaVersion: 2, viewport: { width: 1440, height: 900 }, keyboardOnly: true, forcedColors: true, reducedMotion: true, focusRestored: true, announcements: true, announcementCount: 8, colorIndependent: true, noPageOverflow: true,
+      states: ['topics-navigation', 'notes-list', 'note-reader', 'native-chat-handoff', 'conversation-create', 'unknown-creation', 'source-unavailable'] },
+    keyboardPermission: { schemaVersion: 2, viewport: { width: 1440, height: 900 }, keyboardOnly: true, forcedColors: true, reducedMotion: true, focusRestored: true, announcements: true, announcementCount: 8, colorIndependent: true, noPageOverflow: true,
+      states: ['topics-navigation', 'notes-list', 'note-reader', 'native-chat-handoff', 'conversation-create', 'unknown-creation', 'permission-refused'] },
     secure: { secureOrigin: 'https://command-center.fictional.ts.net:443', actualTlsLoad: true, fictionalTailnetHost: 'command-center.fictional.ts.net', loopbackResolution: '127.0.0.1', nativeActivationObserved: true, revision },
     bridgeDenied: { ...degraded, bridge: { ...bridge } },
     sourceUnavailable: { ...degraded, source: { ...source } },
@@ -78,7 +80,7 @@ function setup() {
   return { options, evidence, events, maximumActive: () => maximumActive };
 }
 
-test('pure orchestration: all fifteen unique participants yield exactly nine coherent rows after exclusive scale and final privacy scan', async () => {
+test('pure orchestration: all sixteen unique participants yield exactly nine coherent rows after exclusive scale and final privacy scan', async () => {
   const state = setup();
   const { report, capturedBaseline } = await runNativeReleaseCapture(state.options);
   assert.equal(report.outcome, 'passed');
@@ -109,7 +111,7 @@ function prerequisiteOptions(state) {
   const { scale: _scale, ...runners } = state.options.runners;
   const { capturePerformanceBaseline: _capture, ...options } = state.options;
   return { ...options, runners, scanArtifacts: async ({ participantEvidence, rowEvidence }) => {
-    assert.equal(Object.keys(participantEvidence).length, 14);
+    assert.equal(Object.keys(participantEvidence).length, 15);
     assert.equal(rowEvidence.length, 7);
     assert.equal(state.events.includes('start:scale'), false);
     return { repository: true, generated: true, capturedOutput: true };
@@ -152,23 +154,30 @@ test('pure orchestration: malformed timing diagnostics never echo nonnumeric evi
   });
 });
 
-test('pure orchestration: early prerequisites run fourteen participants in two lanes without claiming release or performance', async () => {
+test('pure orchestration: early prerequisites run fifteen participants in two lanes without claiming release or performance', async () => {
   const state = setup();
   const result = await nativeRelease.runNativeReleasePrerequisites(prerequisiteOptions(state));
   assert.equal(result.kind, 'native-release-prerequisites');
   assert.equal(result.performanceQualified, false);
   assert.equal(result.buildDigest, digest);
   assert.equal(result.rows.length, 7);
-  assert.equal(Object.keys(result.finalization).length, 14);
+  assert.equal(Object.keys(result.finalization).length, 15);
   assert.equal(state.maximumActive(), 2);
   assert.equal('report' in result, false);
   assert.equal('performanceBaseline' in result, false);
 });
 
+test('pure orchestration: each keyboard restart variant is required before performance can run', async () => {
+  const state = setup();
+  state.evidence.keyboardPermission.states.pop();
+  await assert.rejects(runNativeReleaseCapture(state.options), /permission-refused/u);
+  assert.equal(state.events.includes('start:scale'), false);
+});
+
 test('pure orchestration: prerequisite entry refuses scale, capture options and failed privacy', async () => {
   const state = setup();
   const options = prerequisiteOptions(state);
-  await assert.rejects(nativeRelease.runNativeReleasePrerequisites({ ...options, runners: state.options.runners }), /fourteen/u);
+  await assert.rejects(nativeRelease.runNativeReleasePrerequisites({ ...options, runners: state.options.runners }), /fifteen/u);
   await assert.rejects(nativeRelease.runNativeReleasePrerequisites({ ...options, capturePerformanceBaseline: true }), /cannot capture/u);
   assert.equal(state.events.length, 0);
   await assert.rejects(nativeRelease.runNativeReleasePrerequisites({ ...options,
@@ -199,9 +208,11 @@ test('pure orchestration: safe ordinary failures collect independent diagnostics
   };
   await assert.rejects(runNativeReleaseCapture(state.options), error => {
     assert.equal(error.fatalAcceptanceCleanup, undefined);
-    assert.equal(error.outcomes.length, 14);
-    assert.equal(new Set(error.outcomes.map(entry => entry.id)).size, 14);
+    assert.equal(error.outcomes.length, 15);
+    assert.equal(new Set(error.outcomes.map(entry => entry.id)).size, 15);
     assert.deepEqual(error.outcomes.find(entry => entry.id === 'primary'), { id: 'primary', status: 'failed' });
+    assert.deepEqual(error.failureDiagnostics.find(entry => entry.id === 'primary')?.causes,
+      [{ name: 'Error', category: null, message: 'fictional primary refusal' }]);
     return /primary/u.test(error.message);
   });
   assert.equal(state.events.includes('stop:schemaMismatch'), true);
@@ -299,7 +310,7 @@ test('pure orchestration: the final artifact scan must complete after teardown a
   const state = setup();
   state.options.scanArtifacts = async ({ participantEvidence, rowEvidence, signal }) => {
     assert.equal(signal.aborted, false);
-    assert.equal(Object.keys(participantEvidence).length, 15);
+    assert.equal(Object.keys(participantEvidence).length, 16);
     assert.equal(rowEvidence.length, 8);
     assert.equal(state.events.includes('stop:scale'), true);
     return { repository: true, generated: true, capturedOutput: false };
@@ -336,7 +347,7 @@ test('pure orchestration: missing producer counts and false restoration evidence
 test('pure orchestration: closed participant configuration and exact startup identity are mandatory', async () => {
   const omitted = setup();
   delete omitted.options.runners.foreignRestoration;
-  await assert.rejects(runNativeReleaseCapture(omitted.options), /fifteen/u);
+  await assert.rejects(runNativeReleaseCapture(omitted.options), /sixteen/u);
   assert.equal(omitted.events.length, 0);
   const stale = setup();
   stale.evidence.primary.startup.hostReceipt.sourceDigest = `sha256:${'f'.repeat(64)}`;

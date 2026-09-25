@@ -139,7 +139,14 @@ export async function createIsolatedWorld({ tmpRoot = os.tmpdir(), candidateRoot
       };
       fixtureModelProvider[fixtureModelCredentialField] = ['fixture', 'only', 'not', 'live'].join('-');
       await writeFile(configPath, `${JSON.stringify({
-        gateway: { bind: 'loopback', port: gateway.port, auth: gatewayAuth, controlUi: { experimental: { customPlugins: true } } },
+        gateway: { bind: 'loopback', port: gateway.port, auth: gatewayAuth, controlUi: {
+          experimental: { customPlugins: true },
+          // Keyboard traversal can focus the host's community invite link.
+          // Its optional server-side preview would fetch a public remote URL.
+          // Keep this disposable host network-isolated through the supported
+          // setting while still testing the real native route and controls.
+          automaticallyFetchFavicons: false
+        } },
         // The current native Control UI deliberately redirects an unconfigured
         // gateway to Model Setup before it can mount any contributed pages.
         // Keep a loopback-only fictional model in the disposable host fixture:

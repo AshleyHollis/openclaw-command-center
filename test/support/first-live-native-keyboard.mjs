@@ -82,7 +82,8 @@ async function requireExactFocus(page, target, label) {
 
 // Called only after the shared native owner admits the pinned host, imports the
 // exact revisioned entry and mounts its real page. It owns no alternate runtime.
-export async function exerciseNativeKeyboardStates({ page, world, host: initialHost, fixture, native, signal, restartHost, reopenPage, browserGuard }) {
+export async function exerciseNativeKeyboardStates({ page, world, host: initialHost, fixture, native, signal, restartHost, reopenPage, browserGuard, degradedState }) {
+  assert.ok(['source-unavailable', 'permission-refused'].includes(degradedState), 'Keyboard journey requires one exact degraded restart state');
   page.setDefaultTimeout(30_000);
   const progress = phase => console.log(`native-keyboard-progress=${JSON.stringify({ phase })}`);
   let host = initialHost;
@@ -342,7 +343,7 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
   const withoutObservationTimes = topic => ({ ...topic,
     sourceReferences: topic.sourceReferences.map(({ updatedAt, ...reference }) => reference)
   });
-  for (const state of ['source-unavailable', 'permission-refused']) {
+  for (const state of [degradedState]) {
     progress(`${state}:started`);
     // Change only the supported isolated plugin configuration. This is source
     // availability / plugin write-grant refusal, not operator-profile revocation.
@@ -421,12 +422,12 @@ export async function exerciseNativeKeyboardStates({ page, world, host: initialH
     await press(button('Reading'));
     await complete(state);
   }
-  assert.equal(states.length, 8); assert.equal(new Set(states).size, 8);
+  assert.equal(states.length, 7); assert.equal(new Set(states).size, 7);
   assert.ok(announcements.length >= 8);
   return {
     schemaVersion: 2, viewport: page.viewportSize(), keyboardOnly: true,
     forcedColors: audits.every(audit => audit.forcedColors), reducedMotion: audits.every(audit => audit.reducedMotion),
-    focusRestored, announcements: announcements.every(value => value.trim().length > 0),
+    focusRestored, announcements: announcements.every(value => value.trim().length > 0), announcementCount: announcements.length,
     colorIndependent: audits.every(audit => audit.colorIndependent), noPageOverflow: audits.every(audit => audit.noPageOverflow), states
   };
 }

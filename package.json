@@ -1,6 +1,6 @@
 {
   "name": "openclaw-command-center",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "description": "The Command Center external Control UI plugin for OpenClaw.",
@@ -14,13 +14,13 @@
   "devDependencies": {
     "dompurify": "3.4.15",
     "markdown-it": "15.0.2",
-    "openclaw": "2026.9.5",
+    "openclaw": "2026.9.6",
     "pdfjs-dist": "6.3.289",
     "playwright": "1.63.0",
     "playwright-core": "1.63.0"
   },
   "peerDependencies": {
-    "openclaw": "2026.9.5"
+    "openclaw": "2026.9.6"
   },
   "commandCenter": {
     "runtimeCapability": {
@@ -31,8 +31,8 @@
       "formatVersion": 1,
       "package": {
         "name": "openclaw-command-center",
-        "version": "0.4.0",
-        "build": "0.4.0"
+        "version": "0.4.1",
+        "build": "0.4.1"
       },
       "priorRelease": {
         "package": {
@@ -68,12 +68,12 @@
         }
       },
       "host": {
-        "range": "=2026.9.5",
-        "commit": "21f1ca697532a9bd9e9cc46322a598a31435de15"
+        "range": "=2026.9.6",
+        "commit": "2b222e394d823814b8c08684841ad38beaf265da"
       },
       "pluginApi": {
         "package": "openclaw",
-        "range": "=2026.9.5"
+        "range": "=2026.9.6"
       },
       "commandCenterSchema": {
         "readable": {
@@ -100,7 +100,7 @@
       "./dist/plugin.mjs"
     ],
     "compat": {
-      "pluginApi": "=2026.9.5"
+      "pluginApi": "=2026.9.6"
     }
   }
 }

@@ -88,6 +88,8 @@ test('guarded child records and blocks network egress before dispatch', async ()
       'websocket'
     ]);
     assert.ok(entries.every((entry) => entry.permitted === false));
+    assert.ok(entries.every((entry) => typeof entry.origin === 'string' && entry.origin.length > 0));
+    assert.ok(entries.every((entry) => !entry.origin.includes(root)));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

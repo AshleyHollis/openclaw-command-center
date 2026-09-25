@@ -26,8 +26,10 @@ export const RELEASE_MEASUREMENTS = Object.freeze([
 
 const REQUIRED_HOST_RECEIPT_FIELDS = Object.freeze(['schemaVersion', 'sourceDigest', 'commit', 'executableDigest', 'contractDigest', 'packageDigest', 'runtimeDigest']);
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
-const HOST_COMMIT = '21f1ca697532a9bd9e9cc46322a598a31435de15';
-const HOST_VERSION = '2026.9.5';
+const HOST_COMMIT = '2b222e394d823814b8c08684841ad38beaf265da';
+const HOST_VERSION = '2026.9.6';
+// The byte-pinned 2026.9.5 observation remains the release budget source.
+const HISTORICAL_BASELINE_HOST_VERSION = '2026.9.5';
 const PLAYWRIGHT_VERSION = '1.63.0';
 export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
   schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION,
@@ -36,12 +38,12 @@ export const RELEASE_FIXTURE_IDENTITY = canonicalDigest({
 });
 const HOST_RECEIPT = Object.freeze({
   schemaVersion: 2,
-  sourceDigest: 'sha256:7551d70c5fb82548ae3c6f3449d1012d7b6b6d53a5af02ead737689b281bfffc',
+  sourceDigest: 'sha256:6b4e864b527e87175ee7bd9f1b7f9a92c5ba042bedff136a0a90acdd8a8a15ed',
   commit: HOST_COMMIT,
-  executableDigest: 'sha256:538e8ee2b65a0b24bb8a5ed3421bfe66621b1e0b5f726a167758c004f566fb36',
+  executableDigest: 'sha256:4dd36d2ed0cb154456c4a09a951a2e8f2508a5dd6ff2fe0688d4e1c8f773fcb5',
   contractDigest: 'sha256:ec170da6eb2bb116bcf6b60cfea795af5dfa41ed83762194526eff977fc52fb6',
-  packageDigest: 'sha256:58293f3ec4c1e996893184c6a4c2e544a3dcfaf43e701db60108446371134741',
-  runtimeDigest: 'sha256:2f8411f11b8b8707c88d0e4a1b0caba15e1e7f986905eef37c1ef9e00ebd367c'
+  packageDigest: 'sha256:b035cffa3d4c2e7b4bcd18baac8a1f0016f316803924956abd71cede3b4d3130',
+  runtimeDigest: 'sha256:c27901e63402beefddd0359e7aaea4f29d6bc7ef30997e1c2e24a6e3a165f397'
 });
 
 function invalid(message) {
@@ -71,7 +73,7 @@ function canonicalDigest(value) {
 function normalizeIdentity(value, { allowPendingCapture = false } = {}) {
   const keys = ['schemaVersion', 'hostVersion', 'hostReceipt', 'pluginBuildDigest', 'browser', 'viewport', 'fixtureIdentity', 'fixtureCounts', ...(allowPendingCapture ? ['capture'] : [])];
   closed(value, keys, allowPendingCapture ? 'baseline seed' : 'baseline identity');
-  if (value.schemaVersion !== RELEASE_PERFORMANCE_BASELINE_VERSION || value.hostVersion !== HOST_VERSION) invalid('version or host identity is not pinned');
+  if (value.schemaVersion !== RELEASE_PERFORMANCE_BASELINE_VERSION || ![HOST_VERSION, HISTORICAL_BASELINE_HOST_VERSION].includes(value.hostVersion)) invalid('version or host identity is not pinned');
   const hostReceipt = assertHostReceipt(value.hostReceipt);
   digest(value.pluginBuildDigest, 'pluginBuildDigest');
   const browser = assertBrowser(value.browser);
@@ -79,7 +81,7 @@ function normalizeIdentity(value, { allowPendingCapture = false } = {}) {
   const fixtureIdentity = digest(value.fixtureIdentity, 'fixtureIdentity');
   if (fixtureIdentity !== RELEASE_FIXTURE_IDENTITY) invalid('fixtureIdentity is not the measured release fixture');
   const fixtureCounts = assertFixtureCounts(value.fixtureCounts);
-  return { schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts };
+  return { schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION, hostVersion: value.hostVersion, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts };
 }
 
 function assertFixtureCounts(value) {
@@ -177,11 +179,11 @@ export function validateReleasePerformanceBaseline(value) {
   const thresholds = assertThresholds(value.thresholds, observations);
   closed(value.capture, ['policy', 'successfulRunOrdinal', 'identityDigest', 'observationsDigest'], 'capture');
   if (value.capture.policy !== 'first-successful-pinned-harness-observation' || value.capture.successfulRunOrdinal !== 1) invalid('capture must identify the first successful pinned harness observation');
-  const expectedIdentityDigest = canonicalDigest({ schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts });
+  const expectedIdentityDigest = canonicalDigest({ schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION, hostVersion: value.hostVersion, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts });
   const expectedObservationsDigest = canonicalDigest(observations);
   if (value.capture.identityDigest !== expectedIdentityDigest || value.capture.observationsDigest !== expectedObservationsDigest) invalid('capture evidence does not match the pinned identities and observations');
   const capture = Object.freeze({ ...value.capture });
-  return Object.freeze({ schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION, hostVersion: HOST_VERSION, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts, observations, thresholds, capture });
+  return Object.freeze({ schemaVersion: RELEASE_PERFORMANCE_BASELINE_VERSION, hostVersion: value.hostVersion, hostReceipt, pluginBuildDigest: value.pluginBuildDigest, browser, viewport, fixtureIdentity, fixtureCounts, observations, thresholds, capture });
 }
 
 export function assertPerformanceObservationWithinBaseline(name, observation, baseline) {

@@ -10,10 +10,10 @@ import { packagedHostDigest } from './packaged-host-integrity.mjs';
 
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 export const pinnedHost = Object.freeze({
-  // The evaluator checkout is the exact authenticated first-live host receipt.
-  packageVersion: '2026.9.5',
-  commit: '21f1ca697532a9bd9e9cc46322a598a31435de15',
-  packageDigest: 'sha256:58293f3ec4c1e996893184c6a4c2e544a3dcfaf43e701db60108446371134741',
+  // The evaluator checkout must match the exact retained 2026.9.6 package source.
+  packageVersion: '2026.9.6',
+  commit: '2b222e394d823814b8c08684841ad38beaf265da',
+  packageDigest: 'sha256:b035cffa3d4c2e7b4bcd18baac8a1f0016f316803924956abd71cede3b4d3130',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
@@ -355,7 +355,8 @@ export async function assertRecordedChildTraffic(world) {
     .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const prohibited = entries.filter((entry) => !entry.permitted);
   if (prohibited.length) {
-    const error = new HarnessFailure('isolation-violation', `Host attempted ${prohibited.length} prohibited destination(s): ${describeTrafficEvidence(prohibited)}`);
+    const origins = prohibited.slice(0, 2).map(entry => typeof entry.origin === 'string' ? redact(entry.origin, 240) : '').filter(Boolean);
+    const error = new HarnessFailure('isolation-violation', `Host attempted ${prohibited.length} prohibited destination(s): ${describeTrafficEvidence(prohibited)}${origins.length ? `; origins: ${origins.join('; ')}` : ''}`);
     error.diagnostics = Object.freeze({ childTraffic: boundedTrafficEvidence(prohibited) });
     throw error;
   }

@@ -80,7 +80,8 @@ test('Topic Page actions are POST-only, closed, bounded, and content-free', asyn
   const applied = await invoke(service, { body: conversationCreate() });
   assert.equal(applied.statusCode, 200);
   assert.equal(applied.body.result.referenceId, 'session:new');
-  assert.doesNotMatch(JSON.stringify(applied.body), /fictional\/notes|agent:main|session-new/u);
+  assert.equal(applied.body.result.sessionId, 'session-new');
+  assert.doesNotMatch(JSON.stringify(applied.body), /fictional\/notes|agent:main/u);
   assert.equal(service.calls[0][1].isPrimary, false);
 
   service.sessionsCreate = async () => ({ status: 'applied', note: { path: 'x'.repeat(33 * 1024), revision: 'revision' } });
