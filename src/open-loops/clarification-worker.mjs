@@ -1,14 +1,27 @@
 import { loadPendingClarificationContext } from './clarification-context.mjs';
 import { runClarificationProposal } from './clarification-proposal.mjs';
+import { clarificationInterpretationOperationId } from './clarification-context.mjs';
 
 const actionKeys = ['outcome', 'decision', 'paymentState', 'paidAmount', 'currency', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone'];
 
-export function createClarificationWorker({ metadata, complete, interpret, assertCurrent, notBefore, now = () => new Date().toISOString() }) {
+function hasPendingFollowUp(metadata, receipt) {
+  if (!receipt?.current) return false;
+  const reminder = receipt.followUpIntent;
+  const reminderPending = reminder && !['none', 'blocked', 'conflict'].includes(reminder.action)
+    && metadata.getOperation(reminder.logicalOperationId)?.state !== 'applied';
+  const note = metadata.getOpenLoopSupportingNoteIntent(receipt.logicalOperationId);
+  const notePending = note?.current && note.target.status === 'ready' && note.outcome?.status !== 'completed';
+  return Boolean(reminderPending || notePending);
+}
+
+export function createClarificationWorker({ metadata, complete, interpret, followUp, assertCurrent, notBefore, now = () => new Date().toISOString() }) {
   if (!metadata || typeof complete !== 'function' || typeof interpret !== 'function' || typeof assertCurrent !== 'function'
     || typeof notBefore !== 'string' || !Number.isFinite(Date.parse(notBefore))) throw new TypeError('The clarification worker requires active owners and an exact admission time.');
 
   async function processOne(item) {
     assertCurrent();
+    if (metadata.getClarificationWorkerDisposition?.(item.clarificationObservationId)?.status === 'review-required')
+      return Object.freeze({ loopId: item.loopId, status: 'review-required' });
     const context = loadPendingClarificationContext(metadata, item);
     if (context.status !== 'pending' || context.clarificationObservationId !== item.clarificationObservationId)
       return Object.freeze({ loopId: item.loopId, status: context.status === 'pending' ? 'superseded' : context.status });
@@ -34,12 +47,23 @@ export function createClarificationWorker({ metadata, complete, interpret, asser
       || accepted.processorVersion !== context.processorVersion || accepted.outcomeId !== context.outcomeId
       || JSON.stringify(accepted.source) !== JSON.stringify(context.source))
       return Object.freeze({ loopId: item.loopId, status: 'proposal-conflict' });
-    if (accepted.proposal.outcome === 'ambiguous') return Object.freeze({ loopId: item.loopId, status: 'review-required' });
+    if (accepted.proposal.outcome === 'ambiguous') {
+      metadata.recordClarificationWorkerDisposition?.({ loopId: item.loopId,
+        clarificationObservationId: item.clarificationObservationId, status: 'review-required',
+        code: 'ambiguous-proposal', updatedAt: now() });
+      return Object.freeze({ loopId: item.loopId, status: 'review-required' });
+    }
     const action = Object.fromEntries(actionKeys.filter(key => accepted.proposal[key] !== undefined).map(key => [key, accepted.proposal[key]]));
     assertCurrent();
     const result = await interpret({ loopId: context.loopId, expectedRevision: context.expectedRevision,
       clarificationObservationId: context.clarificationObservationId, processorVersion: context.processorVersion, ...action });
-    return Object.freeze({ loopId: item.loopId, status: result?.disposition ?? result?.status ?? 'unknown' });
+    const receipt = metadata.getOpenLoopUserActionReceipt?.(clarificationInterpretationOperationId(item.clarificationObservationId));
+    const pendingFollowUp = receipt && hasPendingFollowUp(metadata, receipt);
+    if (receipt && !pendingFollowUp) metadata.recordClarificationWorkerDisposition?.({ loopId: item.loopId,
+      clarificationObservationId: item.clarificationObservationId,
+      status: 'recovered', updatedAt: now() });
+    return Object.freeze({ loopId: item.loopId,
+      status: pendingFollowUp ? 'follow-up-pending' : result?.disposition ?? result?.status ?? 'unknown' });
   }
 
   async function runPage({ cursor, limit = 5 } = {}) {
@@ -50,11 +74,58 @@ export function createClarificationWorker({ metadata, complete, interpret, asser
       try { results.push(await processOne(item)); }
       catch (error) {
         if (error?.code === 'capability-unavailable') throw error;
-        results.push(Object.freeze({ loopId: item.loopId, status: 'failed', code: typeof error?.code === 'string' && /^[a-z0-9-]{1,80}$/u.test(error.code) ? error.code : 'clarification-worker-failed' }));
+        const code = typeof error?.code === 'string' && /^[a-z0-9-]{1,80}$/u.test(error.code) ? error.code : 'clarification-worker-failed';
+        const status = code === 'invalid-proposal' ? 'review-required' : 'failed';
+        metadata.recordClarificationWorkerDisposition?.({ loopId: item.loopId,
+          clarificationObservationId: item.clarificationObservationId, status, code, updatedAt: now() });
+        results.push(Object.freeze({ loopId: item.loopId, status, code }));
       }
     }
     return Object.freeze({ schemaVersion: 1, results, nextCursor: page.nextCursor });
   }
 
-  return Object.freeze({ processOne, runPage });
+  // The pending marker disappears at the decision commit. A separate bounded
+  // pass over durable decision receipts recovers effects after that boundary.
+  async function runFollowUpPage({ cursor, limit = 20 } = {}) {
+    assertCurrent();
+    if (typeof followUp !== 'function') return Object.freeze({ schemaVersion: 1, results: [], nextCursor: null });
+    const page = metadata.listOpenLoopUserActionReceiptsPage({ ...(cursor ? { cursor } : {}), limit });
+    const results = [];
+    for (const item of page.actions) {
+      assertCurrent();
+      if (!item.current) continue;
+      const interpretation = item.loop.evidenceObservationIds?.map(id => {
+        const observation = metadata.getOpenLoopObservation(id);
+        return observation?.source?.kind === 'processor-interpretation'
+          && observation.source.externalId === item.logicalOperationId ? observation : null;
+      }).find(Boolean);
+      if (!interpretation) continue;
+      const clarificationId = interpretation.facts?.interpretationOf;
+      const clarification = clarificationId && metadata.getOpenLoopObservation(clarificationId);
+      const proposal = clarificationId && metadata.getClarificationProposal(clarificationId);
+      if (!clarification || Date.parse(clarification.observedAt) < Date.parse(notBefore)
+        || proposal?.loopId !== item.loop.loopId || proposal.proposal?.outcome !== 'clear') continue;
+      const receipt = metadata.getOpenLoopUserActionReceipt(item.logicalOperationId);
+      if (!hasPendingFollowUp(metadata, receipt)) continue;
+      try {
+        const result = await followUp(receipt);
+        if (!hasPendingFollowUp(metadata, metadata.getOpenLoopUserActionReceipt(item.logicalOperationId))) metadata.recordClarificationWorkerDisposition?.({ loopId: receipt.loop.loopId,
+          clarificationObservationId: clarificationId,
+          status: 'recovered', updatedAt: now() });
+        results.push(Object.freeze({ loopId: receipt.loop.loopId,
+          status: hasPendingFollowUp(metadata, metadata.getOpenLoopUserActionReceipt(item.logicalOperationId))
+            ? 'follow-up-pending' : result?.disposition ?? result?.status ?? 'recovered' }));
+      } catch (error) {
+        if (error?.code === 'capability-unavailable') throw error;
+        const code = typeof error?.code === 'string' && /^[a-z0-9-]{1,80}$/u.test(error.code) ? error.code : 'clarification-follow-up-failed';
+        metadata.recordClarificationWorkerDisposition?.({ loopId: receipt.loop.loopId,
+          clarificationObservationId: clarificationId,
+          status: 'failed', code, updatedAt: now() });
+        results.push(Object.freeze({ loopId: receipt.loop.loopId, status: 'failed', code }));
+      }
+    }
+    return Object.freeze({ schemaVersion: 1, results, nextCursor: page.nextCursor });
+  }
+
+  return Object.freeze({ processOne, runPage, runFollowUpPage });
 }

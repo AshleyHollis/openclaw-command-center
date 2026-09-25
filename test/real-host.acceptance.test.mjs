@@ -1573,24 +1573,37 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           && item.interpretationOf === clarificationTarget.clarificationObservationId),
         `interpreted evidence identities: ${JSON.stringify(interpreted.evidence.map(item => ({ sourceKind: item.sourceKind,
           interpretationOf: item.interpretationOf, observationId: item.observationId })))}`);
-        assert.equal(interpreted.followUp.status, 'pending');
-        assert.equal(interpreted.supportingNote.status, 'pending');
+        if (workerVariant) {
+          await waitForConsecutiveReadiness(async probeSignal => {
+            const current = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+              method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal: probeSignal });
+            const detail = current.result ?? current;
+            return detail.followUp.status === 'completed' && detail.supportingNote.status === 'completed';
+          }, scenarioHost.earlyExit, { required: 1, deadlineMs: 90_000, delayMs: 500, signal });
+          milestone('maintained-worker-native-follow-up-completed');
+        } else {
+          assert.equal(interpreted.followUp.status, 'pending');
+          assert.equal(interpreted.supportingNote.status, 'pending');
+        }
         const interpretationInspection = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
         try {
           const accepted = interpretationInspection.getOpenLoopUserActionReceipt(paidDecisionId);
           const note = interpretationInspection.getOpenLoopSupportingNoteIntent(paidDecisionId);
           assert.equal(accepted.current, true);
           assert.equal(accepted.followUpIntent.action, 'cancel');
-          assert.equal(interpretationInspection.getOperation(openLoopReminderOperationId(paidDecisionId)), null);
+          assert.equal(interpretationInspection.getOperation(openLoopReminderOperationId(paidDecisionId))?.state ?? null,
+            workerVariant ? 'applied' : null);
           assert.equal(note.target.status, 'ready');
-          assert.equal(note.intent, undefined);
+          assert.equal(note.outcome?.status ?? null, workerVariant ? 'completed' : null);
         } finally { interpretationInspection.close(); }
-        const resumedInterpretationResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
-          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
-          method: 'command-center.v1.open-loops.resume-follow-up', params: { schemaVersion: 1, logicalOperationId: paidDecisionId }, signal });
-        const resumedInterpretation = resumedInterpretationResponse.result ?? resumedInterpretationResponse;
-        assert.equal(resumedInterpretation.reminder.status, 'applied');
-        assert.equal(resumedInterpretation.supportingNote.status, 'completed');
+        if (!workerVariant) {
+          const resumedInterpretationResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+            scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+            method: 'command-center.v1.open-loops.resume-follow-up', params: { schemaVersion: 1, logicalOperationId: paidDecisionId }, signal });
+          const resumedInterpretation = resumedInterpretationResponse.result ?? resumedInterpretationResponse;
+          assert.equal(resumedInterpretation.reminder.status, 'applied');
+          assert.equal(resumedInterpretation.supportingNote.status, 'completed');
+        }
         milestone('authenticated-clarification-interpretation-applied');
         const noteTargetMetadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
         try {

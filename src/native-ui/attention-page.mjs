@@ -117,6 +117,8 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     if (nonBlank(loop?.attention?.pendingClarificationId)) {
       const wording = interpretation?.status === 'review-required'
         ? 'Your clarification was reviewed, but it did not support one safe action. Choose an explicit action or clarify this item again.'
+        : interpretation?.status === 'processing-failed'
+          ? 'Your clarification is saved, but automatic processing failed. The existing obligation remains unchanged; you can review it or clarify again.'
         : interpretation?.status === 'proposal-saved'
           ? 'An interpretation is saved; applying it is still pending. No payment or completion is claimed yet.'
           : 'Your exact clarification is saved for this item. Interpretation is pending; no payment, completion or broader rule was inferred.';
@@ -757,7 +759,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         row.append(element('h3', card.title));
         const planning = card.planning ?? {};
         row.append(element('p', [reason, planning.importance ? `${planning.importance} importance` : null, planning.effortMinutes ? `${planning.effortMinutes} min` : null, planning.contexts?.length ? planning.contexts.join(', ') : null].filter(Boolean).join(' · ')));
-        if (card.clarificationPending) row.append(element('p', card.clarificationStatus === 'review-required' ? 'Clarification needs your review' : card.clarificationStatus === 'proposal-saved' ? 'Interpretation saved · applying pending' : 'Clarification saved · interpretation pending'));
+        if (card.clarificationPending) row.append(element('p', card.clarificationStatus === 'review-required' ? 'Clarification needs your review' : card.clarificationStatus === 'processing-failed' ? 'Clarification processing failed · review available' : card.clarificationStatus === 'proposal-saved' ? 'Interpretation saved · applying pending' : 'Clarification saved · interpretation pending'));
         if (!writable() || ['resolved', 'cancelled'].includes(card.state)) { parent.append(row); return; }
         const form = element('form'); const actionLabel = element('label', 'Action '); const action = element('select');
         const choices = [['plan', 'Plan time'], ['set-priority', 'Set priority'], ['start', 'Start'], ['wait', 'Waiting / blocked'], ['review-later', 'Review later'], ['someday', 'Move to Someday'], ['keep', 'Keep available'], ['drop', 'Drop']];
@@ -889,7 +891,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         const facts = [nonBlank(topicName) ? `Topic: ${topicName}` : null, nonBlank(card.sourceLabel) ? `Source: ${card.sourceLabel}` : null, card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, formatDue(card) ? `Due ${formatDue(card)}` : null].filter(Boolean);
         if (facts.length) row.append(element('p', facts.join(' · ')));
         if (nonBlank(card.whyNow)) row.append(element('p', card.whyNow));
-        if (card.clarificationPending) row.append(element('p', card.clarificationStatus === 'review-required' ? 'Clarification needs your review' : card.clarificationStatus === 'proposal-saved' ? 'Interpretation saved · applying pending' : 'Clarification saved · interpretation pending'));
+        if (card.clarificationPending) row.append(element('p', card.clarificationStatus === 'review-required' ? 'Clarification needs your review' : card.clarificationStatus === 'processing-failed' ? 'Clarification processing failed · review available' : card.clarificationStatus === 'proposal-saved' ? 'Interpretation saved · applying pending' : 'Clarification saved · interpretation pending'));
         row.append(element('p', `${Number.isSafeInteger(card.evidenceCount) ? card.evidenceCount : 0} linked source ${card.evidenceCount === 1 ? 'item' : 'items'}.`));
         const evidence = element('button', 'Review evidence'); evidence.type = 'button';
         evidence.addEventListener('click', async () => {

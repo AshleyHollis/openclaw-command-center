@@ -8,9 +8,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { sourceNoteOperationId } from '../src/open-loops/source-intake-tool.mjs';
-import { loadPendingClarificationContext } from '../src/open-loops/clarification-context.mjs';
-import { CLARIFICATION_PROPOSAL_OPERATION, clarificationProposalOperationId } from '../src/metadata/clarification-proposals.mjs';
+import { loadPendingClarificationContext, clarificationInterpretationOperationId } from '../src/open-loops/clarification-context.mjs';
+import { CLARIFICATION_PROPOSAL_OPERATION, CLARIFICATION_WORKER_DISPOSITION_OPERATION, clarificationProposalOperationId } from '../src/metadata/clarification-proposals.mjs';
 import { createClarificationWorker } from '../src/open-loops/clarification-worker.mjs';
+import { clarificationInterpretationStatus } from '../src/open-loops/clarification-status.mjs';
 import { pendingClarificationToolFactory } from '../src/open-loops/clarification-tool.mjs';
 import { interpretClarificationToolFactory } from '../src/open-loops/clarification-tool.mjs';
 import { createMetadataService } from '../src/plugin-service.mjs';
@@ -169,6 +170,7 @@ test('configured service worker applies one accepted fictional clarification wit
   const temporary = await temporaryStateDir('command-center-configured-clarification-worker-');
   let modelCalls = 0;
   const service = createMetadataService({ runtime: { state: { resolveStateDir: () => temporary.path },
+    gateway: { request: async () => { throw new Error('The fictional decision has no native Reminder effect.'); } },
     llm: { complete: async request => {
       modelCalls += 1;
       assert.equal(request.execution.mode, 'isolated-agent-runtime');
@@ -256,6 +258,101 @@ test('actual child process death after proposal persistence resumes without a mo
       interpret: async input => { assert.equal(input.clarificationObservationId, item.clarificationObservationId); return { disposition: 'applied' }; } });
     assert.equal((await resumed.processOne(item)).status, 'applied');
   } finally { if (child?.exitCode === null) child.kill('SIGKILL'); metadata?.close(); await temporary.cleanup(); }
+});
+
+test('actual process death after interpretation commit leaves a durable follow-up recovery candidate', async () => {
+  const temporary = await temporaryStateDir('command-center-clarification-committed-death-');
+  let metadata;
+  let child;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    addTopic(metadata);
+    const plan = sourcePlan();
+    plan.acceptedExtraction.obligations = [{ obligationId: 'choose-delivery', title: 'Choose fictional delivery window', provenance: 'inferred', classification: 'decision' }];
+    recordIntakeSourcePlan(metadata, plan);
+    const decision = addDecisionLoop(metadata);
+    recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: plan.sourceExternalId,
+      sourceVersion: plan.sourceVersion, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision',
+      summary: 'Choose fictional delivery window', loopId: decision.loopId, recordedAt: '2026-09-22T01:01:00.000Z' });
+    const clarified = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'committed-death-words',
+      loopId: decision.loopId, expectedRevision: decision.revision, actorId: 'operator-fixture',
+      rationale: 'Review this choice on Saturday.', updatedAt: '2026-09-22T01:02:00.000Z' });
+    const context = loadPendingClarificationContext(metadata, { loopId: decision.loopId, expectedRevision: clarified.loop.revision });
+    metadata.recordClarificationProposal({ loopId: context.loopId, expectedRevision: context.expectedRevision,
+      clarificationObservationId: context.clarificationObservationId, processorVersion: context.processorVersion,
+      source: context.source, outcomeId: context.outcomeId,
+      proposal: { outcome: 'clear', decision: 'defer', reviewAt: '2026-09-26T09:00:00.000Z', evidenceQuote: 'Review this choice on Saturday.' },
+      model: 'fictional/model', createdAt: '2026-09-22T01:03:00.000Z' });
+    metadata.close(); metadata = null;
+    child = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/clarification-worker-crash-child.mjs', import.meta.url))],
+      { env: { ...process.env, COMMAND_CENTER_FIXTURE_STATE_DIR: temporary.path, COMMAND_CENTER_FIXTURE_PHASE: 'decision-committed' },
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    const phase = await Promise.race([new Promise((resolve, reject) => {
+      child.once('message', resolve); child.once('error', reject);
+      child.once('exit', code => reject(new Error(`Child exited before decision boundary: ${code}`)));
+    }), delay(10_000, undefined, { ref: false }).then(() => { throw new Error('Child did not reach decision boundary.'); })]);
+    assert.equal(phase.phase, 'decision-committed');
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    child.kill('SIGKILL');
+    await exited;
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    assert.equal(metadata.listPendingOpenLoopClarificationsPage().items.length, 0);
+    const receiptId = clarificationInterpretationOperationId(context.clarificationObservationId);
+    const receipt = metadata.getOpenLoopUserActionReceipt(receiptId);
+    assert.equal(receipt.current, true);
+    assert.equal(receipt.followUpIntent.action, 'create');
+    let resumed = 0;
+    const worker = createClarificationWorker({ metadata, notBefore: '2026-09-22T00:00:00.000Z', assertCurrent() {},
+      complete: async () => { throw new Error('The model must not run after the commit.'); },
+      interpret: async () => { throw new Error('The interpretation must not run after the commit.'); },
+      followUp: async accepted => { resumed += 1; assert.equal(accepted.logicalOperationId, receiptId); return { status: 'pending' }; } });
+    assert.equal((await worker.runFollowUpPage()).results.length, 1);
+    assert.equal(resumed, 1);
+    const laterActivation = createClarificationWorker({ metadata, notBefore: '2026-09-23T00:00:00.000Z', assertCurrent() {},
+      complete: async () => { throw new Error('Outside admission window.'); },
+      interpret: async () => { throw new Error('Outside admission window.'); },
+      followUp: async () => { throw new Error('Prior interpretation cannot be adopted.'); } });
+    assert.deepEqual((await laterActivation.runFollowUpPage()).results, []);
+  } finally { if (child?.exitCode === null) child.kill('SIGKILL'); metadata?.close(); await temporary.cleanup(); }
+});
+
+test('invalid model interpretation persists one review disposition and does not retry the same words', async () => {
+  const temporary = await temporaryStateDir('command-center-clarification-review-');
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    addTopic(metadata);
+    const plan = sourcePlan();
+    plan.acceptedExtraction.obligations = [{ obligationId: 'choose-delivery', title: 'Choose fictional delivery window', provenance: 'inferred', classification: 'decision' }];
+    recordIntakeSourcePlan(metadata, plan);
+    const decision = addDecisionLoop(metadata);
+    recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: plan.sourceExternalId,
+      sourceVersion: plan.sourceVersion, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision',
+      summary: 'Choose fictional delivery window', loopId: decision.loopId, recordedAt: '2026-09-22T01:01:00.000Z' });
+    const clarified = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'review-words',
+      loopId: decision.loopId, expectedRevision: decision.revision, actorId: 'operator-fixture',
+      rationale: 'Maybe choose a time later.', updatedAt: '2026-09-22T01:02:00.000Z' });
+    const item = { loopId: decision.loopId, expectedRevision: clarified.loop.revision,
+      clarificationObservationId: clarified.loop.attention.pendingClarificationId };
+    let modelCalls = 0;
+    const worker = createClarificationWorker({ metadata, notBefore: '2026-09-22T00:00:00.000Z', assertCurrent() {},
+      complete: async () => { modelCalls += 1; return { model: 'fictional/model', text: '{"outcome":"clear","decision":"confirm","evidenceQuote":"invented"}' }; },
+      interpret: async () => { throw new Error('Invalid proposal must not execute.'); } });
+    assert.equal((await worker.runPage()).results[0].status, 'review-required');
+    assert.equal(metadata.getClarificationWorkerDisposition(item.clarificationObservationId).code, 'invalid-proposal');
+    assert.throws(() => metadata.recordOperation({ logicalOperationId: 'forged-review', transportRequestId: 'forged-review',
+      intentDigest: 'forged', operationKind: CLARIFICATION_WORKER_DISPOSITION_OPERATION,
+      state: 'applied', createdAt: '2026-09-22T01:03:00.000Z', updatedAt: '2026-09-22T01:03:00.000Z' }),
+    { code: 'clarification-disposition-owner-required' });
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir: temporary.path, capabilities: { notes: true } });
+    const resumed = createClarificationWorker({ metadata, notBefore: '2026-09-22T00:00:00.000Z', assertCurrent() {},
+      complete: async () => { modelCalls += 1; throw new Error('Review must not rerun the model.'); },
+      interpret: async () => { throw new Error('Review must not execute.'); } });
+    assert.equal((await resumed.processOne(item)).status, 'review-required');
+    assert.equal(clarificationInterpretationStatus(metadata, metadata.getOpenLoop(item.loopId)), 'review-required');
+    assert.equal(modelCalls, 1);
+  } finally { metadata?.close(); await temporary.cleanup(); }
 });
 
 test('email reader location changes after a move without changing accepted effects or decisions', async () => {

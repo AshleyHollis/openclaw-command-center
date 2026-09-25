@@ -99,6 +99,7 @@ export function createMetadataService(api) {
   let clarificationWorker;
   let clarificationWorkerTimer;
   let clarificationWorkerCursor;
+  let clarificationFollowUpCursor;
   let clarificationWorkerRun;
   const processorCapability = Symbol('command-center-clarification-processor');
   let releaseDurableFolderStager;
@@ -111,6 +112,7 @@ export function createMetadataService(api) {
     clarificationWorkerTimer = undefined;
     clarificationWorker = undefined;
     clarificationWorkerCursor = undefined;
+    clarificationFollowUpCursor = undefined;
     clarificationWorkerRun = undefined;
     releaseDurableFolderStager?.();
     releaseDurableFolderStager = undefined;
@@ -412,7 +414,7 @@ export function createMetadataService(api) {
       // request; startup itself touches no job or optional background owner.
       const workerConfig = api.pluginConfig?.clarificationWorker;
       if (workerConfig?.enabled === true) {
-        if (typeof api.runtime?.llm?.complete !== 'function' || typeof workerConfig.notBefore !== 'string'
+        if (typeof api.runtime?.llm?.complete !== 'function' || !openLoopReminders || typeof workerConfig.notBefore !== 'string'
           || !Number.isFinite(Date.parse(workerConfig.notBefore)))
           throw new SourceServiceError('capability-unavailable', 'The configured clarification worker needs an isolated model completion capability and valid admission time.');
         const admissionTime = workerConfig.notBefore;
@@ -423,13 +425,24 @@ export function createMetadataService(api) {
         };
         clarificationWorker = createClarificationWorker({ metadata: activatedMetadata,
           complete: request => api.runtime.llm.complete(request),
-          interpret: input => service.openLoopsInterpretClarification(input, { processorCapability, assertCurrent, deferFollowUp: true }),
+          interpret: input => service.openLoopsInterpretClarification(input, { processorCapability, assertCurrent, gateway: api.runtime.gateway }),
+          followUp: async receipt => {
+            assertCurrent();
+            const result = await afterDecisionCommit({ schemaVersion: 1, disposition: 'duplicate', loop: receipt.loop,
+              ...(receipt.followUpIntent ? { followUpIntent: receipt.followUpIntent } : {}),
+              ...(receipt.supportingNoteTarget ? { supportingNoteTarget: receipt.supportingNoteTarget } : {}) },
+            receipt.logicalOperationId, { gateway: api.runtime.gateway });
+            assertCurrent();
+            return result;
+          },
           assertCurrent, notBefore: admissionTime });
         const intervalMs = (workerConfig.intervalSeconds ?? 300) * 1000;
         const tick = async () => {
           assertCurrent();
           if (clarificationWorkerRun) return;
-          const run = clarificationWorker.runPage({ ...(clarificationWorkerCursor ? { cursor: clarificationWorkerCursor } : {}) })
+          const run = clarificationWorker.runFollowUpPage({ ...(clarificationFollowUpCursor ? { cursor: clarificationFollowUpCursor } : {}) })
+            .then(page => { assertCurrent(); clarificationFollowUpCursor = page.nextCursor;
+              return clarificationWorker.runPage({ ...(clarificationWorkerCursor ? { cursor: clarificationWorkerCursor } : {}) }); })
             .then(page => { assertCurrent(); clarificationWorkerCursor = page.nextCursor; })
             .catch(error => { api.logger?.warn?.(`Command Center clarification worker ${typeof error?.code === 'string' ? error.code : 'failed'}`); })
             .finally(() => { if (clarificationWorkerRun === run) clarificationWorkerRun = undefined; });
@@ -476,7 +489,9 @@ export function createMetadataService(api) {
     get dailyWorkspace() { return dailyWorkspace ?? readTopicMaintenanceOwners()?.dailyWorkspace; },
     async runClarificationWorkerOnce(input = {}) {
       if (!clarificationWorker) throw new SourceServiceError('capability-unavailable', 'The clarification worker is not enabled.');
-      return clarificationWorker.runPage(input);
+      const recovery = await clarificationWorker.runFollowUpPage({ ...(input.recoveryCursor ? { cursor: input.recoveryCursor } : {}) });
+      const pending = await clarificationWorker.runPage(input);
+      return Object.freeze({ ...pending, recovered: recovery.results, nextRecoveryCursor: recovery.nextCursor });
     },
     get attentionService() { return attentionService; },
     get maintenanceService() { return undefined; },
