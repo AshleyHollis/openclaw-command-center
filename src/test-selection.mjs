@@ -1,5 +1,6 @@
 const separatelyOwnedTests = new Set(['real-host.acceptance.test.mjs']);
 const browserHeavyTests = new Set([
+  'test/iframe-responsive-remount.test.mjs',
   'test/native-reader-workspace.test.mjs',
   'test/topic-notes-panel.test.mjs',
   'test/native-document-preview.test.mjs',
