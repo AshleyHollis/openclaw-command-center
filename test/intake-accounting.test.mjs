@@ -385,11 +385,19 @@ test('actual process death after interpretation commit leaves a durable follow-u
     const receipt = metadata.getOpenLoopUserActionReceipt(receiptId);
     assert.equal(receipt.current, true);
     assert.equal(receipt.followUpIntent.action, 'create');
+    const newerWords = metadata.recordOpenLoopClarification({ schemaVersion: 1,
+      logicalOperationId: 'newer-words-during-native-recovery', loopId: receipt.loop.loopId,
+      expectedRevision: receipt.loop.revision, actorId: 'operator-fixture',
+      rationale: 'Please check the accepted date again.', updatedAt: '2026-09-22T01:04:00.000Z' });
+    assert.equal(newerWords.loop.attention.priorUserActionOperationId, receiptId);
+    assert.equal(metadata.getOpenLoopUserActionReceipt(receiptId).current, false);
+    assert.equal(metadata.getOpenLoopUserActionReceipt(receiptId).recoverable, true);
     let resumed = 0;
     const worker = createClarificationWorker({ metadata, notBefore: '2026-09-22T00:00:00.000Z', assertCurrent() {},
       complete: async () => { throw new Error('The model must not run after the commit.'); },
       interpret: async () => { throw new Error('The interpretation must not run after the commit.'); },
-      followUp: async accepted => { resumed += 1; assert.equal(accepted.logicalOperationId, receiptId); return { status: 'pending' }; } });
+      followUp: async accepted => { resumed += 1; assert.equal(accepted.logicalOperationId, receiptId);
+        assert.equal(accepted.recoverable, true); return { status: 'pending' }; } });
     assert.equal((await worker.runFollowUpPage()).results.length, 1);
     assert.equal(resumed, 1);
     const laterActivation = createClarificationWorker({ metadata, notBefore: '2026-09-23T00:00:00.000Z', assertCurrent() {},

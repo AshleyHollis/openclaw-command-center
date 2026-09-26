@@ -5,13 +5,14 @@ import { clarificationInterpretationOperationId } from './clarification-context.
 const actionKeys = ['outcome', 'decision', 'paymentState', 'paidAmount', 'currency', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone'];
 
 function followUpState(metadata, receipt) {
-  if (!receipt?.current) return 'superseded';
+  if (!receipt?.current && !receipt?.recoverable) return 'superseded';
   const reminder = receipt.followUpIntent;
   const reminderReview = ['blocked', 'conflict'].includes(reminder?.action);
   const reminderPending = reminder && !['none', 'blocked', 'conflict'].includes(reminder.action)
     && metadata.getOperation(reminder.logicalOperationId)?.state !== 'applied';
   const note = metadata.getOpenLoopSupportingNoteIntent(receipt.logicalOperationId);
-  const noteReview = note?.current && (note.target.status === 'conflict' || note.outcome?.status === 'conflict');
+  const noteReview = (note?.current || receipt.recoverable)
+    && (note?.target.status === 'conflict' || note?.outcome?.status === 'conflict');
   const notePending = note?.current && note.target.status === 'ready' && note.outcome?.status !== 'completed';
   if (reminderPending || notePending) return 'follow-up-pending';
   return reminderReview || noteReview ? 'review-required' : 'recovered';
@@ -97,7 +98,7 @@ export function createClarificationWorker({ metadata, complete, interpret, follo
     const results = [];
     for (const item of page.actions) {
       assertCurrent();
-      if (!item.current) continue;
+      if (!item.current && !item.recoverable) continue;
       const interpretation = item.loop.evidenceObservationIds?.map(id => {
         const observation = metadata.getOpenLoopObservation(id);
         return observation?.source?.kind === 'processor-interpretation'
