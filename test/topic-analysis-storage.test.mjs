@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createTopicAnalysisRunner } from '../src/topics/analysis-runner.mjs';
-import { proposalIdentity } from '../src/topics/analysis-evidence.mjs';
+import { canonicalJson, normalizeEvidenceFacts, proposalIdentity, sha256 } from '../src/topics/analysis-evidence.mjs';
 import { metadataSchemaV7Sql } from '../src/metadata/schema.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
 import { mkdir } from 'node:fs/promises';
@@ -90,6 +90,39 @@ test('analysis uses the authoritative locator revision when the source-reference
   });
 });
 
+test('revision-only source churn preserves Keep as-is suppression while material changes reopen it', async () => {
+  await withMetadata(async ({ metadata }) => {
+    addTopic(metadata, 'topic-suppression'); addSource(metadata, 'topic-suppression');
+    let fact = 'The fictional record explicitly names a stable resource boundary.';
+    const runner = createTopicAnalysisRunner({ metadata, analyzer: async ({ topic, sources }) => [{
+      ...proposal(topic, sources[0].observedRevision),
+      evidenceFacts: [{ evidenceId: `evidence-${sources[0].observedRevision}`, sourceId, sourceRevision: sources[0].observedRevision, fact, material: true }]
+    }] });
+    await runner.run({ trigger: 'manual' });
+    metadata.updateSourceReference({ version: 1, referenceId: sourceId, observedRevision: sourceRevision(2), updatedAt: '2026-08-25T07:00:00.000Z' });
+    assert.equal((await runner.run({ trigger: 'manual' })).outcome, 'success');
+    const initial = metadata.listTopicProposals()[0];
+    const priorEvidence = metadata.listTopicAnalysisEvidence(initial.proposalId, { currentOnly: true });
+    const legacyDigest = sha256(normalizeEvidenceFacts(priorEvidence).map(({ sourceId, sourceRevision, fact, material, kind }) => ({ sourceId, sourceRevision, fact, material, ...(kind ? { kind } : {}) })).sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right))));
+    metadata.saveTopicProposal({ ...initial, state: 'suppressed', materialEvidenceDigest: legacyDigest, suppressedDigest: legacyDigest, updatedAt: '2026-08-25T07:00:00.000Z' });
+    metadata.updateSourceReference({ version: 1, referenceId: sourceId, observedRevision: sourceRevision(3), updatedAt: '2026-08-26T07:00:00.000Z' });
+    assert.equal((await runner.run({ trigger: 'manual' })).outcome, 'success');
+    const unchanged = metadata.getTopicProposal(initial.proposalId);
+    assert.equal(unchanged.state, 'suppressed');
+    assert.equal(unchanged.revision, initial.revision);
+    assert.equal(unchanged.materialEvidenceDigest, initial.materialEvidenceDigest);
+    assert.equal(metadata.listTopicAnalysisEvidence(initial.proposalId, { currentOnly: true })[0].sourceRevision, sourceRevision(3));
+    assert.equal(metadata.getTopicAnalysisWatermark(`source:${sourceId}`).observedRevision, sourceRevision(3));
+    fact = 'The fictional record explicitly names a newly changed resource boundary.';
+    metadata.updateSourceReference({ version: 1, referenceId: sourceId, observedRevision: sourceRevision(4), updatedAt: '2026-08-27T07:00:00.000Z' });
+    assert.equal((await runner.run({ trigger: 'manual' })).outcome, 'success');
+    const reopened = metadata.getTopicProposal(initial.proposalId);
+    assert.equal(reopened.state, 'pending');
+    assert.equal(reopened.revision, initial.revision + 1);
+    assert.notEqual(reopened.materialEvidenceDigest, initial.materialEvidenceDigest);
+  });
+});
+
 test('meaningful proposal state changes increment the stable proposal revision and reset approval', async () => {
   await withMetadata(async ({ metadata }) => {
     addTopic(metadata, 'topic-proposal-revision'); addSource(metadata, 'topic-proposal-revision');
@@ -133,6 +166,36 @@ test('analysis scopes active and Archived Topics, excludes Provisioning and Reti
     const first = await bounded.run({ trigger: 'weekly' });
     assert.equal(first.outcome, 'failed'); assert.equal(first.retainedOverflowCount, 1); assert.deepEqual(metadata.listTopicAnalysisWatermarks(), before); assert.deepEqual(metadata.listTopicProposals(), []);
   });
+});
+
+test('eligible-Topic scope is bounded before source reads; exact bound and targeted cursor work', async () => {
+  const topics = Array.from({ length: 101 }, (_, index) => ({ topicId: `topic-${String(index).padStart(3, '0')}`, lifecycle: 'active', paraCategory: 'area', revision: 1 }));
+  const watermarks = topics.slice(0, 100).filter((item) => !['topic-001', 'topic-099'].includes(item.topicId)).map((item) => ({ subjectId: `topic:${item.topicId}`, observedRevision: 'topic:1' }));
+  const reads = []; const seen = []; const runs = [];
+  const cursor = { nextTopicId: 'topic-099', nextSourceId: null };
+  const metadata = {
+    listTopicAnalysisRuns: () => [{ outcome: 'success' }], getTopicAnalysisCursor: () => cursor,
+    recordTopicAnalysisRun: (run) => runs.push(run), listTopicAnalysisWatermarks: () => watermarks,
+    listSourceReferences: (topicId) => { reads.push(topicId); return []; },
+    listTopicProposals: () => [], setTopicAnalysisWatermarks: () => {},
+    setTopicAnalysisCursor: (next) => Object.assign(cursor, next)
+  };
+  const runner = createTopicAnalysisRunner({ metadata, topicService: { listTopics: () => topics }, analyzer: async ({ topic }) => { seen.push(topic.topicId); return []; } });
+  const overflow = await runner.run({ trigger: 'weekly' });
+  assert.equal(overflow.outcome, 'failed'); assert.equal(overflow.retainedOverflowCount, 1);
+  assert.deepEqual(reads, []); assert.deepEqual(seen, []);
+  assert.equal(cursor.nextTopicId, 'topic-099');
+  assert.equal(runs.at(-1).baselineCursor.nextTopicId, 'topic-099');
+
+  const targeted = await runner.run({ trigger: 'manual', topicId: 'topic-100' });
+  assert.equal(targeted.outcome, 'success'); assert.deepEqual(reads, ['topic-100']);
+  assert.deepEqual(seen, ['topic-100']);
+
+  reads.length = 0; seen.length = 0; topics.pop(); cursor.nextTopicId = 'topic-099';
+  const exact = await runner.run({ trigger: 'weekly' });
+  assert.equal(exact.outcome, 'success'); assert.equal(reads.length, 100);
+  assert.deepEqual(seen, ['topic-099', 'topic-001']);
+  assert.equal(exact.changedCount, 2); assert.equal(exact.retainedOverflowCount, 0);
 });
 
 test('analysis operation replay returns the durable result without a second run Activity', async () => {
@@ -187,6 +250,16 @@ test('evidence kind survives durable storage so gated digests remain stable afte
       updatedAt: '2026-08-24T07:00:00Z'
     });
     metadata.setTopicAnalysisEvidence(proposalId, [{ evidenceId: 'evidence-kind', sourceId, sourceRevision: sourceRevision(1), fact: 'The fictional record states a concrete category boundary.', material: true, kind: 'direct-observation', observedAt: '2026-08-24T07:00:00Z' }]);
+    const original = metadata.listTopicAnalysisEvidence(proposalId, { currentOnly: true });
+    const storedFact = { ...original[0] };
+    assert.throws(() => metadata.setTopicAnalysisEvidence(proposalId, [{ ...storedFact, sourceId: 's'.repeat(161) }]), (error) => error.code === 'invalid-value');
+    assert.throws(() => metadata.setTopicAnalysisEvidence(proposalId, [{ ...storedFact, sourceRevision: 'r'.repeat(1025) }]), (error) => error.code === 'invalid-value');
+    const oversized = Array.from({ length: 8 }, (_, index) => ({
+      evidenceId: `evidence-${index}`.padEnd(160, 'e'), sourceId: `source-${index}`.padEnd(160, 's'),
+      sourceRevision: 'r'.repeat(1024), fact: `Material fact ${index} `.padEnd(320, 'f'), material: true, observedAt: '2026-08-24T07:00:00Z'
+    }));
+    assert.throws(() => metadata.setTopicAnalysisEvidence(proposalId, oversized), (error) => error.code === 'invalid-value' && /12 KiB aggregate/u.test(error.message));
+    assert.deepEqual(metadata.listTopicAnalysisEvidence(proposalId, { currentOnly: true }), original);
     metadata.close();
     const reopened = openCommandCenterMetadataService({ stateDir: root, capabilities: { analysis: true, activity: true } });
     assert.equal(reopened.listTopicAnalysisEvidence()[0].kind, 'direct-observation');

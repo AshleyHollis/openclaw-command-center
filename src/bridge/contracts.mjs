@@ -2,6 +2,7 @@ import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 import { historyResultSchema } from './history-contracts.mjs';
 import { sourceError } from '../sources/errors.mjs';
 import { validateScheduleDeclaration, validateScheduleUpdatePatch } from '../sources/scheduler-input.mjs';
+import { parseLexicalQuery } from '../search/query.mjs';
 
 export const READ_METHODS = Object.freeze([
   'command-center.v1.histories.list',
@@ -601,6 +602,7 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
   if (!params || typeof params !== 'object' || Array.isArray(params)) throw sourceError('invalid-request', 'Bridge request params must be an object.');
   for (const key of Object.keys(params)) if (!contract.fields.includes(key)) throw sourceError('invalid-request', `Unsupported bridge request field: ${key}`);
   if (params.schemaVersion !== 1) throw sourceError('unsupported-version', 'Bridge request schemaVersion must be 1.');
+  if (method === 'command-center.v1.search.query') parseLexicalQuery(params.query);
   for (const [key, schema] of Object.entries(contract.paramsSchema.properties)) {
     if (params[key] === undefined) continue;
     const expected = schema.type;

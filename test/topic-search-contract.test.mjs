@@ -7,15 +7,17 @@ import test from 'node:test';
 import { buildFtsQuery, parseLexicalQuery, validateSearchRequest } from '../src/search/query.mjs';
 import { openProjectionStore } from '../src/search/projection-store.mjs';
 import { createSearchAdapter } from '../src/sources/search.mjs';
-import { sanitizeBridgeResult } from '../src/bridge/contracts.mjs';
+import { sanitizeBridgeResult, validateBridgeRequest } from '../src/bridge/contracts.mjs';
 
-test('lexical contract supports exact mixed phrases and keywords only', () => {
-  assert.deepEqual(parseLexicalQuery('alpha "beta gamma" delta'), [
-    { kind: 'keyword', value: 'alpha' },
-    { kind: 'phrase', value: 'beta gamma' },
-    { kind: 'keyword', value: 'delta' }
+test('lexical v1 accepts an entirely quoted phrase or whitespace-separated AND keywords', () => {
+  assert.deepEqual(parseLexicalQuery('  alpha  \t beta\n gamma  '), [
+    { kind: 'keyword', value: 'alpha' }, { kind: 'keyword', value: 'beta' }, { kind: 'keyword', value: 'gamma' }
   ]);
   assert.deepEqual(parseLexicalQuery('"beta gamma"'), [{ kind: 'phrase', value: 'beta gamma' }]);
+  assert.deepEqual(parseLexicalQuery(' "cafe\u0301  😀" '), [{ kind: 'phrase', value: 'café 😀' }]);
+  assert.throws(() => parseLexicalQuery('alpha "beta gamma" delta'), /entirely double-quoted/u);
+  assert.throws(() => parseLexicalQuery('alpha"beta'), /unmatched quote/u);
+  assert.throws(() => parseLexicalQuery('"alpha" "beta"'), /entirely double-quoted/u);
   assert.throws(() => parseLexicalQuery('unbalanced "quote'), /unmatched quote/u);
   assert.equal(buildFtsQuery(parseLexicalQuery('"beta gamma"')), '"beta gamma"');
   assert.throws(() => parseLexicalQuery('!!!'), /token/i);
@@ -23,16 +25,22 @@ test('lexical contract supports exact mixed phrases and keywords only', () => {
   assert.throws(() => validateSearchRequest({ topicId: 'topic', query: 'alpha' }), /schemaVersion/u);
   assert.throws(() => validateSearchRequest({ schemaVersion: 1, topicId: 'topic', query: '""' }), /token/i);
   assert.deepEqual(parseLexicalQuery('cafe\u0301'), [{ kind: 'keyword', value: 'café' }]);
-  assert.equal(validateSearchRequest({ schemaVersion: 1, topicId: 'topic', query: '𐐀'.repeat(128) }).query, '𐐀'.repeat(128));
-  assert.throws(() => validateSearchRequest({ schemaVersion: 1, topicId: 'topic', query: '𐐀'.repeat(129) }), /256/u);
+  assert.equal(validateSearchRequest({ schemaVersion: 1, topicId: 'topic', query: '𐐀'.repeat(256) }).query, '𐐀'.repeat(256));
+  assert.equal(validateSearchRequest({ schemaVersion: 1, topicId: 'topic', query: 'a'.repeat(256) }).query, 'a'.repeat(256));
+  assert.throws(() => validateSearchRequest({ schemaVersion: 1, topicId: 'topic', query: '𐐀'.repeat(257) }), /256 Unicode code points/u);
+  assert.throws(() => validateSearchRequest({ schemaVersion: 1, topicId: 'topic', query: 'a'.repeat(257) }), /256 Unicode code points/u);
+  assert.equal(validateSearchRequest({ schemaVersion: 1, topicId: 'topic', query: 'cafe\u0301' }).query, 'café');
 });
 
-test('bridge query bounds count UTF-16 code units', async () => {
-  const query = '𐐀'.repeat(128);
+test('bridge query bounds count NFC Unicode code points', async () => {
+  const query = '𐐀'.repeat(256);
   const calls = [];
   const provider = { query: async (input) => { calls.push(input); return { schemaVersion: 1, topicId: input.topicId, query: input.query, notes: { results: [] }, conversations: { results: [] } }; } };
   const result = await createSearchAdapter({ provider }).query({ schemaVersion: 1, topicId: 'topic-one', query });
   assert.equal(result.query, query);
+  assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.search.query', { schemaVersion: 1, topicId: 'topic-one', query }));
+  assert.throws(() => validateBridgeRequest('command-center.v1.search.query', { schemaVersion: 1, topicId: 'topic-one', query: `${query}𐐀` }), /256 Unicode code points/u);
+  assert.throws(() => validateBridgeRequest('command-center.v1.search.query', { schemaVersion: 1, topicId: 'topic-one', query: 'alpha "beta gamma"' }), /entirely double-quoted/u);
   await assert.rejects(
     createSearchAdapter({ provider }).query({ schemaVersion: 1, topicId: 'topic-one', query: `${query}𐐀` }),
     /256/u
