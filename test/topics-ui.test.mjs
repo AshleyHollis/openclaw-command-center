@@ -186,7 +186,7 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
       globalThis.__relayHttpFixture = async (_url, options) => {
         const body = JSON.parse(options.body); globalThis.__calls.push({ method: `http:${body.action}`, params: body });
         if (body.action === 'create') globalThis.__created = true;
-        const preview = { structuralChangeId: '44444444-4444-4444-8444-444444444444', digest: 'sha256:preview', expectedRevisions: [{ source: 'topic', id: body.topicId, revision: 1 }], changes: [], commitments: [] };
+        const preview = { structuralChangeId: '44444444-4444-4444-8444-444444444444', digest: 'sha256:preview', expectedRevisions: [{ source: 'topic', id: body.topicId, revision: 1 }], changes: body.action === 'recategorize.preview' ? [{ aspect: 'category', from: 'project', to: 'area' }] : [], commitments: [] };
         return { ok: true, async json() { return body.action.endsWith('.preview') ? { status: 'applied', result: { preview } } : { status: 'applied', result: { destination: destination() } }; } };
       };
       window.addEventListener('message', async (event) => {
@@ -250,6 +250,7 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
     assert.equal(recoveryCall.params.expectedRevision, 1);
     assert.equal(recoveryCall.params.expectedSourceRevision, 'session-revision-1');
     assert.equal(await page.evaluate(() => globalThis.__confirmations.some((message) => message.includes('Disable and retain every active Reminder and scheduled operation (0 active of 0 commitment(s))'))), true);
+    assert.equal(await page.evaluate(() => globalThis.__confirmations.some((message) => message.includes('Category: project → area\nNote Folder location: unchanged (customized)'))), true);
     await page.setViewportSize({ width: 320, height: 900 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= 320), true);
   } finally { await browser.close(); }

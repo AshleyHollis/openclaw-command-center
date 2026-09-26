@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
 
@@ -20,7 +21,7 @@ async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z') {
     async clear(input) { clears.push(input); for (const notifications of devices.values()) notifications.delete(input.logicalOperationId); return { status: 'cleared', attempted: devices.size, cleared: devices.size, failed: 0, ambiguous: 0 }; }
   };
   const service = createNotificationService({ metadata, attentionService: attention, emitter: binding, now: () => clock });
-  try { return await run({ metadata, service, episode, episodes, candidates, clears, devices, binding, advance(ms) { clock += ms; } }); }
+  try { return await run({ metadata, service, attention, episode, episodes, candidates, clears, devices, binding, advance(ms) { clock += ms; }, now: () => clock }); }
   finally { service.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 }
 
@@ -93,7 +94,7 @@ test('notification settings suppress delivery without rewriting fixed policy slo
   });
 });
 
-test('snoozing cancels repeat slots and excludes snoozed time from High active hours', async () => {
+test('snoozing cancels repeat slots and uses the remaining High delivery allowance on return', async () => {
   await fixture(async ({ service, episode, candidates, clears, advance }) => {
     await service.reconcile();
     assert.equal(candidates.length, 1);
@@ -112,8 +113,102 @@ test('snoozing cancels repeat slots and excludes snoozed time from High active h
     assert.match(candidates.at(-1).preview.title, /High/i);
     advance(3 * 60 * 60 * 1000);
     await service.reconcile();
-    assert.equal(candidates.length, 3);
+    assert.equal(candidates.length, 2);
   });
+});
+
+test('Action running clears delivery without ending the High epoch or reopening its cap after restart', async () => {
+  await fixture(async ({ metadata, service, episode, attention, binding, candidates, now, advance }) => {
+    await service.reconcile();
+    advance(4 * 60 * 60 * 1000);
+    await service.reconcile();
+    assert.equal(candidates.length, 2);
+    episode.state = 'Action running';
+    await service.reconcile();
+    assert.notEqual(service.inspect().epochs[0].state, 'terminal');
+    service.close();
+    const restarted = createNotificationService({ metadata, attentionService: attention, emitter: binding, now });
+    try {
+      episode.state = 'Active';
+      await restarted.reconcile();
+      assert.equal(restarted.inspect().epochs.length, 1);
+      assert.equal(candidates.length, 2);
+      await restarted.reconcile();
+      assert.equal(candidates.length, 2);
+    } finally { restarted.close(); }
+  });
+});
+
+test('restart repairs a sent High emission whose slot receipt was interrupted', async () => {
+  await fixture(async ({ metadata, service, attention, binding, candidates, now, advance }) => {
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    service.close();
+    const db = new DatabaseSync(metadata.databasePath);
+    try { db.prepare("UPDATE notification_slots SET status = 'scheduled', emission_id = NULL, logical_operation_id = NULL, emitted_at_ms = NULL WHERE slot_kind = 'high-activation'").run(); }
+    finally { db.close(); }
+    const restarted = createNotificationService({ metadata, attentionService: attention, emitter: binding, now });
+    try {
+      await restarted.reconcile();
+      assert.equal(candidates.length, 1);
+      assert.equal(restarted.inspect().slots.find(slot => slot.slot_kind === 'high-activation').status, 'emitted');
+      advance(4 * 60 * 60 * 1000);
+      await restarted.reconcile();
+      assert.equal(candidates.length, 2);
+    } finally { restarted.close(); }
+  });
+});
+
+test('repeated Snooze returns cannot exceed the High generation cap after restart', async () => {
+  await fixture(async ({ metadata, service, attention, episode, binding, candidates, now, advance }) => {
+    await service.reconcile();
+    advance(60 * 60 * 1000);
+    episode.state = 'Snoozed'; episode.updatedAt = new Date(now()).toISOString();
+    await service.reconcile();
+    advance(60 * 60 * 1000);
+    episode.state = 'Active'; episode.updatedAt = new Date(now()).toISOString();
+    await service.reconcile();
+    assert.equal(candidates.length, 2);
+    service.close();
+    const restarted = createNotificationService({ metadata, attentionService: attention, emitter: binding, now });
+    try {
+      episode.state = 'Snoozed'; episode.updatedAt = new Date(now()).toISOString();
+      await restarted.reconcile();
+      advance(60 * 60 * 1000);
+      episode.state = 'Active'; episode.updatedAt = new Date(now()).toISOString();
+      await restarted.reconcile();
+      advance(4 * 60 * 60 * 1000);
+      await restarted.reconcile();
+      assert.equal(candidates.length, 2);
+      assert.equal(restarted.inspect().epochs.length, 1);
+    } finally { restarted.close(); }
+  });
+});
+
+test('queued High summary excludes an episode whose severity changed before release', async () => {
+  await fixture(async ({ service, episode, episodes, candidates, advance }) => {
+    const second = { ...episode, episodeId: 'fictional-second' }; episodes.push(second);
+    await service.reconcile();
+    second.severity = 'Critical';
+    advance(9 * 60 * 60 * 1000);
+    await service.reconcile();
+    const summaries = candidates.filter(candidate => candidate.preview.body.includes('item') && candidate.preview.title.endsWith('Attention'));
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0].preview.body, '1 item needs review.');
+  }, '2026-08-27T22:00:00.000Z');
+});
+
+test('queued High summary excludes an episode that left Active before release', async () => {
+  await fixture(async ({ service, episode, episodes, candidates, advance }) => {
+    episodes.push({ ...episode, episodeId: 'fictional-second' });
+    await service.reconcile();
+    episodes[1].state = 'Snoozed';
+    advance(9 * 60 * 60 * 1000);
+    await service.reconcile();
+    const summaries = candidates.filter(candidate => candidate.preview.title.endsWith('Attention'));
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0].preview.body, '1 item needs review.');
+  }, '2026-08-27T22:00:00.000Z');
 });
 
 for (const concurrentReconcile of [false, true]) test(`late emission cannot outlive its terminal episode (queued reconcile: ${concurrentReconcile})`, async () => {
