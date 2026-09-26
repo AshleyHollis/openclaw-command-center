@@ -6,6 +6,12 @@ export const ATTENTION_SEVERITIES = Object.freeze(['Routine', 'High', 'Critical'
 export const ACTION_KINDS = Object.freeze(['navigation', 'mutation']);
 export const APPROVAL_MODES = Object.freeze(['never', 'required', 'preauthorized']);
 
+export function occurrenceInstant(value) {
+  const [, fraction = ''] = /\.(\d{1,9})(?=Z|[+-]\d{2}:\d{2}$)/u.exec(value) ?? [];
+  const wholeSecond = value.replace(/\.\d{1,9}(?=Z|[+-]\d{2}:\d{2}$)/u, '');
+  return BigInt(Date.parse(wholeSecond)) * 1_000_000n + BigInt(fraction.padEnd(9, '0') || '0');
+}
+
 const occurrenceKeys = Object.freeze([
   'schemaVersion', 'sourceCapabilityId', 'stableSubjectId', 'attentionReason',
   'occurrenceId', 'unversioned', 'occurrenceVersion', 'occurredAt', 'topicId', 'sourceReferenceId',
@@ -111,7 +117,7 @@ export function validateActionDescriptor(input) {
   return Object.freeze(descriptor);
 }
 
-const schemaKeys = Object.freeze(['type', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'minLength']);
+const schemaKeys = Object.freeze(['type', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'minLength', 'oneOf']);
 const schemaTypes = Object.freeze(['object', 'array', 'string', 'integer', 'number', 'boolean']);
 
 function validateParameterSchema(schema, path = 'parameterSchema') {
@@ -121,6 +127,8 @@ function validateParameterSchema(schema, path = 'parameterSchema') {
   if (schema.type === undefined && schema.enum === undefined) throw new TypeError(`${path} requires a type or enum`);
   if (schema.enum !== undefined && (!Array.isArray(schema.enum) || schema.enum.length === 0 || schema.enum.some((item) => item !== null && !['string', 'boolean'].includes(typeof item) && !(typeof item === 'number' && Number.isFinite(item))))) throw new TypeError(`${path}.enum must contain JSON primitive values`);
   if (schema.minLength !== undefined && (schema.type !== 'string' || !Number.isInteger(schema.minLength) || schema.minLength < 0)) throw new TypeError(`${path}.minLength requires a nonnegative string length`);
+  if (schema.oneOf !== undefined && (schema.type !== 'object' || !Array.isArray(schema.oneOf) || schema.oneOf.length < 2)) throw new TypeError(`${path}.oneOf requires object alternatives`);
+  for (const [index, branch] of (schema.oneOf ?? []).entries()) validateParameterSchema(branch, `${path}.oneOf[${index}]`);
   if (schema.type === 'object') {
     if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== 'boolean') throw new TypeError(`${path}.additionalProperties must be a boolean`);
     const properties = schema.properties === undefined ? {} : objectValue(schema.properties, `${path}.properties`);
@@ -148,6 +156,10 @@ function validateInputValue(value, schema, path) {
     if (schema.additionalProperties === false) for (const key of Object.keys(value)) if (!Object.hasOwn(properties, key)) throw new TypeError(`${path} contains unsupported field ${key}`);
     for (const key of schema.required ?? []) if (!Object.hasOwn(value, key)) throw new TypeError(`${path} is missing ${key}`);
     for (const [key, child] of Object.entries(properties)) if (Object.hasOwn(value, key)) validateInputValue(value[key], child, `${path}.${key}`);
+    if (schema.oneOf) {
+      const matches = schema.oneOf.filter((branch) => { try { validateInputValue(value, branch, path); return true; } catch { return false; } });
+      if (matches.length !== 1) throw new TypeError(`${path} requires exactly one matching alternative`);
+    }
   }
   if (schema.type === 'array' && schema.items) for (let index = 0; index < value.length; index += 1) validateInputValue(value[index], schema.items, `${path}[${index}]`);
 }
