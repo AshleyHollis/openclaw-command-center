@@ -439,6 +439,7 @@ test('an earlier recoverable Reminder remains resumable while clarification wait
   }, operationId);
   const bill = page.locator('article[data-open-loop-id="clarified-bill"]');
   await bill.getByRole('button', { name: 'Review evidence' }).click();
+  await bill.getByText('Resume its exact saved follow-up to reconcile the schedule before a new correction.', { exact: false }).waitFor();
   await bill.getByRole('button', { name: 'Resume saved follow-up' }).click();
   assert.equal(await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.resume-follow-up'))?.params.logicalOperationId), operationId);
 }));

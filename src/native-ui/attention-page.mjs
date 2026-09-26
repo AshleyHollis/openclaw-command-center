@@ -127,8 +127,12 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         unavailable: 'Decision saved. Reminder scheduling is currently unavailable.'
       };
       const priorWording = {
-        pending: 'An earlier Reminder effect is unresolved and may still finish. Check its outcome before a new correction; it is not queued for retry from this clarification.',
-        unknown: 'An earlier Reminder outcome is unknown. Check the exact schedule before a new correction; it cannot be resumed from this clarification.'
+        pending: followUp.recoverable
+          ? 'An earlier Reminder effect is unresolved and may still finish. Resume its exact saved follow-up to check the outcome before a new correction.'
+          : 'An earlier Reminder effect is unresolved and may still finish. Check its outcome before a new correction.',
+        unknown: followUp.recoverable
+          ? 'An earlier Reminder outcome is unknown. Resume its exact saved follow-up to reconcile the schedule before a new correction.'
+          : 'An earlier Reminder outcome is unknown. Check the exact schedule before a new correction.'
       };
       disclosure.append(element('p', followUp.priorDecision && priorWording[followUp.status]
         ? priorWording[followUp.status]
