@@ -100,13 +100,13 @@ async function main() {
           scopes: ['operator.admin'] });
         return response?.result ?? response;
       };
-      assert.ok((await dashboard()).attention.some(card => card.sourceCapabilityId === 'developer-work'),
+      assert.ok((await dashboard()).attention.some(card => card.sourceCapabilityId === 'developer-work.v1'),
         'Accepted fictional request did not reach Attention');
       await send({ ...base, eventId: randomUUID(), workRevision: 2,
         eventType: 'request_resolved', occurredAt: new Date().toISOString(),
         request: { ...request, expectedRequestRevision: 1 },
         outcome: { code: 'answered', requestId } }, 2);
-      assert.ok(!(await dashboard()).attention.some(card => card.sourceCapabilityId === 'developer-work'),
+      assert.ok(!(await dashboard()).attention.some(card => card.sourceCapabilityId === 'developer-work.v1'),
         'Resolved fictional request remained active in Attention');
       await assertRecordedChildTraffic(world);
       assertNoFatalHostOutput(run.diagnostics);
