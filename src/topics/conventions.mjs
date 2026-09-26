@@ -1,11 +1,9 @@
-import { lstat, mkdir, open, readdir, realpath, rename } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { paraCategories } from '../metadata/schema.mjs';
 import { sourceError } from '../sources/errors.mjs';
-import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
 import { enrollNoteFolderIdentity, readNoteFolderIdentity, inspectNoteFolderCandidate, withBootstrapNoteFolder } from '../sources/note-folder-identity.mjs';
-import { parseNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 import { ownsNoteFilesystem, withNoteFilesystemOwner } from '../sources/note-filesystem-owner.mjs';
 
 export const PARA_DIRECTORY_NAMES = Object.freeze({ project: 'Projects', area: 'Areas', resource: 'Resources', archive: 'Archive' });
@@ -81,11 +79,11 @@ export function resolveProvisioningFolderPath(options) {
 }
 
 async function enrollCandidate(candidate, options) {
-  if (options.assertCurrent === undefined && options.enrollmentOperationId === undefined) return enrollNoteFolderIdentity(candidate.path);
-  options.assertCurrent?.();
+  if (options.assertCurrent === undefined) return enrollNoteFolderIdentity(candidate.path);
+  options.assertCurrent();
   const witness = await inspectNoteFolderCandidate(candidate.path);
   return withBootstrapNoteFolder(candidate.path, { expectedDirectoryIdentity: witness.directoryIdentity,
-    expectedIdentity: witness.markerIdentity, markerId: options.enrollmentOperationId, assertCurrent: options.assertCurrent ?? (() => {}) }, held => held.identity);
+    expectedIdentity: witness.markerIdentity, markerId: options.enrollmentOperationId, assertCurrent: options.assertCurrent }, held => held.identity);
 }
 
 function similarName(left, right) {
@@ -139,39 +137,6 @@ export async function ensureConventionalFolder(options = {}) {
   if (!ownsNoteFilesystem(options.metadata)) return withNoteFilesystemOwner(options.metadata, () => ensureConventionalFolder(options));
   const candidate = await findConventionalFolder(options);
   options.assertCurrent?.();
-  if (options.enrollmentOperationId) {
-    assertLogicalOperationId(options.enrollmentOperationId);
-    const categoryPath = path.dirname(candidate.path);
-    const stagingPath = path.join(categoryPath, `.command-center-provision-${options.enrollmentOperationId}`);
-    const staged = await lstat(stagingPath).catch(error => error?.code === 'ENOENT' ? null : Promise.reject(error));
-    if (staged && (!staged.isDirectory() || staged.isSymbolicLink())) throw sourceError('source-recovery', 'The operation-owned Note Folder staging path is unsafe.');
-    if (candidate.status === 'existing') {
-      if (staged) throw sourceError('source-recovery', 'Both the final and staged Note Folder exist; exact recovery is required.');
-      const revision = candidate.revision ?? await enrollNoteFolderIdentity(candidate.path);
-      options.assertCurrent?.();
-      const owned = parseNoteFolderIdentity(revision)?.markerId === options.enrollmentOperationId;
-      return Object.freeze({ ...candidate, status: owned ? 'created' : 'existing', ownership: owned ? 'created' : 'adopted', revision });
-    }
-    await mkdir(categoryPath, { recursive: true, mode: 0o700 });
-    if (!staged) {
-      const category = await open(categoryPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      try {
-        const descriptorRoot = process.platform === 'linux' ? '/proc/self/fd' : process.platform === 'darwin' ? '/dev/fd' : null;
-        if (!descriptorRoot) throw sourceError('capability-unavailable', 'Descriptor-anchored folder creation is unavailable.');
-        options.assertCurrent?.();
-        await mkdir(path.join(descriptorRoot, String(category.fd), path.basename(stagingPath)), { recursive: false, mode: 0o700 });
-      } finally { await category.close(); }
-    }
-    const stagedRevision = await readNoteFolderIdentity(stagingPath).catch(error => error?.code === 'source-recovery' ? null : Promise.reject(error));
-    if (staged && !stagedRevision) throw sourceError('source-recovery', 'Unmarked operation staging requires exact recovery before retry.');
-    const revision = stagedRevision ?? await enrollCandidate({ path: stagingPath }, options);
-    if (parseNoteFolderIdentity(revision)?.markerId !== options.enrollmentOperationId) throw sourceError('source-recovery', 'The staged Note Folder belongs to another operation.');
-    options.assertCurrent?.();
-    if (await lstat(candidate.path).catch(error => error?.code === 'ENOENT' ? null : Promise.reject(error))) throw sourceError('conflict', 'The target Note Folder appeared during creation.');
-    await rename(stagingPath, candidate.path);
-    if (await readNoteFolderIdentity(candidate.path) !== revision) throw sourceError('source-recovery', 'The created Note Folder identity changed before binding.');
-    return Object.freeze({ ...candidate, status: 'created', ownership: 'created', revision });
-  }
   if (candidate.status === 'existing') return Object.freeze({ ...candidate, revision: await enrollCandidate(candidate, options) });
   const categoryPath = path.dirname(candidate.path);
   await mkdir(categoryPath, { recursive: true, mode: 0o700 });

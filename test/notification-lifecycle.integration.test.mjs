@@ -300,3 +300,16 @@ test('a quiet summary is cleared when a contributing episode becomes terminal du
     assert.equal([...devices.values()].every(notifications => notifications.size === 0), true);
   }, '2026-08-27T22:00:00.000Z');
 });
+
+test('a quiet summary is cleared when its category is disabled during delivery', async () => {
+  await fixture(async ({ service, binding, devices, advance }) => {
+    await service.reconcile(); advance(9 * 60 * 60 * 1000);
+    const entered = Promise.withResolvers(); const release = Promise.withResolvers(); const emit = binding.emit;
+    binding.emit = async candidate => { entered.resolve(); await release.promise; return emit(candidate); };
+    const pending = service.reconcile(); await entered.promise;
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '89999999-4444-4444-8444-444444444444', expectedRevision: 1, settings: { importantItems: false } });
+    release.resolve(); await pending;
+    assert.equal([...devices.values()].every(notifications => notifications.size === 0), true);
+    assert.equal(service.inspect().emissions.filter(emission => emission.status === 'sent').length, 0);
+  }, '2026-08-27T22:00:00.000Z');
+});

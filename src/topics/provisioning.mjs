@@ -108,7 +108,7 @@ export class TopicProvisioningService {
         throw sourceError('conflict', 'A provisioning operation is bound to a non-provisioning Topic.');
       }
       this.step(logicalOperationId, topicId, 'folder', operation);
-      const folder = await this.bindFolder(topicId, intent, { enrollmentOperationId: logicalOperationId });
+      const folder = await this.bindFolder(topicId, intent);
       this.step(logicalOperationId, topicId, 'session', operation, { folderReferenceId: folder.referenceId });
       const session = await this.bindSession(topicId, intent, logicalOperationId, requestId, runtime);
       this.step(logicalOperationId, topicId, 'verify-bindings', operation, { folderReferenceId: folder.referenceId, sessionReferenceId: session.referenceId });

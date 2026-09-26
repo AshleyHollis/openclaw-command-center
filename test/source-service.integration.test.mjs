@@ -45,6 +45,12 @@ test('guarded Note mutations persist exact missing-folder recovery and preserve 
       assert.equal(recovery[0].state, 'required');
       await assert.rejects(() => service[method](input));
       assert.equal(metadata.listSourceRecovery(topicId)[0].revision, recovery[0].revision);
+      metadata.close();
+      metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+      const reopened = metadata.listSourceRecovery(topicId);
+      assert.equal(reopened.length, 1, `${method} recovery survives SQLite reopen`);
+      assert.equal(reopened[0].referenceId, referenceId);
+      assert.equal(reopened[0].revision, recovery[0].revision);
     } finally { metadata?.close(); await rm(parent, { recursive: true, force: true }); }
   }
 });
