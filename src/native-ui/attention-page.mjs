@@ -149,7 +149,10 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           ? priorNoteWording[supportingNote.status]
           : `${supportingNote.priorDecision ? 'Earlier decision: ' : ''}${noteWording[supportingNote.status] ?? 'Supporting Note status is unavailable.'}`));
       }
-      if (!followUp.priorDecision && (['pending', 'unknown'].includes(followUp.status) || ['pending', 'unknown', 'unavailable'].includes(supportingNote?.status)) && nonBlank(followUp.logicalOperationId)) {
+      if ((!followUp.priorDecision || followUp.recoverable)
+        && (['pending', 'unknown'].includes(followUp.status)
+          || !followUp.priorDecision && ['pending', 'unknown', 'unavailable'].includes(supportingNote?.status))
+        && nonBlank(followUp.logicalOperationId)) {
         const resume = element('button', 'Resume saved follow-up'); resume.type = 'button';
         resume.addEventListener('click', async () => {
           if (!writable() || resume.disabled) return;
