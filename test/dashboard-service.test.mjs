@@ -96,6 +96,26 @@ test('Dashboard presents an open-loop obligation once when its owned native Remi
   assert.equal(result.attentionBadgeCount, 1);
 });
 
+test('Dashboard distinguishes an ambiguous saved clarification from one still awaiting interpretation', async () => {
+  const now = '2026-09-24T02:00:00.000Z';
+  const loop = { schemaVersion: 1, loopId: 'fictional-clarification-loop', kind: 'general', stableSubjectId: 'fictional:clarification',
+    title: 'Choose fictional delivery window', state: 'decision-needed',
+    attention: { reason: 'decision-requested', whyNow: 'Clarification needs review.', actions: ['Open evidence'],
+      activated: true, pendingClarificationId: 'fictional-clarification' }, evidenceObservationIds: [], revision: 2 };
+  let proposal = null;
+  const metadata = { listUsableTopics: () => [], listOpenLoops: () => [loop],
+    getClarificationProposal: () => proposal,
+    getQuietAttentionInbox: () => ({ attention: [{ loop, reason: 'decision-requested', whyNow: loop.attention.whyNow,
+      actions: loop.attention.actions }], inProgress: [], comingUp: [], waiting: [], suggested: [], deferred: [], reconciliation: [], terminal: [] }),
+    projectActiveRenovationStagePrerequisites: () => [] };
+  const project = async () => (await projectDashboard({ metadata, sourceService: {}, now: () => now })).openLoops.highlighted[0];
+  assert.equal((await project()).clarificationStatus, 'pending');
+  proposal = { proposal: { outcome: 'ambiguous' } };
+  assert.equal((await project()).clarificationStatus, 'review-required');
+  proposal = { proposal: { outcome: 'clear', decision: 'confirm' } };
+  assert.equal((await project()).clarificationStatus, 'proposal-saved');
+});
+
 test('Dashboard does not hide an enabled Reminder that conflicts with a terminal open loop', async () => {
   const now = '2026-09-20T01:00:00.000Z';
   const loop = { schemaVersion: 1, loopId: 'loop-paid-obligation', kind: 'payment', stableSubjectId: 'invoice:paid', title: 'Paid fictional invoice', topicId: 'topic-one', state: 'resolved', paymentState: 'paid', dueAt: now, attention: { actions: [], activated: false, currentEvidence: true }, evidenceObservationIds: ['evidence-paid'], revision: 2 };

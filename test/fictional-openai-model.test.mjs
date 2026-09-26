@@ -44,6 +44,18 @@ test('fictional model binds a response to the current exact tool result, not his
   } finally { await model.close(); }
 });
 
+test('fictional isolated clarification proposal uses zero tools and only exact saved words', async () => {
+  const model = await startFictionalOpenAiModel();
+  try {
+    const words = 'I paid the fictional invoice in full. Keep this statement on this bill only.';
+    const response = await completion(model, [{ role: 'user', content: JSON.stringify({ userWords: words,
+      acceptedObligation: { title: 'Pay fictional invoice' } }) }], []);
+    assert.match(response, /paymentState/u);
+    assert.equal(model.requests.at(-1).isolatedClarificationProposal, true);
+    assert.deepEqual(model.requests.at(-1).tools, []);
+  } finally { await model.close(); }
+});
+
 test('fictional model can complete an explicit no-Note fixture turn without invoking an available maintenance tool', async () => {
   const model = await startFictionalOpenAiModel();
   try {
@@ -89,5 +101,33 @@ test('fictional model exercises explicit and vague natural-language capture thro
     const vague = await completion(model, [{ role: 'user', content: '[fixture:capture-vague] Maybe utility-room storage could be interesting.' }], [capture]);
     assert.equal(model.requests.at(-1).action, 'capture');
     assert.match(vague, /provenance\\\":\\\"idea/);
+  } finally { await model.close(); }
+});
+
+test('fictional targeted clarification calls exact read and interpretation tools across normalized native messages', async () => {
+  const model = await startFictionalOpenAiModel();
+  try {
+    const target = { loopId: 'fictional-loop', expectedRevision: 4, clarificationObservationId: 'fictional-clarification' };
+    const prompt = `Process one item.\n[fixture:targeted-clarification:${Buffer.from(JSON.stringify(target)).toString('base64url')}]`;
+    const read = await completion(model, [{ role: 'user', content: prompt }], []);
+    assert.equal(model.requests.at(-1).action, 'targeted-load');
+    assert.match(read, /command_center_get_pending_clarification/u);
+    const readId = model.requests.at(-1).issuedToolCallId;
+    const interpreted = await completion(model, [
+      { role: 'user', content: prompt },
+      { role: 'assistant', tool_calls: [{ id: readId }] },
+      { role: 'tool', tool_call_id: readId, content: JSON.stringify({ ...target, status: 'pending', processorVersion: 'fictional-v1', userWords: 'I paid the fictional bill in full.' }) },
+      { role: 'user', content: 'Normalized current user record.' }
+    ], []);
+    assert.equal(model.requests.at(-1).action, 'targeted-interpret');
+    assert.match(interpreted, /command_center_interpret_clarification/u);
+    const interpretationId = model.requests.at(-1).issuedToolCallId;
+    await completion(model, [
+      { role: 'user', content: prompt },
+      { role: 'assistant', tool_calls: [{ id: interpretationId }] },
+      { role: 'tool', tool_call_id: interpretationId, content: '{"status":"applied"}' },
+      { role: 'user', content: 'Normalized current user record.' }
+    ], []);
+    assert.equal(model.requests.at(-1).action, 'final');
   } finally { await model.close(); }
 });

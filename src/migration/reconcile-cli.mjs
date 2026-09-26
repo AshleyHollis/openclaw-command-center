@@ -17,6 +17,7 @@ import { normalizeProducerIntakePlan, producerIntakePlanDigest } from '../open-l
 import { normalizeEmailReaderPlan, emailReaderPlanDigest } from '../open-loops/email-reader-plan.mjs';
 import { emailReaderRefreshOperationId, recordEmailReaderRefreshReceipt } from '../open-loops/email-reader-refresh-receipt.mjs';
 import { sourceTopicResolverToolFactory, sourceNoteCaptureToolFactory, sourceCommitmentCaptureToolFactory, intakeReceiptToolFactory, intakeSourcePlanToolFactory, intakeSourceAccountToolFactory, intakeOutcomeToolFactory } from '../open-loops/source-intake-tool.mjs';
+import { buildTargetedClarificationPrompt } from '../open-loops/clarification-prompt.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const recoveryFailure = receipts => { throw Object.assign(new Error('note-folder-recovery-halted'), { code: 'note-folder-recovery-halted', receipts }); };
@@ -389,8 +390,44 @@ export async function runConfiguredDiscoverabilityCheck({ config, signal }) {
   } finally { sources?.close(); metadata?.close(); releaseIdentityReader(); }
 }
 
+export async function runPendingClarifications({ stateDir, cursor, limit = 10 } = {}) {
+  const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')
+  ]);
+  const metadata = openCommandCenterMetadataService({ stateDir: stateDir ?? resolveStateDir({ ...process.env }), readOnly: true });
+  try { return metadata.listPendingOpenLoopClarificationsPage({ ...(cursor ? { cursor } : {}), limit }); }
+  finally { metadata.close(); }
+}
+
+export async function runPendingClarificationPrompt({ stateDir, loopId, expectedRevision, clarificationObservationId }) {
+  const [{ resolveStateDir }, { openCommandCenterMetadataService }] = await Promise.all([
+    import('openclaw/plugin-sdk/state-paths'), import('../metadata/service.mjs')
+  ]);
+  const metadata = openCommandCenterMetadataService({ stateDir: stateDir ?? resolveStateDir({ ...process.env }), readOnly: true });
+  try {
+    const current = metadata.getOpenLoop(loopId);
+    if (!current || current.revision !== expectedRevision
+      || current.attention?.pendingClarificationId !== clarificationObservationId) fail('clarification-superseded');
+    return buildTargetedClarificationPrompt({ loopId, expectedRevision, clarificationObservationId });
+  } finally { metadata.close(); }
+}
+
 export function registerReconciliationCli({ program, config, logger }) {
   const group = program.command('command-center').description('Command Center existing-data reconciliation');
+  const clarifications = group.command('clarifications').description('Inspect the content-free item clarification queue');
+  clarifications.command('pending').description('List bounded pending item identities without reading source content')
+    .option('--limit <count>', 'Maximum items, 1-20', '10')
+    .option('--cursor <loop-id>', 'Continue after one returned loop ID')
+    .action(async options => {
+      try { logger.info(JSON.stringify(await runPendingClarifications({ limit: Number(options.limit), ...(options.cursor ? { cursor: options.cursor } : {}) }))); }
+      catch (error) { logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'clarification-queue-failed'); process.exitCode = 1; }
+    });
+  clarifications.command('prompt').description('Build one exact item-scoped model prompt without source content')
+    .requiredOption('--loop-id <id>').requiredOption('--expected-revision <number>').requiredOption('--clarification-id <id>')
+    .action(async options => {
+      try { logger.info(await runPendingClarificationPrompt({ loopId: options.loopId, expectedRevision: Number(options.expectedRevision), clarificationObservationId: options.clarificationId })); }
+      catch (error) { logger.error(typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,80}$/u.test(error.code) ? error.code : 'clarification-prompt-failed'); process.exitCode = 1; }
+    });
   for (const [command, run] of [['reconcile', runConfiguredReconciliation], ['prepare-topic', runConfiguredTopicPreparation], ['initialize-metadata', runConfiguredMetadataInitialization], ['recover-note-folders', runConfiguredNoteFolderRecovery]]) {
   const reconcile = group.command(command).description('Inspect or run an explicitly pinned private preparation or import plan');
   for (const mode of command === 'initialize-metadata' ? ['execute', 'verify'] : command === 'recover-note-folders' ? ['preflight', 'execute', 'verify'] : ['preflight', 'execute', 'resume', 'verify']) {

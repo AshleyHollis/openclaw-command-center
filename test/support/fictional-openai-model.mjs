@@ -6,7 +6,7 @@ export const fictionalAccountedEmailBinding = `sha256:${'a'.repeat(64)}`;
 export const fictionalAccountedEmailSourceNamespace = `microsoft-graph:${fictionalAccountedEmailBinding}`;
 export const fictionalAccountedEmailRawId = 'fictional-real-host-mixed-message';
 export const fictionalAccountedEmailSourceId = `namespaced:v1:sha256:${createHash('sha256').update(JSON.stringify([fictionalAccountedEmailSourceNamespace, fictionalAccountedEmailRawId])).digest('hex')}`;
-export const fictionalAccountedEmailAcceptedExtraction = { schemaVersion: 1, proposedTopic: 'Fictional Native Journey', notePath: 'Inbox/fictional-real-host-mixed-email.md', knowledgeMarkdown: '# Fictional retained real-host reference\n', knowledgeOutcomeId: 'real-host-reference', obligations: [{ obligationId: 'real-host-choice', title: 'Choose fictional real-host delivery window', provenance: 'inferred', classification: 'decision' }, { obligationId: 'real-host-payment', title: 'Pay fictional real-host invoice', provenance: 'explicit' }, { obligationId: 'real-host-reply', title: 'Reply with fictional real-host reference', provenance: 'explicit' }] };
+export const fictionalAccountedEmailAcceptedExtraction = { schemaVersion: 1, proposedTopic: 'Fictional Native Journey', notePath: 'Inbox/fictional-real-host-mixed-email.md', knowledgeMarkdown: '# Fictional retained real-host reference\n', knowledgeOutcomeId: 'real-host-reference', obligations: [{ obligationId: 'real-host-choice', title: 'Choose fictional real-host delivery window', provenance: 'inferred', classification: 'decision' }, { obligationId: 'real-host-payment', title: 'Pay fictional real-host invoice', provenance: 'explicit', obligationKind: 'payment' }, { obligationId: 'real-host-reply', title: 'Reply with fictional real-host reference', provenance: 'explicit' }] };
 export const fictionalAccountedEmailPlan = retainedNoteRevision => ({ schemaVersion: 1, purpose: 'command-center-producer-intake', runId: 'fictional-real-host-original', sourceKind: 'email', sourceNamespace: fictionalAccountedEmailSourceNamespace,
   scope: { accountBinding: fictionalAccountedEmailBinding, folders: ['inbox'], sinceUtc: '2026-09-21T00:00:00.000Z', beforeUtc: '2026-09-22T00:00:00.000Z', maxMessages: 50, batchKind: 'bounded' }, processorVersion: 'fictional-real-host-processor-v1', nextExpectedAt: '2026-09-23T04:02:00.000Z',
   enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false }, records: [{ schemaVersion: 1, sourceExternalId: fictionalAccountedEmailRawId, sourceVersion: 'email-change-key-real-host-52', checkpoint: 'page-1:fictional-real-host-mixed-message', retainedNoteRevision, acceptedExtraction: fictionalAccountedEmailAcceptedExtraction }] });
@@ -131,7 +131,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
   const pendingToolCalls = new Set();
   const pendingToolActions = new Map();
   const usedMediaReferences = new Set();
-  const accounted = { phaseOneStep: 0, phaseTwoStep: 0, resolved: null, saved: null, captured: null };
+  const accounted = { phaseOneStep: 0, phaseTwoStep: 0, resolved: null, saved: null, captured: null, clarification: null };
   let sequence = 0;
   let initialTurnCompleted = false;
   const server = createServer(async (request, response) => {
@@ -164,22 +164,49 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     // production tool selection remains entirely host/model owned.
     const noNoteFixtureTurn = JSON.stringify(latestUserMessage(messages)?.content ?? '').includes('[fixture:no-note]');
     const serializedMessages = JSON.stringify(messages);
+    const isolatedClarificationProposal = tools.size === 0 && serializedMessages.includes('acceptedObligation') && serializedMessages.includes('userWords');
     const captureFixtureTurn = serializedMessages.includes('[fixture:capture-laundry]');
     const vagueFixtureTurn = serializedMessages.includes('[fixture:capture-vague]');
     const accountedPhaseOne = serializedMessages.includes('[fixture:accounted-mixed-email-phase-1]');
     const accountedPhaseTwo = serializedMessages.includes('[fixture:accounted-mixed-email-phase-2]');
-    if (completedCurrentTool && (accountedPhaseOne || accountedPhaseTwo)) {
+    const targetedMatch = serializedMessages.match(/\[fixture:targeted-clarification:([A-Za-z0-9_-]+)\]/u);
+    const targeted = targetedMatch ? JSON.parse(Buffer.from(targetedMatch[1], 'base64url').toString('utf8')) : null;
+    if (completedCurrentTool && (accountedPhaseOne || accountedPhaseTwo || targeted)) {
       const result = latestToolResult(messages);
       if (completedToolAction === 'command_center_get_intake_source_account') accounted.loaded = result;
       if (completedToolAction === 'command_center_resolve_source_topic') accounted.resolved = result;
       if (completedToolAction === 'command_center_save_source_note') accounted.saved = result;
       if (completedToolAction === 'command_center_capture_source_commitment') accounted.captured = result;
+      if (completedToolAction === 'command_center_get_pending_clarification') accounted.clarification = result;
     }
     const source = { sourceKind: 'email', sourceExternalId: fictionalAccountedEmailSourceId, sourceVersion: 'email-change-key-real-host-52' };
     const acceptedExtraction = fictionalAccountedEmailAcceptedExtraction;
     let frames;
     let action = 'final';
-    if (accountedPhaseOne && accounted.phaseOneStep <= 6) {
+    if (isolatedClarificationProposal) {
+      const content = latestUserMessage(messages)?.content;
+      const words = JSON.parse(typeof content === 'string' ? content : Array.isArray(content) ? content.map(part => part?.text ?? '').join('') : 'null')?.userWords;
+      if (typeof words !== 'string') throw new Error('Fictional isolated clarification lacks the saved words.');
+      const proposal = words === 'I paid the fictional invoice in full. Keep this statement on this bill only.'
+        ? { outcome: 'clear', paymentState: 'paid', evidenceQuote: words }
+        : { outcome: 'ambiguous' };
+      frames = textCompletion({ id, model, text: JSON.stringify(proposal) });
+    } else if (targeted && completedToolAction === 'command_center_get_pending_clarification') {
+      const context = accounted.clarification;
+      if (context?.status !== 'pending' || context.clarificationObservationId !== targeted.clarificationObservationId)
+        throw new Error(`Fictional targeted clarification context mismatch: ${JSON.stringify({ status: context?.status ?? null,
+          observationMatches: context?.clarificationObservationId === targeted.clarificationObservationId,
+          resultKeys: context && typeof context === 'object' ? Object.keys(context) : [] })}`);
+      action = 'targeted-interpret';
+      frames = toolCall({ id, model, name: 'command_center_interpret_clarification', arguments: {
+        ...targeted, processorVersion: context.processorVersion, outcome: 'clear', paymentState: 'paid'
+      } });
+    } else if (targeted && !completedCurrentTool) {
+      action = 'targeted-load';
+      frames = toolCall({ id, model, name: 'command_center_get_pending_clarification', arguments: {
+        loopId: targeted.loopId, expectedRevision: targeted.expectedRevision
+      } });
+    } else if (accountedPhaseOne && accounted.phaseOneStep <= 6) {
       const step = accounted.phaseOneStep++;
       if (step === 0) { action = 'accounted-resolve'; frames = toolCall({ id, model, name: 'command_center_resolve_source_topic', arguments: { topicName: acceptedExtraction.proposedTopic } }); }
       else if (step === 1) { action = 'accounted-save'; frames = toolCall({ id, model, name: 'command_center_save_source_note', arguments: { topicId: accounted.resolved?.topicId, noteFolderReferenceId: accounted.resolved?.noteFolderReferenceId, ...source, path: acceptedExtraction.notePath, markdown: acceptedExtraction.knowledgeMarkdown } }); }
@@ -224,7 +251,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     const issuedToolCallId = action === 'final' ? null : stableToolCallId(id);
     if (issuedToolCallId) { pendingToolCalls.add(issuedToolCallId); pendingToolActions.set(issuedToolCallId, frames[0].choices[0].delta.tool_calls[0].function.name); }
     if (action === 'file' && mediaRef) usedMediaReferences.add(mediaRef);
-    requests.push(Object.freeze({ id, action, mediaRef, tools: [...tools].sort(), messageCount: messages.length, currentRole: currentMessage?.role ?? null, currentToolResultId, currentToolStatus: toolResultStatus(currentMessage), completedCurrentTool, issuedToolCallId, transcriptShape: transcriptShape(messages), loadedProcessorVersion: accounted.loaded?.processorVersion ?? null, loadedOutcomeStatuses: accounted.loaded?.outcomes?.map(outcome => [outcome.outcomeId, outcome.status]) ?? [] }));
+    requests.push(Object.freeze({ id, action, isolatedClarificationProposal, mediaRef, tools: [...tools].sort(), messageCount: messages.length, currentRole: currentMessage?.role ?? null, currentToolResultId, currentToolStatus: toolResultStatus(currentMessage), completedCurrentTool, issuedToolCallId, transcriptShape: transcriptShape(messages), loadedProcessorVersion: accounted.loaded?.processorVersion ?? null, loadedOutcomeStatuses: accounted.loaded?.outcomes?.map(outcome => [outcome.outcomeId, outcome.status]) ?? [] }));
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     for (const frame of frames) response.write(`data: ${JSON.stringify(frame)}\n\n`);
     response.end('data: [DONE]\n\n');

@@ -18,6 +18,8 @@ const schedulerRuntimeMethods = new Set([
   'command-center.v1.attention.act',
   'command-center.v1.dashboard.get',
   'command-center.v1.open-loops.decide',
+  'command-center.v1.open-loops.interpret-clarification',
+  'command-center.v1.open-loops.resume-follow-up',
   'command-center.v1.open-loops.payment-status',
   'command-center.v1.open-loops.organize',
   'command-center.v1.open-loops.renovation-requirement',
@@ -228,6 +230,9 @@ const handlerMap = Object.freeze({
   'command-center.v1.open-loops.capture': (service, params) => service.openLoopsCapture(params),
   'command-center.v1.open-loops.intake-selected': (service, params) => service.openLoopsIngestSelected(params),
   'command-center.v1.open-loops.decide': (service, params, runtime) => service.openLoopsDecide(params, runtime),
+  'command-center.v1.open-loops.clarify': (service, params) => service.openLoopsClarify(params),
+  'command-center.v1.open-loops.interpret-clarification': (service, params, runtime) => service.openLoopsInterpretClarification(params, { ...runtime, authenticatedRequesterId: params.authenticatedOperatorId, deferFollowUp: true }),
+  'command-center.v1.open-loops.resume-follow-up': (service, params, runtime) => service.openLoopsResumeFollowUp(params, runtime),
   'command-center.v1.open-loops.payment-status': (service, params, runtime) => service.openLoopsPaymentStatus(params, runtime),
   'command-center.v1.open-loops.organize': (service, params, runtime) => service.openLoopsOrganize(params, runtime),
   'command-center.v1.open-loops.renovation-requirement': (service, params, runtime) => service.openLoopsRenovationRequirement(params, runtime),
@@ -316,6 +321,11 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         if (assertHistoryRead) runtime = { assertCurrent: assertHistoryRead };
         if (schedulerRuntimeMethods.has(method) && client?.connect) {
           runtime = { gateway: createAuthenticatedCoreGateway({ req, client, context, isWebchatConnect, signal }) };
+        }
+        if (method === 'command-center.v1.open-loops.interpret-clarification') {
+          const authority = captureAuthenticatedConversationAuthority({ client, context, signal });
+          if (authority.principalId !== authenticatedOperatorId) throw new SourceServiceError('unauthenticated', 'Interpretation operator identity changed.');
+          runtime = { ...runtime, assertCurrent: authority.assertCurrent };
         }
         const coreSessionSend = method === 'command-center.v1.sessions.send' ? context.getGatewayMethodRegistry?.()?.getHandler?.('sessions.send') : null;
         if (method === 'command-center.v1.sessions.send' && client && typeof coreSessionSend === 'function') {

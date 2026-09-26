@@ -196,13 +196,23 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     const reading = noteView === 'reading';
     readingMode.setAttribute('aria-pressed', String(reading)); sourceMode.setAttribute('aria-pressed', String(!reading));
     content.hidden = !reading; source.hidden = reading;
-    if (!noteText) { content.replaceChildren(); source.textContent = ''; return; }
+    // Release the inactive representation, including a large textarea's value.
+    // The authoritative read remains in noteText for the next mode switch.
+    const clear = (container) => {
+      for (const viewer of container.querySelectorAll('[data-large-note-viewer]')) viewer.value = '';
+      container.replaceChildren();
+      delete container.dataset.largeNote;
+    };
+    if (!noteText) { clear(content); clear(source); return; }
     if (!reading) {
+      clear(content);
+      clear(source);
       const { renderReadOnlySource } = await import('./note-render.mjs');
       if (signal.aborted || !presented || noteView !== 'source' || pending !== renderGeneration) return;
       renderReadOnlySource(source, noteText);
       return;
     }
+    clear(source);
     content.textContent = 'Rendering Note…';
     try {
       const { renderReadOnlyMarkdown } = await import('./note-render.mjs');
@@ -537,7 +547,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
           if (panel && !showPanelInMain()) return;
           (noteView === 'reading' ? content : source).focus();
         }
-        return;
+        return true;
       }
       let draft = drafts.get(key);
       if (!draft || (!draft.operation && draft.version === version && (discardDraft || draft.text === draft.baseText))) {
@@ -547,6 +557,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       showDraft();
       announce(`Note opened · ${result.revision}`);
       if (userInitiated) (noteView === 'reading' ? content : source).focus();
+      return true;
     } catch (error) { if (!readSignal.aborted && current(pending)) report(error); }
   }
   async function load() {
@@ -652,6 +663,17 @@ export function mountTopicPage(container, context, state = createNativeState(), 
         if (matches[0].revision !== requested.evidenceSourceVersion) {
           viewState.selected = undefined;
           status.textContent = `The evidence used source version ${requested.evidenceSourceVersion}; the current original is ${matches[0].revision}. It was not opened as the earlier evidence.`;
+          if (sourceKindFor(matches[0]) === 'note') {
+            const currentNote = matches[0];
+            const openCurrent = element('button', 'Open current Note'); openCurrent.type = 'button';
+            openCurrent.addEventListener('click', () => {
+              if (!currentCatalog(pending)) return;
+              void openNote(currentNote, { userInitiated: true }).then(opened => {
+                if (opened && currentCatalog(pending)) status.textContent = `Opened the current Note at ${currentNote.revision}. The earlier evidence used ${requested.evidenceSourceVersion}; this is a later revision.`;
+              });
+            }, { signal });
+            status.append(' ', openCurrent);
+          }
           return;
         }
         if (sourceKindFor(matches[0]) === 'note') await openNote(matches[0]);

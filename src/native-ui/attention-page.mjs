@@ -112,6 +112,74 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   function renderEvidence(disclosure, detail) {
     disclosure.replaceChildren(element('summary', 'Source evidence'));
     const loop = detail?.loop;
+    const interpretation = detail?.interpretation;
+    const followUp = detail?.followUp;
+    const supportingNote = detail?.supportingNote;
+    if (nonBlank(loop?.attention?.pendingClarificationId)) {
+      const wording = interpretation?.status === 'review-required'
+        ? 'Your clarification was reviewed, but it did not support one safe action. Choose an explicit action or clarify this item again.'
+        : interpretation?.status === 'processing-failed'
+          ? 'Your clarification is saved, but automatic processing failed. The existing obligation remains unchanged; you can review it or clarify again.'
+        : interpretation?.status === 'proposal-saved'
+          ? 'An interpretation is saved; applying it is still pending. No payment or completion is claimed yet.'
+          : 'Your exact clarification is saved for this item. Interpretation is pending; no payment, completion or broader rule was inferred.';
+      disclosure.append(element('p', wording));
+      disclosure.append(element('p', `Previously accepted details${formatDue(loop) ? `, including the ${formatDue(loop)} due time,` : ''} remain in place. An existing Reminder may still run until you make a specific correction.`));
+    }
+    if (followUp) {
+      const wording = {
+        pending: 'Decision saved. Reminder follow-up is still pending.',
+        completed: 'Decision saved. Reminder follow-up is complete.',
+        unknown: 'Decision saved. The Reminder outcome is uncertain and needs reconciliation.',
+        conflict: 'Decision saved. Reminder follow-up conflicts with the current schedule.',
+        blocked: 'Decision saved. Reminder follow-up needs more information before scheduling.',
+        unavailable: 'Decision saved. Reminder scheduling is currently unavailable.'
+      };
+      const priorWording = {
+        pending: followUp.recoverable
+          ? 'An earlier Reminder effect is unresolved and may still finish. Resume its exact saved follow-up to check the outcome before a new correction.'
+          : 'An earlier Reminder effect is unresolved and may still finish. Check its outcome before a new correction; it is not queued for retry from this clarification.',
+        unknown: followUp.recoverable
+          ? 'An earlier Reminder outcome is unknown. Resume its exact saved follow-up to reconcile the schedule before a new correction.'
+          : 'An earlier Reminder outcome is unknown. Check the exact schedule before a new correction; it cannot be resumed from this clarification.'
+      };
+      disclosure.append(element('p', followUp.priorDecision && priorWording[followUp.status]
+        ? priorWording[followUp.status]
+        : `${followUp.priorDecision ? 'Earlier decision: ' : ''}${wording[followUp.status] ?? 'Decision saved. Follow-up status is unavailable.'}`));
+      if (supportingNote) {
+        const noteWording = {
+          pending: 'Supporting Note update is pending.',
+          completed: 'The supporting Note recorded this decision.',
+          unknown: 'The supporting Note update outcome is uncertain.',
+          conflict: 'The supporting Note changed; review it before recording this decision there.',
+          unavailable: 'The supporting Note update is unavailable; your decision remains saved.'
+        };
+        const priorNoteWording = {
+          pending: 'An earlier supporting Note update is unresolved and may still finish. Check the exact Note before a new correction; it is not queued for retry from this clarification.',
+          unknown: 'An earlier supporting Note outcome is unknown. Check the exact Note before a new correction; it cannot be resumed from this clarification.'
+        };
+        disclosure.append(element('p', supportingNote.priorDecision && priorNoteWording[supportingNote.status]
+          ? priorNoteWording[supportingNote.status]
+          : `${supportingNote.priorDecision ? 'Earlier decision: ' : ''}${noteWording[supportingNote.status] ?? 'Supporting Note status is unavailable.'}`));
+      }
+      if ((!followUp.priorDecision || followUp.recoverable)
+        && (['pending', 'unknown'].includes(followUp.status)
+          || !followUp.priorDecision && ['pending', 'unknown', 'unavailable'].includes(supportingNote?.status))
+        && nonBlank(followUp.logicalOperationId)) {
+        const resume = element('button', 'Resume saved follow-up'); resume.type = 'button';
+        resume.addEventListener('click', async () => {
+          if (!writable() || resume.disabled) return;
+          resume.disabled = true;
+          try {
+            await host.request('command-center.v1.open-loops.resume-follow-up', { schemaVersion: 1, logicalOperationId: followUp.logicalOperationId });
+            const refreshed = unwrap(await host.request('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: loop.loopId }));
+            if (refreshed?.loop?.loopId === loop.loopId) renderEvidence(disclosure, refreshed);
+          } catch (error) { report(error?.message || 'Saved follow-up could not be resumed.'); }
+          finally { resume.disabled = false; }
+        }, { signal });
+        disclosure.append(resume);
+      }
+    }
     if (nonBlank(loop?.expectedEvent)) disclosure.append(element('p', `Expected next event: ${loop.expectedEvent}`));
     if (nonBlank(loop?.reviewAt)) disclosure.append(element('p', `Review after ${formatInstant(loop.reviewAt)}`));
     const evidence = Array.isArray(detail?.evidence) ? detail.evidence : [];
@@ -121,9 +189,14 @@ export function mountAttentionPage(container, context, operations = new Map(), p
     }
     for (const item of evidence) {
       const article = element('article');
-      article.append(element('h5', nonBlank(item.summary) ? item.summary : `${item.type ?? 'Evidence'} from ${item.sourceKind ?? item.sourceSystem ?? 'source'}`));
+      const interpretedPayment = item.sourceKind === 'processor-interpretation' && item.provenance === 'interpreted-user-assertion';
+      article.append(element('h5', item.sourceKind === 'user-clarification' ? 'Your item clarification'
+        : interpretedPayment ? 'Interpreted payment assertion'
+          : item.sourceKind === 'processor-interpretation' ? 'Interpreted item decision'
+            : nonBlank(item.summary) ? item.summary : `${item.type ?? 'Evidence'} from ${item.sourceKind ?? item.sourceSystem ?? 'source'}`));
       const source = [item.sourceSystem, item.sourceKind, item.sourceVersion].filter(nonBlank).join(' · ');
       if (source) article.append(element('p', `Source: ${source}`));
+      if (interpretedPayment) article.append(element('p', 'This payment status came from your saved words. Payment has not been independently verified.'));
       const timing = [nonBlank(item.occurredAt) ? `Occurred ${formatInstant(item.occurredAt)}` : null, nonBlank(item.observedAt) ? `Observed ${formatInstant(item.observedAt)}` : null, item.historicalBaseline === true ? 'Historical baseline' : null].filter(Boolean);
       if (timing.length) article.append(element('p', timing.join(' · ')));
       const facts = [
@@ -133,7 +206,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         ['Requirement', nonBlank(item.requirementKind) && nonBlank(item.requirementId) ? `${item.requirementKind}: ${item.requirementId}` : null],
         ['Stage', nonBlank(item.stageId) ? item.stageId : null], ['Choice', item.chosenOption],
         ['Recorded choice', item.recordedChoice], ['Observed choice', item.observedChoice], ['Rationale', item.rationale], ['Assumption', item.assumption],
-        ['Assessment', item.assessment], ['Delivered items', Array.isArray(item.fulfilledItemIds) ? item.fulfilledItemIds.join(', ') : null], ['Outstanding items', Array.isArray(item.outstandingItemIds) ? item.outstandingItemIds.join(', ') : null], ['Expected update', item.expectedAt ? formatInstant(item.expectedAt) : null], ['Operator note', item.note], ['Status', item.status]
+        ['Assessment', item.assessment], ['Delivered items', Array.isArray(item.fulfilledItemIds) ? item.fulfilledItemIds.join(', ') : null], ['Outstanding items', Array.isArray(item.outstandingItemIds) ? item.outstandingItemIds.join(', ') : null], ['Expected update', item.expectedAt ? formatInstant(item.expectedAt) : null], ['Operator note', item.note], ['Payment status', item.paymentState], ['Status', item.status]
       ].filter(([, value]) => value !== undefined && value !== null && value !== '');
       if (facts.length) {
         const list = element('dl');
@@ -178,7 +251,15 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   }
 
   async function submitOpenLoopOperation({ key, method, params, card, pending, success, includeLoopId = true }) {
-    const operation = operations.get(key) ?? { method, params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), ...(includeLoopId ? { loopId: card.loopId } : {}), expectedRevision: card.revision, ...params } };
+    const proposed = { schemaVersion: 1, ...(includeLoopId ? { loopId: card.loopId } : {}), expectedRevision: card.revision, ...params };
+    const prior = operations.get(key);
+    if (prior && ['command-center.v1.open-loops.decide', 'command-center.v1.open-loops.clarify', 'command-center.v1.open-loops.payment-status'].includes(method)) {
+      const { logicalOperationId: _savedId, ...savedIntent } = prior.params;
+      if (prior.method !== method || JSON.stringify(savedIntent) !== JSON.stringify(proposed)) {
+        throw new Error('An earlier decision has an uncertain outcome. Restore its original choices and retry before making a different decision.');
+      }
+    }
+    const operation = prior ?? { method, params: { logicalOperationId: crypto.randomUUID(), ...proposed } };
     operations.set(key, operation);
     const envelope = await host.request(operation.method, operation.params);
     const response = unwrap(envelope);
@@ -377,6 +458,29 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           success: decision.value === 'defer' ? 'The item was deferred to the selected review time.' : decision.value === 'correct-date' ? 'The accepted due date was corrected.' : decision.value === 'confirm' ? 'The suggestion was confirmed.' : decision.value === 'dismiss' ? 'The suggestion was dismissed.' : 'The outcome was recorded.'
         });
       } catch (error) { if (current(pending)) report(error?.message || 'Action outcome is unknown. Retry to reconcile the same operation.'); }
+      finally { if (current(pending)) save.disabled = false; }
+    }, { signal });
+    disclosure.append(form); row.append(disclosure);
+  }
+
+  function appendClarificationControls(row, card, pending) {
+    if (!writable()) return;
+    const disclosure = element('details'); disclosure.dataset.openLoopClarification = 'true';
+    disclosure.append(element('summary', 'Clarify this item'));
+    const form = element('form');
+    form.append(element('p', 'Save your exact words for this item. Existing accepted details and reminders stay in place until you make a specific correction. This does not mark a payment or task complete or create a rule for other items.'));
+    const label = element('label', 'What needs correcting? ');
+    const words = element('textarea'); words.required = true; words.maxLength = 1000; label.append(words);
+    const save = element('button', 'Save clarification'); save.type = 'submit'; form.append(label, save);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!current(pending) || !writable() || save.disabled || !words.value.trim()) return;
+      save.disabled = true;
+      try {
+        await submitOpenLoopOperation({ key: `open-loop-clarification:${card.loopId}`,
+          method: 'command-center.v1.open-loops.clarify', params: { rationale: words.value.trim() }, card, pending,
+          success: 'Your exact words were saved for this item. Its outcome still needs review; no payment or message was sent.' });
+      } catch (error) { if (current(pending)) report(error?.message || 'Clarification outcome is unknown. Retry the same words.'); }
       finally { if (current(pending)) save.disabled = false; }
     }, { signal });
     disclosure.append(form); row.append(disclosure);
@@ -663,6 +767,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         row.append(element('h3', card.title));
         const planning = card.planning ?? {};
         row.append(element('p', [reason, planning.importance ? `${planning.importance} importance` : null, planning.effortMinutes ? `${planning.effortMinutes} min` : null, planning.contexts?.length ? planning.contexts.join(', ') : null].filter(Boolean).join(' · ')));
+        if (card.clarificationPending) row.append(element('p', card.clarificationStatus === 'review-required' ? 'Clarification needs your review' : card.clarificationStatus === 'processing-failed' ? 'Clarification processing failed · review available' : card.clarificationStatus === 'proposal-saved' ? 'Interpretation saved · applying pending' : 'Clarification saved · interpretation pending'));
         if (!writable() || ['resolved', 'cancelled'].includes(card.state)) { parent.append(row); return; }
         const form = element('form'); const actionLabel = element('label', 'Action '); const action = element('select');
         const choices = [['plan', 'Plan time'], ['set-priority', 'Set priority'], ['start', 'Start'], ['wait', 'Waiting / blocked'], ['review-later', 'Review later'], ['someday', 'Move to Someday'], ['keep', 'Keep available'], ['drop', 'Drop']];
@@ -794,6 +899,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         const facts = [nonBlank(topicName) ? `Topic: ${topicName}` : null, nonBlank(card.sourceLabel) ? `Source: ${card.sourceLabel}` : null, card.paymentState ?? card.state, Number.isSafeInteger(card.amount) && nonBlank(card.currency) ? `${card.currency} ${(card.amount / 100).toFixed(2)}` : null, formatDue(card) ? `Due ${formatDue(card)}` : null].filter(Boolean);
         if (facts.length) row.append(element('p', facts.join(' · ')));
         if (nonBlank(card.whyNow)) row.append(element('p', card.whyNow));
+        if (card.clarificationPending) row.append(element('p', card.clarificationStatus === 'review-required' ? 'Clarification needs your review' : card.clarificationStatus === 'processing-failed' ? 'Clarification processing failed · review available' : card.clarificationStatus === 'proposal-saved' ? 'Interpretation saved · applying pending' : 'Clarification saved · interpretation pending'));
         row.append(element('p', `${Number.isSafeInteger(card.evidenceCount) ? card.evidenceCount : 0} linked source ${card.evidenceCount === 1 ? 'item' : 'items'}.`));
         const evidence = element('button', 'Review evidence'); evidence.type = 'button';
         evidence.addEventListener('click', async () => {
@@ -878,6 +984,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           actionDisclosure.append(form); row.append(actionDisclosure);
         }
         appendDecisionControls(row, card, pending);
+        appendClarificationControls(row, card, pending);
         group.append(row);
       }
     }
@@ -895,6 +1002,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           if (!nonBlank(loop.loopId) || !nonBlank(loop.title) || inventoryRows.querySelector(`[data-open-loop-id="${CSS.escape(loop.loopId)}"]`)) continue;
           const row = element('article'); row.className = 'cc-open-loop-card'; row.dataset.openLoopId = loop.loopId; row.dataset.loopKind = loop.kind ?? 'general';
           row.append(element('h4', loop.title), element('p', [loop.paymentState ?? loop.state, formatDue(loop) ? `Due ${formatDue(loop)}` : null].filter(Boolean).join(' · ')));
+          if (nonBlank(loop.attention?.pendingClarificationId)) row.append(element('p', 'Clarification saved · interpretation pending'));
           const evidence = element('button', 'Review evidence'); evidence.type = 'button';
           evidence.addEventListener('click', async () => {
             if (!current(pending) || evidence.disabled) return; evidence.disabled = true;
@@ -909,6 +1017,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
           }, { signal });
           row.append(evidence);
           appendDecisionControls(row, loop, pending);
+          appendClarificationControls(row, loop, pending);
           inventoryRows.append(row);
         }
         offset = page.nextOffset ?? offset + page.loops.length;

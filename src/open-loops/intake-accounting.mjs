@@ -23,7 +23,7 @@ function jsonObject(value, name) {
   return Object.freeze(JSON.parse(encoded));
 }
 const extractionKeys = new Set(['schemaVersion', 'proposedTopic', 'notePath', 'knowledgeMarkdown', 'knowledgeOutcomeId', 'knowledgeSummary', 'obligations', 'noAction']);
-const obligationKeys = new Set(['obligationId', 'title', 'classification', 'provenance', 'correlationNamespace', 'correlationId', 'confidence', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies']);
+const obligationKeys = new Set(['obligationId', 'title', 'classification', 'obligationKind', 'provenance', 'correlationNamespace', 'correlationId', 'confidence', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies']);
 export function normalizeAcceptedExtraction(input) {
   const value = jsonObject(input, 'acceptedExtraction');
   if (value.schemaVersion !== 1 || Object.keys(value).some(key => !extractionKeys.has(key)) || !Array.isArray(value.obligations) || value.obligations.length > 100 || typeof value.notePath !== 'string' || value.notePath.length > 1000 || typeof value.knowledgeMarkdown !== 'string' || value.knowledgeMarkdown.length > 262_144) fail('invalid-request', 'acceptedExtraction is invalid.');
@@ -33,6 +33,7 @@ export function normalizeAcceptedExtraction(input) {
     if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(key => !obligationKeys.has(key))) fail('invalid-request', `acceptedExtraction.obligations[${index}] is invalid.`);
     const normalized = { ...item, obligationId: text(item.obligationId, `acceptedExtraction.obligations[${index}].obligationId`, 300), title: text(item.title, `acceptedExtraction.obligations[${index}].title`, 500), provenance: item.provenance, classification: item.classification ?? 'obligation' };
     if (!['explicit', 'inferred', 'idea', 'quoted'].includes(normalized.provenance) || !['obligation', 'decision'].includes(normalized.classification)) fail('invalid-request', `acceptedExtraction.obligations[${index}] is invalid.`);
+    if (normalized.obligationKind !== undefined && (normalized.obligationKind !== 'payment' || normalized.classification !== 'obligation')) fail('invalid-request', `acceptedExtraction.obligations[${index}] cannot use that obligationKind.`);
     return Object.freeze(normalized);
   });
   if (value.noAction !== undefined && (!value.noAction || typeof value.noAction !== 'object' || Array.isArray(value.noAction) || Object.keys(value.noAction).some(key => !['outcomeId', 'summary'].includes(key)))) fail('invalid-request', 'acceptedExtraction.noAction is invalid.');

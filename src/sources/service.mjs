@@ -273,12 +273,17 @@ export class AuthoritativeSourceService {
       sourceReference: note.sourceReference
     };
   }
-  async guardedNoteMutation(input, operationKind, method, { reconcileOnly = false } = {}) {
+  async guardedNoteMutation(input, operationKind, method, { reconcileOnly = false, recoveryChecked = false } = {}) {
     const service = this.requireTopicService(input, { write: !reconcileOnly, requiredSourceKinds: ['note_folder'] });
     requireCapability(this.capabilities, 'notes');
     // Re-enter policy validation after obtaining cross-process ownership, and
     // keep it through coordinator reconciliation and the durable result receipt.
-    if (service.notes.recovery && !service.notes.recovery.owned) return service.notes.recovery.run(() => this.guardedNoteMutation(input, operationKind, method, { reconcileOnly }));
+    if (reconcileOnly && !recoveryChecked && service.notes.recovery && input.logicalOperationId) {
+      this.assertExactNoteReference(input, { create: method === 'create' });
+      return service.notes.recovery.runExactReconciliation(adapterInput(input), method,
+        () => this.guardedNoteMutation(input, operationKind, method, { reconcileOnly, recoveryChecked: true }));
+    }
+    if (service.notes.recovery && !service.notes.recovery.owned) return service.notes.recovery.run(() => this.guardedNoteMutation(input, operationKind, method, { reconcileOnly, recoveryChecked }));
     this.assertExactNoteReference(input, { create: method === 'create' });
     const execute = () => service.notes[method](adapterInput(input));
     if (!this.coordinator) {

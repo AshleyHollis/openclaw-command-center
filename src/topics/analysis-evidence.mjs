@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 
 const PRIVATE_CONTENT = /(?:bearer\s+|password\s*[:=]|secret\s*[:=]|token\s*[:=]|cookie\s*[:=]|-----BEGIN|(?:^|\s)\/(?:home|users|workspace|var)\/)/iu;
 const INACTIVITY = /\b(?:inactive|inactivity|no activity|elapsed|last active|age)\b/iu;
+export const MAX_SERIALIZED_EVIDENCE_BYTES = 12 * 1024;
+export const MAX_EVIDENCE_SOURCE_ID_LENGTH = 160;
+export const MAX_EVIDENCE_SOURCE_REVISION_LENGTH = 1024;
 function canonicalFact(value) { return value.trim().replace(/\s+/gu, ' '); }
 
 export function canonicalize(value) {
@@ -47,7 +50,8 @@ export function normalizeEvidenceFacts(facts = []) {
     if (keys.some((key) => !['evidenceId', 'proposalId', 'sourceId', 'sourceRevision', 'fact', 'material', 'observedAt', 'kind'].includes(key))) throw new TypeError('Evidence facts contain an unsupported field.');
     if (fact.evidenceId !== undefined && (typeof fact.evidenceId !== 'string' || !fact.evidenceId.trim() || fact.evidenceId.length > 160)) throw new TypeError('Evidence facts require a bounded identity.');
     if (fact.kind !== undefined && (typeof fact.kind !== 'string' || !fact.kind.trim() || fact.kind.length > 80)) throw new TypeError('Evidence fact kind must be a bounded string.');
-    if (typeof fact.sourceId !== 'string' || !fact.sourceId.trim() || typeof fact.sourceRevision !== 'string' || !fact.sourceRevision.trim()) throw new TypeError('Evidence facts require exact source identity and observed revision.');
+    if (typeof fact.sourceId !== 'string' || !fact.sourceId.trim() || fact.sourceId.length > MAX_EVIDENCE_SOURCE_ID_LENGTH) throw new TypeError(`Evidence sourceId must be between 1 and ${MAX_EVIDENCE_SOURCE_ID_LENGTH} characters.`);
+    if (typeof fact.sourceRevision !== 'string' || !fact.sourceRevision.trim() || fact.sourceRevision.length > MAX_EVIDENCE_SOURCE_REVISION_LENGTH) throw new TypeError(`Evidence sourceRevision must be between 1 and ${MAX_EVIDENCE_SOURCE_REVISION_LENGTH} characters.`);
     const text = typeof fact.fact === 'string' ? canonicalFact(fact.fact) : '';
     if (!text || text.length > 320 || PRIVATE_CONTENT.test(text)) throw new TypeError('Evidence facts must be bounded and sanitized.');
     if (fact.material !== true) throw new TypeError('Only material evidence facts may be retained.');
@@ -63,11 +67,13 @@ export function normalizeEvidenceFacts(facts = []) {
     if (identities.has(identity)) throw new TypeError('Evidence facts must be distinct material observations.');
     identities.add(identity);
   }
-  return normalized.sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  normalized.sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > MAX_SERIALIZED_EVIDENCE_BYTES) throw new TypeError('Serialized evidence exceeds the 12 KiB aggregate limit.');
+  return normalized;
 }
 
 export function materialEvidenceDigest(facts = []) {
-  const normalized = normalizeEvidenceFacts(facts).map(({ sourceId, sourceRevision, fact, material, kind }) => ({ sourceId, sourceRevision, fact, material, ...(kind ? { kind } : {}) })).sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  const normalized = normalizeEvidenceFacts(facts).map(({ sourceId, fact, material, kind }) => ({ sourceId, fact, material, ...(kind ? { kind } : {}) })).sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
   return sha256(normalized);
 }
 

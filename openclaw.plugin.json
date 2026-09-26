@@ -157,12 +157,23 @@
         "properties": {
           "enabled": { "const": true }
         }
+      },
+      "clarificationWorker": {
+        "type": "object",
+        "description": "Explicitly enabled item-local clarification interpretation. Omit to leave all saved clarifications for manual review. Does not activate mailbox discovery or external messaging.",
+        "additionalProperties": false,
+        "required": ["enabled", "notBefore"],
+        "properties": {
+          "enabled": { "const": true },
+          "notBefore": { "type": "string", "format": "date-time" },
+          "intervalSeconds": { "type": "integer", "minimum": 30, "maximum": 3600 }
+        }
       }
     },
     "additionalProperties": false
   },
   "contracts": {
-    "tools": ["command_center_capture_commitment", "command_center_open_capacity_review", "command_center_resolve_source_topic", "command_center_save_source_note", "command_center_capture_source_commitment", "command_center_plan_intake_source", "command_center_get_intake_source_account", "command_center_record_intake_outcome", "command_center_record_intake_receipt", "command_center_publish_briefing"],
+    "tools": ["command_center_capture_commitment", "command_center_open_capacity_review", "command_center_resolve_source_topic", "command_center_save_source_note", "command_center_capture_source_commitment", "command_center_plan_intake_source", "command_center_get_intake_source_account", "command_center_get_pending_clarification", "command_center_interpret_clarification", "command_center_record_intake_outcome", "command_center_record_intake_receipt", "command_center_publish_briefing"],
     "gatewayMethodDispatch": ["authenticated-request"],
     "workspaceSessionTurnScheduling": []
   },

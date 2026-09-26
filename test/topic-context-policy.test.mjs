@@ -114,10 +114,7 @@ test('on-demand context binds only the trusted current Session Topic and stays b
   assert.deepEqual(result.currentTopic, { topicId: 'topic-one', displayLabel: 'Current Topic', paraCategory: 'project' });
   assert.deepEqual(result.originatingTopic, result.currentTopic);
   assert.equal(result.selectionBasis, 'current-topic');
-  assert.deepEqual(result.projectionVersions, {
-    notes: { projectionId: 'topic-search-notes', formatVersion: 1 },
-    conversations: { projectionId: 'topic-search-conversations', formatVersion: 1 }
-  });
+  assert.equal('projectionVersions' in result, false);
   assert.equal('query' in result, false);
   assert.equal(result.groups.notes.length + result.groups.conversations.length, 2);
   assert.deepEqual(result.groups.notes[0].navigation, { kind: 'note', topicId: 'topic-one', referenceId: 'note:topic-one', path: 'one.md', heading: 'Heading', observedRevision: 'sha256:one' });
@@ -146,6 +143,8 @@ test('cross-Topic context requires a closed basis and bounded rationale and pres
   assert.equal(tool.parameters.additionalProperties, false);
   const response = await tool.execute('call', { query: 'fictional' });
   assert.match(response.content[0].text, /topic-one/);
+  assert.doesNotMatch(response.content[0].text, /projectionVersions|topic-search-notes|formatVersion/u);
+  assert.equal('projectionVersions' in response.details, false);
   assert.ok(Buffer.byteLength(response.content[0].text) <= 12 * 1024);
   assert.doesNotMatch(response.content[0].text, /\/fictional\/private\/topic-folder/u);
   assert.equal((await tool.execute('call', { query: 'fictional' })).details.groups.notes.length, 1);
@@ -162,11 +161,16 @@ test('conversation excerpts preserve an authoritative originating Topic label', 
   assert.equal(result.groups.conversations[0].originatingTopic.displayLabel, 'Other Topic');
 });
 
-test('query bounds count UTF-16 code units', async () => {
-  const query = '😀'.repeat(128);
+test('context and model tool query bounds count NFC Unicode code points', async () => {
+  const query = `${'😀'.repeat(255)}𐐀`;
   const policy = createTopicContextPolicy({ metadata, searchService });
   await assert.doesNotReject(policy.retrieve({ query, sessionKey: currentSession.externalSourceId }));
+  const tool = topicContextToolFactory(policy)({ sessionKey: currentSession.externalSourceId });
+  await assert.doesNotReject(tool.execute('emoji-boundary', { query }));
   await assert.rejects(policy.retrieve({ query: `${query}😀`, sessionKey: currentSession.externalSourceId }), /256/);
+  await assert.rejects(tool.execute('emoji-overflow', { query: `${query}😀` }), /256/);
+  await assert.rejects(policy.retrieve({ query: 'alpha "beta gamma"', sessionKey: currentSession.externalSourceId }), /entirely double-quoted/u);
+  await assert.rejects(tool.execute('mixed-phrase', { query: 'alpha "beta gamma"' }), /entirely double-quoted/u);
 });
 
 test('context returns at most eight results, 320 code points each, and 2,560 total', async () => {

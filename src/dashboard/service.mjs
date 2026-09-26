@@ -4,6 +4,7 @@ import { notificationFocusRecordId } from '../notifications/candidate.mjs';
 import { openLoopReminderReferenceId, zonedDateAtNine } from '../open-loops/reminder-coordinator.mjs';
 import { projectCapacityWorkspace } from '../open-loops/capacity-workspace.mjs';
 import { projectIntakeAccounts } from '../open-loops/intake-accounting.mjs';
+import { clarificationInterpretationStatus } from '../open-loops/clarification-status.mjs';
 
 const DEFAULT_ACTIVITY_LIMIT = 50;
 const MAX_ACTIVITY_LIMIT = 50;
@@ -106,6 +107,8 @@ function compactOpenLoop(projected, metadata) {
       ...(loop.attention.lastConsideredAt ? { lastConsideredAt: loop.attention.lastConsideredAt } : {}),
       someday: loop.attention.someday === true
     }) }),
+    ...(loop.attention?.pendingClarificationId ? { clarificationPending: true } : {}),
+    ...(loop.attention?.pendingClarificationId ? { clarificationStatus: clarificationInterpretationStatus(metadata, loop) } : {}),
     actions: Object.freeze(asArray(projected.actions).slice(0, 4)),
     ...(sourceKinds.length ? { sourceLabel: sourceKinds.map(value => value === 'message' ? 'Email or message' : value[0].toUpperCase() + value.slice(1)).join(', ') } : {}),
     evidenceCount: loop.evidenceObservationIds.length,

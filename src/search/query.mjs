@@ -14,33 +14,25 @@ function quoteFts(value) {
   return `"${String(value).replaceAll('"', '""')}"`;
 }
 
-export function parseLexicalQuery(input) {
+export function normalizeSearchQuery(input) {
   if (typeof input !== 'string') invalid('query must be a string.');
   const query = input.trim().normalize('NFC');
-  if (query.length === 0 || query.length > MAX_QUERY_LENGTH) invalid(`query must be between 1 and ${MAX_QUERY_LENGTH} UTF-16 code units.`);
-  const tokens = [];
-  let offset = 0;
-  while (offset < query.length) {
-    while (/\s/u.test(query[offset] ?? '')) offset += 1;
-    if (offset >= query.length) break;
-    let kind = 'keyword';
-    let value = '';
-    if (query[offset] === '"') {
-      kind = 'phrase';
-      const end = query.indexOf('"', offset + 1);
-      if (end < 0) invalid('query contains an unmatched quote.');
-      value = query.slice(offset + 1, end).trim();
-      offset = end + 1;
-    } else {
-      let end = offset;
-      while (end < query.length && !/\s|"/u.test(query[end])) end += 1;
-      value = query.slice(offset, end);
-      offset = end;
-    }
-    if (!/[\p{L}\p{N}_]/u.test(value)) invalid('query must contain a searchable token.');
-    tokens.push({ kind, value: value.normalize('NFC') });
+  const length = Array.from(query).length;
+  if (length === 0 || length > MAX_QUERY_LENGTH) invalid(`query must be between 1 and ${MAX_QUERY_LENGTH} Unicode code points.`);
+  return query;
+}
+
+export function parseLexicalQuery(input) {
+  const query = normalizeSearchQuery(input);
+  if (query.includes('"') && !(query.startsWith('"') && query.endsWith('"') && !query.slice(1, -1).includes('"'))) {
+    invalid(query.split('"').length % 2 === 0 ? 'query contains an unmatched quote.' : 'query supports only an entirely double-quoted phrase.');
   }
-  if (tokens.length === 0) invalid('query must contain a searchable token.');
+  const phrase = query.startsWith('"');
+  const values = phrase ? [query.slice(1, -1).trim().replace(/\s+/gu, ' ')] : query.split(/\s+/u);
+  const tokens = values.map((value) => {
+    if (!/[\p{L}\p{N}_]/u.test(value)) invalid('query must contain a searchable token.');
+    return { kind: phrase ? 'phrase' : 'keyword', value };
+  });
   return Object.freeze(tokens.map((token) => Object.freeze(token)));
 }
 
@@ -57,7 +49,7 @@ export function validateSearchRequest(input = {}) {
   for (const key of Object.keys(input)) if (!requestKeys.includes(key)) invalid(`Search request contains unsupported field: ${key}`);
   if (input.schemaVersion !== SEARCH_SCHEMA_VERSION) throw sourceError('unsupported-version', 'Search schemaVersion must be 1.');
   if (typeof input.topicId !== 'string' || input.topicId.trim() === '') invalid('topicId must be a non-blank string.');
-  const query = typeof input.query === 'string' ? input.query.trim() : invalid('query must be a string.');
+  const query = normalizeSearchQuery(input.query);
   const tokens = parseLexicalQuery(query);
   const limit = input.limit ?? 50;
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RESULT_LIMIT) invalid(`limit must be an integer between 1 and ${MAX_RESULT_LIMIT}.`);
