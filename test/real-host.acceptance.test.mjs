@@ -38,6 +38,7 @@ import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, ru
 import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence, verifiedMigrationStatusReady } from '../src/acceptance-migration.mjs';
 import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet, verifyMissingSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
+import { assessJourneyClaim, JOURNEY_CLAIMS } from '../src/qualification-evidence.mjs';
 import { assertCandidatePluginPermissions, assertFastHostAdmission } from './support/isolated-acceptance-preflight.mjs';
 import { tabTo } from './support/keyboard-navigation.mjs';
 import { activate, enterText, chooseOption, auditDynamicAccessibilityState, assertNoFrameOverflow, assertResponsiveFrame, assertKeyboardAccessibility } from './support/keyboard-accessibility.mjs';
@@ -2682,7 +2683,28 @@ test('mounts the built plugin through the isolated authenticated external tab', 
     if (failures.length) throw new AggregateError(failures, 'Independent diagnostic slices failed');
     assert.equal(isolatedEvidence.size, acceptancePlan.isolatedSliceIds.length);
     if (acceptancePlan.isolatedSliceIds.includes('reminder-runtime-lifecycle')) testContext.diagnostic(`reminder-lifecycle-evidence=${JSON.stringify(isolatedEvidence.get('reminder-runtime-lifecycle'))}`);
-    if (acceptancePlan.isolatedSliceIds.includes('accounted-mixed-email')) testContext.diagnostic(`accounted-mixed-email-evidence=${JSON.stringify(isolatedEvidence.get('accounted-mixed-email'))}`);
+    if (acceptancePlan.isolatedSliceIds.includes('accounted-mixed-email')) {
+      const accounted = isolatedEvidence.get('accounted-mixed-email');
+      const sourceCommit = await new Promise((resolve, reject) => execFile('git', ['rev-parse', 'HEAD'],
+        { cwd: process.cwd(), timeout: 10_000 }, (error, stdout) => error ? reject(error) : resolve(stdout.trim())));
+      const claim = JOURNEY_CLAIMS['accounted-mixed-email'];
+      const fixtureDigest = `sha256:${createHash('sha256').update(JSON.stringify({
+        sourceVersion: accounted.sourceVersion, noteVersion: accounted.noteVersion,
+        outcomeStatuses: accounted.outcomeStatuses
+      })).digest('hex')}`;
+      const assessed = assessJourneyClaim({
+        id: 'accounted-mixed-email', scenario: process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO,
+        sourceCommit, buildDigest: buildReceipt.digest, hostCommit: descriptor.commit,
+        hostPackageDigest: descriptor.integrity.packageDigest,
+        runtimeCapabilityDigest: descriptor.integrity.contractDigest, fixtureDigest,
+        execution: { runner: 'test/real-host.acceptance.test.mjs', package: 'installed', host: 'pinned-isolated',
+          failureMode: 'process-termination-and-restart', real: claim.real, mocked: claim.mocked },
+        evidence: accounted
+      });
+      assert.equal(assessed.status, 'passed', 'Installed mixed-email proof is incomplete');
+      testContext.diagnostic(`qualification-claim=${JSON.stringify(assessed)}`);
+      testContext.diagnostic(`accounted-mixed-email-evidence=${JSON.stringify(accounted)}`);
+    }
     for (const kind of ['reader-refresh-failed', 'reader-refresh-completed']) if (acceptancePlan.isolatedSliceIds.includes(kind)) testContext.diagnostic(`${kind}-evidence=${JSON.stringify(isolatedEvidence.get(kind))}`);
     testContext.diagnostic(`acceptance-scenario-result=${JSON.stringify({ schemaVersion: 1, outcome: 'passed', scenario: process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO, isolatedSliceIds: [...isolatedEvidence.keys()], buildDigest: buildReceipt.digest, performanceQualified: false })}`);
     return;
