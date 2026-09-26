@@ -331,7 +331,7 @@ async function setupPage({ width = 1200, height = 900, queryless = false, reduce
         result = {
           schemaVersion: 1, topicId: payload.params.topicId, query: payload.params.query,
           notes: { results: payload.params.topicId === topicBId ? [] : [{ path: brief.path, heading: 'Fictional Brief', snippet: query === 'stale' ? 'Stale revision Note result' : query === 'older query' ? 'Older Search result' : query === 'newer query' ? 'Newer Search result' : 'Grouped Note result', navigation: { kind: 'note', topicId, referenceId: brief.sourceReference.referenceId, path: brief.path, heading: null, observedRevision: query === 'stale' ? 'stale-revision' : brief.revision } }] },
-          conversations: { results: payload.params.topicId === topicBId ? [] : [{ conversationName: closed.displayName, snippet: 'Grouped Closed Conversation result', provenance: { role: 'topic-conversation', status: closed.status, importedPrimaryHistory: false }, navigation: { kind: 'conversation', topicId, referenceId: closed.referenceId, sessionKey: closed.sessionKey, sessionId: closed.sessionId, messageId: 'closed-message-1' } }] }
+          conversations: { results: payload.params.topicId === topicBId ? [] : [{ conversationName: closed.displayName, date: '2026-08-27T00:00:00.000Z', snippet: 'Grouped Closed Conversation result', provenance: { role: 'topic-conversation', status: closed.status, importedPrimaryHistory: false }, navigation: { kind: 'conversation', topicId, referenceId: closed.referenceId, sessionKey: query === 'mismatched key' ? 'agent:main:wrong-key' : closed.sessionKey, sessionId: query === 'mismatched id' ? 'wrong-session-id' : closed.sessionId, messageId: 'closed-message-1' } }] }
         };
         if (fixture.deferSearch) { fixture.deferSearch = false; fixture.searchPending = true; await new Promise((resolve) => { fixture.searchResolver = resolve; }); fixture.searchPending = false; }
       }
@@ -892,6 +892,27 @@ test('structured Chat references and grouped Search open exact authoritative sou
     await page.locator('#workspace-search-query').fill('closed'); await submit(page, '#workspace-search-form'); await page.locator('#workspace-conversations-results').getByRole('button', { name: 'Open Conversation' }).click(); await page.waitForFunction(() => document.querySelector('#chat-conversation-name')?.textContent === 'Closed Conversation'); assert.equal(await page.locator('#chat-open').isDisabled(), true);
     await page.waitForFunction(() => globalThis.__topicPageFixture.calls.some((call) => call.method === 'command-center.v1.sessions.navigate' && call.params.referenceId === 'session:fictional-topic:closed'));
     assert.equal(await page.locator('#chat-open').isDisabled(), true);
+  } finally { await closeGuardedPage(page); }
+});
+
+test('mismatched Search Conversation key and ID independently preserve selection, transcript, and native send target', async () => {
+  const page = await setupPage();
+  try {
+    await page.getByRole('button', { name: 'Independent Conversation', exact: true }).click();
+    await page.locator('#chat-conversation-name').filter({ hasText: 'Independent Conversation' }).waitFor();
+    const before = await page.evaluate(() => ({ name: document.querySelector('#chat-conversation-name')?.textContent, transcript: document.querySelector('#chat-messages')?.innerHTML, openDisabled: document.querySelector('#chat-open')?.disabled }));
+    for (const query of ['mismatched key', 'mismatched id']) {
+      await page.locator('#workspace-search-query').fill(query); await submit(page, '#workspace-search-form');
+      await page.locator('#workspace-conversations-results').getByRole('button', { name: 'Open Conversation' }).click();
+      await page.getByText('The authoritative Conversation changed after this result was created.', { exact: true }).waitFor();
+      assert.deepEqual(await page.evaluate(() => ({ name: document.querySelector('#chat-conversation-name')?.textContent, transcript: document.querySelector('#chat-messages')?.innerHTML, openDisabled: document.querySelector('#chat-open')?.disabled })), before);
+      assert.equal(await page.evaluate(() => globalThis.__topicPageFixture.calls.filter((call) => call.method === 'ui.session.navigateResolved').length), 0);
+    }
+    await page.locator('#chat-open').click();
+    await page.getByText('Opened native Chat.', { exact: true }).waitFor();
+    const target = await page.evaluate(() => globalThis.__topicPageFixture.calls.find((call) => call.method === 'ui.session.navigateResolved')?.params);
+    assert.equal(target.input.referenceId, 'session:fictional-topic:conversation');
+    assert.equal(target.expectedSessionKey, 'agent:main:conversation');
   } finally { await closeGuardedPage(page); }
 });
 

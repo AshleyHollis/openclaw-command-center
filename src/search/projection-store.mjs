@@ -108,9 +108,12 @@ export async function withGroupedProjectionPublication({ stateDir }, publish) {
     const markerPath = groupedMarker(root);
     writeFileSync(markerPath, `${JSON.stringify({ schemaVersion: 1, existing })}\n`, { mode: 0o600 });
     syncFile(markerPath);
+    crashAt('group-marker-publication');
     try {
       const result = await publish(publicationLease);
+      crashAt('group-pair-finalization');
       unlinkSync(markerPath);
+      crashAt('group-marker-removal');
       for (const name of groupedPublicationFiles) {
         const backup = groupedBackup(root, name);
         if (assertOwnedRegular(backup, true)) unlinkSync(backup);
@@ -180,9 +183,9 @@ function committedRowsDigest(database, config) {
   return inputDigest(rows);
 }
 
-function crashAt(point) {
+function crashAt(point, kind) {
   const configured = process.env.COMMAND_CENTER_SEARCH_PROJECTION_CRASH_AT;
-  if (configured === point || configured === 'publication' && ['database-publication', 'manifest-publication'].includes(point)) process.kill(process.pid, 'SIGKILL');
+  if (configured === point || kind && configured === `${kind}:${point}` || configured === 'publication' && ['database-publication', 'manifest-publication'].includes(point)) process.kill(process.pid, 'SIGKILL');
 }
 
 function cleanupRollback(file, point) {
@@ -572,7 +575,7 @@ export async function openProjectionStore({ stateDir, root: suppliedRoot, projec
         const priorCoverage = topicId === null ? [] : (() => { try { return JSON.parse(generationRow(db)?.covered_topic_ids ?? '[]'); } catch { return []; } })();
         const coveredTopicIds = [...new Set([...priorCoverage, ...topicIds, ...normalizedRows.map((row) => row.topicId)])].sort((left, right) => left.localeCompare(right));
         db.prepare('INSERT INTO projection_generations (projection_id, schema_version, generation, source_revision, input_digest, row_count, covered_topic_ids, committed) VALUES (?, 1, ?, ?, ?, ?, ?, 1) ON CONFLICT(projection_id) DO UPDATE SET schema_version=1, generation=excluded.generation, source_revision=excluded.source_revision, input_digest=excluded.input_digest, row_count=excluded.row_count, covered_topic_ids=excluded.covered_topic_ids, committed=1').run(config.projectionId, generation, sourceRevision, digest, rowCount, JSON.stringify(coveredTopicIds));
-        crashAt('write');
+        crashAt('write', kind);
         db.exec('COMMIT');
         const row = generationRow(db);
         db.close();
@@ -586,17 +589,19 @@ export async function openProjectionStore({ stateDir, root: suppliedRoot, projec
         syncFile(temporaryManifestPath);
         if (currentValid) {
           renameSync(databasePath, rollbackDatabasePath); oldDatabaseMoved = true;
+          crashAt('database-backup', kind);
           renameSync(commitPath, rollbackCommitPath); oldCommitMoved = true;
+          crashAt('commit-backup', kind);
         } else {
           if (assertOwnedRegular(databasePath, true)) unlinkSync(databasePath);
           if (assertOwnedRegular(commitPath, true)) unlinkSync(commitPath);
         }
         renameSync(temporaryPath, databasePath);
-        crashAt('database-publication');
+        crashAt('database-publication', kind);
         renameSync(temporaryCommitPath, commitPath);
-        crashAt('manifest-publication');
+        crashAt('manifest-publication', kind);
         if (assertOwnedRegular(manifestPath, true)) { renameSync(manifestPath, rollbackManifestPath); oldManifestMoved = true; }
-        crashAt('manifest-write');
+        crashAt('manifest-write', kind);
         renameSync(temporaryManifestPath, manifestPath);
         if (oldDatabaseMoved) cleanupRollback(rollbackDatabasePath, 'database');
         if (oldCommitMoved) cleanupRollback(rollbackCommitPath, 'commit');

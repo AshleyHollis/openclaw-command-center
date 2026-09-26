@@ -893,8 +893,15 @@ export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VE
     const actual = database.prepare(`PRAGMA foreign_key_list(${table})`).all().map((row) => `${row.table}|${row.from}|${row.to}|${row.on_delete}`).sort();
     if (!sameArray(actual, [...(foreignKeysForVersion[table] ?? [])].sort())) problems.push(`${table} foreign keys differ`);
   }
-  if (database.prepare('PRAGMA foreign_key_check').all().length > 0) problems.push('foreign-key integrity check failed');
   return Object.freeze({ valid: problems.length === 0, problems: Object.freeze(problems) });
+}
+export function inspectStoredIntegrity(database) {
+  if (database.prepare('PRAGMA foreign_key_check').all().length > 0) return false;
+  for (const row of database.prepare('SELECT reference_id, source_system, source_kind, external_source_id FROM source_references').iterate()) {
+    if ([row.reference_id, row.source_system, row.source_kind, row.external_source_id]
+      .some((value) => typeof value !== 'string' || value.trim().length === 0)) return false;
+  }
+  return true;
 }
 export function inspectSchemaV1(database) { return inspectSchema(database, SOURCE_SCHEMA_VERSION); }
 export function inspectSchemaV2(database) { return inspectSchema(database, LEGACY_METADATA_SCHEMA_VERSION); }
