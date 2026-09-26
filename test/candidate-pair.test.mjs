@@ -94,7 +94,7 @@ test('candidate descriptor binds both exact artifacts and cannot enter the relea
   await assert.rejects(verifyCandidateHost(descriptor, pair, { gitCommand }), error => error.category === 'host-integrity');
 });
 
-test('candidate input staging overlays only exact host tuple mirrors in an isolated committed tree', async t => {
+test('candidate input staging seals exact host mirrors and a candidate-only notification gate', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-stage-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceCheckout = path.join(root, 'source');
@@ -106,6 +106,7 @@ test('candidate input staging overlays only exact host tuple mirrors in an isola
   await writeFile(path.join(sourceCheckout, 'src', 'compatibility-tuple.json'), JSON.stringify(tuple));
   await writeFile(path.join(sourceCheckout, 'package.json'), JSON.stringify(pkg));
   await writeFile(path.join(sourceCheckout, 'package-lock.json'), JSON.stringify({ packages: { '': { commandCenter: pkg.commandCenter } } }));
+  await writeFile(path.join(sourceCheckout, 'src', 'release-scope.mjs'), 'export const FIRST_LIVE_FEATURES = Object.freeze({ notifications: false, noteMaintenance: false });\n');
   await writeFile(path.join(sourceCheckout, 'marker.txt'), 'committed source');
   const git = async (...args) => (await exec('git', ['-C', sourceCheckout, ...args])).stdout.trim();
   await git('init');
@@ -115,7 +116,7 @@ test('candidate input staging overlays only exact host tuple mirrors in an isola
   const sourceCommit = await git('rev-parse', 'HEAD');
   await writeFile(path.join(sourceCheckout, 'marker.txt'), 'uncommitted change');
   const receipt = await stageCandidateInputs({ sourceCheckout, sourceCommit, destination,
-    hostCommit: candidateCommit, hostPackageVersion: '2026.9.6', pluginApiVersion: '2026.9.5' });
+    hostCommit: candidateCommit, hostPackageVersion: '2026.9.6', pluginApiVersion: '2026.9.5', candidateNotifications: true });
   assert.equal(receipt.repository, candidateRepositories.commandCenter);
   assert.match(receipt.inputTreeDigest, /^sha256:[a-f0-9]{64}$/u);
   assert.match(receipt.overlayDigest, /^sha256:[a-f0-9]{64}$/u);
@@ -126,9 +127,17 @@ test('candidate input staging overlays only exact host tuple mirrors in an isola
   assert.deepEqual(stagedTuple.host, { range: '=2026.9.6', commit: candidateCommit });
   assert.deepEqual(stagedPkg.commandCenter.compatibilityTuple, stagedTuple);
   assert.deepEqual(stagedLock.packages[''].commandCenter, stagedPkg.commandCenter);
+  assert.match(await readFile(path.join(destination, 'src', 'release-scope.mjs'), 'utf8'), /notifications: true/u);
+  assert.match(await readFile(path.join(sourceCheckout, 'src', 'release-scope.mjs'), 'utf8'), /notifications: false/u);
   assert.equal((await readFile(path.join(sourceCheckout, 'package.json'), 'utf8')), JSON.stringify(pkg));
   await assert.rejects(stageCandidateInputs({ sourceCheckout, sourceCommit, destination,
     hostCommit: candidateCommit, hostPackageVersion: '2026.9.6', pluginApiVersion: '2026.9.5' }), { code: 'EEXIST' });
   await assert.rejects(stageCandidateInputs({ sourceCheckout, sourceCommit, destination: path.join(root, 'wrong-api'),
     hostCommit: candidateCommit, hostPackageVersion: '2026.9.6', pluginApiVersion: '2026.9.6' }), { code: 'candidate-input-invalid' });
+  await assert.rejects(stageCandidateInputs({ sourceCheckout, sourceCommit, destination: path.join(root, 'wrong-gate'),
+    hostCommit: candidateCommit, hostPackageVersion: '2026.9.6', pluginApiVersion: '2026.9.5', candidateNotifications: 'true' }), { code: 'candidate-input-invalid' });
+  const ordinary = await stageCandidateInputs({ sourceCheckout, sourceCommit, destination: path.join(root, 'ordinary'),
+    hostCommit: candidateCommit, hostPackageVersion: '2026.9.6', pluginApiVersion: '2026.9.5' });
+  assert.notEqual(ordinary.overlayDigest, receipt.overlayDigest);
+  assert.match(await readFile(path.join(root, 'ordinary', 'src', 'release-scope.mjs'), 'utf8'), /notifications: false/u);
 });

@@ -28,10 +28,11 @@ function safePath(relative) {
 function json(bytes) { return JSON.parse(bytes.toString('utf8')); }
 
 /** Extract one committed CC tree into a new private candidate staging directory. */
-export async function stageCandidateInputs({ sourceCheckout, sourceCommit, destination, hostCommit, hostPackageVersion, pluginApiVersion }) {
+export async function stageCandidateInputs({ sourceCheckout, sourceCommit, destination, hostCommit, hostPackageVersion, pluginApiVersion, candidateNotifications = false }) {
   if (!commitPattern.test(sourceCommit) || !commitPattern.test(hostCommit) ||
       typeof destination !== 'string' || !path.isAbsolute(destination) ||
       !/^\d{4}\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/u.test(hostPackageVersion ?? '')) fail('Candidate identities are incomplete');
+  if (typeof candidateNotifications !== 'boolean') fail('Candidate notification gate must be explicit');
   if ((await git(sourceCheckout, ['remote', 'get-url', 'origin'])).toString().trim() !== candidateRepositories.commandCenter ||
       (await git(sourceCheckout, ['cat-file', '-t', sourceCommit])).toString().trim() !== 'commit') fail('Candidate source repository or commit is invalid');
   const listing = (await git(sourceCheckout, ['ls-tree', '-r', '-z', sourceCommit])).toString('utf8').split('\0').filter(Boolean);
@@ -68,6 +69,17 @@ export async function stageCandidateInputs({ sourceCheckout, sourceCommit, desti
       content.set(name, after);
       overlay.push({ path: name, before: digest(before), after: digest(after) });
     }
+  }
+  if (candidateNotifications) {
+    const name = 'src/release-scope.mjs';
+    const before = content.get(name);
+    if (!before) fail('Candidate source lacks the release gate');
+    const source = before.toString('utf8');
+    const marker = 'notifications: false, noteMaintenance: false';
+    if (source.split(marker).length !== 2) fail('Candidate notification gate is not the reviewed disabled release gate');
+    const after = Buffer.from(source.replace(marker, 'notifications: true, noteMaintenance: false'));
+    content.set(name, after);
+    overlay.push({ path: name, before: digest(before), after: digest(after) });
   }
   // Exclusive directory creation prevents replacing a worker's existing tree.
   await mkdir(destination);
