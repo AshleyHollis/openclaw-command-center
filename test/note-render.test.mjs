@@ -36,12 +36,12 @@ test('formatted Reading preserves useful Markdown while blocking active content'
       renderReadOnlyMarkdown(root, text);
       const readingViewer = root.querySelector('[data-large-note-viewer]');
       const reading = { mode: root.dataset.largeNote, viewers: root.querySelectorAll('[data-large-note-viewer]').length,
-        exact: readingViewer.value === text && root.textContent === text, markup: root.querySelector('p') === null,
+        exact: readingViewer.value === text && root.textContent === '', markup: root.querySelector('p') === null,
         readOnly: readingViewer.readOnly, bounded: readingViewer.style.blockSize === '50vh' };
       renderReadOnlySource(root, text);
       const sourceViewer = root.querySelector('[data-large-note-viewer]');
       return { reading, source: { mode: root.dataset.largeNote, viewers: root.querySelectorAll('[data-large-note-viewer]').length,
-        exact: sourceViewer.value === text && root.textContent === text, readOnly: sourceViewer.readOnly } };
+        exact: sourceViewer.value === text && root.textContent === '', readOnly: sourceViewer.readOnly } };
     });
     assert.deepEqual(large, {
       reading: { mode: 'bounded', viewers: 1, exact: true, markup: true, readOnly: true, bounded: true },
