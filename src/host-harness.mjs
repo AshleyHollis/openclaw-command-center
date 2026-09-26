@@ -9,11 +9,16 @@ import { boundedTrafficEvidence, describeTrafficEvidence, TrafficGuard } from '.
 import { packagedHostDigest } from './packaged-host-integrity.mjs';
 
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
+const diagnosticHostProfile = process.env.COMMAND_CENTER_DIAGNOSTIC_HOST_PROFILE;
+if (diagnosticHostProfile && (diagnosticHostProfile !== 'conditional-cron-id-pr53'
+  || process.env.COMMAND_CENTER_ACCEPTANCE_SCENARIO !== 'diagnostic-clarification-worker')) {
+  throw new Error('The conditional Cron ID host profile is limited to the clarification-worker diagnostic.');
+}
 export const pinnedHost = Object.freeze({
   // The evaluator checkout is the exact authenticated first-live host receipt.
   packageVersion: '2026.9.5',
-  commit: '21f1ca697532a9bd9e9cc46322a598a31435de15',
-  packageDigest: 'sha256:58293f3ec4c1e996893184c6a4c2e544a3dcfaf43e701db60108446371134741',
+  commit: diagnosticHostProfile ? 'e603f08382dfb3cbe8245b673fcbd793bad9ce9d' : '21f1ca697532a9bd9e9cc46322a598a31435de15',
+  packageDigest: diagnosticHostProfile ? 'sha256:675cea09c7800caf9084c6c700024232d54c5b940c8d8d3887f148f6894963cb' : 'sha256:58293f3ec4c1e996893184c6a4c2e544a3dcfaf43e701db60108446371134741',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });

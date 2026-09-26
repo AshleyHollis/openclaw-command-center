@@ -164,6 +164,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     // production tool selection remains entirely host/model owned.
     const noNoteFixtureTurn = JSON.stringify(latestUserMessage(messages)?.content ?? '').includes('[fixture:no-note]');
     const serializedMessages = JSON.stringify(messages);
+    const isolatedClarificationProposal = tools.size === 0 && serializedMessages.includes('acceptedObligation') && serializedMessages.includes('userWords');
     const captureFixtureTurn = serializedMessages.includes('[fixture:capture-laundry]');
     const vagueFixtureTurn = serializedMessages.includes('[fixture:capture-vague]');
     const accountedPhaseOne = serializedMessages.includes('[fixture:accounted-mixed-email-phase-1]');
@@ -182,7 +183,15 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     const acceptedExtraction = fictionalAccountedEmailAcceptedExtraction;
     let frames;
     let action = 'final';
-    if (targeted && completedToolAction === 'command_center_get_pending_clarification') {
+    if (isolatedClarificationProposal) {
+      const content = latestUserMessage(messages)?.content;
+      const words = JSON.parse(typeof content === 'string' ? content : Array.isArray(content) ? content.map(part => part?.text ?? '').join('') : 'null')?.userWords;
+      if (typeof words !== 'string') throw new Error('Fictional isolated clarification lacks the saved words.');
+      const proposal = words === 'I paid the fictional invoice in full. Keep this statement on this bill only.'
+        ? { outcome: 'clear', paymentState: 'paid', evidenceQuote: words }
+        : { outcome: 'ambiguous' };
+      frames = textCompletion({ id, model, text: JSON.stringify(proposal) });
+    } else if (targeted && completedToolAction === 'command_center_get_pending_clarification') {
       const context = accounted.clarification;
       if (context?.status !== 'pending' || context.clarificationObservationId !== targeted.clarificationObservationId)
         throw new Error(`Fictional targeted clarification context mismatch: ${JSON.stringify({ status: context?.status ?? null,
@@ -242,7 +251,7 @@ export async function startFictionalOpenAiModel({ firstTurnFinal = false } = {})
     const issuedToolCallId = action === 'final' ? null : stableToolCallId(id);
     if (issuedToolCallId) { pendingToolCalls.add(issuedToolCallId); pendingToolActions.set(issuedToolCallId, frames[0].choices[0].delta.tool_calls[0].function.name); }
     if (action === 'file' && mediaRef) usedMediaReferences.add(mediaRef);
-    requests.push(Object.freeze({ id, action, mediaRef, tools: [...tools].sort(), messageCount: messages.length, currentRole: currentMessage?.role ?? null, currentToolResultId, currentToolStatus: toolResultStatus(currentMessage), completedCurrentTool, issuedToolCallId, transcriptShape: transcriptShape(messages), loadedProcessorVersion: accounted.loaded?.processorVersion ?? null, loadedOutcomeStatuses: accounted.loaded?.outcomes?.map(outcome => [outcome.outcomeId, outcome.status]) ?? [] }));
+    requests.push(Object.freeze({ id, action, isolatedClarificationProposal, mediaRef, tools: [...tools].sort(), messageCount: messages.length, currentRole: currentMessage?.role ?? null, currentToolResultId, currentToolStatus: toolResultStatus(currentMessage), completedCurrentTool, issuedToolCallId, transcriptShape: transcriptShape(messages), loadedProcessorVersion: accounted.loaded?.processorVersion ?? null, loadedOutcomeStatuses: accounted.loaded?.outcomes?.map(outcome => [outcome.outcomeId, outcome.status]) ?? [] }));
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     for (const frame of frames) response.write(`data: ${JSON.stringify(frame)}\n\n`);
     response.end('data: [DONE]\n\n');

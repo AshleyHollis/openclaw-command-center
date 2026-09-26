@@ -29,7 +29,8 @@ test('Snooze re-enables a delivered one-shot through the exact revision-fenced i
   const input = { referenceId: 'reminder-delivered-ref', logicalOperationId: randomUUID(), expectedConfigRevision: 'revision-1', patch: { schedule } };
   const result = await adapter.snooze(input);
   assert.equal(result.value.job.enabled, true, 'a new date on a disabled schedule does not schedule another delivery');
-  assert.deepEqual(updates[0], { id: 'job-delivered', expectedConfigRevision: 'revision-1', patch: { schedule, enabled: true } });
+  assert.deepEqual(updates[0], { id: 'job-delivered', expectedConfigRevision: 'revision-1', patch: { schedule, enabled: true,
+    description: `[command-center:reminder-operation:${input.logicalOperationId}]` } });
   assert.equal((await adapter.snooze(input)).status, 'applied');
   assert.equal(updates.length, 1);
   await assert.rejects(() => adapter.snooze({ ...input, logicalOperationId: randomUUID(), patch: { schedule, enabled: true } }), /unsupported|schedule/i);
@@ -115,7 +116,7 @@ test('a bound Reminder create uses one conditional native ID and recovers its ex
   let job;
   let adds = 0;
   const gateway = { async request(method, params) {
-    if (method === 'cron.list') return { jobs: job ? [structuredClone(job)] : [] };
+    if (method === 'cron.get') return job && params.id === job.id ? structuredClone(job) : undefined;
     if (method === 'cron.add') {
       adds += 1;
       assert.equal(params.id, logicalOperationId, 'native ID must be conditional and known before dispatch');
@@ -155,13 +156,13 @@ test('a bound Reminder never adopts a conflicting exact-ID job after an ambiguou
     payload: { kind: 'systemEvent', text: 'Review expected fictional bill' } };
   let metadata;
   let adds = 0;
-  const gateway = { async request(method) {
+  const gateway = { async request(method, params) {
     if (method === 'cron.add') {
       adds += 1;
       throw Object.assign(new Error('fictional ambiguous response'), { code: 'timeout', ambiguous: true });
     }
-    if (method === 'cron.list') return { jobs: [{ id: logicalOperationId, configRevision: 'foreign-native-r1',
-      name: 'Another fictional job', enabled: true, schedule: declaration.schedule, payload: declaration.payload }] };
+    if (method === 'cron.get' && params.id === logicalOperationId) return { id: logicalOperationId, configRevision: 'foreign-native-r1',
+      name: 'Another fictional job', enabled: true, schedule: declaration.schedule, payload: declaration.payload };
     throw new Error(`unexpected Scheduler method ${method}`);
   } };
   try {
@@ -335,15 +336,20 @@ test('scheduler actions construct closed conservative patches and reject unrelat
   await assert.rejects(() => adapter.reschedule({ ...common, referenceId: 'schedule-ref', patch: { enabled: false } }), /unsupported.*patch|field/i);
 
   await adapter.complete({ ...common, referenceId: 'reminder-ref' });
-  assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
+  assert.deepEqual(calls.at(-1).params.patch, { enabled: false,
+    description: `[command-center:reminder-operation:${common.logicalOperationId}]` });
   await adapter.setEnabled({ ...common, logicalOperationId: randomUUID(), referenceId: 'schedule-ref', enabled: false });
   assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
-  await adapter.setEnabled({ ...common, logicalOperationId: randomUUID(), referenceId: 'reminder-ref', enabled: false });
+  const reminderEnabledOperationId = randomUUID();
+  await adapter.setEnabled({ ...common, logicalOperationId: reminderEnabledOperationId, referenceId: 'reminder-ref', enabled: false });
   assert.equal(calls.at(-1).params.id, 'reminder-job');
-  assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
+  assert.deepEqual(calls.at(-1).params.patch, { enabled: false,
+    description: `[command-center:reminder-operation:${reminderEnabledOperationId}]` });
   const schedule = { kind: 'at', at: '2026-08-24T00:00:00Z' };
-  await adapter.snooze({ ...common, logicalOperationId: randomUUID(), referenceId: 'reminder-ref', patch: { schedule } });
-  assert.deepEqual(calls.at(-1).params.patch, { schedule, enabled: true });
+  const snoozeOperationId = randomUUID();
+  await adapter.snooze({ ...common, logicalOperationId: snoozeOperationId, referenceId: 'reminder-ref', patch: { schedule } });
+  assert.deepEqual(calls.at(-1).params.patch, { schedule, enabled: true,
+    description: `[command-center:reminder-operation:${snoozeOperationId}]` });
   await adapter.reschedule({ ...common, logicalOperationId: randomUUID(), referenceId: 'schedule-ref', patch: { schedule } });
   assert.deepEqual(calls.at(-1).params.patch, { schedule });
 });

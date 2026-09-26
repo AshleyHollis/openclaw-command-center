@@ -63,20 +63,20 @@ try {
       rationale: 'Wait for the fictional correction.', updatedAt: '2026-09-20T01:00:00.000Z' });
     process.send?.({ type: 'accepted', loopId: created.loop.loopId, operationId });
     setInterval(() => {}, 60_000);
-  } else if (['resume', 'effect', 'recover', 'paid-recover'].includes(mode)) {
+  } else if (['resume', 'effect', 'recover', 'paid-recover', 'paid-effect', 'paid-verify'].includes(mode)) {
     const actions = metadata.listOpenLoopUserActionReceiptsPage({ limit: 10 });
     const action = actions.actions.find(item => item.logicalOperationId === operationId);
-    if (!action || (mode !== 'paid-recover' && !action.current)) throw new Error('accepted decision missing after process death');
-    const saved = mode === 'paid-recover'
+    if (!action || (!mode.startsWith('paid-') && !action.current)) throw new Error('accepted decision missing after process death');
+    const saved = mode.startsWith('paid-')
       ? metadata.getCurrentOpenLoopUserActionReceipt(action.loop.loopId)
       : metadata.getOpenLoopUserActionReceipt(operationId);
     const jobs = new Map(existsSync(nativeFile) ? JSON.parse(readFileSync(nativeFile, 'utf8')).map(job => [job.id, job]) : []);
-    let revision = 0;
+    let revision = Math.max(0, ...[...jobs.values()].map(job => Number(job.configRevision?.match(/^fictional-revision-(\d+)$/u)?.[1] ?? 0)));
     const gateway = { async request(method, params) {
       if (method === 'cron.list') return { jobs: [...jobs.values()].map(job => structuredClone(job)) };
       if (method === 'cron.get') return structuredClone(jobs.get(params.id));
       if (method === 'cron.add') {
-        if (mode === 'recover' || mode === 'paid-recover') throw new Error('fresh process must not recreate an accepted native job');
+        if (mode === 'recover' || mode.startsWith('paid-')) throw new Error('fresh process must not recreate an accepted native job');
         const job = { ...structuredClone(params), id: params.id ?? 'fictional-process-reminder', configRevision: `fictional-revision-${++revision}` };
         jobs.set(job.id, job);
         if (mode === 'effect') {
@@ -87,11 +87,16 @@ try {
         return { created: true, job: structuredClone(job) };
       }
       if (method === 'cron.update') {
+        if (mode === 'paid-verify') throw new Error('recovery must not repeat the witnessed native update');
         const before = jobs.get(params.id);
         if (before.configRevision !== params.expectedConfigRevision) throw new Error('fictional Cron revision conflict');
         const after = { ...before, ...structuredClone(params.patch), configRevision: `fictional-revision-${++revision}` };
         jobs.set(after.id, after);
-        if (mode === 'paid-recover') writeFileSync(nativeFile, JSON.stringify([...jobs.values()]));
+        if (mode.startsWith('paid-')) writeFileSync(nativeFile, JSON.stringify([...jobs.values()]));
+        if (mode === 'paid-effect') {
+          process.send?.({ type: 'native-update-accepted', id: after.id });
+          await new Promise(() => {});
+        }
         return structuredClone(after);
       }
       throw new Error(`unexpected Scheduler method ${method}`);

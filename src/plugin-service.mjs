@@ -13,10 +13,13 @@ import { withNoteFilesystemOwner } from './sources/note-filesystem-owner.mjs';
 import { prepareSupportingNoteAnnotation } from './open-loops/supporting-note-annotation.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { createOpenLoopReminderCoordinator, openLoopReminderOperationId } from './open-loops/reminder-coordinator.mjs';
+import { createReminderServiceCronTransport } from './open-loops/service-cron-transport.mjs';
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
 import { loadIntakeSourceAccount } from './open-loops/intake-accounting.mjs';
 import { clarificationInterpretationOperationId, loadPendingClarificationContext } from './open-loops/clarification-context.mjs';
+import { createClarificationWorker } from './open-loops/clarification-worker.mjs';
+import { clarificationInterpretationStatus } from './open-loops/clarification-status.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
 
@@ -94,12 +97,26 @@ export function createMetadataService(api) {
   let dailyWorkspace;
   let topicService;
   let stopPromise;
+  let clarificationWorker;
+  let clarificationWorkerTimer;
+  let clarificationWorkerCursor;
+  let clarificationFollowUpCursor;
+  let clarificationWorkerRun;
+  let enqueueClarificationWorkerRun;
+  const processorCapability = Symbol('command-center-clarification-processor');
   let releaseDurableFolderStager;
   let releaseFilesystemIdentityReader;
   let releaseNoteFilesystemCoordinator;
   let releaseTopicMaintenanceOwners;
   let recoveryOnly = false;
   const closeActivation = () => {
+    if (clarificationWorkerTimer) clearTimeout(clarificationWorkerTimer);
+    clarificationWorkerTimer = undefined;
+    clarificationWorker = undefined;
+    clarificationWorkerCursor = undefined;
+    clarificationFollowUpCursor = undefined;
+    clarificationWorkerRun = undefined;
+    enqueueClarificationWorkerRun = undefined;
     releaseDurableFolderStager?.();
     releaseDurableFolderStager = undefined;
     releaseFilesystemIdentityReader?.();
@@ -413,6 +430,68 @@ export function createMetadataService(api) {
       // Existing-data bootstrap and its durable recovery remain required.
       // Native Cron is acquired only by an authenticated Reminder/Schedule
       // request; startup itself touches no job or optional background owner.
+      const workerConfig = api.pluginConfig?.clarificationWorker;
+      if (workerConfig?.enabled === true) {
+        if (typeof api.runtime?.llm?.complete !== 'function' || !openLoopReminders || typeof workerConfig.notBefore !== 'string'
+          || !Number.isFinite(Date.parse(workerConfig.notBefore)))
+          throw new SourceServiceError('capability-unavailable', 'The configured clarification worker needs an isolated model completion capability and valid admission time.');
+        const admissionTime = workerConfig.notBefore;
+        const assertCurrent = () => {
+          if (stopPromise || metadataService !== activatedMetadata || api.pluginConfig?.clarificationWorker !== workerConfig
+            || workerConfig.enabled !== true || workerConfig.notBefore !== admissionTime)
+            throw new SourceServiceError('capability-unavailable', 'The clarification worker activation has ended.');
+        };
+        const reminderCron = createReminderServiceCronTransport({ getCron: () => context.getCron?.(), assertCurrent });
+        clarificationWorker = createClarificationWorker({ metadata: activatedMetadata,
+          complete: request => api.runtime.llm.complete(request),
+          // The interpretation commits one durable decision first. Native
+          // follow-up belongs to this registered service's recovery pass; a
+          // background timer cannot borrow an authenticated Gateway caller.
+          interpret: input => service.openLoopsInterpretClarification(input, { processorCapability, assertCurrent, deferFollowUp: true }),
+          followUp: async receipt => {
+            assertCurrent();
+            const result = await afterDecisionCommit({ schemaVersion: 1, disposition: 'duplicate', loop: receipt.loop,
+              ...(receipt.followUpIntent ? { followUpIntent: receipt.followUpIntent } : {}),
+              ...(receipt.supportingNoteTarget ? { supportingNoteTarget: receipt.supportingNoteTarget } : {}) },
+            receipt.logicalOperationId, { gateway: reminderCron });
+            assertCurrent();
+            return result;
+          },
+          assertCurrent, notBefore: admissionTime });
+        const enqueueRun = work => {
+          const previous = clarificationWorkerRun;
+          const run = Promise.resolve(previous).catch(() => {}).then(() => { assertCurrent(); return work(); });
+          clarificationWorkerRun = run;
+          const release = () => { if (clarificationWorkerRun === run) clarificationWorkerRun = undefined; };
+          void run.then(release, release);
+          return run;
+        };
+        enqueueClarificationWorkerRun = enqueueRun;
+        const intervalMs = (workerConfig.intervalSeconds ?? 300) * 1000;
+        const tick = async () => {
+          assertCurrent();
+          if (clarificationWorkerRun) return;
+          await enqueueRun(async () => {
+            const recovery = await clarificationWorker.runFollowUpPage({ ...(clarificationFollowUpCursor ? { cursor: clarificationFollowUpCursor } : {}) });
+            assertCurrent();
+            clarificationFollowUpCursor = recovery.nextCursor;
+            const pending = await clarificationWorker.runPage({ ...(clarificationWorkerCursor ? { cursor: clarificationWorkerCursor } : {}) });
+            assertCurrent();
+            clarificationWorkerCursor = pending.nextCursor;
+          });
+        };
+        const schedule = () => {
+          clarificationWorkerTimer = setTimeout(async () => {
+            try { await tick(); }
+            catch (error) { if (!stopPromise) api.logger?.warn?.(`Command Center clarification worker ${typeof error?.code === 'string' ? error.code : 'failed'}`); }
+            finally {
+              if (!stopPromise && metadataService === activatedMetadata) schedule();
+            }
+          }, intervalMs);
+          clarificationWorkerTimer.unref?.();
+        };
+        schedule();
+      }
       return migrationResult;
       } catch (error) {
         closeActivation();
@@ -439,6 +518,16 @@ export function createMetadataService(api) {
     },
     get capacityReview() { return capacityReview ?? readTopicMaintenanceOwners()?.capacityReview; },
     get dailyWorkspace() { return dailyWorkspace ?? readTopicMaintenanceOwners()?.dailyWorkspace; },
+    async runClarificationWorkerOnce(input = {}) {
+      const worker = clarificationWorker;
+      const enqueueRun = enqueueClarificationWorkerRun;
+      if (!worker || !enqueueRun) throw new SourceServiceError('capability-unavailable', 'The clarification worker is not enabled.');
+      return enqueueRun(async () => {
+        const recovery = await worker.runFollowUpPage({ ...(input.recoveryCursor ? { cursor: input.recoveryCursor } : {}) });
+        const pending = await worker.runPage(input);
+        return Object.freeze({ ...pending, recovered: recovery.results, nextRecoveryCursor: recovery.nextCursor });
+      });
+    },
     get attentionService() { return attentionService; },
     get maintenanceService() { return undefined; },
     get searchService() { return undefined; },
@@ -510,7 +599,10 @@ export function createMetadataService(api) {
             ...(note.intent ? { logicalOperationId: note.intent.logicalOperationId } : {}) });
         }
       }
-      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id), metadataService))), ...(followUp ? { followUp } : {}), ...(supportingNote ? { supportingNote } : {}) });
+      const interpretationStatus = clarificationInterpretationStatus(metadataService, loop);
+      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id), metadataService))),
+        ...(interpretationStatus ? { interpretation: { status: interpretationStatus } } : {}),
+        ...(followUp ? { followUp } : {}), ...(supportingNote ? { supportingNote } : {}) });
     },
     async openLoopsCapture(input = {}) {
       requireOperational();
@@ -633,7 +725,8 @@ export function createMetadataService(api) {
     },
     openLoopsInterpretClarification(input = {}, runtime = {}) {
       requireOperational();
-      if (typeof runtime.authenticatedRequesterId !== 'string' || !runtime.authenticatedRequesterId.trim())
+      const processorRun = runtime.processorCapability === processorCapability;
+      if (!processorRun && (typeof runtime.authenticatedRequesterId !== 'string' || !runtime.authenticatedRequesterId.trim()))
         throw new SourceServiceError('unauthenticated', 'Targeted interpretation requires a trusted owner request.');
       if (typeof runtime.assertCurrent !== 'function')
         throw new SourceServiceError('unauthenticated', 'Targeted interpretation requires a live authority check.');
@@ -666,8 +759,17 @@ export function createMetadataService(api) {
         throw new SourceServiceError('conflict', 'The saved interpretation identity differs.');
       const clarification = prior ? null : metadataService.getOpenLoopObservation(context.clarificationObservationId);
       const clarificationActorId = priorEvidence?.facts.actorId ?? clarification?.facts.actorId;
-      if (clarificationActorId !== runtime.authenticatedRequesterId)
+      if (!processorRun && clarificationActorId !== runtime.authenticatedRequesterId)
         throw new SourceServiceError('unauthorized', 'The saved clarification belongs to another operator.');
+      if (processorRun) {
+        const saved = metadataService.getClarificationProposal(input.clarificationObservationId);
+        const requested = Object.fromEntries(['outcome', 'decision', 'paymentState', 'paidAmount', 'currency', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone']
+          .filter(key => input[key] !== undefined).map(key => [key, input[key]]));
+        const accepted = saved?.proposal && Object.fromEntries(Object.entries(saved.proposal).filter(([key]) => key !== 'evidenceQuote'));
+        if (!saved || saved.loopId !== input.loopId || saved.expectedRevision !== input.expectedRevision
+          || saved.processorVersion !== input.processorVersion || JSON.stringify(requested) !== JSON.stringify(accepted))
+          throw new SourceServiceError('conflict', 'The processor action differs from the accepted proposal.');
+      }
       const interpretationFence = priorEvidence?.facts.interpretationFence ?? { clarificationObservationId: context.clarificationObservationId,
         ...context.source, outcomeId: context.outcomeId, processorVersion: context.processorVersion };
       const common = { schemaVersion: 1, logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision,

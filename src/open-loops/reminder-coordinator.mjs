@@ -162,19 +162,27 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
         if (!predecessor || predecessor.logicalOperationId !== assertLogicalOperationId(predecessor.logicalOperationId)
           || !Number.isSafeInteger(predecessor.loopRevision) || predecessor.loopRevision >= intent.loopRevision
           || !predecessor.declaration) throw sourceError('invalid-request', 'Pending native create identity is unavailable.');
-        let recovered = await reminder.recoverBound({ schemaVersion: 1, referenceId: intent.referenceId,
-          logicalOperationId: predecessor.logicalOperationId, declaration: predecessor.declaration });
-        if (recovered.status === 'not-applied') {
-          // The predecessor was durably accepted but died before dispatch. Its
-          // exact conditional ID must be established before the successor can
-          // cancel or retime it; another in-flight attempt may still own it.
-          recovered = await reminder.createBound({ schemaVersion: 1, referenceId: intent.referenceId,
+        const prior = metadata.getOperation?.(predecessor.logicalOperationId);
+        const bound = metadata.getSourceReference(intent.referenceId);
+        let expectedConfigRevision;
+        if (prior?.state === 'applied' && prior.resultIdentity === bound?.externalSourceId && prior.observedRevision) {
+          // The successor may already have changed the job before a crash.
+          // Reuse the durable predecessor receipt, not its obsolete final shape.
+          expectedConfigRevision = prior.observedRevision;
+        } else {
+          let recovered = await reminder.recoverBound({ schemaVersion: 1, referenceId: intent.referenceId,
             logicalOperationId: predecessor.logicalOperationId, declaration: predecessor.declaration });
+          if (recovered.status === 'not-applied') {
+            // The accepted predecessor died before native dispatch. Establish
+            // its exact conditional ID before cancelling or retiming it.
+            recovered = await reminder.createBound({ schemaVersion: 1, referenceId: intent.referenceId,
+              logicalOperationId: predecessor.logicalOperationId, declaration: predecessor.declaration });
+          }
+          if (recovered.status !== 'applied') return Object.freeze({ schemaVersion: 1,
+            status: recovered.status === 'not-applied' ? 'pending' : recovered.status,
+            logicalOperationId: intent.logicalOperationId, plan: intent });
+          expectedConfigRevision = nonBlank(recovered.value?.job?.configRevision, 'recoveredConfigRevision');
         }
-        if (recovered.status !== 'applied') return Object.freeze({ schemaVersion: 1,
-          status: recovered.status === 'not-applied' ? 'pending' : recovered.status,
-          logicalOperationId: intent.logicalOperationId, plan: intent });
-        const expectedConfigRevision = nonBlank(recovered.value?.job?.configRevision, 'recoveredConfigRevision');
         receipt = intent.action === 'cancel-pending-create'
           ? await reminder.complete({ schemaVersion: 1, referenceId: intent.referenceId,
               logicalOperationId: intent.logicalOperationId, expectedConfigRevision })

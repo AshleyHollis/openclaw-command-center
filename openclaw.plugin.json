@@ -157,6 +157,17 @@
         "properties": {
           "enabled": { "const": true }
         }
+      },
+      "clarificationWorker": {
+        "type": "object",
+        "description": "Explicitly enabled item-local clarification interpretation. Omit to leave all saved clarifications for manual review. Does not activate mailbox discovery or external messaging.",
+        "additionalProperties": false,
+        "required": ["enabled", "notBefore"],
+        "properties": {
+          "enabled": { "const": true },
+          "notBefore": { "type": "string", "format": "date-time" },
+          "intervalSeconds": { "type": "integer", "minimum": 30, "maximum": 3600 }
+        }
       }
     },
     "additionalProperties": false
