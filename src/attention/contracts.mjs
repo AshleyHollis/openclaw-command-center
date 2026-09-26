@@ -103,32 +103,58 @@ export function validateActionDescriptor(input) {
   };
   if (!ACTION_KINDS.includes(descriptor.kind)) throw new TypeError('kind must be navigation or mutation');
   if (!APPROVAL_MODES.includes(descriptor.approvalMode)) throw new TypeError('approvalMode is invalid');
-  if (descriptor.parameterSchema.type !== 'object' || descriptor.parameterSchema.additionalProperties !== false || (descriptor.parameterSchema.required !== undefined && !Array.isArray(descriptor.parameterSchema.required))) throw new TypeError('parameterSchema must be a closed object schema');
+  if (descriptor.parameterSchema.type !== 'object' || descriptor.parameterSchema.additionalProperties !== false) throw new TypeError('parameterSchema must be a closed object schema');
+  validateParameterSchema(descriptor.parameterSchema);
   for (const [field, expected] of [['targetResolver', 'function'], ['executor', 'function'], ['authoritativeVerifier', 'function'], ['successTransition', 'function']]) if (typeof descriptor[field] !== expected) throw new TypeError(`${field} must be a function`);
   closed(descriptor.idempotency, ['idempotent', 'transientRetryable'], 'idempotency');
   if (typeof descriptor.idempotency.idempotent !== 'boolean' || typeof descriptor.idempotency.transientRetryable !== 'boolean') throw new TypeError('idempotency disclosure must be closed booleans');
   return Object.freeze(descriptor);
 }
 
-export function validateActionInput(descriptor, input = {}) {
-  const value = objectValue(input, 'action input');
-  const properties = descriptor.parameterSchema.properties ?? {};
-  const allowed = Object.keys(properties);
-  for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new TypeError(`action input contains unsupported field ${key}`);
-  if (descriptor.parameterSchema.required) for (const key of descriptor.parameterSchema.required) if (!Object.hasOwn(value, key)) throw new TypeError(`action input is missing ${key}`);
-  for (const [key, schema] of Object.entries(properties)) {
-    if (!Object.hasOwn(value, key) || !schema || schema.type === undefined) continue;
-    const valid = schema.type === 'string' ? typeof value[key] === 'string'
-      : schema.type === 'integer' ? Number.isInteger(value[key])
-        : schema.type === 'number' ? typeof value[key] === 'number' && Number.isFinite(value[key])
-          : schema.type === 'boolean' ? typeof value[key] === 'boolean'
-            : schema.type === 'object' ? value[key] !== null && typeof value[key] === 'object' && !Array.isArray(value[key])
-              : schema.type === 'array' ? Array.isArray(value[key])
-                : true;
-    if (!valid || schema.minLength !== undefined && value[key].length < schema.minLength) throw new TypeError(`action input field ${key} has an invalid type`);
-    if (schema.enum !== undefined && (!Array.isArray(schema.enum) || !schema.enum.includes(value[key]))) throw new TypeError(`action input field ${key} has an invalid value`);
+const schemaKeys = Object.freeze(['type', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'minLength']);
+const schemaTypes = Object.freeze(['object', 'array', 'string', 'integer', 'number', 'boolean']);
+
+function validateParameterSchema(schema, path = 'parameterSchema') {
+  objectValue(schema, path);
+  closed(schema, schemaKeys, path);
+  if (schema.type !== undefined && !schemaTypes.includes(schema.type)) throw new TypeError(`${path}.type is unsupported`);
+  if (schema.type === undefined && schema.enum === undefined) throw new TypeError(`${path} requires a type or enum`);
+  if (schema.enum !== undefined && (!Array.isArray(schema.enum) || schema.enum.length === 0 || schema.enum.some((item) => item !== null && !['string', 'boolean'].includes(typeof item) && !(typeof item === 'number' && Number.isFinite(item))))) throw new TypeError(`${path}.enum must contain JSON primitive values`);
+  if (schema.minLength !== undefined && (schema.type !== 'string' || !Number.isInteger(schema.minLength) || schema.minLength < 0)) throw new TypeError(`${path}.minLength requires a nonnegative string length`);
+  if (schema.type === 'object') {
+    if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== 'boolean') throw new TypeError(`${path}.additionalProperties must be a boolean`);
+    const properties = schema.properties === undefined ? {} : objectValue(schema.properties, `${path}.properties`);
+    if (schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.some((key) => typeof key !== 'string' || !Object.hasOwn(properties, key)))) throw new TypeError(`${path}.required must name declared properties`);
+    if (schema.items !== undefined) throw new TypeError(`${path}.items is unsupported for an object`);
+    for (const [key, child] of Object.entries(properties)) validateParameterSchema(child, `${path}.properties.${key}`);
+  } else if (schema.type === 'array') {
+    if (schema.properties !== undefined || schema.required !== undefined || schema.additionalProperties !== undefined) throw new TypeError(`${path} contains object-only constraints`);
+    if (schema.items !== undefined) validateParameterSchema(schema.items, `${path}.items`);
+  } else if (['properties', 'required', 'additionalProperties', 'items'].some((key) => schema[key] !== undefined)) throw new TypeError(`${path} contains constraints incompatible with its type`);
+}
+
+function validateInputValue(value, schema, path) {
+  const valid = schema.type === 'object' ? value !== null && typeof value === 'object' && !Array.isArray(value)
+    : schema.type === 'array' ? Array.isArray(value)
+      : schema.type === 'string' ? typeof value === 'string'
+        : schema.type === 'integer' ? Number.isInteger(value)
+          : schema.type === 'number' ? typeof value === 'number' && Number.isFinite(value)
+            : schema.type === 'boolean' ? typeof value === 'boolean' : true;
+  if (!valid) throw new TypeError(`${path} has an invalid type`);
+  if (schema.enum !== undefined && !schema.enum.some((item) => Object.is(item, value))) throw new TypeError(`${path} has an invalid value`);
+  if (schema.minLength !== undefined && value.length < schema.minLength) throw new TypeError(`${path} must have at least ${schema.minLength} characters`);
+  if (schema.type === 'object') {
+    const properties = schema.properties ?? {};
+    if (schema.additionalProperties === false) for (const key of Object.keys(value)) if (!Object.hasOwn(properties, key)) throw new TypeError(`${path} contains unsupported field ${key}`);
+    for (const key of schema.required ?? []) if (!Object.hasOwn(value, key)) throw new TypeError(`${path} is missing ${key}`);
+    for (const [key, child] of Object.entries(properties)) if (Object.hasOwn(value, key)) validateInputValue(value[key], child, `${path}.${key}`);
   }
-  return Object.freeze(canonicalize(value));
+  if (schema.type === 'array' && schema.items) for (let index = 0; index < value.length; index += 1) validateInputValue(value[index], schema.items, `${path}[${index}]`);
+}
+
+export function validateActionInput(descriptor, input = {}) {
+  validateInputValue(input, descriptor.parameterSchema, 'action input');
+  return Object.freeze(canonicalize(input));
 }
 
 export { occurrenceKeys, descriptorKeys };

@@ -205,6 +205,22 @@ test('native Attention approval submits the exact disclosed approval identity', 
   assert.equal(await page.evaluate(() => window.requests.find((r) => r.method.endsWith('attention.act')).params.approvalId), 'approval-fictional');
 }));
 
+test('native Attention shows approval Snooze within the three action slots', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    const approval = (actionId, label) => ({ actionId, label, kind: 'mutation', target: { approvalId: 'approval-fictional' }, parameterSchema: { type: 'object', properties: {} }, sideEffects: [] });
+    window.cards[0].actions = [approval('approval.approve', 'Approve'), approval('approval.reject', 'Reject'), { actionId: 'attention.snooze', label: 'Snooze', kind: 'mutation', target: { episodeId: 'episode-one' }, parameterSchema: { type: 'object', properties: { preset: { type: 'string' }, until: { type: 'string' } } }, sideEffects: ['Suppresses presentation only.'] }];
+    window.cards[0].eligibleSnoozeChoices = ['PT1H', 'P1D', 'custom'];
+    window.mountRecord();
+  });
+  assert.equal(await page.locator('article[data-episode-id] form').count(), 3);
+  await page.getByLabel('Snooze duration').selectOption('PT1H');
+  await page.getByRole('button', { name: 'Snooze', exact: true }).click();
+  await page.waitForFunction(() => window.requests.some((request) => request.method.endsWith('attention.act')));
+  const action = await page.evaluate(() => window.requests.find((request) => request.method.endsWith('attention.act')).params);
+  assert.equal(action.actionId, 'attention.snooze');
+  assert.deepEqual(action.input, { preset: 'PT1H' });
+}));
+
 test('native Attention retains an unknown operation across remount and reconciles its unchanged identity', () => fixture(async (page) => {
   await page.evaluate(() => { window.actionMode = 'unknown'; });
   await page.getByRole('button', { name: 'Reminder Complete', exact: true }).click();
