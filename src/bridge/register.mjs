@@ -272,7 +272,7 @@ export function registerBridgeMethods(api, service, { mutationsAllowed = true } 
         if (!context || context.authenticated === false) throw new SourceServiceError('unauthenticated', 'Authenticated Gateway request context is required.');
         if (!mutationsAllowed && WRITE_METHODS.includes(method)) throw new SourceServiceError('capability-unavailable', 'Control UI mutation grant is unavailable.');
         assertFirstLiveCommand('bridge', method);
-        if (FIRST_LIVE_FEATURES.notifications) service.notificationCaptureBinding?.();
+        if (FIRST_LIVE_FEATURES.notifications) await service.notificationCaptureBinding?.();
         // The host profile is canonical across HTTP and WebSocket. An invalid
         // profile must not switch an approval to a login label or legacy owner.
         const principal = client?.authenticatedUserProfile !== undefined

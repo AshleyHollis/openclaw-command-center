@@ -117,6 +117,7 @@ export function createNotificationService({ metadata, attentionService, sourceSe
   let closed = false;
   let reconciliation = Promise.resolve();
   let retainedBinding = emitter?.emit && emitter?.clear ? emitter : undefined;
+  let bindingGeneration = 0;
 
   function assertOpen() {
     if (closed) throw new Error('Notification service is closed.');
@@ -301,14 +302,20 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     return allCleared;
   }
 
-  function captureCurrentOperatorBinding() {
+  async function captureCurrentOperatorBinding() {
     assertOpen();
+    const generation = ++bindingGeneration;
     try {
       if (typeof emitter?.bindCurrentOperator !== 'function') return retainedBinding !== undefined;
-      const captured = emitter.bindCurrentOperator();
+      const captured = await emitter.bindCurrentOperator();
+      // A later authenticated request or activation shutdown owns the binding.
+      if (closed || generation !== bindingGeneration) return false;
       retainedBinding = captured?.emit && captured?.clear ? captured : undefined;
       return retainedBinding !== undefined;
-    } catch { retainedBinding = undefined; return false; }
+    } catch {
+      if (!closed && generation === bindingGeneration) retainedBinding = undefined;
+      return false;
+    }
   }
 
   function deliveryEligible(slot, epoch) {
@@ -477,7 +484,7 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     return Object.freeze({ settings: getSettings(), epochs: Object.freeze(rows('notification_policy_epochs')), slots: Object.freeze(rows('notification_slots')), emissions: Object.freeze(rows('notification_emissions')), clears: Object.freeze(rows('notification_clear_operations')) });
   }
 
-  return Object.freeze({ getSettings, updateSettings, captureCurrentOperatorBinding, reconcile, inspect, close() { if (!closed) { closed = true; retainedBinding = undefined; db.close(); } } });
+  return Object.freeze({ getSettings, updateSettings, captureCurrentOperatorBinding, reconcile, inspect, close() { if (!closed) { closed = true; bindingGeneration += 1; retainedBinding = undefined; db.close(); } } });
 }
 
 export { ONE_DAY_MS, UUID_PATTERN };

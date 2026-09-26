@@ -8,7 +8,7 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
 import { projectDashboard } from '../src/dashboard/service.mjs';
 
-async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z') {
+async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z', emitterFactory = binding => binding) {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-notification-lifecycle-'));
   const metadata = openCommandCenterMetadataService({ stateDir });
   let clock = Date.parse(initialTime);
@@ -21,10 +21,47 @@ async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z') {
     async emit(candidate) { candidates.push(candidate); for (const notifications of devices.values()) notifications.add(candidate.logicalOperationId); return { status: 'sent' }; },
     async clear(input) { clears.push(input); for (const notifications of devices.values()) notifications.delete(input.logicalOperationId); return { status: 'cleared', attempted: devices.size, cleared: devices.size, failed: 0, ambiguous: 0 }; }
   };
-  const service = createNotificationService({ metadata, attentionService: attention, emitter: binding, now: () => clock });
+  const service = createNotificationService({ metadata, attentionService: attention, emitter: emitterFactory(binding), now: () => clock });
   try { return await run({ metadata, service, attention, episode, episodes, candidates, clears, devices, binding, advance(ms) { clock += ms; }, now: () => clock }); }
   finally { service.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 }
+
+test('awaits the published host binding before reconciling an activation', async () => {
+  await fixture(async ({ service, candidates }) => {
+    await service.reconcile();
+    assert.equal(candidates.length, 0);
+    assert.equal(await service.captureCurrentOperatorBinding(), true);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+  }, undefined, binding => ({ async bindCurrentOperator() { return binding; } }));
+});
+
+test('a late authenticated binding cannot replace the newer operator binding', async () => {
+  const resolvers = [];
+  const staleCandidates = [];
+  await fixture(async ({ service, binding, candidates }) => {
+    const first = service.captureCurrentOperatorBinding();
+    const second = service.captureCurrentOperatorBinding();
+    assert.equal(resolvers.length, 2);
+    resolvers[1](binding);
+    assert.equal(await second, true);
+    resolvers[0]({ async emit(candidate) { staleCandidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } });
+    assert.equal(await first, false);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    assert.equal(staleCandidates.length, 0);
+  }, undefined, () => ({ bindCurrentOperator: () => new Promise(resolve => resolvers.push(resolve)) }));
+});
+
+test('shutdown invalidates a pending operator binding', async () => {
+  let resolveBinding;
+  await fixture(async ({ service, binding }) => {
+    const pending = service.captureCurrentOperatorBinding();
+    service.close();
+    resolveBinding(binding);
+    assert.equal(await pending, false);
+  }, undefined, () => ({ bindCurrentOperator: () => new Promise(resolve => { resolveBinding = resolve; }) }));
+});
 
 test('notification lifecycle emits High activation and one active-hour repeat, then clears both devices by exact candidate identity', async () => {
   await fixture(async ({ service, episode, candidates, clears, devices, advance }) => {

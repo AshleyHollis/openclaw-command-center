@@ -68,7 +68,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     notifications: {
       registerEmitter(declaration) {
         declarations.push(structuredClone(declaration));
-        return { bindCurrentOperator() { bindingCaptures += 1; return currentBindingAvailable ? binding : undefined; } };
+        return { async bindCurrentOperator() { bindingCaptures += 1; return currentBindingAvailable ? binding : undefined; } };
       }
     },
     registerHttpRoute(value) { routes.push(value); },
@@ -1031,10 +1031,10 @@ test('background notification reconciliation excludes a future Reminder and rout
     metadata,
     attentionService: { allEpisodes: () => episodes },
     now: () => Date.parse('2026-08-27T12:00:00.000Z'),
-    emitter: { bindCurrentOperator: () => ({ async emit(candidate) { candidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } }) }
+    emitter: { async bindCurrentOperator() { return { async emit(candidate) { candidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } }; } }
   });
   try {
-    assert.equal(notification.captureCurrentOperatorBinding(), true);
+    assert.equal(await notification.captureCurrentOperatorBinding(), true);
     await notification.reconcile();
     assert.deepEqual(candidates, []);
   } finally {
