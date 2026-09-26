@@ -955,6 +955,7 @@ test('real first-live plugin activates Attention without acquiring the deferred 
 });
 
 test('candidate notification gate mounts the registered owner and clears a resolved DEV request', { skip: !FIRST_LIVE_FEATURES.notifications && 'Requires the sealed candidate-only notification overlay.' }, async () => {
+  const { default: builtPlugin } = await import('../dist/plugin.mjs');
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-candidate-notifications-'));
   const credential = 'fictional-machine-credential-with-enough-entropy-123456789';
   const previousCredential = process.env.FICTIONAL_DEV_BEARER;
@@ -968,7 +969,7 @@ test('candidate notification gate mounts the registered owner and clears a resol
   const request = { requestId, kind: 'input', expectedRequestRevision: 0, summary: 'Fictional input required', question: 'Fictional private question?' };
   const base = { schemaVersion: 1, workId: 'fictional-work', context: { projectAlias: 'fictional-project', phase: 'waiting' }, session };
   try {
-    plugin.register(host.api);
+    builtPlugin.register(host.api);
     assert.equal(host.declarations.length, 1);
     const route = host.routes.find((entry) => entry.path === developerEventRoute);
     assert.equal(route.auth, 'plugin');
