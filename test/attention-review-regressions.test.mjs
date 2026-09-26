@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createAttentionService as createAttentionServiceBase } from '../src/attention/service.mjs';
-import { orderAttentionEpisodes } from '../src/attention/ordering.mjs';
+import { validateActionInput } from '../src/attention/contracts.mjs';
+import { compareOccurrenceRows, orderAttentionEpisodes } from '../src/attention/ordering.mjs';
 import { resolveSnoozeUntil, SNOOZE_PRESETS } from '../src/attention/snooze.mjs';
 import { assertTransition, canTransition } from '../src/attention/state-machine.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
@@ -926,11 +927,9 @@ test('the delayed-delivery window excludes the exact ten-minute boundary and req
     service.registerSourceCapability({ sourceCapabilityId: 'boundary-monitor', deriveEvidence: () => ({}), verifyTransition: async (value) => value.transitionEvidence?.verified === true, actions: [] });
     const created = await service.ingest(occurrence('boundary-monitor'));
     await service.ingest(occurrence('boundary-monitor', { occurrenceId: 'boundary-terminal', transitionEvidence: { state: 'resolved', verified: true } }));
-    const exactActiveReplay = await service.ingest(occurrence('boundary-monitor', { transitionEvidence: { state: 'active', verified: true } }));
-    assert.equal(exactActiveReplay.duplicate, true);
-    assert.equal(exactActiveReplay.episode.generation, created.episode.generation);
-    const revisedExactReplay = await service.ingest(occurrence('boundary-monitor', { occurrenceVersion: 'revision-2' }));
-    assert.equal(revisedExactReplay.duplicate, true, 'an occurrence ID remains exact across observed revisions');
+    await assert.rejects(() => service.ingest(occurrence('boundary-monitor', { transitionEvidence: { state: 'active', verified: true } })), (error) => error?.code === 'intent-mismatch');
+    await assert.rejects(() => service.ingest(occurrence('boundary-monitor', { occurrenceVersion: 'revision-2' })), (error) => error?.code === 'intent-mismatch');
+    assert.equal(service.get(created.episode.episodeId).episode.generation, created.episode.generation);
     const unverifiedRevision = await service.ingest(occurrence('boundary-monitor', { occurrenceId: 'boundary-unverified-revision', occurrenceVersion: 'revision-3' }));
     assert.equal(unverifiedRevision.ignored, true, 'a changed revision is not capability-verified transition proof');
     clock = '2026-08-23T00:09:59.999Z';
@@ -964,6 +963,100 @@ test('accepted snooze presets use fixed durations and timezone-aware next 07:00'
   assert.equal(resolveSnoozeUntil('NEXT_0700', '2026-03-08T05:30:00.000Z', 'America/New_York'), '2026-03-09T11:00:00.000Z');
   assert.equal(resolveSnoozeUntil('NEXT_0700', '2026-11-01T04:30:00.000Z', 'America/New_York'), '2026-11-02T12:00:00.000Z');
   assert.equal(resolveSnoozeUntil('NEXT_0700', '2026-08-27T05:30:00.000Z', 'UTC'), '2026-08-28T07:00:00.000Z');
+});
+
+test('verified source transitions retain system attribution beside manual Reminder actions', async () => {
+  await fixture(async ({ metadata }) => {
+    const service = createAttentionService({ metadata, now: () => '2026-08-23T00:01:00.000Z' });
+    service.registerSourceCapability({ sourceCapabilityId: 'system-monitor', deriveEvidence: (value) => value.evidenceFacts, verifyTransition: async () => true, actions: [] });
+    const result = await service.ingest(occurrence('system-monitor', { transitionEvidence: { state: 'resolved' } }));
+    assert.equal(result.activity.actorMode, 'system');
+    assert.equal(service.getActivity(result.activity.activityId).actorMode, 'system');
+    service.close();
+  });
+});
+
+test('advertised snooze schemas and execution require exactly one choice', async () => {
+  await fixture(async ({ metadata }) => {
+    const service = createAttentionService({ metadata, now: () => '2026-08-23T00:01:00.000Z' });
+    service.registerSourceCapability({ sourceCapabilityId: 'reminders', sourceKind: 'reminder', deriveEvidence: (value) => value.evidenceFacts, actions: [] });
+    const created = await service.ingest(occurrence('reminders', { occurrenceVersion: 'config-1', evidenceFacts: { reminderDue: true } }));
+    const action = service.get(created.episode.episodeId).episode.actions.find((item) => item.actionId === 'reminder.snooze');
+    assert.deepEqual(action.parameterSchema.oneOf.map((branch) => branch.required), [['preset'], ['until']]);
+    const base = { expectedConfigRevision: 'config-1' };
+    const request = { schemaVersion: 1, episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, expectedSourceRevision: 'config-1', topicId: 'topic-review', sourceReferenceId: 'source-review', actionId: 'reminder.snooze' };
+    for (const input of [base, { ...base, preset: 'PT72H', until: '2026-08-24T00:00:00.000Z' }]) {
+      assert.throws(() => validateActionInput(action, input), /exactly one/i);
+      await assert.rejects(() => service.act({ ...request, input, logicalOperationId: randomUUID() }), /exactly one/i);
+    }
+    assert.doesNotThrow(() => validateActionInput(action, { ...base, preset: 'PT72H' }));
+    assert.doesNotThrow(() => validateActionInput(action, { ...base, until: '2026-08-24T00:00:00.000Z' }));
+    assert.equal(service.get(created.episode.episodeId).episode.revision, 1);
+    service.close();
+  });
+});
+
+test('occurrence replays preserve durable intent in SQLite', async () => {
+    const run = async (metadata) => {
+      const service = createAttentionService({ metadata, now: () => '2026-08-23T00:01:00.000Z' });
+      service.registerSourceCapability({ sourceCapabilityId: 'replay-monitor', deriveEvidence: (value) => value.evidenceFacts, verifyTransition: async () => true, actions: [] });
+      const input = occurrence('replay-monitor', { occurrenceVersion: 'revision-1', evidenceFacts: { nested: { alpha: 1, beta: 2 } }, transitionEvidence: { state: 'active', observed: true } });
+      const first = await service.ingest(input);
+      const equivalent = await service.ingest({ ...input, evidenceFacts: { nested: { beta: 2, alpha: 1 } }, transitionEvidence: { observed: true, state: 'active' } });
+      assert.equal(equivalent.duplicate, true);
+      assert.equal(equivalent.episode.episodeId, first.episode.episodeId);
+      const changes = [
+        { occurredAt: '2026-08-23T00:00:01.000Z' },
+        { occurrenceVersion: 'revision-2' },
+        { evidenceFacts: { nested: { alpha: 2, beta: 2 } } },
+        { transitionEvidence: { state: 'active', observed: false } },
+        { sourceReferenceId: 'source-alternate' },
+        { topicId: 'topic-alternate', sourceReferenceId: 'source-alternate-topic' }
+      ];
+      for (const change of changes) {
+        await assert.rejects(() => service.ingest({ ...input, ...change }), (error) => error?.code === 'intent-mismatch');
+        assert.equal(service.get(first.episode.episodeId).episode.revision, 1);
+        assert.equal(service.listActivity().records.length, 0);
+      }
+      service.close();
+      const reopened = createAttentionService({ metadata, now: () => '2026-08-23T00:02:00.000Z' });
+      reopened.registerSourceCapability({ sourceCapabilityId: 'replay-monitor', deriveEvidence: (value) => value.evidenceFacts, verifyTransition: async () => true, actions: [] });
+      assert.equal(reopened.get(first.episode.episodeId).episode.revision, 1);
+      assert.equal((await reopened.ingest(input)).duplicate, true);
+      reopened.close();
+    };
+    await fixture(async ({ metadata }) => {
+      metadata.createSourceReference({ version: 1, referenceId: 'source-alternate', topicId: 'topic-review', sourceSystem: 'fictional', sourceKind: 'monitor', externalSourceId: 'subject-alternate' });
+      metadata.createTopic({ topicId: 'topic-alternate', paraCategory: 'project', lifecycle: 'active' });
+      metadata.createSourceReference({ version: 1, referenceId: 'source-alternate-topic', topicId: 'topic-alternate', sourceSystem: 'fictional', sourceKind: 'monitor', externalSourceId: 'subject-alternate-topic' });
+      await run(metadata);
+    });
+});
+
+test('source revision follows instant order, offset equivalence and fractional precision in SQLite', async () => {
+    const run = async (metadata) => {
+      const service = createAttentionService({ metadata, now: () => '2026-08-23T00:01:00.000Z' });
+      service.registerSourceCapability({ sourceCapabilityId: 'instant-monitor', deriveEvidence: (value) => value.evidenceFacts, actions: [descriptor()] });
+      const first = await service.ingest(occurrence('instant-monitor', { occurrenceId: 'instant-1', occurrenceVersion: 'revision-1', occurredAt: '2026-08-23T00:00:00.09Z' }));
+      await service.ingest(occurrence('instant-monitor', { occurrenceId: 'instant-2', occurrenceVersion: 'revision-2', occurredAt: '2026-08-23T10:00:00.100+10:00' }));
+      assert.equal(service.get(first.episode.episodeId).episode.sourceRevision, 'revision-2');
+      await assert.rejects(() => service.ingest(occurrence('instant-monitor', { occurrenceId: 'instant-3', occurrenceVersion: 'revision-3', occurredAt: '2026-08-23T00:00:00.1Z' })), /equal-time|revision/i);
+      await service.ingest(occurrence('instant-monitor', { occurrenceId: 'instant-4', occurrenceVersion: 'revision-4', occurredAt: '2026-08-23T00:00:00.100000001Z' }));
+      assert.equal(service.get(first.episode.episodeId).episode.sourceRevision, 'revision-4');
+      const request = { schemaVersion: 1, logicalOperationId: randomUUID(), episodeId: first.episode.episodeId, expectedEpisodeRevision: 3, expectedSourceRevision: 'revision-2', topicId: 'topic-review', sourceReferenceId: 'source-review', actionId: 'monitor.apply', input: {} };
+      await assert.rejects(() => service.act(request), /source revision/i);
+      service.close();
+    };
+    await fixture(async ({ metadata }) => run(metadata));
+});
+
+test('equivalent occurrence instants break ties by creation order and stable row identity', () => {
+  const rows = [
+    { occurredAt: '2026-08-23T10:00:00+10:00', createdAt: '2026-08-23T00:01:00Z', insertionOrder: 1, occurrenceRowId: 'row-a' },
+    { occurredAt: '2026-08-23T00:00:00.0Z', createdAt: '2026-08-23T00:01:00Z', insertionOrder: 2, occurrenceRowId: 'row-b' },
+    { occurredAt: '2026-08-23T00:00:00Z', createdAt: '2026-08-23T00:01:00Z', insertionOrder: 2, occurrenceRowId: 'row-c' }
+  ];
+  assert.deepEqual(rows.sort(compareOccurrenceRows).map((row) => row.occurrenceRowId), ['row-c', 'row-b', 'row-a']);
 });
 
 test('occurrence identity is condition-scoped while out-of-order evidence fails closed and severity remains monotonic', async () => {

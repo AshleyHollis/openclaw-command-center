@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -130,7 +130,13 @@ test('completed authenticated rebuilds do not consume active preparation capacit
 
 test('temporary authoritative fixtures rebuild equivalent grouped Topic Search results', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-acceptance-'));
-  const authoritative = JSON.stringify({ markdown: '# Readme\n\nalpha phrase', session: 'closed conversation alpha phrase', metadata: 'Topic metadata' });
+  const markdownPath = path.join(stateDir, 'authoritative-readme.md');
+  const markdown = '# Readme\n\nbefore\n\nalpha phrase\n\nafter';
+  await writeFile(markdownPath, markdown);
+  const sessionStates = linkedSessions.map((reference) => ({ referenceId: reference.referenceId, sessionId: `session-id-${reference.referenceId.split(':')[1]}`, status: reference.referenceId === session.referenceId ? 'closed' : 'open', isPrimary: reference.referenceId === 'session:primary', wasPrimary: reference.referenceId === 'session:former' }));
+  const transcripts = linkedSessions.map((reference) => ({ referenceId: reference.referenceId, sessionKey: reference.externalSourceId, sessionId: `session-id-${reference.referenceId.split(':')[1]}`, messages: [{ id: `message-${reference.referenceId}`, role: 'user', createdAt: '2026-08-23T00:00:00.000Z', content: `${reference.referenceId} alpha phrase`, ...(reference.referenceId === 'session:primary' ? { __openclaw: { importedFrom: 'agent:main:legacy-primary' } } : {}) }] }));
+  const ownedMetadata = { presentationPreferences: { displayLabel: 'Fictional Topic' }, commitments: [{ commitmentId: 'fictional-commitment', topicId: topic.topicId, text: 'Keep the fictional plan current' }] };
+  const authoritativeSnapshot = async () => ({ markdownBytes: await readFile(markdownPath), transcripts: structuredClone(transcripts), sourceReferences: structuredClone([folder, note, ...linkedSessions]), sessionStates: structuredClone(sessionStates), topic: structuredClone(topic), ownedMetadata: structuredClone(ownedMetadata) });
   try {
     const metadata = {
       listTopics: () => [topic],
@@ -140,23 +146,23 @@ test('temporary authoritative fixtures rebuild equivalent grouped Topic Search r
       getSessionState: (id) => {
         const reference = linkedSessions.find((item) => item.referenceId === id);
         if (!reference) return null;
-        return { referenceId: id, sessionId: `session-id-${id.split(':')[1]}`, status: id === session.referenceId ? 'closed' : 'open', isPrimary: id === 'session:primary', wasPrimary: id === 'session:former' };
+        return sessionStates.find((state) => state.referenceId === id) ?? null;
       },
-      getPresentationPreferences: () => ({ displayLabel: 'Fictional Topic' })
+      getPresentationPreferences: () => ownedMetadata.presentationPreferences
     };
     const noteAdapter = {
       browse: async () => [{ path: 'readme.md', sourceReference: note }],
-      read: async () => ({ path: 'readme.md', text: '# Readme\n\nbefore\n\nalpha phrase\n\nafter', revision: note.observedRevision, sourceReference: note })
+      read: async () => ({ path: 'readme.md', text: await readFile(markdownPath, 'utf8'), revision: note.observedRevision, sourceReference: note })
     };
     const gateway = { request: async (method, input) => {
       const sessionKey = input.sessionKey ?? input.key;
       const reference = linkedSessions.find((item) => item.externalSourceId === sessionKey);
       assert.ok(reference, 'only exact linked Session keys may be read');
-      const sessionId = `session-id-${reference.referenceId.split(':')[1]}`;
+      const transcript = transcripts.find((item) => item.referenceId === reference.referenceId);
+      const sessionId = transcript.sessionId;
       if (method === 'sessions.describe') return { session: { ['k' + 'ey']: sessionKey, sessionId, derivedTitle: `Fixture ${sessionKey}` } };
       assert.equal(method, 'chat.history');
-      const imported = reference.referenceId === 'session:primary';
-      return { sessionKey, sessionId, messages: input.offset === 0 ? [{ id: `message-${reference.referenceId}`, role: 'user', createdAt: '2026-08-23T00:00:00.000Z', content: `${reference.referenceId} alpha phrase`, ...(imported ? { __openclaw: { importedFrom: 'agent:main:legacy-primary' } } : {}) }] : [], hasMore: false };
+      return { sessionKey, sessionId, messages: input.offset === 0 ? transcript.messages : [], hasMore: false };
     } };
     const rebuild = createSearchRebuildService({ stateDir, metadata, noteAdapterFactory: () => noteAdapter, gateway });
     const search = createTopicSearchService({ stateDir, metadata });
@@ -184,12 +190,24 @@ test('temporary authoritative fixtures rebuild equivalent grouped Topic Search r
     }));
     assert.equal(bridged.notes.results[0].sourceReference.referenceId, note.referenceId);
     assert.deepEqual(bridged.notes.results[0].navigation, before.notes.results[0].navigation);
-    const authorityDigest = createHash('sha256').update(authoritative).digest('hex');
+    const authorityBefore = await authoritativeSnapshot();
     await rebuild.delete();
     await rebuild.rebuild();
     const after = await search.query({ schemaVersion: 1, topicId: topic.topicId, query: '"alpha phrase"', limit: 50 });
     assert.deepEqual(after, before);
-    assert.equal(createHash('sha256').update(authoritative).digest('hex'), authorityDigest);
+    assert.deepEqual(await authoritativeSnapshot(), authorityBefore, 'the adapters\' actual authoritative fixtures remain unchanged');
+    const detectsMutation = async (change, restore, label) => {
+      await change();
+      try { assert.notDeepEqual(await authoritativeSnapshot(), authorityBefore, `${label} mutation must be detected`); }
+      finally { await restore(); }
+      assert.deepEqual(await authoritativeSnapshot(), authorityBefore, `${label} fixture must be restored`);
+    };
+    await detectsMutation(() => writeFile(markdownPath, `${markdown}\nchanged`), () => writeFile(markdownPath, markdown), 'Markdown bytes');
+    await detectsMutation(() => { transcripts[0].messages[0].content = 'changed'; }, () => { transcripts[0].messages[0].content = `${transcripts[0].referenceId} alpha phrase`; }, 'Session transcript');
+    await detectsMutation(() => { linkedSessions[0].observedRevision = 'changed'; }, () => { linkedSessions[0].observedRevision = null; }, 'Source Reference');
+    await detectsMutation(() => { sessionStates[0].status = 'open'; }, () => { sessionStates[0].status = 'closed'; }, 'Session state');
+    await detectsMutation(() => { ownedMetadata.commitments[0].text = 'changed'; }, () => { ownedMetadata.commitments[0].text = 'Keep the fictional plan current'; }, 'commitment');
+    await detectsMutation(() => { ownedMetadata.presentationPreferences.displayLabel = 'changed'; }, () => { ownedMetadata.presentationPreferences.displayLabel = 'Fictional Topic'; }, 'owned metadata');
     assert.doesNotMatch(await readFile(path.join(stateDir, 'plugins', 'command-center', 'projections', 'topic-search-notes.json'), 'utf8'), /authoritative/);
   } finally {
     await rm(stateDir, { recursive: true, force: true });

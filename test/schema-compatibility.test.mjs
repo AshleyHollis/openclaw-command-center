@@ -38,18 +38,81 @@ async function assertRecoveryPreservesFixture(stateDir, expectedCode, fixtureLab
   const beforeBytes = await readFile(databasePath);
   const beforeMtime = (await stat(databasePath)).mtimeMs;
   const beforeSiblings = (await readdir(path.dirname(databasePath))).sort();
-  const service = openCommandCenterMetadataService({ stateDir });
-  const firstStatus = service.getOperatingStatus();
-  assert.equal(firstStatus.mode, 'recovery-only', fixtureLabel);
-  assert.equal(firstStatus.diagnostics[0].code, expectedCode);
-  assert.deepEqual(service.getOperatingStatus(), firstStatus);
-  assert.throws(() => service.createTopic({ topicId: 'blocked-topic', paraCategory: 'area', lifecycle: 'active' }), (error) => error.code === 'recovery-only');
-  assert.throws(() => service.setPolicyVersion({ policyId: 'blocked-policy', version: 'v1', digest: 'blocked-digest' }), (error) => error.code === 'recovery-only');
-  service.close();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const service = openCommandCenterMetadataService({ stateDir });
+    const firstStatus = service.getOperatingStatus();
+    assert.equal(firstStatus.mode, 'recovery-only', fixtureLabel);
+    assert.equal(firstStatus.diagnostics[0].code, expectedCode, fixtureLabel);
+    if (expectedCode === 'integrity-failure') assert.match(firstStatus.diagnostics[0].summary, /integrity/i);
+    if (expectedCode === 'malformed-schema') assert.match(firstStatus.diagnostics[0].summary, /schema/i);
+    assert.deepEqual(service.getOperatingStatus(), firstStatus);
+    assert.throws(() => service.createTopic({ topicId: 'blocked-topic', paraCategory: 'area', lifecycle: 'active' }), (error) => error.code === 'recovery-only');
+    assert.throws(() => service.setPolicyVersion({ policyId: 'blocked-policy', version: 'v1', digest: 'blocked-digest' }), (error) => error.code === 'recovery-only');
+    service.close();
+  }
   assert.deepEqual(await readFile(databasePath), beforeBytes);
   assert.equal((await stat(databasePath)).mtimeMs, beforeMtime);
   assert.deepEqual((await readdir(path.dirname(databasePath))).sort(), beforeSiblings);
 }
+
+const fixtureTime = '2026-08-22T00:00:00.000Z';
+function insertExternalSource(db, values = {}) {
+  db.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .run('fictional-topic', 'resource', 'active', fixtureTime, fixtureTime);
+  db.prepare('INSERT INTO source_references (reference_id, topic_id, source_system, source_kind, external_source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(values.referenceId ?? 'fictional-reference', values.topicId ?? 'fictional-topic', values.sourceSystem ?? 'openclaw', values.sourceKind ?? 'session', values.externalSourceId ?? 'fictional-session', fixtureTime, fixtureTime);
+}
+
+test('exact supported schemas reject externally stored blank source identities without repair', async () => {
+  for (const [field, schema, values] of [
+    ['schema-1 reference ID', metadataSchemaV1Sql, { referenceId: '  ' }],
+    ['current reference ID', metadataSchemaSql, { referenceId: '  ' }],
+    ['source system', metadataSchemaV1Sql, { sourceSystem: '  ' }],
+    ['source kind', metadataSchemaV1Sql, { sourceKind: '\t' }],
+    ['external source ID', metadataSchemaV1Sql, { externalSourceId: '  ' }]
+  ]) {
+    await withState(async (stateDir) => {
+      await createDatabase(stateDir, (db) => {
+        db.exec(schema);
+        db.exec('PRAGMA ignore_check_constraints = ON');
+        insertExternalSource(db, values);
+      });
+      await assertRecoveryPreservesFixture(stateDir, 'integrity-failure', field);
+    });
+  }
+});
+
+test('exact current schema reports an orphan as stored integrity failure, distinct from changed DDL', async () => {
+  await withState(async (stateDir) => {
+    await createDatabase(stateDir, (db) => {
+      db.exec(metadataSchemaSql);
+      db.exec('PRAGMA foreign_keys = OFF');
+      insertExternalSource(db, { topicId: 'missing-topic' });
+    });
+    await assertRecoveryPreservesFixture(stateDir, 'integrity-failure', 'orphaned Source Reference');
+  });
+  await withState(async (stateDir) => {
+    await createDatabase(stateDir, (db) => db.exec(metadataSchemaSql.replace('UNIQUE (source_system, source_kind, external_source_id)', 'UNIQUE (source_system, external_source_id)')));
+    await assertRecoveryPreservesFixture(stateDir, 'malformed-schema', 'changed DDL');
+  });
+});
+
+test('exact current schema with valid stored identities remains writable across reopen', async () => {
+  await withState(async (stateDir) => {
+    await createDatabase(stateDir, (db) => {
+      db.exec(metadataSchemaSql);
+      insertExternalSource(db);
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const service = openCommandCenterMetadataService({ stateDir });
+      assert.notEqual(service.getOperatingStatus().mode, 'recovery-only');
+      assert.ok(service.getOperatingStatus().diagnostics.every((item) => item.code.startsWith('capability-')));
+      assert.equal(service.getSourceReference('fictional-reference').externalSourceId, 'fictional-session');
+      if (attempt === 0) service.createTopic({ topicId: 'permitted-topic', paraCategory: 'area', lifecycle: 'active' });
+      service.close();
+    }
+  });
+});
 
 const malformedFixtures = [
   ['missing table', (db) => { db.exec(metadataSchemaSql); db.exec('DROP TABLE topics'); }],
