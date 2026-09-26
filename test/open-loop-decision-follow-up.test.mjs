@@ -410,6 +410,58 @@ test('SIGKILL after decision commit leaves one resumable Reminder plan for a fre
     }
   });
 
+test('SIGKILL after targeted interpretation commit resumes only its follow-up and preserves a clear sibling',
+  { skip: process.platform !== 'linux' && 'actual SIGKILL/reopen requires the supported Linux runtime', timeout: 30_000 }, async () => {
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-interpretation-kill-'));
+    const fixturePath = fileURLToPath(new URL('./fixtures/open-loop-decision-process-death.mjs', import.meta.url));
+    const launch = mode => {
+      const child = spawn(process.execPath, [fixturePath, stateDir, mode], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      let stderr = '';
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      return { child, exited: new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal, stderr }))) };
+    };
+    const message = (child, type) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`fixture did not reach ${type}`)), 15_000);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.on('message', value => {
+        if (value?.type === type) { clearTimeout(timer); resolve(value); }
+        if (value?.type === 'failed') { clearTimeout(timer); reject(new Error(value.message)); }
+      });
+    });
+    let committed; let resumed;
+    try {
+      committed = launch('commit-interpreted');
+      const accepted = await message(committed.child, 'accepted');
+      committed.child.kill('SIGKILL');
+      assert.deepEqual({ code: (await committed.exited).code, signal: committed.child.signalCode }, { code: null, signal: 'SIGKILL' });
+      const inspection = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+      try {
+        const receipt = inspection.getOpenLoopUserActionReceipt(accepted.operationId);
+        assert.equal(receipt.loop.loopId, accepted.loopId);
+        assert.equal(receipt.followUpIntent.action, 'create');
+        assert.equal(inspection.getOperation(receipt.followUpIntent.logicalOperationId), null);
+        assert.equal(inspection.getOpenLoop(accepted.siblingId).revision, accepted.siblingRevision);
+        const evidence = receipt.loop.evidenceObservationIds.map(id => inspection.getOpenLoopObservation(id))
+          .find(item => item.source.kind === 'processor-interpretation');
+        assert.equal(evidence.facts.provenance, 'targeted-interpretation');
+        assert.equal(evidence.facts.interpretationOf, evidence.facts.resolvesClarificationId);
+      } finally { inspection.close(); }
+      resumed = launch('resume');
+      const completed = await message(resumed.child, 'completed');
+      const exit = await resumed.exited;
+      assert.deepEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null }, exit.stderr);
+      assert.deepEqual({ status: completed.status, jobCount: completed.jobCount, operationState: completed.operationState },
+        { status: 'applied', jobCount: 1, operationState: 'applied' });
+      const after = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+      try { assert.equal(after.getOpenLoop(accepted.siblingId).revision, accepted.siblingRevision); }
+      finally { after.close(); }
+    } finally {
+      if (committed?.child.exitCode === null && committed.child.signalCode === null) committed.child.kill('SIGKILL');
+      if (resumed?.child.exitCode === null && resumed.child.signalCode === null) resumed.child.kill('SIGKILL');
+      await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
 test('SIGKILL after native Cron accepts a bound Reminder lets a newer paid decision recover and cancel that exact job',
   { skip: process.platform !== 'linux' && 'actual SIGKILL/reopen requires the supported Linux runtime', timeout: 30_000 }, async () => {
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-decision-native-kill-'));

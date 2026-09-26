@@ -4,11 +4,42 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
+import { createMetadataService } from '../src/plugin-service.mjs';
+import { clarificationInterpretationOperationId } from '../src/open-loops/clarification-context.mjs';
+import { isCanonicalUuid } from '../src/sources/operation-journal.mjs';
 import { projectQuietAttention } from '../src/open-loops/quiet-attention.mjs';
 import { createOpenLoopReminderCoordinator } from '../src/open-loops/reminder-coordinator.mjs';
 import { planCommitmentCapture } from '../src/open-loops/commitment-capture.mjs';
 
 const now = '2026-09-24T03:00:00.000Z';
+
+test('one saved clarification has one public-route-compatible interpretation identity', () => {
+  const first = clarificationInterpretationOperationId('fictional-clarification-one');
+  assert.ok(isCanonicalUuid(first));
+  assert.equal(first, clarificationInterpretationOperationId('fictional-clarification-one'));
+  assert.notEqual(first, clarificationInterpretationOperationId('fictional-clarification-two'));
+  assert.throws(() => clarificationInterpretationOperationId(''), { code: 'invalid-request' });
+});
+
+test('inactive agent-tool registration delegates interpretation to the active owner', () => {
+  const key = Symbol.for('openclaw.command-center.active-topic-maintenance-owners.v1');
+  const previous = globalThis[key];
+  const inactive = createMetadataService({});
+  const input = { clarificationObservationId: 'fictional-saved-clarification', outcome: 'clear', paymentState: 'paid' };
+  const expected = { schemaVersion: 1, disposition: 'applied' };
+  try {
+    globalThis[key] = { interpretClarification: received => {
+      assert.deepEqual(received, input);
+      return expected;
+    } };
+    assert.equal(inactive.openLoopsInterpretClarification(input, { authenticatedRequesterId: 'owner-fixture', assertCurrent() {} }), expected);
+    delete globalThis[key];
+    assert.throws(() => inactive.openLoopsInterpretClarification(input, { authenticatedRequesterId: 'owner-fixture', assertCurrent() {} }), { code: 'capability-unavailable' });
+  } finally {
+    if (previous === undefined) delete globalThis[key]; else globalThis[key] = previous;
+  }
+});
+
 const message = (id, invoiceId) => ({
   schemaVersion: 1, channel: 'email', source: { system: 'fictional-mail', externalId: id, version: 'v1' },
   occurredAt: now, observedAt: now, historicalBaseline: false, disposition: 'confirmed-obligation',

@@ -154,6 +154,36 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       ON CONFLICT(loop_id, observation_id) DO UPDATE SET evidence_role=excluded.evidence_role`).run(loop.loopId, observationId, roles[observationId] ?? (existing ? 'update' : 'origin'), updatedAt);
     return { disposition: existing ? 'updated' : 'created', loop: mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(loop.loopId)) };
   }
+  function enforceInterpretationFence(db, fence, loopId, expectedRevision, observation) {
+    closed(fence, ['clarificationObservationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'processorVersion']);
+    for (const key of ['clarificationObservationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'outcomeId', 'processorVersion']) text(fence[key], key, key === 'sourceExternalId' ? 500 : 300);
+    if (!['email', 'chat', 'note'].includes(fence.sourceKind) || observation.source.kind !== 'processor-interpretation') fail('open-loop-intent-invalid');
+    const current = db.prepare('SELECT revision, attention_json FROM open_loops WHERE loop_id = ?').get(loopId);
+    if (current?.revision !== expectedRevision) fail('open-loop-stale-revision');
+    if (JSON.parse(current.attention_json).pendingClarificationId !== fence.clarificationObservationId) fail('open-loop-clarification-superseded');
+    const clarification = db.prepare(`SELECT o.facts_json FROM open_loop_evidence e JOIN source_observations o ON o.observation_id = e.observation_id
+      WHERE e.loop_id = ? AND o.observation_id = ? AND o.source_system = 'command-center' AND o.source_kind = 'user-clarification'
+        AND json_extract(o.facts_json, '$.eventKind') = 'clarification-submitted'`).get(loopId, fence.clarificationObservationId);
+    const capture = db.prepare(`SELECT 1 FROM open_loop_evidence e JOIN source_observations o ON o.observation_id = e.observation_id
+      WHERE e.loop_id = ? AND o.source_system = 'command-center-capture' AND o.source_kind = ? AND o.external_source_id = ?
+        AND json_extract(o.facts_json, '$.sourceVersion') = ? AND json_extract(o.facts_json, '$.obligationId') = ?`).get(loopId, fence.sourceKind, fence.sourceExternalId, fence.sourceVersion, fence.outcomeId);
+    const outcome = db.prepare(`SELECT 1 FROM operation_journal WHERE operation_kind = ? AND state = 'applied'
+      AND json_extract(result_identity, '$.sourceExternalId') = ? AND json_extract(result_identity, '$.sourceVersion') = ?
+      AND json_extract(result_identity, '$.outcomeId') = ? AND json_extract(result_identity, '$.loopId') = ? LIMIT 1`)
+      .get(`intake-outcome.${fence.sourceKind}.v1`, fence.sourceExternalId, fence.sourceVersion, fence.outcomeId, loopId);
+    if (!clarification || !capture || !outcome) fail('open-loop-interpretation-source-conflict');
+    const words = JSON.parse(clarification.facts_json);
+    if (observation.facts.interpretationOf !== fence.clarificationObservationId
+      || observation.facts.actorId !== words.actorId || observation.facts.rationale !== words.rationale
+      || observation.facts.processorVersion !== fence.processorVersion) fail('open-loop-interpretation-source-conflict');
+    const plans = db.prepare(`SELECT result_identity FROM operation_journal WHERE operation_kind = ? AND state = 'applied'
+      AND json_extract(result_identity, '$.sourceExternalId') = ?`).all(`intake-source.${fence.sourceKind}.v1`, fence.sourceExternalId)
+      .map(row => { try { return JSON.parse(row.result_identity); } catch { return null; } }).filter(Boolean);
+    const accepted = plans.find(plan => plan.sourceVersion === fence.sourceVersion && plan.processorVersion === fence.processorVersion
+      && plan.outcomes?.some(item => item.outcomeId === fence.outcomeId && ['obligation', 'decision'].includes(item.kind)));
+    if (!accepted || plans.some(plan => plan.sourceVersion !== fence.sourceVersion
+      && Date.parse(plan.observedAt) >= Date.parse(accepted.observedAt))) fail('open-loop-interpretation-source-conflict');
+  }
   function followUpIntent(db, logicalOperationId, operationKind, loop) {
     if (!loop || !(operationKind.startsWith('decision-') || operationKind === 'payment-status')) return undefined;
     const referenceId = openLoopReminderReferenceId(loop.loopId);
@@ -218,7 +248,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
   }
 
   service.applyOpenLoopChange = input => {
-    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'operationKind', 'intent', 'expectedRevision', 'observation', 'loop', 'evidenceRoles', 'updatedAt']);
+    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'operationKind', 'intent', 'expectedRevision', 'observation', 'loop', 'evidenceRoles', 'updatedAt', 'interpretationFence']);
     if (value.schemaVersion !== 1 || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 0) fail('open-loop-intent-invalid');
     const logicalOperationId = text(value.logicalOperationId, 'logicalOperationId');
     const operationKind = text(value.operationKind, 'operationKind', 100);
@@ -233,6 +263,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     return mutate(null, db => {
       const replay = operation(db, logicalOperationId, CHANGE_OPERATION, intentDigest);
       if (replay) return replay;
+      if (value.interpretationFence) enforceInterpretationFence(db, value.interpretationFence, loop.loopId, value.expectedRevision, observation);
       const stored = storeObservation(db, observation);
       const changed = loop ? storeLoop(db, loop, value.expectedRevision, roles, updatedAt,
         operationKind.startsWith('decision-') || operationKind === 'payment-status' || operationKind === 'clarification-submit') : null;
@@ -517,6 +548,19 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       ORDER BY l.loop_id LIMIT ?`).all(text(system, 'source.system', 80), text(kind, 'source.kind', 80), text(externalId, 'source.externalId', 500), boundedLimit).map(row => mapLoop(db, row)));
   };
   service.listOpenLoops = () => inspect(db => db.prepare('SELECT * FROM open_loops ORDER BY updated_at, loop_id').all().map(row => mapLoop(db, row)));
+  service.listPendingOpenLoopClarificationsPage = ({ cursor, limit = 10 } = {}) => {
+    if (cursor !== undefined && (typeof cursor !== 'string' || !cursor.trim())
+      || !Number.isSafeInteger(limit) || limit < 1 || limit > 20) fail('open-loop-intent-invalid');
+    return inspect(db => {
+      const rows = db.prepare(`SELECT loop_id, revision, json_extract(attention_json, '$.pendingClarificationId') AS clarification_id
+        FROM open_loops WHERE json_type(attention_json, '$.pendingClarificationId') = 'text'
+          AND (? IS NULL OR loop_id > ?) ORDER BY loop_id LIMIT ?`).all(cursor ?? null, cursor ?? null, limit + 1);
+      const items = rows.slice(0, limit).map(row => freeze({ loopId: row.loop_id, expectedRevision: row.revision,
+        clarificationObservationId: row.clarification_id }));
+      return freeze({ schemaVersion: 1, items, hasMore: rows.length > limit,
+        nextCursor: rows.length > limit ? items.at(-1).loopId : null });
+    });
+  };
   service.listOpenLoopsPage = ({ offset = 0, limit = 50, cursor } = {}) => {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || cursor !== undefined && (typeof cursor !== 'string' || cursor.trim() === '')) fail('open-loop-intent-invalid');
     return inspect(db => {
