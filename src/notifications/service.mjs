@@ -318,6 +318,8 @@ export function createNotificationService({ metadata, attentionService, sourceSe
 
   function developerCatchupReady(episode) {
     if (episode?.sourceCapabilityId !== 'developer-work.v1') return true;
+    const expiresAt = episode.evidenceFacts?.requestExpiresAt;
+    if (expiresAt && Date.parse(expiresAt) <= nowMs(now)) return false;
     try {
       return metadata.isDeveloperWorkNotificationReady?.({ producerId: episode.evidenceFacts?.producerId, workId: episode.evidenceFacts?.workId }) === true;
     } catch { return false; }

@@ -119,6 +119,7 @@ test('lost receiver reply leaves the same event pending and blocks its successor
   const sent = [];
   const watermarks = [];
   let failFirst = true;
+  let clock = Date.parse('2026-09-26T11:00:00.000Z');
   const receiver = { async send(value, options) {
     sent.push(value);
     watermarks.push(options.watermark);
@@ -126,7 +127,7 @@ test('lost receiver reply leaves the same event pending and blocks its successor
     return { schemaVersion: 1, producerId: authority.producerId, eventId: value.eventId, workId: value.workId, workRevision: value.workRevision, eventDigest: metadata.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: operations.get(value.eventId) }).eventDigest, projectionState: 'projected', acceptedAt: '2026-09-26T11:00:00.000Z' };
   } };
   const operations = new Map();
-  const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => undefined, receiver });
+  const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => undefined, receiver, now: () => clock });
   try {
     const first = metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
     operations.set(first.eventId, first.logicalOperationId);
@@ -135,11 +136,50 @@ test('lost receiver reply leaves the same event pending and blocks its successor
     const firstFlush = await producer.flush();
     assert.equal(firstFlush.delivered, 0);
     assert.deepEqual(sent.map(row => row.eventId), [first.eventId]);
+    const recorded = metadata.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: first.logicalOperationId }).deliveryDiagnostic;
+    assert.equal(recorded.attemptCount, 1);
+    assert.equal(recorded.lastErrorCode, 'receiver-unavailable');
+    assert.ok(recorded.nextAttemptAtMs > clock);
+    assert.equal((await producer.flush()).attempted, 0, 'native Cron checks before the due time cannot hot-loop');
+    clock = recorded.nextAttemptAtMs;
     const retried = await producer.flush();
     assert.equal(retried.delivered, 2);
     assert.deepEqual(sent.map(row => row.eventId), [first.eventId, first.eventId, second.eventId]);
     assert.deepEqual(watermarks, [2, 2, 2]);
     assert.equal(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).length, 0);
+  } finally { producer.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('authentication refusal pauses durable delivery across restart without retrying later revisions', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-pause-'));
+  let metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+  const first = metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
+  metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-b') });
+  let calls = 0;
+  let reject = true;
+  const receiver = { async send(event) {
+    calls++;
+    if (reject) throw Object.assign(new Error('unauthorized'), { code: 'receiver-http-401' });
+    const row = metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).find(item => item.eventId === event.eventId);
+    return { schemaVersion: 1, producerId: authority.producerId, eventId: event.eventId, workId: event.workId, workRevision: event.workRevision, eventDigest: row.eventDigest, projectionState: 'projected', acceptedAt: '2026-09-26T11:00:00.000Z' };
+  } };
+  let producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => undefined, receiver });
+  try {
+    const failed = await producer.flush();
+    assert.deepEqual([failed.attempted, failed.paused, failed.pending], [1, 1, 2]);
+    const diagnostic = metadata.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: first.logicalOperationId }).deliveryDiagnostic;
+    assert.deepEqual({ attemptCount: diagnostic.attemptCount, lastErrorCode: diagnostic.lastErrorCode, paused: diagnostic.paused, nextAttemptAtMs: diagnostic.nextAttemptAtMs },
+      { attemptCount: 1, lastErrorCode: 'receiver-http-401', paused: true, nextAttemptAtMs: null });
+    producer.close(); metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+    producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => undefined, receiver });
+    const afterRestart = await producer.flush();
+    assert.deepEqual([afterRestart.attempted, afterRestart.paused, afterRestart.pending], [0, 1, 2]);
+    assert.equal(calls, 1);
+    reject = false;
+    const resumed = await producer.flush({ resumePaused: true });
+    assert.deepEqual([resumed.delivered, resumed.pending], [2, 0]);
+    assert.equal(calls, 3);
   } finally { producer.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

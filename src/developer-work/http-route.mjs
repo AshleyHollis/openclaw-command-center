@@ -19,10 +19,11 @@ const eventFamilies = Object.freeze({
   deployment_succeeded: 'deployment-outcome'
 });
 
-function reply(res, statusCode, payload) {
+function reply(res, statusCode, payload, headers = {}) {
   res.statusCode = statusCode;
   res.setHeader?.('content-type', 'application/json; charset=utf-8');
   res.setHeader?.('cache-control', 'no-store');
+  for (const [name, value] of Object.entries(headers)) res.setHeader?.(name, value);
   res.end?.(JSON.stringify(payload));
   return true;
 }
@@ -57,25 +58,32 @@ export function createDeveloperEventHandler({ service, principals = [], trustedP
     if (req.headers?.origin || req.headers?.cookie) return reply(res, 403, { schemaVersion: 1, status: 'error', code: 'machine-only' });
     const principal = principalFor(req.headers?.authorization, principals, env);
     if (!principal) return reply(res, 401, { schemaVersion: 1, status: 'error', code: 'unauthorized' });
+    const authority = JSON.stringify({ tokenEnv: principal.tokenEnv, producerId: principal.producerId, role: principal.role, allowedProjects: principal.allowedProjects, families: principal.families });
+    const assertAuthorityCurrent = () => {
+      const current = principalFor(req.headers?.authorization, principals, env);
+      if (current !== principal || JSON.stringify({ tokenEnv: current.tokenEnv, producerId: current.producerId, role: current.role, allowedProjects: current.allowedProjects, families: current.families }) !== authority) {
+        throw Object.assign(new Error('Developer Work principal was revoked or changed.'), { code: 'unauthorized' });
+      }
+    };
     const current = now();
     const window = windows.get(principal.producerId);
     const active = window && current - window.startedAt < 60_000 ? window : { startedAt: current, count: 0 };
     active.count += 1;
     windows.set(principal.producerId, active);
-    if (active.count > limitPerMinute) return reply(res, 429, { schemaVersion: 1, status: 'error', code: 'rate-limited' });
+    if (active.count > limitPerMinute) return reply(res, 429, { schemaVersion: 1, status: 'error', code: 'rate-limited' }, { 'retry-after': String(Math.max(1, Math.ceil((active.startedAt + 60_000 - current) / 1000))) });
     if (!/^application\/json(?:\s*;|$)/iu.test(String(req.headers?.['content-type'] ?? ''))) return reply(res, 415, { schemaVersion: 1, status: 'error', code: 'json-required' });
     try {
-      const { body } = await readBoundedJson(req, DEVELOPER_EVENT_MAX_BYTES);
+      const { body } = await readBoundedJson(req, DEVELOPER_EVENT_MAX_BYTES, { oversizeCode: 'body-too-large' });
       if (!principal.families?.includes(eventFamilies[body?.eventType])) return reply(res, 403, { schemaVersion: 1, status: 'error', code: 'event-family-denied' });
       const watermarkHeader = req.headers?.['x-developer-work-watermark'];
       if (watermarkHeader !== undefined && (typeof watermarkHeader !== 'string' || !/^[1-9][0-9]{0,15}$/u.test(watermarkHeader) || !Number.isSafeInteger(Number(watermarkHeader)))) throw Object.assign(new Error('Invalid delivery watermark.'), { code: 'delivery-watermark-invalid' });
-      const receipt = await service.accept({ producerId: principal.producerId, role: principal.role, allowedProjects: principal.allowedProjects, event: body,
+      const receipt = await service.accept({ producerId: principal.producerId, role: principal.role, allowedProjects: principal.allowedProjects, event: body, assertAuthorityCurrent,
         ...(watermarkHeader !== undefined ? { watermark: Number(watermarkHeader) } : {}) });
       return reply(res, receipt.projectionState === 'projected' ? 200 : 202, { schemaVersion: 1, status: 'accepted', receipt });
     } catch (error) {
       const code = typeof error?.code === 'string' ? error.code : 'invalid-request';
-      const status = code === 'developer-event-backpressure' ? 429 : code === 'capability-unavailable' || code === 'recovery-only' ? 503 : /(?:stale|gap|conflict|terminal|order|missing)$/u.test(code) ? 409 : 400;
-      return reply(res, status, { schemaVersion: 1, status: 'error', code });
+      const status = code === 'unauthorized' ? 401 : code === 'body-too-large' ? 413 : code === 'developer-event-backpressure' ? 429 : code === 'capability-unavailable' || code === 'recovery-only' ? 503 : /(?:stale|gap|conflict|terminal|order|missing)$/u.test(code) ? 409 : 400;
+      return reply(res, status, { schemaVersion: 1, status: 'error', code }, status === 429 ? { 'retry-after': '60' } : {});
     }
   };
 }

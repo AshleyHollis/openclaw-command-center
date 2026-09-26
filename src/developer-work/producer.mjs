@@ -23,25 +23,37 @@ export function createDeveloperEventTransport({ baseUrl, tokenEnv, env = process
         body: JSON.stringify(event)
       });
       if (![200, 202].includes(response.status) || !/^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? '')) throw Object.assign(new Error('Developer Work receipt was not confirmed.'), { code: `receiver-http-${response.status}` });
-      const envelope = (await readBoundedJson(response.body, MAX_RECEIPT_BYTES)).body;
+      let envelope;
+      try { envelope = (await readBoundedJson(response.body, MAX_RECEIPT_BYTES)).body; }
+      catch { throw Object.assign(new Error('Developer Work receiver returned an invalid receipt.'), { code: 'receiver-receipt-invalid' }); }
       if (envelope?.schemaVersion !== 1 || envelope.status !== 'accepted' || !envelope.receipt) throw Object.assign(new Error('Developer Work receiver returned an invalid receipt.'), { code: 'receiver-receipt-invalid' });
       return envelope.receipt;
     }
   });
 }
 
-export function createDeveloperWorkProducer({ metadata, sessionReader, authority, receiver } = {}) {
-  if (!metadata?.submitDeveloperWork || !metadata?.listPendingDeveloperDeliveries || !metadata?.getDeveloperProducerRequest || typeof sessionReader !== 'function' || !authority || typeof authority.producerId !== 'string') throw new TypeError('Developer Work producer requires metadata, session read, and fixed authority.');
+function deliveryFailure(error) {
+  const code = typeof error?.code === 'string' && /^[a-z0-9-]{1,80}$/u.test(error.code) ? error.code : 'receiver-unavailable';
+  const status = /^receiver-http-([0-9]{3})$/u.exec(code);
+  const paused = ['credential-unavailable', 'receiver-receipt-invalid', 'developer-receipt-conflict'].includes(code)
+    || status && Number(status[1]) >= 400 && Number(status[1]) < 500 && ![408, 429].includes(Number(status[1]));
+  return { code, paused: Boolean(paused) };
+}
+
+export function createDeveloperWorkProducer({ metadata, sessionReader, authority, receiver, now = () => Date.now() } = {}) {
+  if (!metadata?.submitDeveloperWork || !metadata?.listPendingDeveloperDeliveries || !metadata?.recordDeveloperDeliveryFailure || !metadata?.resumeDeveloperDelivery || !metadata?.getDeveloperProducerRequest || typeof sessionReader !== 'function' || !authority || typeof authority.producerId !== 'string') throw new TypeError('Developer Work producer requires metadata, session read, and fixed authority.');
   let closed = false;
   let flushing = null;
   const assertOpen = () => { if (closed) throw Object.assign(new Error('Developer Work producer is closed.'), { code: 'producer-closed' }); };
 
-  function flush() {
+  function flush({ resumePaused = false } = {}) {
     assertOpen();
     const run = (flushing ?? Promise.resolve()).catch(() => {}).then(async () => {
       const failedWork = new Set();
       let delivered = 0;
       let attempted = 0;
+      let deferred = 0;
+      let paused = 0;
       // Freeze each work's highest queued revision for this delivery pass.
       // Events submitted while sends are awaiting a reply belong to a later pass.
       const pending = metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId, limit: 500 });
@@ -49,6 +61,15 @@ export function createDeveloperWorkProducer({ metadata, sessionReader, authority
       for (const item of pending) watermarks.set(item.workId, Math.max(item.workRevision, watermarks.get(item.workId) ?? 0));
       for (const item of pending) {
         if (failedWork.has(item.workId) || attempted >= 10) continue;
+        const diagnostic = item.deliveryDiagnostic?.paused && resumePaused
+          ? metadata.resumeDeveloperDelivery({ producerId: authority.producerId, eventId: item.eventId, observedAtMs: now() }).deliveryDiagnostic
+          : item.deliveryDiagnostic;
+        if (diagnostic?.paused || diagnostic?.nextAttemptAtMs > now()) {
+          failedWork.add(item.workId);
+          if (diagnostic?.paused) paused += 1;
+          else deferred += 1;
+          continue;
+        }
         assertOpen();
         attempted += 1;
         try {
@@ -56,9 +77,16 @@ export function createDeveloperWorkProducer({ metadata, sessionReader, authority
           assertOpen();
           metadata.markDeveloperDelivery({ producerId: authority.producerId, eventId: item.eventId, receiverReceipt: receipt });
           delivered += 1;
-        } catch { if (closed) assertOpen(); failedWork.add(item.workId); }
+        } catch (error) {
+          if (closed) assertOpen();
+          const failure = deliveryFailure(error);
+          metadata.recordDeveloperDeliveryFailure({ producerId: authority.producerId, eventId: item.eventId, ...failure, observedAtMs: now() });
+          failedWork.add(item.workId);
+          if (failure.paused) paused += 1;
+          else deferred += 1;
+        }
       }
-      return Object.freeze({ delivered, attempted, pending: metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId, limit: 500 }).length });
+      return Object.freeze({ delivered, attempted, deferred, paused, pending: metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId, limit: 500 }).length });
     });
     flushing = run;
     run.finally(() => { if (flushing === run) flushing = null; }).catch(() => {});

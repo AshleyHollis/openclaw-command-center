@@ -47,3 +47,34 @@ test('a queued request followed by its resolution produces no push after the ann
     await rm(stateDir, { recursive: true, force: true });
   }
 });
+
+for (const quietDrain of [false, true]) test(`expired Developer Work request stays visible but cannot push (quiet drain: ${quietDrain})`, async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-notification-expiry-'));
+  const initial = quietDrain ? '2026-09-26T23:00:00.000Z' : '2026-09-26T10:00:00.000Z';
+  let clock = Date.parse(initial);
+  const expiresAt = quietDrain ? '2026-09-26T23:30:00.000Z' : '2026-09-26T09:00:00.000Z';
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { activity: true, attention: true } });
+  const attention = createAttentionService({ metadata, now: () => new Date(clock).toISOString() });
+  const developer = createDeveloperWorkService({ metadata, attention });
+  const candidates = [];
+  const notification = createNotificationService({ metadata, attentionService: attention, now: () => clock,
+    emitter: { async emit(candidate) { candidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } } });
+  try {
+    await developer.accept({ ...authority, event: { ...event(1, 'human_input_required', { ...request, expiresAt }), occurredAt: initial }, watermark: 1 });
+    const episode = attention.allEpisodes()[0];
+    assert.equal(episode.state, 'Active');
+    assert.equal(episode.evidenceFacts.requestExpiresAt, expiresAt);
+    await notification.reconcile();
+    assert.equal(candidates.length, 0);
+    if (quietDrain) {
+      assert.equal(notification.inspect().slots[0].status, 'queued');
+      clock = Date.parse('2026-09-27T07:00:00.000Z');
+      await notification.reconcile();
+      assert.equal(candidates.length, 0, 'expired queued requests cannot appear in a quiet summary or a direct push');
+      assert.equal(attention.allEpisodes()[0].state, 'Active', 'stale source context remains visible');
+    }
+  } finally {
+    notification.close(); developer.close(); attention.close(); metadata.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});

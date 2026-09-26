@@ -1,10 +1,17 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { developerEventDigest, normalizeDeveloperEvent } from '../developer-work/contract.mjs';
 
 const MAX_PENDING_RECEIPTS = 500;
 const MAX_WATERMARK_LEAD = 500;
 const terminalTypes = new Set(['request_resolved', 'request_withdrawn']);
 const requestOpeningTypes = new Set(['human_input_required', 'product_decision_required', 'approval_required', 'feature_ready_for_review', 'production_deployment_failed']);
+const deliveryDiagnosticId = (producerId, eventId) => `developer-delivery:${createHash('sha256').update(`${producerId}\u0000${eventId}`).digest('hex')}`;
+const deliveryDiagnostic = (db, row) => {
+  const entry = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(deliveryDiagnosticId(row.producer_id, row.event_id));
+  if (!entry) return null;
+  if (entry.operation_kind !== 'developer-work.delivery.v1' || entry.intent_digest !== row.event_digest || entry.transport_request_id !== row.event_id) throw new Error('Developer Work delivery diagnostic identity differs.');
+  return Object.freeze(JSON.parse(entry.result_identity));
+};
 
 export const developerWorkTablesSql = `
 CREATE TABLE developer_work_cursors (
@@ -113,12 +120,16 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
   const fail = (code, message = code) => { throw new ErrorType(code, message); };
   const readReceipt = (db, producerId, eventId) => db.prepare('SELECT * FROM developer_work_receipts WHERE producer_id = ? AND event_id = ?').get(producerId, eventId);
 
-  service.acceptDeveloperEvent = ({ producerId, event, watermark, acceptedAt = new Date().toISOString() } = {}) => {
+  service.acceptDeveloperEvent = ({ producerId, event, watermark, assertAuthorityCurrent, acceptedAt = new Date().toISOString() } = {}) => {
     if (typeof producerId !== 'string' || !producerId.trim() || !event || event.schemaVersion !== 1 || typeof event.eventId !== 'string' || typeof event.workId !== 'string' || !Number.isSafeInteger(event.workRevision) || event.workRevision < 1 || typeof acceptedAt !== 'string' || Number.isNaN(Date.parse(acceptedAt))) fail('developer-event-invalid');
     if (watermark !== undefined && (!Number.isSafeInteger(watermark) || watermark < event.workRevision)) fail('delivery-watermark-invalid');
     const eventDigest = developerEventDigest(event);
     const eventJson = JSON.stringify(event);
     return mutate(null, db => {
+      if (assertAuthorityCurrent !== undefined) {
+        if (typeof assertAuthorityCurrent !== 'function') fail('developer-event-invalid');
+        assertAuthorityCurrent();
+      }
       const announceWatermark = () => {
         if (watermark === undefined) return;
         const cursor = db.prepare('SELECT revision FROM developer_work_cursors WHERE producer_id = ? AND work_id = ?').get(producerId, event.workId);
@@ -206,7 +217,7 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
     return row ? Object.freeze({ schemaVersion: 1, producerId: row.producer_id, workId: row.work_id, requestId: row.request_id, kind: row.kind, revision: row.revision, state: row.state, lastEventId: row.last_event_id }) : null;
   });
 
-  const producerRow = row => row && Object.freeze({
+  const producerRow = (row, db) => row && Object.freeze({
     producerId: row.producer_id,
     logicalOperationId: row.logical_operation_id,
     eventId: row.event_id,
@@ -215,7 +226,8 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
     eventDigest: row.event_digest,
     deliveryState: row.delivery_state,
     event: Object.freeze(JSON.parse(row.event_json)),
-    receiverReceipt: row.receiver_receipt_json ? Object.freeze(JSON.parse(row.receiver_receipt_json)) : null
+    receiverReceipt: row.receiver_receipt_json ? Object.freeze(JSON.parse(row.receiver_receipt_json)) : null,
+    deliveryDiagnostic: db ? deliveryDiagnostic(db, row) : null
   });
 
   service.submitDeveloperWork = ({ authority, logicalOperationId, draft, assertSourceCurrent } = {}) => {
@@ -226,7 +238,7 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       const old = db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND logical_operation_id = ?').get(authority.producerId, logicalOperationId);
       if (old) {
         if (old.intent_digest !== intentDigest) fail('developer-producer-conflict', 'Logical operation ID was reused with changed intent.');
-        return producerRow(old);
+        return producerRow(old, db);
       }
       if (db.prepare("SELECT count(*) AS pending FROM developer_work_outbox WHERE producer_id = ? AND delivery_state = 'pending'").get(authority.producerId).pending >= MAX_PENDING_RECEIPTS) fail('developer-producer-backpressure');
       const current = db.prepare('SELECT revision FROM developer_work_producer_cursors WHERE producer_id = ? AND work_id = ?').get(authority.producerId, draft.workId);
@@ -257,18 +269,51 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       const createdAt = new Date().toISOString();
       db.prepare(`INSERT INTO developer_work_outbox (producer_id, logical_operation_id, event_id, work_id, work_revision, intent_digest, event_digest, event_json, delivery_state, receiver_receipt_json, created_at, delivered_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL)`).run(authority.producerId, logicalOperationId, event.eventId, event.workId, revision, intentDigest, developerEventDigest(event), JSON.stringify(event), createdAt);
-      return producerRow(db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND logical_operation_id = ?').get(authority.producerId, logicalOperationId));
+      return producerRow(db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND logical_operation_id = ?').get(authority.producerId, logicalOperationId), db);
     });
   };
 
   service.listPendingDeveloperDeliveries = ({ producerId, limit = 100 } = {}) => {
     if (typeof producerId !== 'string' || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) fail('developer-producer-invalid');
-    return inspect(db => Object.freeze(db.prepare("SELECT * FROM developer_work_outbox WHERE producer_id = ? AND delivery_state = 'pending' ORDER BY work_id, work_revision LIMIT ?").all(producerId, limit).map(producerRow)));
+    return inspect(db => Object.freeze(db.prepare("SELECT * FROM developer_work_outbox WHERE producer_id = ? AND delivery_state = 'pending' ORDER BY work_id, work_revision LIMIT ?").all(producerId, limit).map(row => producerRow(row, db))));
   };
 
   service.getDeveloperProducerEvent = ({ producerId, logicalOperationId } = {}) => {
     if (typeof producerId !== 'string' || typeof logicalOperationId !== 'string') fail('developer-producer-invalid');
-    return inspect(db => producerRow(db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND logical_operation_id = ?').get(producerId, logicalOperationId)));
+    return inspect(db => producerRow(db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND logical_operation_id = ?').get(producerId, logicalOperationId), db));
+  };
+
+  service.recordDeveloperDeliveryFailure = ({ producerId, eventId, code, paused = false, observedAtMs = Date.now() } = {}) => {
+    if (typeof producerId !== 'string' || typeof eventId !== 'string' || typeof code !== 'string' || !/^[a-z0-9-]{1,80}$/u.test(code) || typeof paused !== 'boolean' || !Number.isSafeInteger(observedAtMs) || observedAtMs < 0) fail('developer-producer-invalid');
+    return mutate(null, db => {
+      const row = db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND event_id = ?').get(producerId, eventId);
+      if (!row) fail('developer-event-missing');
+      if (row.delivery_state === 'delivered') return producerRow(row, db);
+      const previous = deliveryDiagnostic(db, row);
+      const attemptCount = Math.min(1000, (previous?.attemptCount ?? 0) + 1);
+      const baseMs = Math.min(6 * 60 * 60_000, 60_000 * 2 ** Math.min(attemptCount - 1, 8));
+      const jitter = createHash('sha256').update(`${producerId}\u0000${eventId}\u0000${attemptCount}`).digest().readUInt32BE(0) % Math.max(1, Math.floor(baseMs / 5));
+      const diagnostic = { attemptCount, lastErrorCode: code, paused, nextAttemptAtMs: paused ? null : observedAtMs + baseMs + jitter, updatedAtMs: observedAtMs };
+      const id = deliveryDiagnosticId(producerId, eventId);
+      const timestamp = new Date(observedAtMs).toISOString();
+      db.prepare(`INSERT INTO operation_journal (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
+        VALUES (?, ?, ?, 'developer-work.delivery.v1', ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(logical_operation_id) DO UPDATE SET state = excluded.state, result_status = excluded.result_status, result_identity = excluded.result_identity, observed_revision = excluded.observed_revision, updated_at = excluded.updated_at`).run(id, eventId, row.event_digest, paused ? 'conflict' : 'unknown', paused ? 'paused' : 'retry-wait', JSON.stringify(diagnostic), String(attemptCount), timestamp, timestamp);
+      return producerRow(row, db);
+    });
+  };
+
+  service.resumeDeveloperDelivery = ({ producerId, eventId, observedAtMs = Date.now() } = {}) => {
+    if (typeof producerId !== 'string' || typeof eventId !== 'string' || !Number.isSafeInteger(observedAtMs) || observedAtMs < 0) fail('developer-producer-invalid');
+    return mutate(null, db => {
+      const row = db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND event_id = ?').get(producerId, eventId);
+      if (!row) fail('developer-event-missing');
+      const current = deliveryDiagnostic(db, row);
+      if (row.delivery_state !== 'pending' || !current?.paused) return producerRow(row, db);
+      const diagnostic = { ...current, paused: false, nextAttemptAtMs: observedAtMs, updatedAtMs: observedAtMs };
+      db.prepare("UPDATE operation_journal SET state = 'unknown', result_status = 'manual-retry', result_identity = ?, updated_at = ? WHERE logical_operation_id = ? AND operation_kind = 'developer-work.delivery.v1'").run(JSON.stringify(diagnostic), new Date(observedAtMs).toISOString(), deliveryDiagnosticId(producerId, eventId));
+      return producerRow(row, db);
+    });
   };
 
   service.markDeveloperDelivery = ({ producerId, eventId, receiverReceipt } = {}) => {
@@ -280,10 +325,11 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       if (row.delivery_state === 'delivered') {
         const prior = JSON.parse(row.receiver_receipt_json);
         if (prior.producerId !== receiverReceipt.producerId || prior.eventId !== receiverReceipt.eventId || prior.eventDigest !== receiverReceipt.eventDigest) fail('developer-receipt-conflict');
-        return producerRow(row);
+        return producerRow(row, db);
       }
       db.prepare("UPDATE developer_work_outbox SET delivery_state = 'delivered', receiver_receipt_json = ?, delivered_at = ? WHERE producer_id = ? AND event_id = ?").run(JSON.stringify(receiverReceipt), new Date().toISOString(), producerId, eventId);
-      return producerRow(db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND event_id = ?').get(producerId, eventId));
+      db.prepare("UPDATE operation_journal SET state = 'applied', result_status = 'delivered', updated_at = ? WHERE logical_operation_id = ? AND operation_kind = 'developer-work.delivery.v1'").run(new Date().toISOString(), deliveryDiagnosticId(producerId, eventId));
+      return producerRow(db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND event_id = ?').get(producerId, eventId), db);
     });
   };
 

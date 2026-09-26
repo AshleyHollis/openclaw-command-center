@@ -36,7 +36,8 @@ test('separate DEV and LIVE stores survive a lost response without duplicating A
     if (loseFirstReply) { loseFirstReply = false; throw new Error('reply lost after LIVE commit'); }
     return new Response(response.body, { status: response.statusCode, headers: response.headers });
   } });
-  const producer = createDeveloperWorkProducer({ metadata: dev, authority, sessionReader: () => ({ sessionId: session.sessionId, lifecycleRevision: session.lifecycleRevision }), receiver: transport });
+  let clock = Date.parse('2026-09-26T11:00:00.000Z');
+  const producer = createDeveloperWorkProducer({ metadata: dev, authority, sessionReader: () => ({ sessionId: session.sessionId, lifecycleRevision: session.lifecycleRevision }), receiver: transport, now: () => clock });
   try {
     const operationId = randomUUID();
     const draft = { schemaVersion: 1, workId: 'sample-feature', eventType: 'feature_ready_for_review', occurredAt: '2026-09-26T10:00:00.000Z', context: { projectAlias: 'sample-project', phase: 'reviewing' }, session,
@@ -44,6 +45,7 @@ test('separate DEV and LIVE stores survive a lost response without duplicating A
     const pending = await producer.submit({ logicalOperationId: operationId, draft });
     assert.equal(pending.deliveryState, 'pending');
     assert.equal(attention.list().episodes.length, 1);
+    clock = pending.deliveryDiagnostic.nextAttemptAtMs;
     const flushed = await producer.flush();
     assert.deepEqual({ delivered: flushed.delivered, attempted: flushed.attempted, pending: flushed.pending }, { delivered: 1, attempted: 1, pending: 0 });
     assert.equal(sends, 2);
@@ -58,7 +60,7 @@ test('separate DEV and LIVE stores survive a lost response without duplicating A
     assert.equal(blocked.deliveryState, 'pending');
     assert.equal(attention.list().episodes.length, 1);
     receiverEnv.SAMPLE_DEV_BEARER = credential;
-    assert.equal((await producer.flush()).delivered, 1);
+    assert.equal((await producer.flush({ resumePaused: true })).delivered, 1);
     assert.equal(attention.list().episodes.length, 2);
   } finally {
     producer.close(); receiver.close(); attention.close(); dev.close(); live.close();
