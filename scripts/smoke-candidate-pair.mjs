@@ -9,7 +9,7 @@ import { withIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, launchCandidateHost,
   parseCandidateHostDescriptor, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
-import { requestAuthenticatedGateway } from '../test/support/real-host-runtime.mjs';
+import { isGatewayStartupPending, requestAuthenticatedGateway } from '../test/support/real-host-runtime.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedFields = ['schemaVersion', 'candidatePairPath', 'inputTreeReceiptPath',
@@ -57,9 +57,19 @@ async function main() {
           throw error;
         }
       }, run.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 250 });
-      const read = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url,
-        credential: world.gatewayCredential, method: 'command-center.v1.topics.list',
-        params: { schemaVersion: 1 } });
+      let read;
+      await waitForConsecutiveReadiness(async (signal) => {
+        try {
+          read = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url,
+            credential: world.gatewayCredential, method: 'command-center.v1.topics.list',
+            params: { schemaVersion: 1 }, signal });
+          return true;
+        } catch (error) {
+          signal.throwIfAborted();
+          if (isGatewayStartupPending(error)) return false;
+          throw error;
+        }
+      }, run.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250 });
       assert.ok(read && typeof read === 'object', 'Authenticated plugin read returned no response');
       await assertRecordedChildTraffic(world);
       assertNoFatalHostOutput(run.diagnostics);
