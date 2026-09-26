@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { canonicalJson, materialEvidenceDigest, proposalIdentity } from './analysis-evidence.mjs';
+import { canonicalJson, materialEvidenceDigest, normalizeEvidenceFacts, proposalIdentity } from './analysis-evidence.mjs';
 import { orderProposals } from './analysis-policy.mjs';
 import { validateProposalContract } from './review-contracts.mjs';
 import { createTopicReviewApplicationService } from './review-application.mjs';
@@ -133,10 +133,11 @@ export class TopicReviewService {
       const replacementInput = { ...identityInput, evidenceFacts };
       const replacement = validateProposalContract({ ...replacementInput, proposalId: successorId }, { requireReady: true });
       if (replacement.proposalId === proposal.proposalId) throw Object.assign(new Error('An Adjust decision must change the intended operation.'), { code: 'conflict' });
+      const retainedEvidence = normalizeEvidenceFacts(replacement.evidenceFacts.map((fact) => ({ ...fact, observedAt: fact.observedAt ?? clockIso(this.now) })));
       const { evidenceFacts: _evidenceFacts, ...storedReplacement } = replacement;
       result = this.metadata.saveTopicProposal({ ...storedReplacement, predecessorId: proposal.proposalId, state: 'approved', decisionRevision: 1, materialEvidenceDigest: materialEvidenceDigest(replacement.evidenceFacts), updatedAt: clockIso(this.now) });
       this.metadata.saveTopicProposal({ ...proposal, schemaVersion: 1, state: 'superseded', successorId: replacement.proposalId, materialEvidenceDigest: proposal.materialEvidenceDigest, updatedAt: clockIso(this.now) });
-      this.metadata.setTopicAnalysisEvidence(replacement.proposalId, replacement.evidenceFacts.map((fact) => ({ ...fact, observedAt: fact.observedAt ?? clockIso(this.now) })));
+      this.metadata.setTopicAnalysisEvidence(replacement.proposalId, retainedEvidence);
       for (const dependent of this.metadata.listTopicProposals?.() ?? []) if ((dependent.dependencies ?? []).includes(proposal.proposalId) && !HIDDEN_TERMINAL.has(dependent.state)) this.metadata.saveTopicProposal({ ...dependent, schemaVersion: 1, revision: dependent.revision + 1, dependencies: dependent.dependencies.map((id) => id === proposal.proposalId ? replacement.proposalId : id), updatedAt: clockIso(this.now) });
     }
     const output = Object.freeze({ schemaVersion: 1, action: value.action, proposal: result });

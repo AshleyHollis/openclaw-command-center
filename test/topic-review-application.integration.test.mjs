@@ -10,6 +10,7 @@ import { createTopicReviewApplicationService } from '../src/topics/review-applic
 import { createTopicReviewService } from '../src/topics/review.mjs';
 import { createTopicService } from '../src/topics/service.mjs';
 import { createSourceReference } from '../src/sources/reference.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 const source = (topicId) => `source-application-${topicId}`;
 
@@ -201,7 +202,9 @@ test('safe verified compensation and Source Recovery are reported distinctly, an
   });
 });
 
-test('production Topic adapters preview and apply create, archive, restore, and recategorize with restart-safe replay', async () => {
+test('production Topic adapters preview and apply create, archive, restore, and recategorize with restart-safe replay', async (t) => {
+  const releaseHostFileAccess = installHostFileAccessFixture();
+  t.after(releaseHostFileAccess);
   await fixture(async ({ metadata, root }) => {
     const topics = await productionTopics(metadata, root);
     const seed = async (name, category = 'project') => (await topics.create({ name, paraCategory: category, logicalOperationId: randomUUID() })).topic.topicId;

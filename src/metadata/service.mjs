@@ -48,7 +48,7 @@ import {
   readRecoveryMaterial,
   verifyRollbackMaterial
 } from './recovery.mjs';
-import { canonicalJson, proposalIdentity, sanitizedPublicValue } from '../topics/analysis-evidence.mjs';
+import { canonicalJson, normalizeEvidenceFacts, proposalIdentity, sanitizedPublicValue } from '../topics/analysis-evidence.mjs';
 import { topicAnalysisCronDeclaration } from '../topics/analysis-schedule.mjs';
 import { IMPORTED_HISTORY_OPERATION, NATIVE_HISTORY_OPERATION, installImportedHistoryMetadata } from './imported-history.mjs';
 import { TOPIC_BOOTSTRAP_OPERATION, installTopicBootstrapMetadata } from './topic-bootstrap.mjs';
@@ -1953,7 +1953,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   };
   service.setTopicAnalysisEvidence = (proposalId, items = []) => mutate(null, (db) => {
     const id = requiredString(proposalId, 'proposalId');
-    if (!Array.isArray(items) || items.length > 8) throw new CommandCenterMetadataError('invalid-value', 'A proposal may retain at most eight evidence facts.');
+    try { normalizeEvidenceFacts(items); } catch (error) { throw new CommandCenterMetadataError('invalid-value', error.message); }
     if (!db.prepare('SELECT 1 FROM topic_proposals WHERE proposal_id = ?').get(id)) throw new CommandCenterMetadataError('not-found', 'Topic proposal was not found.');
     if (new Set(items.map((item) => item?.evidenceId)).size !== items.length) throw new CommandCenterMetadataError('invalid-value', 'Evidence identities must be distinct.');
     db.prepare('UPDATE topic_analysis_evidence SET current = 0 WHERE proposal_id = ?').run(id);
