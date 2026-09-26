@@ -9,7 +9,9 @@ export const JOURNEY_CLAIMS = Object.freeze({
       'src/open-loops/source-intake-tool.mjs', 'src/open-loops/email-reader-plan.mjs',
       'src/open-loops/reminder-coordinator.mjs', 'src/dashboard/service.mjs',
       'src/metadata/service.mjs', 'src/native-ui/attention-page.mjs',
-      'src/plugin.mjs', 'src/plugin-service.mjs', 'src/migration/reconcile-cli.mjs'
+      'src/plugin.mjs', 'src/plugin-service.mjs', 'src/migration/reconcile-cli.mjs',
+      'src/qualification-evidence.mjs', 'src/test-selection.mjs',
+      'test/real-host.acceptance.test.mjs', 'test/support/fictional-openai-model.mjs'
     ]),
     real: Object.freeze(['installed-plugin', 'pinned-host', 'sqlite', 'native-control-ui', 'registered-intake-commands']),
     mocked: Object.freeze(['fictional-model', 'fictional-outlook'])

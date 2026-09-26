@@ -22,6 +22,8 @@ test('changed production owners select the installed mixed-email journey once', 
   assert.deepEqual(selectAffectedJourneyClaims(['src/open-loops/intake-accounting.mjs', 'src/dashboard/service.mjs']),
     [{ id: 'accounted-mixed-email', scenario: 'diagnostic-accounted-mixed-email' }]);
   assert.deepEqual(selectAffectedJourneyClaims(['docs/agents/release-policy.md']), []);
+  assert.deepEqual(selectAffectedJourneyClaims(['src/qualification-evidence.mjs']),
+    [{ id: 'accounted-mixed-email', scenario: 'diagnostic-accounted-mixed-email' }]);
   assert.deepEqual(planAffectedJourneyEvidence(['src/open-loops/intake-accounting.mjs', 'src/unknown-owner.mjs']), {
     claims: [{ id: 'accounted-mixed-email', scenario: 'diagnostic-accounted-mixed-email' }],
     unmatchedPaths: ['src/unknown-owner.mjs']
