@@ -4,14 +4,17 @@ import { clarificationInterpretationOperationId } from './clarification-context.
 
 const actionKeys = ['outcome', 'decision', 'paymentState', 'paidAmount', 'currency', 'reviewAt', 'dueAt', 'dueDate', 'dueTimeZone'];
 
-function hasPendingFollowUp(metadata, receipt) {
-  if (!receipt?.current) return false;
+function followUpState(metadata, receipt) {
+  if (!receipt?.current) return 'superseded';
   const reminder = receipt.followUpIntent;
+  const reminderReview = ['blocked', 'conflict'].includes(reminder?.action);
   const reminderPending = reminder && !['none', 'blocked', 'conflict'].includes(reminder.action)
     && metadata.getOperation(reminder.logicalOperationId)?.state !== 'applied';
   const note = metadata.getOpenLoopSupportingNoteIntent(receipt.logicalOperationId);
+  const noteReview = note?.current && (note.target.status === 'conflict' || note.outcome?.status === 'conflict');
   const notePending = note?.current && note.target.status === 'ready' && note.outcome?.status !== 'completed';
-  return Boolean(reminderPending || notePending);
+  if (reminderPending || notePending) return 'follow-up-pending';
+  return reminderReview || noteReview ? 'review-required' : 'recovered';
 }
 
 export function createClarificationWorker({ metadata, complete, interpret, followUp, assertCurrent, notBefore, now = () => new Date().toISOString() }) {
@@ -58,12 +61,13 @@ export function createClarificationWorker({ metadata, complete, interpret, follo
     const result = await interpret({ loopId: context.loopId, expectedRevision: context.expectedRevision,
       clarificationObservationId: context.clarificationObservationId, processorVersion: context.processorVersion, ...action });
     const receipt = metadata.getOpenLoopUserActionReceipt?.(clarificationInterpretationOperationId(item.clarificationObservationId));
-    const pendingFollowUp = receipt && hasPendingFollowUp(metadata, receipt);
-    if (receipt && !pendingFollowUp) metadata.recordClarificationWorkerDisposition?.({ loopId: item.loopId,
+    const followUpStatus = receipt ? followUpState(metadata, receipt) : null;
+    if (receipt && ['recovered', 'review-required'].includes(followUpStatus)) metadata.recordClarificationWorkerDisposition?.({ loopId: item.loopId,
       clarificationObservationId: item.clarificationObservationId,
-      status: 'recovered', updatedAt: now() });
+      status: followUpStatus, ...(followUpStatus === 'review-required' ? { code: 'follow-up-conflict' } : {}), updatedAt: now() });
     return Object.freeze({ loopId: item.loopId,
-      status: pendingFollowUp ? 'follow-up-pending' : result?.disposition ?? result?.status ?? 'unknown' });
+      status: followUpStatus === 'follow-up-pending' || followUpStatus === 'review-required'
+        ? followUpStatus : result?.disposition ?? result?.status ?? 'unknown' });
   }
 
   async function runPage({ cursor, limit = 5 } = {}) {
@@ -106,15 +110,23 @@ export function createClarificationWorker({ metadata, complete, interpret, follo
       if (!clarification || Date.parse(clarification.observedAt) < Date.parse(notBefore)
         || proposal?.loopId !== item.loop.loopId || proposal.proposal?.outcome !== 'clear') continue;
       const receipt = metadata.getOpenLoopUserActionReceipt(item.logicalOperationId);
-      if (!hasPendingFollowUp(metadata, receipt)) continue;
+      const before = followUpState(metadata, receipt);
+      if (before === 'recovered' || before === 'superseded') continue;
+      if (before === 'review-required') {
+        metadata.recordClarificationWorkerDisposition?.({ loopId: receipt.loop.loopId,
+          clarificationObservationId: clarificationId, status: 'review-required', code: 'follow-up-conflict', updatedAt: now() });
+        results.push(Object.freeze({ loopId: receipt.loop.loopId, status: 'review-required' }));
+        continue;
+      }
       try {
         const result = await followUp(receipt);
-        if (!hasPendingFollowUp(metadata, metadata.getOpenLoopUserActionReceipt(item.logicalOperationId))) metadata.recordClarificationWorkerDisposition?.({ loopId: receipt.loop.loopId,
+        const after = followUpState(metadata, metadata.getOpenLoopUserActionReceipt(item.logicalOperationId));
+        if (['recovered', 'review-required'].includes(after)) metadata.recordClarificationWorkerDisposition?.({ loopId: receipt.loop.loopId,
           clarificationObservationId: clarificationId,
-          status: 'recovered', updatedAt: now() });
+          status: after, ...(after === 'review-required' ? { code: 'follow-up-conflict' } : {}), updatedAt: now() });
         results.push(Object.freeze({ loopId: receipt.loop.loopId,
-          status: hasPendingFollowUp(metadata, metadata.getOpenLoopUserActionReceipt(item.logicalOperationId))
-            ? 'follow-up-pending' : result?.disposition ?? result?.status ?? 'recovered' }));
+          status: after === 'follow-up-pending' || after === 'review-required'
+            ? after : result?.disposition ?? result?.status ?? 'recovered' }));
       } catch (error) {
         if (error?.code === 'capability-unavailable') throw error;
         const code = typeof error?.code === 'string' && /^[a-z0-9-]{1,80}$/u.test(error.code) ? error.code : 'clarification-follow-up-failed';

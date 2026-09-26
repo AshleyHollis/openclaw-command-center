@@ -160,6 +160,21 @@ test('clarification worker resumes the accepted proposal after an interrupted ef
       } });
     assert.equal((await second.processOne(item)).status, 'applied');
     assert.equal(modelCalls, 1);
+    for (const conflict of ['reminder', 'note']) {
+      const dispositions = [];
+      const conflictingMetadata = { ...metadata,
+        getOpenLoopUserActionReceipt: () => ({ current: true, logicalOperationId: 'fictional-interpreted-decision',
+          ...(conflict === 'reminder' ? { followUpIntent: { action: 'conflict' } } : {}) }),
+        getOpenLoopSupportingNoteIntent: () => conflict === 'note'
+          ? { current: true, target: { status: 'conflict' } } : null,
+        recordClarificationWorkerDisposition: value => dispositions.push(value) };
+      const conflicted = createClarificationWorker({ metadata: conflictingMetadata,
+        notBefore: '2026-09-22T00:00:00.000Z', assertCurrent() {},
+        complete: async () => { throw new Error('accepted proposal must be reused'); },
+        interpret: async () => ({ disposition: 'applied' }) });
+      assert.equal((await conflicted.processOne(item)).status, 'review-required');
+      assert.equal(dispositions.at(-1).status, 'review-required', `${conflict} conflict cannot be recorded as recovered`);
+    }
     const outside = createClarificationWorker({ metadata, notBefore: '2026-09-23T00:00:00.000Z', assertCurrent() {},
       complete: async () => { throw new Error('outside admission window'); }, interpret: async () => { throw new Error('outside admission window'); } });
     assert.equal((await outside.processOne(item)).status, 'outside-admission-window');
@@ -217,7 +232,7 @@ test('configured service worker applies one accepted fictional clarification wit
     await delay(20);
     releaseModel();
     const [page, replay] = await Promise.all([firstRun, overlappingRun]);
-    assert.equal(page.results[0].status, 'applied');
+    assert.equal(page.results[0].status, 'review-required', 'the decision commits, but the missing supporting Note identity needs review');
     assert.deepEqual(replay.results, [], 'the overlapping request should observe the accepted proposal without another model call');
     assert.equal(modelCalls, 1);
     const resolved = metadata.getOpenLoop(decision.loopId);
