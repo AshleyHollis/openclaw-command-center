@@ -17,6 +17,7 @@ import { withNoteFilesystemOwner } from '../src/sources/note-filesystem-owner.mj
 import { createCommitmentCaptureService } from '../src/open-loops/commitment-capture.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 import { build, distRoot } from '../src/build.mjs';
+import { FIRST_LIVE_FEATURES } from '../src/release-scope.mjs';
 
 const qualifyOpenLoop = (service, method, params) => invokeBridgeMethod(service, method, params, 'fictional-qualification-request', 'fictional-operator');
 const qualifyRegisteredOpenLoop = async (host, method, params) => (await host.authenticatedGatewayRequest(method, params)).result;
@@ -50,6 +51,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
   const lifecycles = [];
   const sessionCatalogs = [];
   const candidates = [];
+  const clears = [];
   const tools = new Map();
   let currentBindingAvailable = bindingAvailable;
   let revoked = false;
@@ -68,7 +70,11 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     notifications: {
       registerEmitter(declaration) {
         declarations.push(structuredClone(declaration));
-        return { async bindCurrentOperator() { bindingCaptures += 1; return currentBindingAvailable ? binding : undefined; } };
+        return {
+          async bindCurrentOperator() { bindingCaptures += 1; return currentBindingAvailable ? binding : undefined; },
+          async emit(candidate) { candidates.push(structuredClone(candidate)); return { status: 'sent', attempted: 1, delivered: 1, failed: 0, ambiguous: 0 }; },
+          async clear(input) { clears.push(structuredClone(input)); return { status: 'cleared', attempted: 1, cleared: 1, failed: 0, ambiguous: 0 }; }
+        };
       }
     },
     registerHttpRoute(value) { routes.push(value); },
@@ -78,7 +84,7 @@ function fakePublishedApi(stateDir, { bindingAvailable = false, pluginConfig = {
     registerService(service) { services.push(service); }
   };
   return {
-    api, declarations, descriptors, routes, methods, services, lifecycles, sessionCatalogs, candidates, tools,
+    api, declarations, descriptors, routes, methods, services, lifecycles, sessionCatalogs, candidates, clears, tools,
     async authenticatedGatewayRequest(name, params) {
       const handler = methods.get(name);
       if (!handler) throw new Error(`Missing fake Gateway method ${name}`);
@@ -942,6 +948,42 @@ test('real first-live plugin activates Attention without acquiring the deferred 
     assert.ok(service.dashboardService);
     assert.equal(host.candidates.length, 0);
     await service.stop();
+  } finally {
+    await host.services[0]?.stop?.();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('candidate notification gate mounts the registered owner and clears a resolved DEV request', { skip: !FIRST_LIVE_FEATURES.notifications && 'Requires the sealed candidate-only notification overlay.' }, async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-candidate-notifications-'));
+  const host = fakePublishedApi(stateDir);
+  const requestId = 'fictional-input-a';
+  const session = { agentId: 'fictional-agent', sessionKey: 'agent:fictional-agent:main', sessionId: 'fictional-session', lifecycleRevision: 'fictional-lifecycle' };
+  const request = { requestId, kind: 'input', expectedRequestRevision: 0, summary: 'Fictional input required', question: 'Fictional private question?' };
+  const base = { schemaVersion: 1, workId: 'fictional-work', context: { projectAlias: 'fictional-project', phase: 'waiting' }, session };
+  try {
+    plugin.register(host.api);
+    assert.equal(host.declarations.length, 1);
+    const service = host.services[0];
+    await service.start();
+    assert.ok(service.notificationService);
+    const authority = { producerId: 'fictional-dev', role: 'worker', allowedProjects: ['fictional-project'] };
+    const first = await service.developerWorkService.accept({ ...authority, watermark: 1, event: {
+      ...base, eventId: randomUUID(), workRevision: 1, eventType: 'human_input_required', occurredAt: new Date().toISOString(), request
+    } });
+    assert.equal(first.projectionState, 'projected');
+    await service.notificationReconcile();
+    assert.equal(host.candidates.length, 1);
+    assert.equal(host.bindingCaptures, 0, 'background delivery must not borrow request-scoped operator authority');
+    assert.equal(JSON.stringify(host.candidates[0]).includes(request.question), false);
+    assert.equal(host.candidates[0].deepLink.destinationId, 'attention-card');
+    const resolved = await service.developerWorkService.accept({ ...authority, watermark: 2, event: {
+      ...base, eventId: randomUUID(), workRevision: 2, eventType: 'request_resolved', occurredAt: new Date().toISOString(),
+      request: { ...request, expectedRequestRevision: 1 }, outcome: { code: 'answered', requestId }
+    } });
+    assert.equal(resolved.projectionState, 'projected');
+    await service.notificationReconcile();
+    assert.equal(host.clears.length, 1);
   } finally {
     await host.services[0]?.stop?.();
     await rm(stateDir, { recursive: true, force: true });
