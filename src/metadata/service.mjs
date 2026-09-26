@@ -1198,6 +1198,15 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   };
 
   service.getProjectionBookkeeping = (projectionId) => readOne('SELECT * FROM projection_bookkeeping WHERE projection_id = ?', [requiredString(projectionId, 'projectionId')], mapProjection) || null;
+  // Serialize core filesystem publication and recovery with the checkpoint commit.
+  service.withCoreProjectionPublication = (operation) => mutate(null, (db) => operation({
+    checkpoint: () => mapProjection(db.prepare('SELECT * FROM projection_bookkeeping WHERE projection_id = ?').get(commandCenterProjectionId)) || null,
+    commit: ({ sourceRevision, inputDigest, updatedAt }) => {
+      if (!isNonBlankString(sourceRevision) || !sha256DigestPattern.test(inputDigest)) throw new CommandCenterMetadataError('invalid-value', 'Core projection bookkeeping is invalid.');
+      db.prepare('INSERT INTO projection_bookkeeping (projection_id, source_revision, input_digest, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(projection_id) DO UPDATE SET source_revision = excluded.source_revision, input_digest = excluded.input_digest, updated_at = excluded.updated_at').run(commandCenterProjectionId, sourceRevision, inputDigest, timestamp(updatedAt, 'updatedAt'));
+      return mapProjection(db.prepare('SELECT * FROM projection_bookkeeping WHERE projection_id = ?').get(commandCenterProjectionId));
+    }
+  }));
   service.listProjectionBookkeeping = () => readMany('SELECT * FROM projection_bookkeeping ORDER BY projection_id', [], mapProjection);
 
   service.commitIntakeAccountingOperation = (input) => {
