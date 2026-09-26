@@ -24,6 +24,18 @@ export function createClarificationWorker({ metadata, complete, interpret, follo
 
   async function processOne(item) {
     assertCurrent();
+    const current = metadata.getOpenLoop(item.loopId);
+    if (current?.revision === item.expectedRevision
+      && current.attention?.pendingClarificationId === item.clarificationObservationId
+      && current.attention?.priorUserActionOperationId) {
+      const priorNote = metadata.getOpenLoopSupportingNoteIntent(current.attention.priorUserActionOperationId);
+      if (priorNote?.outcome?.status === 'unknown') {
+        metadata.recordClarificationWorkerDisposition?.({ loopId: item.loopId,
+          clarificationObservationId: item.clarificationObservationId, status: 'review-required',
+          code: 'prior-note-publication-unknown', updatedAt: now() });
+        return Object.freeze({ loopId: item.loopId, status: 'review-required', code: 'prior-note-publication-unknown' });
+      }
+    }
     if (metadata.getClarificationWorkerDisposition?.(item.clarificationObservationId)?.status === 'review-required')
       return Object.freeze({ loopId: item.loopId, status: 'review-required' });
     const context = loadPendingClarificationContext(metadata, item);

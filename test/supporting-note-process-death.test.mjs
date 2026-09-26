@@ -9,6 +9,7 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
 import { createCommitmentCaptureService } from '../src/open-loops/commitment-capture.mjs';
 import { prepareSupportingNoteAnnotation } from '../src/open-loops/supporting-note-annotation.mjs';
+import { createClarificationWorker } from '../src/open-loops/clarification-worker.mjs';
 import { createMetadataService } from '../src/plugin-service.mjs';
 import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
@@ -90,6 +91,14 @@ for (const clarifyBeforeRecovery of [false, true]) test(
         assert.equal(prior.outcome.reason, 'prior-note-publication-unverified');
         assert.equal(await readFile(path.join(root, notePath), 'utf8'), desired);
         assert.equal((await stat(path.join(root, notePath))).ino, published.ino);
+        const worker = createClarificationWorker({ metadata: service.sourceService.metadata,
+          notBefore: '2026-09-22T00:00:00.000Z', assertCurrent() {},
+          complete: async () => { throw new Error('Unverified Note publication must not reach interpretation.'); },
+          interpret: async () => { throw new Error('Unverified Note publication must not produce a decision.'); } });
+        const blocked = await worker.processOne({ loopId: words.loop.loopId, expectedRevision: words.loop.revision,
+          clarificationObservationId: words.loop.attention.pendingClarificationId });
+        assert.equal(blocked.status, 'review-required');
+        assert.equal(blocked.code, 'prior-note-publication-unknown');
         const stopped = await service.openLoopsResumeFollowUp({ schemaVersion: 1, logicalOperationId: decisionId,
           authenticatedOperatorId: 'fictional-operator' }, { gateway: { request: async () => { throw new Error('No native Reminder is needed.'); } } });
         assert.equal(stopped.supportingNote.status, 'superseded');
