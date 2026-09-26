@@ -16,6 +16,7 @@ import {
   conventionAspects,
   conventionStates,
   inspectSchema,
+  inspectStoredIntegrity,
   metadataSchemaSql,
   metadataSchemaV1ToV2Sql,
   metadataSchemaV2Sql,
@@ -325,6 +326,11 @@ function inspectSchemaOneDatabase(database, schemaVersion) {
     return coreFailure('malformed-schema', 'The Command Center database does not match the supported schema shape.', 'Restore or migrate the database through the separate recovery workflow.', schemaVersion);
   }
   if (!shape.valid) return coreFailure('malformed-schema', 'The Command Center database does not match the supported schema shape.', 'Restore or migrate the database through the separate recovery workflow.', schemaVersion);
+  try {
+    if (!inspectStoredIntegrity(database)) return coreFailure('integrity-failure', 'The Command Center database failed stored integrity checks for identities or relationships.', 'Restore a verified database before allowing metadata mutations.', schemaVersion);
+  } catch {
+    return coreFailure('integrity-failure', 'The Command Center database failed stored integrity inspection.', 'Restore a verified database before allowing metadata mutations.', schemaVersion);
+  }
   return null;
 }
 
