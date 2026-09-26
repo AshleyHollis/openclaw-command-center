@@ -157,9 +157,18 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
         if (!predecessor || predecessor.logicalOperationId !== assertLogicalOperationId(predecessor.logicalOperationId)
           || !Number.isSafeInteger(predecessor.loopRevision) || predecessor.loopRevision >= intent.loopRevision
           || !predecessor.declaration) throw sourceError('invalid-request', 'Pending native create identity is unavailable.');
-        const recovered = await reminder.recoverBound({ schemaVersion: 1, referenceId: intent.referenceId,
+        let recovered = await reminder.recoverBound({ schemaVersion: 1, referenceId: intent.referenceId,
           logicalOperationId: predecessor.logicalOperationId, declaration: predecessor.declaration });
-        if (recovered.status === 'not-applied') return Object.freeze({ schemaVersion: 1, status: 'pending', logicalOperationId: intent.logicalOperationId, plan: intent });
+        if (recovered.status === 'not-applied') {
+          // The predecessor was durably accepted but died before dispatch. Its
+          // exact conditional ID must be established before the successor can
+          // cancel or retime it; another in-flight attempt may still own it.
+          recovered = await reminder.createBound({ schemaVersion: 1, referenceId: intent.referenceId,
+            logicalOperationId: predecessor.logicalOperationId, declaration: predecessor.declaration });
+        }
+        if (recovered.status !== 'applied') return Object.freeze({ schemaVersion: 1,
+          status: recovered.status === 'not-applied' ? 'pending' : recovered.status,
+          logicalOperationId: intent.logicalOperationId, plan: intent });
         const expectedConfigRevision = nonBlank(recovered.value?.job?.configRevision, 'recoveredConfigRevision');
         receipt = intent.action === 'cancel-pending-create'
           ? await reminder.complete({ schemaVersion: 1, referenceId: intent.referenceId,
@@ -181,15 +190,16 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
       const currentLoop = metadata.getOpenLoop?.(loop.loopId);
       const latest = metadata.getCurrentOpenLoopUserActionReceipt?.(loop.loopId);
       if (currentLoop?.revision !== loop.revision) {
-        const successorOwnsPredecessor = latest.followUpIntent?.predecessor?.logicalOperationId === intent.logicalOperationId;
-        const canHandoff = (intent.action === 'create' && ['cancel-pending-create', 'reschedule-pending-create'].includes(latest.followUpIntent?.action))
-          || (intent.action === 'reschedule' && ['cancel-after-update', 'reschedule-after-update'].includes(latest.followUpIntent?.action));
+        const successorOwnsPredecessor = latest?.followUpIntent?.predecessor?.logicalOperationId === intent.logicalOperationId;
+        const canHandoff = (intent.action === 'create' && ['cancel-pending-create', 'reschedule-pending-create'].includes(latest?.followUpIntent?.action))
+          || (intent.action === 'reschedule' && ['cancel-after-update', 'reschedule-after-update'].includes(latest?.followUpIntent?.action));
         if (successorOwnsPredecessor && canHandoff) {
           const successor = await this.reconcileAccepted({ loop: latest.loop, followUpIntent: latest.followUpIntent });
           return Object.freeze({ schemaVersion: 1, status: 'superseded', logicalOperationId: intent.logicalOperationId,
             plan: intent, successorStatus: successor.status });
         }
-        throw sourceError('conflict', 'A newer decision superseded this native Reminder follow-up after dispatch.');
+        return Object.freeze({ schemaVersion: 1, status: 'unknown', logicalOperationId: intent.logicalOperationId,
+          plan: intent, reason: 'open-loop-updated-after-dispatch' });
       }
       return Object.freeze({ ...receipt, plan: intent });
     },

@@ -6,6 +6,7 @@ import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { planTransactionEvent } from '../src/open-loops/transaction-intake.mjs';
 import { projectQuietAttention } from '../src/open-loops/quiet-attention.mjs';
+import { createOpenLoopReminderCoordinator } from '../src/open-loops/reminder-coordinator.mjs';
 
 const now = '2026-09-20T01:00:00.000Z';
 function event(overrides = {}) {
@@ -65,6 +66,64 @@ test('split delivery stays open and delivery completion remains distinct from in
     assert.equal(installed.loop.state, 'resolved');
     assert.equal(projectQuietAttention(installed.loop, { now }).group, 'terminal');
   });
+});
+
+test('source completion keeps a saved active Reminder visible until the user resolves it', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-order-follow-up-'));
+  const service = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+  try {
+    service.createTopic({ topicId: 'fictional-order-topic', paraCategory: 'project', lifecycle: 'active' });
+    const placed = ingest(service, 'follow-up-order-place', event({ topicId: 'fictional-order-topic', installationRequired: false }));
+    const deferred = service.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'follow-up-order-defer',
+      loopId: placed.loop.loopId, expectedRevision: placed.loop.revision, decision: 'defer',
+      reviewAt: '2026-10-02T00:00:00.000Z', actorId: 'fictional-operator',
+      rationale: 'Check the fictional delivery.', updatedAt: '2026-09-20T01:10:00.000Z' });
+    let job;
+    const gateway = { async request(method, params) {
+      if (method === 'cron.list') return { jobs: job ? [structuredClone(job)] : [] };
+      if (method === 'cron.add') {
+        job = { ...structuredClone(params), configRevision: 'fictional-revision-1' };
+        return { created: true, job: structuredClone(job) };
+      }
+      if (method === 'cron.get') return structuredClone(job);
+      if (method === 'cron.update') {
+        assert.equal(params.expectedConfigRevision, job.configRevision);
+        job = { ...job, ...structuredClone(params.patch), configRevision: 'fictional-revision-2' };
+        return structuredClone(job);
+      }
+      throw new Error(`unexpected fictional Cron method ${method}`);
+    } };
+    const coordinator = createOpenLoopReminderCoordinator({ metadata: service, gateway });
+    assert.equal((await coordinator.reconcileAccepted({ loop: deferred.loop, followUpIntent: deferred.followUpIntent })).status, 'applied');
+    const historical = ingest(service, 'follow-up-order-historical', event({ topicId: 'fictional-order-topic',
+      eventKind: 'delivery-complete', source: { system: 'fictional-archive', kind: 'order-event', externalId: 'historical-delivery', version: 'v1' },
+      historicalBaseline: true, occurredAt: '2026-09-19T00:00:00.000Z', amount: undefined, currency: undefined,
+      amountBasis: undefined, expectedAt: undefined, installationRequired: false,
+      summary: 'An archived fictional delivery claim.' }));
+    assert.equal(historical.loop.state, deferred.loop.state, 'historical evidence must not silently close the accepted plan');
+    assert.equal(historical.loop.reviewAt, deferred.loop.reviewAt);
+    const corrected = ingest(service, 'follow-up-order-corrected', event({ topicId: 'fictional-order-topic',
+      eventKind: 'dispatch', source: { system: 'fictional-orders', kind: 'order-event', externalId: 'follow-up-correction', version: 'v1' },
+      amount: undefined, currency: undefined, amountBasis: undefined, expectedAt: '2026-11-03T01:00:00.000Z',
+      summary: 'The fictional order delivery date changed.' }));
+    assert.equal(projectQuietAttention(corrected.loop, { now }).group, 'attention', 'new material evidence is visible despite a future accepted review time');
+    const delivered = ingest(service, 'follow-up-order-delivered', event({ topicId: 'fictional-order-topic',
+      eventKind: 'delivery-complete', source: { system: 'fictional-orders', kind: 'order-event', externalId: 'follow-up-delivery', version: 'v1' },
+      amount: undefined, currency: undefined, amountBasis: undefined, expectedAt: undefined,
+      installationRequired: false, summary: 'The fictional order was delivered.' }));
+    assert.equal(delivered.loop.state, 'uncertain');
+    assert.equal(projectQuietAttention(delivered.loop, { now }).group, 'attention');
+    assert.equal(job.enabled, true, 'source evidence alone must not silently cancel the accepted Reminder');
+    const resolved = service.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'follow-up-order-resolve',
+      loopId: delivered.loop.loopId, expectedRevision: delivered.loop.revision, decision: 'resolve',
+      actorId: 'fictional-operator', rationale: 'Confirmed the fictional delivery.', updatedAt: '2026-09-20T02:00:00.000Z' });
+    assert.equal((await coordinator.reconcileAccepted({ loop: resolved.loop, followUpIntent: resolved.followUpIntent })).status, 'applied');
+    assert.equal(job.enabled, false);
+    assert.equal(projectQuietAttention(resolved.loop, { now }).group, 'terminal');
+  } finally {
+    service.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });
 
 test('a corrected expected date surfaces once while exact replay remains duplicate-free', async () => {

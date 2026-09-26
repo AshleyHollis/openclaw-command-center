@@ -138,6 +138,29 @@ export function createMetadataService(api) {
       ? metadataService.previewOpenLoopSupportingNoteTarget(loop.loopId) : null;
     return note && note.status !== 'none' ? withNoteFilesystemOwner(metadataService, commit) : commit();
   }
+  function reconcileDecisionEffects(committed, logicalOperationId, runtime, requireGateway = false) {
+    const run = result => {
+      const saved = metadataService.getOpenLoopSupportingNoteIntent(logicalOperationId);
+      const reconcileReminder = () => {
+        if (requireGateway && typeof runtime?.gateway?.request !== 'function') {
+          throw new SourceServiceError('capability-unavailable', 'An authenticated Scheduler request is required to resume follow-up.');
+        }
+        return reconcileOpenLoopReminder(result, logicalOperationId, runtime);
+      };
+      if (!saved || saved.target.status === 'none') return reconcileReminder();
+      // Both intents were committed with the decision. An unavailable Scheduler
+      // must not prevent the independent supporting Note from being reconciled.
+      return Promise.allSettled([
+        Promise.resolve().then(reconcileReminder),
+        Promise.resolve().then(() => reconcileOpenLoopSupportingNote(logicalOperationId))
+      ]).then(([reminder, note]) => {
+        if (reminder.status === 'rejected') throw reminder.reason;
+        if (note.status === 'rejected') throw note.reason;
+        return Object.freeze({ ...reminder.value, supportingNote: note.value });
+      });
+    };
+    return committed && typeof committed.then === 'function' ? committed.then(run) : run(committed);
+  }
   function afterDecisionCommit(committed, logicalOperationId, runtime) {
     if (runtime?.deferFollowUp === true) {
       const pending = result => {
@@ -149,15 +172,7 @@ export function createMetadataService(api) {
       };
       return committed && typeof committed.then === 'function' ? committed.then(pending) : pending(committed);
     }
-    const withReminder = committed && typeof committed.then === 'function'
-      ? committed.then(result => reconcileOpenLoopReminder(result, logicalOperationId, runtime))
-      : reconcileOpenLoopReminder(committed, logicalOperationId, runtime);
-    const withNote = result => {
-      const saved = metadataService.getOpenLoopSupportingNoteIntent(logicalOperationId);
-      if (!saved || saved.target.status === 'none') return result;
-      return reconcileOpenLoopSupportingNote(logicalOperationId).then(supportingNote => Object.freeze({ ...result, supportingNote }));
-    };
-    return withReminder && typeof withReminder.then === 'function' ? withReminder.then(withNote) : withNote(withReminder);
+    return reconcileDecisionEffects(committed, logicalOperationId, runtime);
   }
   async function reconcileOpenLoopSupportingNote(decisionOperationId) {
     const initial = metadataService.getOpenLoopSupportingNoteIntent(decisionOperationId);
@@ -672,20 +687,14 @@ export function createMetadataService(api) {
     openLoopsResumeFollowUp(input = {}, runtime = {}) {
       requireOperational();
       const actorId = requireOperator(input, 'open-loop follow-up recovery');
-      if (typeof runtime?.gateway?.request !== 'function') throw new SourceServiceError('capability-unavailable', 'An authenticated Scheduler request is required to resume follow-up.');
       const accepted = metadataService.getOpenLoopUserActionReceipt(input.logicalOperationId);
       if (!accepted) throw new SourceServiceError('not-found', 'The exact saved user decision is unavailable.');
       if (accepted.actorId !== actorId) throw new SourceServiceError('unauthorized', 'The saved decision belongs to another operator.');
       if (!accepted.current || metadataService.getOpenLoop(accepted.loop.loopId)?.revision !== accepted.loop.revision) {
         return Object.freeze({ schemaVersion: 1, disposition: 'superseded', loop: metadataService.getOpenLoop(accepted.loop.loopId) });
       }
-      const reminder = reconcileOpenLoopReminder({ schemaVersion: 1, disposition: 'duplicate', loop: accepted.loop,
-        ...(accepted.followUpIntent ? { followUpIntent: accepted.followUpIntent } : {}) }, accepted.logicalOperationId, runtime);
-      return Promise.resolve(reminder).then(async result => {
-        const saved = metadataService.getOpenLoopSupportingNoteIntent(accepted.logicalOperationId);
-        if (!saved || saved.target.status === 'none') return result;
-        return Object.freeze({ ...result, supportingNote: await reconcileOpenLoopSupportingNote(accepted.logicalOperationId) });
-      });
+      return reconcileDecisionEffects({ schemaVersion: 1, disposition: 'duplicate', loop: accepted.loop,
+        ...(accepted.followUpIntent ? { followUpIntent: accepted.followUpIntent } : {}) }, accepted.logicalOperationId, runtime, true);
     },
     openLoopsPaymentStatus(input = {}, runtime = {}) {
       requireOperational();
