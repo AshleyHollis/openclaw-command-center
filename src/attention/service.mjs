@@ -1,18 +1,19 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
-import { normalizeOccurrence, occurrenceKey, ATTENTION_SCHEMA_VERSION, canonicalize, digest, validateActionInput } from './contracts.mjs';
+import { normalizeOccurrence, occurrenceKey, occurrenceInstant, ATTENTION_SCHEMA_VERSION, canonicalize, digest, validateActionInput } from './contracts.mjs';
 import { episodeIdentity, episodeId, exactOccurrenceKey } from './identity.mjs';
 import { deriveSeverity, isHigherSeverity, maxSeverity } from './severity.mjs';
 import { assertTransition } from './state-machine.mjs';
 import { eligibleSnoozeChoices, resolveSnoozeUntil, snoozeExpired } from './snooze.mjs';
 import { createActionRegistry } from './actions.mjs';
 import { executeWithReconciliation } from './execution.mjs';
-import { orderAttentionEpisodes } from './ordering.mjs';
+import { compareOccurrenceRows, orderAttentionEpisodes } from './ordering.mjs';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 
 const DELIVERY_WINDOW_MS = 10 * 60 * 1000;
 const APPROVAL_WINDOW_MS = 15 * 60 * 1000;
 const EMPTY_OBJECT = Object.freeze({});
+const SNOOZE_CHOICE = Object.freeze([{ type: 'object', required: ['preset'] }, { type: 'object', required: ['until'] }]);
 
 export class AttentionServiceError extends Error {
   constructor(code, message, details = {}) { super(message); this.name = 'AttentionServiceError'; this.code = code; Object.assign(this, details); }
@@ -174,13 +175,13 @@ function defaultReminderDescriptors() {
   const target = (episode) => episode.sourceReferenceId ? { sourceReferenceId: episode.sourceReferenceId } : null;
   return [
     { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', targetResolver: target, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string', minLength: 1 } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact linked reminder schedule.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true }, executor: async () => ({}), authoritativeVerifier: async () => ({ outcome: 'unknown' }), successTransition: async () => 'Resolved' },
-    { actionId: 'reminder.snooze', label: 'Reminder Snooze', kind: 'mutation', targetResolver: target, parameterSchema: { type: 'object', properties: { preset: { type: 'string' }, until: { type: 'string' }, expectedConfigRevision: { type: 'string', minLength: 1 } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Reschedules the exact linked reminder schedule.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true }, executor: async () => ({}), authoritativeVerifier: async () => ({ outcome: 'unknown' }), successTransition: async () => 'Active' },
+    { actionId: 'reminder.snooze', label: 'Reminder Snooze', kind: 'mutation', targetResolver: target, parameterSchema: { type: 'object', properties: { preset: { type: 'string' }, until: { type: 'string' }, expectedConfigRevision: { type: 'string', minLength: 1 } }, required: ['expectedConfigRevision'], oneOf: SNOOZE_CHOICE, additionalProperties: false }, sideEffects: ['Reschedules the exact linked reminder schedule.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true }, executor: async () => ({}), authoritativeVerifier: async () => ({ outcome: 'unknown' }), successTransition: async () => 'Active' },
     { actionId: 'topic.open', label: 'Open Topic', kind: 'navigation', targetResolver: (episode) => episode.topicId ? { topicId: episode.topicId } : null, parameterSchema: { type: 'object', properties: {}, additionalProperties: false }, sideEffects: [], approvalMode: 'never', idempotency: { idempotent: true, transientRetryable: false }, executor: async () => ({}), authoritativeVerifier: async () => true, successTransition: async () => 'Active' }
   ];
 }
 
 function presentationSnoozeDescriptor() {
-  return { actionId: 'attention.snooze', label: 'Snooze', kind: 'mutation', targetResolver: (episode) => episode.episodeId ? { episodeId: episode.episodeId } : null, parameterSchema: { type: 'object', properties: { preset: { type: 'string' }, until: { type: 'string' } }, additionalProperties: false }, sideEffects: ['Suppresses Attention presentation until the disclosed instant.'], approvalMode: 'never', idempotency: { idempotent: true, transientRetryable: false }, executor: async () => ({}), authoritativeVerifier: async () => true, successTransition: async () => 'Active' };
+  return { actionId: 'attention.snooze', label: 'Snooze', kind: 'mutation', targetResolver: (episode) => episode.episodeId ? { episodeId: episode.episodeId } : null, parameterSchema: { type: 'object', properties: { preset: { type: 'string' }, until: { type: 'string' } }, oneOf: SNOOZE_CHOICE, additionalProperties: false }, sideEffects: ['Suppresses Attention presentation until the disclosed instant.'], approvalMode: 'never', idempotency: { idempotent: true, transientRetryable: false }, executor: async () => ({}), authoritativeVerifier: async () => true, successTransition: async () => 'Active' };
 }
 
 function approvalDecisionDescriptors(approval) {
@@ -264,13 +265,25 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     return db ? db.prepare('SELECT * FROM attention_episodes WHERE identity_digest = ? ORDER BY generation DESC').all(identity.identityDigest).map(mapEpisode) : [...memory.episodes.values()].filter((episode) => episode.identityDigest === identity.identityDigest).sort((a, b) => b.generation - a.generation);
   }
   function findOccurrence(identityDigest, key) {
-    if (db) return db.prepare('SELECT e.* FROM attention_episodes e JOIN attention_occurrences o ON o.episode_id = e.episode_id WHERE e.identity_digest = ? AND o.occurrence_key = ? ORDER BY e.generation DESC LIMIT 1').get(identityDigest, key);
+    if (db) {
+      const row = db.prepare('SELECT o.* FROM attention_occurrences o JOIN attention_episodes e ON e.episode_id = o.episode_id WHERE e.identity_digest = ? AND o.occurrence_key = ? ORDER BY e.generation DESC LIMIT 1').get(identityDigest, key);
+      return row ? { episode: findById(row.episode_id), occurrence: row } : null;
+    }
     const match = [...memory.occurrences.values()].find((item) => item.identityDigest === identityDigest && item.occurrenceKey === key);
-    return match ? findById(match.episodeId) : null;
+    return match ? { episode: findById(match.episodeId), occurrence: match } : null;
+  }
+  function occurrencePayload(episode, row) {
+    return {
+      sourceCapabilityId: episode.sourceCapabilityId, stableSubjectId: episode.stableSubjectId, attentionReason: episode.attentionReason,
+      occurrenceKey: row.occurrence_key ?? row.occurrenceKey, occurrenceVersion: row.occurrence_version ?? row.occurrenceVersion ?? null,
+      occurredAt: occurrenceInstant(row.occurred_at ?? row.occurredAt).toString(), topicId: episode.topicId,
+      sourceReferenceId: episode.sourceReferenceId, evidenceFacts: parseJson(row.evidence_json ?? null, row.evidenceFacts ?? EMPTY_OBJECT),
+      transitionEvidence: parseJson(row.transition_json ?? null, row.transitionEvidence ?? null), derivedSeverity: row.derived_severity ?? row.derivedSeverity
+    };
   }
   function latestOccurrence(episodeIdValue) {
-    if (db) return db.prepare('SELECT occurrence_version, occurred_at FROM attention_occurrences WHERE episode_id = ? ORDER BY occurred_at DESC, created_at DESC, occurrence_row_id DESC LIMIT 1').get(episodeIdValue) ?? null;
-    return [...memory.occurrences.values()].filter((item) => item.episodeId === episodeIdValue).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt) || right.createdAt.localeCompare(left.createdAt))[0] ?? null;
+    const rows = db ? db.prepare('SELECT rowid AS insertion_order, * FROM attention_occurrences WHERE episode_id = ?').all(episodeIdValue) : [...memory.occurrences.values()].filter((item) => item.episodeId === episodeIdValue);
+    return rows.sort(compareOccurrenceRows)[0] ?? null;
   }
   function saveEpisode(episode, { insert = false } = {}) {
     if (!db) { memory.episodes.set(episode.episodeId, Object.freeze({ ...episode })); return episode; }
@@ -281,9 +294,9 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     else db.prepare(sql).run(episode.state, episode.severity, episode.attentionSince, episode.occurredAt, episode.terminalAt, episode.snoozedUntil, episode.revision, json(episode.diagnosis), json(episode.evidenceFacts), episode.updatedAt, episode.episodeId);
     return findById(episode.episodeId);
   }
-  function saveOccurrence(episode, occurrence, derivedSeverity, verified) {
+  function saveOccurrence(episode, occurrence, derivedSeverity) {
     const occurrenceIdentity = exactOccurrenceKey(occurrence);
-    const row = { occurrenceRowId: `occurrence:${randomUUID()}`, episodeId: episode.episodeId, occurrenceKey: occurrenceIdentity, occurrenceVersion: occurrence.occurrenceVersion ?? null, occurredAt: occurrence.occurredAt, derivedSeverity, evidenceFacts: occurrence.evidenceFacts, transitionEvidence: verified ? occurrence.transitionEvidence : null, createdAt: nowIso(now), identityDigest: episode.identityDigest, episode };
+    const row = { occurrenceRowId: `occurrence:${randomUUID()}`, insertionOrder: memory?.occurrences.size + 1, episodeId: episode.episodeId, occurrenceKey: occurrenceIdentity, occurrenceVersion: occurrence.occurrenceVersion ?? null, occurredAt: occurrence.occurredAt, derivedSeverity, evidenceFacts: occurrence.evidenceFacts, transitionEvidence: occurrence.transitionEvidence ?? null, createdAt: nowIso(now), identityDigest: episode.identityDigest };
     if (!db) { memory.occurrences.set(`${episode.episodeId}:${occurrenceIdentity}`, row); return row; }
     db.prepare('INSERT INTO attention_occurrences (occurrence_row_id, episode_id, occurrence_key, occurrence_version, occurred_at, derived_severity, evidence_json, transition_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(row.occurrenceRowId, row.episodeId, row.occurrenceKey, row.occurrenceVersion, row.occurredAt, row.derivedSeverity, json(row.evidenceFacts), row.transitionEvidence === null ? null : json(row.transitionEvidence), row.createdAt);
     return row;
@@ -476,7 +489,9 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       const exact = findOccurrence(identity.identityDigest, occurrenceIdentity);
       const confirmedState = verifiedTransition && ['withdrawn', 'resolved'].includes(effectiveOccurrence.transitionEvidence?.state) ? (effectiveOccurrence.transitionEvidence.state === 'withdrawn' ? 'Withdrawn' : 'Resolved') : null;
       if (exact) {
-        const episode = mapEpisode(exact) ?? exact;
+        const episode = exact.episode;
+        const received = { sourceCapabilityId: effectiveOccurrence.sourceCapabilityId, stableSubjectId: effectiveOccurrence.stableSubjectId, attentionReason: effectiveOccurrence.attentionReason, occurrenceKey: occurrenceIdentity, occurrenceVersion: effectiveOccurrence.occurrenceVersion ?? null, occurredAt: occurrenceInstant(effectiveOccurrence.occurredAt).toString(), topicId: effectiveOccurrence.topicId ?? null, sourceReferenceId: effectiveOccurrence.sourceReferenceId ?? null, evidenceFacts: effectiveOccurrence.evidenceFacts, transitionEvidence: effectiveOccurrence.transitionEvidence ?? null, derivedSeverity: severity };
+        if (digest(occurrencePayload(episode, exact.occurrence)) !== digest(received)) fail('intent-mismatch', 'Occurrence identity was reused with different immutable evidence.');
         const activityId = confirmedState ? `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}` : null;
         return Object.freeze({ episode, activity: activityId ? service.getActivity(activityId) : null, duplicate: true, ignored: false });
       }
@@ -491,8 +506,8 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       }
       if (current && !['Resolved', 'Withdrawn'].includes(current.state)) {
         const prior = latestOccurrence(current.episodeId);
-        if (Date.parse(effectiveOccurrence.occurredAt) < Date.parse(current.occurredAt)) return Object.freeze({ episode: current, duplicate: false, ignored: true });
-        if (effectiveOccurrence.occurredAt === current.occurredAt && prior?.occurrence_version && prior.occurrence_version !== (effectiveOccurrence.occurrenceVersion ?? null)) fail('conflict', 'Equal-time evidence cannot replace a confirmed source revision.');
+        if (occurrenceInstant(effectiveOccurrence.occurredAt) < occurrenceInstant(current.occurredAt)) return Object.freeze({ episode: current, duplicate: false, ignored: true });
+        if (occurrenceInstant(effectiveOccurrence.occurredAt) === occurrenceInstant(current.occurredAt) && (prior?.occurrence_version ?? prior?.occurrenceVersion) && (prior?.occurrence_version ?? prior?.occurrenceVersion) !== (effectiveOccurrence.occurrenceVersion ?? null)) fail('conflict', 'Equal-time evidence cannot replace a confirmed source revision.');
       }
       const generation = current ? current.generation + 1 : 1;
       if (current && !['Resolved', 'Withdrawn'].includes(current.state) && (current.topicId !== (effectiveOccurrence.topicId ?? null) || current.sourceReferenceId !== (effectiveOccurrence.sourceReferenceId ?? null))) fail('conflict', 'Attention episode source linkage cannot be rebound.');
@@ -506,7 +521,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       if (episode.state === 'Snoozed' && severity === 'Critical') episode = { ...episode, state: assertTransition(episode.state, 'Active'), snoozedUntil: null };
       if (confirmedState && !['Resolved', 'Withdrawn'].includes(episode.state)) episode = { ...episode, state: assertTransition(episode.state, confirmedState), terminalAt: clock, snoozedUntil: null };
       saveEpisode(episode, { insert: !current || ['Resolved', 'Withdrawn'].includes(current.state) });
-      saveOccurrence(episode, effectiveOccurrence, severity, verifiedTransition);
+      saveOccurrence(episode, effectiveOccurrence, severity);
       const activity = confirmedState
         ? saveActivity({ activityId: `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, episodeId: episode.episodeId, logicalOperationId: `transition:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, attemptId: null, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actorMode: 'system', actionId: `source.${confirmedState.toLowerCase()}`, operationKind: `attention.${confirmedState.toLowerCase()}`, outcome: confirmedState.toLowerCase(), verificationRevision: effectiveOccurrence.occurrenceVersion ?? null, createdAt: clock, updatedAt: clock })
         : null;

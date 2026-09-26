@@ -114,11 +114,19 @@ export function mountHistoryPage(container, context) {
     if (!readable() || next.disabled || nextOffset === null) return;
     previousOffsets.push(offset); offset = nextOffset; void load();
   }, { signal });
-  let connectionReadable = readable();
-  const unsubscribe = host.subscribe(() => { const next = readable(); if (next !== connectionReadable) { connectionReadable = next; void load(); } });
+  let connectionReadable = readable(); let connection = host.connection;
+  const unsubscribe = host.subscribe(() => {
+    const next = readable();
+    if (next !== connectionReadable || connection !== host.connection) {
+      connectionReadable = next; connection = host.connection; void load();
+    }
+  });
   void load();
   return {
-    update(next) { props = { ...next.props }; presented = next.presented; offset = 0; previousOffsets.length = 0; void load(); },
+    update(next) {
+      if (props.historyId === next.props.historyId && props.topicId === next.props.topicId && presented === next.presented) return;
+      props = { ...next.props }; presented = next.presented; offset = 0; previousOffsets.length = 0; void load();
+    },
     focus() { all.focus(); },
     dispose() { generation++; lifetime.abort(); unsubscribe(); cleanDownloads(); container.replaceChildren(); }
   };
