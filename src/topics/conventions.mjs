@@ -1,5 +1,6 @@
 import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { paraCategories } from '../metadata/schema.mjs';
 import { sourceError } from '../sources/errors.mjs';
@@ -8,6 +9,18 @@ import { ownsNoteFilesystem, withNoteFilesystemOwner } from '../sources/note-fil
 
 export const PARA_DIRECTORY_NAMES = Object.freeze({ project: 'Projects', area: 'Areas', resource: 'Resources', archive: 'Archive' });
 export const ACTIVE_PARA_CATEGORIES = Object.freeze(['project', 'area', 'resource']);
+let hostDirectoryPublisher;
+const publisherBindings = [];
+export function setHostDurableDirectoryPublisher(publisher) {
+  const binding = { publisher: typeof publisher === 'function' ? publisher : undefined, active: true };
+  publisherBindings.push(binding); hostDirectoryPublisher = binding.publisher;
+  return () => {
+    if (!binding.active) return;
+    binding.active = false;
+    while (publisherBindings.at(-1)?.active === false) publisherBindings.pop();
+    hostDirectoryPublisher = publisherBindings.at(-1)?.publisher;
+  };
+}
 
 function nonBlank(value, field) {
   if (typeof value !== 'string' || value.trim() === '') throw sourceError('invalid-request', `${field} must be a non-blank string.`);
@@ -135,6 +148,7 @@ export async function findConventionalFolder(options = {}) {
 
 export async function ensureConventionalFolder(options = {}) {
   if (!ownsNoteFilesystem(options.metadata)) return withNoteFilesystemOwner(options.metadata, () => ensureConventionalFolder(options));
+  if (options.enrollmentOperationId && options.metadata?.prepareConditionalFolderCreation) return ensureConditionalFolder(options);
   const candidate = await findConventionalFolder(options);
   options.assertCurrent?.();
   if (candidate.status === 'existing') return Object.freeze({ ...candidate, revision: await enrollCandidate(candidate, options) });
@@ -154,6 +168,66 @@ export async function ensureConventionalFolder(options = {}) {
   const stat = await lstat(candidate.path);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw sourceError('unsafe-path', 'The created Note Folder is not a real directory.');
   return Object.freeze({ ...candidate, status: 'created', ownership: 'created', revision: await enrollCandidate(candidate, options) });
+}
+
+async function ensureConditionalFolder(options) {
+  const parentOperationId = options.enrollmentOperationId;
+  const metadata = options.metadata;
+  const check = options.assertCurrent;
+  if (typeof check !== 'function') throw sourceError('provisioning-authority-unavailable', 'Conditional folder creation requires current authority.');
+  const target = resolveProvisioningFolderPath(options);
+  const receipt = metadata.getConditionalFolderCreation(parentOperationId);
+  if (!receipt) {
+    const candidate = await findConventionalFolder(options);
+    check();
+    if (candidate.status === 'existing') return Object.freeze({ ...candidate, revision: await enrollCandidate(candidate, options) });
+    const stagePath = path.join(path.dirname(target), `.command-center-provisioning-${parentOperationId}-${randomUUID()}`);
+    metadata.prepareConditionalFolderCreation({ parentOperationId, expectedTopicRevision: 0, stagePath }, check);
+  }
+  let current = metadata.getConditionalFolderCreation(parentOperationId);
+  if (current.finalPath !== target || current.operationId !== parentOperationId) throw sourceError('source-recovery', 'The folder creation receipt does not match this operation.');
+  await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+  if (current.phase === 'prepared') {
+    if (await lstat(target).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error)))
+      throw sourceError('source-recovery', 'The reserved operation destination was claimed before publication.');
+    const stageStat = await lstat(current.stagePath).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+    // An unrecorded directory cannot be attributed to this operation after a crash.
+    if (stageStat) throw sourceError('source-recovery', 'The unrecorded staging folder requires exact recovery.');
+    check();
+    await mkdir(current.stagePath, { mode: 0o700 });
+    await enrollCandidate({ path: current.stagePath }, options);
+    const witness = await inspectNoteFolderCandidate(current.stagePath);
+    check();
+    current = metadata.identifyConditionalFolderCreation({ parentOperationId, stagePath: current.stagePath,
+      directoryIdentity: witness.directoryIdentity, markerIdentity: witness.markerIdentity }, check);
+  }
+  const exact = async (candidatePath) => {
+    const witness = await inspectNoteFolderCandidate(candidatePath).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (!witness || witness.directoryIdentity !== current.directoryIdentity || witness.markerIdentity !== current.markerIdentity)
+      throw sourceError('source-recovery', 'The operation-created folder identity changed.');
+    return witness;
+  };
+  const finalStat = await lstat(target).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  const stagedStat = await lstat(current.stagePath).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (finalStat && stagedStat) throw sourceError('source-recovery', 'Both staged and final folders exist for one operation.');
+  if (finalStat) await exact(target);
+  else {
+    if (current.phase === 'published') throw sourceError('source-recovery', 'The published operation folder is missing.');
+    await exact(current.stagePath);
+    const stageStat = await lstat(current.stagePath, { bigint: true });
+    const publishDurableDirectoryNoReplace = hostDirectoryPublisher ??
+      (await import('openclaw/plugin-sdk/file-access-runtime')).publishDurableDirectoryNoReplace;
+    if (typeof publishDurableDirectoryNoReplace !== 'function')
+      throw sourceError('capability-unavailable', 'The native directory publication capability is unavailable.');
+    check();
+    publishDurableDirectoryNoReplace({ stagedDir: current.stagePath, targetDir: target,
+      expectedIdentity: { dev: stageStat.dev, ino: stageStat.ino }, assertBeforeMutation: check });
+    await exact(target);
+  }
+  if (current.phase !== 'published') current = metadata.publishConditionalFolderCreation({ parentOperationId,
+    stagePath: current.stagePath, directoryIdentity: current.directoryIdentity, markerIdentity: current.markerIdentity }, check);
+  check();
+  return Object.freeze({ path: target, exactName: path.basename(target), status: 'created', ownership: 'created', revision: current.markerIdentity });
 }
 
 export function sourceConventionManaged(states, aspect) {

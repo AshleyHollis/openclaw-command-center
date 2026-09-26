@@ -50,7 +50,7 @@ test('provisioning resumes a lost first-Primary response after SQLite reopen wit
   process.env.OPENCLAW_STATE_DIR = stateDir; process.env.OPENCLAW_CONFIG_PATH = path.join(stateDir, 'openclaw.json');
   const require = createRequire(process.env.COMMAND_CENTER_REHEARSAL_HOST_PACKAGE);
   const sessionStore = await import(pathToFileURL(require.resolve('openclaw/plugin-sdk/session-store-runtime')).href);
-  const resolved = new Map(['sqlite-runtime', 'file-access-runtime', 'state-paths', 'session-store-runtime'].map(name => [`openclaw/plugin-sdk/${name}`, pathToFileURL(require.resolve(`openclaw/plugin-sdk/${name}`)).href]));
+  const resolved = new Map(['sqlite-runtime', 'file-access-runtime', 'state-paths', 'session-store-runtime', 'session-store-paths'].map(name => [`openclaw/plugin-sdk/${name}`, pathToFileURL(require.resolve(`openclaw/plugin-sdk/${name}`)).href]));
   const hooks = registerHooks({ resolve: (specifier, context, nextResolve) => resolved.has(specifier) ? { url: resolved.get(specifier), shortCircuit: true } : nextResolve(specifier, context) });
   t.after(() => hooks.deregister());
   const vault = path.join(stateDir, 'vault'); const folder = path.join(vault, 'areas', 'studio');
