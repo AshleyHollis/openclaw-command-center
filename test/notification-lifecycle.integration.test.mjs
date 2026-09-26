@@ -33,7 +33,14 @@ test('awaits the published host binding before reconciling an activation', async
     assert.equal(await service.captureCurrentOperatorBinding(), true);
     await service.reconcile();
     assert.equal(candidates.length, 1);
-  }, undefined, binding => ({ async bindCurrentOperator() { return binding; } }));
+  }, undefined, binding => {
+    let durablyBound = false;
+    return {
+      async bindCurrentOperator() { durablyBound = true; return binding; },
+      async emit(candidate) { return durablyBound ? binding.emit(candidate) : { status: 'failed' }; },
+      async clear(request) { return binding.clear(request); }
+    };
+  });
 });
 
 test('a late authenticated binding cannot replace the newer operator binding', async () => {
@@ -43,14 +50,34 @@ test('a late authenticated binding cannot replace the newer operator binding', a
     const first = service.captureCurrentOperatorBinding();
     const second = service.captureCurrentOperatorBinding();
     assert.equal(resolvers.length, 2);
-    resolvers[1](binding);
+    resolvers[1]({ async emit(candidate) { staleCandidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } });
     assert.equal(await second, true);
     resolvers[0]({ async emit(candidate) { staleCandidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } });
     assert.equal(await first, false);
     await service.reconcile();
     assert.equal(candidates.length, 1);
     assert.equal(staleCandidates.length, 0);
-  }, undefined, () => ({ bindCurrentOperator: () => new Promise(resolve => resolvers.push(resolve)) }));
+  }, undefined, binding => ({
+    bindCurrentOperator: () => new Promise(resolve => resolvers.push(resolve)),
+    emit: candidate => binding.emit(candidate),
+    clear: request => binding.clear(request)
+  }));
+});
+
+test('background reconciliation never borrows a prior request-scoped binding', async () => {
+  const scopedCandidates = [];
+  await fixture(async ({ service, candidates }) => {
+    assert.equal(await service.captureCurrentOperatorBinding(), true);
+    await service.reconcile();
+    assert.equal(candidates.length, 0);
+    assert.equal(scopedCandidates.length, 0);
+  }, undefined, () => ({
+    async bindCurrentOperator() {
+      return { async emit(candidate) { scopedCandidates.push(candidate); return { status: 'sent' }; }, async clear() { return { status: 'cleared' }; } };
+    },
+    async emit() { return { status: 'failed' }; },
+    async clear() { return { status: 'ambiguous' }; }
+  }));
 });
 
 test('shutdown invalidates a pending operator binding', async () => {

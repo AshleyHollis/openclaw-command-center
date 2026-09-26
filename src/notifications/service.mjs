@@ -116,7 +116,6 @@ export function createNotificationService({ metadata, attentionService, sourceSe
   const db = new DatabaseSync(metadata.databasePath);
   let closed = false;
   let reconciliation = Promise.resolve();
-  let retainedBinding = emitter?.emit && emitter?.clear ? emitter : undefined;
   let bindingGeneration = 0;
 
   function assertOpen() {
@@ -306,14 +305,13 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     assertOpen();
     const generation = ++bindingGeneration;
     try {
-      if (typeof emitter?.bindCurrentOperator !== 'function') return retainedBinding !== undefined;
+      if (typeof emitter?.bindCurrentOperator !== 'function') return Boolean(emitter?.emit && emitter?.clear);
       const captured = await emitter.bindCurrentOperator();
-      // A later authenticated request or activation shutdown owns the binding.
+      // The host persists the authorized operator binding. Never retain the
+      // request-scoped emitter for later machine ingress or timer delivery.
       if (closed || generation !== bindingGeneration) return false;
-      retainedBinding = captured?.emit && captured?.clear ? captured : undefined;
-      return retainedBinding !== undefined;
+      return Boolean(captured?.emit && captured?.clear);
     } catch {
-      if (!closed && generation === bindingGeneration) retainedBinding = undefined;
       return false;
     }
   }
@@ -410,7 +408,9 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     const currentSettings = getSettings();
     try { attentionService?.list?.({ schemaVersion: 1, now: new Date(clock).toISOString() }); } catch { /* lifecycle reads remain best-effort */ }
     const episodes = attentionService?.allEpisodes?.() ?? [];
-    const binding = retainedBinding;
+    // The host's direct emitter resolves current durable authority at each
+    // effect. A prior authenticated Gateway request is never its authority.
+    const binding = emitter?.emit && emitter?.clear ? emitter : undefined;
     // A failed compensating clear remains retryable even when its category is disabled.
     for (const clear of rows('notification_clear_operations', "status != 'cleared'")) {
       for (const emission of rows('notification_emissions', 'episode_id = ?', [clear.episode_id])) {
@@ -484,7 +484,7 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     return Object.freeze({ settings: getSettings(), epochs: Object.freeze(rows('notification_policy_epochs')), slots: Object.freeze(rows('notification_slots')), emissions: Object.freeze(rows('notification_emissions')), clears: Object.freeze(rows('notification_clear_operations')) });
   }
 
-  return Object.freeze({ getSettings, updateSettings, captureCurrentOperatorBinding, reconcile, inspect, close() { if (!closed) { closed = true; bindingGeneration += 1; retainedBinding = undefined; db.close(); } } });
+  return Object.freeze({ getSettings, updateSettings, captureCurrentOperatorBinding, reconcile, inspect, close() { if (!closed) { closed = true; bindingGeneration += 1; db.close(); } } });
 }
 
 export { ONE_DAY_MS, UUID_PATTERN };
