@@ -956,7 +956,13 @@ test('real first-live plugin activates Attention without acquiring the deferred 
 
 test('candidate notification gate mounts the registered owner and clears a resolved DEV request', { skip: !FIRST_LIVE_FEATURES.notifications && 'Requires the sealed candidate-only notification overlay.' }, async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-candidate-notifications-'));
-  const host = fakePublishedApi(stateDir);
+  const credential = 'fictional-machine-credential-with-enough-entropy-123456789';
+  const previousCredential = process.env.FICTIONAL_DEV_BEARER;
+  process.env.FICTIONAL_DEV_BEARER = credential;
+  const host = fakePublishedApi(stateDir, { pluginConfig: { developerWork: { principals: [{
+    producerId: 'fictional-dev', role: 'worker', tokenEnv: 'FICTIONAL_DEV_BEARER',
+    allowedProjects: ['fictional-project'], families: ['human-request', 'request-terminal']
+  }] } } });
   const requestId = 'fictional-input-a';
   const session = { agentId: 'fictional-agent', sessionKey: 'agent:fictional-agent:main', sessionId: 'fictional-session', lifecycleRevision: 'fictional-lifecycle' };
   const request = { requestId, kind: 'input', expectedRequestRevision: 0, summary: 'Fictional input required', question: 'Fictional private question?' };
@@ -964,28 +970,46 @@ test('candidate notification gate mounts the registered owner and clears a resol
   try {
     plugin.register(host.api);
     assert.equal(host.declarations.length, 1);
+    const route = host.routes.find((entry) => entry.path === developerEventRoute);
+    assert.equal(route.auth, 'plugin');
     const service = host.services[0];
     await service.start();
     assert.ok(service.notificationService);
-    const authority = { producerId: 'fictional-dev', role: 'worker', allowedProjects: ['fictional-project'] };
-    const first = await service.developerWorkService.accept({ ...authority, watermark: 1, event: {
+    const send = async (event, watermark) => {
+      const response = { statusCode: 200, setHeader() {}, end(body) { this.body = JSON.parse(body); } };
+      await route.handler({ method: 'POST', socket: { encrypted: true },
+        headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json', 'x-developer-work-watermark': String(watermark) },
+        body: event }, response);
+      assert.equal(response.statusCode, 200, JSON.stringify(response.body));
+      return response.body.receipt;
+    };
+    const first = await send({
       ...base, eventId: randomUUID(), workRevision: 1, eventType: 'human_input_required', occurredAt: new Date().toISOString(), request
-    } });
+    }, 1);
     assert.equal(first.projectionState, 'projected');
-    await service.notificationReconcile();
     assert.equal(host.candidates.length, 1);
     assert.equal(host.bindingCaptures, 0, 'background delivery must not borrow request-scoped operator authority');
     assert.equal(JSON.stringify(host.candidates[0]).includes(request.question), false);
     assert.equal(host.candidates[0].deepLink.destinationId, 'attention-card');
-    const resolved = await service.developerWorkService.accept({ ...authority, watermark: 2, event: {
+    const resolved = await send({
       ...base, eventId: randomUUID(), workRevision: 2, eventType: 'request_resolved', occurredAt: new Date().toISOString(),
       request: { ...request, expectedRequestRevision: 1 }, outcome: { code: 'answered', requestId }
-    } });
+    }, 2);
     assert.equal(resolved.projectionState, 'projected');
-    await service.notificationReconcile();
     assert.equal(host.clears.length, 1);
+    const pendingRequest = { ...request, requestId: 'fictional-input-b' };
+    const pendingBase = { ...base, workId: 'fictional-work-b' };
+    await send({ ...pendingBase, eventId: randomUUID(), workRevision: 1, eventType: 'human_input_required',
+      occurredAt: new Date().toISOString(), request: pendingRequest }, 2);
+    assert.equal(host.candidates.length, 1, 'the announced replay must not push an incomplete request');
+    await send({ ...pendingBase, eventId: randomUUID(), workRevision: 2, eventType: 'request_resolved',
+      occurredAt: new Date().toISOString(), request: { ...pendingRequest, expectedRequestRevision: 1 },
+      outcome: { code: 'answered', requestId: pendingRequest.requestId } }, 2);
+    assert.equal(host.candidates.length, 1, 'a resolved replay must never emit the stale input');
   } finally {
     await host.services[0]?.stop?.();
+    if (previousCredential === undefined) delete process.env.FICTIONAL_DEV_BEARER;
+    else process.env.FICTIONAL_DEV_BEARER = previousCredential;
     await rm(stateDir, { recursive: true, force: true });
   }
 });
