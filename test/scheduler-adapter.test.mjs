@@ -29,7 +29,8 @@ test('Snooze re-enables a delivered one-shot through the exact revision-fenced i
   const input = { referenceId: 'reminder-delivered-ref', logicalOperationId: randomUUID(), expectedConfigRevision: 'revision-1', patch: { schedule } };
   const result = await adapter.snooze(input);
   assert.equal(result.value.job.enabled, true, 'a new date on a disabled schedule does not schedule another delivery');
-  assert.deepEqual(updates[0], { id: 'job-delivered', expectedConfigRevision: 'revision-1', patch: { schedule, enabled: true } });
+  assert.deepEqual(updates[0], { id: 'job-delivered', expectedConfigRevision: 'revision-1', patch: { schedule, enabled: true,
+    description: `[command-center:reminder-operation:${input.logicalOperationId}]` } });
   assert.equal((await adapter.snooze(input)).status, 'applied');
   assert.equal(updates.length, 1);
   await assert.rejects(() => adapter.snooze({ ...input, logicalOperationId: randomUUID(), patch: { schedule, enabled: true } }), /unsupported|schedule/i);
@@ -98,6 +99,81 @@ test('Reminder creation recovers an exact lost response after metadata reopen wi
     assert.equal(addCalls, 1);
     const read = await adapter.read({ referenceId: recovered.value.sourceReference.referenceId });
     assert.equal(read.job.configRevision, 'revision-current');
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('a bound Reminder create uses one conditional native ID and recovers its exact lost response', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-bound-reminder-reopen-'));
+  const logicalOperationId = randomUUID();
+  const referenceId = 'open-loop-reminder:fictional-bound';
+  const declaration = { name: 'Fictional bound reminder', enabled: true,
+    schedule: { kind: 'at', at: '2099-01-02T03:04:05.000Z' },
+    payload: { kind: 'systemEvent', text: 'Review fictional bill' } };
+  let metadata;
+  let job;
+  let adds = 0;
+  const gateway = { async request(method, params) {
+    if (method === 'cron.get') return job && params.id === job.id ? structuredClone(job) : undefined;
+    if (method === 'cron.add') {
+      adds += 1;
+      assert.equal(params.id, logicalOperationId, 'native ID must be conditional and known before dispatch');
+      assert.equal(params.declarationKey, undefined, 'declarative upsert is not a conditional create');
+      job = { ...structuredClone(params), configRevision: 'fictional-native-v1' };
+      throw Object.assign(new Error('fictional response lost after durable add'), { code: 'timeout', ambiguous: true });
+    }
+    throw new Error(`unexpected Scheduler method ${method}`);
+  } };
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    metadata.createTopic({ topicId: 'fictional-bound-topic', paraCategory: 'project', lifecycle: 'active' });
+    const adapter = createSchedulerAdapter({ topicId: 'fictional-bound-topic', metadata, gateway });
+    const result = await adapter.createBoundReminder({ schemaVersion: 1, logicalOperationId, referenceId, declaration });
+    assert.equal(result.status, 'applied');
+    assert.equal(result.value.job.id, logicalOperationId);
+    assert.equal(result.value.sourceReference.referenceId, referenceId);
+    assert.equal(adds, 1);
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    const reopened = createSchedulerAdapter({ topicId: 'fictional-bound-topic', metadata, gateway });
+    const replay = await reopened.createBoundReminder({ schemaVersion: 1, logicalOperationId, referenceId, declaration });
+    assert.equal(replay.status, 'applied');
+    assert.equal(adds, 1, 'restart replay must read the exact job instead of adding again');
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('a bound Reminder never adopts a conflicting exact-ID job after an ambiguous native response', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-bound-reminder-conflict-'));
+  const logicalOperationId = randomUUID();
+  const referenceId = 'open-loop-reminder:fictional-conflict';
+  const declaration = { name: 'Expected fictional bill reminder', enabled: true,
+    schedule: { kind: 'at', at: '2099-01-02T03:04:05.000Z' },
+    payload: { kind: 'systemEvent', text: 'Review expected fictional bill' } };
+  let metadata;
+  let adds = 0;
+  const gateway = { async request(method, params) {
+    if (method === 'cron.add') {
+      adds += 1;
+      throw Object.assign(new Error('fictional ambiguous response'), { code: 'timeout', ambiguous: true });
+    }
+    if (method === 'cron.get' && params.id === logicalOperationId) return { id: logicalOperationId, configRevision: 'foreign-native-r1',
+      name: 'Another fictional job', enabled: true, schedule: declaration.schedule, payload: declaration.payload };
+    throw new Error(`unexpected Scheduler method ${method}`);
+  } };
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    metadata.createTopic({ topicId: 'fictional-bound-topic', paraCategory: 'project', lifecycle: 'active' });
+    const adapter = createSchedulerAdapter({ topicId: 'fictional-bound-topic', metadata, gateway });
+    await assert.rejects(() => adapter.createBoundReminder({ schemaVersion: 1, logicalOperationId, referenceId, declaration }),
+      error => error.code === 'conflict');
+    assert.equal(adds, 1);
+    assert.equal(metadata.getSourceReference(referenceId), null);
+    assert.equal(metadata.getOperation(logicalOperationId)?.state, 'conflict');
   } finally {
     metadata?.close();
     await rm(stateDir, { recursive: true, force: true });
@@ -260,15 +336,20 @@ test('scheduler actions construct closed conservative patches and reject unrelat
   await assert.rejects(() => adapter.reschedule({ ...common, referenceId: 'schedule-ref', patch: { enabled: false } }), /unsupported.*patch|field/i);
 
   await adapter.complete({ ...common, referenceId: 'reminder-ref' });
-  assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
+  assert.deepEqual(calls.at(-1).params.patch, { enabled: false,
+    description: `[command-center:reminder-operation:${common.logicalOperationId}]` });
   await adapter.setEnabled({ ...common, logicalOperationId: randomUUID(), referenceId: 'schedule-ref', enabled: false });
   assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
-  await adapter.setEnabled({ ...common, logicalOperationId: randomUUID(), referenceId: 'reminder-ref', enabled: false });
+  const reminderEnabledOperationId = randomUUID();
+  await adapter.setEnabled({ ...common, logicalOperationId: reminderEnabledOperationId, referenceId: 'reminder-ref', enabled: false });
   assert.equal(calls.at(-1).params.id, 'reminder-job');
-  assert.deepEqual(calls.at(-1).params.patch, { enabled: false });
+  assert.deepEqual(calls.at(-1).params.patch, { enabled: false,
+    description: `[command-center:reminder-operation:${reminderEnabledOperationId}]` });
   const schedule = { kind: 'at', at: '2026-08-24T00:00:00Z' };
-  await adapter.snooze({ ...common, logicalOperationId: randomUUID(), referenceId: 'reminder-ref', patch: { schedule } });
-  assert.deepEqual(calls.at(-1).params.patch, { schedule, enabled: true });
+  const snoozeOperationId = randomUUID();
+  await adapter.snooze({ ...common, logicalOperationId: snoozeOperationId, referenceId: 'reminder-ref', patch: { schedule } });
+  assert.deepEqual(calls.at(-1).params.patch, { schedule, enabled: true,
+    description: `[command-center:reminder-operation:${snoozeOperationId}]` });
   await adapter.reschedule({ ...common, logicalOperationId: randomUUID(), referenceId: 'schedule-ref', patch: { schedule } });
   assert.deepEqual(calls.at(-1).params.patch, { schedule });
 });

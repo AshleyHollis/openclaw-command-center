@@ -31,6 +31,15 @@ function reminderDeclarationMatchesJob(job, declaration) {
   return containsDeclaredValue(job, expected);
 }
 
+function reminderOperationMarker(logicalOperationId) {
+  return `[command-center:reminder-operation:${logicalOperationId}]`;
+}
+
+function reminderMutationDescription(description, logicalOperationId) {
+  const original = (description ?? '').replace(/(?:\r?\n)?\[command-center:reminder-operation:[0-9a-f-]{36}\]$/u, '');
+  return `${original}${original ? '\n' : ''}${reminderOperationMarker(logicalOperationId)}`;
+}
+
 function closedSchedulePatch(value, operationKind) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw sourceError('invalid-request', `${operationKind} patch must be an object`);
   const keys = Object.keys(value);
@@ -159,6 +168,43 @@ export class SchedulerAdapter {
     if (this.coordinator) return this.coordinator.mutate({ operationKind: 'reminders.create', requestId: input.requestId ?? logicalOperationId, logicalOperationId, intent: { declarationKey, declaration }, execute, reconcile });
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
   }
+
+  async createBoundReminder(input = {}, reconcileOnly = false) {
+    assertNoUnexpectedKeys(input, ['schemaVersion', 'requestId', 'referenceId', 'logicalOperationId', 'declaration'], 'Bound Reminder create request');
+    const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
+    const referenceId = nonBlank(input.referenceId, 'referenceId');
+    validateScheduleDeclaration(input.declaration);
+    // Cron rejects an existing explicit ID at the durable add commit. This is
+    // a conditional create, unlike declarationKey's declarative upsert.
+    const declaration = { ...structuredClone(input.declaration), id: logicalOperationId };
+    const reconcile = async ({ applied = false, resultIdentity = null, observedRevision = null } = {}) => {
+      const job = jobFrom(await this.request('cron.get', { id: logicalOperationId }));
+      if (!job) return { outcome: applied ? 'unknown' : 'not-applied' };
+      if (job.id !== logicalOperationId) return { outcome: 'conflict' };
+      if (job.declarationKey || !reminderDeclarationMatchesJob(job, declaration)) return { outcome: 'conflict' };
+      if (typeof job.configRevision !== 'string' || !job.configRevision.trim()) return { outcome: 'unknown' };
+      if (applied && (resultIdentity !== logicalOperationId || observedRevision !== job.configRevision)) return { outcome: 'unknown' };
+      const existing = this.metadata?.getSourceReference?.(referenceId) ?? this.references().find(item => item.referenceId === referenceId);
+      if (existing && (existing.topicId !== this.topicId || existing.sourceKind !== 'reminder_schedule' || existing.externalSourceId !== logicalOperationId)) return { outcome: 'conflict' };
+      const owners = this.allReferences().filter(item => item.externalSourceId === logicalOperationId);
+      if (owners.some(item => item.referenceId !== referenceId || item.topicId !== this.topicId || item.sourceKind !== 'reminder_schedule')) return { outcome: 'conflict' };
+      const sourceReference = await this.persistReference(logicalOperationId, job.configRevision, 'reminder_schedule', referenceId);
+      return { outcome: 'applied', value: { job, sourceReference } };
+    };
+    const execute = async ({ requestId }) => {
+      if (this.metadata?.getSourceReference?.(referenceId)) throw sourceError('conflict', 'The exact bound Reminder reference already exists.');
+      const job = jobFrom(await this.request('cron.add', declaration, { requestId }));
+      if (job?.id !== logicalOperationId || typeof job.configRevision !== 'string' || !job.configRevision.trim()) {
+        throw sourceError('source-recovery', 'Cron did not confirm the conditional bound Reminder identity and revision.');
+      }
+      const sourceReference = await this.persistReference(logicalOperationId, job.configRevision, 'reminder_schedule', referenceId);
+      return { job, sourceReference };
+    };
+    return this.coordinator[reconcileOnly ? 'reconcile' : 'mutate']({ operationKind: 'reminders.create', requestId: input.requestId ?? logicalOperationId,
+      logicalOperationId, topicId: this.topicId, referenceId, intent: { declaration }, execute, reconcile });
+  }
+
+  async recoverBoundReminder(input = {}) { return this.createBoundReminder(input, true); }
 
   async createDeclared(input, sourceKind, operationKind) {
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
@@ -310,10 +356,12 @@ export class SchedulerAdapter {
     validateScheduleUpdatePatch(input.patch);
     const expectedConfigRevision = nonBlank(input.expectedConfigRevision, 'expectedConfigRevision');
     const patch = structuredClone(input.patch);
-    const requestParams = { id: reference.externalSourceId, expectedConfigRevision, patch };
+    const marker = expectedSourceKind === 'reminder_schedule' ? reminderOperationMarker(logicalOperationId) : null;
     const execute = async ({ requestId }) => {
       const current = await this.read({ referenceId: reference.referenceId });
       if (current.job.configRevision !== expectedConfigRevision) throw sourceError('conflict', 'The scheduler configuration revision is stale.', { currentRevision: current.job.configRevision, expectedRevision: expectedConfigRevision });
+      const requestParams = { id: reference.externalSourceId, expectedConfigRevision,
+        patch: marker ? { ...patch, description: reminderMutationDescription(current.job.description, logicalOperationId) } : patch };
       let response;
       try { response = await this.request('cron.update', requestParams, { requestId }); } catch (error) {
         if (error?.code === 'CRON_JOB_CHANGED' || error?.details?.code === 'CRON_JOB_CHANGED') throw sourceError('conflict', 'The scheduler configuration revision is stale.', { currentRevision: error?.actualConfigRevision ?? error?.details?.actualConfigRevision ?? null, expectedRevision: expectedConfigRevision });
@@ -334,9 +382,14 @@ export class SchedulerAdapter {
       // Only the exact response previously recorded by the owner can qualify.
       const witnessed = applied && resultIdentity === reference.externalSourceId
         && typeof observedRevision === 'string' && after.job.configRevision === observedRevision;
+      const marked = marker && after.job.description?.endsWith(marker)
+        && (patch.enabled === undefined || after.job.enabled === patch.enabled)
+        && (patch.schedule === undefined || containsDeclaredValue(after.job.schedule, patch.schedule));
       // Native Cron owns normalization (for example every.anchorMs). Its exact
       // saved response revision is the witness, not equality with a partial patch.
-      return witnessed ? { outcome: 'applied', value: after } : { outcome: 'unknown' };
+      if (witnessed || (!applied && marked)) return { outcome: 'applied', value: after };
+      return !applied && after.job.configRevision === expectedConfigRevision
+        ? { outcome: 'not-applied' } : { outcome: 'unknown' };
     };
     if (this.coordinator) return this.coordinator.mutate({ operationKind, requestId: input.requestId ?? logicalOperationId, logicalOperationId, intent: { jobId: reference.externalSourceId, expectedConfigRevision, patch }, reconcile, execute });
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };

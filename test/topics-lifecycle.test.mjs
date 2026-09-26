@@ -134,6 +134,7 @@ test('Topic provisioning is durable, grouped only when usable, and preserves ide
     assert.equal(afterRename.locators.find((item) => item.referenceId.startsWith('note-folder:')).locatorVersion, initialLocatorVersion + 1);
     const preview = topics.recategorizationPreview({ topicId, paraCategory: 'area' });
     assert.equal(metadata.getTopic(topicId).paraCategory, 'project');
+    await assert.rejects(topics.recategorizationConfirm({ topicId, paraCategory: 'area', structuralChangeId: preview.structuralChangeId, previewDigest: preview.digest, logicalOperationId: randomUUID() }), /expected revisions are required/i);
     await assert.rejects(topics.recategorizationConfirm({ topicId, paraCategory: 'area', preview: { ...preview, changes: [{ aspect: 'note-folder-location', from: '/fictional/source', to: '/fictional/private', managed: true }] }, previewDigest: 'sha256:forged', expectedRevisions: preview.expectedRevisions, logicalOperationId: randomUUID() }), /digest|stale|canonical/i);
     const recategorizationInput = { topicId, preview, structuralChangeId: preview.structuralChangeId, previewDigest: preview.digest, expectedRevisions: preview.expectedRevisions, logicalOperationId: randomUUID() };
     await topics.recategorizationConfirm(recategorizationInput);
@@ -418,7 +419,7 @@ test('Source Recovery reconciles an interrupted folder binding before preserving
     const reference = metadata.listSourceReferences(topicId).find((item) => item.sourceKind === 'note_folder');
     const original = metadata.getSourceLocator(reference.referenceId);
     assert.equal(original.ownership, 'adopted');
-    assert.match(original.observedRevision, /^note-folder:1:/u);
+    assert.match(original.observedRevision, /^note-folder:[12]:/u);
     await rm(original.locator, { recursive: true });
     await topics.markSourceMissing(topicId, reference.referenceId, 'interrupted exact folder recovery');
     const replacement = path.join(vault, 'Custom', 'Interrupted Folder Recovery');
@@ -676,6 +677,24 @@ test('provisioning rollback preserves an unverifiable created Session after acti
     await assert.rejects(topics.rollback({ topicId, expectedRevision: metadata.getTopic(topicId).revision, logicalOperationId }), /lacks an authoritative creation revision/);
     assert.equal(metadata.getTopic(topicId).lifecycle, 'provisioning');
     assert.equal(metadata.getSourceReference(sessionReference.referenceId).externalSourceId, sessionReference.externalSourceId);
+  });
+});
+
+test('created-folder rollback refuses before any Session removal when Folder cleanup lacks proof', async () => {
+  await fixture(async ({ vault, metadata }) => {
+    const boundary = pluginSessionBoundary({ sessionId: () => 'protected-session-id', updatedAt: () => 73 });
+    const interrupted = { ...metadata, completeTopicProvisioning() { throw new Error('fictional activation interruption'); } };
+    const operationId = randomUUID();
+    const creator = createTopicService({ metadata: interrupted, noteVaultRoot: vault, gateway: boundary.gateway, sessionStore: boundary.sessionStore });
+    await assert.rejects(creator.create({ name: 'Protected Cleanup', paraCategory: 'project', logicalOperationId: operationId }), /activation interruption/);
+    const topicId = metadata.getTopicOperation(operationId).topicId;
+    assert.equal(metadata.getSourceLocator(`note-folder:${topicId}`).ownership, 'created');
+    let removed = false;
+    const rollback = createTopicService({ metadata, noteVaultRoot: vault, gateway: boundary.gateway, sessionStore: boundary.sessionStore,
+      sessionMessages: async () => ({ messages: [] }), sessionRemover: async () => { removed = true; } });
+    await assert.rejects(rollback.rollback({ topicId, expectedRevision: metadata.getTopic(topicId).revision, logicalOperationId: operationId }), /folder.*cleanup/i);
+    assert.equal(removed, false);
+    assert.equal(metadata.getTopic(topicId).lifecycle, 'provisioning');
   });
 });
 

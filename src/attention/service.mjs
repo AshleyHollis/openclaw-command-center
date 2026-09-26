@@ -1,18 +1,19 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
-import { normalizeOccurrence, occurrenceKey, ATTENTION_SCHEMA_VERSION, canonicalize, digest, validateActionInput } from './contracts.mjs';
+import { normalizeOccurrence, occurrenceKey, occurrenceInstant, ATTENTION_SCHEMA_VERSION, canonicalize, digest, validateActionInput } from './contracts.mjs';
 import { episodeIdentity, episodeId, exactOccurrenceKey } from './identity.mjs';
 import { deriveSeverity, isHigherSeverity, maxSeverity } from './severity.mjs';
 import { assertTransition } from './state-machine.mjs';
 import { eligibleSnoozeChoices, resolveSnoozeUntil, snoozeExpired } from './snooze.mjs';
 import { createActionRegistry } from './actions.mjs';
 import { executeWithReconciliation } from './execution.mjs';
-import { orderAttentionEpisodes } from './ordering.mjs';
+import { compareOccurrenceRows, orderAttentionEpisodes } from './ordering.mjs';
 import { isCanonicalUuid } from '../sources/operation-journal.mjs';
 
 const DELIVERY_WINDOW_MS = 10 * 60 * 1000;
 const APPROVAL_WINDOW_MS = 15 * 60 * 1000;
 const EMPTY_OBJECT = Object.freeze({});
+const SNOOZE_CHOICE = Object.freeze([{ type: 'object', required: ['preset'] }, { type: 'object', required: ['until'] }]);
 
 export class AttentionServiceError extends Error {
   constructor(code, message, details = {}) { super(message); this.name = 'AttentionServiceError'; this.code = code; Object.assign(this, details); }
@@ -174,13 +175,13 @@ function defaultReminderDescriptors() {
   const target = (episode) => episode.sourceReferenceId ? { sourceReferenceId: episode.sourceReferenceId } : null;
   return [
     { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', targetResolver: target, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string', minLength: 1 } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact linked reminder schedule.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true }, executor: async () => ({}), authoritativeVerifier: async () => ({ outcome: 'unknown' }), successTransition: async () => 'Resolved' },
-    { actionId: 'reminder.snooze', label: 'Reminder Snooze', kind: 'mutation', targetResolver: target, parameterSchema: { type: 'object', properties: { preset: { type: 'string' }, until: { type: 'string' }, expectedConfigRevision: { type: 'string', minLength: 1 } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Reschedules the exact linked reminder schedule.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true }, executor: async () => ({}), authoritativeVerifier: async () => ({ outcome: 'unknown' }), successTransition: async () => 'Active' },
+    { actionId: 'reminder.snooze', label: 'Reminder Snooze', kind: 'mutation', targetResolver: target, parameterSchema: { type: 'object', properties: { preset: { type: 'string' }, until: { type: 'string' }, expectedConfigRevision: { type: 'string', minLength: 1 } }, required: ['expectedConfigRevision'], oneOf: SNOOZE_CHOICE, additionalProperties: false }, sideEffects: ['Reschedules the exact linked reminder schedule.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true }, executor: async () => ({}), authoritativeVerifier: async () => ({ outcome: 'unknown' }), successTransition: async () => 'Active' },
     { actionId: 'topic.open', label: 'Open Topic', kind: 'navigation', targetResolver: (episode) => episode.topicId ? { topicId: episode.topicId } : null, parameterSchema: { type: 'object', properties: {}, additionalProperties: false }, sideEffects: [], approvalMode: 'never', idempotency: { idempotent: true, transientRetryable: false }, executor: async () => ({}), authoritativeVerifier: async () => true, successTransition: async () => 'Active' }
   ];
 }
 
 function presentationSnoozeDescriptor() {
-  return { actionId: 'attention.snooze', label: 'Snooze', kind: 'mutation', targetResolver: (episode) => episode.episodeId ? { episodeId: episode.episodeId } : null, parameterSchema: { type: 'object', properties: { preset: { type: 'string' }, until: { type: 'string' } }, additionalProperties: false }, sideEffects: ['Suppresses Attention presentation until the disclosed instant.'], approvalMode: 'never', idempotency: { idempotent: true, transientRetryable: false }, executor: async () => ({}), authoritativeVerifier: async () => true, successTransition: async () => 'Active' };
+  return { actionId: 'attention.snooze', label: 'Snooze', kind: 'mutation', targetResolver: (episode) => episode.episodeId ? { episodeId: episode.episodeId } : null, parameterSchema: { type: 'object', properties: { preset: { type: 'string' }, until: { type: 'string' } }, oneOf: SNOOZE_CHOICE, additionalProperties: false }, sideEffects: ['Suppresses Attention presentation until the disclosed instant.'], approvalMode: 'never', idempotency: { idempotent: true, transientRetryable: false }, executor: async () => ({}), authoritativeVerifier: async () => true, successTransition: async () => 'Active' };
 }
 
 function approvalDecisionDescriptors(approval) {
@@ -264,13 +265,25 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     return db ? db.prepare('SELECT * FROM attention_episodes WHERE identity_digest = ? ORDER BY generation DESC').all(identity.identityDigest).map(mapEpisode) : [...memory.episodes.values()].filter((episode) => episode.identityDigest === identity.identityDigest).sort((a, b) => b.generation - a.generation);
   }
   function findOccurrence(identityDigest, key) {
-    if (db) return db.prepare('SELECT e.* FROM attention_episodes e JOIN attention_occurrences o ON o.episode_id = e.episode_id WHERE e.identity_digest = ? AND o.occurrence_key = ? ORDER BY e.generation DESC LIMIT 1').get(identityDigest, key);
+    if (db) {
+      const row = db.prepare('SELECT o.* FROM attention_occurrences o JOIN attention_episodes e ON e.episode_id = o.episode_id WHERE e.identity_digest = ? AND o.occurrence_key = ? ORDER BY e.generation DESC LIMIT 1').get(identityDigest, key);
+      return row ? { episode: findById(row.episode_id), occurrence: row } : null;
+    }
     const match = [...memory.occurrences.values()].find((item) => item.identityDigest === identityDigest && item.occurrenceKey === key);
-    return match ? findById(match.episodeId) : null;
+    return match ? { episode: findById(match.episodeId), occurrence: match } : null;
+  }
+  function occurrencePayload(episode, row) {
+    return {
+      sourceCapabilityId: episode.sourceCapabilityId, stableSubjectId: episode.stableSubjectId, attentionReason: episode.attentionReason,
+      occurrenceKey: row.occurrence_key ?? row.occurrenceKey, occurrenceVersion: row.occurrence_version ?? row.occurrenceVersion ?? null,
+      occurredAt: occurrenceInstant(row.occurred_at ?? row.occurredAt).toString(), topicId: episode.topicId,
+      sourceReferenceId: episode.sourceReferenceId, evidenceFacts: parseJson(row.evidence_json ?? null, row.evidenceFacts ?? EMPTY_OBJECT),
+      transitionEvidence: parseJson(row.transition_json ?? null, row.transitionEvidence ?? null), derivedSeverity: row.derived_severity ?? row.derivedSeverity
+    };
   }
   function latestOccurrence(episodeIdValue) {
-    if (db) return db.prepare('SELECT occurrence_version, occurred_at FROM attention_occurrences WHERE episode_id = ? ORDER BY occurred_at DESC, created_at DESC, occurrence_row_id DESC LIMIT 1').get(episodeIdValue) ?? null;
-    return [...memory.occurrences.values()].filter((item) => item.episodeId === episodeIdValue).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt) || right.createdAt.localeCompare(left.createdAt))[0] ?? null;
+    const rows = db ? db.prepare('SELECT rowid AS insertion_order, * FROM attention_occurrences WHERE episode_id = ?').all(episodeIdValue) : [...memory.occurrences.values()].filter((item) => item.episodeId === episodeIdValue);
+    return rows.sort(compareOccurrenceRows)[0] ?? null;
   }
   function saveEpisode(episode, { insert = false } = {}) {
     if (!db) { memory.episodes.set(episode.episodeId, Object.freeze({ ...episode })); return episode; }
@@ -281,9 +294,9 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     else db.prepare(sql).run(episode.state, episode.severity, episode.attentionSince, episode.occurredAt, episode.terminalAt, episode.snoozedUntil, episode.revision, json(episode.diagnosis), json(episode.evidenceFacts), episode.updatedAt, episode.episodeId);
     return findById(episode.episodeId);
   }
-  function saveOccurrence(episode, occurrence, derivedSeverity, verified) {
+  function saveOccurrence(episode, occurrence, derivedSeverity) {
     const occurrenceIdentity = exactOccurrenceKey(occurrence);
-    const row = { occurrenceRowId: `occurrence:${randomUUID()}`, episodeId: episode.episodeId, occurrenceKey: occurrenceIdentity, occurrenceVersion: occurrence.occurrenceVersion ?? null, occurredAt: occurrence.occurredAt, derivedSeverity, evidenceFacts: occurrence.evidenceFacts, transitionEvidence: verified ? occurrence.transitionEvidence : null, createdAt: nowIso(now), identityDigest: episode.identityDigest, episode };
+    const row = { occurrenceRowId: `occurrence:${randomUUID()}`, insertionOrder: memory?.occurrences.size + 1, episodeId: episode.episodeId, occurrenceKey: occurrenceIdentity, occurrenceVersion: occurrence.occurrenceVersion ?? null, occurredAt: occurrence.occurredAt, derivedSeverity, evidenceFacts: occurrence.evidenceFacts, transitionEvidence: occurrence.transitionEvidence ?? null, createdAt: nowIso(now), identityDigest: episode.identityDigest };
     if (!db) { memory.occurrences.set(`${episode.episodeId}:${occurrenceIdentity}`, row); return row; }
     db.prepare('INSERT INTO attention_occurrences (occurrence_row_id, episode_id, occurrence_key, occurrence_version, occurred_at, derived_severity, evidence_json, transition_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(row.occurrenceRowId, row.episodeId, row.occurrenceKey, row.occurrenceVersion, row.occurredAt, row.derivedSeverity, json(row.evidenceFacts), row.transitionEvidence === null ? null : json(row.transitionEvidence), row.createdAt);
     return row;
@@ -341,9 +354,22 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       if (metadata.getOperatingStatus?.().mode !== 'recovery-only') expireApproval(approval, clock);
       return null;
     }
-    if (approval.episodeRevision === episode.revision) return approval;
+    if (approvalPresentationRevisionCurrent(approval, episode)) return approval;
     if (metadata.getOperatingStatus?.().mode !== 'recovery-only') supersedeApproval(approval);
     return null;
+  }
+  function approvalPresentationRevisionCurrent(approval, episode) {
+    if (approval.episodeRevision === episode.revision) return true;
+    // A presentation snooze changes the episode revision, but cannot change the
+    // source approval's disclosure or expiry. Accept only its exact recorded
+    // transition (and the automatic wakeup); any other revision still fences it.
+    const snoozes = db
+      ? db.prepare("SELECT * FROM attention_attempts WHERE episode_id = ? AND action_id = 'attention.snooze' AND expected_episode_revision = ?").all(episode.episodeId, approval.episodeRevision).map(mapAttempt)
+      : [...memory.attempts.values()].filter((attempt) => attempt.episodeId === episode.episodeId && attempt.actionId === 'attention.snooze' && attempt.expectedEpisodeRevision === approval.episodeRevision);
+    return snoozes.some((attempt) => attempt.state === 'applied'
+      && digest(episode.diagnosis) === digest(approval.diagnosis)
+      && ((episode.revision === approval.episodeRevision + 2 && episode.state === 'Snoozed' && episode.snoozedUntil === attempt.parameters.until)
+        || (episode.revision === approval.episodeRevision + 3 && episode.state === 'Active' && episode.severity !== 'Critical' && episode.snoozedUntil === null && Date.parse(nowIso(now)) >= Date.parse(attempt.parameters.until))));
   }
   async function refreshApprovalForEpisode(episode, authenticatedOperatorId) {
     const approval = projectedApprovalForEpisode(episode);
@@ -360,7 +386,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       assertOpen();
       const refreshedClock = nowIso(now);
       if (Date.parse(refreshedClock) >= Date.parse(approval.expiresAt)) { expireApproval(approval, refreshedClock); return null; }
-      const expectedDigest = digest({ episodeId: episode.episodeId, episodeRevision: episode.revision, diagnosis: approval.diagnosis, actionId: descriptor.actionId, target, parameters: attempt.parameters, planRevision: approval.planRevision, sideEffects: descriptor.sideEffects, host: approval.host, operatorId: approval.operatorId, preconditionRevision: approval.preconditionRevision, policyRevision: approval.policyRevision, expiresAt: approval.expiresAt });
+      const expectedDigest = digest({ episodeId: episode.episodeId, episodeRevision: approval.episodeRevision, diagnosis: approval.diagnosis, actionId: descriptor.actionId, target, parameters: attempt.parameters, planRevision: approval.planRevision, sideEffects: descriptor.sideEffects, host: approval.host, operatorId: approval.operatorId, preconditionRevision: approval.preconditionRevision, policyRevision: approval.policyRevision, expiresAt: approval.expiresAt });
       if (authorization.planRevision === approval.planRevision && authorization.policyRevision === approval.policyRevision && authorization.preconditionRevision === approval.preconditionRevision && approval.disclosureDigest === expectedDigest && attempt.disclosureDigest === approval.disclosureDigest) return approval;
     } catch {}
     supersedeApproval(approval);
@@ -376,11 +402,15 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       const capability = capabilities.get(episode.sourceCapabilityId);
       const isReminder = episode.sourceCapabilityId === 'reminders' || capability?.sourceKind === 'reminder';
       const approval = projectedApprovalForEpisode(episode);
-      let descriptors = approval ? approvalDecisionDescriptors(approval) : isReminder ? defaultReminderDescriptors() : actionIdsForCapability(capability, episode);
+      const canSnooze = eligibleSnoozeChoices({ ...episode, monitoring: capability?.monitoring === true }).length > 0;
+      // Approval decisions take the first two slots. For eligible approvals,
+      // Snooze takes the third and Open Topic is omitted from this projection.
+      const decisions = approval ? approvalDecisionDescriptors(approval) : null;
+      let descriptors = decisions ? [...decisions.slice(0, 2), canSnooze ? presentationSnoozeDescriptor() : decisions[2]] : isReminder ? defaultReminderDescriptors() : actionIdsForCapability(capability, episode);
       if (episode.evidenceFacts?.actionOutcome === 'projection-failure') descriptors = descriptors.filter((descriptor) => descriptor.kind === 'navigation');
-      if (!approval && descriptors.length < 3 && episode.state === 'Active' && episode.severity !== 'Critical' && episode.sourceKind !== 'approval' && !isReminder) descriptors = [...descriptors, presentationSnoozeDescriptor()];
+      if (!approval && descriptors.length < 3 && canSnooze && episode.sourceKind !== 'approval' && !isReminder) descriptors = [...descriptors, presentationSnoozeDescriptor()];
       const actions = descriptors.map((descriptor) => actionProjection(descriptor, episode)).filter(Boolean);
-    return Object.freeze({ ...episode, actions, eligibleSnoozeChoices: eligibleSnoozeChoices({ ...episode, sourceKind: capability?.sourceKind ?? episode.sourceKind, monitoring: capability?.monitoring === true }), notificationEligible: episode.state === 'Active' && episode.severity !== 'Critical' });
+    return Object.freeze({ ...episode, actions, eligibleSnoozeChoices: eligibleSnoozeChoices({ ...episode, sourceKind: approval ? 'approval' : capability?.sourceKind ?? episode.sourceKind, monitoring: capability?.monitoring === true }), notificationEligible: episode.state === 'Active' && episode.severity !== 'Critical' });
     });
   }
   function expireSnoozes(clock) {
@@ -468,7 +498,9 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       const exact = findOccurrence(identity.identityDigest, occurrenceIdentity);
       const confirmedState = verifiedTransition && ['withdrawn', 'resolved'].includes(effectiveOccurrence.transitionEvidence?.state) ? (effectiveOccurrence.transitionEvidence.state === 'withdrawn' ? 'Withdrawn' : 'Resolved') : null;
       if (exact) {
-        const episode = mapEpisode(exact) ?? exact;
+        const episode = exact.episode;
+        const received = { sourceCapabilityId: effectiveOccurrence.sourceCapabilityId, stableSubjectId: effectiveOccurrence.stableSubjectId, attentionReason: effectiveOccurrence.attentionReason, occurrenceKey: occurrenceIdentity, occurrenceVersion: effectiveOccurrence.occurrenceVersion ?? null, occurredAt: occurrenceInstant(effectiveOccurrence.occurredAt).toString(), topicId: effectiveOccurrence.topicId ?? null, sourceReferenceId: effectiveOccurrence.sourceReferenceId ?? null, evidenceFacts: effectiveOccurrence.evidenceFacts, transitionEvidence: effectiveOccurrence.transitionEvidence ?? null, derivedSeverity: severity };
+        if (digest(occurrencePayload(episode, exact.occurrence)) !== digest(received)) fail('intent-mismatch', 'Occurrence identity was reused with different immutable evidence.');
         const activityId = confirmedState ? `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}` : null;
         return Object.freeze({ episode, activity: activityId ? service.getActivity(activityId) : null, duplicate: true, ignored: false });
       }
@@ -485,12 +517,13 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       if (current && !['Resolved', 'Withdrawn'].includes(current.state)) {
         const prior = latestOccurrence(current.episodeId);
         if (capability.revisionOrdering === 'positive-integer') {
-          const priorRevision = Number(prior?.occurrence_version ?? 0);
+          const priorRevision = Number(prior?.occurrence_version ?? prior?.occurrenceVersion ?? 0);
           if (sourceRevision < priorRevision) return Object.freeze({ episode: current, duplicate: false, ignored: true });
           if (sourceRevision === priorRevision) fail('conflict', 'The same Developer Work revision cannot change its evidence.');
         } else {
-          if (Date.parse(effectiveOccurrence.occurredAt) < Date.parse(current.occurredAt)) return Object.freeze({ episode: current, duplicate: false, ignored: true });
-          if (effectiveOccurrence.occurredAt === current.occurredAt && prior?.occurrence_version && prior.occurrence_version !== (effectiveOccurrence.occurrenceVersion ?? null)) fail('conflict', 'Equal-time evidence cannot replace a confirmed source revision.');
+          if (occurrenceInstant(effectiveOccurrence.occurredAt) < occurrenceInstant(current.occurredAt)) return Object.freeze({ episode: current, duplicate: false, ignored: true });
+          const priorOccurrenceVersion = prior?.occurrence_version ?? prior?.occurrenceVersion;
+          if (occurrenceInstant(effectiveOccurrence.occurredAt) === occurrenceInstant(current.occurredAt) && priorOccurrenceVersion && priorOccurrenceVersion !== (effectiveOccurrence.occurrenceVersion ?? null)) fail('conflict', 'Equal-time evidence cannot replace a confirmed source revision.');
         }
       }
       const generation = current ? current.generation + 1 : 1;
@@ -505,7 +538,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       if (episode.state === 'Snoozed' && severity === 'Critical') episode = { ...episode, state: assertTransition(episode.state, 'Active'), snoozedUntil: null };
       if (confirmedState && !['Resolved', 'Withdrawn'].includes(episode.state)) episode = { ...episode, state: assertTransition(episode.state, confirmedState), terminalAt: clock, snoozedUntil: null };
       saveEpisode(episode, { insert: !current || ['Resolved', 'Withdrawn'].includes(current.state) });
-      saveOccurrence(episode, effectiveOccurrence, severity, verifiedTransition);
+      saveOccurrence(episode, effectiveOccurrence, severity);
       const activity = confirmedState
         ? saveActivity({ activityId: `activity:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, episodeId: episode.episodeId, logicalOperationId: `transition:${digest({ episodeId: episode.episodeId, occurrence: occurrenceIdentity })}`, attemptId: null, topicId: episode.topicId, sourceReferenceId: episode.sourceReferenceId, actorMode: 'system', actionId: `source.${confirmedState.toLowerCase()}`, operationKind: `attention.${confirmedState.toLowerCase()}`, outcome: confirmedState.toLowerCase(), verificationRevision: effectiveOccurrence.occurrenceVersion ?? null, createdAt: clock, updatedAt: clock })
         : null;
@@ -602,10 +635,10 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
   function actionDescriptor(episode, actionId) {
     const capability = capabilities.get(episode.sourceCapabilityId);
     const approval = projectedApprovalForEpisode(episode);
-    if (approval) return approvalDecisionDescriptors(approval).find((item) => item.actionId === actionId) ?? null;
+    if (approval) return [...approvalDecisionDescriptors(approval), ...(eligibleSnoozeChoices({ ...episode, monitoring: capability?.monitoring === true }).length ? [presentationSnoozeDescriptor()] : [])].find((item) => item.actionId === actionId) ?? null;
     const isReminder = capability?.sourceKind === 'reminder' || episode.sourceCapabilityId === 'reminders';
     const sourceKind = capability?.sourceKind ?? episode.sourceKind;
-    let descriptors = isReminder ? defaultReminderDescriptors() : actionIdsForCapability(capability, episode);
+    let descriptors = isReminder ? defaultReminderDescriptors() : capability?.actions ?? [];
     if (episode.evidenceFacts?.actionOutcome === 'projection-failure') descriptors = descriptors.filter((descriptor) => descriptor.kind === 'navigation');
     if (descriptors.length < 3 && episode.state === 'Active' && episode.severity !== 'Critical' && !isReminder) descriptors = [...descriptors, presentationSnoozeDescriptor()];
     return descriptors.find((item) => item.actionId === actionId) ?? null;
@@ -614,7 +647,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
   function sourceActionDescriptor(episode, actionId) {
     const capability = capabilities.get(episode.sourceCapabilityId);
     const isReminder = capability?.sourceKind === 'reminder' || episode.sourceCapabilityId === 'reminders';
-    const descriptors = isReminder ? defaultReminderDescriptors() : actionIdsForCapability(capability, episode);
+    const descriptors = isReminder ? defaultReminderDescriptors() : capability?.actions ?? [];
     return descriptors.find((item) => item.actionId === actionId) ?? null;
   }
 
@@ -844,7 +877,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
         return ownLiveAttempts(owners, () => resumeApprovalDecision(existingAttempt, nowIso(now), authenticatedOperatorId));
       }
       const existingApproval = approvalForAttempt(existingAttempt.attemptId);
-      const replayDescriptor = replayEpisode && (existingApproval ? sourceActionDescriptor(replayEpisode, value.actionId) : actionDescriptor(replayEpisode, value.actionId));
+      const replayDescriptor = replayEpisode && (value.actionId === 'attention.snooze' ? presentationSnoozeDescriptor() : existingApproval ? sourceActionDescriptor(replayEpisode, value.actionId) : actionDescriptor(replayEpisode, value.actionId));
       if (!replayDescriptor) fail('intent-mismatch', 'Logical operation ID was reused with an unavailable action.');
       const replayParameters = validateActionInput(replayDescriptor, value.input ?? {});
       const replayTarget = replayDescriptor.targetResolver(replayEpisode, replayParameters);
@@ -901,6 +934,8 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     const descriptor = actionDescriptor(episode, nonBlank(value.actionId, 'actionId'));
     if (!descriptor) fail('invalid-action', 'The Attention action is not registered for this episode.');
     const parameters = validateActionInput(descriptor, value.input ?? {});
+    const target = descriptor.targetResolver(episode, parameters);
+    if (target === null || target === undefined) fail('invalid-action', 'The Attention action has no target for this episode.');
     const sourceRevision = latestOccurrence(episode.episodeId)?.occurrence_version ?? latestOccurrence(episode.episodeId)?.occurrenceVersion ?? null;
     if (descriptor.kind === 'mutation' && sourceRevision !== null && value.expectedSourceRevision !== sourceRevision) fail(value.expectedSourceRevision === undefined ? 'invalid-request' : 'conflict', 'Attention source revision is stale.', { currentRevision: sourceRevision, expectedRevision: value.expectedSourceRevision ?? null });
     if (['reminder.complete', 'reminder.snooze'].includes(descriptor.actionId)) {
@@ -933,7 +968,6 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       return ownLiveAttempts([{ attemptId: decisionAttempt.attemptId, intentDigest: requestIntentDigest, operatorId: authenticatedOperatorId }], () => resumeApprovalDecision(decisionAttempt, clock, authenticatedOperatorId));
     }
     if (descriptor.approvalMode === 'required') return Object.freeze({ status: 'approval-required', episode, approval: await createApproval({ episodeId: episode.episodeId, expectedEpisodeRevision: episode.revision, actionId: descriptor.actionId, parameters, logicalOperationId, authenticatedOperatorId }) });
-    const target = descriptor.targetResolver(episode, parameters);
     let disclosureDigest = digest({ actionId: descriptor.actionId, target, parameters, sideEffects: descriptor.sideEffects });
     let beforeRetry = async () => {
       const currentEpisode = findById(episode.episodeId);
@@ -1054,7 +1088,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     if (authenticatedOperatorId !== approval.operatorId) fail('conflict', 'Approval operator does not match.');
     if (host !== approval.host) fail('conflict', 'Approval host does not match.');
     const episode = findById(approval.episodeId);
-    if (!episode || episode.revision !== approval.episodeRevision) {
+    if (!episode || !approvalPresentationRevisionCurrent(approval, episode)) {
       supersedeApproval(approval, executionClock);
       fail('conflict', 'Approved Attention evidence changed.');
     }
@@ -1081,7 +1115,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       supersedeApproval(approval, executionClock);
       fail('conflict', 'Approved action preconditions changed.');
     }
-    const expectedDigest = digest({ episodeId: episode.episodeId, episodeRevision: episode.revision, diagnosis: approval.diagnosis, actionId: descriptor.actionId, target, parameters: attempt.parameters, planRevision: approval.planRevision, sideEffects: descriptor.sideEffects, host: approval.host, operatorId: approval.operatorId, preconditionRevision: approval.preconditionRevision, policyRevision: approval.policyRevision, expiresAt: approval.expiresAt });
+    const expectedDigest = digest({ episodeId: episode.episodeId, episodeRevision: approval.episodeRevision, diagnosis: approval.diagnosis, actionId: descriptor.actionId, target, parameters: attempt.parameters, planRevision: approval.planRevision, sideEffects: descriptor.sideEffects, host: approval.host, operatorId: approval.operatorId, preconditionRevision: approval.preconditionRevision, policyRevision: approval.policyRevision, expiresAt: approval.expiresAt });
     if (approval.disclosureDigest !== expectedDigest || attempt.disclosureDigest !== approval.disclosureDigest) {
       supersedeApproval(approval, executionClock);
       fail('conflict', 'Approved action disclosure changed.');
@@ -1104,7 +1138,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       failReservedApproval(currentApproval, 'superseded', driftCode, `Approved action host or operator changed before ${phase}.`);
     }
     const currentEpisode = findById(episode.episodeId);
-    if (!currentEpisode || currentEpisode.state !== 'Action running' || currentEpisode.revision !== currentApproval.episodeRevision + 1) {
+    if (!currentEpisode || currentEpisode.state !== 'Action running' || currentEpisode.revision !== episode.revision + 1) {
       failReservedApproval(currentApproval, 'superseded', driftCode, `Approved Attention evidence changed before ${phase}.`);
     }
     const currentDescriptor = sourceActionDescriptor(currentEpisode, currentAttempt.actionId);

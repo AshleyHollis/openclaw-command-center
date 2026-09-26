@@ -26,7 +26,7 @@ async function fixture(run) {
       window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.quickCaptureMode = 'success'; window.dailyMode = 'success'; window.activity = []; window.allOpenLoops = []; window.intakeResult = null; window.intakeCoverage = []; window.briefings = []; window.briefingHistory = []; window.routineOccurrences = [];
       window.openLoops = { total: 0, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 };
       const action = { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', target: { topicId: 'fictional-topic', sourceReferenceId: 'fictional-source' }, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string' } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact reminder.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true } };
-      window.cards = ['one', 'two'].map((id) => ({ notificationRecordId: `record-${id}`, episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
+      window.cards = ['one', 'two'].map((id) => ({ attentionRecordId: `attention-${id}`, notificationRecordIds: [`record-${id}`], episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
       let context; let view; let scope;
       const host = { signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: true }, redact: (value) => value,
         subscribe: (fn) => { subscribers.add(fn); return () => subscribers.delete(fn); },
@@ -59,7 +59,17 @@ async function fixture(run) {
             const evidence = [{ observationId: `evidence-${card.loopId}`, type: card.kind === 'payment' ? 'bill' : 'reply-request', sourceSystem: 'fictional-source', sourceKind: card.kind === 'payment' ? 'email' : 'sms', sourceVersion: 'v1', occurredAt: '2026-09-20T01:00:00.000Z', observedAt: '2026-09-20T01:01:00.000Z', historicalBaseline: false, summary: card.title, ...(card.requirementId ? { eventKind: 'requirement-recorded', requirementKind: 'purchase', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId } : {}), ...(card.evidence ?? {}) }];
             if (card.purchaseId) evidence.push({ observationId: `purchase-${card.loopId}`, type: 'order', sourceSystem: 'fictional-source', sourceKind: 'receipt', sourceVersion: 'v1', occurredAt: '2026-09-20T02:00:00.000Z', observedAt: '2026-09-20T02:01:00.000Z', historicalBaseline: false, eventKind: 'item-purchased', requirementNamespace: 'fictional-home-project', requirementId: card.requirementId, purchaseNamespace: 'fictional-home-project', purchaseId: card.purchaseId });
             if (Array.isArray(card.additionalEvidence)) evidence.push(...structuredClone(card.additionalEvidence));
-            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence } };
+            return { result: { schemaVersion: 1, loop: structuredClone(card), evidence,
+              ...(card.clarificationStatus ? { interpretation: { status: card.clarificationStatus } } : {}),
+              ...(window.followUps?.[card.loopId] ? { followUp: structuredClone(window.followUps[card.loopId]) } : {}),
+              ...(window.supportingNotes?.[card.loopId] ? { supportingNote: structuredClone(window.supportingNotes[card.loopId]) } : {}) } };
+          }
+          if (method.endsWith('open-loops.resume-follow-up')) {
+            const entry = Object.entries(window.followUps ?? {}).find(([, followUp]) => followUp.logicalOperationId === params.logicalOperationId);
+            if (!entry) throw new Error('The exact fictional saved decision is unavailable.');
+            entry[1].status = 'completed';
+            if (window.supportingNotes?.[entry[0]]?.status === 'pending') window.supportingNotes[entry[0]].status = 'completed';
+            return { result: { schemaVersion: 1, disposition: 'duplicate', loop: { loopId: entry[0] }, reminder: { status: 'applied', action: 'create', referenceId: 'fictional-reminder' } } };
           }
           if (method.endsWith('open-loops.list')) {
             const loops = window.allOpenLoops.slice(params.offset, params.offset + params.limit);
@@ -76,6 +86,17 @@ async function fixture(run) {
             if (window.openLoopActionMode === 'unknown') throw new Error('The transport outcome is unknown.');
             const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
             Object.assign(card, { paymentState: params.paymentState, state: params.paymentState === 'paid' ? 'resolved' : params.paymentState === 'payment-pending' ? 'monitoring' : card.state, revision: card.revision + 1 });
+            return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
+          }
+          if (method.endsWith('open-loops.clarify')) {
+            if (window.openLoopActionMode === 'unknown') throw new Error('The transport outcome is unknown.');
+            const card = [...(window.openLoops.highlighted ?? []), ...(window.openLoops.comingUp ?? []), ...(window.openLoops.waiting ?? []), ...(window.openLoops.suggested ?? []), ...(window.openLoops.deferred ?? []), ...(window.openLoops.reconciliation ?? []), ...window.allOpenLoops].find(item => item.loopId === params.loopId);
+            Object.assign(card, { state: card.state === 'resolved' ? 'uncertain' : 'decision-needed', revision: card.revision + 1,
+              clarificationPending: true, attention: { pendingClarificationId: 'fictional-clarification-observation' },
+              additionalEvidence: [{ observationId: 'fictional-clarification-observation', type: 'decision-evidence',
+                sourceSystem: 'command-center', sourceKind: 'user-clarification', sourceVersion: 'v1',
+                occurredAt: '2026-09-24T00:00:00.000Z', observedAt: '2026-09-24T00:00:00.000Z',
+                historicalBaseline: false, rationale: params.rationale, status: 'submitted' }] });
             return { schemaVersion: 1, status: 'applied', logicalOperationId: params.logicalOperationId, result: { schemaVersion: 1, disposition: 'applied', loop: structuredClone(card) } };
           }
           if (method.endsWith('open-loops.decide')) {
@@ -174,6 +195,13 @@ test('native Attention never substitutes another card for a missing or duplicate
   assert.equal(await page.locator('article').count(), 0);
 }));
 
+test('native notification focus rejects an expired record while a newer exact record remains usable', () => fixture(async (page) => {
+  await page.evaluate(() => { window.cards[0].notificationRecordIds = ['record-new']; window.mountRecord('record-one'); });
+  await page.getByRole('status').filter({ hasText: 'exact Attention item is no longer available' }).waitFor();
+  await page.evaluate(() => window.mountRecord('record-new'));
+  await page.getByRole('heading', { name: 'Fictional one' }).waitFor();
+}));
+
 test('native Attention ignores an older detail response after selection changes', () => fixture(async (page) => {
   await page.evaluate(() => { window.delayGet = true; window.selectRecord('record-two'); });
   await page.waitForFunction(() => window.finishGet);
@@ -203,6 +231,22 @@ test('native Attention approval submits the exact disclosed approval identity', 
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await page.waitForFunction(() => window.requests.some((r) => r.method.endsWith('attention.act')));
   assert.equal(await page.evaluate(() => window.requests.find((r) => r.method.endsWith('attention.act')).params.approvalId), 'approval-fictional');
+}));
+
+test('native Attention shows approval Snooze within the three action slots', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    const approval = (actionId, label) => ({ actionId, label, kind: 'mutation', target: { approvalId: 'approval-fictional' }, parameterSchema: { type: 'object', properties: {} }, sideEffects: [] });
+    window.cards[0].actions = [approval('approval.approve', 'Approve'), approval('approval.reject', 'Reject'), { actionId: 'attention.snooze', label: 'Snooze', kind: 'mutation', target: { episodeId: 'episode-one' }, parameterSchema: { type: 'object', properties: { preset: { type: 'string' }, until: { type: 'string' } } }, sideEffects: ['Suppresses presentation only.'] }];
+    window.cards[0].eligibleSnoozeChoices = ['PT1H', 'P1D', 'custom'];
+    window.mountRecord();
+  });
+  assert.equal(await page.locator('article[data-episode-id] form').count(), 3);
+  await page.getByLabel('Snooze duration').selectOption('PT1H');
+  await page.getByRole('button', { name: 'Snooze', exact: true }).click();
+  await page.waitForFunction(() => window.requests.some((request) => request.method.endsWith('attention.act')));
+  const action = await page.evaluate(() => window.requests.find((request) => request.method.endsWith('attention.act')).params);
+  assert.equal(action.actionId, 'attention.snooze');
+  assert.deepEqual(action.input, { preset: 'PT1H' });
 }));
 
 test('native Attention retains an unknown operation across remount and reconciles its unchanged identity', () => fixture(async (page) => {
@@ -255,6 +299,72 @@ test('native open-loop retry reconciles the same logical operation after an unkn
   const ids = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.payment-status')).map(request => request.params.logicalOperationId));
   assert.equal(ids.length, 2);
   assert.equal(ids[0], ids[1]);
+}));
+
+test('an uncertain payment decision cannot silently replay different form values', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoopActionMode = 'unknown';
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'uncertain-bill', kind: 'payment', title: 'Fictional bill with an uncertain response.', state: 'confirmed', paymentState: 'unpaid', actions: ['Record payment status'], evidenceCount: 1, revision: 1 }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.mountInbox();
+  });
+  const bill = page.locator('article[data-open-loop-id="uncertain-bill"]');
+  await bill.getByText('Record payment status', { exact: true }).click();
+  const rationale = bill.getByLabel('Evidence or rationale');
+  await rationale.fill('The fictional transfer was initiated.');
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  await page.getByRole('status').filter({ hasText: 'transport outcome is unknown' }).waitFor();
+  await rationale.fill('The fictional transfer has settled.');
+  await page.evaluate(() => { window.openLoopActionMode = 'success'; });
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  await page.getByRole('status').filter({ hasText: 'Restore its original choices' }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.payment-status')).length), 1);
+  await rationale.fill('The fictional transfer was initiated.');
+  await bill.getByRole('button', { name: 'Save payment status' }).click();
+  await page.getByRole('status').filter({ hasText: 'No payment was submitted.' }).waitFor();
+  const requests = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.payment-status')).map(request => request.params));
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0], requests[1]);
+}));
+
+test('item clarification preserves exact words on retry without claiming a payment outcome', () => fixture(async (page) => {
+  await page.evaluate(() => {
+    window.cards = [];
+    window.openLoopActionMode = 'unknown';
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'clarify-bill', kind: 'payment', title: 'Fictional invoice needs correction', state: 'confirmed', paymentState: 'unpaid', actions: ['Open bill'], evidenceCount: 1, revision: 1 }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.followUps = { 'clarify-bill': { status: 'pending', logicalOperationId: 'fictional-earlier-decision', priorDecision: true } };
+    window.supportingNotes = { 'clarify-bill': { status: 'unknown', priorDecision: true } };
+    window.mountInbox();
+  });
+  const bill = page.locator('article[data-open-loop-id="clarify-bill"]');
+  await bill.getByText('Clarify this item', { exact: true }).click();
+  const words = bill.getByLabel('What needs correcting?');
+  await words.fill('The fictional attachment appears to show a later date.');
+  await bill.getByRole('button', { name: 'Save clarification' }).click();
+  await page.getByRole('status').filter({ hasText: 'transport outcome is unknown' }).waitFor();
+  await words.fill('This is a different correction.');
+  await page.evaluate(() => { window.openLoopActionMode = 'success'; });
+  await bill.getByRole('button', { name: 'Save clarification' }).click();
+  await page.getByRole('status').filter({ hasText: 'Restore its original choices' }).waitFor();
+  assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.clarify')).length), 1);
+  await words.fill('The fictional attachment appears to show a later date.');
+  await bill.getByRole('button', { name: 'Save clarification' }).click();
+  await page.getByRole('status').filter({ hasText: 'Its outcome still needs review' }).waitFor();
+  await page.getByText('Clarification saved · interpretation pending').waitFor();
+  await page.locator('article[data-open-loop-id="clarify-bill"]').getByRole('button', { name: 'Review evidence' }).click();
+  await page.getByText('Your exact clarification is saved for this item.', { exact: false }).waitFor();
+  await page.getByText('An earlier Reminder effect is unresolved and may still finish. Check its outcome before a new correction; it is not queued for retry from this clarification.', { exact: true }).waitFor();
+  await page.getByText('An earlier supporting Note outcome is unknown. Check the exact Note before a new correction; it cannot be resumed from this clarification.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Resume saved follow-up' }).count(), 0);
+  await page.getByText('The fictional attachment appears to show a later date.', { exact: true }).waitFor();
+  const requests = await page.evaluate(() => window.requests.filter(request => request.method.endsWith('open-loops.clarify')).map(request => request.params));
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0], requests[1]);
+  assert.equal(await page.evaluate(() => window.openLoops.highlighted[0].paymentState), 'unpaid');
+  await page.evaluate(() => { window.openLoops.highlighted[0].clarificationStatus = 'review-required'; window.mountInbox(); });
+  await page.getByText('Clarification needs your review').waitFor();
+  await page.locator('article[data-open-loop-id="clarify-bill"]').getByRole('button', { name: 'Review evidence' }).click();
+  await page.getByText('Your clarification was reviewed, but it did not support one safe action.', { exact: false }).waitFor();
 }));
 
 test('native on-demand inventory pages through every quiet open loop', () => fixture(async (page) => {
@@ -312,6 +422,56 @@ test('native Attention reviews evidence and records status without paying or sen
   assert.equal(payment.paidAmount, undefined);
   assert.equal(await page.getByRole('button', { name: /^Pay|^Send$/i }).count(), 0);
   assert.equal(await page.evaluate(() => window.requests.filter(request => request.method.endsWith('attention.act')).length), 0);
+}));
+
+test('item evidence shows a saved decision with pending follow-up and resumes its exact identity', () => fixture(async (page) => {
+  const operationId = '10000000-0000-4000-8000-000000000021';
+  await page.evaluate((id) => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'bill-follow-up', kind: 'payment', title: 'Fictional renovation invoice', state: 'confirmed', paymentState: 'unpaid', reason: 'due-window', whyNow: 'The accepted date is approaching.', actions: ['Open bill'], evidenceCount: 1, revision: 2 }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.followUps = { 'bill-follow-up': { status: 'pending', logicalOperationId: id, action: 'create' } };
+    window.supportingNotes = { 'bill-follow-up': { status: 'pending' } };
+    window.mountInbox();
+  }, operationId);
+  const bill = page.locator('article[data-open-loop-id="bill-follow-up"]');
+  await bill.getByRole('button', { name: 'Review evidence' }).click();
+  await bill.getByText('Decision saved. Reminder follow-up is still pending.').waitFor();
+  await bill.getByText('Supporting Note update is pending.').waitFor();
+  await bill.getByRole('button', { name: 'Resume saved follow-up' }).click();
+  await bill.getByText('Decision saved. Reminder follow-up is complete.').waitFor();
+  await bill.getByText('The supporting Note recorded this decision.').waitFor();
+  assert.equal(await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.resume-follow-up'))?.params.logicalOperationId), operationId);
+}));
+
+test('an uncertain native Reminder outcome offers the exact saved resume action', () => fixture(async (page) => {
+  const operationId = '10000000-0000-4000-8000-000000000022';
+  await page.evaluate((id) => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'uncertain-bill', kind: 'payment', title: 'Fictional uncertain invoice', state: 'confirmed', paymentState: 'unpaid', reason: 'due-window', actions: ['Open bill'], evidenceCount: 1, revision: 2 }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.followUps = { 'uncertain-bill': { status: 'unknown', logicalOperationId: id, action: 'create' } };
+    window.mountInbox();
+  }, operationId);
+  const bill = page.locator('article[data-open-loop-id="uncertain-bill"]');
+  await bill.getByRole('button', { name: 'Review evidence' }).click();
+  await bill.getByText('The Reminder outcome is uncertain and needs reconciliation.', { exact: false }).waitFor();
+  await bill.getByRole('button', { name: 'Resume saved follow-up' }).click();
+  assert.equal(await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.resume-follow-up'))?.params.logicalOperationId), operationId);
+}));
+
+test('an earlier recoverable Reminder remains resumable while clarification waits', () => fixture(async (page) => {
+  const operationId = '10000000-0000-4000-8000-000000000023';
+  await page.evaluate((id) => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'clarified-bill', kind: 'payment', title: 'Fictional clarified bill', state: 'decision-needed', paymentState: 'unpaid', evidenceCount: 2, revision: 3,
+      attention: { pendingClarificationId: 'fictional-words', priorUserActionOperationId: id } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.followUps = { 'clarified-bill': { status: 'unknown', logicalOperationId: id, action: 'create', priorDecision: true, recoverable: true } };
+    window.mountInbox();
+  }, operationId);
+  const bill = page.locator('article[data-open-loop-id="clarified-bill"]');
+  await bill.getByRole('button', { name: 'Review evidence' }).click();
+  await bill.getByText('Resume its exact saved follow-up to reconcile the schedule before a new correction.', { exact: false }).waitFor();
+  await bill.getByRole('button', { name: 'Resume saved follow-up' }).click();
+  assert.equal(await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.resume-follow-up'))?.params.logicalOperationId), operationId);
 }));
 
 test('native capacity workspace plans the same item without inventing a deadline', () => fixture(async (page) => {
@@ -454,7 +614,7 @@ test('busy Dashboard keeps 25 Attention items visible while 200 optional items s
   await page.evaluate(() => {
     const planning = { importance: 'low', importanceOrigin: 'processing', contexts: ['home'], dependencies: [], someday: false };
     window.cards = Array.from({ length: 25 }, (_, index) => ({
-      notificationRecordId: `busy-record-${index + 1}`, episodeId: `busy-episode-${index + 1}`,
+      attentionRecordId: `busy-attention-${index + 1}`, notificationRecordIds: [`busy-record-${index + 1}`], episodeId: `busy-episode-${index + 1}`,
       topicId: 'topic-fictional-renovation', sourceReferenceId: `busy-source-${index + 1}`,
       sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 1,
       severity: 'Reminder', state: 'Active', context: `Required item ${index + 1}`, actions: [], eligibleSnoozeChoices: []
@@ -503,7 +663,7 @@ test('returning after a week shows every overdue, due, decision and accepted rev
 
 test('a failed producer remains a titled dashboard widget without blanking focused work', () => fixture(async (page) => {
   await page.evaluate(() => {
-    window.cards = [{ notificationRecordId: 'producer-record', episodeId: 'producer-episode', topicId: 'topic-fictional-renovation', sourceReferenceId: 'producer-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 1, severity: 'Reminder', state: 'Active', context: 'Review unaffected fictional work', actions: [], eligibleSnoozeChoices: [] }];
+    window.cards = [{ attentionRecordId: 'producer-attention', notificationRecordIds: ['producer-record'], episodeId: 'producer-episode', topicId: 'topic-fictional-renovation', sourceReferenceId: 'producer-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 1, severity: 'Reminder', state: 'Active', context: 'Review unaffected fictional work', actions: [], eligibleSnoozeChoices: [] }];
     window.intakeCoverage = [{ source: 'Email intake', sourceKind: 'email', status: 'failed', explanation: 'The last bounded producer run failed before publishing a receipt.' }];
     window.mountInbox();
   });

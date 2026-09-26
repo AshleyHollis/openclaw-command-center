@@ -1,4 +1,13 @@
 import { severityRank } from './severity.mjs';
+import { occurrenceInstant } from './contracts.mjs';
+
+export function compareOccurrenceRows(left, right) {
+  const instant = occurrenceInstant(right.occurred_at ?? right.occurredAt) - occurrenceInstant(left.occurred_at ?? left.occurredAt);
+  if (instant !== 0n) return instant > 0n ? 1 : -1;
+  return (right.created_at ?? right.createdAt).localeCompare(left.created_at ?? left.createdAt)
+    || (right.insertion_order ?? right.insertionOrder) - (left.insertion_order ?? left.insertionOrder)
+    || (right.occurrence_row_id ?? right.occurrenceRowId).localeCompare(left.occurrence_row_id ?? left.occurrenceRowId);
+}
 
 function compare(left, right) {
   const chronological = Date.parse(left.attentionSince) - Date.parse(right.attentionSince);

@@ -23,6 +23,9 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { loadIntakeSourceAccount, recordIntakeSourcePlan } from '../src/open-loops/intake-accounting.mjs';
 import { recordIntakeReceipt } from '../src/open-loops/intake-receipt.mjs';
 import { producerSourceExternalId } from '../src/open-loops/intake-retry.mjs';
+import { openLoopReminderOperationId } from '../src/open-loops/reminder-coordinator.mjs';
+import { buildTargetedClarificationPrompt } from '../src/open-loops/clarification-prompt.mjs';
+import { clarificationInterpretationOperationId, loadPendingClarificationContext } from '../src/open-loops/clarification-context.mjs';
 import { producerIntakePlanDigest } from '../src/open-loops/producer-intake-plan.mjs';
 import { emailReaderPlanDigest } from '../src/open-loops/email-reader-plan.mjs';
 import { expectedRollbackRelease } from '../src/metadata/recovery.mjs';
@@ -35,6 +38,7 @@ import { createAcceptanceScenarioCoordinator, requireBoundedMutationResponse, ru
 import { readVerifiedImportedHistoryEvidence, readVerifiedMigrationCompletion, retainPreparedMigrationFixtureEvidence, verifiedMigrationStatusReady } from '../src/acceptance-migration.mjs';
 import { captureSearchProjectionEvidence, COMMITTED_SEARCH_PROJECTION_FILES, verifyCommittedSearchProjectionSet, verifyMissingSearchProjectionSet } from '../src/acceptance-search-projections.mjs';
 import { resolveRealHostAcceptancePlan } from '../src/test-selection.mjs';
+import { assertCandidatePluginPermissions, assertFastHostAdmission } from './support/isolated-acceptance-preflight.mjs';
 import { tabTo } from './support/keyboard-navigation.mjs';
 import { activate, enterText, chooseOption, auditDynamicAccessibilityState, assertNoFrameOverflow, assertResponsiveFrame, assertKeyboardAccessibility } from './support/keyboard-accessibility.mjs';
 import { closeOpenConversation } from './support/conversation-lifecycle.mjs';
@@ -1178,7 +1182,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       } finally { metadata.close(); }
     }
     let fictionalModel;
-    if (kind === 'accounted-email') {
+    const workerVariant = kind === 'accounted-email-worker';
+    if (kind === 'accounted-email' || workerVariant) {
       fictionalModel = await startFictionalOpenAiModel();
       const config = JSON.parse(await readFile(scenarioWorld.manifest.configPath, 'utf8'));
       config.models.providers.fixture.baseUrl = fictionalModel.baseUrl;
@@ -1187,7 +1192,11 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
       config.models.providers.fixture.models[0].compat = { supportsTools: true };
       config.models.providers.fixture.request = { allowPrivateNetwork: true };
       config.agents.entries = { ...(config.agents.entries ?? {}), main: { model: 'fixture/fixture-model', modelPolicy: { allow: ['fixture/fixture-model'] } } };
-      config.tools = { ...(config.tools ?? {}), alsoAllow: [...new Set([...(config.tools?.alsoAllow ?? []), 'command_center_resolve_source_topic', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt'])] };
+      if (workerVariant) config.plugins.entries['command-center'].config = {
+        ...(config.plugins.entries['command-center'].config ?? {}),
+        clarificationWorker: { enabled: true, notBefore: '2026-09-24T00:00:00.000Z', intervalSeconds: 30 }
+      };
+      config.tools = { ...(config.tools ?? {}), alsoAllow: [...new Set([...(config.tools?.alsoAllow ?? []), 'command_center_resolve_source_topic', 'command_center_plan_intake_source', 'command_center_get_intake_source_account', 'command_center_save_source_note', 'command_center_capture_source_commitment', 'command_center_record_intake_outcome', 'command_center_record_intake_receipt', 'command_center_get_pending_clarification', 'command_center_interpret_clarification'])] };
       await writeFile(scenarioWorld.manifest.configPath, `${JSON.stringify(config)}\n`);
     }
     let scenarioHost = await withDeadline(`${kind} fresh host launch`, (signal) => launchPinnedHost({ descriptor, world: scenarioWorld, buildReceipt, signal }), 120_000);
@@ -1238,7 +1247,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         try { assert.ok(readVerifiedMigrationCompletion(database, { completionId: 'legacy-discord-v1', topicId: scaleTopicId }), 'verified scale migration must have a durable completion and exact Primary binding'); }
         finally { database.close(); }
       }
-      const nativeFixture = kind === 'accounted-email' ? await seedNativeExistingTopic({ world: scenarioWorld, host: scenarioHost, signal }) : null;
+      const nativeFixture = kind === 'accounted-email' || workerVariant ? await seedNativeExistingTopic({ world: scenarioWorld, host: scenarioHost, signal }) : null;
       managedBrowser = await withDeadline(`${kind} fresh browser launch`, () => launchManagedBrowser({ headless: true, timeout: 60_000 }));
       const page = await managedBrowser.browser.newPage({ viewport: { width, height: 900 } });
       const evidence = { console: [], errors: [], requests: [], responses: [] };
@@ -1289,7 +1298,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await retainNativeChatScreenshot(page, 'reader-refresh-completed-dashboard');
         return Object.freeze({ kind, assertionsCompleted: true, seededAcceptedSourceFixture: true, installedReaderStatusCommand: true, installedTaggedReaderApply: true, completedDashboardInspected: true, liveGraphRead: false });
       }
-      if (kind === 'accounted-email') {
+      if (kind === 'accounted-email' || workerVariant) {
         page.setDefaultTimeout(10_000);
         const milestone = name => process.stdout.write(`accounted-email-milestone=${name}\n`);
         const openNativeChat = async () => {
@@ -1308,7 +1317,13 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           const requestCount = fictionalModel.requests.length;
           await chatPane.locator('.agent-chat__composer-combobox textarea').fill(message);
           await chatPane.getByRole('button', { name: 'Send message', exact: true }).press('Enter');
-          await waitForConsecutiveReadiness(() => fictionalModel.requests.slice(requestCount).some(entry => entry.action === 'final' && entry.completedCurrentTool && entry.currentToolResultId), scenarioHost.earlyExit, { required: 1, deadlineMs: 60_000, delayMs: 100, signal });
+          try {
+            await waitForConsecutiveReadiness(() => fictionalModel.requests.slice(requestCount).some(entry => entry.action === 'final' && entry.completedCurrentTool && entry.currentToolResultId), scenarioHost.earlyExit, { required: 1, deadlineMs: completedAction === 'targeted-interpret' ? 30_000 : 60_000, delayMs: 100, signal });
+          } catch (error) {
+            const actions = fictionalModel.requests.slice(requestCount).map(entry => ({ action: entry.action, completedCurrentTool: entry.completedCurrentTool,
+              currentToolResultId: entry.currentToolResultId, tools: entry.tools.filter(name => name.includes('clarification')) }));
+            throw new Error(`Fictional native turn did not settle: ${JSON.stringify(actions)}`, { cause: error });
+          }
           assert.ok(fictionalModel.requests.slice(requestCount).some(entry => entry.action === completedAction), `Native turn did not execute ${completedAction}`);
           await chatPane.getByText(message, { exact: true }).waitFor({ timeout: 30_000 });
         };
@@ -1331,7 +1346,9 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const bootstrap = await fetchJsonWithDeadline(`${scenarioWorld.gateway.url}${runtimeCapability.bootstrap.path}`, { headers: { authorization: `Bearer ${scenarioWorld.gatewayCredential}` }, signal }, { label: 'accounted email authenticated build identity', timeoutMs: 10_000 });
         assert.equal(bootstrap.response.ok, true);
         assert.ok(typeof bootstrap.body.serverBuildId === 'string' && bootstrap.body.serverBuildId.trim());
-        await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId, method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
+        const deliveryDecisionId = randomUUID();
+        const deliveryDecisionResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential, scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId, method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: deliveryDecisionId, loopId: loop.loopId, expectedRevision: loop.revision, decision: 'confirm', rationale: 'Keep the accepted fictional delivery window.' }, signal });
+        assert.equal((deliveryDecisionResponse.result ?? deliveryDecisionResponse).supportingNote.status, 'pending', 'the original Note evidence stays unchanged while admitted siblings are missing');
         milestone('decision-recorded');
         const readerPlanPath = path.join(scenarioWorld.root, 'fictional-email-reader-plan.json');
         const installedWrapper = path.join(descriptor.schemaVersion === 2 ? descriptor.runtimeRoot : descriptor.checkout, descriptor.executable);
@@ -1385,6 +1402,10 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         }), 70_000);
         assert.match(retryOutput, /"retriedSources":1/u);
         milestone('installed-retry-complete');
+        const resumedDecisionResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.resume-follow-up', params: { schemaVersion: 1, logicalOperationId: deliveryDecisionId }, signal });
+        assert.equal((resumedDecisionResponse.result ?? resumedDecisionResponse).supportingNote.status, 'completed', 'the exact saved decision annotates the Note after admitted retry settles');
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         const dashboardPage = page.locator('openclaw-plugin-page');
         await dashboardPage.getByRole('heading', { name: 'Command Center', exact: true }).waitFor({ timeout: 30_000 });
@@ -1406,6 +1427,8 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         milestone('evidence-inspected');
         await retainNativeChatScreenshot(page, 'accounted-mixed-email-dashboard');
         await emailCard.getByRole('button', { name: 'Open retained Note', exact: true }).click();
+        await page.locator('openclaw-plugin-page').getByText(/The evidence used source version .*the current original is /u).waitFor({ timeout: 30_000 });
+        await page.locator('openclaw-plugin-page').getByRole('button', { name: 'Open current Note', exact: true }).click();
         await page.locator('openclaw-plugin-page').getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
         milestone('retained-note-inspected');
         const finalDashboard = await readDashboard(scenarioWorld.gateway.url, { credential: scenarioWorld.gatewayCredential });
@@ -1433,9 +1456,191 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         await outlookPopup.close();
         await page.setViewportSize({ width: 390, height: 900 });
         await paymentCard.getByRole('button', { name: 'Open supporting Note' }).click();
+        await page.locator('openclaw-plugin-page').getByText(/The evidence used source version .*the current original is /u).waitFor({ timeout: 30_000 });
+        await page.locator('openclaw-plugin-page').getByRole('button', { name: 'Open current Note', exact: true }).click();
         await page.locator('openclaw-plugin-page').getByText('Fictional retained real-host reference', { exact: true }).waitFor({ timeout: 30_000 });
         await retainNativeChatScreenshot(page, 'accounted-email-reader-note-mobile');
         milestone('original-email-and-note-opened');
+        const paymentBefore = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        const beforeDecision = (paymentBefore.result ?? paymentBefore).loop;
+        const clarificationId = randomUUID();
+        const clarificationWords = 'The fictional invoice date needs checking for this bill only.';
+        const clarificationResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.clarify', params: { schemaVersion: 1, logicalOperationId: clarificationId,
+            loopId: paymentLoopId, expectedRevision: beforeDecision.revision, rationale: clarificationWords }, signal });
+        const clarified = clarificationResponse.result ?? clarificationResponse;
+        assert.equal(clarified.loop.loopId, paymentLoopId);
+        assert.equal(clarified.loop.paymentState, beforeDecision.paymentState);
+        assert.ok(clarified.loop.attention.pendingClarificationId);
+        assert.equal(clarified.reminder, undefined, 'free text does not invent a native schedule effect');
+        const clarificationDetailResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        const clarificationDetail = clarificationDetailResponse.result ?? clarificationDetailResponse;
+        assert.equal(clarificationDetail.followUp, undefined);
+        assert.ok(clarificationDetail.evidence.some(item => item.observationId === clarified.loop.attention.pendingClarificationId
+          && item.rationale === clarificationWords && item.sourceKind === 'user-clarification'));
+        await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        const clarificationPage = page.locator('openclaw-plugin-page');
+        await clarificationPage.getByText(/Review all open loops \(/u).click();
+        await clarificationPage.getByRole('button', { name: 'Load open loops' }).click();
+        const clarificationCard = clarificationPage.locator(`article[data-open-loop-id="${paymentLoopId}"]`).first();
+        await clarificationCard.getByText(/Clarification saved · interpretation pending|Clarification needs your review/u).waitFor();
+        await clarificationCard.getByRole('button', { name: 'Review evidence' }).click();
+        const clarificationEvidence = clarificationCard.locator('details[data-open-loop-evidence][open]');
+        await clarificationEvidence.waitFor();
+        assert.match(await clarificationEvidence.innerText(), /The fictional invoice date needs checking for this bill only\./u);
+        milestone('clarification-saved-and-inspected');
+        const scheduleDecisionId = randomUUID();
+        const fictionalDueAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+        const scheduledResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: scheduleDecisionId,
+            loopId: paymentLoopId, expectedRevision: clarified.loop.revision,
+            decision: beforeDecision.state === 'suggested' ? 'confirm' : 'correct-date', dueAt: fictionalDueAt,
+            rationale: 'Fictional due date accepted for installed follow-up qualification.' }, signal });
+        const scheduled = scheduledResponse.result ?? scheduledResponse;
+        assert.equal(scheduled.loop.attention.pendingClarificationId, undefined);
+        assert.equal(scheduled.reminder.status, 'applied');
+        assert.equal(scheduled.supportingNote.status, 'completed');
+        const nativeReminderId = openLoopReminderOperationId(scheduleDecisionId);
+        const nativeDatabase = new DatabaseSync(path.join(scenarioWorld.root, '.openclaw', 'state', 'openclaw.sqlite'), { readOnly: true });
+        try { assert.equal(nativeDatabase.prepare('SELECT enabled FROM cron_jobs WHERE job_id = ?').get(nativeReminderId)?.enabled, 1); }
+        finally { nativeDatabase.close(); }
+        const reviewResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.clarify', params: { schemaVersion: 1, logicalOperationId: randomUUID(),
+            loopId: paymentLoopId, expectedRevision: scheduled.loop.revision,
+            rationale: 'I paid the fictional invoice in full. Keep this statement on this bill only.' }, signal });
+        const review = reviewResponse.result ?? reviewResponse;
+        const reviewDetailResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        const reviewDetail = reviewDetailResponse.result ?? reviewDetailResponse;
+        assert.equal(reviewDetail.followUp.status, 'completed');
+        assert.equal(reviewDetail.followUp.priorDecision, true);
+        assert.equal(reviewDetail.supportingNote.status, 'completed');
+        assert.equal(reviewDetail.supportingNote.priorDecision, true);
+        await clarificationPage.getByRole('button', { name: 'Refresh Dashboard' }).click();
+        const reviewedCard = clarificationPage.locator(`article[data-open-loop-id="${paymentLoopId}"]`).first();
+        await reviewedCard.getByRole('button', { name: 'Review evidence' }).click();
+        await reviewedCard.getByText('Earlier decision: Decision saved. Reminder follow-up is complete.', { exact: true }).waitFor();
+        await reviewedCard.getByText('Earlier decision: The supporting Note recorded this decision.', { exact: true }).waitFor();
+        const clarificationTarget = { loopId: paymentLoopId, expectedRevision: review.loop.revision,
+          clarificationObservationId: review.loop.attention.pendingClarificationId };
+        const paidDecisionId = clarificationInterpretationOperationId(clarificationTarget.clarificationObservationId);
+        if (workerVariant) {
+          await waitForConsecutiveReadiness(async probeSignal => {
+            const current = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+              method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal: probeSignal });
+            return (current.result ?? current).loop.paymentState === 'paid';
+          }, scenarioHost.earlyExit, { required: 1, deadlineMs: 90_000, delayMs: 500, signal });
+          const acceptedProposal = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+          try {
+            const proposal = acceptedProposal.getClarificationProposal(clarificationTarget.clarificationObservationId);
+            assert.equal(proposal?.proposal.paymentState, 'paid');
+            assert.equal(proposal.model, 'fixture-model');
+          } finally { acceptedProposal.close(); }
+          assert.ok(fictionalModel.requests.some(item => item.isolatedClarificationProposal && item.tools.length === 0),
+            'the installed worker must use one zero-tool isolated model call');
+          milestone('maintained-worker-interpretation-applied');
+        } else {
+          chatPane = await openNativeChat();
+          await sendNativeTurn(chatPane,
+            `${buildTargetedClarificationPrompt(clarificationTarget)}\n[fixture:targeted-clarification:${Buffer.from(JSON.stringify(clarificationTarget)).toString('base64url')}]`,
+            'targeted-interpret');
+          assert.equal(fictionalModel.requests.filter(item => item.action === 'targeted-load').length, 1);
+          assert.equal(fictionalModel.requests.filter(item => item.action === 'targeted-interpret').length, 1);
+          const untrustedResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+            method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+          assert.equal((untrustedResponse.result ?? untrustedResponse).loop.paymentState, 'unpaid', 'native Chat without trusted owner scope must not write a payment assertion');
+          const pendingInspection = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+          let exactClarification;
+          try { exactClarification = loadPendingClarificationContext(pendingInspection, { loopId: paymentLoopId, expectedRevision: review.loop.revision }); }
+          finally { pendingInspection.close(); }
+          assert.equal(exactClarification.status, 'pending');
+          const interpretedCommit = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+            scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+            method: 'command-center.v1.open-loops.interpret-clarification', params: { schemaVersion: 1, logicalOperationId: paidDecisionId,
+              ...clarificationTarget, processorVersion: exactClarification.processorVersion, outcome: 'clear', paymentState: 'paid' }, signal });
+          assert.equal((interpretedCommit.result ?? interpretedCommit).loop.paymentState, 'paid');
+        }
+        const interpretedResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        const interpreted = interpretedResponse.result ?? interpretedResponse;
+        assert.equal(interpreted.loop.paymentState, 'paid', 'the authenticated Gateway command records only an interpreted user assertion');
+        assert.ok(interpreted.evidence.some(item => item.sourceKind === 'processor-interpretation'
+          && item.interpretationOf === clarificationTarget.clarificationObservationId),
+        `interpreted evidence identities: ${JSON.stringify(interpreted.evidence.map(item => ({ sourceKind: item.sourceKind,
+          interpretationOf: item.interpretationOf, observationId: item.observationId })))}`);
+        if (workerVariant) {
+          await waitForConsecutiveReadiness(async probeSignal => {
+            const current = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+              method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal: probeSignal });
+            const detail = current.result ?? current;
+            return detail.followUp.status === 'completed' && detail.supportingNote.status === 'completed';
+          }, scenarioHost.earlyExit, { required: 1, deadlineMs: 90_000, delayMs: 500, signal });
+          milestone('maintained-worker-native-follow-up-completed');
+        } else {
+          assert.equal(interpreted.followUp.status, 'pending');
+          assert.equal(interpreted.supportingNote.status, 'pending');
+        }
+        const interpretationInspection = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+        try {
+          const accepted = interpretationInspection.getOpenLoopUserActionReceipt(paidDecisionId);
+          const note = interpretationInspection.getOpenLoopSupportingNoteIntent(paidDecisionId);
+          assert.equal(accepted.current, true);
+          assert.equal(accepted.followUpIntent.action, 'cancel');
+          assert.equal(interpretationInspection.getOperation(openLoopReminderOperationId(paidDecisionId))?.state ?? null,
+            workerVariant ? 'applied' : null);
+          assert.equal(note.target.status, 'ready');
+          assert.equal(note.outcome?.status ?? null, workerVariant ? 'completed' : null);
+        } finally { interpretationInspection.close(); }
+        if (!workerVariant) {
+          const resumedInterpretationResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+            scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+            method: 'command-center.v1.open-loops.resume-follow-up', params: { schemaVersion: 1, logicalOperationId: paidDecisionId }, signal });
+          const resumedInterpretation = resumedInterpretationResponse.result ?? resumedInterpretationResponse;
+          assert.equal(resumedInterpretation.reminder.status, 'applied');
+          assert.equal(resumedInterpretation.supportingNote.status, 'completed');
+        }
+        milestone('authenticated-clarification-interpretation-applied');
+        const noteTargetMetadata = openCommandCenterMetadataService({ stateDir: path.join(scenarioWorld.root, '.openclaw'), readOnly: true });
+        try {
+          const scheduledNote = noteTargetMetadata.getOpenLoopSupportingNoteIntent(scheduleDecisionId);
+          assert.equal(scheduledNote.outcome?.status, 'completed');
+          assert.ok(scheduledNote.intent?.textDigest);
+          const selected = noteTargetMetadata.getOpenLoopUserActionReceipt(paidDecisionId)?.supportingNoteTarget;
+          assert.equal(selected?.status, 'ready');
+          assert.equal(selected.target.expectedRevision, scheduledNote.outcome.observedRevision);
+          assert.equal(selected.target.retainedNoteRevision, durableBeforeRestart.plan.retainedNoteRevision);
+          assert.equal(selected.target.upstreamSourceVersion, 'email-change-key-real-host-52');
+          assert.notEqual(selected.target.upstreamSourceVersion, selected.target.retainedNoteRevision);
+        } finally { noteTargetMetadata.close(); }
+        const settledDetail = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        assert.equal((settledDetail.result ?? settledDetail).loop.paymentState, 'paid');
+        assert.equal((settledDetail.result ?? settledDetail).followUp.status, 'completed');
+        assert.equal((settledDetail.result ?? settledDetail).supportingNote.status, 'completed');
+        const disabledDatabase = new DatabaseSync(path.join(scenarioWorld.root, '.openclaw', 'state', 'openclaw.sqlite'), { readOnly: true });
+        try { assert.equal(disabledDatabase.prepare('SELECT enabled FROM cron_jobs WHERE job_id = ?').get(nativeReminderId)?.enabled, 0); }
+        finally { disabledDatabase.close(); }
+        await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        const settledPage = page.locator('openclaw-plugin-page');
+        await settledPage.getByRole('button', { name: 'Refresh Dashboard' }).click();
+        const settledInventory = settledPage.locator('details[data-open-loop-inventory]');
+        await settledInventory.waitFor();
+        if (!(await settledInventory.evaluate(node => node.open))) await settledInventory.locator('summary').click();
+        const loadSettled = settledInventory.getByRole('button', { name: 'Load open loops' });
+        if (await loadSettled.count()) await loadSettled.click();
+        const settledCard = settledInventory.locator(`article[data-open-loop-id="${paymentLoopId}"]`);
+        await settledCard.getByRole('button', { name: 'Review evidence' }).click();
+        await settledCard.getByText('Interpreted payment assertion', { exact: true }).waitFor();
+        await settledCard.getByText('This payment status came from your saved words. Payment has not been independently verified.', { exact: true }).waitFor();
+        await settledCard.getByText('Decision saved. Reminder follow-up is complete.', { exact: true }).waitFor();
+        await settledCard.getByText('The supporting Note recorded this decision.', { exact: true }).waitFor();
+        await retainNativeChatScreenshot(page, 'accounted-email-paid-follow-up');
+        milestone('native-reminder-created-and-cancelled');
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-capture-choice').length, 1);
         assert.equal(fictionalModel.requests.filter(item => ['accounted-capture-payment', 'accounted-capture-reply'].includes(item.action)).length, 0, 'installed CLI retry must not rerun the fictional model');
         assert.equal(fictionalModel.requests.filter(item => item.action === 'accounted-save').length, 1);
@@ -1447,7 +1652,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
           assert.equal(durable.plan.processorVersion, 'fictional-real-host-processor-v1');
           assert.deepEqual(durable.account.outcomes.map(item => item.status), ['clarified', 'applied', 'applied', 'quiet']);
         } finally { afterRetry.close(); }
-        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, mockedOutlookOpen: true });
+        return Object.freeze({ kind, assertionsCompleted: true, actualTermination: 'SIGKILL', sourceVersion: 'email-change-key-real-host-52', noteVersion: quiet.target.sourceVersion, outcomeStatuses: finalEmail.recentSources[0].outcomes.map(item => item.status), installedNativePage: true, inspectedDashboard: true, inspectedEvidence: true, inspectedRetainedNote: true, installedReaderCommand: true, installedRetryCommand: true, nativeReminderCreatedAndCancelled: true, supportingNoteTargetRetained: true, supportingNoteUpdated: true, inspectedPaidFollowUp: true, mockedOutlookOpen: true });
       }
       const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/plugins/command-center', { timeout: 10_000 }));
       await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'command-center', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -2278,20 +2483,27 @@ async function exerciseLargeNoteFixture(frame, { gatewayUrl, credential, topicId
 // retains a 285-second slice bound, so the outer owner must outlive the closed
 // matrix plus preparation and final evidence scanning.
 test('mounts the built plugin through the isolated authenticated external tab', { timeout: 2_400_000, concurrency: true }, async (testContext) => {
-  let descriptor, buildReceipt, baseline, baselineSeed;
+  let descriptor, buildReceipt, baseline, baselineSeed, preparationError;
   const nativeDiagnostic = acceptancePlan.kind === 'focused' && acceptancePlan.scenarioIds?.length === 1
     ? ['native-control-ui-activation', 'native-topic-chat-handoff', 'native-topic-notes-workspace', 'native-topic-files-workspace', 'topic-notes-visual', 'topic-document-tools', 'desktop-keyboard-journey', 'diagnostic-scale-startup', 'scale-performance', 'historical-backfill-owner'].find(id => acceptancePlan.scenarioIds[0] === id) : undefined;
   await testContext.test('release preparation: candidate build and authenticated descriptor', async () => {
-    reportProgress(testContext, 'build:started');
-    descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
-    if ((nativeDiagnostic || ['release', 'prerequisites'].includes(acceptancePlan.kind)) && process.env.COMMAND_CENTER_SEALED_CANDIDATE !== '1') throw new Error('Native acceptance requires a sealed candidate receipt.');
-    buildReceipt = await withDeadline('candidate build', () => process.env.COMMAND_CENTER_SEALED_CANDIDATE === '1' ? readBuiltReceipt() : build(), 120_000);
-    await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
-    if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
-      baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(capturedPerformanceBaselinePath, 'utf8')));
-    }
-    reportProgress(testContext, 'build:passed');
+    try {
+      reportProgress(testContext, 'build:started');
+      descriptor = parseHostDescriptor(); // Mandatory: never skip absent controller input.
+      if ((nativeDiagnostic || ['release', 'prerequisites'].includes(acceptancePlan.kind)) && process.env.COMMAND_CENTER_SEALED_CANDIDATE !== '1') throw new Error('Native acceptance requires a sealed candidate receipt.');
+      const requiresBoundCron = acceptancePlan.kind === 'release'
+        || acceptancePlan.isolatedSliceIds?.some(id => ['accounted-mixed-email', 'accounted-mixed-email-worker'].includes(id));
+      await assertFastHostAdmission(descriptor, { requireBoundCron: Boolean(requiresBoundCron) });
+      buildReceipt = await withDeadline('candidate build', () => process.env.COMMAND_CENTER_SEALED_CANDIDATE === '1' ? readBuiltReceipt() : build(), 120_000);
+      await withDeadline('candidate build digest verification', () => assertBuiltDigest(buildReceipt));
+      await assertCandidatePluginPermissions(process.cwd());
+      if (!capturePerformanceBaseline && acceptancePlan.kind === 'release') {
+        baseline = validateReleasePerformanceBaseline(JSON.parse(await readFile(capturedPerformanceBaselinePath, 'utf8')));
+      }
+      reportProgress(testContext, 'build:passed');
+    } catch (error) { preparationError = error; throw error; }
   });
+  if (preparationError || !descriptor || !buildReceipt) throw new Error('Acceptance preparation failed; no isolated slice was started.', { cause: preparationError });
   if (nativeDiagnostic) {
     assert.ok(descriptor && buildReceipt, 'Native diagnosis requires successful descriptor and sealed receipt admission');
     if (capturePerformanceBaseline) assertPerformanceHostIdentity(descriptor);
@@ -2446,6 +2658,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
   // Diagnostic only: do not silently add a new release-matrix requirement.
   if (acceptancePlan.isolatedSliceIds?.includes('dashboard-mixed-payload')) isolatedSlices.set('dashboard-mixed-payload', startIsolatedSlice('dashboard-mixed-payload', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'dashboard-payload', width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('accounted-mixed-email')) isolatedSlices.set('accounted-mixed-email', startIsolatedSlice('accounted-mixed-email', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'accounted-email', width: 1440, signal })));
+  if (acceptancePlan.isolatedSliceIds?.includes('accounted-mixed-email-worker')) isolatedSlices.set('accounted-mixed-email-worker', startIsolatedSlice('accounted-mixed-email-worker', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'accounted-email-worker', width: 1440, signal })));
   for (const kind of ['reader-refresh-failed', 'reader-refresh-completed']) if (acceptancePlan.isolatedSliceIds?.includes(kind)) isolatedSlices.set(kind, startIsolatedSlice(kind, (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, width: 1440, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('fresh-mobile')) isolatedSlices.set('fresh-mobile', startIsolatedSlice('fresh-mobile', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'mobile', width: 320, signal })));
   if (acceptancePlan.isolatedSliceIds?.includes('reminder-runtime-lifecycle')) isolatedSlices.set('reminder-runtime-lifecycle', startIsolatedSlice('reminder-runtime-lifecycle', (signal) => exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind: 'reminder-lifecycle', width: 1440, signal })));

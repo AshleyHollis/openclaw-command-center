@@ -1,4 +1,5 @@
 import { planTransactionEvent } from '../open-loops/transaction-intake.mjs';
+import { openLoopReminderReferenceId } from '../open-loops/reminder-coordinator.mjs';
 
 export function installTransactionIntake(service, { ErrorType }) {
   const fail = (code, message = code) => { throw new ErrorType(code, message); };
@@ -15,6 +16,8 @@ export function installTransactionIntake(service, { ErrorType }) {
     const terminal = ['resolved', 'cancelled'].includes(existing?.state);
     const terminalOccurredAt = terminal ? existing.evidenceObservationIds.map(id => service.getOpenLoopObservation(id)).filter(item => ['installation-complete', 'delivery-complete', 'order-cancelled'].includes(item?.facts?.eventKind)).map(item => Date.parse(item.occurredAt)).sort((left, right) => left - right).at(-1) : undefined;
     const incomingTerminal = ['resolved', 'cancelled'].includes(plan.loop.state);
+    const nativeReminderBound = existing && service.getSourceReference(openLoopReminderReferenceId(existing.loopId));
+    const terminalNeedsDecision = Boolean(incomingTerminal && !plan.observation.historicalBaseline && !terminal && nativeReminderBound);
     const preserveTerminal = terminal && (plan.observation.historicalBaseline === true || terminalOccurredAt !== undefined && Date.parse(plan.observation.occurredAt) <= terminalOccurredAt || incomingTerminal && plan.loop.state === existing.state);
     const laterCurrentEvidence = existing && terminal && !preserveTerminal;
     const amountChanged = existing?.amount !== undefined && plan.observation.facts.amount !== undefined && (existing.amount !== plan.observation.facts.amount || existing.currency !== plan.observation.facts.currency);
@@ -29,10 +32,11 @@ export function installTransactionIntake(service, { ErrorType }) {
       evidenceObservationIds: [...existing.evidenceObservationIds, plan.observation.observationId],
       revision: existing.revision + 1
     } : plan.loop;
-    if (preserveTerminal) next = { ...existing, evidenceObservationIds: [...existing.evidenceObservationIds, plan.observation.observationId], revision: existing.revision + 1 };
+    if (preserveTerminal || existing && plan.observation.historicalBaseline) next = { ...existing, evidenceObservationIds: [...existing.evidenceObservationIds, plan.observation.observationId], revision: existing.revision + 1 };
     else if (plan.observation.facts.amount !== undefined) next = { ...next, amount: plan.observation.facts.amount, currency: plan.observation.facts.currency };
     if (laterCurrentEvidence) next = { ...next, state: 'uncertain', attention: { reason: 'evidence-conflict', whyNow: 'New current evidence conflicts with the recorded terminal outcome.', actions: ['Open source', 'Review evidence'], activated: true, currentEvidence: true } };
     else if (!plan.observation.historicalBaseline && (amountChanged || dateChanged) && plan.loop.state !== 'cancelled') next = { ...next, attention: { reason: 'material-change', whyNow: 'The exact source changed an amount or expected date; review the evidence before changing the plan.', actions: ['Open source', 'Compare versions', 'Record decision'], materialRevision: `${plan.observation.source.externalId}:${plan.observation.source.version}`, activated: true, currentEvidence: true } };
+    if (terminalNeedsDecision) next = { ...next, state: 'uncertain', attention: { reason: 'evidence-conflict', whyNow: 'The source reports completion while a Reminder is linked. Confirm the outcome so its status can be reconciled.', actions: ['Open source', 'Review evidence', 'Mark resolved'], activated: true, currentEvidence: true } };
     const reconciled = service.applyOpenLoopChange({
       schemaVersion: 1,
       logicalOperationId: operationId,
@@ -41,7 +45,7 @@ export function installTransactionIntake(service, { ErrorType }) {
       expectedRevision: existing?.revision ?? 0,
       observation: plan.observation,
       loop: next,
-      evidenceRoles: { [plan.observation.observationId]: laterCurrentEvidence ? 'conflict' : existing ? incomingTerminal ? 'resolution' : 'update' : 'origin' },
+      evidenceRoles: { [plan.observation.observationId]: laterCurrentEvidence || terminalNeedsDecision ? 'conflict' : existing ? incomingTerminal ? 'resolution' : 'update' : 'origin' },
       updatedAt: plan.observation.observedAt
     });
     return Object.freeze({ schemaVersion: 1, disposition: 'applied', observation: reconciled.observation, loop: reconciled.loop });

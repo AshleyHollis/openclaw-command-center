@@ -24,9 +24,9 @@ function snapshot(value) {
 export function createNotificationCandidate({ episodeId, severity, kind = 'attention', epochId, nowMs = Date.now(), genericPreview = false, destinationId = 'attention-card', summaryCount = 0 } = {}) {
   if (typeof episodeId !== 'string' || episodeId.trim() === '') throw new TypeError('episodeId is required');
   if (!Number.isSafeInteger(nowMs)) throw new TypeError('nowMs must be a safe integer');
-  const recordId = opaqueNotificationId({ version: 1, episodeId }, 'record');
   const logicalOperationId = opaqueNotificationId({ version: 1, episodeId, epochId, kind }, 'operation');
   const emissionId = opaqueNotificationId({ version: 1, episodeId, epochId, kind, emission: 1 }, 'emission');
+  const recordId = notificationFocusRecordId(emissionId);
   const preview = notificationPreview({ severity, kind, genericPreview, summaryCount });
   return Object.freeze({
     version: NOTIFICATION_CANDIDATE_VERSION,
@@ -37,6 +37,11 @@ export function createNotificationCandidate({ episodeId, severity, kind = 'atten
     deepLink: Object.freeze({ kind: 'plugin-detail', destinationId, recordId }),
     expiresAtMs: nowMs + NOTIFICATION_MAX_AGE_MS
   });
+}
+
+export function notificationFocusRecordId(emissionId) {
+  if (typeof emissionId !== 'string' || !NOTIFICATION_ID_PATTERN.test(emissionId)) throw new TypeError('emissionId is invalid');
+  return opaqueNotificationId({ version: 2, emissionId }, 'record');
 }
 
 export function validateNotificationCandidate(value, { nowMs = Date.now(), destinationId = 'attention-card' } = {}) {

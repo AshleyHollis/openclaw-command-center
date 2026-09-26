@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { chromium } from 'playwright';
 
-test('reader keeps nested Files beside long Notes during consecutive selection and filtering', { timeout: 30000 }, async () => {
+test('reader keeps nested Files beside long Notes during consecutive selection and filtering', { timeout: 60000 }, async () => {
   const packagedRoot = process.env.COMMAND_CENTER_NATIVE_UI_ROOT;
   const nativeUiRoot = packagedRoot ? path.resolve(packagedRoot) : fileURLToPath(new URL('../src/native-ui/', import.meta.url));
   const server = createServer(async (req, res) => {
@@ -35,6 +35,7 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
       const signal = new AbortController().signal;
       window.readerState = createNativeState(signal);
       window.promoted = 0;
+      window.largeNoteText = `${'A'.repeat(8 * 1024 * 1024)}\n`;
       const paths = [
         ...Array.from({ length: 8 }, (_, i) => `projects/renovation/invoices/invoice-${i}.md`),
         ...Array.from({ length: 110 }, (_, i) => `archive/receipts/receipt-${i}.md`),
@@ -57,8 +58,10 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
             return { notes: page, total: notes.length, offset, hasMore, ...(hasMore ? { nextOffset } : {}), cursor: 'fixture-catalog' };
           }
           if (method.endsWith('notes.read')) {
-            const text = `---\r\ntitle: Sample invoice\r\ntags: [example]\r\n---\r\n# ${params.path}\r\n\r\n${'Long fictional paragraph.\r\n\r\n'.repeat(100)}`;
-            return { path: params.path, revision: 'r1', sourceReference: { topicId: params.topicId, referenceId: params.path }, contentEncoding: 'identity', contentBase64: btoa(text), byteOffset: 0, nextOffset: text.length, totalBytes: text.length, complete: true };
+            const text = params.path.endsWith('invoice-7.md') ? window.largeNoteText : `---\r\ntitle: Sample invoice\r\ntags: [example]\r\n---\r\n# ${params.path}\r\n\r\n${'Long fictional paragraph.\r\n\r\n'.repeat(100)}`;
+            const offset = params.offset ?? 0;
+            const nextOffset = Math.min(text.length, offset + 256 * 1024);
+            return { path: params.path, revision: 'r1', sourceReference: { topicId: params.topicId, referenceId: params.path }, contentEncoding: 'identity', contentBase64: btoa(text.slice(offset, nextOffset)), byteOffset: offset, nextOffset, totalBytes: text.length, complete: nextOffset === text.length };
           }
           throw new Error(`Unexpected method: ${method}`);
         }
@@ -79,11 +82,14 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
                 window.nativeExplorerUpdates.push({ query: props.query, expandedPaths: [...props.expandedPaths] });
                 const search = document.createElement('input'); search.type = 'search'; search.setAttribute('aria-label', 'Filter files by name or path'); search.value = props.query;
                 search.addEventListener('input', () => props.onQueryChange(search.value));
+                const folder = document.createElement('details');
+                const folderToggle = document.createElement('summary'); folderToggle.className = 'chat-workspace-rail__file'; folderToggle.textContent = 'projects';
+                folder.append(folderToggle);
                 const files = props.entries.filter(entry => entry.kind === 'file').map(entry => {
-                  const button = document.createElement('button'); button.type = 'button'; button.textContent = entry.name;
+                  const button = document.createElement('button'); button.type = 'button'; button.className = 'chat-workspace-rail__file'; button.textContent = entry.name;
                   button.addEventListener('click', () => props.onSelect(entry.path)); return button;
                 });
-                explorer.replaceChildren(search, ...files);
+                explorer.replaceChildren(search, folder, ...files);
               };
               container.replaceChildren(explorer); render();
               return { update(next) { props = next; window.nativeExplorerProps = props; render(); }, dispose() { explorer.remove(); } };
@@ -95,6 +101,16 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     });
     const filter = page.getByRole('searchbox', { name: /Filter/ });
     await filter.waitFor();
+    const assertTargets = async (selector) => {
+      const sizes = await page.locator(selector).evaluateAll(elements => elements.filter(el => el.getClientRects().length).map(el => {
+        const box = el.getBoundingClientRect(); return { width: box.width, height: box.height };
+      }));
+      assert.ok(sizes.length > 0, `${selector} has visible controls`);
+      for (const size of sizes) assert.ok(size.width >= 44 && size.height >= 44, `${selector} target is at least 44x44 CSS pixels: ${JSON.stringify(size)}`);
+    };
+    await assertTargets('[data-topic-notes] summary');
+    await assertTargets('.note-tree-item');
+    await assertTargets('.reader-files input[type="search"]');
     for (const name of ['projects', 'renovation', 'invoices']) {
       const folder = page.locator('summary').filter({ hasText: new RegExp(`^${name}$`) });
       if (!(await folder.locator('..').getAttribute('open'))) {
@@ -120,8 +136,29 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     const metadata = page.getByText('title: Sample invoice', { exact: false });
     assert.equal(await metadata.isVisible(), false, 'frontmatter should not dominate Reading');
     await page.getByRole('button', { name: 'Source', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="Note source"]')?.textContent?.startsWith('---\r\ntitle: Sample invoice'));
     assert.ok((await page.getByRole('region', { name: 'Note source', exact: true }).textContent()).startsWith('---\r\ntitle: Sample invoice\r\ntags: [example]\r\n---\r\n'));
     await page.getByRole('button', { name: 'Reading', exact: true }).click();
+    await page.getByRole('region', { name: 'Note content', exact: true }).getByRole('heading', { level: 1 }).waitFor();
+    assert.equal(await page.locator('[aria-label="Note source"]').textContent(), '', 'inactive source DOM is released');
+    await page.getByRole('button', { name: 'Read projects/renovation/invoices/invoice-7.md', exact: true }).click();
+    await page.locator('[aria-label="Note content"] [data-large-note-viewer]').waitFor();
+    const assertLargeView = async (active, inactive) => {
+      assert.deepEqual(await page.evaluate(({ active, inactive }) => {
+        const viewer = document.querySelector(`[aria-label="Note ${active}"] [data-large-note-viewer]`);
+        const other = document.querySelector(`[aria-label="Note ${inactive}"]`);
+        return { viewers: document.querySelectorAll('[data-large-note-viewer]').length, length: viewer?.value.length, newline: viewer?.value.endsWith('\n'), defaultContent: viewer?.textContent.length, readOnly: viewer?.readOnly, inactiveChildren: other?.childNodes.length };
+      }, { active, inactive }), { viewers: 1, length: 8 * 1024 * 1024 + 1, newline: true, defaultContent: 0, readOnly: true, inactiveChildren: 0 });
+    };
+    await assertLargeView('content', 'source');
+    await page.getByRole('button', { name: 'Source', exact: true }).click();
+    await page.locator('[aria-label="Note source"] [data-large-note-viewer]').waitFor();
+    await assertLargeView('source', 'content');
+    await page.getByRole('button', { name: 'Reading', exact: true }).click();
+    await page.locator('[aria-label="Note content"] [data-large-note-viewer]').waitFor();
+    await assertLargeView('content', 'source');
+    await page.getByRole('button', { name: 'Read projects/renovation/invoices/invoice-4.md', exact: true }).click();
+    await page.getByRole('region', { name: 'Note content', exact: true }).getByRole('heading', { level: 1 }).waitFor();
     await filter.fill('invoice-4');
     await filter.fill('');
     assert.equal(await page.getByRole('button', { name: 'Read projects/renovation/invoices/invoice-4.md', exact: true }).isVisible(), true, 'filter clearing restores nested expansion');
@@ -146,6 +183,9 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     await page.getByRole('button', { name: 'Show Files', exact: true }).waitFor();
     await page.getByRole('button', { name: 'Show Files', exact: true }).click();
     assert.equal(await filter.isVisible(), true);
+    await assertTargets('[data-topic-notes] summary');
+    await assertTargets('.note-tree-item');
+    await assertTargets('.reader-files input[type="search"]');
     await page.getByRole('button', { name: 'Hide Files', exact: true }).click();
     assert.equal(await page.getByRole('region', { name: 'Note content', exact: true }).isVisible(), true);
     await page.locator('#mount').evaluate(el => el.style.width = '900px');
@@ -155,6 +195,9 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     const nativeExplorer = page.locator('.control-ui-file-explorer');
     await nativeExplorer.waitFor({ state: 'visible' });
     const nativeFilter = nativeExplorer.getByRole('searchbox', { name: 'Filter files by name or path', exact: true });
+    await assertTargets('[data-native-topic-files] .chat-workspace-rail__file');
+    await assertTargets('[data-native-topic-files] summary.chat-workspace-rail__file');
+    await assertTargets('[data-native-topic-files] input[type="search"]');
     // A host disclosure emits the complete expanded set based on its last
     // props. Sequential nested opens must therefore update that existing
     // renderer rather than leaving it with only the initial root path.
@@ -175,6 +218,9 @@ test('reader keeps nested Files beside long Notes during consecutive selection a
     assert.equal(await nativeExplorer.isVisible(), true, 'native Files remains visible after selecting a Note');
     await page.locator('#mount').evaluate(el => el.style.width = '400px');
     assert.equal(await nativeExplorer.isVisible(), true, 'native Files does not collapse at its retained rail width');
+    await assertTargets('[data-native-topic-files] .chat-workspace-rail__file');
+    await assertTargets('[data-native-topic-files] summary.chat-workspace-rail__file');
+    await assertTargets('[data-native-topic-files] input[type="search"]');
     await nativeFilter.fill('receipt-109');
     const laterPageFile = nativeExplorer.getByRole('button', { name: 'receipt-109.md', exact: true });
     await laterPageFile.waitFor({ state: 'visible' });

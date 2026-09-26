@@ -8,6 +8,7 @@ import { canonicalImportedUserMessage } from '../src/migration/transcript.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { NoteAdapter } from '../src/sources/notes.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 const topic = { topicId: 'topic-one', paraCategory: 'project' };
 const noteFolder = { version: 1, referenceId: 'folder:one', topicId: 'topic-one', sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/topic-one', observedRevision: null };
@@ -96,6 +97,7 @@ test('Note source snapshot reuses content from the authoritative stable browse w
 });
 
 test('production Note snapshot registers the exact authoritative Note identity for navigation', async () => {
+  const releaseHostFileAccess = installHostFileAccessFixture();
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-search-note-state-'));
   const vault = path.join(stateDir, 'vault');
   let durable;
@@ -120,6 +122,7 @@ test('production Note snapshot registers the exact authoritative Note identity f
     adapter?.close();
     durable?.close();
     await rm(stateDir, { recursive: true, force: true });
+    releaseHostFileAccess();
   }
 });
 

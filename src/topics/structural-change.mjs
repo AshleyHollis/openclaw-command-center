@@ -39,14 +39,17 @@ export function assertPreviewConfirmation(preview, input = {}) {
     throw error;
   }
   const expected = input.expectedRevisions ?? input.revisions;
-  if (expected !== undefined) {
-    const expectedJson = canonicalJson(expected);
-    const previewJson = canonicalJson(preview.expectedRevisions ?? []);
-    if (expectedJson !== previewJson) {
-      const error = new Error('Structural Change expected revisions are incomplete or stale.');
-      error.code = 'conflict';
-      throw error;
-    }
+  if (expected === undefined) {
+    const error = new Error('Structural Change expected revisions are required.');
+    error.code = 'conflict';
+    throw error;
+  }
+  const expectedJson = canonicalJson(expected);
+  const previewJson = canonicalJson(preview.expectedRevisions ?? []);
+  if (expectedJson !== previewJson) {
+    const error = new Error('Structural Change expected revisions are incomplete or stale.');
+    error.code = 'conflict';
+    throw error;
   }
   return preview;
 }

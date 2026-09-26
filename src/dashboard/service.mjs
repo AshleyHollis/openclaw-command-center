@@ -1,8 +1,10 @@
 import { sourceError } from '../sources/errors.mjs';
 import { opaqueNotificationId } from '../notifications/preview.mjs';
+import { notificationFocusRecordId } from '../notifications/candidate.mjs';
 import { openLoopReminderReferenceId, zonedDateAtNine } from '../open-loops/reminder-coordinator.mjs';
 import { projectCapacityWorkspace } from '../open-loops/capacity-workspace.mjs';
 import { projectIntakeAccounts } from '../open-loops/intake-accounting.mjs';
+import { clarificationInterpretationStatus } from '../open-loops/clarification-status.mjs';
 
 const DEFAULT_ACTIVITY_LIMIT = 50;
 const MAX_ACTIVITY_LIMIT = 50;
@@ -60,14 +62,17 @@ async function listReminderRows({ sourceService, metadata, topics }) {
   return rows;
 }
 
-function compactEpisode(episode) {
+function compactEpisode(episode, metadata, serverTimeMs) {
   const evidence = episode?.evidenceFacts ?? {};
   const dueReminder = episode?.sourceCapabilityId === 'reminders' && evidence.reminderDue === true;
+  const focusEmissions = episode?.state === 'Active' && typeof metadata?.listNotificationFocusEmissions === 'function'
+    ? metadata.listNotificationFocusEmissions(episode.episodeId, serverTimeMs) : [];
   return Object.freeze({
     ...episode,
     ...(dueReminder ? { severity: 'Reminder' } : {}),
     actions: Object.freeze(Array.isArray(episode?.actions) ? episode.actions.slice(0, 3) : []),
-    notificationRecordId: opaqueNotificationId({ version: 1, episodeId: episode?.episodeId }, 'record'),
+    attentionRecordId: opaqueNotificationId({ version: 1, episodeId: episode?.episodeId }, 'record'),
+    notificationRecordIds: Object.freeze(focusEmissions.map(notificationFocusRecordId)),
     context: episode?.sourceCapabilityId === 'developer-work.v1' ? (typeof evidence.summary === 'string' ? evidence.summary.slice(0, 120) : 'Development needs your attention') : typeof evidence.context === 'string' ? evidence.context.slice(0, 120) : episode?.sourceKind === 'reminder' ? 'Reminder' : 'Attention item',
     evidenceFacts: undefined,
     evidence: Object.freeze({ ...evidence })
@@ -102,6 +107,8 @@ function compactOpenLoop(projected, metadata) {
       ...(loop.attention.lastConsideredAt ? { lastConsideredAt: loop.attention.lastConsideredAt } : {}),
       someday: loop.attention.someday === true
     }) }),
+    ...(loop.attention?.pendingClarificationId ? { clarificationPending: true } : {}),
+    ...(loop.attention?.pendingClarificationId ? { clarificationStatus: clarificationInterpretationStatus(metadata, loop) } : {}),
     actions: Object.freeze(asArray(projected.actions).slice(0, 4)),
     ...(sourceKinds.length ? { sourceLabel: sourceKinds.map(value => value === 'message' ? 'Email or message' : value[0].toUpperCase() + value.slice(1)).join(', ') } : {}),
     evidenceCount: loop.evidenceObservationIds.length,
@@ -340,8 +347,8 @@ export async function projectDashboard({ sourceService, attentionService, metada
     || episode.sourceCapabilityId === 'topic-review'
     || episode.sourceCapabilityId === 'developer-work.v1'
     || episode.sourceCapabilityId === 'reminders' && episode.evidenceFacts?.reminderDue === true
-  )).map(compactEpisode);
-  const inProgress = asArray(attentionResult?.inProgress).filter((episode) => episode?.state === 'Action running').map((episode) => Object.freeze({ ...compactEpisode(episode), actions: [] }));
+  )).map((episode) => compactEpisode(episode, metadata, serverTimeMs));
+  const inProgress = asArray(attentionResult?.inProgress).filter((episode) => episode?.state === 'Action running').map((episode) => Object.freeze({ ...compactEpisode(episode, metadata, serverTimeMs), actions: [] }));
   const topicById = new Map(topics.map((topic) => [topic.topicId, topic]));
   const reminders = await listReminderRows({ sourceService, metadata, topics });
   const futureOccurrenceKeys = new Set();

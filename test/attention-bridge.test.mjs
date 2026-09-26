@@ -74,6 +74,9 @@ test('Attention and Activity contracts stay closed while first-live handlers pre
   response = undefined;
   await actHandler({ req: { id: operationId }, params: { schemaVersion: 1, topicId: 'topic-1', sourceReferenceId: 'source-1', episodeId: 'episode-1', expectedEpisodeRevision: 1, expectedSourceRevision: 'source-revision-1', actionId: 'monitor.retry', input: {}, logicalOperationId: operationId }, client: { authenticatedUserId: 'operator-bridge' }, context: { authenticated: true }, respond: (...args) => { response = args; } });
   assert.equal(response[0], true);
+  const publicAttempt = sanitizeBridgeResult('command-center.v1.attention.act', { schemaVersion: 1, status: 'applied', attempt: { attemptId: 'attempt-1', state: 'applied', target: { private: true }, parameters: { private: true }, disclosureDigest: 'forensic' } });
+  assert.deepEqual(publicAttempt.attempt, { attemptId: 'attempt-1', state: 'applied' });
+  for (const key of ['target', 'parameters', 'disclosureDigest']) assert.equal(JSON.stringify(publicAttempt).includes(key), false);
   const getHandler = registrations.find(([method]) => method === 'command-center.v1.attention.get')[1];
   response = undefined;
   await getHandler({ req: { id: 'frame-3' }, params: { schemaVersion: 1, episodeId: 'missing' }, context: { authenticated: true }, respond: (...args) => { response = args; } });

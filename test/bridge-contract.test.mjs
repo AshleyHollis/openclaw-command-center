@@ -68,6 +68,13 @@ test('closed bridge validation rejects unversioned, extra-field, and non-UUID mu
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.browse', { schemaVersion: 1, topicId: 'topic', includeClosed: 'true' }), /includeClosed.*boolean/i);
   assert.throws(() => validateBridgeRequest('command-center.v1.sessions.list', { schemaVersion: 1, topicId: 'topic' }), /unsupported.*bridge method/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.structural-change.confirm', { schemaVersion: 1, topicId: randomUUID(), structuralChangeId: randomUUID(), paraCategory: 'area', previewDigest: 'sha256:preview', expectedRevision: 4, expectedRevisions: [], logicalOperationId: randomUUID() }));
+  for (const method of ['command-center.v1.topics.structural-change.confirm', 'command-center.v1.topics.archive.confirm', 'command-center.v1.topics.restore.confirm']) {
+    const confirmation = { schemaVersion: 1, topicId: randomUUID(), structuralChangeId: randomUUID(), ...(method.includes('structural-change') || method.includes('restore') ? { paraCategory: 'area' } : {}), previewDigest: 'sha256:preview', expectedRevision: 4, logicalOperationId: randomUUID() };
+    assert.throws(() => validateBridgeRequest(method, confirmation), /expectedRevisions/i);
+    assert.throws(() => validateBridgeRequest(method, { ...confirmation, expectedRevisions: [{ source: 'reference', id: 'note-folder:exact' }] }), /expectedRevisions/i);
+    assert.throws(() => validateBridgeRequest(method, { ...confirmation, expectedRevisions: [{ source: 'reference', id: 'note-folder:exact', revision: null }] }), /expectedRevisions/i);
+    assert.throws(() => validateBridgeRequest(method, { ...confirmation, expectedRevisions: [{ source: 'reference', id: 'note-folder:exact', revision: 'r1', extra: true }] }), /expectedRevisions/i);
+  }
   assert.throws(() => validateBridgeRequest('command-center.v1.topics.rename', { schemaVersion: 1, topicId: randomUUID(), name: 'Fictional rename', logicalOperationId: randomUUID() }), /expectedRevision/i);
   assert.doesNotThrow(() => validateBridgeRequest('command-center.v1.topics.recovery.verify', { schemaVersion: 1, topicId: randomUUID(), referenceId: 'note-folder:fictional', expectedRevision: 4, expectedSourceRevision: 'fs:1:2:3', logicalOperationId: randomUUID() }));
   for (const attachment of [{ path: '/fictional/private.md' }, { url: 'https://fictional.invalid/private' }]) {

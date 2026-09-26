@@ -33,7 +33,7 @@ export function projectQuietAttention(input, { now = new Date().toISOString(), l
   const dueMs = acceptedDueAt === undefined ? undefined : instant(acceptedDueAt, 'accepted due time');
   const explicitReason = loop.attention?.reason;
   const reviewMs = loop.reviewAt === undefined ? undefined : instant(loop.reviewAt, 'reviewAt');
-  if (reviewMs !== undefined && reviewMs > nowMs && explicitReason !== 'evidence-conflict') return Object.freeze({ group: 'deferred', reviewAt: loop.reviewAt, loop });
+  if (reviewMs !== undefined && reviewMs > nowMs && !['evidence-conflict', 'material-change'].includes(explicitReason)) return Object.freeze({ group: 'deferred', reviewAt: loop.reviewAt, loop });
   const historicalOnly = loop.attention && loop.attention.currentEvidence !== true;
   let reason;
   if (explicitReason && ['response-requested', 'decision-requested', 'material-change', 'activated-blocker', 'evidence-conflict', 'review-time'].includes(explicitReason)) reason = explicitReason;

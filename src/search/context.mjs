@@ -1,6 +1,6 @@
 import { sourceError } from '../sources/errors.mjs';
 import { effectiveSourceLocator } from '../sources/reference.mjs';
-import { SEARCH_PROJECTION_VERSIONS } from './projection-store.mjs';
+import { normalizeSearchQuery, parseLexicalQuery } from './query.mjs';
 
 const MAX_EXCERPTS = 8;
 const MAX_EXCERPT_CHARS = 320;
@@ -121,7 +121,8 @@ export function createTopicContextPolicy({ metadata, searchService } = {}) {
     const binding = currentBinding(metadata, sessionKey, sessionId);
     if (!binding) throw sourceError('source-recovery', 'Trusted session context does not resolve exactly one current Topic.');
     const current = binding.topic;
-    if (typeof query !== 'string' || query.trim() === '' || query.trim().length > 256) throw sourceError('invalid-request', 'query must be 1–256 UTF-16 code units.');
+    const normalizedQuery = normalizeSearchQuery(query);
+    parseLexicalQuery(normalizedQuery);
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_EXCERPTS) throw sourceError('invalid-request', `limit must be an integer between 1 and ${MAX_EXCERPTS}.`);
     const targetId = targetTopicId ?? current.topicId;
     const crossTopic = targetId !== current.topicId;
@@ -132,11 +133,11 @@ export function createTopicContextPolicy({ metadata, searchService } = {}) {
     if (!topic) throw sourceError('source-recovery', 'The requested Topic does not exist.');
     const currentTopicIdentity = identity(metadata, current);
     const retrievedTopic = identity(metadata, topic);
-    const result = await searchService.query({ schemaVersion: 1, topicId: targetId, query: query.trim(), limit });
+    const result = await searchService.query({ schemaVersion: 1, topicId: targetId, query: normalizedQuery, limit });
     const verified = currentBinding(metadata, sessionKey, sessionId);
     if (!verified || verified.referenceId !== binding.referenceId || verified.topic.topicId !== current.topicId || verified.sessionId !== binding.sessionId) throw sourceError('source-recovery', 'Trusted Session ownership changed during Topic context retrieval.');
     const selected = selectExcerpts(result.notes.results, result.conversations.results, limit);
-    return fitOutput({ schemaVersion: 1, currentTopic: currentTopicIdentity, originatingTopic: currentTopicIdentity, retrievedTopic, crossTopic, selectionBasis: crossTopic ? crossTopicBasis : 'current-topic', projectionVersions: SEARCH_PROJECTION_VERSIONS, groups: {
+    return fitOutput({ schemaVersion: 1, currentTopic: currentTopicIdentity, originatingTopic: currentTopicIdentity, retrievedTopic, crossTopic, selectionBasis: crossTopic ? crossTopicBasis : 'current-topic', groups: {
       notes: selected.notes.map((item) => excerpt(item, 'notes', retrievedTopic, metadata)),
       conversations: selected.conversations.map((item) => excerpt(item, 'conversations', retrievedTopic, metadata))
     }, truncation: {

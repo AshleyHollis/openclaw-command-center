@@ -19,6 +19,28 @@ test('explicit capture becomes one quiet confirmed commitment and an idea stays 
   assert.equal(idea.loop.attention.provenance, 'idea');
 });
 
+test('an explicitly typed bill is a payment loop that can record a paid assertion', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-bill-capture-'));
+  const metadata = openCommandCenterMetadataService({ stateDir });
+  try {
+    metadata.createTopic({ topicId: 'topic-home', paraCategory: 'area', lifecycle: 'active', createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' });
+    const capture = createCommitmentCaptureService({ metadata });
+    const input = base({ sourceKind: 'email', sourceExternalId: 'email:fictional-bill', title: 'Pay fictional bill', obligationId: 'bill-1', obligationKind: 'payment' });
+    const first = await capture.capture(input);
+    assert.equal(first.loop.kind, 'payment');
+    assert.equal(first.loop.paymentState, 'unpaid');
+    assert.equal((await capture.capture(input)).loop.loopId, first.loop.loopId);
+    const paid = metadata.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: '20000000-0000-4000-8000-000000000002', loopId: first.loop.loopId, expectedRevision: first.loop.revision, paymentState: 'paid', actorId: 'fictional-operator', rationale: 'Fictional assertion only.', updatedAt: '2026-09-20T02:00:00Z' });
+    assert.equal(paid.loop.paymentState, 'paid');
+    assert.equal(paid.loop.state, 'resolved');
+    const replay = await capture.capture({ ...input, logicalOperationId: '30000000-0000-4000-8000-000000000003', sourceVersion: 'session-2' });
+    assert.equal(replay.loop.loopId, first.loop.loopId);
+    assert.equal(replay.loop.paymentState, 'paid');
+    await assert.rejects(() => capture.capture({ ...input, logicalOperationId: '40000000-0000-4000-8000-000000000004', sourceVersion: 'session-3', obligationKind: undefined }), /explicit duplicate review/u);
+    assert.equal(metadata.listOpenLoops().length, 1);
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('manual quick capture shares the commitment identity and keeps ideas in review', () => {
   const task = planCommitmentCapture(base({ sourceKind: 'manual', sourceExternalId: 'operator:fictional', sourceVersion: 'quick-capture:task-1', obligationId: 'task-1' }));
   const idea = planCommitmentCapture(base({ sourceKind: 'manual', sourceExternalId: 'operator:fictional', sourceVersion: 'quick-capture:idea-1', obligationId: 'idea-1', provenance: 'idea' }));
@@ -102,7 +124,7 @@ test('capture owner atomically replays and verifies exact Note references', asyn
   const loops = new Map(); const receipts = new Map();
   const metadata = {
     getSourceReference: id => id === 'ref-note' ? { referenceId: id, topicId: 'topic-home', sourceKind: 'note' } : null,
-    findOpenLoopBySubject: (_kind, subject) => [...loops.values()].find(loop => loop.stableSubjectId === subject) ?? null,
+    findOpenLoopBySubject: (kind, subject) => [...loops.values()].find(loop => loop.kind === kind && loop.stableSubjectId === subject) ?? null,
     applyOpenLoopChange: input => { const prior = receipts.get(input.logicalOperationId); if (prior) return prior; loops.set(input.loop.loopId, input.loop); const result = { schemaVersion: 1, disposition: 'created', observation: input.observation, loop: input.loop }; receipts.set(input.logicalOperationId, result); return result; }
   };
   const sourceService = { notesRead: async input => ({ referenceId: input.referenceId }) };

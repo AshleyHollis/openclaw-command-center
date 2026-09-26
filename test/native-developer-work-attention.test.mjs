@@ -20,7 +20,7 @@ test('LIVE Attention opens the DEV handoff without exposing a session key or sub
     const result = await page.evaluate(async () => {
       const { mountAttentionPage } = await import('/attention-page.mjs');
       const controller = new AbortController();
-      const card = { episodeId: 'episode-1', notificationRecordId: 'record-1', context: 'Review sample feature', revision: 1 };
+      const card = { episodeId: 'episode-1', attentionRecordId: 'attention-1', notificationRecordIds: ['record-1'], context: 'Review sample feature', revision: 1 };
       const detail = { ...card, sourceCapabilityId: 'developer-work.v1', state: 'Active', severity: 'Routine', evidenceFacts: {
         question: 'Is this ready?', devHandoffUrl: 'https://dev.example.test/ui/plugin?plugin=command-center&id=developer-work&p.workId=sample-feature&p.requestId=review-a'
       } };

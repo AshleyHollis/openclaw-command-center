@@ -1,11 +1,37 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { MAX_EVIDENCE_SOURCE_ID_LENGTH, MAX_EVIDENCE_SOURCE_REVISION_LENGTH, MAX_SERIALIZED_EVIDENCE_BYTES, materialEvidenceDigest, normalizeEvidenceFacts, proposalIdentity } from '../src/topics/analysis-evidence.mjs';
 import { candidateToProposal, eligibleTopics, orderProposals } from '../src/topics/analysis-policy.mjs';
-import { materialEvidenceDigest, proposalIdentity } from '../src/topics/analysis-evidence.mjs';
 
 const topic = { topicId: 'topic-fictional', lifecycle: 'active', paraCategory: 'project', revision: 4, name: 'Fictional Topic' };
 const source = { referenceId: 'source-fictional', observedRevision: 'source-revision-4' };
 const evidence = [{ evidenceId: 'evidence-fictional', sourceId: source.referenceId, sourceRevision: source.observedRevision, fact: 'A fictional source records a concrete category boundary in its latest revision.', material: true, observedAt: '2026-08-24T07:00:00Z' }];
+
+test('evidence enforces exact serialized budget and bounded source identity before publication', () => {
+  const facts = Array.from({ length: 8 }, (_, index) => ({
+    evidenceId: `evidence-${index}`.padEnd(160, 'e'), sourceId: `source-${index}`.padEnd(MAX_EVIDENCE_SOURCE_ID_LENGTH, 's'),
+    sourceRevision: 'r', fact: `Material fact ${index} `.padEnd(320, 'f'), material: true,
+    observedAt: '2026-08-24T07:00:00.000Z'
+  }));
+  let remaining = MAX_SERIALIZED_EVIDENCE_BYTES - Buffer.byteLength(JSON.stringify(facts));
+  assert.ok(remaining > 0);
+  for (const fact of facts) {
+    const added = Math.min(remaining, MAX_EVIDENCE_SOURCE_REVISION_LENGTH - fact.sourceRevision.length);
+    fact.sourceRevision += 'r'.repeat(added);
+    remaining -= added;
+  }
+  assert.equal(remaining, 0);
+  const normalized = normalizeEvidenceFacts(facts);
+  assert.equal(Buffer.byteLength(JSON.stringify(normalized)), MAX_SERIALIZED_EVIDENCE_BYTES);
+  assert.deepEqual(normalizeEvidenceFacts(evidence), evidence);
+  const room = facts.findIndex((fact) => fact.sourceRevision.length < MAX_EVIDENCE_SOURCE_REVISION_LENGTH);
+  assert.ok(room >= 0);
+  const overBudget = facts.map((fact, index) => index === room ? { ...fact, sourceRevision: `${fact.sourceRevision}r` } : fact);
+  assert.throws(() => normalizeEvidenceFacts(overBudget), /12 KiB aggregate/u);
+  assert.throws(() => normalizeEvidenceFacts([{ ...evidence[0], sourceId: 's'.repeat(MAX_EVIDENCE_SOURCE_ID_LENGTH + 1) }]), /sourceId/u);
+  assert.throws(() => normalizeEvidenceFacts([{ ...evidence[0], sourceRevision: 'r'.repeat(MAX_EVIDENCE_SOURCE_REVISION_LENGTH + 1) }]), /sourceRevision/u);
+  assert.doesNotThrow(() => normalizeEvidenceFacts([{ ...evidence[0], sourceId: 's'.repeat(MAX_EVIDENCE_SOURCE_ID_LENGTH), sourceRevision: 'r'.repeat(MAX_EVIDENCE_SOURCE_REVISION_LENGTH) }]));
+});
 
 function candidate(overrides = {}) {
   return {

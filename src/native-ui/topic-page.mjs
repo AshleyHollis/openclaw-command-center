@@ -6,6 +6,7 @@ import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { readerStyles } from './reader-layout.mjs';
 import { loadTopicCatalog, topicCatalogPageSize } from './topic-catalog.mjs';
 import { topicSourceAvailable } from './topic-source-availability.mjs';
+import { renderGroupedSearchResults } from './search-results.mjs';
 
 export const nativeExplorerCompleteCatalogLimit = 500;
 
@@ -92,6 +93,15 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   const previousNotes = element('button', 'Previous Notes'); previousNotes.type = 'button'; previousNotes.disabled = true;
   const nextNotes = element('button', 'Next Notes'); nextNotes.type = 'button'; nextNotes.disabled = true;
   const notePagination = element('nav'); notePagination.setAttribute('aria-label', 'Note pages'); notePagination.append(previousNotes, nextNotes);
+  const searchPane = element('section'); searchPane.setAttribute('aria-label', 'Search this Topic');
+  const searchForm = element('form');
+  const searchLabel = element('label', 'Search this Topic');
+  const searchInput = element('input'); searchInput.type = 'search'; searchInput.maxLength = 256; searchInput.required = true;
+  searchLabel.append(searchInput);
+  const searchSubmit = element('button', 'Search'); searchSubmit.type = 'submit';
+  const searchStatus = element('p'); searchStatus.setAttribute('role', 'status');
+  const searchResults = element('div'); searchResults.dataset.topicSearchResults = '';
+  searchForm.append(searchLabel, searchSubmit); searchPane.append(searchForm, searchStatus, searchResults);
   const noteTitle = element('h2', 'Select a Note');
   const breadcrumb = element('nav'); breadcrumb.className = 'reader-breadcrumb'; breadcrumb.setAttribute('aria-label', 'File path');
   const noteModes = element('div'); noteModes.setAttribute('role', 'group'); noteModes.setAttribute('aria-label', 'Note view');
@@ -150,7 +160,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   // its host in that case without assuming the supplied mount is an element.
   const pageMarker = container instanceof HTMLElement ? container : container.host;
   if (pageMarker?.dataset) pageMarker.dataset.topicReaderPage = panel ? 'panel' : 'page';
-  container.replaceChildren(readerStyles(document), toolbar, ...(panel ? [] : [back, chat, history]), status, announcement, paneHelp, ...(panel ? [] : [creationActions, conversationsLabel, conversationStatus, conversations, historiesLabel, historyStatus, histories]), notesWorkspace,
+  container.replaceChildren(readerStyles(document), toolbar, ...(panel ? [] : [back, chat, history]), status, announcement, paneHelp, ...(panel ? [] : [creationActions, conversationsLabel, conversationStatus, conversations, historiesLabel, historyStatus, histories]), notesWorkspace, ...(FIRST_LIVE_FEATURES.search && !panel ? [searchPane] : []),
     ...(FIRST_LIVE_FEATURES.noteWrite ? [editing] : [footer]));
   const readable = () => host.connection.connected && host.connection.canRead;
   function showPanelInMain() {
@@ -168,7 +178,8 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   const current = (pending) => !signal.aborted && presented && readable() && pending === generation;
   const currentCatalog = (pending) => !signal.aborted && presented && readable() && pending === catalogGeneration;
   const report = (error) => { if (!signal.aborted && presented && error?.name !== 'AbortError') { status.textContent = host.redact(error?.message || 'Topic is unavailable.'); renderNativeExplorer(); } };
-  function cancel() { generation += 1; catalogGeneration += 1; reading.abort(); preview?.dispose(); preview = undefined; writing.abort(); writing = new AbortController(); navigation.cancel(); }
+  let searchGeneration = 0;
+  function cancel() { generation += 1; catalogGeneration += 1; searchGeneration += 1; reading.abort(); preview?.dispose(); preview = undefined; writing.abort(); writing = new AbortController(); navigation.cancel(); }
   function clearDocumentUrls() { for (const url of documentUrls) URL.revokeObjectURL(url); documentUrls.clear(); }
   const draftKey = (descriptor) => JSON.stringify([descriptor.topicId, descriptor.referenceId]);
   const sameDocumentSelection = (candidate, descriptor) => candidate?.sourceKind === 'document' && candidate.topicId === descriptor.topicId && candidate.referenceId === descriptor.referenceId && candidate.path === descriptor.path && candidate.observedRevision === descriptor.observedRevision;
@@ -196,13 +207,23 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     const reading = noteView === 'reading';
     readingMode.setAttribute('aria-pressed', String(reading)); sourceMode.setAttribute('aria-pressed', String(!reading));
     content.hidden = !reading; source.hidden = reading;
-    if (!noteText) { content.replaceChildren(); source.textContent = ''; return; }
+    // Release the inactive representation, including a large textarea's value.
+    // The authoritative read remains in noteText for the next mode switch.
+    const clear = (container) => {
+      for (const viewer of container.querySelectorAll('[data-large-note-viewer]')) viewer.value = '';
+      container.replaceChildren();
+      delete container.dataset.largeNote;
+    };
+    if (!noteText) { clear(content); clear(source); return; }
     if (!reading) {
+      clear(content);
+      clear(source);
       const { renderReadOnlySource } = await import('./note-render.mjs');
       if (signal.aborted || !presented || noteView !== 'source' || pending !== renderGeneration) return;
       renderReadOnlySource(source, noteText);
       return;
     }
+    clear(source);
     content.textContent = 'Rendering Note…';
     try {
       const { renderReadOnlyMarkdown } = await import('./note-render.mjs');
@@ -537,7 +558,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
           if (panel && !showPanelInMain()) return;
           (noteView === 'reading' ? content : source).focus();
         }
-        return;
+        return true;
       }
       let draft = drafts.get(key);
       if (!draft || (!draft.operation && draft.version === version && (discardDraft || draft.text === draft.baseText))) {
@@ -547,10 +568,12 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       showDraft();
       announce(`Note opened · ${result.revision}`);
       if (userInitiated) (noteView === 'reading' ? content : source).focus();
+      return true;
     } catch (error) { if (!readSignal.aborted && current(pending)) report(error); }
   }
   async function load() {
     cancel(); const pending = catalogGeneration;
+    searchResults.replaceChildren(); searchStatus.textContent = ''; searchInput.value = '';
     pendingCatalogOffset = null;
     showReaderPath(); status.title = '';
     creation?.dispose(); creation?.form.remove(); creation = undefined;
@@ -652,6 +675,17 @@ export function mountTopicPage(container, context, state = createNativeState(), 
         if (matches[0].revision !== requested.evidenceSourceVersion) {
           viewState.selected = undefined;
           status.textContent = `The evidence used source version ${requested.evidenceSourceVersion}; the current original is ${matches[0].revision}. It was not opened as the earlier evidence.`;
+          if (sourceKindFor(matches[0]) === 'note') {
+            const currentNote = matches[0];
+            const openCurrent = element('button', 'Open current Note'); openCurrent.type = 'button';
+            openCurrent.addEventListener('click', () => {
+              if (!currentCatalog(pending)) return;
+              void openNote(currentNote, { userInitiated: true }).then(opened => {
+                if (opened && currentCatalog(pending)) status.textContent = `Opened the current Note at ${currentNote.revision}. The earlier evidence used ${requested.evidenceSourceVersion}; this is a later revision.`;
+              });
+            }, { signal });
+            status.append(' ', openCurrent);
+          }
           return;
         }
         if (sourceKindFor(matches[0]) === 'note') await openNote(matches[0]);
@@ -735,6 +769,27 @@ export function mountTopicPage(container, context, state = createNativeState(), 
   reload.addEventListener('click', () => void reloadNote(), { signal });
   discard.addEventListener('click', () => void reloadNote(true), { signal });
   filter.addEventListener('input', () => { if (viewState) viewState.filter = filter.value; renderNoteTree(); }, { signal });
+  searchForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!FIRST_LIVE_FEATURES.search || !presented || !readable() || !topic || !searchInput.value.trim()) return;
+    const selectedTopicId = topicId; const pending = ++searchGeneration;
+    searchStatus.textContent = 'Searching…';
+    void host.request('command-center.v1.search.query', { schemaVersion: 1, topicId: selectedTopicId, query: searchInput.value.trim(), limit: 50 }).then((response) => {
+      if (pending !== searchGeneration || selectedTopicId !== topicId || !presented || !readable()) return;
+      const grouped = response?.result ?? response;
+      renderGroupedSearchResults(searchResults, grouped, {
+        openNote: (descriptor) => {
+          if (descriptor?.kind !== 'note' || descriptor.topicId !== topicId || typeof descriptor.referenceId !== 'string' || typeof descriptor.path !== 'string' || typeof descriptor.observedRevision !== 'string') return;
+          void openNote({ path: descriptor.path, revision: descriptor.observedRevision, sourceReference: { referenceId: descriptor.referenceId } }, { userInitiated: true });
+        },
+        openConversation: (descriptor) => {
+          if (descriptor?.kind !== 'conversation' || descriptor.topicId !== topicId || typeof descriptor.referenceId !== 'string' || typeof descriptor.sessionId !== 'string' || typeof descriptor.sessionKey !== 'string') return;
+          void navigation.open({ topicId, referenceId: descriptor.referenceId, expectedSessionId: descriptor.sessionId, expectedSessionKey: descriptor.sessionKey }).catch(report);
+        }
+      });
+      searchStatus.textContent = `${grouped.notes.results.length} Notes · ${grouped.conversations.results.length} Conversations`;
+    }).catch((error) => { if (pending === searchGeneration) searchStatus.textContent = host.redact(error?.message || 'Search is unavailable.'); });
+  }, { signal });
   previousNotes.addEventListener('click', () => void loadCatalogPage(Math.max(0, catalogOffset - 50)), { signal });
   nextNotes.addEventListener('click', () => { if (catalogNextOffset !== null) void loadCatalogPage(catalogNextOffset); }, { signal });
   tree.addEventListener('scroll', () => { if (viewState && tree.childNodes.length && !filter.value.trim()) viewState.scroll = tree.scrollTop; }, { signal });

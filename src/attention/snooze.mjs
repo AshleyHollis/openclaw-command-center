@@ -1,4 +1,4 @@
-const presetDurations = Object.freeze({ PT72H: 72 * 60 * 60 * 1000, PT168H: 168 * 60 * 60 * 1000 });
+const presetDurations = Object.freeze({ PT1H: 60 * 60 * 1000, P1D: 24 * 60 * 60 * 1000, PT72H: 72 * 60 * 60 * 1000, PT168H: 168 * 60 * 60 * 1000 });
 
 export const SNOOZE_PRESETS = Object.freeze(['NEXT_0700', 'PT72H', 'PT168H']);
 
@@ -33,6 +33,7 @@ function nextLocalSeven(now, timeZone) {
 
 export function eligibleSnoozeChoices(episode) {
   if (!episode || episode.state !== 'Active' || episode.severity === 'Critical' || episode.monitoring !== true) return [];
+  if (episode.sourceKind === 'approval') return ['PT1H', 'P1D', ...SNOOZE_PRESETS, 'custom'];
   return [...SNOOZE_PRESETS, 'custom'];
 }
 

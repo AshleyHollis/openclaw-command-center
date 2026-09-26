@@ -17,6 +17,7 @@ import {
   conventionAspects,
   conventionStates,
   inspectSchema,
+  inspectStoredIntegrity,
   metadataSchemaSql,
   metadataSchemaV1ToV2Sql,
   metadataSchemaV2Sql,
@@ -50,7 +51,7 @@ import {
   readRecoveryMaterial,
   verifyRollbackMaterial
 } from './recovery.mjs';
-import { canonicalJson, proposalIdentity, sanitizedPublicValue } from '../topics/analysis-evidence.mjs';
+import { canonicalJson, normalizeEvidenceFacts, proposalIdentity, sanitizedPublicValue } from '../topics/analysis-evidence.mjs';
 import { topicAnalysisCronDeclaration } from '../topics/analysis-schedule.mjs';
 import { IMPORTED_HISTORY_OPERATION, NATIVE_HISTORY_OPERATION, installImportedHistoryMetadata } from './imported-history.mjs';
 import { TOPIC_BOOTSTRAP_OPERATION, installTopicBootstrapMetadata } from './topic-bootstrap.mjs';
@@ -60,6 +61,7 @@ import { installOpenLoopMetadata } from './open-loops.mjs';
 import { installDeveloperWorkMetadata } from './developer-work.mjs';
 import { installMessageIntake } from './message-intake.mjs';
 import { installOpenLoopActions } from './open-loop-actions.mjs';
+import { CLARIFICATION_PROPOSAL_OPERATION, CLARIFICATION_WORKER_DISPOSITION_OPERATION, installClarificationProposalMetadata } from './clarification-proposals.mjs';
 import { installTransactionIntake } from './transaction-intake.mjs';
 import { installDecisionMemory } from './decision-memory.mjs';
 import { installEntityCorrections } from './entity-corrections.mjs';
@@ -327,6 +329,11 @@ function inspectSchemaOneDatabase(database, schemaVersion) {
     return coreFailure('malformed-schema', 'The Command Center database does not match the supported schema shape.', 'Restore or migrate the database through the separate recovery workflow.', schemaVersion);
   }
   if (!shape.valid) return coreFailure('malformed-schema', 'The Command Center database does not match the supported schema shape.', 'Restore or migrate the database through the separate recovery workflow.', schemaVersion);
+  try {
+    if (!inspectStoredIntegrity(database)) return coreFailure('integrity-failure', 'The Command Center database failed stored integrity checks for identities or relationships.', 'Restore a verified database before allowing metadata mutations.', schemaVersion);
+  } catch {
+    return coreFailure('integrity-failure', 'The Command Center database failed stored integrity inspection.', 'Restore a verified database before allowing metadata mutations.', schemaVersion);
+  }
   return null;
 }
 
@@ -1222,6 +1229,15 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   };
 
   service.getProjectionBookkeeping = (projectionId) => readOne('SELECT * FROM projection_bookkeeping WHERE projection_id = ?', [requiredString(projectionId, 'projectionId')], mapProjection) || null;
+  // Serialize core filesystem publication and recovery with the checkpoint commit.
+  service.withCoreProjectionPublication = (operation) => mutate(null, (db) => operation({
+    checkpoint: () => mapProjection(db.prepare('SELECT * FROM projection_bookkeeping WHERE projection_id = ?').get(commandCenterProjectionId)) || null,
+    commit: ({ sourceRevision, inputDigest, updatedAt }) => {
+      if (!isNonBlankString(sourceRevision) || !sha256DigestPattern.test(inputDigest)) throw new CommandCenterMetadataError('invalid-value', 'Core projection bookkeeping is invalid.');
+      db.prepare('INSERT INTO projection_bookkeeping (projection_id, source_revision, input_digest, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(projection_id) DO UPDATE SET source_revision = excluded.source_revision, input_digest = excluded.input_digest, updated_at = excluded.updated_at').run(commandCenterProjectionId, sourceRevision, inputDigest, timestamp(updatedAt, 'updatedAt'));
+      return mapProjection(db.prepare('SELECT * FROM projection_bookkeeping WHERE projection_id = ?').get(commandCenterProjectionId));
+    }
+  }));
   service.listProjectionBookkeeping = () => readMany('SELECT * FROM projection_bookkeeping ORDER BY projection_id', [], mapProjection);
 
   service.commitIntakeAccountingOperation = (input) => {
@@ -1430,6 +1446,8 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
       if (/^intake-receipt\./u.test(operationKind) || /^intake-receipt\./u.test(existing?.operation_kind ?? '')) throw new CommandCenterMetadataError('intake-receipt-owner-required', 'Intake run receipts require their dedicated owner.');
       if (operationKind === 'email-reader.locator.v1' || existing?.operation_kind === 'email-reader.locator.v1') throw new CommandCenterMetadataError('email-reader-owner-required', 'Email reader locations require their dedicated owner.');
       if (operationKind === 'email-reader.refresh.v1' || existing?.operation_kind === 'email-reader.refresh.v1') throw new CommandCenterMetadataError('email-reader-owner-required', 'Email reader refresh receipts require their dedicated owner.');
+      if (operationKind === CLARIFICATION_PROPOSAL_OPERATION || existing?.operation_kind === CLARIFICATION_PROPOSAL_OPERATION) throw new CommandCenterMetadataError('clarification-proposal-owner-required', 'Clarification proposals require their dedicated owner.');
+      if (operationKind === CLARIFICATION_WORKER_DISPOSITION_OPERATION || existing?.operation_kind === CLARIFICATION_WORKER_DISPOSITION_OPERATION) throw new CommandCenterMetadataError('clarification-disposition-owner-required', 'Clarification worker dispositions require their dedicated owner.');
       reconciliationClaims.assertChildClaim(db, { logicalOperationId, operationKind, intentDigest }, true);
       if (existing && existing.intent_digest !== intentDigest) throw new CommandCenterMetadataError('intent-mismatch', 'Logical operation ID was reused with a different intent.');
       db.prepare(`INSERT INTO operation_journal
@@ -1981,7 +1999,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   };
   service.setTopicAnalysisEvidence = (proposalId, items = []) => mutate(null, (db) => {
     const id = requiredString(proposalId, 'proposalId');
-    if (!Array.isArray(items) || items.length > 8) throw new CommandCenterMetadataError('invalid-value', 'A proposal may retain at most eight evidence facts.');
+    try { normalizeEvidenceFacts(items); } catch (error) { throw new CommandCenterMetadataError('invalid-value', error.message); }
     if (!db.prepare('SELECT 1 FROM topic_proposals WHERE proposal_id = ?').get(id)) throw new CommandCenterMetadataError('not-found', 'Topic proposal was not found.');
     if (new Set(items.map((item) => item?.evidenceId)).size !== items.length) throw new CommandCenterMetadataError('invalid-value', 'Evidence identities must be distinct.');
     db.prepare('UPDATE topic_analysis_evidence SET current = 0 WHERE proposal_id = ?').run(id);
@@ -2429,6 +2447,10 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   });
 
   service.getTopicOperation = (logicalOperationId) => readOne('SELECT * FROM topic_operations WHERE logical_operation_id = ?', [requiredString(logicalOperationId, 'logicalOperationId')], mapTopicOperation) || null;
+  service.listNotificationFocusEmissions = (episodeId, nowMs) => {
+    if (!Number.isSafeInteger(nowMs)) throw new CommandCenterMetadataError('invalid-value', 'Notification focus time is invalid.');
+    return readMany("SELECT emission_id FROM notification_emissions WHERE episode_id = ? AND expires_at_ms > ? AND status IN ('sent', 'partial', 'ambiguous') ORDER BY emitted_at_ms, emission_id", [requiredString(episodeId, 'episodeId'), nowMs], row => row.emission_id);
+  };
   service.listTopicOperations = (topicId = undefined) => topicId === undefined ? readMany('SELECT * FROM topic_operations ORDER BY created_at, logical_operation_id', [], mapTopicOperation) : readMany('SELECT * FROM topic_operations WHERE topic_id = ? ORDER BY created_at, logical_operation_id', [requiredString(topicId, 'topicId')], mapTopicOperation);
 
   service.recordSourceRecovery = (input = {}) => mutate(null, (db) => {
@@ -2556,6 +2578,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   installDeveloperWorkMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
   installMessageIntake(service, { ErrorType: CommandCenterMetadataError });
   installOpenLoopActions(service, { ErrorType: CommandCenterMetadataError });
+  installClarificationProposalMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
   installTransactionIntake(service, { ErrorType: CommandCenterMetadataError });
   installDecisionMemory(service, { ErrorType: CommandCenterMetadataError });
   installEntityCorrections(service, { ErrorType: CommandCenterMetadataError });
@@ -2571,6 +2594,28 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   service.projectActiveRenovationStagePrerequisites = renovation.projectActiveStagePrerequisites;
   service.recordRenovationDecisionConflict = renovation.recordDecisionConflict;
   service.reviseRenovationDecision = renovation.reviseDecision;
+  if (!readOnly && operating.mode !== 'recovery-only') {
+    // Historical upgrades copied source reference revisions into locators without
+    // proving a marker-backed Note Folder. Quarantine those bindings once, in
+    // the same SQLite transaction, before any Topic lifecycle call can use them.
+    const unprovenFolders = readMany(`SELECT reference.reference_id AS referenceId, reference.topic_id AS topicId,
+      reference.external_source_id AS externalSourceId, reference.last_observed_revision AS lastObservedRevision,
+      locator.locator, locator.observed_revision AS observedRevision
+      FROM source_references AS reference JOIN topics AS topic ON topic.topic_id = reference.topic_id
+      LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+      WHERE topic.lifecycle = 'active' AND reference.source_system = 'obsidian' AND reference.source_kind = 'note_folder'`, [], row => row)
+      .filter(row => !isNoteFolderIdentity(row.observedRevision));
+    if (unprovenFolders.length) mutate(null, db => {
+      const now = new Date().toISOString();
+      const insert = db.prepare(`INSERT OR IGNORE INTO source_recovery
+        (recovery_id, topic_id, reference_id, source_kind, state, revision, last_locator, last_identity, failure, diagnostics_json, created_at, updated_at)
+        VALUES (?, ?, ?, 'note_folder', 'required', 1, ?, ?, ?, ?, ?, ?)`);
+      for (const folder of unprovenFolders) insert.run(`recovery:${folder.referenceId}`, folder.topicId, folder.referenceId,
+        folder.locator ?? folder.externalSourceId, folder.observedRevision ?? folder.lastObservedRevision ?? null,
+        'The historical Note Folder binding lacks a verified exact identity.',
+        JSON.stringify([{ topicId: folder.topicId, referenceId: folder.referenceId, sourceKind: 'note_folder', check: 'exact-folder-identity', status: 'recovery-required', routes: ['verify-exact', 'authorized-replacement'] }]), now, now);
+    });
+  }
   return Object.freeze(service);
 }
 

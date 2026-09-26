@@ -7,7 +7,7 @@ export function notificationPreview({ severity, kind = 'attention', genericPrevi
   if (genericPreview) return Object.freeze({ title: 'Command Center', body: 'Open Command Center to review an item.' });
   if (kind === 'quiet-summary') {
     const count = Number.isSafeInteger(summaryCount) && summaryCount > 0 ? summaryCount : 1;
-    return Object.freeze({ title: 'Command Center · Attention', body: `${count} item${count === 1 ? '' : 's'} need review.` });
+    return Object.freeze({ title: 'Command Center · Attention', body: `${count} item${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} review.` });
   }
   if (kind.startsWith('attention-developer-')) {
     const category = kind.slice('attention-developer-'.length);

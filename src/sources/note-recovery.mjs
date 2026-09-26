@@ -33,6 +33,23 @@ export class NoteRecovery {
     return withNoteFilesystemOwner(this.metadata, async () => { await this.recover(); return action(); }, { acquire: this.acquire });
   }
 
+  // An explicit reconcile request may recover only its own proven filesystem
+  // effect while automatic Note recovery is disabled. Check the saved intent
+  // before touching the interrupted effect; unrelated pending Notes remain
+  // blocked and this path never dispatches a fresh write.
+  async runExactReconciliation(input, operation, action) {
+    const reconcileExact = async () => {
+      const record = this.metadata.getTopicOperation(`notes.fs:${input.logicalOperationId}`);
+      if (record && ['pending', 'unknown'].includes(record.state)) {
+        const verified = await this.reconcile(input, operation);
+        if (verified?.outcome !== 'unknown') throw sourceError('conflict', 'The interrupted Note effect no longer matches this recovery request.');
+        await this.recoverRecord(record, await this.adapter.resolveRoot());
+      }
+      return action();
+    };
+    return this.owned ? reconcileExact() : withNoteFilesystemOwner(this.metadata, reconcileExact, { acquire: this.acquire });
+  }
+
   record(record, state, currentStep, result = record.result) {
     return this.metadata.recordTopicOperation({ ...record, state, currentStep, result, updatedAt: this.adapter.now() });
   }

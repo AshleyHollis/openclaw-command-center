@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { candidateToProposal, eligibleTopics, MAX_CHANGED_TOPICS, MAX_PROPOSALS, orderProposals } from './analysis-policy.mjs';
-import { canonicalJson, materialEvidenceDigest } from './analysis-evidence.mjs';
+import { canonicalJson, materialEvidenceDigest, normalizeEvidenceFacts, sha256 } from './analysis-evidence.mjs';
 
 const locks = new WeakMap();
 const MAX_SOURCES = 100;
@@ -10,11 +10,14 @@ function freeze(value) { return Object.freeze(value); }
 function publicFailure(error) { return error?.code === 'conflict' ? 'Topic Analysis was blocked by a source revision conflict.' : 'Topic Analysis could not complete.'; }
 function withoutCaptureTimes(value) {
   if (Array.isArray(value)) return value.map(withoutCaptureTimes);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([key]) => !/^(?:capturedAt|captureTime|observedAt)$/u.test(key)).map(([key, item]) => [key, withoutCaptureTimes(item)]));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([key]) => !/^(?:capturedAt|captureTime|observedAt|sourceRevision)$/u.test(key)).map(([key, item]) => [key, withoutCaptureTimes(item)]));
   return value;
 }
 function proposalContent(proposal, evidenceDigest) {
   return { operation: proposal.operation, affectedTopicIds: proposal.affectedTopicIds, affectedSourceIds: proposal.affectedSourceIds, plannedSourceIds: proposal.plannedSourceIds, before: proposal.before, after: proposal.after, rationale: proposal.rationale, provenance: withoutCaptureTimes(proposal.provenance), searchRetrievalConsequences: proposal.searchRetrievalConsequences, dependencies: proposal.dependencies, blockers: proposal.blockers, reversibility: proposal.reversibility, materialEvidenceDigest: evidenceDigest };
+}
+function legacyEvidenceDigest(facts) {
+  return sha256(normalizeEvidenceFacts(facts).map(({ sourceId, sourceRevision, fact, material, kind }) => ({ sourceId, sourceRevision, fact, material, ...(kind ? { kind } : {}) })).sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right))));
 }
 
 export function topicAnalysisRunId(logicalOperationId) {
@@ -88,6 +91,10 @@ export class TopicAnalysisRunner {
     let changed = []; let evaluated = 0; let proposals = 0; let retainedOverflowCount = 0; let activitySourceReferenceId = null; let activitySourceRevision = null;
     try {
       const topics = eligibleTopics(this.topicService?.listTopics?.({ includeArchived: true, includeProvisioning: false, includeRetired: false }) ?? this.metadata.listTopics().filter((topic) => topic.lifecycle === 'active')).filter((topic) => topicId === null || topic.topicId === topicId);
+      if (topicId === null && topics.length > this.maxChangedTopics) {
+        retainedOverflowCount = topics.length - this.maxChangedTopics;
+        throw Object.assign(new Error('Topic Analysis eligible-Topic bound was exceeded.'), { code: 'bounded-analysis' });
+      }
       const watermarks = new Map((this.metadata.listTopicAnalysisWatermarks?.() ?? []).map((item) => [item.subjectId, item]));
       const scoped = topics.map((topic) => {
         const sources = (this.metadata.listSourceReferences(topic.topicId) ?? []).slice(0, MAX_SOURCES).map((source) => ({ ...source, observedRevision: sourceRevision(this.metadata, source) }));
@@ -136,12 +143,16 @@ export class TopicAnalysisRunner {
           const inferredPredecessor = proposal.predecessorId ? null : activeLineage[0];
           const linkedProposal = inferredPredecessor ? { ...proposal, predecessorId: inferredPredecessor.proposalId } : proposal;
           const digest = materialEvidenceDigest(proposal.evidenceFacts);
-          const suppressed = existing?.state === 'suppressed' && existing.suppressedDigest === digest;
-          const materialChanged = !existing || existing.materialEvidenceDigest !== digest;
-          const contentChanged = !existing || canonicalJson(proposalContent(existing, existing.materialEvidenceDigest)) !== canonicalJson(proposalContent(proposal, digest));
+          const priorEvidence = existing ? this.metadata.listTopicAnalysisEvidence?.(existing.proposalId, { currentOnly: true }) ?? [] : [];
+          const legacyDigest = priorEvidence.length ? legacyEvidenceDigest(priorEvidence) : null;
+          const priorDigest = existing?.materialEvidenceDigest === legacyDigest ? materialEvidenceDigest(priorEvidence) : existing?.materialEvidenceDigest;
+          const suppressedDigest = existing?.suppressedDigest === legacyDigest ? materialEvidenceDigest(priorEvidence) : existing?.suppressedDigest;
+          const suppressed = existing?.state === 'suppressed' && suppressedDigest === digest;
+          const contentChanged = !existing || canonicalJson(proposalContent(existing, priorDigest)) !== canonicalJson(proposalContent(proposal, digest));
           const retainedState = existing?.state === 'applied' || existing?.state === 'superseded' ? existing.state : suppressed ? 'suppressed' : contentChanged ? 'pending' : existing?.state ?? 'pending';
           const next = { ...linkedProposal, revision: existing ? (contentChanged ? existing.revision + 1 : existing.revision) : 1, state: retainedState, ...(suppressed ? { suppressedDigest: digest } : {}) };
-          publications.push({ proposal: linkedProposal, next });
+          const evidenceFacts = normalizeEvidenceFacts(proposal.evidenceFacts.map((fact) => ({ ...fact, observedAt: fact.observedAt ?? startedAt })));
+          publications.push({ proposal: linkedProposal, next, evidenceFacts });
           proposals += 1;
           if (proposals > this.maxProposals) {
             retainedOverflowCount = proposals - this.maxProposals;
@@ -152,14 +163,14 @@ export class TopicAnalysisRunner {
       }
       const retained = (this.metadata.listTopicProposals?.() ?? []).filter((proposal) => !['superseded', 'applied', 'failed', 'kept', 'suppressed'].includes(proposal.state) && !publications.some((item) => item.next.proposalId === proposal.proposalId)).map((proposal) => ({ ...proposal, evidenceFacts: this.metadata.listTopicAnalysisEvidence?.(proposal.proposalId, { currentOnly: true }) ?? [] }));
       orderProposals([...retained, ...publications.map((item) => item.next)]);
-      for (const { proposal, next } of publications) {
+      for (const { proposal, next, evidenceFacts } of publications) {
         if (proposal.predecessorId) {
           const predecessor = this.metadata.getTopicProposal?.(proposal.predecessorId);
           if (predecessor && predecessor.proposalId !== proposal.proposalId && !['superseded', 'applied', 'failed', 'kept', 'suppressed'].includes(predecessor.state)) this.metadata.saveTopicProposal({ ...predecessor, schemaVersion: 1, state: 'superseded', successorId: proposal.proposalId, updatedAt: nowIso(this.now) });
         }
         const { evidenceFacts: _evidenceFacts, ...storedProposal } = next;
         this.metadata.saveTopicProposal(storedProposal);
-        this.metadata.setTopicAnalysisEvidence(proposal.proposalId, proposal.evidenceFacts.map((fact) => ({ ...fact, observedAt: fact.observedAt ?? startedAt })));
+        this.metadata.setTopicAnalysisEvidence(proposal.proposalId, evidenceFacts);
       }
       const successfulWatermarks = pendingWatermarks.flatMap(({ topic, sources }) => [
         { subjectId: `topic:${topic.topicId}`, subjectType: 'topic', topicId: topic.topicId, observedRevision: `topic:${topic.revision}`, lastSuccessRunId: runId, updatedAt: nowIso(this.now) },

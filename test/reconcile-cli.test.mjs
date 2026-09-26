@@ -33,6 +33,7 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
     requiredOption(option) { required.push([name, option]); return this; }, option() { return this; }, action(callback) { paths.push(name); actions.push(callback); return this; } });
   await registration({ program: command(''), config: {}, logger: {} });
   assert.deepEqual(paths, [
+    'command-center clarifications pending', 'command-center clarifications prompt',
     ...['reconcile', 'prepare-topic'].flatMap(command => ['preflight', 'execute', 'resume', 'verify'].map(mode => `command-center ${command} ${mode}`)),
     'command-center initialize-metadata execute', 'command-center initialize-metadata verify',
     ...['preflight', 'execute', 'verify'].map(mode => `command-center recover-note-folders ${mode}`),
@@ -40,7 +41,7 @@ test('CLI metadata declares lazy reconciliation without runtime activation', asy
     'command-center intake digest', 'command-center intake apply', 'command-center intake resume', 'command-center intake reader-digest', 'command-center intake reader-apply', 'command-center intake reader-status',
     'command-center verify-discoverability'
   ]);
-  assert.equal(required.length, 56); assert.equal(actions.length, 23);
+  assert.equal(required.length, 59); assert.equal(actions.length, 25);
   assert.ok(required.some(([name, option]) => name === 'command-center intake reader-status' && option === '--capture-run-id <id>'));
 });
 
