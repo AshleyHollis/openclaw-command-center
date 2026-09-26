@@ -258,7 +258,8 @@ test(`Dashboard exposes Routine decisions from ${sourceKind} sources through aut
     const projectedApproval = attention.get(created.episode.episodeId).episode.actions.find((action) => action.actionId === 'approval.approve');
     assert.equal(projectedApproval.target.approvalId, pending[1].result.approval.approvalId);
     assert.deepEqual(projectedApproval.target.disclosure.sideEffects, ['Changes the fictional monitor.']);
-    assert.deepEqual(attention.get(created.episode.episodeId).episode.actions.map((action) => action.actionId), ['approval.approve', 'approval.reject', 'topic.open']);
+    assert.deepEqual(attention.get(created.episode.episodeId).episode.actions.map((action) => action.actionId), ['approval.approve', 'approval.reject', 'attention.snooze']);
+    assert.deepEqual(attention.get(created.episode.episodeId).episode.eligibleSnoozeChoices, ['PT1H', 'P1D', 'NEXT_0700', 'PT72H', 'PT168H', 'custom']);
     const pendingDashboard = await dashboard.get();
     assert.equal(pendingDashboard.attentionBadgeCount, 1);
     assert.deepEqual(pendingDashboard.attention.map((episode) => episode.episodeId), [created.episode.episodeId]);
