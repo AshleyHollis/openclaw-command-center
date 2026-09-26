@@ -12,7 +12,8 @@ function followUpState(metadata, receipt) {
     && metadata.getOperation(reminder.logicalOperationId)?.state !== 'applied';
   const note = metadata.getOpenLoopSupportingNoteIntent(receipt.logicalOperationId);
   const noteReview = (note?.current || receipt.recoverable)
-    && (note?.target.status === 'conflict' || note?.outcome?.status === 'conflict');
+    && (note?.target.status === 'conflict' || note?.outcome?.status === 'conflict'
+      || receipt.recoverable && note?.outcome?.status === 'unknown');
   const notePending = note?.current && note.target.status === 'ready' && note.outcome?.status !== 'completed';
   if (reminderPending || notePending) return 'follow-up-pending';
   return reminderReview || noteReview ? 'review-required' : 'recovered';
