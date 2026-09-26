@@ -55,7 +55,8 @@ export async function prepareTopicForReconciliation(options) {
   check();
   const inspected = metadata.inspectConditionalProvisioning(input, check);
   if (protectedKeys.has(inspected.primary.sessionKey) || plan.protectedSessions.some(session => session.agentId === inspected.primary.agentId && session.sessionId === inspected.primary.sessionId)) fail('preparation-protected-session-claimed');
-  const owner = new TopicProvisioningService({ metadata, sessionStore, noteVaultRoots: plan.noteVaultRoots });
+  const owner = new TopicProvisioningService({ metadata, sessionStore, sessionStoreSelector: config.session?.store,
+    noteVaultRoots: plan.noteVaultRoots });
   const result = await owner.prepare(input, { env, provisioningAuthority: { assertCurrent: check } }, mode);
   check();
   // This public result is safe for CLI logs. Exact private identities remain in

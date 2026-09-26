@@ -4,7 +4,7 @@ import { sourceError } from '../sources/errors.mjs';
 
 // The surrounding provisioning owner holds the existing Note filesystem lock.
 // Native creation has a fixed identity and a single durable dispatch claimant.
-export async function finishConditionalProvisioning({ metadata, sessionStore, env, parentOperationId, expectedTopicRevision, assertCurrent, mode = 'execute' }) {
+export async function finishConditionalProvisioning({ metadata, sessionStore, env, sessionStorePath, parentOperationId, expectedTopicRevision, assertCurrent, mode = 'execute' }) {
   const read = sessionStore?.getSessionEntry; const patch = sessionStore?.patchSessionEntry;
   if (typeof read !== 'function' || typeof patch !== 'function') throw sourceError('capability-unavailable', 'Conditional native Primary creation requires the exact Session SDK.');
   const check = () => {
@@ -12,8 +12,9 @@ export async function finishConditionalProvisioning({ metadata, sessionStore, en
   };
   check();
   if (!['execute', 'verify'].includes(mode)) throw sourceError('preparation-mode-invalid', 'Unknown preparation mode.');
-  let receipt = mode === 'verify' ? metadata.getProvisioningPrimary(parentOperationId) : metadata.reserveProvisioningPrimary({ parentOperationId, expectedTopicRevision }, check);
+  let receipt = mode === 'verify' ? metadata.getProvisioningPrimary(parentOperationId) : metadata.reserveProvisioningPrimary({ parentOperationId, expectedTopicRevision, sessionStorePath }, check);
   if (mode === 'verify' && receipt?.phase !== 'applied') throw sourceError('preparation-incomplete', 'Verification requires a completed Primary.');
+  if (receipt?.intent.primary.sessionStorePath !== sessionStorePath) throw sourceError('provisioning-primary-conflict', 'The native Session store changed after reservation.');
   const primary = receipt.intent.primary;
   const locator = receipt.intent.folder.locator;
   const candidate = await inspectNoteFolderCandidate(locator.locator);
@@ -21,7 +22,8 @@ export async function finishConditionalProvisioning({ metadata, sessionStore, en
   let dispatching = false;
   const assertSources = () => {
     check();
-    const entry = read.call(sessionStore, { agentId: primary.agentId, sessionKey: primary.sessionKey, env, readConsistency: 'latest' });
+    const entry = read.call(sessionStore, { agentId: primary.agentId, sessionKey: primary.sessionKey, env,
+      storePath: primary.sessionStorePath, readConsistency: 'latest' });
     if (receipt.phase === 'reserved') {
       if (entry) throw sourceError('provisioning-primary-conflict', 'The new Primary destination is already occupied.');
       return;
@@ -43,8 +45,9 @@ export async function finishConditionalProvisioning({ metadata, sessionStore, en
       dispatching = true;
       try {
         await patch.call(sessionStore, { agentId: primary.agentId, sessionKey: primary.sessionKey, env,
-          fallbackEntry: { sessionId: primary.sessionId, lifecycleRevision: primary.lifecycleRevision, label: receipt.intent.root.name, updatedAt: Date.now() },
-          skipMaintenance: true, preserveActivity: true, requireWriteSuccess: true,
+          storePath: primary.sessionStorePath,
+          fallbackEntry: { sessionId: primary.sessionId, lifecycleRevision: primary.lifecycleRevision, pluginOwnerId: 'command-center', label: receipt.intent.root.name, updatedAt: primary.sessionUpdatedAt, sessionStartedAt: primary.sessionUpdatedAt },
+          skipMaintenance: true, replaceEntry: true, requireWriteSuccess: true,
           update: (entry, context) => {
             if (context.existingEntry) throw sourceError('provisioning-primary-conflict', 'The destination was claimed before native creation.');
             return entry;
