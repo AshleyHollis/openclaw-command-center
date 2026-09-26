@@ -137,10 +137,10 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       const priorWording = {
         pending: followUp.recoverable
           ? 'An earlier Reminder effect is unresolved and may still finish. Resume its exact saved follow-up to check the outcome before a new correction.'
-          : 'An earlier Reminder effect is unresolved and may still finish. Check its outcome before a new correction.',
+          : 'An earlier Reminder effect is unresolved and may still finish. Check its outcome before a new correction; it is not queued for retry from this clarification.',
         unknown: followUp.recoverable
           ? 'An earlier Reminder outcome is unknown. Resume its exact saved follow-up to reconcile the schedule before a new correction.'
-          : 'An earlier Reminder outcome is unknown. Check the exact schedule before a new correction.'
+          : 'An earlier Reminder outcome is unknown. Check the exact schedule before a new correction; it cannot be resumed from this clarification.'
       };
       disclosure.append(element('p', followUp.priorDecision && priorWording[followUp.status]
         ? priorWording[followUp.status]
@@ -1066,7 +1066,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         const choices = episode.eligibleSnoozeChoices ?? [];
         if (!choices.length) continue;
         const label = element('label', 'Snooze duration'); const select = element('select');
-        for (const choice of choices) { const option = element('option', ({ NEXT_0700: 'Tomorrow morning', PT72H: 'Three days', PT168H: 'One week', custom: 'Custom time' })[choice] ?? choice); option.value = choice; select.append(option); }
+        for (const choice of choices) { const option = element('option', ({ PT1H: 'One hour', P1D: 'One day', NEXT_0700: 'Tomorrow morning', PT72H: 'Three days', PT168H: 'One week', custom: 'Custom time' })[choice] ?? choice); option.value = choice; select.append(option); }
         label.append(select); form.append(label);
         const timeLabel = element('label', 'Custom snooze time'); const time = element('input'); time.type = 'datetime-local'; timeLabel.append(time); timeLabel.hidden = true; form.append(timeLabel);
         select.addEventListener('change', () => { timeLabel.hidden = select.value !== 'custom'; time.required = !timeLabel.hidden; }, { signal });

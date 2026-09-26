@@ -389,7 +389,7 @@ test('approval decisions are public actions and stale preconditions block dispat
     const created = await service.ingest(occurrence('approval-monitor'));
     const pending = await service.act({ schemaVersion: 1, logicalOperationId: '64444444-4444-4444-8444-444444444444', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, topicId: 'topic-review', sourceReferenceId: 'source-review', actionId: 'monitor.apply', input: {} });
     assert.equal(pending.status, 'approval-required');
-    assert.deepEqual(service.get(created.episode.episodeId).episode.actions.map((action) => action.actionId), ['approval.approve', 'approval.reject', 'topic.open']);
+    assert.deepEqual(service.get(created.episode.episodeId).episode.actions.map((action) => action.actionId), ['approval.approve', 'approval.reject', 'attention.snooze']);
     preconditionRevision = 'precondition-2';
     const replacement = await service.act({ schemaVersion: 1, logicalOperationId: '65555555-5555-4555-8555-555555555555', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, topicId: 'topic-review', sourceReferenceId: 'source-review', actionId: 'monitor.apply', input: {} });
     assert.equal(replacement.status, 'approval-required');
