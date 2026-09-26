@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -46,11 +47,28 @@ async function fixture(run, options = {}) {
         async request(method, params) {
           window.requests.push({ method, params });
           if (method.endsWith('histories.read')) {
+            if (options.historyRace) {
+              const offset = params.offset;
+              const attachment = { attachmentId: 'fictional-attachment', filename: 'receipt.txt', totalBytes: options.historyRace.bytes.length,
+                declaredBytes: options.historyRace.bytes.length, preservationStatus: 'preserved', revision: options.historyRace.revision };
+              return { result: { schemaVersion: 1, historyId: params.historyId, title: 'Fictional preserved history', readOnly: true,
+                totalMessages: 3, offset, nextOffset: offset < 2 ? offset + 1 : null, hasMore: offset < 2,
+                messages: [{ messageId: `event-${offset}`, author: 'Fictional author', bot: false, timestamp: '2026-01-01T00:00:00Z',
+                  text: `Preserved message ${offset + 1}`, detailsJson: '{}', attachments: offset === 1 ? [attachment] : [] }] } };
+            }
             const offset = params.offset; const end = Math.min(offset + 10, 30);
             return { result: { schemaVersion: 1, historyId: params.historyId, title: 'Fictional preserved history', readOnly: true,
               totalMessages: 30, offset, nextOffset: end < 30 ? end : null, hasMore: end < 30,
               messages: Array.from({ length: end - offset }, (_, index) => ({ messageId: `event-${offset + index}`, author: 'Fictional author',
                 bot: false, timestamp: '2026-01-01T00:00:00Z', text: `Preserved message ${offset + index + 1}`, detailsJson: '{}', attachments: [] })) } };
+          }
+          if (method.endsWith('histories.attachment-read') && options.historyRace) {
+            const held = Promise.withResolvers(); window.pendingAttachment = { params, release: held.resolve };
+            await held.promise;
+            return { result: { historyId: params.historyId, messageId: params.messageId, attachmentId: params.attachmentId,
+              revision: options.historyRace.revision, totalBytes: options.historyRace.bytes.length,
+              declaredBytes: options.historyRace.bytes.length, preservationStatus: 'preserved', byteOffset: 0,
+              nextOffset: options.historyRace.bytes.length, complete: true, contentBase64: btoa(options.historyRace.bytes) } };
           }
           if (method.endsWith('histories.list')) return { result: { histories: [] } };
           if (method.endsWith('sessions.create')) return { result: { key: 'agent:fictional:new', sessionId: 'new-id', revision: 'fictional-revision' } };
@@ -114,7 +132,9 @@ async function fixture(run, options = {}) {
       };
       window.navigate = id => host.navigation.openPage({ id, params: { topicId } });
       window.openHistory = historyId => host.navigation.openPage({ id: 'histories', params: { historyId } });
+      window.updateHistory = props => { context = { ...context, props: structuredClone(props) }; view.update(context); };
       window.setConnection = patch => { Object.assign(host.connection, patch); for (const fn of subscribers) fn(); };
+      window.replaceConnection = () => { host.connection = { ...host.connection }; context.host.connection = host.connection; for (const fn of subscribers) fn(); };
       window.setPolicy = patch => { Object.assign(topic, patch); window.navigate('topic'); };
       window.setPresented = presented => view.update({ ...context, presented });
       window.reactivate = () => { scope?.abort(); view?.dispose(); window.stop(); lifetime.abort(); lifetime = new AbortController(); host.signal = lifetime.signal; window.stop = plugin.activate(host); window.navigate('topic'); };
@@ -143,6 +163,73 @@ test('Imported History Previous returns to the actual prior byte-limited page', 
   await page.getByText('Messages 1–10 of 30.', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Previous Messages', exact: true }).isDisabled(), true);
 }));
+
+const historyRaceBytes = 'Fictional receipt bytes.\n';
+const historyRace = { bytes: historyRaceBytes, revision: createHash('sha256').update(historyRaceBytes).digest('hex') };
+
+test('equivalent retained History context preserves a held attachment and its byte-limited page', { timeout: 30000 }, () => fixture(async page => {
+  const historyId = 'a'.repeat(64); const downloads = [];
+  page.on('download', download => downloads.push(download));
+  await page.evaluate(id => window.openHistory(id), historyId);
+  await page.getByText('Messages 1–1 of 3.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Next Messages', exact: true }).click();
+  await page.getByText('Messages 2–2 of 3.', { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('histories.read')).map(row => row.params.offset)), [0, 1]);
+  await page.getByRole('button', { name: 'Download receipt.txt', exact: true }).click();
+  await page.waitForFunction(() => Boolean(window.pendingAttachment));
+  await page.evaluate(id => window.updateHistory({ historyId: id }), historyId);
+  assert.equal(await page.getByRole('status').textContent(), 'Reading receipt.txt…');
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('histories.read')).map(row => row.params.offset)), [0, 1]);
+  await page.evaluate(() => window.pendingAttachment.release());
+  await page.getByText('Verified preserved export bytes for receipt.txt. Download started.', { exact: true }).waitFor();
+  assert.equal(downloads.length, 1);
+  const downloaded = await readFile(await downloads[0].path());
+  assert.equal(downloaded.length, Buffer.byteLength(historyRaceBytes));
+  assert.equal(createHash('sha256').update(downloaded).digest('hex'), historyRace.revision);
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('histories.attachment-read')).map(row => row.params.offset)), [0]);
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('histories.read')).map(row => row.params.offset)), [0, 1]);
+  await page.getByRole('button', { name: 'Next Messages', exact: true }).click();
+  await page.getByText('Messages 3–3 of 3.', { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('histories.read')).map(row => row.params.offset)), [0, 1, 2]);
+}, { historyRace }));
+
+test('changed History identity cancels a held attachment result', { timeout: 30000 }, () => fixture(async page => {
+  const downloads = []; page.on('download', download => downloads.push(download));
+  await page.evaluate(() => window.openHistory('a'.repeat(64)));
+  await page.getByText('Messages 1–1 of 3.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Next Messages', exact: true }).click();
+  await page.getByRole('button', { name: 'Download receipt.txt', exact: true }).click();
+  await page.waitForFunction(() => Boolean(window.pendingAttachment));
+  await page.evaluate(() => window.updateHistory({ historyId: 'b'.repeat(64) }));
+  await page.getByText('Messages 1–1 of 3.', { exact: true }).waitFor();
+  await page.evaluate(() => window.pendingAttachment.release());
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+  assert.equal(downloads.length, 0);
+  assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.method.endsWith('histories.read')).map(row => [row.params.historyId, row.params.offset])),
+    [['a'.repeat(64), 0], ['a'.repeat(64), 1], ['b'.repeat(64), 0]]);
+}, { historyRace }));
+
+for (const name of ['Topic context', 'hidden view', 'read authority loss', 'disconnect and reconnect', 'connection replacement', 'navigation', 'disposal'])
+  test(`${name} invalidates a held History attachment`, { timeout: 30000 }, () => fixture(async page => {
+    const downloads = []; page.on('download', download => downloads.push(download));
+    await page.evaluate(() => window.openHistory('a'.repeat(64)));
+    await page.getByText('Messages 1–1 of 3.', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Next Messages', exact: true }).click();
+    await page.getByRole('button', { name: 'Download receipt.txt', exact: true }).click();
+    await page.waitForFunction(() => Boolean(window.pendingAttachment));
+    await page.evaluate(name => {
+      if (name === 'Topic context') window.updateHistory({ historyId: 'a'.repeat(64), topicId: 'fictional-other-topic' });
+      if (name === 'hidden view') window.setPresented(false);
+      if (name === 'read authority loss') window.setConnection({ canRead: false });
+      if (name === 'disconnect and reconnect') { window.setConnection({ connected: false }); window.setConnection({ connected: true }); }
+      if (name === 'connection replacement') window.replaceConnection();
+      if (name === 'navigation') window.openHistory('b'.repeat(64));
+      if (name === 'disposal') window.dispose();
+    }, name);
+    await page.evaluate(() => window.pendingAttachment.release());
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+    assert.equal(downloads.length, 0);
+  }, { historyRace }));
 
 test('Conversation creation waits for a current server inspection before enabling a new ID', { timeout: 30000 }, () => fixture(async page => {
   await page.getByRole('button', { name: 'Create Conversation', exact: true }).waitFor();
