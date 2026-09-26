@@ -2,6 +2,7 @@ import { lstat, readdir, realpath, unlink, rmdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { resolveStorePath } from 'openclaw/plugin-sdk/session-store-paths';
 import { createSessionAdapter } from '../sources/sessions.mjs';
 import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
 import { sourceError } from '../sources/errors.mjs';
@@ -220,7 +221,9 @@ export class TopicProvisioningService {
   async runConditional(input, runtime, mode = 'execute') {
     const metadata = this.metadata; const sessionStore = this.sessionStore;
     const read = sessionStore?.getSessionEntry; const patch = sessionStore?.patchSessionEntry;
-    const env = Object.freeze({ ...(runtime.env ?? process.env) }); const folderEnsurer = this.folderEnsurer;
+    const env = Object.freeze({ ...(runtime.env ?? process.env) });
+    const sessionStorePath = resolveStorePath(undefined, { agentId: 'main', env });
+    const folderEnsurer = this.folderEnsurer;
     const roots = [...this.noteVaultRoots]; const authority = runtime.provisioningAuthority; const guard = authority?.assertCurrent;
     const check = () => {
       if (typeof guard !== 'function' || runtime.provisioningAuthority !== authority || authority.assertCurrent !== guard ||
@@ -233,13 +236,16 @@ export class TopicProvisioningService {
     if (typeof read !== 'function') throw sourceError('capability-unavailable', 'Preparation requires the native Session reader.');
     if (mode === 'preflight' || mode === 'verify') {
       const inspected = metadata.inspectConditionalProvisioning(input, check);
+      if (inspected.primaryReceipt && inspected.primaryReceipt.intent.primary.sessionStorePath !== sessionStorePath)
+        throw sourceError('provisioning-primary-conflict', 'The native Session store changed after reservation.');
       if (mode === 'verify' && inspected.primaryReceipt?.phase !== 'applied') throw sourceError('preparation-incomplete', 'Verification requires completed preparation.');
       const candidate = await findConventionalFolder({ noteVaultRoots: roots, ...input, metadata });
       check();
       const locator = metadata.getSourceLocator(`note-folder:${input.topicId}`);
       if (locator && (candidate.status === 'missing' || candidate.path !== locator.locator || candidate.revision !== locator.observedRevision)) throw sourceError('source-recovery', 'The original preparation folder changed.');
       const primary = inspected.primary;
-      const entry = read.call(sessionStore, { agentId: primary.agentId, sessionKey: primary.sessionKey, env, readConsistency: 'latest' });
+      const entry = read.call(sessionStore, { agentId: primary.agentId, sessionKey: primary.sessionKey, env,
+        storePath: sessionStorePath, readConsistency: 'latest' });
       const phase = inspected.primaryReceipt?.phase;
       if (!phase || phase === 'reserved') {
         if (entry) throw sourceError('provisioning-primary-conflict', 'The planned Primary destination is occupied.');
@@ -249,7 +255,7 @@ export class TopicProvisioningService {
       const finalInspection = metadata.inspectConditionalProvisioning(input, check);
       if (!isDeepStrictEqual(finalInspection, inspected)) throw sourceError('stale-revision', 'Preparation changed during inspection.');
       if (mode === 'preflight') return { status: 'preflight' };
-      await finishConditionalProvisioning({ metadata, sessionStore, env, parentOperationId: input.logicalOperationId,
+      await finishConditionalProvisioning({ metadata, sessionStore, env, sessionStorePath, parentOperationId: input.logicalOperationId,
         expectedTopicRevision: inspected.primaryReceipt.intent.topicRevision, assertCurrent: check, mode: 'verify' });
       check(); return this.result(input.logicalOperationId);
     }
@@ -263,7 +269,8 @@ export class TopicProvisioningService {
       const topic = metadata.getTopic(input.topicId);
       const expectedTopicRevision = prior?.intent.topicRevision ?? topic.revision;
       if (!prior) { await this.bindFolder(input.topicId, operation.intent, { assertCurrent: check, enrollmentOperationId: input.logicalOperationId }); check(); }
-      await finishConditionalProvisioning({ metadata, sessionStore, env, parentOperationId: input.logicalOperationId, expectedTopicRevision, assertCurrent: check });
+      await finishConditionalProvisioning({ metadata, sessionStore, env, sessionStorePath,
+        parentOperationId: input.logicalOperationId, expectedTopicRevision, assertCurrent: check });
       check(); return this.result(input.logicalOperationId);
     });
   }
@@ -298,6 +305,7 @@ export class TopicProvisioningService {
     const read = this.sessionStore?.getSessionEntry;
     if (typeof read !== 'function' || !this.gateway?.request) throw sourceError('capability-unavailable', 'Exact native Session lifecycle cleanup is unavailable.');
     const session = () => read.call(this.sessionStore, { agentId: primary.agentId, sessionKey: primary.sessionKey,
+      ...(primary.sessionStorePath ? { storePath: primary.sessionStorePath } : {}),
       env: process.env, readConsistency: 'latest' });
     const assertSession = () => {
       const entry = session();
@@ -309,10 +317,13 @@ export class TopicProvisioningService {
     };
     if (receipt.phase === 'prepared') {
       const entry = assertSession();
+      if (!entry && receipt.primaryReceipt?.phase === 'creating')
+        throw sourceError('provisioning-creation-unknown', 'Native Session creation was dispatched, but its exact lifecycle outcome is unavailable.');
       if (entry) {
         const result = unwrap(await this.gateway.request('sessions.delete', { key: primary.sessionKey, agentId: primary.agentId,
           expectedSessionId: primary.sessionId, expectedLifecycleRevision: primary.lifecycleRevision,
-          expectedSessionUpdatedAt: primary.sessionUpdatedAt, requireEmptyHistory: true, deleteTranscript: true },
+          expectedSessionUpdatedAt: primary.sessionUpdatedAt, expectedStorePath: primary.sessionStorePath,
+          requireEmptyHistory: true, deleteTranscript: true },
         { requestId: derivedUuid(`topic-rollback-session:${input.logicalOperationId}`) }));
         if (result?.deleted !== true) throw sourceError('source-recovery', 'Native Session deletion was not confirmed.');
       }

@@ -2,7 +2,8 @@
 
 Conditional Topic provisioning reserves one operation, Topic ID, folder path,
 Primary Session key, Session ID, lifecycle revision, and creation timestamp in
-SQLite before external effects. The legacy Topic creation route lacks those
+SQLite before external effects. The native Session store path is pinned in the
+Primary receipt before its write. The legacy Topic creation route lacks those
 durable native Session witnesses and refuses created-Session cleanup.
 
 ## Native owners reused
@@ -14,7 +15,7 @@ durable native Session witnesses and refuses created-Session cleanup.
 - Gateway `sessions.delete` owns Session termination, transcript and runtime
   cleanup, lifecycle hooks, and worker retirement. Command Center supplies
   `expectedSessionId`, `expectedLifecycleRevision`,
-  `expectedSessionUpdatedAt`, `requireEmptyHistory: true`, and
+  `expectedSessionUpdatedAt`, `expectedStorePath`, `requireEmptyHistory: true`, and
   `deleteTranscript: true`. The Gateway requires `operator.admin` for this
   active-Session delete. Its SQLite owner rejects prior generations, archived
   or cold transcript state, transcript and trajectory events, and ACP stream
@@ -36,8 +37,10 @@ never grants ownership; a pre-existing folder is adopted.
 
 `src/topics/provisioning.mjs` starts rollback only for a provisioning Topic and
 the original operation and revision. It compares the native Session key, ID,
-lifecycle revision, timestamp, and plugin owner before asking Gateway to
-delete. The Gateway performs the atomic empty-history check. SQLite records
+lifecycle revision, timestamp, pinned store path, and plugin owner before asking
+Gateway to delete. A dispatched creation with an absent Session stays unknown;
+absence alone is not deletion proof. The Gateway performs the atomic
+empty-history and configured-store checks. SQLite records
 `prepared`, `session-cleared`, `folder-cleaning`, and `folder-cleared` before
 final `not-applied` completion. The folder is removed only after Session
 cleanup, only when its physical witness matches, and only when it contains its
@@ -56,6 +59,10 @@ unlink during `folder-cleaning`. Those rollback tests use a host capability
 fixture and start with no Session; they prove checkpoint and folder order,
 while native Session deletion is covered by the OpenClaw Gateway tests and is
 not yet proven as one installed end-to-end journey.
+
+A death after native Session deletion but before the local `session-cleared`
+checkpoint leaves a dispatched-but-absent Session ambiguous. Rollback retains
+the folder and requires explicit Source Recovery instead of inferring success.
 
 The current plugin release pin does not contain these candidate OpenClaw SDK
 changes. This source work is not a release or deployment. An unrecorded staging

@@ -95,7 +95,8 @@ test('legacy metadata cleanup cannot remove conditional provisioning ownership',
   metadata.bindProvisioningNoteFolder({ topicId: input.topicId, name: input.name, paraCategory: input.paraCategory,
     expectedRevision: 0, expectedLocatorVersion: 0, expectedSourceRevision: null, locator: path.join(stateDir, 'vault', 'Areas', 'Studio'),
     observedRevision: `note-folder:1:${randomUUID()}:${'a'.repeat(64)}`, ownership: 'created' }, () => {});
-  const reserved = metadata.reserveProvisioningPrimary({ parentOperationId: input.logicalOperationId, expectedTopicRevision: 0 }, () => {});
+  const reserved = metadata.reserveProvisioningPrimary({ parentOperationId: input.logicalOperationId, expectedTopicRevision: 0,
+    sessionStorePath: path.join(stateDir, 'sessions.json') }, () => {});
   metadata.dispatchProvisioningPrimary(reserved, () => {});
   assert.throws(() => metadata.deleteProvisioningSourceReference({ referenceId, topicId: input.topicId, expectedTopicRevision: 0, provisioningOperationId: input.logicalOperationId }), { code: 'provisioning-owner-required' });
   assert.throws(() => metadata.deleteTopic(input.topicId), { code: 'provisioning-owner-required' });
@@ -109,7 +110,8 @@ test('competing dispatch and retired completion preserve one atomic provisioning
   metadata.bindProvisioningNoteFolder({ topicId: input.topicId, name: input.name, paraCategory: input.paraCategory,
     expectedRevision: 0, expectedLocatorVersion: 0, expectedSourceRevision: null, locator: path.join(stateDir, 'vault', 'Areas', 'Studio'),
     observedRevision: `note-folder:1:${randomUUID()}:${'a'.repeat(64)}`, ownership: 'created' }, () => {});
-  const reserved = metadata.reserveProvisioningPrimary({ parentOperationId: input.logicalOperationId, expectedTopicRevision: 0 }, () => {});
+  const reserved = metadata.reserveProvisioningPrimary({ parentOperationId: input.logicalOperationId, expectedTopicRevision: 0,
+    sessionStorePath: path.join(stateDir, 'sessions.json') }, () => {});
   const creating = metadata.dispatchProvisioningPrimary(reserved, () => {});
   const other = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
   try {

@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { ensureConventionalFolder, setHostDurableDirectoryPublisher } from '../src/topics/conventions.mjs';
+import { TopicProvisioningService } from '../src/topics/provisioning.mjs';
 import { setHostDurableFolderStager, setHostFilesystemIdentityReader } from '../src/sources/note-folder-identity.mjs';
 import { setHostNoteFilesystemCoordinator } from '../src/sources/note-filesystem-owner.mjs';
 

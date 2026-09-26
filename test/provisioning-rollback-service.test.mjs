@@ -20,7 +20,8 @@ async function fixture(t, change = {}) {
   metadata.bindProvisioningNoteFolder({ topicId: input.topicId, name: input.name, paraCategory: input.paraCategory,
     expectedRevision: 0, expectedLocatorVersion: 0, expectedSourceRevision: null, locator: input.folderPath,
     observedRevision: identity, ownership: 'adopted' }, () => {});
-  const reserved = metadata.reserveProvisioningPrimary({ parentOperationId: input.logicalOperationId, expectedTopicRevision: 0 }, () => {});
+  const reserved = metadata.reserveProvisioningPrimary({ parentOperationId: input.logicalOperationId, expectedTopicRevision: 0,
+    sessionStorePath: path.join(stateDir, 'sessions.json') }, () => {});
   metadata.dispatchProvisioningPrimary(reserved, () => {});
   const primary = reserved.intent.primary;
   let entry = { sessionId: primary.sessionId, lifecycleRevision: primary.lifecycleRevision,
@@ -30,8 +31,18 @@ async function fixture(t, change = {}) {
     sessionStore: { getSessionEntry: () => entry }, gateway: { request: async (method, params) => {
       calls.push({ method, params }); entry = null; return { deleted: true };
     } } });
-  return { metadata, input, primary, calls, owner, entry: () => entry };
+  return { metadata, input, primary, calls, owner, entry: () => entry, removeSession: () => { entry = null; } };
 }
+
+test('dispatched but absent Session leaves folder and rollback checkpoint intact', async t => {
+  const f = await fixture(t);
+  f.removeSession();
+  await assert.rejects(() => f.owner.rollback({ logicalOperationId: f.input.logicalOperationId,
+    topicId: f.input.topicId, expectedRevision: 0 }), error => error.code === 'provisioning-creation-unknown');
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.metadata.getConditionalProvisioningRollback(f.input.logicalOperationId).phase, 'prepared');
+  assert.equal(f.metadata.getSourceLocator(`note-folder:${f.input.topicId}`).ownership, 'adopted');
+});
 
 test('conditional rollback passes exact native lifecycle guards and preserves an adopted folder', async t => {
   const f = await fixture(t);
@@ -40,6 +51,7 @@ test('conditional rollback passes exact native lifecycle guards and preserves an
   assert.deepEqual(f.calls, [{ method: 'sessions.delete', params: {
     key: f.primary.sessionKey, agentId: 'main', expectedSessionId: f.primary.sessionId,
     expectedLifecycleRevision: f.primary.lifecycleRevision, expectedSessionUpdatedAt: f.primary.sessionUpdatedAt,
+    expectedStorePath: f.primary.sessionStorePath,
     requireEmptyHistory: true, deleteTranscript: true } }]);
   assert.equal(f.metadata.getSourceReference(`note-folder:${f.input.topicId}`), null);
   assert.equal(f.metadata.getTopic(f.input.topicId), null);

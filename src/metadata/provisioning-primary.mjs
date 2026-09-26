@@ -68,9 +68,12 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
         row.state !== (value.phase === 'applied' ? 'applied' : value.phase === 'rolled-back' ? 'not-applied' : 'pending') ||
         !isDeepStrictEqual(value.intent.root, rootIntent({ logicalOperationId: value.intent.parentOperationId, ...Object.fromEntries(Object.entries(value.intent.root).filter(([key]) => key !== 'primaryMode')) })) ||
         !Number.isSafeInteger(value.intent.topicRevision) || value.intent.topicRevision < 0 ||
-        !exact(value.intent.primary, ['agentId', 'sessionKey', 'sessionId', 'lifecycleRevision', 'referenceId', 'sessionUpdatedAt']) ||
+        !exact(value.intent.primary, ['agentId', 'sessionKey', 'sessionId', 'lifecycleRevision', 'referenceId', 'sessionUpdatedAt', 'sessionStorePath']) ||
         !Number.isSafeInteger(value.intent.primary.sessionUpdatedAt) || value.intent.primary.sessionUpdatedAt <= 0 ||
-        !isDeepStrictEqual(value.intent.primary, primaryOf(value.intent.parentOperationId, value.intent.root.topicId, value.intent.primary.sessionUpdatedAt))) fail();
+        typeof value.intent.primary.sessionStorePath !== 'string' || !path.isAbsolute(value.intent.primary.sessionStorePath) ||
+        path.resolve(value.intent.primary.sessionStorePath) !== value.intent.primary.sessionStorePath ||
+        !isDeepStrictEqual(value.intent.primary, { ...primaryOf(value.intent.parentOperationId, value.intent.root.topicId, value.intent.primary.sessionUpdatedAt),
+          sessionStorePath: value.intent.primary.sessionStorePath })) fail();
       return freeze(value);
     } catch { fail('provisioning-primary-receipt-invalid'); }
   }
@@ -160,7 +163,8 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
   });
   service.reserveProvisioningPrimary = (input, authority) => mutate('sessions', db => {
     check(authority);
-    if (!exact(input, ['parentOperationId', 'expectedTopicRevision']) || !uuid(input.parentOperationId) || !Number.isSafeInteger(input.expectedTopicRevision)) fail('provisioning-intent-invalid');
+    if (!exact(input, ['parentOperationId', 'expectedTopicRevision', 'sessionStorePath']) || !uuid(input.parentOperationId) || !Number.isSafeInteger(input.expectedTopicRevision) ||
+      typeof input.sessionStorePath !== 'string' || !path.isAbsolute(input.sessionStorePath) || path.resolve(input.sessionStorePath) !== input.sessionStorePath) fail('provisioning-intent-invalid');
     if (input.expectedTopicRevision !== 0) fail('stale-revision');
     const root = parent(db, input.parentOperationId); if (!root) fail();
     const rootValue = JSON.parse(root.intent_json);
@@ -168,9 +172,12 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
     assertParent(db, input.parentOperationId, rootValue);
     const id = provisioningPrimaryOperationId(input.parentOperationId);
     const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id=?').get(id);
-    if (existing) { const receipt = decode(existing); if (receipt.intent.topicRevision !== input.expectedTopicRevision) fail('stale-revision'); assertBasis(db, receipt); return receipt; }
+    if (existing) { const receipt = decode(existing); if (receipt.intent.topicRevision !== input.expectedTopicRevision) fail('stale-revision');
+      if (receipt.intent.primary.sessionStorePath !== input.sessionStorePath) fail('provisioning-primary-conflict');
+      assertBasis(db, receipt); return receipt; }
     const intent = { parentOperationId: input.parentOperationId, root: rootValue, topicRevision: input.expectedTopicRevision,
-      folder: folderBasis(rootValue.topicId), primary: primaryOf(input.parentOperationId, rootValue.topicId, sessionUpdatedAtOf(db, input.parentOperationId)) };
+      folder: folderBasis(rootValue.topicId), primary: { ...primaryOf(input.parentOperationId, rootValue.topicId, sessionUpdatedAtOf(db, input.parentOperationId)),
+        sessionStorePath: input.sessionStorePath } };
     const value = { schemaVersion: 1, logicalOperationId: id, intent, phase: 'reserved', revision: 1 };
     assertBasis(db, value); assertUnbound(intent);
     assertChildClaim(db, { logicalOperationId: id, operationKind: PROVISIONING_PRIMARY_OPERATION, intentDigest: hash(intent) });
@@ -302,7 +309,8 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
       topic.name !== root.name || topic.paraCategory !== root.paraCategory) fail();
     if (!isDeepStrictEqual(folderCreation(db, row.logical_operation_id), receipt.folderCreation)) fail();
     const primary = service.getProvisioningPrimary(row.logical_operation_id);
-    if (!isDeepStrictEqual(primary, receipt.primaryReceipt)) fail();
+    const expectedPrimary = primary?.intent.primary ?? primaryOf(row.logical_operation_id, root.topicId, sessionUpdatedAtOf(db, row.logical_operation_id));
+    if (!isDeepStrictEqual(primary, receipt.primaryReceipt) || !isDeepStrictEqual(receipt.primary, expectedPrimary)) fail();
     const folderRef = service.getSourceReference(`note-folder:${root.topicId}`);
     const folderLocator = service.getSourceLocator(`note-folder:${root.topicId}`);
     if (receipt.phase === 'folder-cleared') {
@@ -337,7 +345,8 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
     if (Boolean(folderRef) !== Boolean(folderLocator) || (folderRef && (folderRef.topicId !== root.topicId ||
       folderRef.sourceKind !== 'note_folder' || folderRef.sourceSystem !== 'obsidian'))) fail();
     const receipt = { schemaVersion: 1, parentOperationId: input.parentOperationId, root, topicRevision: topic.revision,
-      folderCreation: folderReceipt, folderLocator, primaryReceipt, primary: primaryOf(input.parentOperationId, root.topicId, sessionUpdatedAtOf(db, input.parentOperationId)),
+      folderCreation: folderReceipt, folderLocator, primaryReceipt,
+      primary: primaryReceipt?.intent.primary ?? primaryOf(input.parentOperationId, root.topicId, sessionUpdatedAtOf(db, input.parentOperationId)),
       phase: 'prepared', revision: 1 };
     const refs = service.listSourceReferences(root.topicId);
     if (refs.some(ref => ref.referenceId !== `note-folder:${root.topicId}`)) fail();

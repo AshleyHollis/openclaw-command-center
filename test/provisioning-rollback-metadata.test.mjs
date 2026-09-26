@@ -12,7 +12,7 @@ async function fixture(t) {
   t.after(async () => { metadata.close(); await rm(stateDir, { recursive: true, force: true }); });
   const input = { logicalOperationId: randomUUID(), topicId: randomUUID(), name: 'Fictional Studio', paraCategory: 'area',
     folderPath: path.join(stateDir, 'vault', 'Areas', 'Fictional Studio') };
-  return { input, get metadata() { return metadata; }, reopen() { metadata.close(); metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } }); } };
+  return { input, stateDir, get metadata() { return metadata; }, reopen() { metadata.close(); metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } }); } };
 }
 
 test('folder creation receipt survives SQLite reopen and pins one staging directory', async t => {
@@ -72,14 +72,18 @@ test('dispatched Primary is frozen by rollback and a bound adopted folder is rem
   f.metadata.bindProvisioningNoteFolder({ topicId: f.input.topicId, name: f.input.name, paraCategory: f.input.paraCategory,
     expectedRevision: 0, expectedLocatorVersion: 0, expectedSourceRevision: null, locator: f.input.folderPath,
     observedRevision: identity, ownership: 'adopted' }, () => {});
-  const primary = f.metadata.reserveProvisioningPrimary({ parentOperationId: f.input.logicalOperationId, expectedTopicRevision: 0 }, () => {});
+  const primary = f.metadata.reserveProvisioningPrimary({ parentOperationId: f.input.logicalOperationId, expectedTopicRevision: 0,
+    sessionStorePath: path.join(f.stateDir, 'sessions.json') }, () => {});
   assert.equal(primary.intent.primary.sessionUpdatedAt, Date.parse(f.metadata.getTopicOperation(f.input.logicalOperationId).createdAt));
+  assert.throws(() => f.metadata.reserveProvisioningPrimary({ parentOperationId: f.input.logicalOperationId, expectedTopicRevision: 0,
+    sessionStorePath: path.join(f.stateDir, 'other-sessions.json') }, () => {}), { code: 'provisioning-primary-conflict' });
   const creating = f.metadata.dispatchProvisioningPrimary(primary, () => {});
   const rollback = f.metadata.beginConditionalProvisioningRollback({ parentOperationId: f.input.logicalOperationId, expectedTopicRevision: 0 }, () => {});
   assert.deepEqual(rollback.primaryReceipt, creating);
   assert.equal(rollback.folderLocator.ownership, 'adopted');
   assert.throws(() => f.metadata.completeProvisioningPrimary(creating, () => {}), { code: 'provisioning-primary-conflict' });
-  assert.throws(() => f.metadata.reserveProvisioningPrimary({ parentOperationId: f.input.logicalOperationId, expectedTopicRevision: 0 }, () => {}), { code: 'provisioning-primary-conflict' });
+  assert.throws(() => f.metadata.reserveProvisioningPrimary({ parentOperationId: f.input.logicalOperationId, expectedTopicRevision: 0,
+    sessionStorePath: path.join(f.stateDir, 'sessions.json') }, () => {}), { code: 'provisioning-primary-conflict' });
   const session = f.metadata.advanceConditionalProvisioningRollback(rollback, 'session-cleared', () => {});
   assert.equal(f.metadata.getSourceReference(referenceId).externalSourceId, referenceId);
   assert.equal(f.metadata.getSourceLocator(referenceId).locator, f.input.folderPath);

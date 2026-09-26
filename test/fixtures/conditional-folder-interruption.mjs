@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { openCommandCenterMetadataService } from '../../src/metadata/service.mjs';
 import { ensureConventionalFolder, setHostDurableDirectoryPublisher } from '../../src/topics/conventions.mjs';
 import { finishConditionalProvisioning } from '../../src/topics/provisioning-primary.mjs';
+import { resolveStorePath } from 'openclaw/plugin-sdk/session-store-paths';
 import { setHostDurableFolderStager, setHostFilesystemIdentityReader } from '../../src/sources/note-folder-identity.mjs';
 import { setHostNoteFilesystemCoordinator } from '../../src/sources/note-filesystem-owner.mjs';
 
@@ -40,7 +41,8 @@ if (mode === 'after-session-create') {
       process.kill(process.pid, 'SIGKILL');
       return result;
     } };
-  await finishConditionalProvisioning({ metadata, sessionStore, env: process.env, parentOperationId: operationId,
+  await finishConditionalProvisioning({ metadata, sessionStore, env: process.env,
+    sessionStorePath: resolveStorePath(undefined, { agentId: 'main', env: process.env }), parentOperationId: operationId,
     expectedTopicRevision: 0, assertCurrent: () => {} });
   throw new Error('The child survived native Session creation.');
 }
