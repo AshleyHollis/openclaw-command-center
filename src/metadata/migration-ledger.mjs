@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
   SCHEMA_EIGHT_COMMAND_CENTER_VERSION,
+  SCHEMA_NINE_COMMAND_CENTER_VERSION,
   SCHEMA_SIX_COMMAND_CENTER_VERSION,
   ATTENTION_METADATA_SCHEMA_VERSION,
   LEGACY_METADATA_SCHEMA_VERSION,
@@ -17,7 +18,8 @@ import {
   metadataSchemaV5ToV6Sql,
   metadataSchemaV6ToV7Sql,
   metadataSchemaV7ToV8Sql,
-  metadataSchemaV8ToV9Sql
+  metadataSchemaV8ToV9Sql,
+  metadataSchemaV9ToV10Sql
 } from './schema.mjs';
 import canonical from '../compatibility-tuple.json' with { type: 'json' };
 import { recoveryMigrationId } from './path.mjs';
@@ -30,8 +32,9 @@ export const V5_TO_V6_MIGRATION_ID = 'command-center-schema-5-to-6';
 export const V6_TO_V7_MIGRATION_ID = 'command-center-schema-6-to-7';
 export const V7_TO_V8_MIGRATION_ID = 'command-center-schema-7-to-8';
 export const V8_TO_V9_MIGRATION_ID = 'command-center-schema-8-to-9';
-export const MIGRATION_ID = V8_TO_V9_MIGRATION_ID;
-export const MIGRATION_FROM_VERSION = PRIOR_COMMAND_CENTER_SCHEMA_VERSION;
+export const V9_TO_V10_MIGRATION_ID = 'command-center-schema-9-to-10';
+export const MIGRATION_ID = V9_TO_V10_MIGRATION_ID;
+export const MIGRATION_FROM_VERSION = SCHEMA_NINE_COMMAND_CENTER_VERSION;
 export const MIGRATION_TO_VERSION = COMMAND_CENTER_SCHEMA_VERSION;
 export const MIGRATION_IS_DESTRUCTIVE = false;
 
@@ -43,7 +46,8 @@ const v4Definition = Object.freeze({ id: V4_TO_V5_MIGRATION_ID, fromVersion: 4, 
 const v5Definition = Object.freeze({ id: V5_TO_V6_MIGRATION_ID, fromVersion: 5, toVersion: 6, destructive: false, statements: Object.freeze([metadataSchemaV5ToV6Sql]) });
 const v6Definition = Object.freeze({ id: V6_TO_V7_MIGRATION_ID, fromVersion: 6, toVersion: 7, destructive: false, statements: Object.freeze([metadataSchemaV6ToV7Sql]) });
 const v7Definition = Object.freeze({ id: V7_TO_V8_MIGRATION_ID, fromVersion: 7, toVersion: 8, destructive: false, statements: Object.freeze([metadataSchemaV7ToV8Sql]) });
-const v8Definition = Object.freeze({ id: V8_TO_V9_MIGRATION_ID, fromVersion: SCHEMA_EIGHT_COMMAND_CENTER_VERSION, toVersion: COMMAND_CENTER_SCHEMA_VERSION, destructive: false, statements: Object.freeze([metadataSchemaV8ToV9Sql]) });
+const v8Definition = Object.freeze({ id: V8_TO_V9_MIGRATION_ID, fromVersion: SCHEMA_EIGHT_COMMAND_CENTER_VERSION, toVersion: SCHEMA_NINE_COMMAND_CENTER_VERSION, destructive: false, statements: Object.freeze([metadataSchemaV8ToV9Sql]) });
+const v9Definition = Object.freeze({ id: V9_TO_V10_MIGRATION_ID, fromVersion: SCHEMA_NINE_COMMAND_CENTER_VERSION, toVersion: COMMAND_CENTER_SCHEMA_VERSION, destructive: false, statements: Object.freeze([metadataSchemaV9ToV10Sql]) });
 export const V1_TO_V2_MIGRATION_DIGEST = digest(v1Definition);
 export const V2_TO_V3_MIGRATION_DIGEST = digest(v2Definition);
 export const V3_TO_V4_MIGRATION_DIGEST = digest(v3Definition);
@@ -52,7 +56,8 @@ export const MIGRATION_DIGEST = digest(v5Definition);
 export const V6_TO_V7_MIGRATION_DIGEST = digest(v6Definition);
 export const V7_TO_V8_MIGRATION_DIGEST = digest(v7Definition);
 export const V8_TO_V9_MIGRATION_DIGEST = digest(v8Definition);
-export const migrationDescriptor = Object.freeze({ ...v8Definition, digest: V8_TO_V9_MIGRATION_DIGEST });
+export const V9_TO_V10_MIGRATION_DIGEST = digest(v9Definition);
+export const migrationDescriptor = Object.freeze({ ...v9Definition, digest: V9_TO_V10_MIGRATION_DIGEST });
 export const CURRENT_BUILD = canonical.package.build;
 
 function invokeHook(hooks, name, context) { if (typeof hooks?.[name] === 'function') hooks[name](context); }
@@ -68,7 +73,8 @@ export function validateMigrationLedger(database, { snapshotId, allowEmpty = fal
     { id: V5_TO_V6_MIGRATION_ID, digest: MIGRATION_DIGEST, from: 5, to: 6, builds: [CURRENT_BUILD] },
     { id: V6_TO_V7_MIGRATION_ID, digest: V6_TO_V7_MIGRATION_DIGEST, from: 6, to: 7, builds: [CURRENT_BUILD] },
     { id: V7_TO_V8_MIGRATION_ID, digest: V7_TO_V8_MIGRATION_DIGEST, from: 7, to: 8, builds: [CURRENT_BUILD] },
-    { id: V8_TO_V9_MIGRATION_ID, digest: V8_TO_V9_MIGRATION_DIGEST, from: 8, to: 9, builds: [CURRENT_BUILD] }
+    { id: V8_TO_V9_MIGRATION_ID, digest: V8_TO_V9_MIGRATION_DIGEST, from: 8, to: 9, builds: [CURRENT_BUILD] },
+    { id: V9_TO_V10_MIGRATION_ID, digest: V9_TO_V10_MIGRATION_DIGEST, from: 9, to: 10, builds: [CURRENT_BUILD] }
   ];
   const targetVersion = Number(database.prepare('PRAGMA user_version').get().user_version);
   const firstFrom = rows[0]?.from_version;
@@ -142,5 +148,9 @@ export function applyV7ToV8Migration(database, { snapshotId, appliedAt = new Dat
 export function applyV8ToV9Migration(database, { snapshotId, appliedAt = new Date().toISOString(), hooks } = {}) {
   if (typeof snapshotId !== 'string' || snapshotId.trim() === '') throw new TypeError('snapshotId must be a non-empty string');
   applyDefinition(database, v8Definition, { sequence: inspectMigrationLedger(database).length + 1, snapshotId, appliedAt, hooks });
+}
+export function applyV9ToV10Migration(database, { snapshotId, appliedAt = new Date().toISOString(), hooks } = {}) {
+  if (typeof snapshotId !== 'string' || snapshotId.trim() === '') throw new TypeError('snapshotId must be a non-empty string');
+  applyDefinition(database, v9Definition, { sequence: inspectMigrationLedger(database).length + 1, snapshotId, appliedAt, hooks });
 }
 export { digest };

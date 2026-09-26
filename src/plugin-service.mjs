@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { extractSelectedDocumentText } from './open-loops/selected-document-text.mjs';
 import { createAttentionService } from './attention/service.mjs';
+import { createDeveloperWorkService } from './developer-work/service.mjs';
+import { createDeveloperEventTransport, createDeveloperWorkProducer } from './developer-work/producer.mjs';
+import { reconcileDeveloperWorkRetrySchedule } from './developer-work/retry-schedule.mjs';
 import { createDashboardService } from './dashboard/service.mjs';
 import { openCommandCenterMetadataService } from './metadata/service.mjs';
 import { createLegacyDiscordMigrationService } from './migration/service.mjs';
@@ -84,6 +87,8 @@ export function createMetadataService(api) {
   let metadataService;
   let sourceService;
   let attentionService;
+  let developerWorkService;
+  let developerWorkProducer;
   let dashboardService;
   let openLoopReminders;
   let capacityReview;
@@ -105,11 +110,15 @@ export function createMetadataService(api) {
     releaseTopicMaintenanceOwners?.();
     releaseTopicMaintenanceOwners = undefined;
     sourceService?.close?.();
+    developerWorkService?.close?.();
+    developerWorkProducer?.close?.();
     attentionService?.close?.();
     metadataService?.close();
     metadataService = undefined;
     sourceService = undefined;
     attentionService = undefined;
+    developerWorkService = undefined;
+    developerWorkProducer = undefined;
     dashboardService = undefined;
     openLoopReminders = undefined;
     capacityReview = undefined;
@@ -156,6 +165,7 @@ export function createMetadataService(api) {
     async start(context = {}) {
       stopPromise = undefined;
       try {
+      if (api.pluginConfig?.developerWorkProducer?.enabled === true && (api.pluginConfig?.developerWork?.principals?.length ?? 0) > 0) throw new Error('DEV producer and LIVE receiver principals require separate Gateway activations.');
       const [{ setHostDurableFolderStager, setHostFilesystemIdentityReader }, { setHostNoteFilesystemCoordinator }, fileAccess, sqlite] = await Promise.all([
         import('./sources/note-folder-identity.mjs'), import('./sources/note-filesystem-owner.mjs'),
         import('openclaw/plugin-sdk/file-access-runtime'), import('openclaw/plugin-sdk/sqlite-runtime')
@@ -221,6 +231,20 @@ export function createMetadataService(api) {
           verifyTransition: (occurrence) => occurrence.transitionEvidence?.verifiedSource === 'scheduler-readback' && occurrence.transitionEvidence?.version === occurrence.occurrenceVersion,
           actions: []
         });
+        developerWorkService = createDeveloperWorkService({ metadata: metadataService, attention: attentionService, devBaseUrl: api.pluginConfig?.developerWork?.devBaseUrl });
+        await developerWorkService.drain();
+      }
+      if (api.pluginConfig?.developerWorkProducer?.enabled === true) {
+        const config = api.pluginConfig.developerWorkProducer;
+        const sessionReader = api.runtime?.agent?.session?.getSessionEntry;
+        if (typeof sessionReader !== 'function') throw new Error('DEV Developer Work requires the public OpenClaw session reader.');
+        developerWorkProducer = createDeveloperWorkProducer({
+          metadata: metadataService,
+          sessionReader: input => sessionReader(input),
+          authority: { producerId: config.producerId, role: 'worker', allowedProjects: config.allowedProjects },
+          receiver: createDeveloperEventTransport({ baseUrl: config.receiverBaseUrl, tokenEnv: config.tokenEnv })
+        });
+        await developerWorkProducer.flush();
       }
       const historySource = structuredClone(api.pluginConfig?.preservedHistorySource);
       const nativeHistorySource = structuredClone(api.pluginConfig?.nativeHistorySource);
@@ -284,9 +308,10 @@ export function createMetadataService(api) {
           }
         });
       }
-      // Existing-data bootstrap and its durable recovery remain required.
-      // Native Cron is acquired only by an authenticated Reminder/Schedule
-      // request; startup itself touches no job or optional background owner.
+      // The DEV-only retry job is reconciled after all other startup owners
+      // have initialized, so a later startup failure cannot leave a new
+      // scheduled tool calling an inactive producer.
+      if (developerWorkProducer) await reconcileDeveloperWorkRetrySchedule({ scheduler: context.getCron?.(), gateway: api.runtime?.gateway });
       return migrationResult;
       } catch (error) {
         closeActivation();
@@ -314,6 +339,13 @@ export function createMetadataService(api) {
     get capacityReview() { return capacityReview ?? readTopicMaintenanceOwners()?.capacityReview; },
     get dailyWorkspace() { return dailyWorkspace ?? readTopicMaintenanceOwners()?.dailyWorkspace; },
     get attentionService() { return attentionService; },
+    get developerWorkService() { return developerWorkService; },
+    get developerWorkProducer() { return developerWorkProducer; },
+    developerWorkResolve(input = {}) {
+      requireOperational();
+      if (!developerWorkProducer) throw new SourceServiceError('capability-unavailable', 'DEV Developer Work is not active on this Gateway.');
+      return developerWorkProducer.resolve(input);
+    },
     get maintenanceService() { return undefined; },
     get searchService() { return undefined; },
     get searchRebuildService() { return undefined; },

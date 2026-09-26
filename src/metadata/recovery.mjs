@@ -41,13 +41,15 @@ import {
   V7_TO_V8_MIGRATION_ID,
   V8_TO_V9_MIGRATION_DIGEST,
   V8_TO_V9_MIGRATION_ID,
+  V9_TO_V10_MIGRATION_DIGEST,
+  V9_TO_V10_MIGRATION_ID,
   validateMigrationLedger
 } from './migration-ledger.mjs';
 import { inspectSchema } from './schema.mjs';
 
 export const RECOVERY_FORMAT_VERSION = 1;
 export const RECOVERY_SNAPSHOT_SCHEMA_VERSION = 1;
-const recoverySnapshotSchemaVersions = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
+const recoverySnapshotSchemaVersions = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 // Exact previously deployed 2026.9.5 host whose committed schema-9 recovery
 // material is retained in production. Extending this set requires Class 3
 // qualification; a syntactically valid commit is not compatibility evidence.
@@ -78,6 +80,10 @@ const schemaEightRelease = Object.freeze({
   ...currentRelease,
   commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 8 }), migratable: Object.freeze({ min: 1, max: 7 }), writable: Object.freeze({ min: 8, max: 8 }) })
 });
+const schemaNineRelease = Object.freeze({
+  ...currentRelease,
+  commandCenterSchema: Object.freeze({ readable: Object.freeze({ min: 1, max: 9 }), migratable: Object.freeze({ min: 1, max: 8 }), writable: Object.freeze({ min: 9, max: 9 }) })
+});
 const schemaOneRelease = Object.freeze({
   package: Object.freeze({ name: canonical.package.name, version: '0.1.0', build: '0.1.0' }),
   host: Object.freeze({ range: '=2026.8.1-beta.2' }),
@@ -94,6 +100,7 @@ function recoveryContractForSchema(schemaVersion, { legacyTarget = false } = {})
   if (schemaVersion === 6) return { migration: { id: V6_TO_V7_MIGRATION_ID, digest: V6_TO_V7_MIGRATION_DIGEST, fromVersion: 6, toVersion: 7 }, sourceRelease: schemaSixRelease, targetRelease: currentRelease };
   if (schemaVersion === 7) return { migration: { id: V7_TO_V8_MIGRATION_ID, digest: V7_TO_V8_MIGRATION_DIGEST, fromVersion: 7, toVersion: 8 }, sourceRelease: schemaSevenRelease, targetRelease: currentRelease };
   if (schemaVersion === 8) return { migration: { id: V8_TO_V9_MIGRATION_ID, digest: V8_TO_V9_MIGRATION_DIGEST, fromVersion: 8, toVersion: 9 }, sourceRelease: schemaEightRelease, targetRelease: currentRelease };
+  if (schemaVersion === 9) return { migration: { id: V9_TO_V10_MIGRATION_ID, digest: V9_TO_V10_MIGRATION_DIGEST, fromVersion: 9, toVersion: 10 }, sourceRelease: schemaNineRelease, targetRelease: currentRelease };
   return { migration: { id: MIGRATION_ID, digest: MIGRATION_DIGEST, fromVersion: MIGRATION_FROM_VERSION, toVersion: MIGRATION_TO_VERSION }, sourceRelease: schemaFiveRelease, targetRelease: currentRelease };
 }
 

@@ -3,6 +3,9 @@ import { registerBridgeMethods, registerNativeSessionNavigation } from './bridge
 import { createRequestScopedConversationRuntime } from './bridge/gateway-method-dispatch.mjs';
 import { pluginConfigSchema } from './plugin-config.mjs';
 import { createAttentionActionHandler } from './attention/http-route.mjs';
+import { createDeveloperEventHandler, developerEventRoute } from './developer-work/http-route.mjs';
+import { developerWorkToolFactory } from './developer-work/producer-tool.mjs';
+import { developerWorkFlushToolFactory } from './developer-work/flush-tool.mjs';
 import { createMetadataService } from './plugin-service.mjs';
 import { topicContextToolFactory } from './search/tool.mjs';
 import { createTopicsHttpHandler } from './topics/http.mjs';
@@ -65,6 +68,7 @@ export default definePluginEntry({
     // Metadata discovery registers only lazy CLI declarations and must not
     // acquire the full activation's services or notification emitter.
     if (api.registrationMode === 'cli-metadata') return;
+    if (api.pluginConfig?.developerWorkProducer?.enabled === true && (api.pluginConfig?.developerWork?.principals?.length ?? 0) > 0) throw new Error('DEV producer and LIVE receiver principals require separate Gateway activations.');
     api.registerSessionCatalog?.({
       id: 'command-center',
       label: 'Command Center native Sessions',
@@ -118,6 +122,7 @@ export default definePluginEntry({
         if (property === 'topics') return service.topicService;
         if (property === 'dashboard') return { get: (input, runtime) => service.dashboardGet(input, runtime) };
         if (property === 'dashboardGet') return (input, runtime) => service.dashboardGet(input, runtime);
+        if (property === 'developerWorkResolve') return input => service.developerWorkResolve(input);
         if (property === 'briefingSetRead') return (input) => service.briefingSetRead(input);
         if (property === 'routineDecide') return (input) => service.routineDecide(input);
         if (property === 'openLoopsList') return (input) => service.openLoopsList(input);
@@ -162,6 +167,20 @@ export default definePluginEntry({
         handler: unavailableFirstLiveFeature
       });
     }
+    api.registerHttpRoute({
+      path: developerEventRoute,
+      auth: 'plugin',
+      match: 'exact',
+      handler: createDeveloperEventHandler({
+        service: { accept: input => {
+          const owner = service.developerWorkService;
+          if (!owner) throw Object.assign(new Error('Developer Work is unavailable.'), { code: 'capability-unavailable' });
+          return owner.accept(input);
+        } },
+        principals: api.pluginConfig?.developerWork?.principals ?? [],
+        trustedProxyPeers: api.pluginConfig?.developerWork?.trustedProxyPeers ?? []
+      })
+    });
     api.registerHttpRoute({
       path: '/plugins/command-center/api/attention/actions',
       auth: 'gateway',
@@ -239,6 +258,14 @@ export default definePluginEntry({
         return matches.length === 1 ? matches[0].sessionKey : undefined;
       }
     }), { name: 'command_center_publish_briefing', optional: true });
+    if (api.pluginConfig?.developerWorkProducer?.enabled === true) api.registerTool(developerWorkToolFactory({
+      getOwner: () => service.developerWorkProducer,
+      sessionReader: input => api.runtime.agent.session.getSessionEntry(input),
+      allowedAgentIds: api.pluginConfig.developerWorkProducer.allowedAgentIds
+    }), { name: 'command_center_report_developer_work', optional: true });
+    if (api.pluginConfig?.developerWorkProducer?.enabled === true) api.registerTool(developerWorkFlushToolFactory({
+      getOwner: () => service.developerWorkProducer
+    }), { name: 'command_center_flush_developer_work', optional: true });
     registerConversationCaptureHook(api);
     // The host exposes the same subscription contract in both its current
     // flat SDK form and its nested facade form. Prefer the facade where it is

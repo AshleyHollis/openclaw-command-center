@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isNoteFolderIdentity } from '../sources/note-folder-identity-format.mjs';
 import {
   COMMAND_CENTER_SCHEMA_VERSION,
+  SCHEMA_NINE_COMMAND_CENTER_VERSION,
   SCHEMA_EIGHT_COMMAND_CENTER_VERSION,
   SCHEMA_SEVEN_COMMAND_CENTER_VERSION,
   SCHEMA_SIX_COMMAND_CENTER_VERSION,
@@ -37,6 +38,7 @@ import {
   applyV6ToV7Migration,
   applyV7ToV8Migration,
   applyV8ToV9Migration,
+  applyV9ToV10Migration,
   validateMigrationLedger
 } from './migration-ledger.mjs';
 import {
@@ -55,6 +57,7 @@ import { TOPIC_BOOTSTRAP_OPERATION, installTopicBootstrapMetadata } from './topi
 import { RECONCILIATION_OPERATION, installReconciliationMetadata } from './reconciliation.mjs';
 import { CONDITIONAL_PRIMARY_MODE, PROVISIONING_PRIMARY_OPERATION, installProvisioningPrimaryMetadata, assertConditionalFolderClaims } from './provisioning-primary.mjs';
 import { installOpenLoopMetadata } from './open-loops.mjs';
+import { installDeveloperWorkMetadata } from './developer-work.mjs';
 import { installMessageIntake } from './message-intake.mjs';
 import { installOpenLoopActions } from './open-loop-actions.mjs';
 import { installTransactionIntake } from './transaction-intake.mjs';
@@ -407,6 +410,9 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     } else if (schemaVersion === SCHEMA_EIGHT_COMMAND_CENTER_VERSION) {
       const priorFailure = inspectSchemaOneDatabase(database, SCHEMA_EIGHT_COMMAND_CENTER_VERSION);
       if (priorFailure) return priorFailure;
+    } else if (schemaVersion === SCHEMA_NINE_COMMAND_CENTER_VERSION) {
+      const priorFailure = inspectSchemaOneDatabase(database, SCHEMA_NINE_COMMAND_CENTER_VERSION);
+      if (priorFailure) return priorFailure;
     } else if (schemaVersion !== COMMAND_CENTER_SCHEMA_VERSION) return coreFailure('unversioned-schema', 'The existing Command Center database is not a declared migratable schema.', 'Use the separate migration or recovery workflow before writing metadata.', null);
   } finally {
     closeQuietly(database);
@@ -438,6 +444,23 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     }
   } catch (error) { return recoveryFailure(error, schemaVersion); }
 
+  if (schemaVersion === SCHEMA_NINE_COMMAND_CENTER_VERSION) {
+    try {
+      if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: SCHEMA_NINE_COMMAND_CENTER_VERSION });
+    } catch (error) { return recoveryFailure(error, SCHEMA_NINE_COMMAND_CENTER_VERSION); }
+    let migrationDatabase;
+    try {
+      migrationDatabase = new DatabaseSync(databasePath);
+      migrationDatabase.exec('PRAGMA foreign_keys = ON;');
+      applyV9ToV10Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    } catch {
+      return coreFailure('migration-failed', 'The schema-9 to schema-10 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', SCHEMA_NINE_COMMAND_CENTER_VERSION);
+    } finally { closeQuietly(migrationDatabase); }
+    migrationHooks?.afterDatabaseCommit?.();
+    try { markRecoveryCommitted(material); } catch (error) { return recoveryFailure(error, COMMAND_CENTER_SCHEMA_VERSION); }
+    return validateCurrentSchema(databasePath, stateDir);
+  }
+
   if (schemaVersion === SCHEMA_EIGHT_COMMAND_CENTER_VERSION) {
     try {
       if (!material.exists) material = ensureRecoverySnapshot({ stateDir, databasePath, sourceSchemaVersion: SCHEMA_EIGHT_COMMAND_CENTER_VERSION });
@@ -447,6 +470,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       migrationDatabase = new DatabaseSync(databasePath);
       migrationDatabase.exec('PRAGMA foreign_keys = ON;');
       applyV8ToV9Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV9ToV10Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-8 to schema-9 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', SCHEMA_EIGHT_COMMAND_CENTER_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -465,6 +489,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       migrationDatabase.exec('PRAGMA foreign_keys = ON;');
       applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV8ToV9Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV9ToV10Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-7 to schema-8 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', SCHEMA_SEVEN_COMMAND_CENTER_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -484,6 +509,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV8ToV9Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV9ToV10Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-6 to schema-7 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', SCHEMA_SIX_COMMAND_CENTER_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -504,6 +530,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV8ToV9Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV9ToV10Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-4 to schema-5 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', PRIOR_COMMAND_CENTER_SCHEMA_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -525,6 +552,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV8ToV9Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV9ToV10Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-4 to schema-6 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', ATTENTION_METADATA_SCHEMA_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -547,6 +575,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV8ToV9Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV9ToV10Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       return coreFailure('migration-failed', 'The schema-3 to schema-5 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_MIGRATION_SCHEMA_VERSION);
     } finally { closeQuietly(migrationDatabase); }
@@ -570,6 +599,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
       applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
       applyV8ToV9Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+      applyV9ToV10Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     } catch {
       closeQuietly(migrationDatabase);
       return coreFailure('migration-failed', 'The schema-2 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the current supported release before allowing metadata mutations.', LEGACY_METADATA_SCHEMA_VERSION);
@@ -597,6 +627,7 @@ function inspectExistingDatabase(databasePath, stateDir, migrationHooks) {
     applyV6ToV7Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     applyV7ToV8Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
     applyV8ToV9Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
+    applyV9ToV10Migration(migrationDatabase, { snapshotId: material.manifest.snapshotId, hooks: migrationHooks });
   } catch (error) {
     closeQuietly(migrationDatabase);
     return coreFailure('migration-failed', 'The schema-1 to schema-4 migration was rolled back and the store remains recovery-only.', 'Retry startup with the retained verified snapshot or restore the prior compatible release.', SOURCE_SCHEMA_VERSION);
@@ -2522,6 +2553,7 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   installTopicBootstrapMetadata(service, { mutate, inspect, readMany, assertMutation, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
   installProvisioningPrimaryMetadata(service, { mutate, inspect, readMany, assertMutation, ...reconciliationClaims, ErrorType: CommandCenterMetadataError });
   installOpenLoopMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
+  installDeveloperWorkMetadata(service, { mutate, inspect, ErrorType: CommandCenterMetadataError });
   installMessageIntake(service, { ErrorType: CommandCenterMetadataError });
   installOpenLoopActions(service, { ErrorType: CommandCenterMetadataError });
   installTransactionIntake(service, { ErrorType: CommandCenterMetadataError });

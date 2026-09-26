@@ -3,19 +3,54 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertDeclarativeMirror } from '../src/compatibility.mjs';
+import { parseCandidatePair } from '../src/candidate-pair.mjs';
+import { pinnedHost } from '../src/host-harness.mjs';
 import { build, distRoot } from '../src/build.mjs';
 import { scanRepositorySafety } from '../src/safety.mjs';
 import { validateReleasePerformanceBaseline } from '../src/performance-baseline.mjs';
 import { repositoryArtifactCheckPhases, runIndependentCheckPhases } from './check-phases.mjs';
 import { checkMutationArchitecture } from './mutation-architecture.mjs';
 
-export async function runRepositoryChecks({ purpose = 'qualification' } = {}) {
-  if (!['qualification', 'capture-prerequisites'].includes(purpose)) throw new Error('Unsupported repository check purpose');
+export function assertCandidateRepositoryMetadata(pairValue, inputTreeReceipt, tuple, packageJson, packageLock) {
+  const pair = parseCandidatePair(pairValue);
+  const source = pair.commandCenter;
+  const host = pair.openClaw;
+  if (inputTreeReceipt?.repository !== source.repository ||
+      inputTreeReceipt.sourceCommit !== source.sourceCommit ||
+      inputTreeReceipt.inputTreeDigest !== source.inputTreeDigest ||
+      inputTreeReceipt.overlayDigest !== source.overlayDigest) throw new Error('Candidate staging receipt differs from the sealed pair');
+  if (tuple.host?.range !== `=${host.packageVersion}` || tuple.host.commit !== host.sourceCommit ||
+      tuple.pluginApi?.range !== `=${packageJson.devDependencies?.openclaw}` ||
+      packageJson.peerDependencies?.openclaw !== packageJson.devDependencies?.openclaw ||
+      packageJson.openclaw?.compat?.pluginApi !== tuple.pluginApi.range ||
+      JSON.stringify(packageJson.commandCenter?.compatibilityTuple) !== JSON.stringify(tuple) ||
+      JSON.stringify(packageLock.packages?.['']?.commandCenter) !== JSON.stringify(packageJson.commandCenter)) {
+    throw new Error('Candidate host, plugin API or metadata mirrors differ');
+  }
+  return pair;
+}
+
+export function assertReleasedHostMetadata(tuple) {
+  if (tuple.host?.range !== `=${pinnedHost.packageVersion}` || tuple.host.commit !== pinnedHost.commit) {
+    throw new Error('Ordinary repository checks require the released host identity');
+  }
+}
+
+export async function runRepositoryChecks({ purpose = 'qualification', candidatePair, inputTreeReceipt } = {}) {
+  if (!['qualification', 'capture-prerequisites', 'candidate-prerequisites'].includes(purpose)) throw new Error('Unsupported repository check purpose');
+  if (purpose !== 'candidate-prerequisites' && (candidatePair !== undefined || inputTreeReceipt !== undefined)) {
+    throw new Error('Candidate inputs require the candidate-only check purpose');
+  }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   await checkMutationArchitecture(root);
   const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
   const packageLock = JSON.parse(await readFile(path.join(root, 'package-lock.json'), 'utf8'));
   assertDeclarativeMirror(packageJson.commandCenter?.compatibilityTuple);
+  const tuple = packageJson.commandCenter.compatibilityTuple;
+  const pair = purpose === 'candidate-prerequisites'
+    ? assertCandidateRepositoryMetadata(candidatePair, inputTreeReceipt, tuple, packageJson, packageLock)
+    : undefined;
+  if (!pair) assertReleasedHostMetadata(tuple);
   const runtimeSourceGraph = packageJson.commandCenter?.runtimeCapability?.sourceGraph;
   if (packageJson.commandCenter?.runtimeCapability?.id !== 'openclaw-control-ui-v1' || runtimeSourceGraph !== './runtime-capability.source-graph.json') throw new Error('Control UI runtime capability source graph drift');
   const graph = JSON.parse(await readFile(path.join(root, runtimeSourceGraph), 'utf8'));
@@ -47,6 +82,9 @@ export async function runRepositoryChecks({ purpose = 'qualification' } = {}) {
   for (const [name, version] of Object.entries(packageLock.packages['node_modules/openclaw'].dependencies)) if (packageLock.packages[`node_modules/${name}`]?.version !== version) throw new Error(`OpenClaw lockfile dependency ${name} does not match the stable host package`);
   if (!pluginManifest.configSchema || typeof pluginManifest.configSchema !== 'object' || Array.isArray(pluginManifest.configSchema)) throw new Error('Plugin configSchema must be an object');
   const buildReceipt = await build();
+  if (pair && buildReceipt.digest !== pair.commandCenter.buildDigest) {
+    throw new Error('Candidate build differs from the sealed pair');
+  }
   const phases = repositoryArtifactCheckPhases(purpose, {
     verifyBaseline: async () => {
       const baselineText = await readFile(path.join(root, 'test', 'fixtures', 'release-performance-baseline.native-workspace.v3.json'), 'utf8');
@@ -74,5 +112,7 @@ export async function runRepositoryChecks({ purpose = 'qualification' } = {}) {
     })
   });
   await runIndependentCheckPhases(phases);
-  return Object.freeze({ purpose, buildDigest: buildReceipt.digest, artifactChecks: Object.freeze(phases.map(phase => phase.id)) });
+  return Object.freeze({ purpose, buildDigest: buildReceipt.digest,
+    ...(pair ? { candidatePairSeal: pair.seal, releaseQualified: false } : {}),
+    artifactChecks: Object.freeze(phases.map(phase => phase.id)) });
 }

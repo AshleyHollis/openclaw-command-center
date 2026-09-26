@@ -137,7 +137,7 @@ document.querySelector('#evidence-close')?.addEventListener('click', () => docum
 function renderNotificationSettings(settings) {
   if (!settings) return;
   notificationSettingsRevision = settings.revision;
-  for (const [id, value] of [['settings-due-reminders', settings.dueReminders], ['settings-important-items', settings.importantItems], ['settings-critical-realerts', settings.criticalRealerts], ['settings-quiet-enabled', settings.quietHoursEnabled], ['settings-generic-preview', settings.genericPreview]]) {
+  for (const [id, value] of [['settings-due-reminders', settings.dueReminders], ['settings-important-items', settings.importantItems], ['settings-critical-realerts', settings.criticalRealerts], ['settings-developer-input', settings.developerInput], ['settings-developer-approval', settings.developerApproval], ['settings-developer-review', settings.developerReview], ['settings-developer-deployment', settings.developerDeployment], ['settings-quiet-enabled', settings.quietHoursEnabled], ['settings-generic-preview', settings.genericPreview]]) {
     const control = document.querySelector(`#${id}`); if (control) control.checked = value === true;
   }
   for (const [id, value] of [['settings-quiet-start', settings.quietHoursStart], ['settings-quiet-end', settings.quietHoursEnd], ['settings-time-zone', settings.timeZone]]) {
@@ -204,6 +204,10 @@ async function saveNotificationSettings(event) {
     dueReminders: document.querySelector('#settings-due-reminders').checked,
     importantItems: document.querySelector('#settings-important-items').checked,
     criticalRealerts: document.querySelector('#settings-critical-realerts').checked,
+    developerInput: document.querySelector('#settings-developer-input').checked,
+    developerApproval: document.querySelector('#settings-developer-approval').checked,
+    developerReview: document.querySelector('#settings-developer-review').checked,
+    developerDeployment: document.querySelector('#settings-developer-deployment').checked,
     quietHoursEnabled: document.querySelector('#settings-quiet-enabled').checked,
     quietHoursStart: document.querySelector('#settings-quiet-start').value,
     quietHoursEnd: document.querySelector('#settings-quiet-end').value,

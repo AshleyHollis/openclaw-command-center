@@ -117,7 +117,7 @@ test('schema 8 upgrades additively to schema 9 with a contiguous durable receipt
     database.exec(metadataSchemaV8Sql);
     applyV8ToV9Migration(database, { snapshotId: 'fictional-schema-8-snapshot', appliedAt: at });
     assert.equal(database.prepare('PRAGMA user_version').get().user_version, 9);
-    assert.equal(inspectSchema(database).valid, true);
+    assert.equal(inspectSchema(database, 9).valid, true);
     assert.equal(validateMigrationLedger(database, { snapshotId: 'fictional-schema-8-snapshot' }).valid, true);
     assert.deepEqual({ ...database.prepare('SELECT from_version AS fromVersion, to_version AS toVersion FROM schema_migrations').get() }, { fromVersion: 8, toVersion: 9 });
   } finally { database.close(); }

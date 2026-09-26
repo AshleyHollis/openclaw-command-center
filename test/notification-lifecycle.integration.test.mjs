@@ -93,6 +93,132 @@ test('notification settings suppress delivery without rewriting fixed policy slo
   });
 });
 
+test('Developer Work input emits once with a separate category switch and clears on resolution', async () => {
+  await fixture(async ({ service, episode, candidates, clears, advance }) => {
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-input-required';
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '81111111-2222-4111-8111-111111111111', expectedRevision: 1, settings: { importantItems: false } });
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    assert.match(candidates[0].preview.body, /Development work needs/);
+    advance(5 * 60 * 60 * 1000);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    assert.deepEqual(service.inspect().slots.map(slot => slot.slot_kind), ['developer-input']);
+    episode.state = 'Resolved';
+    await service.reconcile();
+    assert.equal(clears.length, 1);
+  });
+});
+
+test('failure, rollback and recovery share one deployment notification activation', async () => {
+  await fixture(async ({ service, episode, candidates, clears, advance }) => {
+    const startedAt = Date.parse(episode.attentionSince);
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-deployment-incident';
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'failed', outcomeObservedAt: episode.attentionSince };
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    for (const [index, outcome] of ['rolled-back', 'recovered'].entries()) {
+      advance(2 * 60 * 1000);
+      const observedAt = new Date(startedAt + (index + 1) * 2 * 60 * 1000).toISOString();
+      episode.evidenceFacts = { deploymentId: 'deployment-1', outcome, outcomeObservedAt: observedAt };
+      episode.updatedAt = observedAt;
+      await service.reconcile();
+      assert.equal(candidates.length, 1);
+    }
+    assert.deepEqual(service.inspect().slots.map(slot => slot.slot_kind), ['developer-deployment']);
+    episode.state = 'Resolved';
+    await service.reconcile();
+    assert.equal(clears.length, 1);
+  });
+});
+
+test('a later rollback gets one outcome alert on the same incident and resolution clears both', async () => {
+  await fixture(async ({ service, episode, candidates, clears, advance }) => {
+    const startedAt = Date.parse(episode.attentionSince);
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-deployment-incident';
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'failed', outcomeObservedAt: episode.attentionSince };
+    await service.reconcile();
+    advance(11 * 60 * 1000);
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'rolled-back', outcomeObservedAt: new Date(startedAt + 11 * 60 * 1000).toISOString() };
+    await service.reconcile();
+    await service.reconcile();
+    assert.equal(candidates.length, 2);
+    assert.equal(new Set(candidates.map(candidate => candidate.logicalOperationId)).size, 2);
+    assert.match(candidates[1].preview.body, /deployment outcome/u);
+    assert.deepEqual(service.inspect().slots.map(slot => slot.slot_kind).sort(), ['developer-deployment', 'developer-deployment-outcome']);
+    advance(60 * 1000);
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'recovered', outcomeObservedAt: new Date(startedAt + 12 * 60 * 1000).toISOString() };
+    await service.reconcile();
+    assert.equal(candidates.length, 2);
+    episode.state = 'Resolved';
+    await service.reconcile();
+    assert.equal(clears.length, 2);
+  });
+});
+
+test('a failed rollback alerts promptly, while a backlog already rolled back gets one activation', async () => {
+  await fixture(async ({ service, episode, candidates, advance }) => {
+    const startedAt = Date.parse(episode.attentionSince);
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-deployment-incident';
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'failed', outcomeObservedAt: episode.attentionSince };
+    await service.reconcile();
+    advance(60 * 1000);
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'rollback-failed', outcomeObservedAt: new Date(startedAt + 60 * 1000).toISOString() };
+    await service.reconcile();
+    assert.equal(candidates.length, 2);
+  });
+  await fixture(async ({ service, episode, candidates }) => {
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-deployment-incident';
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'rolled-back', outcomeObservedAt: episode.attentionSince };
+    await service.reconcile();
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+  });
+});
+
+test('a queued rollback outcome is cancelled when recovery arrives before quiet hours end', async () => {
+  await fixture(async ({ service, episode, candidates, advance }) => {
+    const startedAt = Date.parse(episode.attentionSince);
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-deployment-incident';
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'failed', outcomeObservedAt: episode.attentionSince };
+    await service.reconcile();
+    advance(20 * 60 * 1000);
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'rolled-back', outcomeObservedAt: new Date(startedAt + 20 * 60 * 1000).toISOString() };
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    assert.equal(service.inspect().slots.find(slot => slot.slot_kind === 'developer-deployment-outcome').status, 'queued');
+    advance(60 * 1000);
+    episode.evidenceFacts = { deploymentId: 'deployment-1', outcome: 'recovered', outcomeObservedAt: new Date(startedAt + 21 * 60 * 1000).toISOString() };
+    await service.reconcile();
+    assert.equal(service.inspect().slots.find(slot => slot.slot_kind === 'developer-deployment-outcome').status, 'cancelled');
+    advance(9 * 60 * 60 * 1000);
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+  }, '2026-08-27T21:50:00.000Z');
+});
+
+test('Routine Developer Work review stays off by default and can be enabled without raising severity', async () => {
+  await fixture(async ({ service, episode, candidates }) => {
+    episode.sourceCapabilityId = 'developer-work.v1';
+    episode.attentionReason = 'developer-review-required';
+    episode.severity = 'Routine';
+    await service.reconcile();
+    assert.equal(candidates.length, 0);
+    assert.deepEqual(service.inspect().slots.map(slot => slot.slot_kind), ['developer-review']);
+    service.updateSettings({ schemaVersion: 1, logicalOperationId: '82222222-2222-4222-8222-222222222222', expectedRevision: 1, settings: { developerReview: true } });
+    await service.reconcile();
+    assert.equal(candidates.length, 1);
+    assert.match(candidates[0].preview.body, /ready for review/);
+    assert.equal(episode.severity, 'Routine');
+  });
+});
+
 test('snoozing cancels repeat slots and excludes snoozed time from High active hours', async () => {
   await fixture(async ({ service, episode, candidates, clears, advance }) => {
     await service.reconcile();

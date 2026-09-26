@@ -70,8 +70,8 @@ test('native HTTP actions require one catalogue owner, including reconcile-only 
 
 test('architecture checks the current native manifest and actual closed HTTP action vocabularies', async () => {
   const result = await checkMutationArchitecture(new URL('../', import.meta.url));
-  assert.equal(result.httpRoutes, 0);
-  assert.equal(result.httpActions, 0);
+  assert.equal(result.httpRoutes, 1);
+  assert.equal(result.httpActions, 1);
 });
 
 test('new native routes and invalid HTTP ownership cannot evade the catalogue', () => {

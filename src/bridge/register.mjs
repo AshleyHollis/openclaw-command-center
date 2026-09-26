@@ -221,6 +221,7 @@ const handlerMap = Object.freeze({
   'command-center.v1.activity.list': (service, params) => service.activityList(params),
   'command-center.v1.activity.get': (service, params) => service.activityGet(params),
   'command-center.v1.dashboard.get': (service, params, runtime) => service.dashboardGet(params, runtime),
+  'command-center.v1.developer-work.resolve': (service, params) => service.developerWorkResolve(params),
   'command-center.v1.briefings.set-read': (service, params) => service.briefingSetRead(params),
   'command-center.v1.routines.decide': (service, params) => service.routineDecide(params),
   'command-center.v1.open-loops.list': (service, params) => service.openLoopsList(params),

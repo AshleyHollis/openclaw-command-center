@@ -9,6 +9,13 @@ export function notificationPreview({ severity, kind = 'attention', genericPrevi
     const count = Number.isSafeInteger(summaryCount) && summaryCount > 0 ? summaryCount : 1;
     return Object.freeze({ title: 'Command Center · Attention', body: `${count} item${count === 1 ? '' : 's'} need review.` });
   }
+  if (kind.startsWith('attention-developer-')) {
+    const category = kind.slice('attention-developer-'.length);
+    if (category === 'review') return Object.freeze({ title: 'Command Center · Development', body: 'Development work is ready for review.' });
+    if (category === 'deployment') return Object.freeze({ title: 'Command Center · Development', body: 'A deployment needs your attention.' });
+    if (category === 'deployment-outcome') return Object.freeze({ title: 'Command Center · Development', body: 'A deployment outcome needs review.' });
+    return Object.freeze({ title: 'Command Center · Development', body: 'Development work needs your attention.' });
+  }
   const label = safeSeverity(severity);
   if (kind === 'reminder' || label === 'Reminder') return Object.freeze({ title: 'Command Center · Reminder', body: 'A Reminder is due.' });
   if (label === 'Critical') return Object.freeze({ title: 'Command Center · Critical', body: 'A Critical item needs review.' });

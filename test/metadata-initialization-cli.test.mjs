@@ -27,9 +27,9 @@ test('pinned initialization CLI verifies without creating and refuses another re
   await assert.rejects(invoke('execute'), { code: 'initialization-state-mismatch' });
   process.env.OPENCLAW_STATE_DIR = stateDir;
   assert.deepEqual(await readdir(stateDir), []);
-  assert.deepEqual(await invoke('execute'), { phase: 'verified', schemaVersion: 9, disposition: 'created' });
+  assert.deepEqual(await invoke('execute'), { phase: 'verified', schemaVersion: 10, disposition: 'created' });
   const bytes = await readFile(resolveCommandCenterDatabasePath(stateDir));
-  assert.deepEqual(await invoke('verify'), { phase: 'verified', schemaVersion: 9, disposition: 'existing' });
-  assert.deepEqual(await invoke('execute'), { phase: 'verified', schemaVersion: 9, disposition: 'existing' });
+  assert.deepEqual(await invoke('verify'), { phase: 'verified', schemaVersion: 10, disposition: 'existing' });
+  assert.deepEqual(await invoke('execute'), { phase: 'verified', schemaVersion: 10, disposition: 'existing' });
   assert.deepEqual(await readFile(resolveCommandCenterDatabasePath(stateDir)), bytes);
 });

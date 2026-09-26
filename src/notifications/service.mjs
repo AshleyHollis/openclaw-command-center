@@ -3,9 +3,10 @@ import { createHash } from 'node:crypto';
 import { sourceError } from '../sources/errors.mjs';
 import { createNotificationCandidate, validateNotificationCandidate } from './candidate.mjs';
 import { DEFAULT_NOTIFICATION_SETTINGS, normalizeNotificationSettings, settingKeys } from './settings.mjs';
-import { isQuietHours, policySlots } from './policy.mjs';
+import { developerNotificationCategory, isQuietHours, policySlots } from './policy.mjs';
 
 const ONE_DAY_MS = 86_400_000;
+const DEPLOYMENT_RECOVERY_GROUP_MS = 10 * 60 * 1000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SEVERITY_RANK = Object.freeze({ Reminder: 1, High: 2, Critical: 3 });
 
@@ -21,13 +22,17 @@ function digest(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-function mapSettings(row, fallback = DEFAULT_NOTIFICATION_SETTINGS) {
+function mapSettings(row, developer, fallback = DEFAULT_NOTIFICATION_SETTINGS) {
   if (!row) return Object.freeze({ ...fallback });
   return Object.freeze({
     settingsId: 'global',
     dueReminders: row.due_reminders === 1,
     importantItems: row.important_items === 1,
     criticalRealerts: row.critical_realerts === 1,
+    developerInput: developer?.developer_input === 1,
+    developerApproval: developer?.developer_approval === 1,
+    developerReview: developer?.developer_review === 1,
+    developerDeployment: developer?.developer_deployment === 1,
     quietHoursEnabled: row.quiet_hours_enabled === 1,
     quietHoursStart: row.quiet_hours_start,
     quietHoursEnd: row.quiet_hours_end,
@@ -54,6 +59,9 @@ function localDateKey(value, timeZone) {
 
 function episodeSeverity(episode) {
   if (episodeKind(episode) === 'reminder') return 'Reminder';
+  const developerCategory = developerNotificationCategory(episode);
+  if (episode?.sourceCapabilityId === 'developer-work.v1' && !developerCategory) return null;
+  if (developerCategory) return episode?.severity === (developerCategory === 'review' ? 'Routine' : 'High') ? 'High' : null;
   return ['High', 'Critical'].includes(episode?.severity) ? episode.severity : null;
 }
 
@@ -65,7 +73,9 @@ function activeEpisode(episode) {
   return episode?.state === 'Active' && !episode?.terminalAt && episodeSeverity(episode) !== null;
 }
 
-function categoryEnabled(slot, severity, settings) {
+function categoryEnabled(slot, severity, settings, episode) {
+  const developerCategory = developerNotificationCategory(episode);
+  if (developerCategory) return settings[`developer${developerCategory[0].toUpperCase()}${developerCategory.slice(1)}`];
   if (severity === 'Reminder') return settings.dueReminders;
   if (severity === 'Critical' && slot.slot_kind !== 'critical-immediate') return settings.criticalRealerts;
   return settings.importantItems;
@@ -88,6 +98,11 @@ function settingsRow(settings, updatedAtMs) {
     settings.revision,
     new Date(updatedAtMs).toISOString()
   ];
+}
+
+function developerSettingsRow(settings) {
+  return [settings.developerInput ? 1 : 0, settings.developerApproval ? 1 : 0,
+    settings.developerReview ? 1 : 0, settings.developerDeployment ? 1 : 0];
 }
 
 function safeOperationId(value) {
@@ -116,7 +131,12 @@ export function createNotificationService({ metadata, attentionService, sourceSe
       db.prepare('INSERT INTO notification_settings (settings_id, due_reminders, important_items, critical_realerts, quiet_hours_enabled, quiet_hours_start, quiet_hours_end, time_zone, generic_preview, revision, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('global', ...settingsRow(defaults, updatedAtMs));
       row = db.prepare('SELECT * FROM notification_settings WHERE settings_id = ?').get('global');
     }
-    return mapSettings(row);
+    let developer = db.prepare('SELECT * FROM notification_developer_settings WHERE settings_id = ?').get('global');
+    if (!developer) {
+      db.prepare('INSERT INTO notification_developer_settings (settings_id, developer_input, developer_approval, developer_review, developer_deployment) VALUES (?, ?, ?, ?, ?)').run('global', ...developerSettingsRow(DEFAULT_NOTIFICATION_SETTINGS));
+      developer = db.prepare('SELECT * FROM notification_developer_settings WHERE settings_id = ?').get('global');
+    }
+    return mapSettings(row, developer);
   }
 
   function updateSettings(input = {}) {
@@ -150,10 +170,12 @@ export function createNotificationService({ metadata, attentionService, sourceSe
         }
       }
       const current = db.prepare('SELECT * FROM notification_settings WHERE settings_id = ?').get('global');
-      const currentSettings = mapSettings(current);
+      const developer = db.prepare('SELECT * FROM notification_developer_settings WHERE settings_id = ?').get('global');
+      const currentSettings = mapSettings(current, developer);
       if (currentSettings.revision !== input.expectedRevision) throw sourceError('conflict', 'Notification settings revision is stale.', { currentRevision: currentSettings.revision });
       const next = normalizeNotificationSettings({ ...currentSettings, ...proposed, revision: currentSettings.revision + 1, updatedAt: new Date(clock).toISOString() });
       db.prepare('UPDATE notification_settings SET due_reminders = ?, important_items = ?, critical_realerts = ?, quiet_hours_enabled = ?, quiet_hours_start = ?, quiet_hours_end = ?, time_zone = ?, generic_preview = ?, revision = ?, updated_at = ? WHERE settings_id = ?').run(...settingsRow(next, clock), 'global');
+      db.prepare('UPDATE notification_developer_settings SET developer_input = ?, developer_approval = ?, developer_review = ?, developer_deployment = ? WHERE settings_id = ?').run(...developerSettingsRow(next), 'global');
       if (existingOperation) {
         db.prepare('UPDATE operation_journal SET state = ?, result_status = ?, result_identity = ?, observed_revision = ?, updated_at = ? WHERE logical_operation_id = ?').run('applied', 'applied', JSON.stringify(next), String(next.revision), new Date(clock).toISOString(), logicalOperationId);
       } else {
@@ -183,7 +205,7 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     const generation = prior ? prior.generation + 1 : 1;
     const epochId = `epoch-${digest({ episodeId: episode.episodeId, generation, severity }).slice(0, 48)}`;
     db.prepare('INSERT INTO notification_policy_epochs (epoch_id, episode_id, severity, generation, activation_at_ms, active_accumulated_ms, state, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(epochId, episode.episodeId, severity, generation, activationAtMs, 0, 'active', clock, clock);
-    const slots = policySlots({ severity, activationAtMs, explicitTimed: explicitReminder(episode) || resumesReminder, kind: episodeKind(episode), settings: schedulingSettings(currentSettings) });
+    const slots = policySlots({ severity: developerNotificationCategory(episode) === 'review' ? 'Routine' : severity, activationAtMs, explicitTimed: explicitReminder(episode) || resumesReminder, kind: episodeKind(episode), developerCategory: developerNotificationCategory(episode), settings: schedulingSettings(currentSettings) });
     for (const slot of slots) {
       const slotId = `slot-${digest({ epochId, slotKind: slot.slotKind }).slice(0, 48)}`;
       db.prepare('INSERT INTO notification_slots (slot_id, epoch_id, episode_id, slot_kind, due_at_ms, status, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(slotId, epochId, episode.episodeId, slot.slotKind, slot.dueAtMs, 'scheduled', clock, clock);
@@ -201,7 +223,7 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     const accumulated = Number(epoch.active_accumulated_ms) + additional;
     db.prepare('UPDATE notification_policy_epochs SET active_accumulated_ms = ?, state = ?, updated_at_ms = ? WHERE epoch_id = ?').run(accumulated, state, clock, epoch.epoch_id);
     if (state === 'paused') db.prepare("UPDATE notification_slots SET status = 'cancelled', updated_at_ms = ? WHERE epoch_id = ? AND status IN ('scheduled', 'queued')").run(clock, epoch.epoch_id);
-    if (episodeSeverity(episode) === 'High' && state === 'active' && wasPaused) {
+    if (episodeSeverity(episode) === 'High' && !developerNotificationCategory(episode) && state === 'active' && wasPaused) {
       const remaining = Math.max(0, 4 * 60 * 60 * 1000 - accumulated);
       db.prepare("UPDATE notification_slots SET status = 'scheduled', due_at_ms = ?, updated_at_ms = ? WHERE epoch_id = ? AND slot_kind = 'high-repeat' AND status IN ('scheduled', 'cancelled')").run(clock + remaining, clock, epoch.epoch_id);
       const returnSlot = db.prepare("SELECT slot_id FROM notification_slots WHERE epoch_id = ? AND slot_kind = 'snooze-return'").get(epoch.epoch_id);
@@ -211,6 +233,33 @@ export function createNotificationService({ metadata, attentionService, sourceSe
       }
     }
     return db.prepare('SELECT * FROM notification_policy_epochs WHERE epoch_id = ?').get(epoch.epoch_id);
+  }
+
+  function deploymentOutcomeDueAt(episode, epoch) {
+    if (developerNotificationCategory(episode) !== 'deployment') return null;
+    const activation = db.prepare("SELECT * FROM notification_slots WHERE epoch_id = ? AND slot_kind = 'developer-deployment'").get(epoch.epoch_id);
+    if (activation?.status !== 'emitted' || !Number.isSafeInteger(activation.emitted_at_ms)) return null;
+    // The source owner records LIVE receipt time, so a delayed replay cannot
+    // turn an outcome already visible at activation into a second alert.
+    const observedAt = Date.parse(episode.evidenceFacts?.outcomeObservedAt ?? '');
+    if (!Number.isSafeInteger(observedAt) || observedAt <= activation.emitted_at_ms) return null;
+    const outcome = episode.evidenceFacts?.outcome;
+    if (outcome === 'rollback-failed') return observedAt;
+    if (outcome === 'rolled-back' && observedAt - activation.emitted_at_ms >= DEPLOYMENT_RECOVERY_GROUP_MS) return observedAt;
+    return null;
+  }
+
+  function scheduleDeploymentOutcome(episode, epoch, clock) {
+    if (developerNotificationCategory(episode) !== 'deployment') return;
+    const slotKind = 'developer-deployment-outcome';
+    const slotId = `slot-${digest({ epochId: epoch.epoch_id, slotKind }).slice(0, 48)}`;
+    const existing = db.prepare('SELECT * FROM notification_slots WHERE slot_id = ?').get(slotId);
+    const dueAt = deploymentOutcomeDueAt(episode, epoch);
+    if (dueAt === null) {
+      if (existing && ['scheduled', 'queued'].includes(existing.status)) db.prepare("UPDATE notification_slots SET status = 'cancelled', updated_at_ms = ? WHERE slot_id = ?").run(clock, slotId);
+      return;
+    }
+    if (!existing) db.prepare('INSERT INTO notification_slots (slot_id, epoch_id, episode_id, slot_kind, due_at_ms, status, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(slotId, epoch.epoch_id, episode.episodeId, slotKind, dueAt, 'scheduled', clock, clock);
   }
 
   async function clearEpisode(episodeId, clock, binding, onlyOperationId) {
@@ -260,7 +309,8 @@ export function createNotificationService({ metadata, attentionService, sourceSe
   function deliveryEligible(slot, epoch) {
     const episode = attentionService?.allEpisodes?.().find(item => item.episodeId === slot.episode_id);
     return activeEpisode(episode) && episodeSeverity(episode) === epoch?.severity
-      && categoryEnabled(slot, epoch.severity, getSettings());
+      && categoryEnabled(slot, epoch.severity, getSettings(), episode)
+      && (slot.slot_kind !== 'developer-deployment-outcome' || deploymentOutcomeDueAt(episode, epoch) !== null);
   }
 
   async function emitSlot(slot, episode, epoch, currentSettings, clock, binding, kind = episodeKind(episode)) {
@@ -360,13 +410,14 @@ export function createNotificationService({ metadata, attentionService, sourceSe
         const previous = latestEpoch(episode.episodeId);
         const activationAtMs = previous?.state === 'paused' && severity === 'Reminder' ? clock : previous && SEVERITY_RANK[previous.severity] < SEVERITY_RANK[severity] ? clock : Number.isSafeInteger(Date.parse(episode.attentionSince)) ? Date.parse(episode.attentionSince) : clock;
         const epoch = updateEpoch(createEpoch(episode, severity, activationAtMs, currentSettings, clock), episode, clock);
+        scheduleDeploymentOutcome(episode, epoch, clock);
         const due = rows('notification_slots', "epoch_id = ? AND status IN ('scheduled', 'queued') AND due_at_ms <= ?", [epoch.epoch_id, clock]);
         const queued = [];
         for (const slot of due) {
           // Settings suppress delivery at the host boundary. Keep the durable
           // slot scheduled so re-enabling a category does not rewrite its
           // fixed policy timing or lose a not-yet-delivered candidate.
-          if (!categoryEnabled(slot, epoch.severity, currentSettings)) continue;
+          if (!categoryEnabled(slot, epoch.severity, currentSettings, episode)) continue;
           const quiet = isQuietHours(clock, currentSettings);
           const bypass = slot.slot_kind.startsWith('critical-') || slot.slot_kind === 'reminder-explicit' || slot.slot_kind === 'snooze-return';
           if (!bypass && quiet) { db.prepare("UPDATE notification_slots SET status = 'queued', queued_at_ms = COALESCE(queued_at_ms, ?), updated_at_ms = ? WHERE slot_id = ?").run(clock, clock, slot.slot_id); queued.push(slot); continue; }

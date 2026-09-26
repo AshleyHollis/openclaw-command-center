@@ -10,7 +10,7 @@ import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { metadataSchemaV1Sql, metadataSchemaV2Sql, metadataSchemaV3Sql, metadataSchemaV4Sql, metadataSchemaV5Sql, metadataSchemaV6Sql, metadataSchemaV7Sql, metadataSchemaV8Sql } from '../src/metadata/schema.mjs';
 import { resolveCommandCenterDatabasePath, resolveCommandCenterRecoveryMigrationPath } from '../src/metadata/path.mjs';
-import { MIGRATION_DIGEST, V1_TO_V2_MIGRATION_DIGEST, V1_TO_V2_MIGRATION_ID, V2_TO_V3_MIGRATION_DIGEST, V2_TO_V3_MIGRATION_ID, V3_TO_V4_MIGRATION_DIGEST, V3_TO_V4_MIGRATION_ID, V4_TO_V5_MIGRATION_DIGEST, V4_TO_V5_MIGRATION_ID, V5_TO_V6_MIGRATION_ID, V6_TO_V7_MIGRATION_DIGEST, V6_TO_V7_MIGRATION_ID, V7_TO_V8_MIGRATION_DIGEST, V7_TO_V8_MIGRATION_ID, V8_TO_V9_MIGRATION_DIGEST, V8_TO_V9_MIGRATION_ID, applyV1ToV2Migration, applyV2ToV3Migration, applyV5ToV6Migration, validateMigrationLedger } from '../src/metadata/migration-ledger.mjs';
+import { MIGRATION_DIGEST, V1_TO_V2_MIGRATION_DIGEST, V1_TO_V2_MIGRATION_ID, V2_TO_V3_MIGRATION_DIGEST, V2_TO_V3_MIGRATION_ID, V3_TO_V4_MIGRATION_DIGEST, V3_TO_V4_MIGRATION_ID, V4_TO_V5_MIGRATION_DIGEST, V4_TO_V5_MIGRATION_ID, V5_TO_V6_MIGRATION_ID, V6_TO_V7_MIGRATION_DIGEST, V6_TO_V7_MIGRATION_ID, V7_TO_V8_MIGRATION_DIGEST, V7_TO_V8_MIGRATION_ID, V8_TO_V9_MIGRATION_DIGEST, V8_TO_V9_MIGRATION_ID, V9_TO_V10_MIGRATION_DIGEST, V9_TO_V10_MIGRATION_ID, applyV1ToV2Migration, applyV2ToV3Migration, applyV5ToV6Migration, validateMigrationLedger } from '../src/metadata/migration-ledger.mjs';
 import { ensureRecoverySnapshot, expectedRollbackRelease, verifyRollbackMaterial } from '../src/metadata/recovery.mjs';
 
 const openServices = new Set();
@@ -96,7 +96,7 @@ for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) {
   });
 }
 
-test('schema-5 to schema-9 preserves Topic Search bookkeeping and backfills exact current locators', async () => {
+test('schema-5 to schema-10 preserves Topic Search bookkeeping and backfills exact current locators', async () => {
   await withState(async (stateDir) => {
     const databasePath = resolveCommandCenterDatabasePath(stateDir);
     await mkdir(path.dirname(databasePath), { recursive: true });
@@ -110,7 +110,7 @@ test('schema-5 to schema-9 preserves Topic Search bookkeeping and backfills exac
     database.close();
 
     const service = open({ stateDir });
-    assert.deepEqual(service.getOperatingStatus(), { mode: 'ready', schemaVersion: 9, diagnostics: [], unavailableCapabilities: [] });
+    assert.deepEqual(service.getOperatingStatus(), { mode: 'ready', schemaVersion: 10, diagnostics: [], unavailableCapabilities: [] });
     assert.equal(service.getTopic('topic-schema-five').topicId, 'topic-schema-five');
     assert.equal(service.getSessionState('session:schema-five').sessionId, 'session-id-schema-five');
     assert.equal(service.getSourceLocator('session:schema-five').locator, 'agent:main:fictional-schema-five');
@@ -135,7 +135,7 @@ for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) test(`a committed schema-$
     await writeFile(manifestPath, historicalBytes);
 
     const reopened = open({ stateDir });
-    assert.deepEqual(reopened.getOperatingStatus(), { mode: 'ready', schemaVersion: 9, diagnostics: [], unavailableCapabilities: [] });
+    assert.deepEqual(reopened.getOperatingStatus(), { mode: 'ready', schemaVersion: 10, diagnostics: [], unavailableCapabilities: [] });
     assert.equal(reopened.getTopic(`topic-compatible-host-upgrade-${schemaVersion}`).paraCategory, 'area');
     reopened.close();
     assert.deepEqual(await readFile(manifestPath), historicalBytes, 'startup must preserve the exact historical recovery facts');
@@ -241,7 +241,7 @@ async function seedPublishedSchemaV3(stateDir) {
   return databasePath;
 }
 
-test('published schema-3 recovery material and historical ledger migrate to schema 9', async () => {
+test('published schema-3 recovery material and historical ledger migrate to schema 10', async () => {
   await withState(async (stateDir) => {
     const databasePath = await seedPublishedSchemaV3(stateDir);
     const service = open({ stateDir });
@@ -257,20 +257,21 @@ test('published schema-3 recovery material and historical ledger migrate to sche
         { from_version: 5, to_version: 6, applied_build: '0.4.0' },
         { from_version: 6, to_version: 7, applied_build: '0.4.0' },
         { from_version: 7, to_version: 8, applied_build: '0.4.0' },
-        { from_version: 8, to_version: 9, applied_build: '0.4.0' }
+        { from_version: 8, to_version: 9, applied_build: '0.4.0' },
+        { from_version: 9, to_version: 10, applied_build: '0.4.0' }
       ]);
     } finally { database.close(); }
   });
 });
 
-test('schema-9 validation rejects a ledger missing its trailing migration row', async () => {
+test('schema-10 validation rejects a ledger missing its trailing migration row', async () => {
   await withState(async (stateDir) => {
     const databasePath = await seedV1(stateDir);
     const initial = open({ stateDir });
     assert.equal(initial.getOperatingStatus().mode, 'ready');
     initial.close();
     const database = new DatabaseSync(databasePath);
-    try { database.prepare('DELETE FROM schema_migrations WHERE to_version = 9').run(); } finally { database.close(); }
+    try { database.prepare('DELETE FROM schema_migrations WHERE to_version = 10').run(); } finally { database.close(); }
     const reopened = open({ stateDir });
     assert.equal(reopened.getOperatingStatus().mode, 'recovery-only');
     assert.equal(reopened.getOperatingStatus().diagnostics[0].code, 'migration-ledger-invalid');
@@ -284,11 +285,11 @@ test('schema-2 stores retain and reuse baseline schema-1 recovery evidence durin
     assert.equal(service.getOperatingStatus().mode, 'ready', JSON.stringify(service.getOperatingStatus()));
     service.close();
     const database = new DatabaseSync(databasePath, { readOnly: true });
-    try { assert.deepEqual(database.prepare('SELECT sequence, from_version, to_version FROM schema_migrations ORDER BY sequence').all().map((row) => ({ ...row })), [{ sequence: 1, from_version: 1, to_version: 2 }, { sequence: 2, from_version: 2, to_version: 3 }, { sequence: 3, from_version: 3, to_version: 4 }, { sequence: 4, from_version: 4, to_version: 5 }, { sequence: 5, from_version: 5, to_version: 6 }, { sequence: 6, from_version: 6, to_version: 7 }, { sequence: 7, from_version: 7, to_version: 8 }, { sequence: 8, from_version: 8, to_version: 9 }]); } finally { database.close(); }
+    try { assert.deepEqual(database.prepare('SELECT sequence, from_version, to_version FROM schema_migrations ORDER BY sequence').all().map((row) => ({ ...row })), [{ sequence: 1, from_version: 1, to_version: 2 }, { sequence: 2, from_version: 2, to_version: 3 }, { sequence: 3, from_version: 3, to_version: 4 }, { sequence: 4, from_version: 4, to_version: 5 }, { sequence: 5, from_version: 5, to_version: 6 }, { sequence: 6, from_version: 6, to_version: 7 }, { sequence: 7, from_version: 7, to_version: 8 }, { sequence: 8, from_version: 8, to_version: 9 }, { sequence: 9, from_version: 9, to_version: 10 }]); } finally { database.close(); }
   });
 });
 
-test('direct schema-2 to schema-9 migration retains a verified snapshot and contiguous ledger rows', async () => {
+test('direct schema-2 to schema-10 migration retains a verified snapshot and contiguous ledger rows', async () => {
   await withState(async (stateDir) => {
     const databasePath = await seedV2(stateDir);
     const service = open({ stateDir });
@@ -296,7 +297,7 @@ test('direct schema-2 to schema-9 migration retains a verified snapshot and cont
     service.close();
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
-      assert.deepEqual(database.prepare('SELECT sequence, from_version, to_version FROM schema_migrations').all().map((row) => ({ ...row })), [{ sequence: 1, from_version: 2, to_version: 3 }, { sequence: 2, from_version: 3, to_version: 4 }, { sequence: 3, from_version: 4, to_version: 5 }, { sequence: 4, from_version: 5, to_version: 6 }, { sequence: 5, from_version: 6, to_version: 7 }, { sequence: 6, from_version: 7, to_version: 8 }, { sequence: 7, from_version: 8, to_version: 9 }]);
+      assert.deepEqual(database.prepare('SELECT sequence, from_version, to_version FROM schema_migrations').all().map((row) => ({ ...row })), [{ sequence: 1, from_version: 2, to_version: 3 }, { sequence: 2, from_version: 3, to_version: 4 }, { sequence: 3, from_version: 4, to_version: 5 }, { sequence: 4, from_version: 5, to_version: 6 }, { sequence: 5, from_version: 6, to_version: 7 }, { sequence: 6, from_version: 7, to_version: 8 }, { sequence: 7, from_version: 8, to_version: 9 }, { sequence: 8, from_version: 9, to_version: 10 }]);
     } finally { database.close(); }
     const manifest = JSON.parse(await readFile(path.join(resolveCommandCenterRecoveryMigrationPath(stateDir), 'manifest.json'), 'utf8'));
     assert.equal(manifest.state, 'committed');
@@ -354,18 +355,18 @@ for (const schemaVersion of [2, 3, 4, 5, 6, 7, 8]) test(`direct schema-${schemaV
       assert.equal(restarted.getTopic('topic-rollback').paraCategory, 'area');
       restarted.close();
       const database = new DatabaseSync(databasePath, { readOnly: true });
-      try { assert.equal(database.prepare('PRAGMA user_version').get().user_version, 9); } finally { database.close(); }
+      try { assert.equal(database.prepare('PRAGMA user_version').get().user_version, 10); } finally { database.close(); }
       assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).state, 'committed');
       assert.deepEqual(await readFile(snapshotPath), snapshotBeforeRestart);
     });
   }
 });
 
-test('ordered v1 to v9 migration preserves application data and records contiguous ledger rows', async () => {
+test('ordered v1 to v10 migration preserves application data and records contiguous ledger rows', async () => {
   await withState(async (stateDir) => {
     const databasePath = await seedV1(stateDir);
     const service = open({ stateDir });
-    assert.deepEqual(service.getOperatingStatus(), { mode: 'ready', schemaVersion: 9, diagnostics: [], unavailableCapabilities: [] });
+    assert.deepEqual(service.getOperatingStatus(), { mode: 'ready', schemaVersion: 10, diagnostics: [], unavailableCapabilities: [] });
     assert.equal(service.getTopic('topic-migration').paraCategory, 'area');
     assert.equal(service.getPolicyVersion('policy-migration').digest, 'fictional-digest');
     service.close();
@@ -373,9 +374,9 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
     let ledgerSnapshotId;
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
-      assert.equal(database.prepare('PRAGMA user_version').get().user_version, 9);
+      assert.equal(database.prepare('PRAGMA user_version').get().user_version, 10);
       const ledgerRows = database.prepare('SELECT sequence, migration_id, migration_digest, from_version, to_version, snapshot_id, applied_build FROM schema_migrations').all().map((row) => ({ ...row }));
-      assert.equal(ledgerRows.length, 8);
+      assert.equal(ledgerRows.length, 9);
       ledgerSnapshotId = ledgerRows[0].snapshot_id;
       assert.match(ledgerSnapshotId, /^sha256:[a-f0-9]{64}$/u);
       assert.deepEqual({ ...ledgerRows[0], snapshot_id: undefined }, {
@@ -450,6 +451,15 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
         snapshot_id: undefined,
         applied_build: '0.4.0'
       });
+      assert.deepEqual({ ...ledgerRows[8], snapshot_id: undefined }, {
+        sequence: 9,
+        migration_id: V9_TO_V10_MIGRATION_ID,
+        migration_digest: V9_TO_V10_MIGRATION_DIGEST,
+        from_version: 9,
+        to_version: 10,
+        snapshot_id: undefined,
+        applied_build: '0.4.0'
+      });
     } finally { database.close(); }
 
     const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(stateDir);
@@ -465,7 +475,7 @@ test('ordered v1 to v9 migration preserves application data and records contiguo
     const snapshotBytes = await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot'));
 
     const reopened = open({ stateDir });
-    assert.deepEqual(reopened.getOperatingStatus(), { mode: 'ready', schemaVersion: 9, diagnostics: [], unavailableCapabilities: [] });
+    assert.deepEqual(reopened.getOperatingStatus(), { mode: 'ready', schemaVersion: 10, diagnostics: [], unavailableCapabilities: [] });
     reopened.close();
     assert.deepEqual(await readFile(path.join(recoveryDirectory, 'metadata.sqlite.snapshot')), snapshotBytes);
     assert.deepEqual((await readdir(path.dirname(databasePath))).filter((name) => !name.startsWith('.')), ['metadata.sqlite', 'recovery']);
@@ -527,7 +537,7 @@ test('a process interruption after the SQLite commit reconciles the prepared sna
     assert.notEqual(child.status, 0, child.stderr);
 
     const committedDatabase = new DatabaseSync(databasePath, { readOnly: true });
-    try { assert.equal(committedDatabase.prepare('PRAGMA user_version').get().user_version, 9); } finally { committedDatabase.close(); }
+    try { assert.equal(committedDatabase.prepare('PRAGMA user_version').get().user_version, 10); } finally { committedDatabase.close(); }
     const recoveryDirectory = resolveCommandCenterRecoveryMigrationPath(stateDir);
     assert.equal(JSON.parse(await readFile(path.join(recoveryDirectory, 'manifest.json'), 'utf8')).state, 'prepared');
 
@@ -560,8 +570,8 @@ test('a process interruption inside the SQLite transaction rolls back cleanly an
     const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true });
     try {
       assert.equal(migratedDatabase.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
-      assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 9);
-      assert.equal(migratedDatabase.prepare('SELECT count(*) AS count FROM schema_migrations').get().count, 8);
+      assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 10);
+      assert.equal(migratedDatabase.prepare('SELECT count(*) AS count FROM schema_migrations').get().count, 9);
     } finally { migratedDatabase.close(); }
   });
 });
@@ -609,10 +619,10 @@ test('a linked recovery path cannot publish snapshot material outside the plugin
   });
 });
 
-test('fresh schema-9 storage does not invent a migration snapshot and can reopen after a successful commit', async () => {
+test('fresh schema-10 storage does not invent a migration snapshot and can reopen after a successful commit', async () => {
   await withState(async (stateDir) => {
     const service = open({ stateDir });
-    assert.equal(service.getOperatingStatus().schemaVersion, 9);
+    assert.equal(service.getOperatingStatus().schemaVersion, 10);
     service.close();
     assert.deepEqual(await readdir(path.dirname(resolveCommandCenterDatabasePath(stateDir))), ['metadata.sqlite']);
     const reopened = open({ stateDir });

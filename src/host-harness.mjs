@@ -7,6 +7,7 @@ import { assertBuiltDigest } from './build.mjs';
 import { fixtureEnvironment } from './fixtures.mjs';
 import { boundedTrafficEvidence, describeTrafficEvidence, TrafficGuard } from './isolation.mjs';
 import { packagedHostDigest } from './packaged-host-integrity.mjs';
+import { assertCandidateArchiveBytes, assertCandidatePairEvidence, parseCandidatePair } from './candidate-pair.mjs';
 
 export const descriptorEnvironment = 'COMMAND_CENTER_ISOLATED_HOST';
 export const pinnedHost = Object.freeze({
@@ -46,7 +47,7 @@ function under(root, value) {
   return relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
 
-export function parseHostDescriptor(raw = process.env[descriptorEnvironment]) {
+function parseDescriptorAgainstHost(raw, expectedHost) {
   if (!raw) throw new HarnessFailure('descriptor-absent', `${descriptorEnvironment} is mandatory`);
   let descriptor;
   try { descriptor = JSON.parse(raw); } catch { throw new HarnessFailure('descriptor-invalid', 'Host descriptor is not valid JSON'); }
@@ -59,26 +60,39 @@ export function parseHostDescriptor(raw = process.env[descriptorEnvironment]) {
   let runtimeExecutable;
   // The controller may describe either `openclaw.mjs gateway …` directly or
   // `node openclaw.mjs gateway …`; validate the same immutable invocation.
-  if (path.basename(wrapper) !== pinnedHost.executable) {
-    if (!/^node(?:\.exe)?$/iu.test(path.basename(wrapper)) || typeof args[0] !== 'string' || path.basename(args[0]) !== pinnedHost.executable) {
+  if (path.basename(wrapper) !== expectedHost.executable) {
+    if (!/^node(?:\.exe)?$/iu.test(path.basename(wrapper)) || typeof args[0] !== 'string' || path.basename(args[0]) !== expectedHost.executable) {
       throw new HarnessFailure('wrapper-mismatch', 'Host descriptor does not name the controller-owned wrapper');
     }
     runtimeExecutable = wrapper;
     wrapper = args[0];
     args = args.slice(1);
   }
-  if (JSON.stringify(args) !== JSON.stringify(pinnedHost.args)) {
+  if (JSON.stringify(args) !== JSON.stringify(expectedHost.args)) {
     throw new HarnessFailure('wrapper-mismatch', 'Host descriptor does not name the controller-owned wrapper');
   }
-  if (descriptor.commit !== pinnedHost.commit) throw new HarnessFailure('invalid-commit', 'Host descriptor commit is not pinned');
+  if (descriptor.commit !== expectedHost.commit) throw new HarnessFailure('invalid-commit', 'Host descriptor commit is not pinned');
   const packaged = descriptor.schemaVersion === 2;
   if (descriptor.schemaVersion !== undefined && ![1, 2].includes(descriptor.schemaVersion)) throw new HarnessFailure('descriptor-invalid', 'Unsupported host descriptor version');
   if (packaged && (typeof descriptor.runtimeRoot !== 'string' || wrapper !== 'node_modules/openclaw/openclaw.mjs')) {
     throw new HarnessFailure('descriptor-invalid', 'Packaged host requires the exact installed layout');
   }
   const integrity = parseIntegrity(descriptor.integrity, packaged);
-  if (packaged && integrity.packageDigest !== pinnedHost.packageDigest) throw new HarnessFailure('host-integrity', 'Host archive is not the pinned package');
+  if (packaged && integrity.packageDigest !== expectedHost.packageDigest) throw new HarnessFailure('host-integrity', 'Host archive is not the pinned package');
   return Object.freeze({ commit: descriptor.commit, checkout: descriptor.checkout, executable: wrapper, runtimeExecutable, args: Object.freeze([...args]), integrity, ...(packaged ? { schemaVersion: 2, runtimeRoot: descriptor.runtimeRoot } : {}) });
+}
+
+export function parseHostDescriptor(raw = process.env[descriptorEnvironment]) {
+  return parseDescriptorAgainstHost(raw, pinnedHost);
+}
+
+/** Candidate-only parser; the ordinary release parser retains committed pins. */
+export function parseCandidateHostDescriptor(raw, pairValue) {
+  const pair = parseCandidatePair(pairValue);
+  const host = pair.openClaw;
+  const descriptor = parseDescriptorAgainstHost(raw, { ...host, commit: host.sourceCommit, executable: pinnedHost.executable, args: pinnedHost.args });
+  if (descriptor.schemaVersion !== 2) throw new HarnessFailure('descriptor-invalid', 'Candidate host requires a packaged runtime receipt');
+  return descriptor;
 }
 
 function git(checkout, args) {
@@ -100,14 +114,14 @@ async function assertNoSymlinkPath(root, relative, stat = lstat) {
   }
 }
 
-async function assertHostIntegrity(checkout, descriptor, read) {
+async function assertHostIntegrity(checkout, descriptor, read, expectedHost) {
   let receipt;
   try {
     receipt = JSON.parse(await read(path.join(path.dirname(checkout), 'receipt.json'), 'utf8'));
   } catch {
     throw new HarnessFailure('host-integrity', 'Host source-integrity receipt is unavailable');
   }
-  if (receipt?.schemaVersion !== (descriptor.schemaVersion === 2 ? 2 : 1) || receipt.commit !== pinnedHost.commit
+  if (receipt?.schemaVersion !== (descriptor.schemaVersion === 2 ? 2 : 1) || receipt.commit !== expectedHost.commit
     || !sha256Digest.test(receipt.sourceDigest)
     || !sha256Digest.test(receipt.executableDigest)
     || !sha256Digest.test(receipt.contractDigest)
@@ -120,7 +134,7 @@ async function assertHostIntegrity(checkout, descriptor, read) {
 }
 
 /** Injectable filesystem/Git seams keep host-integrity category tests offline. */
-export async function verifyHost(descriptor, { gitCommand = git, resolvePath = realpath, read = readFile, stat = lstat } = {}) {
+async function verifyHostAgainst(descriptor, expectedHost, { gitCommand = git, resolvePath = realpath, read = readFile, stat = lstat } = {}) {
   const checkout = await resolvePath(descriptor.checkout).catch(() => { throw new HarnessFailure('descriptor-invalid', 'Host checkout is not accessible'); });
   const packaged = descriptor.schemaVersion === 2;
   let runtimeRoot = checkout;
@@ -131,7 +145,7 @@ export async function verifyHost(descriptor, { gitCommand = git, resolvePath = r
   }
   const wrapper = path.resolve(runtimeRoot, descriptor.executable);
   if (!under(runtimeRoot, wrapper)) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper escapes its runtime');
-  const wrapperRelative = packaged ? pinnedHost.executable : path.relative(checkout, wrapper);
+  const wrapperRelative = packaged ? expectedHost.executable : path.relative(checkout, wrapper);
   await assertNoSymlinkPath(runtimeRoot, path.relative(runtimeRoot, wrapper), stat);
   if (descriptor.runtimeExecutable) {
     const [declaredRuntime, controllerRuntime] = await Promise.all([resolvePath(descriptor.runtimeExecutable), resolvePath(process.execPath)]).catch(() => {
@@ -141,12 +155,15 @@ export async function verifyHost(descriptor, { gitCommand = git, resolvePath = r
   }
   let commit;
   try { commit = await gitCommand(checkout, ['rev-parse', 'HEAD']); } catch { throw new HarnessFailure('invalid-commit', 'Host checkout is not a Git checkout'); }
-  if (commit !== pinnedHost.commit) throw new HarnessFailure('invalid-commit', 'Host checkout is not at the pinned commit');
-  try { await gitCommand(checkout, ['cat-file', '-e', `${pinnedHost.commit}^{commit}`]); } catch { throw new HarnessFailure('invalid-commit', 'Pinned host object is not a Git commit'); }
+  if (commit !== expectedHost.commit) throw new HarnessFailure('invalid-commit', 'Host checkout is not at the pinned commit');
+  if (expectedHost.repository && await gitCommand(checkout, ['remote', 'get-url', 'origin']).catch(() => '') !== expectedHost.repository) {
+    throw new HarnessFailure('invalid-commit', 'Candidate host repository origin differs from the pair');
+  }
+  try { await gitCommand(checkout, ['cat-file', '-e', `${expectedHost.commit}^{commit}`]); } catch { throw new HarnessFailure('invalid-commit', 'Pinned host object is not a Git commit'); }
   try { await gitCommand(checkout, ['fsck', '--full']); } catch { throw new HarnessFailure('invalid-commit', 'Pinned host object database failed integrity validation'); }
   if (await gitCommand(checkout, ['status', '--porcelain', '--untracked-files=no']).catch(() => 'dirty')) throw new HarnessFailure('dirty-host-source', 'Host tracked source is dirty');
   const hostPackage = JSON.parse(await read(path.join(checkout, 'package.json'), 'utf8').catch(() => '{}'));
-  if (hostPackage.version !== pinnedHost.packageVersion) throw new HarnessFailure('invalid-commit', 'Host package version is not pinned');
+  if (hostPackage.version !== expectedHost.packageVersion) throw new HarnessFailure('invalid-commit', 'Host package version is not pinned');
   const indexed = await gitCommand(checkout, ['ls-files', '-s', '--', wrapperRelative]);
   const blob = indexed.split(/\s+/)[1];
   if (!blob) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper is not tracked by its pinned commit');
@@ -155,16 +172,31 @@ export async function verifyHost(descriptor, { gitCommand = git, resolvePath = r
   if (object !== blob) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper differs from the Git object');
   const wrapperSha256 = createHash('sha256').update(contents).digest('hex');
   if (descriptor.integrity.executableDigest.slice('sha256:'.length) !== wrapperSha256) throw new HarnessFailure('wrapper-mismatch', 'Host wrapper integrity assertion differs');
-  await assertHostIntegrity(checkout, descriptor, read);
+  await assertHostIntegrity(checkout, descriptor, read, expectedHost);
   if (packaged) {
     const installed = path.dirname(wrapper);
     const installedPackage = JSON.parse(await read(path.join(installed, 'package.json'), 'utf8'));
     const build = JSON.parse(await read(path.join(installed, 'dist/build-info.json'), 'utf8'));
-    if (installedPackage.name !== 'openclaw' || installedPackage.version !== pinnedHost.packageVersion || build.commit !== pinnedHost.commit || build.version !== pinnedHost.packageVersion) throw new HarnessFailure('host-integrity', 'Packaged build identity differs from pinned source');
+    if (installedPackage.name !== 'openclaw' || installedPackage.version !== expectedHost.packageVersion || build.commit !== expectedHost.commit || build.version !== expectedHost.packageVersion) throw new HarnessFailure('host-integrity', 'Packaged build identity differs from pinned source');
     const actual = await packagedHostDigest(runtimeRoot).catch(() => { throw new HarnessFailure('host-integrity', 'Packaged runtime inventory is unsafe'); });
     if (actual !== descriptor.integrity.runtimeDigest) throw new HarnessFailure('host-integrity', 'Installed runtime differs from its preparation receipt');
   }
   return Object.freeze({ checkout: packaged ? path.dirname(wrapper) : checkout, wrapper, commit, runtimeExecutable: descriptor.runtimeExecutable });
+}
+
+/** Release callers cannot select another expected host through options. */
+export function verifyHost(descriptor, options) { return verifyHostAgainst(descriptor, pinnedHost, options); }
+
+export function verifyCandidateHost(descriptor, pairValue, options) {
+  const host = parseCandidatePair(pairValue).openClaw;
+  const parsed = parseCandidateHostDescriptor(JSON.stringify(descriptor), pairValue);
+  if (parsed.commit !== host.sourceCommit ||
+      Object.entries({ packageDigest: host.packageDigest, runtimeDigest: host.runtimeDigest,
+        sourceDigest: host.sourceDigest, executableDigest: host.executableDigest,
+        contractDigest: host.contractDigest }).some(([key, value]) => parsed.integrity?.[key] !== value)) {
+    throw new HarnessFailure('host-integrity', 'Candidate host descriptor differs from the pair');
+  }
+  return verifyHostAgainst(parsed, { ...host, commit: host.sourceCommit, executable: pinnedHost.executable, args: pinnedHost.args }, options);
 }
 
 export function redact(text, maximum = 4096) {
@@ -252,6 +284,24 @@ export async function launchPinnedHost(options) {
   } finally { owner.transitioning = false; }
 }
 
+/** Candidate launch uses the same isolated world and lifecycle safeguards. */
+export async function launchCandidateHost(options) {
+  if (options.hostVerificationOptions) throw new HarnessFailure('host-integrity', 'Candidate launch requires real source and runtime verification');
+  const descriptor = parseCandidateHostDescriptor(JSON.stringify(options.descriptor), options.candidatePair);
+  const pair = assertCandidatePairEvidence(options.candidatePair, {
+    inputTreeReceipt: options.inputTreeReceipt, buildReceipt: options.buildReceipt,
+    artifactReceipt: options.artifactReceipt, hostDescriptor: descriptor
+  });
+  const expectedHost = { ...pair.openClaw, commit: pair.openClaw.sourceCommit, executable: pinnedHost.executable, args: pinnedHost.args };
+  const { world } = options;
+  if (!world || worldRuns.has(world)) throw new HarnessFailure('restart-owner', 'World already has a host lifecycle owner');
+  const owner = { options: { ...options, descriptor }, expectedHost, candidatePair: pair, transitioning: true, current: undefined };
+  worldRuns.set(world, owner);
+  try { return await launchGeneration(owner, owner.options, []); }
+  catch (error) { worldRuns.delete(world); throw error; }
+  finally { owner.transitioning = false; }
+}
+
 /** Restart only a run issued by this owner; never copy state or choose a new port. */
 export async function restartPinnedHost(previousRun, { signal, onOutput } = {}) {
   const owner = runOwners.get(previousRun);
@@ -284,7 +334,12 @@ export async function restartPinnedHost(previousRun, { signal, onOutput } = {}) 
 
 async function launchGeneration(owner, { descriptor, world, buildReceipt, onOutput = () => {}, signal, notificationCaPath, hostVerificationOptions }, preceding) {
   signal?.throwIfAborted();
-  const host = await verifyHost(descriptor, hostVerificationOptions);
+  if (owner.candidatePair) {
+    assertCandidatePairEvidence(owner.candidatePair, { inputTreeReceipt: owner.options.inputTreeReceipt,
+      buildReceipt, artifactReceipt: owner.options.artifactReceipt, hostDescriptor: descriptor });
+    await assertCandidateArchiveBytes(owner.candidatePair, owner.options);
+  }
+  const host = await verifyHostAgainst(descriptor, owner.expectedHost ?? pinnedHost, hostVerificationOptions);
   signal?.throwIfAborted();
   await assertBuiltDigest(buildReceipt);
   signal?.throwIfAborted();
@@ -299,7 +354,7 @@ async function launchGeneration(owner, { descriptor, world, buildReceipt, onOutp
   guard.assert('127.0.0.1', 'host launch');
   const guardModule = new URL('./isolated-child-guard.mjs', import.meta.url);
   const executable = host.runtimeExecutable || host.wrapper;
-  const arguments_ = host.runtimeExecutable ? [host.wrapper, ...pinnedHost.args] : pinnedHost.args;
+  const arguments_ = host.runtimeExecutable ? [host.wrapper, ...descriptor.args] : descriptor.args;
   if (notificationCaPath && !under(world.root, path.resolve(notificationCaPath))) throw new HarnessFailure('endpoint-isolation', 'Notification CA path escapes the isolated world');
   const child = spawn(executable, arguments_, {
     cwd: host.checkout,

@@ -47,9 +47,9 @@
     "range": "=2026.9.5"
   },
   "commandCenterSchema": {
-    "readable": { "min": 1, "max": 9 },
-    "migratable": { "min": 1, "max": 8 },
-    "writable": { "min": 9, "max": 9 }
+    "readable": { "min": 1, "max": 10 },
+    "migratable": { "min": 1, "max": 9 },
+    "writable": { "min": 10, "max": 10 }
   },
   "capabilityBridgeProtocol": {
     "min": 1,

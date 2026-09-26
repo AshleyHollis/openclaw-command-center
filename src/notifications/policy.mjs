@@ -5,6 +5,18 @@ export const ACTIVE_HOUR_MS = 60 * 60 * 1000;
 export const CRITICAL_REPEAT_OFFSETS_MS = Object.freeze([0, 15 * 60 * 1000, 2 * 60 * 60 * 1000 + 15 * 60 * 1000, 4 * 60 * 60 * 1000 + 15 * 60 * 1000]);
 export const HIGH_REPEAT_OFFSET_MS = 4 * ACTIVE_HOUR_MS;
 
+const developerReasonCategory = Object.freeze({
+  'developer-input-required': 'input',
+  'developer-approval-required': 'approval',
+  'developer-review-required': 'review',
+  'developer-deployment-incident': 'deployment'
+});
+
+export function developerNotificationCategory(episode) {
+  if (episode?.sourceCapabilityId !== 'developer-work.v1') return null;
+  return developerReasonCategory[episode.attentionReason] ?? null;
+}
+
 function partsAt(ms, timeZone) {
   const parts = new Intl.DateTimeFormat('en-US-u-hc-h23', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(ms));
   return Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, Number(part.value)]));
@@ -28,9 +40,14 @@ export function quietHoursEnd(nowMs, settings = DEFAULT_NOTIFICATION_SETTINGS) {
   throw sourceError('invalid-request', 'quiet-hours end could not be resolved.');
 }
 
-export function policySlots({ severity, activationAtMs, explicitTimed = false, kind = 'attention', settings = DEFAULT_NOTIFICATION_SETTINGS } = {}) {
+export function policySlots({ severity, activationAtMs, explicitTimed = false, kind = 'attention', developerCategory = null, settings = DEFAULT_NOTIFICATION_SETTINGS } = {}) {
   const value = normalizeNotificationSettings(settings);
   if (!Number.isSafeInteger(activationAtMs)) throw new TypeError('activationAtMs must be a safe integer');
+  if (developerCategory) {
+    if (!['input', 'approval', 'review', 'deployment'].includes(developerCategory)) return [];
+    if (severity !== (developerCategory === 'review' ? 'Routine' : 'High')) return [];
+    return [{ slotKind: `developer-${developerCategory}`, dueAtMs: activationAtMs, bypassQuietHours: false }];
+  }
   if (!['Reminder', 'High', 'Critical'].includes(severity)) return [];
   if (kind === 'reminder' && !value.dueReminders) return [];
   if (kind !== 'reminder' && !value.importantItems) return [];
