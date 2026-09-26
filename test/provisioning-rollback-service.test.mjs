@@ -1,12 +1,30 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { setHostNoteFilesystemCoordinator } from '../src/sources/note-filesystem-owner.mjs';
 import { TopicProvisioningService } from '../src/topics/provisioning.mjs';
+
+test('preparation resolves the host configured Session store selector', async t => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'topic-store-selector-'));
+  const vault = path.join(stateDir, 'vault');
+  await mkdir(vault);
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true, sessions: true } });
+  t.after(async () => { metadata.close(); await rm(stateDir, { recursive: true, force: true }); });
+  const reads = [];
+  const owner = new TopicProvisioningService({ metadata, noteVaultRoot: vault,
+    sessionStoreSelector: path.join(stateDir, 'native', '{agentId}', 'sessions.json'),
+    sessionStore: { getSessionEntry: params => { reads.push(params); return undefined; } } });
+  const input = { logicalOperationId: randomUUID(), topicId: randomUUID(), name: 'Fictional Studio', paraCategory: 'area',
+    folderPath: path.join(vault, 'Areas', 'Fictional Studio') };
+  const result = await owner.prepare(input, { provisioningAuthority: { assertCurrent() {} } }, 'preflight');
+  assert.equal(result.status, 'preflight');
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].storePath, path.join(stateDir, 'native', 'main', 'sessions.json'));
+});
 
 async function fixture(t, change = {}) {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'topic-rollback-service-'));

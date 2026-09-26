@@ -2,8 +2,9 @@
 
 Conditional Topic provisioning reserves one operation, Topic ID, folder path,
 Primary Session key, Session ID, lifecycle revision, and creation timestamp in
-SQLite before external effects. The native Session store path is pinned in the
-Primary receipt before its write. The legacy Topic creation route lacks those
+SQLite before external effects. The resolved native Session store path is pinned in the
+Primary receipt before its write, after resolving the host's configured
+`session.store` selector. The legacy Topic creation route lacks those
 durable native Session witnesses and refuses created-Session cleanup.
 
 ## Native owners reused
@@ -40,7 +41,7 @@ the original operation and revision. It compares the native Session key, ID,
 lifecycle revision, timestamp, pinned store path, and plugin owner before asking
 Gateway to delete. A dispatched creation with an absent Session stays unknown;
 absence alone is not deletion proof. The Gateway performs the atomic
-empty-history and configured-store checks. SQLite records
+empty-history and configured-store-path checks. SQLite records
 `prepared`, `session-cleared`, `folder-cleaning`, and `folder-cleared` before
 final `not-applied` completion. The folder is removed only after Session
 cleanup, only when its physical witness matches, and only when it contains its

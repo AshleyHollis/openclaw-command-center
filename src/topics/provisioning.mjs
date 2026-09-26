@@ -38,6 +38,7 @@ export class TopicProvisioningService {
     this.noteVaultRoot = this.noteVaultRoots[0];
     this.gateway = options.gateway ?? options.api?.runtime?.gateway;
     this.sessionStore = options.sessionStore ?? options.api?.runtime?.agent?.session;
+    this.sessionStoreSelector = options.sessionStoreSelector ?? options.api?.config?.session?.store;
     this.sessionAdapterFactory = options.sessionAdapterFactory;
     this.sessionRemover = options.sessionRemover;
     this.sessionMessages = options.sessionMessages ?? (options.api?.runtime?.subagent?.getSessionMessages
@@ -222,7 +223,7 @@ export class TopicProvisioningService {
     const metadata = this.metadata; const sessionStore = this.sessionStore;
     const read = sessionStore?.getSessionEntry; const patch = sessionStore?.patchSessionEntry;
     const env = Object.freeze({ ...(runtime.env ?? process.env) });
-    const sessionStorePath = resolveStorePath(undefined, { agentId: 'main', env });
+    const sessionStorePath = resolveStorePath(this.sessionStoreSelector, { agentId: 'main', env });
     const folderEnsurer = this.folderEnsurer;
     const roots = [...this.noteVaultRoots]; const authority = runtime.provisioningAuthority; const guard = authority?.assertCurrent;
     const check = () => {
