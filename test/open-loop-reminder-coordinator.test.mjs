@@ -216,3 +216,45 @@ test('an explicit stale scheduler revision fails instead of overwriting a newer 
     assert.equal(metadata.getOperation('40000000-0000-4000-8000-000000000002'), null, 'a stale precondition must fail before reserving a mutation');
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
+
+test('a missing exact Reminder cannot be treated as a completed cancellation', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-open-loop-reminder-missing-'));
+  const gateway = schedulerGateway(); let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    metadata.createTopic({ topicId, paraCategory: 'project', lifecycle: 'active' });
+    const coordinator = createOpenLoopReminderCoordinator({ metadata, gateway });
+    const created = await coordinator.reconcile({ loop: loop(), logicalOperationId: '50000000-0000-4000-8000-000000000001' });
+    gateway.jobs.delete(created.value.job.id);
+    const updates = gateway.calls.filter(call => call.method === 'cron.update').length;
+    await assert.rejects(() => coordinator.reconcile({
+      loop: loop({ revision: 2, state: 'resolved', paymentState: 'paid' }),
+      logicalOperationId: '50000000-0000-4000-8000-000000000002',
+      expectedConfigRevision: created.value.job.configRevision
+    }), error => error.code === 'source-recovery');
+    assert.equal(gateway.calls.filter(call => call.method === 'cron.update').length, updates);
+    assert.notEqual(metadata.getOperation('50000000-0000-4000-8000-000000000002')?.state, 'applied');
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('an externally disabled Reminder with a changed revision is not credited to the accepted decision', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-open-loop-reminder-disabled-'));
+  const gateway = schedulerGateway(); let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    metadata.createTopic({ topicId, paraCategory: 'project', lifecycle: 'active' });
+    const coordinator = createOpenLoopReminderCoordinator({ metadata, gateway });
+    const created = await coordinator.reconcile({ loop: loop(), logicalOperationId: '60000000-0000-4000-8000-000000000001' });
+    const external = gateway.jobs.get(created.value.job.id);
+    external.enabled = false;
+    external.configRevision = 'fictional-external-disabled-revision';
+    const updates = gateway.calls.filter(call => call.method === 'cron.update').length;
+    await assert.rejects(() => coordinator.reconcile({
+      loop: loop({ revision: 2, state: 'resolved', paymentState: 'paid' }),
+      logicalOperationId: '60000000-0000-4000-8000-000000000002',
+      expectedConfigRevision: created.value.job.configRevision
+    }), error => error.code === 'conflict');
+    assert.equal(gateway.calls.filter(call => call.method === 'cron.update').length, updates);
+    assert.notEqual(metadata.getOperation('60000000-0000-4000-8000-000000000002')?.state, 'applied');
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
