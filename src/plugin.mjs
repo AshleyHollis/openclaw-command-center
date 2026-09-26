@@ -83,7 +83,7 @@ export default definePluginEntry({
     // manifest. The host owns authentication; no iframe grant is manufactured.
     const controlUiMutationsAllowed = api.pluginConfig?.controlUiGrant !== false;
     let notificationEmitter;
-    if (FIRST_LIVE_FEATURES.notifications) {
+    if (FIRST_LIVE_FEATURES.notifications && (api.registrationMode ?? 'full') === 'full') {
       if (typeof api.notifications?.registerEmitter !== 'function') throw new Error('Command Center requires the published notification emitter API.');
       notificationEmitter = api.notifications.registerEmitter({
         version: 1,

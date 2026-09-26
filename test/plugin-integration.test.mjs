@@ -954,6 +954,15 @@ test('real first-live plugin activates Attention without acquiring the deferred 
   }
 });
 
+test('candidate discovery registers without acquiring a live notification emitter', { skip: !FIRST_LIVE_FEATURES.notifications && 'Requires the sealed candidate-only notification overlay.' }, async () => {
+  const { default: builtPlugin } = await import('../dist/plugin.mjs');
+  const host = fakePublishedApi(os.tmpdir());
+  host.api.registrationMode = 'discovery';
+  host.api.notifications.registerEmitter = () => undefined;
+  assert.doesNotThrow(() => builtPlugin.register(host.api));
+  assert.equal(host.declarations.length, 0);
+});
+
 test('candidate notification gate mounts the registered owner and clears a resolved DEV request', { skip: !FIRST_LIVE_FEATURES.notifications && 'Requires the sealed candidate-only notification overlay.' }, async () => {
   const { default: builtPlugin } = await import('../dist/plugin.mjs');
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-candidate-notifications-'));
