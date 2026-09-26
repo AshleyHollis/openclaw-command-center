@@ -11,7 +11,7 @@ import { assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
 import { assertCandidateArchiveBytes, assertCandidatePairEvidence, parseCandidatePair } from '../src/candidate-pair.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, launchCandidateHost,
-  parseCandidateHostDescriptor, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
+  parseCandidateHostDescriptor, restartPinnedHost, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { developerEventRoute } from '../src/developer-work/http-route.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
@@ -40,7 +40,7 @@ async function loopbackPushReceiver(tempRoot) {
     let bytes = 0;
     request.on('data', chunk => { bytes += chunk.byteLength; });
     request.on('end', () => {
-      deliveries.push({ method: request.method, bytes });
+      deliveries.push({ method: request.method, path: request.url, bytes });
       response.writeHead(201);
       response.end();
     });
@@ -51,7 +51,7 @@ async function loopbackPushReceiver(tempRoot) {
   });
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
-  return { certificatePath, endpoint: `https://127.0.0.1:${address.port}/push`, deliveries,
+  return { certificatePath, endpointFor: device => `https://127.0.0.1:${address.port}/push/${device}`, deliveries,
     close: () => new Promise(resolve => server.close(resolve)) };
 }
 
@@ -80,23 +80,24 @@ async function main() {
   const result = await withIsolatedWorld(async (world) => {
     const receiver = await loopbackPushReceiver(world.tempRoot);
     let run;
+    const awaitBootstrap = currentRun => waitForConsecutiveReadiness(async (signal) => {
+      try {
+        const response = await fetchWithRuntimeDispatcher(
+          `${world.gateway.url}${runtimeCapability.bootstrap.path}`,
+          { headers: { authorization: `Bearer ${world.gatewayCredential}` },
+            signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
+        return response.ok;
+      } catch (error) {
+        signal.throwIfAborted();
+        if (error?.name === 'TimeoutError') return false;
+        throw error;
+      }
+    }, currentRun.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 250 });
     try {
       run = await launchCandidateHost({ descriptor, candidatePair: pair, inputTreeReceipt,
         artifactReceipt, buildReceipt, pluginArchivePath: input.pluginArchivePath,
         hostArchivePath: input.hostArchivePath, world, notificationCaPath: receiver.certificatePath });
-      await waitForConsecutiveReadiness(async (signal) => {
-        try {
-          const response = await fetchWithRuntimeDispatcher(
-            `${world.gateway.url}${runtimeCapability.bootstrap.path}`,
-            { headers: { authorization: `Bearer ${world.gatewayCredential}` },
-              signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
-          return response.ok;
-        } catch (error) {
-          signal.throwIfAborted();
-          if (error?.name === 'TimeoutError') return false;
-          throw error;
-        }
-      }, run.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 250 });
+      await awaitBootstrap(run);
       let read;
       await waitForConsecutiveReadiness(async (signal) => {
         try {
@@ -116,22 +117,31 @@ async function main() {
       assert.equal(bootstrap.status, 200);
       const bootstrapBody = await bootstrap.json();
       assert.ok(typeof bootstrapBody.serverBuildId === 'string' && bootstrapBody.serverBuildId);
-      const deviceIdentity = createGatewayDeviceIdentity();
-      const receiverKey = createECDH('prime256v1');
-      receiverKey.generateKeys();
-      const operator = { gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
-        scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity,
-        controlUiBuildId: bootstrapBody.serverBuildId };
-      await requestAuthenticatedGateway({ ...operator, method: 'push.web.subscribe',
-        params: { endpoint: receiver.endpoint, keys: { p256dh: receiverKey.getPublicKey().toString('base64url'),
-          auth: randomBytes(16).toString('base64url') } } });
+      const operators = [];
+      for (const device of ['first', 'second']) {
+        const deviceIdentity = createGatewayDeviceIdentity();
+        const receiverKey = createECDH('prime256v1');
+        receiverKey.generateKeys();
+        const operator = { gatewayUrl: world.gateway.url, credential: world.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity,
+          controlUiBuildId: bootstrapBody.serverBuildId };
+        await requestAuthenticatedGateway({ ...operator, method: 'push.web.subscribe',
+          params: { endpoint: receiver.endpointFor(device), keys: { p256dh: receiverKey.getPublicKey().toString('base64url'),
+            auth: randomBytes(16).toString('base64url') } } });
+        operators.push({ ...operator, device });
+      }
+      const operator = operators[0];
       const nativePreferences = await requestAuthenticatedGateway({ ...operator, method: 'push.web.preferences.get',
-        params: { endpoint: receiver.endpoint } });
+        params: { endpoint: receiver.endpointFor(operator.device) } });
       assert.equal(nativePreferences.durableIdentity, true, 'Fictional device lacks a durable operator profile');
       await requestAuthenticatedGateway({ ...operator, method: 'push.web.preferences.set',
-        params: { endpoint: receiver.endpoint, scope: 'user', preferences: {
+        params: { endpoint: receiver.endpointFor(operator.device), scope: 'user', preferences: {
           ...nativePreferences.user, categories: { ...nativePreferences.user.categories, pluginAttention: true }
         } } });
+      const secondPreferences = await requestAuthenticatedGateway({ ...operators[1], method: 'push.web.preferences.get',
+        params: { endpoint: receiver.endpointFor('second') } });
+      assert.equal(secondPreferences.effective.categories.pluginAttention, true,
+        'Fictional second device did not share the enabled operator category');
       const boundResponse = await requestAuthenticatedGateway({ ...operator,
         method: 'command-center.v1.dashboard.get',
         params: { schemaVersion: 1, activityOffset: 0, activityLimit: 20 } });
@@ -174,7 +184,23 @@ async function main() {
       assert.ok((await dashboard()).attention.some(card => card.sourceCapabilityId === 'developer-work.v1'),
         'Accepted fictional request did not reach Attention');
       assert.ok(notificationStatus(world, 'sent') > 0, 'Installed host did not record a sent notification');
-      assert.equal(receiver.deliveries.length, 1, 'Fictional receiver did not get exactly one activation');
+      assert.deepEqual(receiver.deliveries.map(delivery => delivery.path).sort(), ['/push/first', '/push/second'],
+        'Fictional devices did not each get one activation');
+      run = await restartPinnedHost(run);
+      await awaitBootstrap(run);
+      await waitForConsecutiveReadiness(async (signal) => {
+        try {
+          const response = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url,
+            credential: world.gatewayCredential, method: 'command-center.v1.topics.list',
+            params: { schemaVersion: 1 }, scopes: ['operator.admin'], signal });
+          return Boolean(response);
+        } catch (error) {
+          signal.throwIfAborted();
+          if (isGatewayStartupPending(error)) return false;
+          throw error;
+        }
+      }, run.earlyExit, { required: 1, deadlineMs: 120_000, delayMs: 250 });
+      assert.equal(receiver.deliveries.length, 2, 'Fresh Gateway worker duplicated the activation');
       await send({ ...base, eventId: randomUUID(), workRevision: 2,
         eventType: 'request_resolved', occurredAt: new Date().toISOString(),
         request: { ...request, expectedRequestRevision: 1 },
@@ -182,7 +208,9 @@ async function main() {
       assert.ok(!(await dashboard()).attention.some(card => card.sourceCapabilityId === 'developer-work.v1'),
         'Resolved fictional request remained active in Attention');
       assert.ok(notificationStatus(world, 'cleared') > 0, 'Installed host did not clear the notification');
-      assert.equal(receiver.deliveries.length, 2, 'Fictional receiver did not get one activation and one clear');
+      assert.deepEqual(receiver.deliveries.map(delivery => delivery.path).sort(),
+        ['/push/first', '/push/first', '/push/second', '/push/second'],
+        'Fresh Gateway worker did not clear both fictional devices');
       await assertRecordedChildTraffic(world);
       assertNoFatalHostOutput(run.diagnostics);
       return { schemaVersion: 1, kind: 'candidate-pair-isolated-smoke',
@@ -190,7 +218,8 @@ async function main() {
         hostPackageDigest: pair.openClaw.packageDigest,
         pluginBuildDigest: pair.commandCenter.buildDigest, fixtureDigest: pair.fixtureDigest,
         checks: ['isolated-gateway-startup', 'authenticated-plugin-read', 'machine-ingress-projection',
-          'attention-lifecycle', 'native-push-delivery-and-clear', 'child-traffic-isolation'],
+          'attention-lifecycle', 'native-multi-device-push-and-clear', 'gateway-restart-continuity',
+          'child-traffic-isolation'],
         releaseQualified: false };
     } finally {
       try {
