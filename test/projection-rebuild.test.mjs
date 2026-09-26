@@ -296,16 +296,23 @@ test('restart rebuild repairs a reordered committed result before exposing queri
 
 test('crash boundaries never expose a partial query and restart converges', async () => {
   for (const point of ['validation', 'write', 'publication', 'bookkeeping']) await withState(async (stateDir) => {
-    const service = open(stateDir); seed(service); service.close(); services.delete(service);
-    const sourcePath = path.join(stateDir, 'fictional-authority.json'); await writeFile(sourcePath, JSON.stringify(sourceSnapshot()));
-    const before = digest(await readFile(sourcePath));
-    const child = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/projection-crash.mjs', import.meta.url)), stateDir, point, sourcePath], { encoding: 'utf8', env: { ...process.env, COMMAND_CENTER_PROJECTION_CRASH_AT: point } });
+    const service = open(stateDir); seed(service); const metadataBeforeCrash = service.readProjectionSnapshot(); assert.deepEqual(service.listProjectionBookkeeping(), []); service.close(); services.delete(service);
+    const sourceRoot = path.join(stateDir, 'authoritative-fixtures'); await mkdir(sourceRoot);
+    const fixtureText = { noteFolders: '# Fictional crash Note\n', sessions: JSON.stringify({ messages: ['fictional'] }), reminderSchedules: JSON.stringify({ schedule: '0 9 * * *' }), importedHistory: JSON.stringify({ events: ['fictional'] }) };
+    await Promise.all(Object.entries(fixtureText).map(([field, value]) => writeFile(path.join(sourceRoot, `${field}.fixture`), value)));
+    const fixtureBytes = async () => Object.fromEntries(await Promise.all(Object.keys(fixtureText).map(async (field) => [field, (await readFile(path.join(sourceRoot, `${field}.fixture`))).toString('base64')])));
+    const before = await fixtureBytes();
+    const child = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/projection-crash.mjs', import.meta.url)), stateDir, point, sourceRoot], { encoding: 'utf8', env: { ...process.env, COMMAND_CENTER_PROJECTION_CRASH_AT: point } });
     assert.equal(child.signal, 'SIGKILL');
     const reopened = open(stateDir); assert.throws(() => reopened.queryProjections(), (error) => error.code === 'projection-unavailable');
-    await reopened.rebuildProjections({ authoritativeSources: provider() });
+    assert.deepEqual(reopened.readProjectionSnapshot(), metadataBeforeCrash);
+    assert.deepEqual(await fixtureBytes(), before);
+    const liveSnapshot = async () => ({ sourceRevision: 'fictional-v1', ...Object.fromEntries(await Promise.all(Object.keys(fixtureText).map(async (field) => [field, [{ identity: { noteFolders: 'folder-fictional', sessions: 'session-fictional', reminderSchedules: 'schedule-fictional', importedHistory: 'history-fictional' }[field], contentDigest: digest(await readFile(path.join(sourceRoot, `${field}.fixture`))) }]]))) });
+    await reopened.rebuildProjections({ authoritativeSources: { readSnapshot: liveSnapshot } });
     assert.equal(reopened.queryProjections().index.length, 4); assert.equal(reopened.listProjectionBookkeeping().filter((row) => row.projectionId === projectionId).length, 1);
     const entries = await readdir(resolveCommandCenterProjectionRoot(stateDir)); assert.deepEqual(entries, ['committed.json']);
-    assert.equal(digest(await readFile(sourcePath)), before);
+    assert.deepEqual(await fixtureBytes(), before);
+    assert.deepEqual(reopened.readProjectionSnapshot(), metadataBeforeCrash);
   });
 });
 
