@@ -19,15 +19,15 @@ export function installOpenLoopActions(service, { ErrorType }) {
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key))) fail('open-loop-action-invalid');
     return value;
   };
-  function identifiers(input, operationKind) {
+  function identifiers(input, operationKind, sourceKind) {
     const logicalOperationId = text(input.logicalOperationId, 'logicalOperationId', 300);
     return {
       logicalOperationId,
-      observationId: `user-decision:${hash(`${operationKind}\u0000${logicalOperationId}`).slice(0, 40)}`
+      observationId: `${sourceKind}:${hash(`${operationKind}\u0000${logicalOperationId}`).slice(0, 40)}`
     };
   }
-  function record({ input, operationKind, facts, transition }) {
-    const ids = identifiers(input, operationKind);
+  function record({ input, operationKind, facts, transition, sourceKind = 'user-decision', resolveClarification = false }) {
+    const ids = identifiers(input, operationKind, sourceKind);
     const { updatedAt: _ownerTime, ...rootIntent } = input;
     const replay = service.replayOpenLoopChange({ schemaVersion: 1, logicalOperationId: ids.logicalOperationId, operationKind, intent: rootIntent });
     if (replay) return Object.freeze({ schemaVersion: 1, disposition: 'duplicate', loop: replay.loop, ...(replay.followUpIntent ? { followUpIntent: replay.followUpIntent } : {}), ...(replay.supportingNoteTarget ? { supportingNoteTarget: replay.supportingNoteTarget } : {}) });
@@ -39,18 +39,28 @@ export function installOpenLoopActions(service, { ErrorType }) {
     const rationale = text(input.rationale, 'rationale', 1000);
     // Validate the transition before persisting its evidence. A rejected action
     // must not leave an orphaned decision observation behind.
-    const next = transition(loop, updatedAt);
+    const pendingClarificationId = loop.attention?.pendingClarificationId;
+    const resolvesClarification = Boolean(pendingClarificationId) && resolveClarification;
+    let next = transition(loop, updatedAt, ids.observationId);
+    if (resolvesClarification) {
+      const { pendingClarificationId: _resolved, priorUserActionOperationId: _prior, ...retainedAttention } = next.attention ?? {};
+      const inheritedPrompt = retainedAttention.reason === loop.attention.reason
+        && retainedAttention.whyNow === loop.attention.whyNow;
+      const { reason: _reason, whyNow: _whyNow, actions: _actions, ...quietAttention } = retainedAttention;
+      next = { ...next, attention: inheritedPrompt ? { ...quietAttention, actions: [], activated: false } : retainedAttention };
+    }
     const observation = {
       schemaVersion: 1,
       observationId: ids.observationId,
-      source: { system: 'command-center', kind: 'user-decision', externalId: ids.logicalOperationId, version: 'v1' },
+      source: { system: 'command-center', kind: sourceKind, externalId: ids.logicalOperationId, version: 'v1' },
       type: operationKind === 'payment-status' ? 'payment-evidence' : 'decision-evidence',
       occurredAt: updatedAt,
       observedAt: updatedAt,
       historicalBaseline: false,
       ...(loop.topicId === undefined ? {} : { topicId: loop.topicId }),
       entityRefs: [{ kind: 'open-loop', id: loop.loopId, evidence: ['explicit-user-action'] }],
-      facts: { operationKind, actorId, rationale, ...facts }
+      facts: { operationKind, actorId, rationale, ...facts,
+        ...(resolvesClarification ? { resolvesClarificationId: pendingClarificationId } : {}) }
     };
     const changed = service.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: ids.logicalOperationId, operationKind, intent: rootIntent, expectedRevision: loop.revision, observation, loop: { ...next, evidenceObservationIds: [...loop.evidenceObservationIds, ids.observationId], revision: loop.revision + 1 }, evidenceRoles: { [ids.observationId]: next.state === 'resolved' || next.state === 'cancelled' ? 'resolution' : 'update' }, updatedAt });
     return Object.freeze({ schemaVersion: 1, disposition: changed.disposition === 'updated' ? 'applied' : changed.disposition, loop: changed.loop,
@@ -78,6 +88,7 @@ export function installOpenLoopActions(service, { ErrorType }) {
     return record({
       input: value,
       operationKind: `decision-${value.decision}`,
+      resolveClarification: value.decision !== 'defer',
       facts: { decision: value.decision, ...(reviewAt === undefined ? {} : { reviewAt }), ...(dueAt === undefined ? {} : { dueAt }), ...(dueDate === undefined ? {} : { dueDate, dueTimeZone }), ...(amount === undefined ? {} : { amount, currency }) },
       transition(loop) {
         if (['resolved', 'cancelled'].includes(loop.state) && value.decision !== 'resolve') fail('open-loop-terminal');
@@ -93,7 +104,9 @@ export function installOpenLoopActions(service, { ErrorType }) {
         if (value.decision === 'defer') return { ...loop, state: 'waiting', reviewAt, attention: { ...(loop.attention ?? {}), reason: 'review-time', whyNow: `${loop.title} reached its accepted review time.`, actions: loop.attention?.actions?.length ? loop.attention.actions : ['Open evidence', 'Choose next review', 'Mark resolved'], activated: false, currentEvidence: true } };
         if (value.decision === 'correct-date') {
           const { dueAt: _oldAt, dueDate: _oldDate, dueTimeZone: _oldZone, ...withoutTiming } = loop;
-          return { ...withoutTiming, ...(dueAt === undefined ? { dueDate, dueTimeZone } : { dueAt }), reviewAt: undefined, attention: { ...(loop.attention ?? {}), activated: false, currentEvidence: true } };
+          return { ...withoutTiming, ...(dueAt === undefined ? { dueDate, dueTimeZone } : { dueAt }),
+            state: loop.attention?.pendingClarificationId && loop.state === 'decision-needed' ? 'confirmed' : loop.state,
+            reviewAt: undefined, attention: { ...(loop.attention ?? {}), activated: false, currentEvidence: true } };
         }
         if (value.decision === 'dismiss') {
           if (loop.kind === 'payment' && loop.state !== 'suggested') fail('open-loop-payment-status-required');
@@ -115,6 +128,7 @@ export function installOpenLoopActions(service, { ErrorType }) {
     return record({
       input: value,
       operationKind: 'payment-status',
+      resolveClarification: true,
       facts: { paymentState: value.paymentState, ...(paidAmount === undefined ? {} : { paidAmount, currency }), provenance: 'explicit-user-assertion' },
       transition(loop) {
         if (loop.kind !== 'payment') fail('open-loop-not-payment');
@@ -125,6 +139,30 @@ export function installOpenLoopActions(service, { ErrorType }) {
         if (value.paymentState === 'uncertain') return { ...loop, state: 'uncertain', paymentState: 'uncertain', attention: { reason: 'evidence-conflict', whyNow: 'The payment outcome needs reconciliation.', actions: ['Open bill', 'Review payment evidence'], activated: true, currentEvidence: true } };
         if (value.paymentState === 'disputed') return { ...loop, state: 'waiting', paymentState: 'disputed', attention: { actions: ['Open bill', 'Review dispute'], activated: false, currentEvidence: true } };
         return { ...loop, state: value.paymentState === 'payment-pending' ? 'monitoring' : 'confirmed', paymentState: value.paymentState };
+      }
+    });
+  };
+
+  service.recordOpenLoopClarification = input => {
+    const value = closed(input, ['schemaVersion', 'logicalOperationId', 'loopId', 'expectedRevision', 'actorId', 'rationale', 'updatedAt']);
+    if (value.schemaVersion !== 1) fail('open-loop-action-invalid');
+    return record({
+      input: value,
+      operationKind: 'clarification-submit',
+      sourceKind: 'user-clarification',
+      facts: { eventKind: 'clarification-submitted', status: 'submitted', scope: 'item' },
+      transition(loop, _updatedAt, clarificationId) {
+        // Saving words is not a payment or completion assertion. A new loop
+        // revision fences older follow-up workers while keeping the same item.
+        const terminal = ['resolved', 'cancelled'].includes(loop.state);
+        const priorUserActionOperationId = loop.attention?.priorUserActionOperationId
+          ?? service.getCurrentOpenLoopUserActionReceipt(loop.loopId)?.logicalOperationId;
+        return { ...loop, state: terminal ? 'uncertain' : loop.state === 'suggested' ? 'suggested' : 'decision-needed',
+          attention: { ...(loop.attention ?? {}), pendingClarificationId: clarificationId,
+            ...(priorUserActionOperationId ? { priorUserActionOperationId } : {}),
+            reason: terminal ? 'evidence-conflict' : 'decision-requested',
+            whyNow: 'Your item-specific clarification is saved and needs review.',
+            actions: ['Open evidence', 'Choose correction'], activated: true, currentEvidence: true } };
       }
     });
   };

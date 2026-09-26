@@ -31,7 +31,7 @@ const loopKeys = Object.freeze([
   'attention', 'evidenceObservationIds', 'revision'
 ]);
 const attentionKeys = Object.freeze([
-  'reason', 'whyNow', 'actions', 'materialRevision', 'activated', 'currentEvidence',
+  'reason', 'whyNow', 'actions', 'materialRevision', 'pendingClarificationId', 'priorUserActionOperationId', 'activated', 'currentEvidence',
   'importance', 'importanceOrigin', 'plannedAt', 'effortMinutes', 'contexts',
   'dependencies', 'provenance', 'confidence', 'lastConsideredAt', 'someday'
 ]);
@@ -175,6 +175,8 @@ export function normalizeLoop(input) {
       ...(candidate.whyNow === undefined ? {} : { whyNow: text(candidate.whyNow, 'attention.whyNow', 500) }),
       actions: Object.freeze(uniqueStrings(candidate.actions ?? [], 'attention.actions', 8)),
       ...(candidate.materialRevision === undefined ? {} : { materialRevision: text(candidate.materialRevision, 'attention.materialRevision', 300) }),
+      ...(candidate.pendingClarificationId === undefined ? {} : { pendingClarificationId: text(candidate.pendingClarificationId, 'attention.pendingClarificationId', 300) }),
+      ...(candidate.priorUserActionOperationId === undefined ? {} : { priorUserActionOperationId: text(candidate.priorUserActionOperationId, 'attention.priorUserActionOperationId', 300) }),
       activated: boolean(candidate.activated, 'attention.activated'),
       currentEvidence: boolean(candidate.currentEvidence, 'attention.currentEvidence'),
       ...(candidate.importance === undefined ? {} : { importance: candidate.importance, importanceOrigin: candidate.importanceOrigin }),

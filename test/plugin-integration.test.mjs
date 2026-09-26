@@ -330,6 +330,62 @@ test('authenticated follow-up command resumes a saved decision after restart wit
   }
 });
 
+test('registered clarification saves one item-specific observation without running Scheduler or changing a sibling', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-registered-clarification-'));
+  let service;
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir });
+    const makeMessage = (externalId, invoiceId) => ({ schemaVersion: 1, channel: 'email',
+      source: { system: 'fictional-mail', externalId, version: 'v1' },
+      occurredAt: '2026-09-24T00:00:00.000Z', observedAt: '2026-09-24T00:01:00.000Z',
+      historicalBaseline: false, disposition: 'confirmed-obligation', requestKind: 'payment',
+      explicitRequest: true, summary: `Fictional invoice ${invoiceId}`, payee: 'Example Supplier',
+      purpose: 'fictional work', amount: 10000, currency: 'AUD', dueAt: '2026-10-01T00:00:00.000Z',
+      invoiceId, authorityId: 'EXAMPLE-SUPPLIER', accountId: 'EXAMPLE-ACCOUNT',
+      attachmentIds: [], evidenceSelectors: ['subject'] });
+    const first = metadata.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'registered-clarification-first', message: makeMessage('message-one', 'ONE') });
+    const second = metadata.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'registered-clarification-second', message: makeMessage('message-two', 'TWO') });
+    const prior = metadata.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'registered-prior-defer',
+      loopId: first.loop.loopId, expectedRevision: first.loop.revision, decision: 'defer',
+      reviewAt: '2026-10-02T00:00:00.000Z', actorId: 'fictional-operator',
+      rationale: 'Fictional review choice.', updatedAt: '2026-09-24T00:02:00.000Z' });
+    assert.equal(metadata.getCurrentOpenLoopUserActionReceipt(first.loop.loopId)?.logicalOperationId, 'registered-prior-defer');
+    metadata.close();
+    const host = fakePublishedApi(stateDir); plugin.register(host.api); service = host.services[0]; await service.start();
+    const params = { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: first.loop.loopId,
+      expectedRevision: prior.loop.revision, rationale: 'Please verify the fictional attachment date for this invoice.' };
+    const saved = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.clarify', params);
+    assert.equal(saved.disposition, 'applied');
+    assert.equal(saved.loop.state, 'decision-needed');
+    assert.equal(saved.loop.paymentState, 'unpaid');
+    const detail = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: first.loop.loopId });
+    assert.ok(detail.evidence.some(item => item.rationale === params.rationale && item.status === 'submitted'));
+    assert.equal(detail.followUp.priorDecision, true, 'the earlier Reminder status stays visible');
+    assert.equal(detail.followUp.logicalOperationId, 'registered-prior-defer');
+    const sibling = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: second.loop.loopId });
+    assert.equal(sibling.loop.revision, second.loop.revision);
+    assert.equal((await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.clarify', params)).disposition, 'duplicate');
+    await assert.rejects(() => qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.clarify', {
+      ...params, logicalOperationId: randomUUID(), rationale: 'Stale fictional correction.' }),
+    error => error?.code === 'unavailable' && error?.details?.status === 'unavailable');
+    const competitors = await Promise.allSettled([
+      qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.clarify', {
+        ...params, logicalOperationId: randomUUID(), loopId: second.loop.loopId,
+        expectedRevision: second.loop.revision, rationale: 'First competing clarification.' }),
+      qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.clarify', {
+        ...params, logicalOperationId: randomUUID(), loopId: second.loop.loopId,
+        expectedRevision: second.loop.revision, rationale: 'Second competing clarification.' })
+    ]);
+    assert.deepEqual(competitors.map(result => result.status).sort(), ['fulfilled', 'rejected']);
+    assert.equal((await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.get', {
+      schemaVersion: 1, loopId: second.loop.loopId })).loop.revision, second.loop.revision + 1);
+    await service.stop(); service = undefined;
+    const restarted = fakePublishedApi(stateDir); plugin.register(restarted.api); service = restarted.services[0]; await service.start();
+    assert.equal((await qualifyRegisteredOpenLoop(restarted, 'command-center.v1.open-loops.clarify', params)).disposition, 'duplicate');
+    assert.equal((await qualifyRegisteredOpenLoop(restarted, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: first.loop.loopId })).loop.revision, saved.loop.revision);
+  } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('bounded document intake reads authoritative content and revision through the existing source owner', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-selected-document-'));
   let service;
@@ -1073,6 +1129,15 @@ test('built package processes a mixed email through registered Note-save, captur
     const afterConflict = await service.sourceService.notesRead({ schemaVersion: 1, topicId: evidence.topicId,
       referenceId: evidence.sourceReferenceId, path: evidence.sourcePath, sourceKind: 'note' });
     assert.equal(afterConflict.text, userEditedText);
+    const clarification = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.clarify', {
+      schemaVersion: 1, logicalOperationId: randomUUID(), loopId: payment.loopId,
+      expectedRevision: uncertain.loop.revision, rationale: 'Review this exact fictional payment status again.' });
+    assert.equal(clarification.loop.paymentState, 'uncertain');
+    const clarifiedDetail = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.get', {
+      schemaVersion: 1, loopId: payment.loopId });
+    assert.equal(clarifiedDetail.supportingNote.status, 'conflict', 'the previous Note conflict remains visible');
+    assert.equal(clarifiedDetail.supportingNote.priorDecision, true);
+    assert.equal(clarifiedDetail.followUp.priorDecision, true);
   } finally {
     seed?.close(); await host.services[0]?.stop?.();
     await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

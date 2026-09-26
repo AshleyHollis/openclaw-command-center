@@ -37,7 +37,7 @@ function unavailable(feature) {
   throw new SourceServiceError('capability-unavailable', `Command Center ${feature} ${reason}.`);
 }
 
-const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'purchaseNamespace', 'purchaseId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'fulfilledItemIds', 'outstandingItemIds', 'expectedAt', 'note', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'supersedesDecisionId', 'supersededByDecisionId', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'extractionStatus', 'pageCount', 'pageEvidence']);
+const publicEvidenceFields = Object.freeze(['summary', 'payee', 'purpose', 'amount', 'currency', 'dueAt', 'dueDate', 'dueTimeZone', 'authorityId', 'invoiceId', 'accountId', 'eventKind', 'subjectKind', 'subjectNamespace', 'subjectId', 'requirementKind', 'requirementNamespace', 'requirementId', 'purchaseNamespace', 'purchaseId', 'stageNamespace', 'stageId', 'installationRequired', 'fulfilmentKind', 'fulfilledItemIds', 'outstandingItemIds', 'expectedAt', 'note', 'replacementPurchaseId', 'replacedItemId', 'dispositionKind', 'obligationId', 'chosenOption', 'recordedChoice', 'observedChoice', 'conflictKind', 'rationale', 'assumption', 'assessment', 'material', 'decisionId', 'status', 'resolvesClarificationId', 'supersedesDecisionId', 'supersededByDecisionId', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'extractionStatus', 'pageCount', 'pageEvidence']);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)]))
   : value;
@@ -464,7 +464,11 @@ export function createMetadataService(api) {
       requireOperational();
       const loop = metadataService.getOpenLoop(input.loopId);
       if (!loop) throw new SourceServiceError('not-found', 'The exact open loop is unavailable.');
-      const accepted = metadataService.getCurrentOpenLoopUserActionReceipt(loop.loopId);
+      const priorUserActionOperationId = loop.attention?.pendingClarificationId && loop.attention?.priorUserActionOperationId;
+      const prior = priorUserActionOperationId ? metadataService.getOpenLoopUserActionReceipt(priorUserActionOperationId) : null;
+      const accepted = metadataService.getCurrentOpenLoopUserActionReceipt(loop.loopId)
+        ?? (prior?.loop.loopId === loop.loopId ? prior : null);
+      const priorDecision = Boolean(accepted && accepted.current === false);
       let followUp;
       let supportingNote;
       if (accepted) {
@@ -478,6 +482,8 @@ export function createMetadataService(api) {
           : operation?.state === 'unknown' ? 'unknown' : operation ? 'conflict'
             : plan.action === 'none' ? 'completed' : plan.action === 'blocked' ? 'blocked' : 'pending';
         followUp = Object.freeze({ status, logicalOperationId: accepted.logicalOperationId,
+          ...(priorDecision ? { priorDecision: true } : {}),
+          ...(accepted.recoverable ? { recoverable: true } : {}),
           ...(plan ? { action: plan.action, ...(plan.reason ? { reason: plan.reason } : {}) } : {}) });
         const note = metadataService.getOpenLoopSupportingNoteIntent(accepted.logicalOperationId);
         if (note && note.target.status !== 'none') {
@@ -487,6 +493,7 @@ export function createMetadataService(api) {
               : note.outcome?.status ?? (operation?.state === 'unknown' ? 'unknown'
                 : operation?.state === 'conflict' ? 'conflict' : 'pending');
           supportingNote = Object.freeze({ status: noteStatus,
+            ...(priorDecision ? { priorDecision: true } : {}),
             ...(note.outcome?.reason ? { reason: note.outcome.reason } : {}),
             ...(note.intent ? { logicalOperationId: note.intent.logicalOperationId } : {}) });
         }
@@ -603,13 +610,22 @@ export function createMetadataService(api) {
       const committed = commitDecisionWithNoteFence(input, () => metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }), ...(input.amount === undefined ? {} : { amount: input.amount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() }));
       return afterDecisionCommit(committed, input.logicalOperationId, runtime);
     },
+    openLoopsClarify(input = {}) {
+      requireOperational();
+      const actorId = requireOperator(input, 'item-specific clarification');
+      return commitDecisionWithNoteFence(input, () => metadataService.recordOpenLoopClarification({
+        schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId,
+        expectedRevision: input.expectedRevision, actorId, rationale: input.rationale,
+        updatedAt: new Date().toISOString()
+      }));
+    },
     openLoopsResumeFollowUp(input = {}, runtime = {}) {
       requireOperational();
       const actorId = requireOperator(input, 'open-loop follow-up recovery');
       const accepted = metadataService.getOpenLoopUserActionReceipt(input.logicalOperationId);
       if (!accepted) throw new SourceServiceError('not-found', 'The exact saved user decision is unavailable.');
       if (accepted.actorId !== actorId) throw new SourceServiceError('unauthorized', 'The saved decision belongs to another operator.');
-      if (!accepted.current || metadataService.getOpenLoop(accepted.loop.loopId)?.revision !== accepted.loop.revision) {
+      if (!accepted.current && !accepted.recoverable) {
         return Object.freeze({ schemaVersion: 1, disposition: 'superseded', loop: metadataService.getOpenLoop(accepted.loop.loopId) });
       }
       return reconcileDecisionEffects({ schemaVersion: 1, disposition: 'duplicate', loop: accepted.loop,

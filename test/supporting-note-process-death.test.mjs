@@ -13,7 +13,10 @@ import { createMetadataService } from '../src/plugin-service.mjs';
 import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 
-test('a saved bill decision recovers its exact Note after process death at filesystem publication',
+for (const clarifyBeforeRecovery of [false, true]) test(
+  clarifyBeforeRecovery
+    ? 'clarification after process death keeps published Note bytes visible as an unknown prior effect'
+    : 'a saved bill decision recovers its exact Note after process death at filesystem publication',
   { skip: process.platform !== 'linux', timeout: 30_000 }, async () => {
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-note-follow-up-death-'));
     const root = path.join(stateDir, 'vault');
@@ -77,6 +80,22 @@ test('a saved bill decision recovers its exact Note after process death at files
       const api = { config: { agents: { defaults: { userTimezone: 'UTC' } } }, pluginConfig: { sourceCapabilities: { sessions: false, scheduler: false } },
         logger: { info() {}, warn() {}, error() {} }, runtime: { state: { resolveStateDir: () => stateDir }, fileAccess: createHostFileAccessFixture() } };
       service = createMetadataService(api); await service.start();
+      if (clarifyBeforeRecovery) {
+        const words = await service.openLoopsClarify({ schemaVersion: 1, logicalOperationId: randomUUID(),
+          loopId: captured.loop.loopId, expectedRevision: accepted.loop.revision,
+          authenticatedOperatorId: 'fictional-operator', rationale: 'I may have marked the wrong fictional bill paid.' });
+        assert.equal(words.loop.attention.pendingClarificationId !== undefined, true);
+        const prior = service.sourceService.metadata.getOpenLoopSupportingNoteIntent(decisionId);
+        assert.equal(prior.outcome.status, 'unknown');
+        assert.equal(prior.outcome.reason, 'prior-note-publication-unverified');
+        assert.equal(await readFile(path.join(root, notePath), 'utf8'), desired);
+        assert.equal((await stat(path.join(root, notePath))).ino, published.ino);
+        const stopped = await service.openLoopsResumeFollowUp({ schemaVersion: 1, logicalOperationId: decisionId,
+          authenticatedOperatorId: 'fictional-operator' }, { gateway: { request: async () => { throw new Error('No native Reminder is needed.'); } } });
+        assert.equal(stopped.supportingNote.status, 'superseded');
+        assert.equal(service.sourceService.metadata.getOpenLoopSupportingNoteIntent(decisionId).outcome.status, 'unknown');
+        return;
+      }
       const recovered = await service.openLoopsResumeFollowUp({ schemaVersion: 1, logicalOperationId: decisionId,
         authenticatedOperatorId: 'fictional-operator' }, { gateway: { request: async () => { throw new Error('No native Reminder is needed for this paid assertion.'); } } });
       assert.equal(recovered.supportingNote.status, 'completed', JSON.stringify(recovered));

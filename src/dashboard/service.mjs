@@ -102,6 +102,7 @@ function compactOpenLoop(projected, metadata) {
       ...(loop.attention.lastConsideredAt ? { lastConsideredAt: loop.attention.lastConsideredAt } : {}),
       someday: loop.attention.someday === true
     }) }),
+    ...(loop.attention?.pendingClarificationId ? { clarificationPending: true } : {}),
     actions: Object.freeze(asArray(projected.actions).slice(0, 4)),
     ...(sourceKinds.length ? { sourceLabel: sourceKinds.map(value => value === 'message' ? 'Email or message' : value[0].toUpperCase() + value.slice(1)).join(', ') } : {}),
     evidenceCount: loop.evidenceObservationIds.length,

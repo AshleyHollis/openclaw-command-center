@@ -127,7 +127,12 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
         || intent.logicalOperationId !== assertLogicalOperationId(intent.logicalOperationId)) {
         throw sourceError('invalid-request', 'Saved Reminder follow-up does not match the accepted decision.');
       }
-      if (metadata.getOpenLoop?.(loop.loopId)?.revision !== loop.revision) throw sourceError('conflict', 'A newer open-loop decision superseded this Reminder follow-up.');
+      const currentBefore = metadata.getOpenLoop?.(loop.loopId);
+      const retainedByClarification = current => Boolean(current?.attention?.pendingClarificationId
+        && typeof current.attention.priorUserActionOperationId === 'string'
+        && openLoopReminderOperationId(current.attention.priorUserActionOperationId) === intent.logicalOperationId);
+      if (currentBefore?.revision !== loop.revision && !retainedByClarification(currentBefore))
+        throw sourceError('conflict', 'A newer open-loop decision superseded this Reminder follow-up.');
       if (['none', 'blocked', 'conflict'].includes(intent.action)) return Object.freeze({ schemaVersion: 1, status: intent.action, logicalOperationId: intent.logicalOperationId, plan: intent });
       const reminder = adapterFor(nonBlank(intent.topicId, 'topicId'));
       let receipt;
@@ -190,6 +195,7 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
       const currentLoop = metadata.getOpenLoop?.(loop.loopId);
       const latest = metadata.getCurrentOpenLoopUserActionReceipt?.(loop.loopId);
       if (currentLoop?.revision !== loop.revision) {
+        if (retainedByClarification(currentLoop)) return Object.freeze({ ...receipt, plan: intent });
         const successorOwnsPredecessor = latest?.followUpIntent?.predecessor?.logicalOperationId === intent.logicalOperationId;
         const canHandoff = (intent.action === 'create' && ['cancel-pending-create', 'reschedule-pending-create'].includes(latest?.followUpIntent?.action))
           || (intent.action === 'reschedule' && ['cancel-after-update', 'reschedule-after-update'].includes(latest?.followUpIntent?.action));

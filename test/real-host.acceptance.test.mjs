@@ -1450,26 +1450,73 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const paymentBefore = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
           method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
         const beforeDecision = (paymentBefore.result ?? paymentBefore).loop;
+        const clarificationId = randomUUID();
+        const clarificationWords = 'The fictional invoice date needs checking for this bill only.';
+        const clarificationResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.clarify', params: { schemaVersion: 1, logicalOperationId: clarificationId,
+            loopId: paymentLoopId, expectedRevision: beforeDecision.revision, rationale: clarificationWords }, signal });
+        const clarified = clarificationResponse.result ?? clarificationResponse;
+        assert.equal(clarified.loop.loopId, paymentLoopId);
+        assert.equal(clarified.loop.paymentState, beforeDecision.paymentState);
+        assert.ok(clarified.loop.attention.pendingClarificationId);
+        assert.equal(clarified.reminder, undefined, 'free text does not invent a native schedule effect');
+        const clarificationDetailResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        const clarificationDetail = clarificationDetailResponse.result ?? clarificationDetailResponse;
+        assert.equal(clarificationDetail.followUp, undefined);
+        assert.ok(clarificationDetail.evidence.some(item => item.observationId === clarified.loop.attention.pendingClarificationId
+          && item.rationale === clarificationWords && item.sourceKind === 'user-clarification'));
+        await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        const clarificationPage = page.locator('openclaw-plugin-page');
+        await clarificationPage.getByText(/Review all open loops \(/u).click();
+        await clarificationPage.getByRole('button', { name: 'Load open loops' }).click();
+        const clarificationCard = clarificationPage.locator(`article[data-open-loop-id="${paymentLoopId}"]`).first();
+        await clarificationCard.getByText('Clarification saved · interpretation pending', { exact: true }).waitFor();
+        await clarificationCard.getByRole('button', { name: 'Review evidence' }).click();
+        const clarificationEvidence = clarificationCard.locator('details[data-open-loop-evidence][open]');
+        await clarificationEvidence.waitFor();
+        assert.match(await clarificationEvidence.innerText(), /The fictional invoice date needs checking for this bill only\./u);
+        milestone('clarification-saved-and-inspected');
         const scheduleDecisionId = randomUUID();
         const fictionalDueAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
         const scheduledResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
           scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
           method: 'command-center.v1.open-loops.decide', params: { schemaVersion: 1, logicalOperationId: scheduleDecisionId,
-            loopId: paymentLoopId, expectedRevision: beforeDecision.revision,
+            loopId: paymentLoopId, expectedRevision: clarified.loop.revision,
             decision: beforeDecision.state === 'suggested' ? 'confirm' : 'correct-date', dueAt: fictionalDueAt,
             rationale: 'Fictional due date accepted for installed follow-up qualification.' }, signal });
         const scheduled = scheduledResponse.result ?? scheduledResponse;
+        assert.equal(scheduled.loop.attention.pendingClarificationId, undefined);
         assert.equal(scheduled.reminder.status, 'applied');
         assert.equal(scheduled.supportingNote.status, 'completed');
         const nativeReminderId = openLoopReminderOperationId(scheduleDecisionId);
         const nativeDatabase = new DatabaseSync(path.join(scenarioWorld.root, '.openclaw', 'state', 'openclaw.sqlite'), { readOnly: true });
         try { assert.equal(nativeDatabase.prepare('SELECT enabled FROM cron_jobs WHERE job_id = ?').get(nativeReminderId)?.enabled, 1); }
         finally { nativeDatabase.close(); }
+        const reviewResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
+          method: 'command-center.v1.open-loops.clarify', params: { schemaVersion: 1, logicalOperationId: randomUUID(),
+            loopId: paymentLoopId, expectedRevision: scheduled.loop.revision,
+            rationale: 'Check the fictional payee name while retaining the accepted reminder.' }, signal });
+        const review = reviewResponse.result ?? reviewResponse;
+        const reviewDetailResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
+          method: 'command-center.v1.open-loops.get', params: { schemaVersion: 1, loopId: paymentLoopId }, signal });
+        const reviewDetail = reviewDetailResponse.result ?? reviewDetailResponse;
+        assert.equal(reviewDetail.followUp.status, 'completed');
+        assert.equal(reviewDetail.followUp.priorDecision, true);
+        assert.equal(reviewDetail.supportingNote.status, 'completed');
+        assert.equal(reviewDetail.supportingNote.priorDecision, true);
+        await clarificationPage.getByRole('button', { name: 'Refresh Dashboard' }).click();
+        const reviewedCard = clarificationPage.locator(`article[data-open-loop-id="${paymentLoopId}"]`).first();
+        await reviewedCard.getByRole('button', { name: 'Review evidence' }).click();
+        await reviewedCard.getByText('Earlier decision: Decision saved. Reminder follow-up is complete.', { exact: true }).waitFor();
+        await reviewedCard.getByText('Earlier decision: The supporting Note recorded this decision.', { exact: true }).waitFor();
         const paidDecisionId = randomUUID();
         const paidResponse = await requestAuthenticatedGateway({ gatewayUrl: scenarioWorld.gateway.url, credential: scenarioWorld.gatewayCredential,
           scopes: ['operator.read', 'operator.write', 'operator.admin'], deviceIdentity: decisionDevice, controlUiBuildId: bootstrap.body.serverBuildId,
           method: 'command-center.v1.open-loops.payment-status', params: { schemaVersion: 1, logicalOperationId: paidDecisionId,
-            loopId: paymentLoopId, expectedRevision: scheduled.loop.revision, paymentState: 'paid',
+            loopId: paymentLoopId, expectedRevision: review.loop.revision, paymentState: 'paid',
             rationale: 'Fictional operator assertion; no payment was made.' }, signal });
         assert.equal((paidResponse.result ?? paidResponse).reminder.status, 'applied');
         assert.equal((paidResponse.result ?? paidResponse).supportingNote.status, 'completed');
@@ -1495,9 +1542,13 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         finally { disabledDatabase.close(); }
         await page.goto(controlUiPluginUrl({ gatewayUrl: scenarioWorld.gateway.url, pluginId: 'command-center', routeId: 'attention', fragmentParameter: runtimeCapability.authentication.urlFragmentParameter, credential: scenarioWorld.gatewayCredential }), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         const settledPage = page.locator('openclaw-plugin-page');
-        await settledPage.getByText(/Review all open loops \(/u).click();
-        await settledPage.getByRole('button', { name: 'Load open loops' }).click();
-        const settledCard = settledPage.locator(`article[data-open-loop-id="${paymentLoopId}"]`);
+        await settledPage.getByRole('button', { name: 'Refresh Dashboard' }).click();
+        const settledInventory = settledPage.locator('details[data-open-loop-inventory]');
+        await settledInventory.waitFor();
+        if (!(await settledInventory.evaluate(node => node.open))) await settledInventory.locator('summary').click();
+        const loadSettled = settledInventory.getByRole('button', { name: 'Load open loops' });
+        if (await loadSettled.count()) await loadSettled.click();
+        const settledCard = settledInventory.locator(`article[data-open-loop-id="${paymentLoopId}"]`);
         await settledCard.getByRole('button', { name: 'Review evidence' }).click();
         await settledCard.getByText('Decision saved. Reminder follow-up is complete.', { exact: true }).waitFor();
         await settledCard.getByText('The supporting Note recorded this decision.', { exact: true }).waitFor();
