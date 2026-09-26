@@ -111,6 +111,8 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     const existing = db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(loop.loopId);
     if ((existing?.revision ?? 0) !== expectedRevision) fail('open-loop-stale-revision', 'The open loop revision is stale.');
     if (existing && !userDecision) {
+      const attention = JSON.parse(existing.attention_json);
+      const retainedDecisionId = attention.pendingClarificationId && attention.priorUserActionOperationId;
       const prior = db.prepare(`SELECT json_extract(op.result_json, '$.followUpIntent.action') AS action,
           journal.state AS native_state,
           json_extract(op.result_json, '$.supportingNoteTarget.status') AS note_status,
@@ -123,8 +125,9 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
         LEFT JOIN operation_journal journal ON journal.logical_operation_id = json_extract(op.result_json, '$.followUpIntent.logicalOperationId')
         WHERE op.operation_kind = ? AND op.state = 'applied'
           AND json_extract(op.result_json, '$.loop.loopId') = ?
-          AND json_extract(op.result_json, '$.loop.revision') = ?
-        ORDER BY op.created_at DESC, op.logical_operation_id DESC LIMIT 1`).get(CHANGE_OPERATION, loop.loopId, existing.revision);
+          AND (op.logical_operation_id = ? OR (? IS NULL AND json_extract(op.result_json, '$.loop.revision') = ?))
+        ORDER BY op.created_at DESC, op.logical_operation_id DESC LIMIT 1`).get(CHANGE_OPERATION, loop.loopId,
+        retainedDecisionId ?? null, retainedDecisionId ?? null, existing.revision);
       if (prior && (!['none', 'blocked', 'conflict', null].includes(prior.action) && prior.native_state !== 'applied'
         || prior.note_status === 'ready' && prior.note_outcome !== 'completed')) {
         fail('open-loop-follow-up-pending', 'The accepted follow-up must settle before this open loop can advance.');
@@ -230,7 +233,21 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       if (replay) return replay;
       const stored = storeObservation(db, observation);
       const changed = loop ? storeLoop(db, loop, value.expectedRevision, roles, updatedAt,
-        operationKind.startsWith('decision-') || operationKind === 'payment-status') : null;
+        operationKind.startsWith('decision-') || operationKind === 'payment-status' || operationKind === 'clarification-submit') : null;
+      if (operationKind === 'clarification-submit' && changed?.loop.attention?.priorUserActionOperationId) {
+        const predecessorId = changed.loop.attention.priorUserActionOperationId;
+        const prior = db.prepare('SELECT result_json FROM open_loop_operations WHERE logical_operation_id = ? AND operation_kind = ? AND state = ?')
+          .get(predecessorId, CHANGE_OPERATION, 'applied');
+        if (prior) {
+          const result = JSON.parse(prior.result_json);
+          if (result.loop?.loopId === changed.loop.loopId && result.supportingNoteTarget?.status === 'ready'
+            && result.supportingNoteOutcome?.status !== 'completed' && result.supportingNoteOutcome?.status !== 'conflict') {
+            db.prepare('UPDATE open_loop_operations SET result_json = ? WHERE logical_operation_id = ? AND result_json = ?')
+              .run(JSON.stringify({ ...result, supportingNoteOutcome: { schemaVersion: 1, status: 'conflict', reason: 'superseded-by-clarification' } }),
+                predecessorId, prior.result_json);
+          }
+        }
+      }
       const pendingFollowUp = followUpIntent(db, logicalOperationId, operationKind, changed?.loop);
       const noteTarget = supportingNoteTarget(db, operationKind, changed?.loop);
       return receipt(db, logicalOperationId, CHANGE_OPERATION, intentDigest, { schemaVersion: 1, disposition: stored.existing && !changed ? 'duplicate' : changed?.disposition ?? 'inserted', observation: stored.observation, loop: changed?.loop ?? null,
@@ -311,7 +328,9 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail('open-loop-intent-invalid');
     const cursor = value.cursor === undefined ? '' : text(value.cursor, 'cursor');
     return inspect(db => {
-      const rows = db.prepare(`SELECT op.logical_operation_id, op.result_json, l.revision AS current_revision
+      const rows = db.prepare(`SELECT op.logical_operation_id, op.result_json, l.revision AS current_revision,
+          json_extract(l.attention_json, '$.priorUserActionOperationId') = op.logical_operation_id
+            AND json_type(l.attention_json, '$.pendingClarificationId') = 'text' AS recoverable
         FROM open_loop_operations op
         JOIN source_observations o ON o.source_system = 'command-center'
           AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
@@ -325,13 +344,15 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
         try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
         if (!result?.loop?.loopId || !Number.isSafeInteger(result.loop.revision)) fail('open-loop-receipt-invalid');
         return { logicalOperationId: row.logical_operation_id, loop: result.loop,
-          current: row.current_revision === result.loop.revision };
+          current: row.current_revision === result.loop.revision, recoverable: row.recoverable === 1 };
       });
       return freeze({ schemaVersion: 1, actions, hasMore, nextCursor: hasMore ? actions.at(-1).logicalOperationId : null });
     });
   };
   service.getOpenLoopUserActionReceipt = logicalOperationId => inspect(db => {
-    const row = db.prepare(`SELECT op.result_json, l.revision AS current_revision
+    const row = db.prepare(`SELECT op.result_json, l.revision AS current_revision,
+        json_extract(l.attention_json, '$.priorUserActionOperationId') = op.logical_operation_id
+          AND json_type(l.attention_json, '$.pendingClarificationId') = 'text' AS recoverable
       FROM open_loop_operations op
       JOIN source_observations o ON o.source_system = 'command-center'
         AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
@@ -345,7 +366,8 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     return freeze({ schemaVersion: 1, logicalOperationId, loop: result.loop,
       ...(result.followUpIntent ? { followUpIntent: result.followUpIntent } : {}),
       ...(result.supportingNoteTarget ? { supportingNoteTarget: result.supportingNoteTarget } : {}),
-      actorId: result.observation.facts.actorId, current: row.current_revision === result.loop.revision });
+      actorId: result.observation.facts.actorId, current: row.current_revision === result.loop.revision,
+      recoverable: row.recoverable === 1 });
   });
   service.getCurrentOpenLoopUserActionReceipt = loopId => inspect(db => {
     const row = db.prepare(`SELECT op.logical_operation_id, op.result_json
