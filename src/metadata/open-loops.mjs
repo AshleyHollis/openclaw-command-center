@@ -314,7 +314,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       const rows = db.prepare(`SELECT op.logical_operation_id, op.result_json, l.revision AS current_revision
         FROM open_loop_operations op
         JOIN source_observations o ON o.source_system = 'command-center'
-          AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+          AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
           AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
         LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
         WHERE op.operation_kind = ? AND op.state = 'applied' AND op.logical_operation_id > ?
@@ -334,7 +334,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     const row = db.prepare(`SELECT op.result_json, l.revision AS current_revision
       FROM open_loop_operations op
       JOIN source_observations o ON o.source_system = 'command-center'
-        AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+        AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
         AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
       LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
       WHERE op.logical_operation_id = ? AND op.operation_kind = ? AND op.state = 'applied'`).get(text(logicalOperationId, 'logicalOperationId'), CHANGE_OPERATION);
@@ -354,7 +354,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
         AND json_extract(op.result_json, '$.loop.loopId') = l.loop_id
         AND json_extract(op.result_json, '$.loop.revision') = l.revision
       JOIN source_observations o ON o.source_system = 'command-center'
-        AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+        AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
         AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
       WHERE l.loop_id = ? ORDER BY op.created_at DESC, op.logical_operation_id DESC LIMIT 1`).get(CHANGE_OPERATION, text(loopId, 'loopId'));
     if (!row) return null;
@@ -369,7 +369,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     const row = db.prepare(`SELECT op.result_json, l.revision AS current_revision
       FROM open_loop_operations op
       JOIN source_observations o ON o.source_system = 'command-center'
-        AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+        AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
         AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
       LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
       WHERE op.logical_operation_id = ? AND op.operation_kind = ? AND op.state = 'applied'`).get(text(decisionOperationId, 'decisionOperationId'), CHANGE_OPERATION);
