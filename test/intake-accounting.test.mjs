@@ -251,7 +251,9 @@ test('interpreted clarification commits one fenced decision and leaves mixed-sou
     const clarified = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'fictional-words-for-interpretation', loopId: decision.loopId, expectedRevision: decision.revision, actorId: 'operator-fixture', rationale: 'Use the morning delivery window for this one.', updatedAt: '2026-09-22T01:02:00.000Z' });
     const context = loadPendingClarificationContext(metadata, { loopId: decision.loopId, expectedRevision: clarified.loop.revision });
     const interpretationFence = { clarificationObservationId: context.clarificationObservationId, ...context.source, outcomeId: context.outcomeId, processorVersion: context.processorVersion };
-    const input = { schemaVersion: 1, logicalOperationId: 'fictional-targeted-interpretation', loopId: decision.loopId, expectedRevision: clarified.loop.revision, decision: 'confirm', actorId: 'operator-fixture', rationale: context.userWords, updatedAt: '2026-09-22T01:03:00.000Z', interpretationFence };
+    const input = { schemaVersion: 1, logicalOperationId: 'fictional-targeted-interpretation', loopId: decision.loopId, expectedRevision: clarified.loop.revision,
+      decision: 'defer', reviewAt: '2026-09-26T09:00:00.000Z', actorId: 'operator-fixture', rationale: context.userWords,
+      updatedAt: '2026-09-22T01:03:00.000Z', interpretationFence };
     assert.throws(() => metadata.recordOpenLoopDecision({ ...input, logicalOperationId: 'forged-interpretation', rationale: 'A different instruction.' }), { code: 'open-loop-interpretation-source-conflict' });
     assert.equal(metadata.getOpenLoop(decision.loopId).revision, clarified.loop.revision);
     const interpreted = metadata.recordOpenLoopDecision(input);
@@ -260,6 +262,11 @@ test('interpreted clarification commits one fenced decision and leaves mixed-sou
     assert.equal(evidence.source.kind, 'processor-interpretation');
     assert.equal(evidence.facts.interpretationOf, context.clarificationObservationId);
     assert.equal(metadata.getOpenLoopUserActionReceipt(input.logicalOperationId).current, true);
+    assert.equal(metadata.getOpenLoopUserActionReceipt(input.logicalOperationId).followUpIntent.action, 'create');
+    assert.throws(() => metadata.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: 'fictional-interpretation-source-update',
+      expectedRevision: interpreted.loop.revision, loop: { ...interpreted.loop, revision: interpreted.loop.revision + 1 },
+      evidenceRoles: {}, updatedAt: '2026-09-22T01:04:00.000Z' }),
+    error => error.code === 'open-loop-follow-up-pending', 'source publication cannot strand interpreted follow-up');
     assert.equal(metadata.recordOpenLoopDecision(input).disposition, 'duplicate');
     assert.equal(loadPendingClarificationContext(metadata, { loopId: decision.loopId, expectedRevision: interpreted.loop.revision }).status, 'not-pending');
     assert.equal(metadata.getOpenLoop(payment.loopId).revision, payment.revision);
