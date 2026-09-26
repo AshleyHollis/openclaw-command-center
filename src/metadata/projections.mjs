@@ -29,12 +29,14 @@ function canonical(value) {
 function sha256(value) { return `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}`; }
 function resultsDigest(value) { return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`; }
 function projectionError(code, message, remediation) { return new CommandCenterProjectionError(code, message, { remediation }); }
-function sourceFailure(code, message) { return projectionError(code, message, 'Restore or verify the authoritative source and retry the projection rebuild.'); }
+function sourceFailure(code, message, category) { return new CommandCenterProjectionError(code, message, { remediation: 'Restore or verify the authoritative source and retry the projection rebuild.', category }); }
 function diagnostic(error) {
   const code = ['source-unavailable', 'missing-source'].includes(error?.code) ? 'projection-source-unavailable'
     : ['source-inconsistent', 'metadata-inconsistent'].includes(error?.code) ? 'projection-source-inconsistent' : 'projection-rebuild-failure';
-  const safe = String(error?.message || 'Projection rebuild failed.').replace(/[\\/][^\s]*/gu, 'source').slice(0, 300);
-  return Object.freeze({ code, mode: 'recovery-only', capability: null, summary: safe, explanation: safe, remediation: String(error?.remediation || 'Verify authoritative source availability and retry.').slice(0, 300) });
+  const category = sourceKinds.some(({ sourceKind }) => sourceKind === error?.category) ? error.category : undefined;
+  const message = error instanceof CommandCenterProjectionError ? error.message : 'Projection rebuild failed.';
+  const safe = `${message}${category ? ` Source category: ${category}.` : ''}`.slice(0, 300);
+  return Object.freeze({ code, mode: 'recovery-only', capability: null, summary: safe, explanation: safe, remediation: error instanceof CommandCenterProjectionError ? String(error.remediation || 'Verify authoritative source availability and retry.').slice(0, 300) : 'Verify authoritative source availability and retry.' });
 }
 function state(mode, progress, diagnostics = [], observations = []) { return Object.freeze({ mode, progress: Object.freeze({ ...progress }), diagnostics: Object.freeze(diagnostics.slice(0, 1)), observations: Object.freeze(observations.slice(-5).map((item) => Object.freeze({ ...item }))) }); }
 function validProgress(phase, completed) { return Object.freeze({ phase, completed: Math.max(0, Math.min(3, completed)), total: 3 }); }
@@ -42,6 +44,8 @@ function sourceKey(sourceSystem, sourceKind, externalSourceId) { return `${sourc
 
 function normalizeSources(snapshot) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) throw sourceFailure('source-inconsistent', 'The authoritative source manifest is malformed.');
+  const manifestKeys = new Set(['sourceRevision', ...sourceKinds.map(({ field }) => field)]);
+  if (Object.keys(snapshot).some((key) => !manifestKeys.has(key))) throw sourceFailure('source-inconsistent', 'The authoritative source manifest contains unsupported facts.');
   if (snapshot.sourceRevision !== undefined && !nonBlank(snapshot.sourceRevision)) throw sourceFailure('source-inconsistent', 'The authoritative source revision is inconsistent.');
   const records = [];
   const revisions = [];
@@ -49,12 +53,15 @@ function normalizeSources(snapshot) {
   for (const definition of sourceKinds) {
     if (!Object.hasOwn(snapshot, definition.field)) throw sourceFailure('missing-source', `The required ${definition.field} source is unavailable.`);
     const collection = snapshot[definition.field];
+    if (Array.isArray(collection) && Object.keys(collection).some((key) => !/^(0|[1-9][0-9]*)$/u.test(key))) throw sourceFailure('source-inconsistent', `The ${definition.field} source declaration is inconsistent.`, definition.sourceKind);
+    if (!Array.isArray(collection) && (!collection || typeof collection !== 'object' || Object.keys(collection).some((key) => !['records', 'sourceRevision'].includes(key)))) throw sourceFailure('source-inconsistent', `The ${definition.field} source declaration is inconsistent.`, definition.sourceKind);
     const suppliedRecords = Array.isArray(collection) ? collection : collection?.records;
     const revision = Array.isArray(collection) ? snapshot.sourceRevision : collection?.sourceRevision;
     if (!Array.isArray(suppliedRecords) || !nonBlank(revision)) throw sourceFailure('source-inconsistent', `The ${definition.field} source declaration is inconsistent.`);
     if (!Array.isArray(collection) && snapshot.sourceRevision !== undefined && snapshot.sourceRevision !== revision) throw sourceFailure('source-inconsistent', `The ${definition.field} source revision is inconsistent.`);
     revisions.push({ source: definition.field, revision });
     for (const record of suppliedRecords) {
+      if (record && typeof record === 'object' && Object.keys(record).some((key) => !['identity', 'contentDigest', 'sourceRevision', 'sourceSystem', 'sourceKind'].includes(key))) throw sourceFailure('source-inconsistent', `The ${definition.field} source facts are inconsistent.`, definition.sourceKind);
       if (!record || typeof record !== 'object' || Array.isArray(record) || !nonBlank(record.identity) || !nonBlank(record.contentDigest) || !digestPattern.test(record.contentDigest)) throw sourceFailure('source-inconsistent', `The ${definition.field} source facts are inconsistent.`);
       if (record.sourceRevision !== undefined && record.sourceRevision !== revision) throw sourceFailure('source-inconsistent', `The ${definition.field} source revision is inconsistent.`);
       if ((record.sourceSystem !== undefined && record.sourceSystem !== definition.sourceSystem) || (record.sourceKind !== undefined && record.sourceKind !== definition.sourceKind)) throw sourceFailure('source-inconsistent', `The ${definition.field} source kind is inconsistent.`);
@@ -87,8 +94,8 @@ function buildResults(metadata, sources) {
   for (const reference of metadata.sourceReferences) {
     const mappingIdentity = sourceKey(reference.sourceSystem, reference.sourceKind, reference.externalSourceId);
     const source = sourceByKey.get(mappingIdentity);
-    if (!source) throw sourceFailure('source-unavailable', 'A declared authoritative source is unavailable.');
-    if (mapped.has(mappingIdentity)) throw sourceFailure('source-inconsistent', 'An authoritative source maps to conflicting metadata.');
+    if (!source) throw sourceFailure('source-unavailable', 'A declared authoritative source is unavailable.', reference.sourceKind);
+    if (mapped.has(mappingIdentity)) throw sourceFailure('source-inconsistent', 'An authoritative source maps to conflicting metadata.', reference.sourceKind);
     mapped.add(mappingIdentity);
     index.push({ referenceId: reference.referenceId, topicId: reference.topicId, sourceSystem: source.sourceSystem, sourceKind: source.sourceKind, externalSourceId: source.externalSourceId, contentDigest: source.contentDigest, sourceRevision: source.sourceRevision });
   }
@@ -164,7 +171,7 @@ export function openCommandCenterProjectionService({ stateDir, metadataService, 
           catch { throw projectionError('metadata-inconsistent', 'Owned metadata is unavailable for projection.'); }
           const metadata = metadataFacts(metadataSnapshot);
           if (!suppliedSources || typeof suppliedSources.readSnapshot !== 'function') throw sourceFailure('source-unavailable', 'The authoritative source provider is unavailable.');
-          let snapshot; try { snapshot = await suppliedSources.readSnapshot(); } catch { throw sourceFailure('source-unavailable', 'The authoritative source provider is unavailable.'); }
+          let snapshot; try { snapshot = await suppliedSources.readSnapshot(); } catch (error) { throw sourceFailure('source-unavailable', 'The authoritative source provider is unavailable.', error?.category); }
           const sources = normalizeSources(snapshot);
           const inputDigest = sha256({ projectionId, metadata, sources: { sourceRevision: sources.sourceRevision, records: sources.records } });
           const existing = checkpoint();
