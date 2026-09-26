@@ -112,7 +112,9 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     if ((existing?.revision ?? 0) !== expectedRevision) fail('open-loop-stale-revision', 'The open loop revision is stale.');
     if (existing && !userDecision) {
       const attention = JSON.parse(existing.attention_json);
-      const retainedDecisionId = attention.pendingClarificationId && attention.priorUserActionOperationId;
+      if (attention.pendingClarificationId) fail('open-loop-clarification-pending',
+        'The saved clarification must be interpreted or explicitly revised before source publication advances this item.');
+      const retainedDecisionId = attention.priorUserActionOperationId;
       const prior = db.prepare(`SELECT json_extract(op.result_json, '$.followUpIntent.action') AS action,
           journal.state AS native_state,
           json_extract(op.result_json, '$.supportingNoteTarget.status') AS note_status,
@@ -242,8 +244,16 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
           const result = JSON.parse(prior.result_json);
           if (result.loop?.loopId === changed.loop.loopId && result.supportingNoteTarget?.status === 'ready'
             && result.supportingNoteOutcome?.status !== 'completed' && result.supportingNoteOutcome?.status !== 'conflict') {
+            const noteEffectId = result.supportingNoteIntent?.logicalOperationId;
+            const noteEffect = noteEffectId && db.prepare('SELECT state FROM operation_journal WHERE logical_operation_id = ? AND operation_kind = ?')
+              .get(noteEffectId, 'notes.edit');
+            const outcome = noteEffect?.state === 'pending'
+              ? { schemaVersion: 1, status: 'unknown', reason: 'prior-note-publication-unverified' }
+              : noteEffect?.state === 'applied'
+                ? { schemaVersion: 1, status: 'unknown', reason: 'prior-note-outcome-unrecorded' }
+                : { schemaVersion: 1, status: 'conflict', reason: 'superseded-by-clarification' };
             db.prepare('UPDATE open_loop_operations SET result_json = ? WHERE logical_operation_id = ? AND result_json = ?')
-              .run(JSON.stringify({ ...result, supportingNoteOutcome: { schemaVersion: 1, status: 'conflict', reason: 'superseded-by-clarification' } }),
+              .run(JSON.stringify({ ...result, supportingNoteOutcome: outcome }),
                 predecessorId, prior.result_json);
           }
         }

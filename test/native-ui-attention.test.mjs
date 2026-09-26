@@ -428,6 +428,21 @@ test('an uncertain native Reminder outcome offers the exact saved resume action'
   assert.equal(await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.resume-follow-up'))?.params.logicalOperationId), operationId);
 }));
 
+test('an earlier recoverable Reminder remains resumable while clarification waits', () => fixture(async (page) => {
+  const operationId = '10000000-0000-4000-8000-000000000023';
+  await page.evaluate((id) => {
+    window.cards = [];
+    window.openLoops = { total: 1, attentionTotal: 1, highlighted: [{ loopId: 'clarified-bill', kind: 'payment', title: 'Fictional clarified bill', state: 'decision-needed', paymentState: 'unpaid', evidenceCount: 2, revision: 3,
+      attention: { pendingClarificationId: 'fictional-words', priorUserActionOperationId: id } }], comingUpTotal: 0, comingUp: [], waitingTotal: 0, waiting: [], suggestedTotal: 0, suggested: [], deferredTotal: 0, deferred: [], reconciliationTotal: 0, reconciliation: [] };
+    window.followUps = { 'clarified-bill': { status: 'unknown', logicalOperationId: id, action: 'create', priorDecision: true, recoverable: true } };
+    window.mountInbox();
+  }, operationId);
+  const bill = page.locator('article[data-open-loop-id="clarified-bill"]');
+  await bill.getByRole('button', { name: 'Review evidence' }).click();
+  await bill.getByRole('button', { name: 'Resume saved follow-up' }).click();
+  assert.equal(await page.evaluate(() => window.requests.find(request => request.method.endsWith('open-loops.resume-follow-up'))?.params.logicalOperationId), operationId);
+}));
+
 test('native capacity workspace plans the same item without inventing a deadline', () => fixture(async (page) => {
   await page.evaluate(() => {
     window.cards = [];

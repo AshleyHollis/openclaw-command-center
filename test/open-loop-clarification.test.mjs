@@ -132,11 +132,15 @@ test('new clarification saves while an earlier native create is in flight and re
     assert.throws(() => metadata.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: 'overlap-source-update',
       expectedRevision: saved.loop.revision, loop: { ...saved.loop, revision: saved.loop.revision + 1 },
       evidenceRoles: {}, updatedAt: '2026-09-24T03:02:00.000Z' }),
-    error => error.code === 'open-loop-follow-up-pending');
+    error => error.code === 'open-loop-clarification-pending');
     releaseAdd();
     assert.equal((await inFlight).status, 'applied');
     assert.equal(metadata.getOperation(accepted.followUpIntent.logicalOperationId).state, 'applied');
     assert.equal(adds, 1);
+    assert.throws(() => metadata.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: 'overlap-source-after-native',
+      expectedRevision: saved.loop.revision, loop: { ...saved.loop, revision: saved.loop.revision + 1 },
+      evidenceRoles: {}, updatedAt: '2026-09-24T03:03:00.000Z' }),
+    error => error.code === 'open-loop-clarification-pending', 'source publication cannot erase unprocessed words');
   } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
