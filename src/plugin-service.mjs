@@ -584,6 +584,7 @@ export function createMetadataService(api) {
             : plan.action === 'none' ? 'completed' : plan.action === 'blocked' ? 'blocked' : 'pending';
         followUp = Object.freeze({ status, logicalOperationId: accepted.logicalOperationId,
           ...(priorDecision ? { priorDecision: true } : {}),
+          ...(accepted.recoverable ? { recoverable: true } : {}),
           ...(plan ? { action: plan.action, ...(plan.reason ? { reason: plan.reason } : {}) } : {}) });
         const note = metadataService.getOpenLoopSupportingNoteIntent(accepted.logicalOperationId);
         if (note && note.target.status !== 'none') {
@@ -792,7 +793,7 @@ export function createMetadataService(api) {
       const accepted = metadataService.getOpenLoopUserActionReceipt(input.logicalOperationId);
       if (!accepted) throw new SourceServiceError('not-found', 'The exact saved user decision is unavailable.');
       if (accepted.actorId !== actorId) throw new SourceServiceError('unauthorized', 'The saved decision belongs to another operator.');
-      if (!accepted.current || metadataService.getOpenLoop(accepted.loop.loopId)?.revision !== accepted.loop.revision) {
+      if (!accepted.current && !accepted.recoverable) {
         return Object.freeze({ schemaVersion: 1, disposition: 'superseded', loop: metadataService.getOpenLoop(accepted.loop.loopId) });
       }
       return reconcileDecisionEffects({ schemaVersion: 1, disposition: 'duplicate', loop: accepted.loop,
