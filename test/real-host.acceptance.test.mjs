@@ -297,6 +297,13 @@ async function mountedPluginFrame(page, pluginDocument, evidence) {
   return { iframe, frame };
 }
 
+async function assertMountedResponsiveFrame(frame, page, width, pluginDocument, evidence) {
+  const result = await assertResponsiveFrame(frame, page, width, {
+    resolveFrame: async () => (await mountedPluginFrame(page, await pluginDocument, evidence)).frame
+  });
+  return result.frame;
+}
+
 async function remountPluginFrame(page) {
   const pluginDocument = observeBrowserResponse(page.waitForResponse((response) => response.request().method() === 'GET' && isCommandCenterControlUiAsset(response.url()), { timeout: 10_000 }));
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -1792,7 +1799,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         return Object.freeze({ kind, topicId: journey.topicId, freshWorld: scenarioWorld.root, assertionsCompleted: true, actionCards: RELEASE_FIXTURE_COUNTS.actionCards });
       } else if (kind === 'mobile') {
         assert.ok(journey.accessibilityStates.length >= 8 && journey.focusRestorations.length >= 4 && journey.announcementTransitions.length >= 4);
-        await assertResponsiveFrame(frame, page, 320);
+        frame = await assertMountedResponsiveFrame(frame, page, 320, pluginDocument, evidence);
         const cdp = await page.context().newCDPSession(page);
         await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
         assert.deepEqual(await page.evaluate(() => ({ width: document.documentElement.clientWidth, visualWidth: visualViewport.width, scale: visualViewport.scale, ratio: devicePixelRatio })), { width: 320, visualWidth: 160, scale: 2, ratio: 1 });
@@ -1800,7 +1807,7 @@ async function exerciseFreshScenarioFixture({ descriptor, buildReceipt, kind, wi
         const { frame: zoomFrame, ...zoomJourney } = await runUiJourney(frame, { page, width: 320, name: 'Fictional Fresh 200 Percent Zoom Topic', category: 'area', keyboard: true });
         frame = zoomFrame;
         assert.ok(zoomJourney.topicId);
-        await assertResponsiveFrame(frame, page, 320);
+        frame = await assertMountedResponsiveFrame(frame, page, 320, pluginDocument, evidence);
         await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
         await cdp.detach();
       } else if (kind === 'review') {
@@ -3580,7 +3587,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.deepEqual(committedProjectionFiles, COMMITTED_SEARCH_PROJECTION_FILES);
       assert.ok(durableRebuildReceipts.length <= 8, 'authenticated rebuild receipts must remain bounded');
       assert.equal(durableRebuildReceipts.every((name) => /^rebuild-operation-[0-9a-f-]{36}\.json$/u.test(name)), true, 'projection directory may contain only committed artifacts and durable rebuild receipts');
-      await assertResponsiveFrame(frame, page, 1440);
+      frame = await assertMountedResponsiveFrame(frame, page, 1440, pluginDocument, evidence);
       return { topicId: desktopJourney.topicId, primarySessionId: releaseState.primarySession.sessionId };
     });
     if (focusedScenarioIds?.has('focused-second-topic-journey')) {
@@ -3901,7 +3908,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       // into the next Topic journey (as already required for Snooze above).
       await mobileCards.waitFor({ state: 'detached', timeout: BRIDGE_UI_OPERATION_BUDGET_MS });
       if (await frame.locator('#activity-load-more').isVisible()) await activate(frame.locator('#activity-load-more'), true);
-      await assertResponsiveFrame(frame, page, accessibilityWidth);
+      frame = await assertMountedResponsiveFrame(frame, page, accessibilityWidth, pluginDocument, evidence);
       let zoomJourney;
       if (mobileQualification) {
         const cdp = await page.context().newCDPSession(page);
@@ -3921,7 +3928,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
         keyboardJourney.accessibilityStates.push(...zoomResult.accessibilityStates);
         keyboardJourney.focusRestorations.push(...zoomResult.focusRestorations);
         keyboardJourney.announcementTransitions.push(...zoomResult.announcementTransitions);
-        await assertResponsiveFrame(frame, page, 320);
+        frame = await assertMountedResponsiveFrame(frame, page, 320, pluginDocument, evidence);
         keyboardJourney.measurement.mobileReflowMs = Math.max(1, Date.now() - reflowStarted);
         keyboardJourney.zoomEvidence = { ...parentZoom, frameLayoutWidth: frameZoom.layoutWidth };
         await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
@@ -4035,7 +4042,7 @@ test('mounts the built plugin through the isolated authenticated external tab', 
       assert.equal((changedTopic?.result ?? changedTopic).topic.paraCategory, 'project');
       releaseState.reviewApplied = true;
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-      await assertResponsiveFrame(frame, page, 1440);
+      frame = await assertMountedResponsiveFrame(frame, page, 1440, pluginDocument, evidence);
       return { planRevision: frozenPlan.planRevision, appliedProposalCount: frozenPlan.proposalRevisions.length };
     });
     const finalizationErrors = await finalizeAcceptanceJourney({

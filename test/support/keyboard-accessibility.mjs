@@ -89,7 +89,23 @@ export async function auditDynamicAccessibilityState(frame, page, width, label, 
   return Object.freeze({ label, colorIndependent: state.colorIndependent, reducedMotion: state.reducedMotion, reducedMotionPreference: state.reducedMotionPreference, forcedColorsPreference: state.forcedColorsPreference, minimumTargetCssPx: responsive.minimumTargetCssPx, noPageOverflow: responsive.noPageOverflow, modalLabelled: state.modalLabelled });
 }
 
-export async function assertResponsiveFrame(frame, page, width) {
+export async function assertResponsiveFrame(frame, page, width, { resolveFrame } = {}) {
+  // The host may replace its external-tab iframe after a viewport change.
+  // Re-run the entire audit on the current document; never accept a partial
+  // result from the document that was detached halfway through the checks.
+  for (let attempt = 0; attempt < (resolveFrame ? 3 : 1); attempt += 1) {
+    if (frame.isDetached() && resolveFrame) frame = await resolveFrame();
+    try {
+      const result = await auditResponsiveDocument(frame, page, width);
+      return resolveFrame ? { ...result, frame } : result;
+    } catch (error) {
+      if (!resolveFrame || !frame.isDetached() || attempt === 2) throw error;
+      frame = await resolveFrame();
+    }
+  }
+}
+
+async function auditResponsiveDocument(frame, page, width) {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, `${width}px page has horizontal overflow`);
   await assertNoFrameOverflow(frame, `${width}px responsive frame`);
   const interactive = await frame.locator('button, input, select, textarea, a').evaluateAll((nodes) => nodes.filter((node) => {
