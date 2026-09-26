@@ -366,7 +366,7 @@ async function launchGeneration(owner, { descriptor, world, buildReceipt, onOutp
     // Preserve only the executable search path needed by the controller's
     // `#!/usr/bin/env node` wrapper. Fixture/configuration state remains
     // explicitly rooted in the disposable world.
-    env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot, COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.href}`, ...(notificationCaPath ? { NODE_EXTRA_CA_CERTS: path.resolve(notificationCaPath) } : {}) },
+    env: { PATH: process.env.PATH, [fixtureEnvironment]: world.manifestPath, OPENCLAW_CONFIG_PATH: world.manifest.configPath, HOME: world.root, TMPDIR: world.tempRoot, TMP: world.tempRoot, TEMP: world.tempRoot, COMMAND_CENTER_DISABLE_HOSTED_PLUGIN_CATALOG: '1', NODE_OPTIONS: `--import=${guardModule.href}`, ...(world.machineCredential ? { COMMAND_CENTER_FIXTURE_DEV_BEARER: world.machineCredential } : {}), ...(notificationCaPath ? { NODE_EXTRA_CA_CERTS: path.resolve(notificationCaPath) } : {}) },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   const diagnostics = { stdout: '', stderr: '', category: undefined, guard };
