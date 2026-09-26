@@ -10,7 +10,7 @@ function freeze(value) { return Object.freeze(value); }
 function publicFailure(error) { return error?.code === 'conflict' ? 'Topic Analysis was blocked by a source revision conflict.' : 'Topic Analysis could not complete.'; }
 function withoutCaptureTimes(value) {
   if (Array.isArray(value)) return value.map(withoutCaptureTimes);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([key]) => !/^(?:capturedAt|captureTime|observedAt)$/u.test(key)).map(([key, item]) => [key, withoutCaptureTimes(item)]));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([key]) => !/^(?:capturedAt|captureTime|observedAt|sourceRevision)$/u.test(key)).map(([key, item]) => [key, withoutCaptureTimes(item)]));
   return value;
 }
 function proposalContent(proposal, evidenceDigest) {

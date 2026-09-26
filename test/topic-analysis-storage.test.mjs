@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createTopicAnalysisRunner } from '../src/topics/analysis-runner.mjs';
+import { createProductionTopicAnalyzer } from '../src/topics/production-analyzer.mjs';
 import { canonicalJson, normalizeEvidenceFacts, proposalIdentity, sha256 } from '../src/topics/analysis-evidence.mjs';
 import { metadataSchemaV7Sql } from '../src/metadata/schema.mjs';
 import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
@@ -120,6 +121,26 @@ test('revision-only source churn preserves Keep as-is suppression while material
     assert.equal(reopened.state, 'pending');
     assert.equal(reopened.revision, initial.revision + 1);
     assert.notEqual(reopened.materialEvidenceDigest, initial.materialEvidenceDigest);
+  });
+});
+
+test('production analyzer preserves suppression revision through provenance-only source churn', async () => {
+  await withMetadata(async ({ metadata }) => {
+    metadata.createTopic({ topicId: 'topic-production-suppression', name: 'Resource: Fictional', paraCategory: 'project', lifecycle: 'active', createdAt: '2026-08-22T00:00:00.000Z', updatedAt: '2026-08-22T00:00:00.000Z' });
+    addSource(metadata, 'topic-production-suppression');
+    const runner = createTopicAnalysisRunner({ metadata, analyzer: createProductionTopicAnalyzer() });
+    await runner.run({ trigger: 'manual' });
+    metadata.updateSourceReference({ version: 1, referenceId: sourceId, observedRevision: sourceRevision(2), updatedAt: '2026-08-25T07:00:00.000Z' });
+    assert.equal((await runner.run({ trigger: 'manual' })).outcome, 'success');
+    const initial = metadata.listTopicProposals()[0];
+    metadata.saveTopicProposal({ ...initial, state: 'suppressed', suppressedDigest: initial.materialEvidenceDigest, updatedAt: '2026-08-25T07:00:00.000Z' });
+    metadata.updateSourceReference({ version: 1, referenceId: sourceId, observedRevision: sourceRevision(3), updatedAt: '2026-08-26T07:00:00.000Z' });
+    assert.equal((await runner.run({ trigger: 'manual' })).outcome, 'success');
+    const retained = metadata.getTopicProposal(initial.proposalId);
+    assert.equal(retained.state, 'suppressed');
+    assert.equal(retained.revision, initial.revision);
+    assert.equal(retained.provenance.sourceRevision, sourceRevision(3));
+    assert.equal(metadata.listTopicAnalysisEvidence(initial.proposalId, { currentOnly: true })[0].sourceRevision, sourceRevision(3));
   });
 });
 

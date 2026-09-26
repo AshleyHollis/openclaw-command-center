@@ -12,6 +12,7 @@ import { createSearchAdapter } from '../src/sources/search.mjs';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createSourceReference } from '../src/sources/reference.mjs';
 import { createTopicService } from '../src/topics/service.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
 
 const topic = { topicId: 'topic-fictional', paraCategory: 'project', lifecycle: 'active' };
 const folder = { version: 1, referenceId: 'folder:fictional', topicId: topic.topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: '/fictional/topic', observedRevision: null };
@@ -195,7 +196,9 @@ test('temporary authoritative fixtures rebuild equivalent grouped Topic Search r
   }
 });
 
-test('an archived lifecycle Topic remains searchable and restore preserves projection provenance', async () => {
+test('an archived lifecycle Topic remains searchable and restore preserves projection provenance', async (t) => {
+  const releaseHostFileAccess = installHostFileAccessFixture();
+  t.after(releaseHostFileAccess);
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-topic-search-archive-'));
   const stateDir = path.join(root, 'state');
   const noteRoot = path.join(root, 'notes');
