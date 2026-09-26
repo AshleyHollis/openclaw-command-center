@@ -43,6 +43,8 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
       ...(input.preparationDigest == null ? {} : { preparationDigest: input.preparationDigest }) };
   }
   const parent = (db, id) => db.prepare('SELECT * FROM topic_operations WHERE logical_operation_id=?').get(id);
+  const rollbackStarted = row => row?.current_step?.startsWith('rollback-');
+  const parentResult = row => row?.result_json ? JSON.parse(row.result_json) : {};
   function assertFolderAvailable(db, intent, id) {
     assertConditionalFolderClaims(db, intent.folderPath, id, ErrorType);
     if (service.listTopicBootstraps().some(row => overlaps(row.intent.folder.path, intent.folderPath))) fail('preparation-folder-conflict');
@@ -60,23 +62,31 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
         !exact(value.intent, ['parentOperationId', 'root', 'topicRevision', 'folder', 'primary']) ||
         !uuid(value.intent.parentOperationId) || value.logicalOperationId !== provisioningPrimaryOperationId(value.intent.parentOperationId) ||
         row.logical_operation_id !== value.logicalOperationId || hash(value.intent) !== row.intent_digest ||
-        !['reserved', 'creating', 'applied'].includes(value.phase) || value.revision !== ['reserved', 'creating', 'applied'].indexOf(value.phase) + 1 ||
-        row.observed_revision !== String(value.revision) || row.result_status !== value.phase || row.state !== (value.phase === 'applied' ? 'applied' : 'pending') ||
+        !['reserved', 'creating', 'applied', 'rolled-back'].includes(value.phase) ||
+        value.revision !== ({ reserved: 1, creating: 2, applied: 3, 'rolled-back': 3 })[value.phase] ||
+        row.observed_revision !== String(value.revision) || row.result_status !== value.phase ||
+        row.state !== (value.phase === 'applied' ? 'applied' : value.phase === 'rolled-back' ? 'not-applied' : 'pending') ||
         !isDeepStrictEqual(value.intent.root, rootIntent({ logicalOperationId: value.intent.parentOperationId, ...Object.fromEntries(Object.entries(value.intent.root).filter(([key]) => key !== 'primaryMode')) })) ||
         !Number.isSafeInteger(value.intent.topicRevision) || value.intent.topicRevision < 0 ||
-        !exact(value.intent.primary, ['agentId', 'sessionKey', 'sessionId', 'lifecycleRevision', 'referenceId']) ||
-        !isDeepStrictEqual(value.intent.primary, primaryOf(value.intent.parentOperationId, value.intent.root.topicId))) fail();
+        !exact(value.intent.primary, ['agentId', 'sessionKey', 'sessionId', 'lifecycleRevision', 'referenceId', 'sessionUpdatedAt']) ||
+        !Number.isSafeInteger(value.intent.primary.sessionUpdatedAt) || value.intent.primary.sessionUpdatedAt <= 0 ||
+        !isDeepStrictEqual(value.intent.primary, primaryOf(value.intent.parentOperationId, value.intent.root.topicId, value.intent.primary.sessionUpdatedAt))) fail();
       return freeze(value);
     } catch { fail('provisioning-primary-receipt-invalid'); }
   }
-  function primaryOf(parentId, topicId) {
+  function primaryOf(parentId, topicId, sessionUpdatedAt = null) {
     const id = provisioningPrimaryOperationId(parentId);
-    return { agentId: 'main', sessionKey: `agent:main:command-center:topic:${topicId}:primary`, sessionId: id, lifecycleRevision: id, referenceId: `session:${topicId}:primary` };
+    return { agentId: 'main', sessionKey: `agent:main:command-center:topic:${topicId}:primary`, sessionId: id, lifecycleRevision: id, referenceId: `session:${topicId}:primary`, sessionUpdatedAt };
+  }
+  function sessionUpdatedAtOf(db, parentId) {
+    const value = Date.parse(parent(db, parentId)?.created_at ?? '');
+    if (!Number.isSafeInteger(value) || value <= 0) fail('provisioning-primary-receipt-invalid');
+    return value;
   }
   service.getProvisioningPrimary = parentId => readMany(select, [], decode).find(row => row.intent.parentOperationId === parentId) ?? null;
   function assertParent(db, parentId, intent) {
     const root = parent(db, parentId);
-    if (!root || root.operation_kind !== 'topics.create' || root.topic_id !== intent.topicId || !isDeepStrictEqual(JSON.parse(root.intent_json), intent) || root.state === 'not-applied') fail();
+    if (!root || root.operation_kind !== 'topics.create' || root.topic_id !== intent.topicId || !isDeepStrictEqual(JSON.parse(root.intent_json), intent) || root.state === 'not-applied' || rollbackStarted(root)) fail();
     return root;
   }
   function folderBasis(topicId) {
@@ -90,6 +100,7 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
     const { intent } = receipt;
     assertFolderAvailable(db, intent.root, intent.parentOperationId);
     const root = assertParent(db, intent.parentOperationId, intent.root);
+    if (intent.primary.sessionUpdatedAt !== sessionUpdatedAtOf(db, intent.parentOperationId)) fail();
     const topic = service.getTopic(intent.root.topicId);
     if (!topic || topic.name !== intent.root.name || topic.paraCategory !== intent.root.paraCategory ||
       topic.revision !== intent.topicRevision + (receipt.phase === 'applied' ? 1 : 0) ||
@@ -125,8 +136,9 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
       if (topic.revision !== (primary?.phase === 'applied' ? 1 : 0)) fail('stale-revision');
       if (topic.name !== intent.name || topic.paraCategory !== intent.paraCategory || topic.lifecycle !== (primary?.phase === 'applied' ? 'active' : 'provisioning')) fail();
       if (primary) assertBasis(db, primary);
-      if (primary?.phase !== 'applied') assertUnbound({ root: intent, primary: primaryOf(id, input.topicId) });
-      return { intent, operation: service.getTopicOperation(id), primaryReceipt: primary, primary: primaryOf(id, input.topicId) };
+      const planned = primaryOf(id, input.topicId, sessionUpdatedAtOf(db, id));
+      if (primary?.phase !== 'applied') assertUnbound({ root: intent, primary: planned });
+      return { intent, operation: service.getTopicOperation(id), primaryReceipt: primary, primary: planned };
     }
     assertChildClaim(db, { logicalOperationId: id }, true);
     assertChildClaim(db, { logicalOperationId: provisioningPrimaryOperationId(id) }, true);
@@ -158,7 +170,7 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
     const existing = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id=?').get(id);
     if (existing) { const receipt = decode(existing); if (receipt.intent.topicRevision !== input.expectedTopicRevision) fail('stale-revision'); assertBasis(db, receipt); return receipt; }
     const intent = { parentOperationId: input.parentOperationId, root: rootValue, topicRevision: input.expectedTopicRevision,
-      folder: folderBasis(rootValue.topicId), primary: primaryOf(input.parentOperationId, rootValue.topicId) };
+      folder: folderBasis(rootValue.topicId), primary: primaryOf(input.parentOperationId, rootValue.topicId, sessionUpdatedAtOf(db, input.parentOperationId)) };
     const value = { schemaVersion: 1, logicalOperationId: id, intent, phase: 'reserved', revision: 1 };
     assertBasis(db, value); assertUnbound(intent);
     assertChildClaim(db, { logicalOperationId: id, operationKind: PROVISIONING_PRIMARY_OPERATION, intentDigest: hash(intent) });
@@ -198,5 +210,168 @@ export function installProvisioningPrimaryMetadata(service, { mutate, inspect, r
     const value = { ...current, phase: 'applied', revision: 3 };
     db.prepare("UPDATE operation_journal SET state='applied',result_status='applied',result_identity=?,observed_revision='3',updated_at=? WHERE logical_operation_id=?").run(JSON.stringify(value), now, current.logicalOperationId);
     check(authority); assertBasis(db, value); return freeze(value);
+  });
+
+  // The parent operation is the durable owner of the directory before its
+  // Source Locator can exist. These transitions never infer ownership from a
+  // matching final pathname. The filesystem owner supplies and verifies the
+  // physical witness at each external-effect boundary.
+  function folderCreation(db, parentId) {
+    const row = parent(db, parentId);
+    if (!row || row.operation_kind !== 'topics.create') fail();
+    return parentResult(row).folderCreation ?? null;
+  }
+  service.getConditionalFolderCreation = parentId => inspect(db => freeze(folderCreation(db, parentId)));
+  function folderRoot(db, parentId) {
+    if (!uuid(parentId)) fail('provisioning-intent-invalid');
+    const row = parent(db, parentId);
+    if (!row || row.operation_kind !== 'topics.create' || row.state === 'applied' || row.state === 'not-applied' || rollbackStarted(row)) fail();
+    const root = JSON.parse(row.intent_json);
+    const expectedRoot = rootIntent({ logicalOperationId: parentId,
+      ...Object.fromEntries(Object.entries(root).filter(([key]) => key !== 'primaryMode')) });
+    if (root.primaryMode !== CONDITIONAL_PRIMARY_MODE || !isDeepStrictEqual(root, expectedRoot)) fail();
+    const topic = service.getTopic(root.topicId);
+    if (!topic || topic.lifecycle !== 'provisioning' || topic.name !== root.name || topic.paraCategory !== root.paraCategory || topic.revision !== 0) fail();
+    return { row, root };
+  }
+  function writeFolderCreation(db, row, receipt, authority) {
+    const result = { ...parentResult(row), folderCreation: receipt };
+    const now = new Date().toISOString(); check(authority);
+    db.prepare('UPDATE topic_operations SET result_json=?,updated_at=? WHERE logical_operation_id=?').run(JSON.stringify(result), now, row.logical_operation_id);
+    return freeze(receipt);
+  }
+  service.prepareConditionalFolderCreation = (input, authority) => mutate('notes', db => {
+    check(authority);
+    if (!exact(input, ['parentOperationId', 'expectedTopicRevision', 'stagePath']) || input.expectedTopicRevision !== 0) fail('provisioning-intent-invalid');
+    const { row, root } = folderRoot(db, input.parentOperationId);
+    if (typeof input.stagePath !== 'string' || !path.isAbsolute(input.stagePath) || path.resolve(input.stagePath) !== input.stagePath ||
+      input.stagePath === root.folderPath || path.dirname(input.stagePath) !== path.dirname(root.folderPath) ||
+      !path.basename(input.stagePath).startsWith(`.command-center-provisioning-${input.parentOperationId}-`)) fail('provisioning-intent-invalid');
+    const receipt = { operationId: input.parentOperationId, stagePath: input.stagePath, finalPath: root.folderPath, phase: 'prepared' };
+    const existing = folderCreation(db, input.parentOperationId);
+    if (existing) { if (existing.operationId !== receipt.operationId || existing.stagePath !== receipt.stagePath || existing.finalPath !== receipt.finalPath) fail(); return freeze(existing); }
+    if (service.getSourceLocator(`note-folder:${root.topicId}`)) fail();
+    return writeFolderCreation(db, row, receipt, authority);
+  });
+  service.identifyConditionalFolderCreation = (input, authority) => mutate('notes', db => {
+    check(authority);
+    if (!exact(input, ['parentOperationId', 'stagePath', 'directoryIdentity', 'markerIdentity']) ||
+      !/^[a-f0-9]{64}$/.test(input.directoryIdentity) || !isNoteFolderIdentity(input.markerIdentity)) fail('provisioning-intent-invalid');
+    const { row, root } = folderRoot(db, input.parentOperationId);
+    const current = folderCreation(db, input.parentOperationId);
+    if (!current || current.operationId !== input.parentOperationId || current.stagePath !== input.stagePath || current.finalPath !== root.folderPath) fail();
+    const receipt = { ...current, directoryIdentity: input.directoryIdentity, markerIdentity: input.markerIdentity, phase: 'identified' };
+    if (current.phase !== 'prepared') { if (!isDeepStrictEqual(current, receipt)) fail(); return freeze(current); }
+    return writeFolderCreation(db, row, receipt, authority);
+  });
+  service.publishConditionalFolderCreation = (input, authority) => mutate('notes', db => {
+    check(authority);
+    if (!exact(input, ['parentOperationId', 'stagePath', 'directoryIdentity', 'markerIdentity'])) fail('provisioning-intent-invalid');
+    const { row, root } = folderRoot(db, input.parentOperationId);
+    const current = folderCreation(db, input.parentOperationId);
+    if (!current || current.operationId !== input.parentOperationId || current.stagePath !== input.stagePath || current.finalPath !== root.folderPath ||
+      current.directoryIdentity !== input.directoryIdentity || current.markerIdentity !== input.markerIdentity || !['identified', 'published'].includes(current.phase)) fail();
+    if (current.phase === 'published') return freeze(current);
+    return writeFolderCreation(db, row, { ...current, phase: 'published' }, authority);
+  });
+
+  function rollbackRow(db, parentId) {
+    if (!uuid(parentId)) fail('provisioning-intent-invalid');
+    const row = parent(db, parentId);
+    if (!row || row.operation_kind !== 'topics.create' || row.state === 'applied' || row.state === 'not-applied') fail();
+    const root = JSON.parse(row.intent_json);
+    const expectedRoot = rootIntent({ logicalOperationId: parentId,
+      ...Object.fromEntries(Object.entries(root).filter(([key]) => key !== 'primaryMode')) });
+    if (root.primaryMode !== CONDITIONAL_PRIMARY_MODE || !isDeepStrictEqual(root, expectedRoot)) fail();
+    return { row, root };
+  }
+  function readRollback(db, parentId) { return parentResult(parent(db, parentId)).rollback ?? null; }
+  service.getConditionalProvisioningRollback = parentId => inspect(db => freeze(readRollback(db, parentId)));
+  function writeRollback(db, row, receipt, authority) {
+    const result = { ...parentResult(row), rollback: receipt };
+    const now = new Date().toISOString(); check(authority);
+    db.prepare("UPDATE topic_operations SET state='unknown',current_step=?,result_json=?,updated_at=? WHERE logical_operation_id=?")
+      .run(`rollback-${receipt.phase}`, JSON.stringify(result), now, row.logical_operation_id);
+    return freeze(receipt);
+  }
+  function assertRollbackBasis(db, receipt, row, root) {
+    if (!isDeepStrictEqual(receipt.root, root) || receipt.parentOperationId !== row.logical_operation_id ||
+      row.current_step !== `rollback-${receipt.phase}` || !isDeepStrictEqual(readRollback(db, row.logical_operation_id), receipt)) fail();
+    const topic = service.getTopic(root.topicId);
+    if (!topic || topic.lifecycle !== 'provisioning' || topic.revision !== receipt.topicRevision ||
+      topic.name !== root.name || topic.paraCategory !== root.paraCategory) fail();
+    if (!isDeepStrictEqual(folderCreation(db, row.logical_operation_id), receipt.folderCreation)) fail();
+    const primary = service.getProvisioningPrimary(row.logical_operation_id);
+    if (!isDeepStrictEqual(primary, receipt.primaryReceipt)) fail();
+    const folderRef = service.getSourceReference(`note-folder:${root.topicId}`);
+    const folderLocator = service.getSourceLocator(`note-folder:${root.topicId}`);
+    if (receipt.phase === 'folder-cleared') {
+      if (folderRef || folderLocator) fail();
+    } else if (!isDeepStrictEqual(folderLocator, receipt.folderLocator) ||
+      (folderRef && (folderRef.topicId !== root.topicId || folderRef.sourceKind !== 'note_folder' || folderRef.sourceSystem !== 'obsidian'))) fail();
+    const refs = service.listSourceReferences(root.topicId);
+    const allowed = receipt.phase === 'folder-cleared' ? [] : [`note-folder:${root.topicId}`];
+    if (refs.some(ref => !allowed.includes(ref.referenceId))) fail();
+    const sessionRef = service.getSourceReference(receipt.primary.referenceId);
+    // Conditional Primary attachment and Topic activation commit together. A
+    // Session reference on a still-provisioning Topic has another owner.
+    if (sessionRef) fail();
+  }
+  service.beginConditionalProvisioningRollback = (input, authority) => mutate('notes', db => {
+    assertMutation('sessions'); check(authority);
+    if (!exact(input, ['parentOperationId', 'expectedTopicRevision']) || !Number.isSafeInteger(input.expectedTopicRevision)) fail('provisioning-intent-invalid');
+    const { row, root } = rollbackRow(db, input.parentOperationId);
+    const existing = readRollback(db, input.parentOperationId);
+    if (existing) { if (input.expectedTopicRevision !== existing.topicRevision) fail('stale-revision'); assertRollbackBasis(db, existing, row, root); return freeze(existing); }
+    const topic = service.getTopic(root.topicId);
+    if (!topic || topic.lifecycle !== 'provisioning' || topic.revision !== input.expectedTopicRevision || topic.name !== root.name || topic.paraCategory !== root.paraCategory) fail('stale-revision');
+    const primaryReceipt = service.getProvisioningPrimary(input.parentOperationId);
+    if (primaryReceipt?.phase === 'applied') fail();
+    const folderReceipt = folderCreation(db, input.parentOperationId);
+    const folderLocator = service.getSourceLocator(`note-folder:${root.topicId}`);
+    if (folderLocator?.ownership === 'created' && folderReceipt?.phase !== 'published') fail('provisioning-folder-unavailable');
+    if (folderReceipt?.phase === 'published' && folderLocator && (folderLocator.locator !== root.folderPath ||
+      folderLocator.observedRevision !== folderReceipt.markerIdentity || folderLocator.ownership !== 'created')) fail('provisioning-folder-unavailable');
+    if (folderLocator && (folderLocator.locator !== root.folderPath || !isNoteFolderIdentity(folderLocator.observedRevision))) fail();
+    const folderRef = service.getSourceReference(`note-folder:${root.topicId}`);
+    if (Boolean(folderRef) !== Boolean(folderLocator) || (folderRef && (folderRef.topicId !== root.topicId ||
+      folderRef.sourceKind !== 'note_folder' || folderRef.sourceSystem !== 'obsidian'))) fail();
+    const receipt = { schemaVersion: 1, parentOperationId: input.parentOperationId, root, topicRevision: topic.revision,
+      folderCreation: folderReceipt, folderLocator, primaryReceipt, primary: primaryOf(input.parentOperationId, root.topicId, sessionUpdatedAtOf(db, input.parentOperationId)),
+      phase: 'prepared', revision: 1 };
+    const refs = service.listSourceReferences(root.topicId);
+    if (refs.some(ref => ref.referenceId !== `note-folder:${root.topicId}`)) fail();
+    return writeRollback(db, row, receipt, authority);
+  });
+  service.advanceConditionalProvisioningRollback = (receipt, nextPhase, authority) => mutate('notes', db => {
+    assertMutation('sessions'); check(authority);
+    const { row, root } = rollbackRow(db, receipt?.parentOperationId);
+    const current = readRollback(db, receipt.parentOperationId);
+    if (!isDeepStrictEqual(current, receipt)) fail('stale-revision');
+    assertRollbackBasis(db, current, row, root);
+    const phases = { prepared: 'session-cleared', 'session-cleared': 'folder-cleaning', 'folder-cleaning': 'folder-cleared' };
+    if (phases[current.phase] !== nextPhase) fail('stale-revision');
+    if (nextPhase === 'folder-cleared' && service.getSourceReference(`note-folder:${root.topicId}`))
+      db.prepare('DELETE FROM source_references WHERE reference_id=? AND topic_id=?').run(`note-folder:${root.topicId}`, root.topicId);
+    return writeRollback(db, row, { ...current, phase: nextPhase, revision: current.revision + 1 }, authority);
+  });
+  service.finishConditionalProvisioningRollback = (receipt, authority) => mutate('notes', db => {
+    assertMutation('sessions'); check(authority);
+    const { row, root } = rollbackRow(db, receipt?.parentOperationId);
+    const current = readRollback(db, receipt.parentOperationId);
+    if (!isDeepStrictEqual(current, receipt) || current.phase !== 'folder-cleared') fail('stale-revision');
+    assertRollbackBasis(db, current, row, root);
+    if (service.listSourceReferences(root.topicId).length) fail();
+    const now = new Date().toISOString(); check(authority);
+    db.prepare('DELETE FROM topics WHERE topic_id=? AND lifecycle=\'provisioning\' AND revision=?').run(root.topicId, receipt.topicRevision);
+    const result = { ...parentResult(row), rollback: { ...current, phase: 'rolled-back', revision: 5 } };
+    if (current.primaryReceipt) {
+      const child = { ...current.primaryReceipt, phase: 'rolled-back', revision: 3 };
+      db.prepare("UPDATE operation_journal SET state='not-applied',result_status='rolled-back',result_identity=?,observed_revision='3',updated_at=? WHERE logical_operation_id=?")
+        .run(JSON.stringify(child), now, current.primaryReceipt.logicalOperationId);
+    }
+    db.prepare("UPDATE topic_operations SET topic_id=NULL,state='not-applied',current_step='rolled-back',result_json=?,updated_at=? WHERE logical_operation_id=?")
+      .run(JSON.stringify(result), now, row.logical_operation_id);
+    return freeze(result.rollback);
   });
 }

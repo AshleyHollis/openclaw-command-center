@@ -106,6 +106,7 @@ export function createMetadataService(api) {
   const processorCapability = Symbol('command-center-clarification-processor');
   let releaseDurableFolderStager;
   let releaseFilesystemIdentityReader;
+  let releaseDirectoryPublisher;
   let releaseNoteFilesystemCoordinator;
   let releaseTopicMaintenanceOwners;
   let recoveryOnly = false;
@@ -121,6 +122,8 @@ export function createMetadataService(api) {
     releaseDurableFolderStager = undefined;
     releaseFilesystemIdentityReader?.();
     releaseFilesystemIdentityReader = undefined;
+    releaseDirectoryPublisher?.();
+    releaseDirectoryPublisher = undefined;
     releaseNoteFilesystemCoordinator?.();
     releaseNoteFilesystemCoordinator = undefined;
     releaseTopicMaintenanceOwners?.();
@@ -298,13 +301,15 @@ export function createMetadataService(api) {
     async start(context = {}) {
       stopPromise = undefined;
       try {
-      const [{ setHostDurableFolderStager, setHostFilesystemIdentityReader }, { setHostNoteFilesystemCoordinator }, fileAccess, sqlite] = await Promise.all([
+      const [{ setHostDurableFolderStager, setHostFilesystemIdentityReader }, { setHostNoteFilesystemCoordinator }, { setHostDurableDirectoryPublisher }, fileAccess, sqlite] = await Promise.all([
         import('./sources/note-folder-identity.mjs'), import('./sources/note-filesystem-owner.mjs'),
+        import('./topics/conventions.mjs'),
         import('openclaw/plugin-sdk/file-access-runtime'), import('openclaw/plugin-sdk/sqlite-runtime')
       ]);
       const fixtureFileAccess = api.runtime?.fileAccess ?? {};
       releaseDurableFolderStager = setHostDurableFolderStager(fixtureFileAccess.stageDurableFileInDirectory ?? fileAccess.stageDurableFileInDirectory);
       releaseFilesystemIdentityReader = setHostFilesystemIdentityReader(fixtureFileAccess.readDurableFilesystemIdentity ?? fileAccess.readDurableFilesystemIdentity);
+      releaseDirectoryPublisher = setHostDurableDirectoryPublisher(fixtureFileAccess.publishDurableDirectoryNoReplace ?? fileAccess.publishDurableDirectoryNoReplace);
       releaseNoteFilesystemCoordinator = setHostNoteFilesystemCoordinator(fixtureFileAccess.tryAcquireExclusiveSqliteCoordinator ?? sqlite.tryAcquireExclusiveSqliteCoordinator);
       const stateDir = api.runtime.state.resolveStateDir(process.env);
       const gatewayAvailable = typeof api.runtime?.gateway?.request === 'function';

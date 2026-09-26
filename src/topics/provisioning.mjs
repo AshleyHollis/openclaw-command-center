@@ -1,10 +1,11 @@
-import { lstat, readdir, realpath } from 'node:fs/promises';
+import { lstat, readdir, realpath, unlink, rmdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { createSessionAdapter } from '../sources/sessions.mjs';
 import { assertLogicalOperationId } from '../sources/operation-journal.mjs';
 import { sourceError } from '../sources/errors.mjs';
-import { readNoteFolderIdentity } from '../sources/note-folder-identity.mjs';
+import { inspectNoteFolderCandidate, readNoteFolderIdentity } from '../sources/note-folder-identity.mjs';
 import { ownsNoteFilesystem, withNoteFilesystemOwner } from '../sources/note-filesystem-owner.mjs';
 import { conventionalFolderPath, conventionalSessionLabel, ensureConventionalFolder, findConventionalFolder, resolveProvisioningFolderPath, validateParaCategory, validateTopicName } from './conventions.mjs';
 import { finishConditionalProvisioning } from './provisioning-primary.mjs';
@@ -37,15 +38,7 @@ export class TopicProvisioningService {
     this.gateway = options.gateway ?? options.api?.runtime?.gateway;
     this.sessionStore = options.sessionStore ?? options.api?.runtime?.agent?.session;
     this.sessionAdapterFactory = options.sessionAdapterFactory;
-    this.sessionRemover = options.sessionRemover ?? (options.api?.runtime?.agent?.session
-      ? async ({ sessionKey, sessionId, expectedRevision }) => {
-          const expectedUpdatedAt = Number(expectedRevision);
-          if (!Number.isSafeInteger(expectedUpdatedAt)) throw sourceError('unknown', 'Created-session cleanup lacks a numeric authoritative revision.');
-          const { deleteSessionEntry } = await import('openclaw/plugin-sdk/session-store-runtime');
-          const deleted = await deleteSessionEntry({ agentId: 'main', sessionKey, expectedSessionId: sessionId, expectedUpdatedAt, archiveTranscript: false });
-          if (!deleted) throw sourceError('conflict', 'The exact created Session was not removed at its authoritative revision.');
-        }
-      : null);
+    this.sessionRemover = options.sessionRemover;
     this.sessionMessages = options.sessionMessages ?? (options.api?.runtime?.subagent?.getSessionMessages
       ? async ({ sessionKey }) => options.api.runtime.subagent.getSessionMessages({ sessionKey, limit: 1 })
       : null);
@@ -287,10 +280,92 @@ export class TopicProvisioningService {
     if (typeof adapter?.resolveExact === 'function') await adapter.resolveExact({ referenceId });
   }
 
+  async rollbackConditional(input, replay) {
+    if (!ownsNoteFilesystem(this.metadata)) return withNoteFilesystemOwner(this.metadata, () => this.rollbackConditional(input, replay));
+    if (input.topicId !== replay.intent.topicId) throw sourceError('intent-mismatch', 'Rollback must name the reserved Topic.');
+    if (replay.state === 'not-applied' && replay.currentStep === 'rolled-back')
+      return { status: 'not-applied', logicalOperationId: input.logicalOperationId, topicId: input.topicId };
+    const check = () => {
+      const current = this.metadata.getTopicOperation(input.logicalOperationId);
+      if (!current || current.intent?.topicId !== input.topicId || current.intent?.primaryMode !== CONDITIONAL_PRIMARY_MODE)
+        throw sourceError('source-recovery', 'The provisioning operation changed during rollback.');
+    };
+    let receipt = this.metadata.getConditionalProvisioningRollback(input.logicalOperationId);
+    if (!receipt) receipt = this.metadata.beginConditionalProvisioningRollback({ parentOperationId: input.logicalOperationId,
+      expectedTopicRevision: input.expectedRevision }, check);
+    else if (input.expectedRevision !== receipt.topicRevision) throw sourceError('stale-revision', 'Rollback revision changed.');
+    const primary = receipt.primary;
+    const read = this.sessionStore?.getSessionEntry;
+    if (typeof read !== 'function' || !this.gateway?.request) throw sourceError('capability-unavailable', 'Exact native Session lifecycle cleanup is unavailable.');
+    const session = () => read.call(this.sessionStore, { agentId: primary.agentId, sessionKey: primary.sessionKey,
+      env: process.env, readConsistency: 'latest' });
+    const assertSession = () => {
+      const entry = session();
+      if (entry && (receipt.primaryReceipt?.phase !== 'creating' || entry.sessionId !== primary.sessionId ||
+        entry.lifecycleRevision !== primary.lifecycleRevision || entry.updatedAt !== primary.sessionUpdatedAt ||
+        entry.pluginOwnerId !== 'command-center'))
+        throw sourceError('source-recovery', 'The operation-created Session changed or was replaced.');
+      return entry;
+    };
+    if (receipt.phase === 'prepared') {
+      const entry = assertSession();
+      if (entry) {
+        const result = unwrap(await this.gateway.request('sessions.delete', { key: primary.sessionKey, agentId: primary.agentId,
+          expectedSessionId: primary.sessionId, expectedLifecycleRevision: primary.lifecycleRevision,
+          expectedSessionUpdatedAt: primary.sessionUpdatedAt, requireEmptyHistory: true, deleteTranscript: true },
+        { requestId: derivedUuid(`topic-rollback-session:${input.logicalOperationId}`) }));
+        if (result?.deleted !== true) throw sourceError('source-recovery', 'Native Session deletion was not confirmed.');
+      }
+      if (session()) throw sourceError('source-recovery', 'The exact Session remains after native lifecycle cleanup.');
+      receipt = this.metadata.advanceConditionalProvisioningRollback(receipt, 'session-cleared', check);
+    }
+    if (receipt.phase === 'session-cleared') {
+      if (session()) throw sourceError('source-recovery', 'A Session appeared during rollback.');
+      receipt = this.metadata.advanceConditionalProvisioningRollback(receipt, 'folder-cleaning', check);
+    }
+    if (receipt.phase === 'folder-cleaning') {
+      if (session()) throw sourceError('source-recovery', 'A Session appeared during folder cleanup.');
+      const folder = receipt.folderCreation;
+      const locator = receipt.folderLocator;
+      if (folder) {
+        if (!['identified', 'published'].includes(folder.phase)) throw sourceError('source-recovery', 'The operation folder has no exact physical receipt.');
+        if (locator && (locator.ownership !== 'created' || locator.locator !== folder.finalPath || locator.observedRevision !== folder.markerIdentity))
+          throw sourceError('source-recovery', 'The folder locator is no longer operation-owned.');
+        const stage = await lstat(folder.stagePath).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+        const final = await lstat(folder.finalPath).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+        if (stage && final) throw sourceError('source-recovery', 'Two folders claim the same operation.');
+        const folderPath = final ? folder.finalPath : stage ? folder.stagePath : null;
+        if (folderPath) {
+          const witness = await inspectNoteFolderCandidate(folderPath);
+          if (witness.directoryIdentity !== folder.directoryIdentity ||
+            (witness.markerIdentity !== null && witness.markerIdentity !== folder.markerIdentity))
+            throw sourceError('source-recovery', 'The operation folder changed or was replaced.');
+          const entries = await readdir(folderPath);
+          if (entries.length > 1 || (entries.length === 1 && entries[0] !== '.command-center-folder-identity') ||
+            (witness.markerIdentity === null && entries.length !== 0))
+            throw sourceError('source-recovery', 'The operation folder contains unknown data.');
+          const second = await inspectNoteFolderCandidate(folderPath);
+          if (second.directoryIdentity !== folder.directoryIdentity || second.markerIdentity !== witness.markerIdentity)
+            throw sourceError('source-recovery', 'The operation folder changed before cleanup.');
+          if (witness.markerIdentity) await unlink(path.join(folderPath, '.command-center-folder-identity'));
+          const empty = await readdir(folderPath);
+          if (empty.length !== 0) throw sourceError('source-recovery', 'The operation folder changed during cleanup.');
+          const bare = await inspectNoteFolderCandidate(folderPath);
+          if (bare.directoryIdentity !== folder.directoryIdentity || bare.markerIdentity !== null)
+            throw sourceError('source-recovery', 'The operation folder changed after marker cleanup.');
+          await rmdir(folderPath);
+        }
+      } else if (locator?.ownership === 'created') throw sourceError('source-recovery', 'Created folder has no operation receipt.');
+      receipt = this.metadata.advanceConditionalProvisioningRollback(receipt, 'folder-cleared', check);
+    }
+    if (receipt.phase === 'folder-cleared') this.metadata.finishConditionalProvisioningRollback(receipt, check);
+    return { status: 'not-applied', logicalOperationId: input.logicalOperationId, topicId: input.topicId };
+  }
+
   async rollback(input = {}) {
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const replay = this.metadata.getTopicOperation(logicalOperationId);
-    if (replay?.intent?.primaryMode === CONDITIONAL_PRIMARY_MODE) throw sourceError('unsupported-operation', 'Conditional provisioning retains source evidence; legacy rollback is not permitted.');
+    if (replay?.intent?.primaryMode === CONDITIONAL_PRIMARY_MODE) return this.rollbackConditional(input, replay);
     if (replay?.operationKind !== 'topics.create') throw sourceError('not-found', 'The Topic provisioning operation was not found.');
     if (replay.state === 'not-applied' && replay.currentStep === 'rolled-back') {
       if (input.topicId !== replay.result?.topicId) throw sourceError('intent-mismatch', 'Provisioning rollback replay must name the original Topic.');
@@ -361,10 +436,7 @@ export class TopicProvisioningService {
               if (remaining.length !== 0) throw sourceError('unknown', 'Created-session cleanup could not verify exact removal.');
             }
           }
-          else if (this.gateway?.request) {
-            const result = await this.gateway.request('sessions.delete', { ['k' + 'ey']: reference.externalSourceId, ...(state.sessionId ? { sessionId: state.sessionId } : {}) }, { requestId: logicalOperationId });
-            if (result?.deleted === false) throw sourceError('unknown', 'The operation-owned Primary Session could not be cleaned up.');
-          } else throw sourceError('unknown', 'Created-session cleanup lacks an exact removal capability.');
+          else throw sourceError('unknown', 'Legacy provisioning has no durable lifecycle incarnation for guarded native Session cleanup.');
         }
       }
       this.metadata.deleteProvisioningSourceReference({

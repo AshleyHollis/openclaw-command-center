@@ -43,8 +43,8 @@ export async function finishConditionalProvisioning({ metadata, sessionStore, en
       dispatching = true;
       try {
         await patch.call(sessionStore, { agentId: primary.agentId, sessionKey: primary.sessionKey, env,
-          fallbackEntry: { sessionId: primary.sessionId, lifecycleRevision: primary.lifecycleRevision, label: receipt.intent.root.name, updatedAt: Date.now() },
-          skipMaintenance: true, preserveActivity: true, requireWriteSuccess: true,
+          fallbackEntry: { sessionId: primary.sessionId, lifecycleRevision: primary.lifecycleRevision, pluginOwnerId: 'command-center', label: receipt.intent.root.name, updatedAt: primary.sessionUpdatedAt, sessionStartedAt: primary.sessionUpdatedAt },
+          skipMaintenance: true, replaceEntry: true, requireWriteSuccess: true,
           update: (entry, context) => {
             if (context.existingEntry) throw sourceError('provisioning-primary-conflict', 'The destination was claimed before native creation.');
             return entry;
