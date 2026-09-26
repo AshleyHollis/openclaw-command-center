@@ -120,6 +120,11 @@ function validateGeneration(value, expectedResults = undefined) {
 }
 function sync(file) { const descriptor = openSync(file, 'r'); try { fsyncSync(descriptor); } finally { closeSync(descriptor); } }
 function crash(point, hooks) { if (process.env.COMMAND_CENTER_PROJECTION_CRASH_AT === point) process.kill(process.pid, 'SIGKILL'); if (typeof hooks?.[point] === 'function') hooks[point](); }
+function syncDirectory(root, hooks) {
+  if (process.env.COMMAND_CENTER_PROJECTION_CRASH_AT === 'directorySync') process.kill(process.pid, 'SIGKILL');
+  if (typeof hooks?.directorySync === 'function') hooks.directorySync(root);
+  else sync(root);
+}
 function readGeneration(root, expectedResults = undefined) {
   const filename = path.join(root, generationName);
   const stat = lstatSync(filename);
@@ -175,12 +180,6 @@ export function openCommandCenterProjectionService({ stateDir, metadataService, 
     }
   };
   reconcile(); metadataService.withCoreProjectionPublication(() => cleanStaging());
-  const restarted = checkpoint();
-  if (matchesCheckpoint(generationPath(), restarted) && /\.\d{12}Z$/u.test(restarted.updatedAt)) {
-    const generation = readGeneration(root);
-    committedResultsDigest = resultsDigest(generation.results);
-    current = state('ready', validProgress('complete', 3));
-  }
   const emit = (phase, completed, onProgress, observations) => { const observation = validProgress(phase, completed); observations.push(observation); current = state('rebuilding', observation, [], observations); onProgress?.({ ...observation }); };
   const query = () => {
     if (current.mode !== 'ready') throw new CommandCenterProjectionError('projection-unavailable', 'Projections are unavailable until a committed rebuild succeeds.', { mode: 'recovery-only' });
@@ -237,8 +236,8 @@ export function openCommandCenterProjectionService({ stateDir, metadataService, 
               renameSync(backup, previousPath()); sync(root);
             }
             renameSync(staging, generationPath()); staging = undefined;
-            crash('replacement', hooks); crash('directorySync', hooks);
-            sync(root); crash('bookkeeping', hooks); crash('bookkeepingCommit', hooks);
+            crash('replacement', hooks); syncDirectory(root, hooks);
+            crash('bookkeeping', hooks); crash('bookkeepingCommit', hooks);
             return commit({ sourceRevision: generation.sourceRevision, inputDigest: generation.inputDigest, updatedAt: publishedAt });
           });
           crash('bookkeepingResponse', hooks);
