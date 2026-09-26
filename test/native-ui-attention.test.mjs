@@ -26,7 +26,7 @@ async function fixture(run) {
       window.requests = []; window.opened = []; window.actionMode = 'success'; window.openLoopActionMode = 'success'; window.quickCaptureMode = 'success'; window.dailyMode = 'success'; window.activity = []; window.allOpenLoops = []; window.intakeResult = null; window.intakeCoverage = []; window.briefings = []; window.briefingHistory = []; window.routineOccurrences = [];
       window.openLoops = { total: 0, attentionTotal: 0, highlighted: [], comingUpTotal: 0, comingUp: [], waitingTotal: 0, suggestedTotal: 0, deferredTotal: 0, reconciliationTotal: 0 };
       const action = { actionId: 'reminder.complete', label: 'Reminder Complete', kind: 'mutation', target: { topicId: 'fictional-topic', sourceReferenceId: 'fictional-source' }, parameterSchema: { type: 'object', properties: { expectedConfigRevision: { type: 'string' } }, required: ['expectedConfigRevision'], additionalProperties: false }, sideEffects: ['Disables the exact reminder.'], approvalMode: 'preauthorized', idempotency: { idempotent: true, transientRetryable: true } };
-      window.cards = ['one', 'two'].map((id) => ({ notificationRecordId: `record-${id}`, episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
+      window.cards = ['one', 'two'].map((id) => ({ attentionRecordId: `attention-${id}`, notificationRecordIds: [`record-${id}`], episodeId: `episode-${id}`, topicId: 'fictional-topic', sourceReferenceId: 'fictional-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 3, severity: 'Reminder', state: 'Active', context: `Fictional ${id}`, diagnosis: { reason: '<img src=x onerror=alert(1)>' }, evidenceFacts: { facts: ['Fictional evidence'] }, actions: [action], eligibleSnoozeChoices: [] }));
       let context; let view; let scope;
       const host = { signal: lifetime.signal, connection: { connected: true, canRead: true, canWrite: true }, redact: (value) => value,
         subscribe: (fn) => { subscribers.add(fn); return () => subscribers.delete(fn); },
@@ -172,6 +172,13 @@ test('native Attention never substitutes another card for a missing or duplicate
   await page.evaluate(() => { window.cards.push({ ...window.cards[0] }); window.selectRecord('record-one'); });
   await page.getByRole('status').filter({ hasText: 'exact Attention item is no longer available' }).waitFor();
   assert.equal(await page.locator('article').count(), 0);
+}));
+
+test('native notification focus rejects an expired record while a newer exact record remains usable', () => fixture(async (page) => {
+  await page.evaluate(() => { window.cards[0].notificationRecordIds = ['record-new']; window.mountRecord('record-one'); });
+  await page.getByRole('status').filter({ hasText: 'exact Attention item is no longer available' }).waitFor();
+  await page.evaluate(() => window.mountRecord('record-new'));
+  await page.getByRole('heading', { name: 'Fictional one' }).waitFor();
 }));
 
 test('native Attention ignores an older detail response after selection changes', () => fixture(async (page) => {
@@ -470,7 +477,7 @@ test('busy Dashboard keeps 25 Attention items visible while 200 optional items s
   await page.evaluate(() => {
     const planning = { importance: 'low', importanceOrigin: 'processing', contexts: ['home'], dependencies: [], someday: false };
     window.cards = Array.from({ length: 25 }, (_, index) => ({
-      notificationRecordId: `busy-record-${index + 1}`, episodeId: `busy-episode-${index + 1}`,
+      attentionRecordId: `busy-attention-${index + 1}`, notificationRecordIds: [`busy-record-${index + 1}`], episodeId: `busy-episode-${index + 1}`,
       topicId: 'topic-fictional-renovation', sourceReferenceId: `busy-source-${index + 1}`,
       sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 1,
       severity: 'Reminder', state: 'Active', context: `Required item ${index + 1}`, actions: [], eligibleSnoozeChoices: []
@@ -519,7 +526,7 @@ test('returning after a week shows every overdue, due, decision and accepted rev
 
 test('a failed producer remains a titled dashboard widget without blanking focused work', () => fixture(async (page) => {
   await page.evaluate(() => {
-    window.cards = [{ notificationRecordId: 'producer-record', episodeId: 'producer-episode', topicId: 'topic-fictional-renovation', sourceReferenceId: 'producer-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 1, severity: 'Reminder', state: 'Active', context: 'Review unaffected fictional work', actions: [], eligibleSnoozeChoices: [] }];
+    window.cards = [{ attentionRecordId: 'producer-attention', notificationRecordIds: ['producer-record'], episodeId: 'producer-episode', topicId: 'topic-fictional-renovation', sourceReferenceId: 'producer-source', sourceCapabilityId: 'reminders', sourceRevision: 'source-r1', revision: 1, severity: 'Reminder', state: 'Active', context: 'Review unaffected fictional work', actions: [], eligibleSnoozeChoices: [] }];
     window.intakeCoverage = [{ source: 'Email intake', sourceKind: 'email', status: 'failed', explanation: 'The last bounded producer run failed before publishing a receipt.' }];
     window.mountInbox();
   });

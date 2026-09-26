@@ -193,9 +193,9 @@ test('Activity load-more repairs terminal focus without stealing a newer selecti
 
 test('notification deep-link focus is consumed once, not on every refresh', async () => withUi(async (page) => {
   await page.evaluate(() => {
-    document.querySelector('[data-episode-id]').dataset.notificationRecord = 'record-fictional'; focusNotificationTarget();
+    document.querySelector('[data-episode-id]').dataset.notificationRecords = 'record-fictional'; focusNotificationTarget();
   });
-  assert.equal(await page.evaluate(() => document.activeElement.dataset.notificationRecord), 'record-fictional');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.notificationRecords), 'record-fictional');
   await page.locator('#header-topic-selector').focus();
   await page.evaluate(() => focusNotificationTarget());
   assert.equal(await page.evaluate(() => document.activeElement.id), 'header-topic-selector');

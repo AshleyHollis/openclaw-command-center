@@ -11,6 +11,7 @@ import { TopicProvisioningService } from '../src/topics/provisioning.mjs';
 
 const referenceId = 'note-folder:fictional-topic';
 const intent = { name: 'Fictional', paraCategory: 'project' };
+const enrollmentOperationId = '77777777-7777-4777-8777-777777777777';
 async function fixture(run) {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'provisioning-folder-transaction-'));
   const vault = path.join(stateDir, 'vault');
@@ -40,6 +41,40 @@ test('process death before Folder binding commit leaves no partial reference, lo
     assert.deepEqual(await readFile(markerPath), marker);
     assert.equal(f.metadata.getSourceLocator(referenceId).locatorVersion, 1);
     assert.deepEqual(f.metadata.getSourceConventionState(referenceId).map(value => value.aspect), ['location', 'name']);
+  });
+});
+
+test('operation-owned Folder remains created after death between publish and locator commit', { skip: process.platform !== 'linux' }, async () => {
+  await fixture(async f => {
+    const child = spawnSync(process.execPath, ['--import', './test/fixtures/note-runtime-loader.mjs', './test/fixtures/provisioning-folder-interruption.mjs', f.stateDir, f.vault, 'before-commit-owned'], { encoding: 'utf8', timeout: 45000 });
+    assert.equal(child.signal, 'SIGKILL', child.stderr);
+    f.reopen();
+    assert.equal(f.metadata.getSourceLocator(referenceId), null);
+    const result = await f.owner().bindFolder('fictional-topic', intent, { enrollmentOperationId });
+    assert.equal(result.ownership, 'created');
+    assert.equal(f.metadata.getSourceLocator(referenceId).ownership, 'created');
+  });
+});
+
+test('death before staging marker cannot adopt an unproven Folder as external', { skip: process.platform !== 'linux' }, async () => {
+  await fixture(async f => {
+    const child = spawnSync(process.execPath, ['--import', './test/fixtures/note-runtime-loader.mjs', './test/fixtures/provisioning-folder-interruption.mjs', f.stateDir, f.vault, 'stage-mkdir'], { encoding: 'utf8', timeout: 45000 });
+    assert.equal(child.signal, 'SIGKILL', child.stderr);
+    f.reopen();
+    await assert.rejects(f.owner().bindFolder('fictional-topic', intent, { enrollmentOperationId }), { code: 'source-recovery' });
+    assert.equal(f.metadata.getSourceLocator(referenceId), null);
+    await assert.rejects(readFile(path.join(f.vault, 'Projects', intent.name, '.command-center-folder-identity')), { code: 'ENOENT' });
+  });
+});
+
+test('marked operation staging resumes publication after process death', { skip: process.platform !== 'linux' }, async () => {
+  await fixture(async f => {
+    const child = spawnSync(process.execPath, ['--import', './test/fixtures/note-runtime-loader.mjs', './test/fixtures/provisioning-folder-interruption.mjs', f.stateDir, f.vault, 'stage-marked'], { encoding: 'utf8', timeout: 45000 });
+    assert.equal(child.signal, 'SIGKILL', child.stderr);
+    f.reopen();
+    const result = await f.owner().bindFolder('fictional-topic', intent, { enrollmentOperationId });
+    assert.equal(result.ownership, 'created');
+    assert.equal(f.metadata.getSourceLocator(referenceId).ownership, 'created');
   });
 });
 

@@ -26,6 +26,7 @@ export const topicActions = Object.freeze({
   'recategorize.apply': 'command-center.v1.topics.structural-change.confirm',
   'archive.preview': 'command-center.v1.topics.archive.preview',
   'archive.apply': 'command-center.v1.topics.archive.confirm',
+  'restore.preview': 'command-center.v1.topics.restore.preview',
   restore: 'command-center.v1.topics.restore.confirm',
   'recovery.verify': 'command-center.v1.topics.recovery.verify',
   'recovery.relink': 'command-center.v1.topics.recovery.relink',
@@ -212,14 +213,7 @@ export function createTopicsHttpHandler(service, { mutationAllowed = true } = {}
       if (!isCanonicalUuid(body.logicalOperationId) || body.action !== 'create' && (!isCanonicalUuid(body.topicId) || !Number.isInteger(body.expectedRevision))) throw Object.assign(new Error('Canonical operation identity, exact Topic identity, and Topic revision are required.'), { code: 'invalid-request' });
       const { action: _action, ...params } = body;
       const runtime = body.authoritativeSession === undefined ? { gatewayRequest: createRequestScopedGatewayRequest() } : {};
-      const result = body.action === 'restore' && !body.previewDigest
-        ? await (async () => {
-            const current = service.topics.get(params.topicId);
-            if (!current || current.revision !== params.expectedRevision) throw Object.assign(new Error('Restore Topic revision is stale.'), { code: 'conflict' });
-            const preview = service.topics.restorePreview(params);
-            return { value: await service.topics.restoreConfirm({ ...params, structuralChangeId: preview.structuralChangeId, previewDigest: preview.digest, expectedRevisions: preview.expectedRevisions }) };
-          })()
-        : await invokeBridgeMethod(service, method, params, null, null, runtime);
+      const result = await invokeBridgeMethod(service, method, params, null, null, runtime);
       const frameResult = sanitizeFrameResult(method, result);
       const destination = await mutationDestination(service);
       if (frameResult.value) frameResult.value.destination = destination;

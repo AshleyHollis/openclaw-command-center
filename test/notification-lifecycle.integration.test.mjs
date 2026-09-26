@@ -6,6 +6,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
+import { projectDashboard } from '../src/dashboard/service.mjs';
 
 async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z') {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-notification-lifecycle-'));
@@ -209,6 +210,25 @@ test('queued High summary excludes an episode that left Active before release', 
     assert.equal(summaries.length, 1);
     assert.equal(summaries[0].preview.body, '1 item needs review.');
   }, '2026-08-27T22:00:00.000Z');
+});
+
+test('notification focus is bound to the exact unexpired durable emission', async () => {
+  await fixture(async ({ metadata, service, episode, candidates, now, advance }) => {
+    const dashboard = () => projectDashboard({ metadata, sourceService: { attentionList: async () => ({ episodes: [episode], inProgress: [] }) }, now });
+    await service.reconcile();
+    const first = candidates[0].deepLink.recordId;
+    assert.deepEqual((await dashboard()).attention[0].notificationRecordIds, [first]);
+    advance(4 * 60 * 60 * 1000);
+    await service.reconcile();
+    const second = candidates[1].deepLink.recordId;
+    assert.notEqual(first, second);
+    assert.deepEqual((await dashboard()).attention[0].notificationRecordIds, [first, second]);
+    advance(20 * 60 * 60 * 1000 + 1);
+    assert.deepEqual((await dashboard()).attention[0].notificationRecordIds, [second]);
+    advance(4 * 60 * 60 * 1000);
+    assert.deepEqual((await dashboard()).attention[0].notificationRecordIds, []);
+    assert.equal((await dashboard()).attention[0].attentionRecordId.length > 0, true);
+  });
 });
 
 for (const concurrentReconcile of [false, true]) test(`late emission cannot outlive its terminal episode (queued reconcile: ${concurrentReconcile})`, async () => {

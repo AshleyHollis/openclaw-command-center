@@ -13,6 +13,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   const signal = AbortSignal.any([context.signal, host.signal, lifetime.signal]);
   let presented = context.presented;
   let recordId = context.props.notificationRecord;
+  let attentionRecordId = context.props.attentionRecord;
   let topicFilter = context.props.topicId;
   let generation = 0;
   let selected;
@@ -1017,7 +1018,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   async function load(message = '') {
     if (content.childElementCount) captureTransientUiState();
     const pending = ++generation; selected = undefined; content.replaceChildren(); setBusy(false); container.inert = !presented || signal.aborted;
-    intake.hidden = Boolean(recordId) || pageMode === 'planner';
+    intake.hidden = Boolean(recordId || attentionRecordId) || pageMode === 'planner';
     if (signal.aborted || !presented) return;
     if (!readable()) {
       const disconnected = element('section'); disconnected.className = 'cc-disconnected';
@@ -1031,7 +1032,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
       const dashboard = unwrap(response);
       if (!Array.isArray(dashboard?.attention) || !Array.isArray(dashboard?.inProgress)) throw new Error('The Attention destination is unavailable.');
       const cards = [...dashboard.attention, ...dashboard.inProgress];
-      if (!recordId) {
+      if (!recordId && !attentionRecordId) {
         const workspace = element('div'); workspace.className = 'cc-workspace'; workspace.dataset.pageMode = pageMode;
         const focus = element('section'); focus.className = 'cc-focus'; focus.setAttribute('aria-label', pageMode === 'planner' ? 'Planner workspace' : 'Focus');
         const dashboards = element('aside'); dashboards.className = 'cc-dashboards'; dashboards.id = 'command-center-dashboards'; dashboards.setAttribute('aria-label', 'Dashboards');
@@ -1121,9 +1122,10 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         if (pageMode === 'dashboard') renderRoutineOccurrences(focus, dashboard, pending);
         if (cards.length) focus.append(element('h2', 'Needs Attention'));
         for (const card of cards) {
-          if (!nonBlank(card.notificationRecordId)) continue;
+          const internalRecordId = card.attentionRecordId ?? card.notificationRecordId;
+          if (!nonBlank(internalRecordId)) continue;
           const button = element('button', `Review ${card.context || 'Attention item'}`); button.type = 'button';
-          button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { notificationRecord: card.notificationRecordId } }); }, { signal }); focus.append(button);
+          button.addEventListener('click', () => { if (current(pending)) host.navigation.openPage({ id: 'attention', params: { attentionRecord: internalRecordId } }); }, { signal }); focus.append(button);
         }
         renderOpenLoops(dashboard.openLoops, pending, { primary: focus, secondary: pageMode === 'planner' ? focus : dashboards, planner: pageMode === 'planner', topicId: pageMode === 'planner' ? topicFilter : undefined, topics: dashboard.topics });
         if (pageMode === 'dashboard') renderQuickCapture(focus, dashboard, pending);
@@ -1132,7 +1134,9 @@ export function mountAttentionPage(container, context, operations = new Map(), p
         restoreTransientUiState();
         report(message || (cards.length || dashboard.openLoops?.attentionTotal ? 'Review the current Attention items and open loops.' : coverageKnown ? 'No current Attention items. Intake coverage is shown in Dashboards.' : 'No items are shown, but intake coverage is unknown. Do not treat this as a complete inbox.')); return;
       }
-      const matches = cards.filter((card) => card.notificationRecordId === recordId);
+      const matches = cards.filter((card) => recordId
+        ? card.notificationRecordIds?.includes(recordId)
+        : card.attentionRecordId === attentionRecordId);
       if (matches.length !== 1) { report(`${message ? `${message} ` : ''}The exact Attention item is no longer available in the current inbox. Refresh to check again.`); return; }
       const card = matches[0];
       const detail = unwrap(await host.request('command-center.v1.attention.get', { schemaVersion: 1, episodeId: card.episodeId }))?.episode;
@@ -1153,7 +1157,7 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   void load();
   if (signal.aborted) cleanup();
   return {
-    update(next) { if (recordId === next.props.notificationRecord && topicFilter === next.props.topicId && presented === next.presented) return; recordId = next.props.notificationRecord; topicFilter = next.props.topicId; presented = next.presented; void load(); },
+    update(next) { if (recordId === next.props.notificationRecord && attentionRecordId === next.props.attentionRecord && topicFilter === next.props.topicId && presented === next.presented) return; recordId = next.props.notificationRecord; attentionRecordId = next.props.attentionRecord; topicFilter = next.props.topicId; presented = next.presented; void load(); },
     focus() { refresh.focus(); },
     dispose() { lifetime.abort(); cleanup(); }
   };

@@ -51,7 +51,7 @@ test('native Topic creation forwards authenticated HTTP dispatch without requiri
   assert.equal(typeof dispatcher, 'function');
 });
 
-test('one-step restore rejects a stale caller revision before regenerating its preview', async () => {
+test('restore confirmation rejects omitted preview preconditions before service dispatch', async () => {
   let previews = 0;
   const service = { topics: {
     get() { return { topicId: '11111111-1111-4111-8111-111111111111', revision: 2, paraCategory: 'archive', lifecycle: 'active' }; },
@@ -59,8 +59,8 @@ test('one-step restore rejects a stale caller revision before regenerating its p
     listDestination() { return { activeGroups: { project: [], area: [], resource: [] }, provisioning: [], recovery: [], archived: [], retired: [] }; }
   } };
   const response = await invokeRoute({ service, body: { schemaVersion: 1, action: 'restore', logicalOperationId: randomUUID(), topicId: '11111111-1111-4111-8111-111111111111', expectedRevision: 1, paraCategory: 'project' } });
-  assert.equal(response.statusCode, 409);
-  assert.equal(response.body.code, 'conflict');
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.code, 'invalid-request');
   assert.equal(previews, 0);
 });
 
@@ -220,7 +220,7 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
     assert.equal(await page.evaluate(() => document.activeElement?.id), 'topic-create-submit');
     for (const label of ['Retry', 'Roll back', 'Rename', 'Move to area', 'Archive', 'Restore to project', 'Search archive', 'Verify exact source', 'Relink Session', 'Replace Primary Session']) {
       await page.getByRole('button', { name: label }).first().click();
-      const values = label.includes('Session') ? ['agent:main:replacement', 'session-id-replacement'] : label === 'Rename' ? ['Renamed Topic'] : ['Move to area', 'Archive'].includes(label) ? [undefined] : [];
+      const values = label.includes('Session') ? ['agent:main:replacement', 'session-id-replacement'] : label === 'Rename' ? ['Renamed Topic'] : ['Move to area', 'Archive', 'Restore to project'].includes(label) ? [undefined] : [];
       for (const value of values) {
         await page.locator('#command-dialog').waitFor({ state: 'visible' });
         await page.evaluate(() => globalThis.__confirmations.push(document.querySelector('#command-dialog-message').textContent));
@@ -233,7 +233,7 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
     await page.locator('#topic-search-form').evaluate((form) => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     await page.waitForFunction(() => {
       const methods = globalThis.__calls.map((call) => call.method);
-      return ['http:create', 'provisioning.retry', 'provisioning.rollback', 'http:rename', 'recategorize.preview', 'archive.preview', 'http:restore', 'search.query', 'recovery.verify', 'recovery.relink', 'recovery.replace-session']
+      return ['http:create', 'provisioning.retry', 'provisioning.rollback', 'http:rename', 'recategorize.preview', 'archive.preview', 'restore.preview', 'http:restore', 'search.query', 'recovery.verify', 'recovery.relink', 'recovery.replace-session']
         .every((fragment) => methods.some((method) => method.includes(fragment)))
         && globalThis.__confirmations.some((message) => message.includes('Disable and retain every active Reminder and scheduled operation'));
     }, undefined, { timeout: 90_000 }); // This batch now shares the host's 12 writes/minute relay budget.
@@ -245,7 +245,7 @@ test('authenticated Topics frame exercises lifecycle controls at desktop and nar
     });
     await page.locator('#topic-search-form button[type="submit"]').click();
     await page.waitForFunction(() => window.__searchAnnouncements.includes('Searching…') && window.__searchAnnouncements.includes('0 Notes · 0 Conversations'));
-    for (const fragment of ['http:create', 'provisioning.retry', 'provisioning.rollback', 'http:rename', 'recategorize.preview', 'archive.preview', 'http:restore', 'search.query', 'recovery.verify', 'recovery.relink', 'recovery.replace-session']) assert.equal(methods.some((method) => method.includes(fragment)), true, fragment);
+    for (const fragment of ['http:create', 'provisioning.retry', 'provisioning.rollback', 'http:rename', 'recategorize.preview', 'archive.preview', 'restore.preview', 'http:restore', 'search.query', 'recovery.verify', 'recovery.relink', 'recovery.replace-session']) assert.equal(methods.some((method) => method.includes(fragment)), true, fragment);
     const recoveryCall = await page.evaluate(() => globalThis.__calls.find((call) => call.method.endsWith('recovery.verify')));
     assert.equal(recoveryCall.params.expectedRevision, 1);
     assert.equal(recoveryCall.params.expectedSourceRevision, 'session-revision-1');
