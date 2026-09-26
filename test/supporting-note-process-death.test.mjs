@@ -44,6 +44,11 @@ test('a saved bill decision recovers its exact Note after process death at files
         loopId: captured.loop.loopId, expectedRevision: captured.loop.revision, paymentState: 'paid', actorId: 'fictional-operator',
         rationale: 'Fictional user assertion; no payment occurred.', updatedAt: '2026-09-24T00:02:00.000Z' });
       assert.equal(accepted.supportingNoteTarget.status, 'ready');
+      assert.throws(() => metadata.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: randomUUID(),
+        expectedRevision: accepted.loop.revision,
+        loop: { ...accepted.loop, revision: accepted.loop.revision + 1 },
+        evidenceRoles: {}, updatedAt: '2026-09-24T00:03:00.000Z' }),
+      error => error.code === 'open-loop-follow-up-pending', 'source publication cannot strand the accepted Note effect');
       const desired = prepareSupportingNoteAnnotation({ text: original, loopId: captured.loop.loopId,
         observation: metadata.getOpenLoopSupportingNoteIntent(decisionId).observation }).text;
       const intent = metadata.prepareOpenLoopSupportingNoteIntent({ schemaVersion: 1, decisionOperationId: decisionId,

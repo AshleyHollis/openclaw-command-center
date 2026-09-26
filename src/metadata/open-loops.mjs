@@ -112,18 +112,22 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     if ((existing?.revision ?? 0) !== expectedRevision) fail('open-loop-stale-revision', 'The open loop revision is stale.');
     if (existing && !userDecision) {
       const prior = db.prepare(`SELECT json_extract(op.result_json, '$.followUpIntent.action') AS action,
-          journal.state AS native_state
+          journal.state AS native_state,
+          json_extract(op.result_json, '$.supportingNoteTarget.status') AS note_status,
+          json_extract(op.result_json, '$.supportingNoteOutcome.status') AS note_outcome
         FROM open_loop_operations op
         JOIN source_observations observation ON observation.source_system = 'command-center'
-          AND observation.source_kind = 'user-decision' AND observation.external_source_id = op.logical_operation_id
+          AND observation.source_kind IN ('user-decision', 'processor-interpretation')
+          AND observation.external_source_id = op.logical_operation_id
           AND observation.observation_id = json_extract(op.result_json, '$.observation.observationId')
         LEFT JOIN operation_journal journal ON journal.logical_operation_id = json_extract(op.result_json, '$.followUpIntent.logicalOperationId')
         WHERE op.operation_kind = ? AND op.state = 'applied'
           AND json_extract(op.result_json, '$.loop.loopId') = ?
           AND json_extract(op.result_json, '$.loop.revision') = ?
         ORDER BY op.created_at DESC, op.logical_operation_id DESC LIMIT 1`).get(CHANGE_OPERATION, loop.loopId, existing.revision);
-      if (prior && !['none', 'blocked', 'conflict', null].includes(prior.action) && prior.native_state !== 'applied') {
-        fail('open-loop-follow-up-pending', 'The accepted Reminder follow-up must settle before this open loop can advance.');
+      if (prior && (!['none', 'blocked', 'conflict', null].includes(prior.action) && prior.native_state !== 'applied'
+        || prior.note_status === 'ready' && prior.note_outcome !== 'completed')) {
+        fail('open-loop-follow-up-pending', 'The accepted follow-up must settle before this open loop can advance.');
       }
     }
     const owner = db.prepare('SELECT loop_id FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(loop.kind, loop.stableSubjectId);
@@ -310,7 +314,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       const rows = db.prepare(`SELECT op.logical_operation_id, op.result_json, l.revision AS current_revision
         FROM open_loop_operations op
         JOIN source_observations o ON o.source_system = 'command-center'
-          AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+          AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
           AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
         LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
         WHERE op.operation_kind = ? AND op.state = 'applied' AND op.logical_operation_id > ?
@@ -330,7 +334,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     const row = db.prepare(`SELECT op.result_json, l.revision AS current_revision
       FROM open_loop_operations op
       JOIN source_observations o ON o.source_system = 'command-center'
-        AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+        AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
         AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
       LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
       WHERE op.logical_operation_id = ? AND op.operation_kind = ? AND op.state = 'applied'`).get(text(logicalOperationId, 'logicalOperationId'), CHANGE_OPERATION);
@@ -350,7 +354,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
         AND json_extract(op.result_json, '$.loop.loopId') = l.loop_id
         AND json_extract(op.result_json, '$.loop.revision') = l.revision
       JOIN source_observations o ON o.source_system = 'command-center'
-        AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+        AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
         AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
       WHERE l.loop_id = ? ORDER BY op.created_at DESC, op.logical_operation_id DESC LIMIT 1`).get(CHANGE_OPERATION, text(loopId, 'loopId'));
     if (!row) return null;
@@ -365,7 +369,7 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     const row = db.prepare(`SELECT op.result_json, l.revision AS current_revision
       FROM open_loop_operations op
       JOIN source_observations o ON o.source_system = 'command-center'
-        AND o.source_kind = 'user-decision' AND o.external_source_id = op.logical_operation_id
+        AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
         AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
       LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
       WHERE op.logical_operation_id = ? AND op.operation_kind = ? AND op.state = 'applied'`).get(text(decisionOperationId, 'decisionOperationId'), CHANGE_OPERATION);
