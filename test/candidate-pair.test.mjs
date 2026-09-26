@@ -101,11 +101,15 @@ test('candidate input staging seals exact host mirrors and a candidate-only noti
   const destination = path.join(root, 'candidate');
   await mkdir(path.join(sourceCheckout, 'src'), { recursive: true });
   const tuple = { host: { range: '=2026.9.5', commit: 'a'.repeat(40) }, pluginApi: { range: '=2026.9.5' } };
-  const pkg = { devDependencies: { openclaw: '2026.9.5' }, peerDependencies: { openclaw: '2026.9.5' },
+  const pkg = { name: 'openclaw-command-center', version: '0.4.0',
+    devDependencies: { openclaw: '2026.9.5' }, peerDependencies: { openclaw: '2026.9.5' },
     openclaw: { compat: { pluginApi: '=2026.9.5' } }, commandCenter: { compatibilityTuple: tuple } };
   await writeFile(path.join(sourceCheckout, 'src', 'compatibility-tuple.json'), JSON.stringify(tuple));
   await writeFile(path.join(sourceCheckout, 'package.json'), JSON.stringify(pkg));
-  await writeFile(path.join(sourceCheckout, 'package-lock.json'), JSON.stringify({ packages: { '': { commandCenter: pkg.commandCenter } } }));
+  await writeFile(path.join(sourceCheckout, 'package-lock.json'), JSON.stringify({
+    name: pkg.name, version: pkg.version, lockfileVersion: 3,
+    packages: { '': { commandCenter: pkg.commandCenter } }
+  }));
   await writeFile(path.join(sourceCheckout, 'src', 'release-scope.mjs'), 'export const FIRST_LIVE_FEATURES = Object.freeze({ notifications: false, noteMaintenance: false });\n');
   await writeFile(path.join(sourceCheckout, 'marker.txt'), 'committed source');
   const git = async (...args) => (await exec('git', ['-C', sourceCheckout, ...args])).stdout.trim();
@@ -140,4 +144,38 @@ test('candidate input staging seals exact host mirrors and a candidate-only noti
     hostCommit: candidateCommit, hostPackageVersion: '2026.9.6', pluginApiVersion: '2026.9.5' });
   assert.notEqual(ordinary.overlayDigest, receipt.overlayDigest);
   assert.match(await readFile(path.join(root, 'ordinary', 'src', 'release-scope.mjs'), 'utf8'), /notifications: false/u);
+  const sdkTuple = structuredClone(tuple);
+  sdkTuple.host = { range: '=2026.9.6', commit: candidateCommit };
+  sdkTuple.pluginApi.range = '=2026.9.6';
+  const sdkPkg = structuredClone(pkg);
+  sdkPkg.devDependencies.openclaw = '2026.9.6';
+  sdkPkg.peerDependencies.openclaw = '2026.9.6';
+  sdkPkg.openclaw.compat.pluginApi = '=2026.9.6';
+  sdkPkg.commandCenter.compatibilityTuple = sdkTuple;
+  const sdkLock = { name: sdkPkg.name, version: sdkPkg.version, lockfileVersion: 3, packages: {
+    '': { name: sdkPkg.name, version: sdkPkg.version, devDependencies: sdkPkg.devDependencies,
+      peerDependencies: sdkPkg.peerDependencies },
+    'node_modules/openclaw': { version: '2026.9.6',
+      resolved: 'https://registry.npmjs.org/openclaw/-/openclaw-2026.9.6.tgz', integrity: 'sha512-YQ==' }
+  } };
+  const resolvedLockPath = path.join(root, 'resolved-lock.json');
+  await writeFile(resolvedLockPath, JSON.stringify(sdkLock));
+  const sdkReceipt = await stageCandidateInputs({ sourceCheckout, sourceCommit, destination: path.join(root, 'sdk-candidate'),
+    hostCommit: candidateCommit, hostPackageVersion: '2026.9.6', pluginApiVersion: '2026.9.5',
+    candidatePluginApiVersion: '2026.9.6', candidateResolvedLockPath: resolvedLockPath });
+  assert.notEqual(sdkReceipt.overlayDigest, ordinary.overlayDigest);
+  const sdkStaged = JSON.parse(await readFile(path.join(root, 'sdk-candidate', 'package.json')));
+  assert.equal(sdkStaged.openclaw.compat.pluginApi, '=2026.9.6');
+  assert.equal(sdkStaged.commandCenter.compatibilityTuple.pluginApi.range, '=2026.9.6');
+  const stagedSdkLock = JSON.parse(await readFile(path.join(root, 'sdk-candidate', 'package-lock.json')));
+  assert.equal(stagedSdkLock.packages['node_modules/openclaw'].integrity, 'sha512-YQ==');
+  assert.deepEqual(stagedSdkLock.packages[''].commandCenter, sdkPkg.commandCenter);
+  await assert.rejects(stageCandidateInputs({ sourceCheckout, sourceCommit, destination: path.join(root, 'sdk-no-lock'),
+    hostCommit: candidateCommit, hostPackageVersion: '2026.9.6', pluginApiVersion: '2026.9.5',
+    candidatePluginApiVersion: '2026.9.6' }), { code: 'candidate-input-invalid' });
+  sdkLock.packages['node_modules/openclaw'].version = '2026.9.5';
+  await writeFile(resolvedLockPath, JSON.stringify(sdkLock));
+  await assert.rejects(stageCandidateInputs({ sourceCheckout, sourceCommit, destination: path.join(root, 'sdk-wrong-lock'),
+    hostCommit: candidateCommit, hostPackageVersion: '2026.9.6', pluginApiVersion: '2026.9.5',
+    candidatePluginApiVersion: '2026.9.6', candidateResolvedLockPath: resolvedLockPath }), { code: 'candidate-input-invalid' });
 });

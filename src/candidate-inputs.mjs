@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { candidateRepositories } from './candidate-pair.mjs';
 
@@ -27,12 +27,37 @@ function safePath(relative) {
 
 function json(bytes) { return JSON.parse(bytes.toString('utf8')); }
 
+async function resolvedCandidateLock(filename, pkg, version, baseLock) {
+  if (typeof filename !== 'string' || !path.isAbsolute(filename)) fail('Candidate SDK change requires an absolute resolved lockfile');
+  const status = await lstat(filename);
+  if (!status.isFile() || status.isSymbolicLink() || status.size > 2 * 1024 * 1024) fail('Candidate resolved lockfile is unsafe');
+  const bytes = await readFile(filename);
+  const lock = json(bytes);
+  const root = lock?.packages?.[''];
+  const sdk = lock?.packages?.['node_modules/openclaw'];
+  if (lock.name !== pkg.name || lock.version !== pkg.version || lock.lockfileVersion !== baseLock.lockfileVersion ||
+      !root || root.name !== pkg.name || root.version !== pkg.version ||
+      JSON.stringify(root.devDependencies) !== JSON.stringify(pkg.devDependencies) ||
+      JSON.stringify(root.peerDependencies) !== JSON.stringify(pkg.peerDependencies) ||
+      (root.commandCenter !== undefined && JSON.stringify(root.commandCenter) !== JSON.stringify(pkg.commandCenter)) ||
+      sdk?.version !== version || sdk.resolved !== `https://registry.npmjs.org/openclaw/-/openclaw-${version}.tgz` ||
+      !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(sdk.integrity ?? '')) fail('Candidate SDK lockfile does not resolve the mirrored package and API');
+  // npm resolves dependency nodes but discards the repository's custom root
+  // metadata. Restore only that mirror after validating every dependency input.
+  root.commandCenter = pkg.commandCenter;
+  return lock;
+}
+
 /** Extract one committed CC tree into a new private candidate staging directory. */
-export async function stageCandidateInputs({ sourceCheckout, sourceCommit, destination, hostCommit, hostPackageVersion, pluginApiVersion, candidateNotifications = false }) {
+export async function stageCandidateInputs({ sourceCheckout, sourceCommit, destination, hostCommit, hostPackageVersion,
+  pluginApiVersion, candidatePluginApiVersion = pluginApiVersion, candidateResolvedLockPath, candidateNotifications = false }) {
   if (!commitPattern.test(sourceCommit) || !commitPattern.test(hostCommit) ||
       typeof destination !== 'string' || !path.isAbsolute(destination) ||
       !/^\d{4}\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/u.test(hostPackageVersion ?? '')) fail('Candidate identities are incomplete');
   if (typeof candidateNotifications !== 'boolean') fail('Candidate notification gate must be explicit');
+  if (candidatePluginApiVersion !== pluginApiVersion &&
+      (candidatePluginApiVersion !== hostPackageVersion || !candidateResolvedLockPath)) fail('Candidate SDK change needs a resolved lock for the exact host API');
+  if (candidatePluginApiVersion === pluginApiVersion && candidateResolvedLockPath !== undefined) fail('Unused candidate lockfile is not accepted');
   if ((await git(sourceCheckout, ['remote', 'get-url', 'origin'])).toString().trim() !== candidateRepositories.commandCenter ||
       (await git(sourceCheckout, ['cat-file', '-t', sourceCommit])).toString().trim() !== 'commit') fail('Candidate source repository or commit is invalid');
   const listing = (await git(sourceCheckout, ['ls-tree', '-r', '-z', sourceCommit])).toString('utf8').split('\0').filter(Boolean);
@@ -59,11 +84,19 @@ export async function stageCandidateInputs({ sourceCheckout, sourceCommit, desti
   // Never fabricate dependency nodes by changing only the displayed version.
   const changedTuple = structuredClone(tuple);
   changedTuple.host = { range: `=${hostPackageVersion}`, commit: hostCommit };
+  if (candidatePluginApiVersion !== pluginApiVersion) {
+    changedTuple.pluginApi.range = `=${candidatePluginApiVersion}`;
+    pkg.devDependencies.openclaw = candidatePluginApiVersion;
+    pkg.peerDependencies.openclaw = candidatePluginApiVersion;
+    pkg.openclaw.compat.pluginApi = `=${candidatePluginApiVersion}`;
+  }
   const overlay = [];
   if (JSON.stringify(changedTuple) !== JSON.stringify(tuple)) {
     pkg.commandCenter.compatibilityTuple = changedTuple;
-    lock.packages[''].commandCenter.compatibilityTuple = changedTuple;
-    for (const [name, value] of [['src/compatibility-tuple.json', changedTuple], ['package.json', pkg], ['package-lock.json', lock]]) {
+    const candidateLock = candidatePluginApiVersion === pluginApiVersion ? lock :
+      await resolvedCandidateLock(candidateResolvedLockPath, pkg, candidatePluginApiVersion, lock);
+    if (candidateLock === lock) lock.packages[''].commandCenter.compatibilityTuple = changedTuple;
+    for (const [name, value] of [['src/compatibility-tuple.json', changedTuple], ['package.json', pkg], ['package-lock.json', candidateLock]]) {
       const before = content.get(name);
       const after = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
       content.set(name, after);
