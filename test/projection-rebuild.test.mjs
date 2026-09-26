@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { symlinkSync } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -210,7 +211,8 @@ test('the actual source fixtures and authored metadata survive failures, discard
     const metadataService = label === 'conflicting metadata mapping' ? {
       readProjectionSnapshot() { const value = service.readProjectionSnapshot(); return { ...value, sourceReferences: [...value.sourceReferences, { ...value.sourceReferences[0], referenceId: 'duplicate-folder' }] }; },
       getProjectionBookkeeping: service.getProjectionBookkeeping,
-      setProjectionBookkeeping: service.setProjectionBookkeeping
+      setProjectionBookkeeping: service.setProjectionBookkeeping,
+      withCoreProjectionPublication: service.withCoreProjectionPublication
     } : service;
     const projection = openCommandCenterProjectionService({ stateDir, metadataService });
     await assert.rejects(projection.rebuild({ authoritativeSources: { readSnapshot } }), (error) => error.code === code, label);
@@ -315,6 +317,199 @@ test('crash boundaries never expose a partial query and restart converges', asyn
     assert.deepEqual(reopened.readProjectionSnapshot(), metadataBeforeCrash);
   });
 });
+
+test('failed replacements preserve exact committed bytes, query and checkpoint across restart', async () => {
+  for (const point of ['bookkeeping', 'publication', 'replacement', 'directorySync', 'bookkeepingCommit']) await withState(async (stateDir) => {
+    const metadata = open(stateDir); seed(metadata);
+    await metadata.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+    const root = resolveCommandCenterProjectionRoot(stateDir);
+    const beforeBytes = await readFile(path.join(root, 'committed.json'));
+    const beforeQuery = metadata.queryProjections();
+    const beforeCheckpoint = metadata.getProjectionBookkeeping(projectionId);
+    const hooks = { [point]: () => { throw new Error(`injected ${point}`); } };
+    const projection = openCommandCenterProjectionService({ stateDir, metadataService: metadata, hooks });
+    await assert.rejects(projection.rebuild({ authoritativeSources: provider(sourceSnapshot('fictional-v2')) }), /injected/u);
+    projection.close(); metadata.close(); services.delete(metadata);
+    const restarted = open(stateDir);
+    restarted.getProjectionStatus();
+    assert.deepEqual(await readFile(path.join(root, 'committed.json')), beforeBytes);
+    assert.deepEqual(restarted.getProjectionBookkeeping(projectionId), beforeCheckpoint);
+    assert.throws(() => restarted.queryProjections(), (error) => error.code === 'projection-unavailable');
+    await restarted.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+    assert.deepEqual(restarted.queryProjections(), beforeQuery);
+    assert.deepEqual(await readdir(root), ['committed.json']);
+  });
+});
+
+test('first publication failure leaves no committed bytes or checkpoint after restart', async () => {
+  for (const point of ['publication', 'replacement', 'directorySync', 'bookkeeping']) await withState(async (stateDir) => {
+    const metadata = open(stateDir); seed(metadata);
+    const projection = openCommandCenterProjectionService({ stateDir, metadataService: metadata, hooks: { [point]: () => { throw new Error(`injected ${point}`); } } });
+    await assert.rejects(projection.rebuild({ authoritativeSources: provider() }), /injected/u);
+    projection.close(); metadata.close(); services.delete(metadata);
+    const restarted = open(stateDir);
+    assert.equal(restarted.getProjectionBookkeeping(projectionId), null);
+    assert.deepEqual(await readdir(resolveCommandCenterProjectionRoot(stateDir)), []);
+    await restarted.rebuildProjections({ authoritativeSources: provider() });
+    assert.equal(restarted.queryProjections().index.length, 4);
+    assert.deepEqual(await readdir(resolveCommandCenterProjectionRoot(stateDir)), ['committed.json']);
+  });
+});
+
+test('a deleted disposable generation is not replaced by uncommitted bytes', async () => withState(async (stateDir) => {
+  const metadata = open(stateDir); seed(metadata);
+  await metadata.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+  const beforeCheckpoint = metadata.getProjectionBookkeeping(projectionId);
+  metadata.deleteDerivedProjections();
+  const projection = openCommandCenterProjectionService({ stateDir, metadataService: metadata, hooks: { bookkeeping: () => { throw new Error('injected bookkeeping'); } } });
+  await assert.rejects(projection.rebuild({ authoritativeSources: provider(sourceSnapshot('fictional-v2')) }), /injected bookkeeping/u);
+  projection.close(); metadata.close(); services.delete(metadata);
+  const restarted = open(stateDir);
+  restarted.getProjectionStatus();
+  assert.deepEqual(restarted.getProjectionBookkeeping(projectionId), beforeCheckpoint);
+  assert.deepEqual(await readdir(resolveCommandCenterProjectionRoot(stateDir)), []);
+  await restarted.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+  assert.equal(restarted.queryProjections().index.length, 4);
+}));
+
+test('process death during replacement restores the old complete generation on restart', async () => {
+  for (const point of ['replacement', 'directorySync', 'bookkeeping']) await withState(async (stateDir) => {
+    const metadata = open(stateDir); seed(metadata);
+    const sourceRoot = path.join(stateDir, 'authoritative-fixtures'); await mkdir(sourceRoot);
+    for (const [field, value] of Object.entries({ noteFolders: 'folder', sessions: 'session', reminderSchedules: 'schedule', importedHistory: 'history' })) await writeFile(path.join(sourceRoot, `${field}.fixture`), value);
+    await metadata.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+    const root = resolveCommandCenterProjectionRoot(stateDir);
+    const beforeBytes = await readFile(path.join(root, 'committed.json'));
+    const beforeQuery = metadata.queryProjections();
+    const beforeCheckpoint = metadata.getProjectionBookkeeping(projectionId);
+    metadata.close(); services.delete(metadata);
+    await writeFile(path.join(sourceRoot, 'noteFolders.fixture'), 'folder-v2');
+    const child = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/projection-crash.mjs', import.meta.url)), stateDir, point, sourceRoot], { encoding: 'utf8', env: { ...process.env, COMMAND_CENTER_PROJECTION_CRASH_AT: point } });
+    assert.equal(child.signal, 'SIGKILL');
+    const restarted = open(stateDir);
+    restarted.getProjectionStatus();
+    assert.deepEqual(await readFile(path.join(root, 'committed.json')), beforeBytes);
+    assert.deepEqual(restarted.getProjectionBookkeeping(projectionId), beforeCheckpoint);
+    assert.throws(() => restarted.queryProjections(), (error) => error.code === 'projection-unavailable');
+    await restarted.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+    assert.deepEqual(restarted.queryProjections(), beforeQuery);
+    assert.deepEqual(await readdir(root), ['committed.json']);
+  });
+});
+
+test('successful replacement publishes exact new bytes and checkpoint across restart', async () => withState(async (stateDir) => {
+  const metadata = open(stateDir); seed(metadata);
+  await metadata.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+  const root = resolveCommandCenterProjectionRoot(stateDir);
+  const oldBytes = await readFile(path.join(root, 'committed.json'));
+  const oldCheckpoint = metadata.getProjectionBookkeeping(projectionId);
+  const newCheckpoint = await metadata.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v2')) });
+  const newBytes = await readFile(path.join(root, 'committed.json'));
+  const newQuery = metadata.queryProjections();
+  assert.notDeepEqual(newBytes, oldBytes);
+  assert.notDeepEqual(newCheckpoint, oldCheckpoint);
+  assert.deepEqual(await readdir(root), ['committed.json']);
+  metadata.close(); services.delete(metadata);
+  const restarted = open(stateDir);
+  assert.throws(() => restarted.queryProjections(), (error) => error.code === 'projection-unavailable');
+  await restarted.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v2')) });
+  assert.deepEqual(await readFile(path.join(root, 'committed.json')), newBytes);
+  assert.deepEqual(restarted.getProjectionBookkeeping(projectionId), newCheckpoint);
+  assert.deepEqual(restarted.queryProjections(), newQuery);
+}));
+
+test('a lost bookkeeping response leaves the new committed generation recoverable', async () => withState(async (stateDir) => {
+  const metadata = open(stateDir); seed(metadata);
+  await metadata.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+  const root = resolveCommandCenterProjectionRoot(stateDir);
+  const oldBytes = await readFile(path.join(root, 'committed.json'));
+  const projection = openCommandCenterProjectionService({ stateDir, metadataService: metadata, hooks: { bookkeepingResponse: () => { throw new Error('bookkeeping response lost'); } } });
+  await assert.rejects(projection.rebuild({ authoritativeSources: provider(sourceSnapshot('fictional-v2')) }), /bookkeeping response lost/u);
+  projection.close(); metadata.close(); services.delete(metadata);
+  const newBytes = await readFile(path.join(root, 'committed.json'));
+  assert.notDeepEqual(newBytes, oldBytes);
+  const restarted = open(stateDir);
+  await restarted.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v2')) });
+  assert.deepEqual(await readFile(path.join(root, 'committed.json')), newBytes);
+  assert.equal(restarted.getProjectionBookkeeping(projectionId).sourceRevision, 'importedHistory:fictional-v2|noteFolders:fictional-v2|reminderSchedules:fictional-v2|sessions:fictional-v2');
+  assert.equal(restarted.queryProjections().index.length, 4);
+  assert.deepEqual(await readdir(root), ['committed.json']);
+}));
+
+test('a legacy committed generation survives a failed replacement and restart', async () => withState(async (stateDir) => {
+  const metadata = open(stateDir); seed(metadata);
+  await metadata.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+  const root = resolveCommandCenterProjectionRoot(stateDir);
+  const file = path.join(root, 'committed.json');
+  const legacy = JSON.parse(await readFile(file));
+  delete legacy.publishedAt; delete legacy.resultsDigest;
+  await writeFile(file, JSON.stringify(legacy));
+  const first = metadata.getProjectionBookkeeping(projectionId);
+  const checkpoint = metadata.setProjectionBookkeeping({ ...first, updatedAt: '2026-08-22T00:00:00.000Z' });
+  const bytes = await readFile(file);
+  const projection = openCommandCenterProjectionService({ stateDir, metadataService: metadata, hooks: { directorySync: () => { throw new Error('injected directory fsync failure'); } } });
+  await assert.rejects(projection.rebuild({ authoritativeSources: provider(sourceSnapshot('fictional-v2')) }), /injected directory fsync failure/u);
+  projection.close(); metadata.close(); services.delete(metadata);
+  const restarted = open(stateDir);
+  restarted.getProjectionStatus();
+  assert.deepEqual(await readFile(file), bytes);
+  assert.deepEqual(restarted.getProjectionBookkeeping(projectionId), checkpoint);
+  await restarted.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+  assert.equal(restarted.queryProjections().index.length, 4);
+  assert.deepEqual(await readdir(root), ['committed.json']);
+}));
+
+test('a planted previous-generation symlink cannot redirect backup writes', async () => withState(async (stateDir) => {
+  const metadata = open(stateDir); seed(metadata);
+  await metadata.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+  const root = resolveCommandCenterProjectionRoot(stateDir);
+  const outside = path.join(stateDir, 'outside.json'); await writeFile(outside, 'untouched');
+  const projection = openCommandCenterProjectionService({ stateDir, metadataService: metadata, hooks: { publication: () => symlinkSync(outside, path.join(root, 'previous.json'), 'file') } });
+  await projection.rebuild({ authoritativeSources: provider(sourceSnapshot('fictional-v2')) });
+  assert.equal(await readFile(outside, 'utf8'), 'untouched');
+  assert.deepEqual(await readdir(root), ['committed.json']);
+}));
+
+test('a competing service cannot reconcile while replacement is uncommitted', async () => withState(async (stateDir) => {
+  const metadata = open(stateDir); seed(metadata);
+  await metadata.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+  let competingError;
+  const projection = openCommandCenterProjectionService({ stateDir, metadataService: metadata, hooks: { replacement: () => {
+    let competitor;
+    try { competitor = open(stateDir); openCommandCenterProjectionService({ stateDir, metadataService: competitor }); }
+    catch (error) { competingError = error; }
+    finally { competitor?.close(); services.delete(competitor); }
+  } } });
+  await projection.rebuild({ authoritativeSources: provider(sourceSnapshot('fictional-v2')) });
+  assert.ok(competingError, 'the concurrent transaction must wait or fail closed while publication holds the database lock');
+  assert.equal(projection.queryProjections().index[0].sourceRevision, 'fictional-v2');
+  metadata.close(); services.delete(metadata);
+  const restarted = open(stateDir);
+  await restarted.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v2')) });
+  assert.equal(restarted.queryProjections().index[0].sourceRevision, 'fictional-v2');
+}));
+
+test('a killed child after same-input repair commits cannot restore stale bytes', async () => withState(async (stateDir) => {
+  const metadata = open(stateDir); seed(metadata);
+  await metadata.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+  const root = resolveCommandCenterProjectionRoot(stateDir);
+  const file = path.join(root, 'committed.json');
+  const stale = JSON.parse(await readFile(file));
+  stale.results.index.reverse();
+  stale.resultsDigest = digest(JSON.stringify(stale.results));
+  await writeFile(file, JSON.stringify(stale));
+  const staleBytes = await readFile(file);
+  metadata.close(); services.delete(metadata);
+  const sourceRoot = path.join(stateDir, 'authoritative-fixtures'); await mkdir(sourceRoot);
+  for (const [field, value] of Object.entries({ noteFolders: 'folder', sessions: 'session', reminderSchedules: 'schedule', importedHistory: 'history' })) await writeFile(path.join(sourceRoot, `${field}.fixture`), value);
+  const child = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/projection-crash.mjs', import.meta.url)), stateDir, 'bookkeepingResponse', sourceRoot], { encoding: 'utf8', env: { ...process.env, COMMAND_CENTER_PROJECTION_CRASH_AT: 'bookkeepingResponse' } });
+  assert.equal(child.signal, 'SIGKILL');
+  const restarted = open(stateDir);
+  assert.notDeepEqual(await readFile(file), staleBytes);
+  await restarted.rebuildProjections({ authoritativeSources: provider(sourceSnapshot('fictional-v1')) });
+  assert.deepEqual(restarted.queryProjections().index.map((row) => row.referenceId), ['folder', 'history', 'session', 'schedule']);
+  assert.deepEqual(await readdir(root), ['committed.json']);
+}));
 
 test('Topic Search publishes independent v1 projections atomically and preserves the prior generation on one-sided failure', async () => withState(async (stateDir) => {
   const metadata = open(stateDir);

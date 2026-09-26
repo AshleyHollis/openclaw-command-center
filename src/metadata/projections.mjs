@@ -1,4 +1,5 @@
-import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { constants as fsConstants } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { resolveCommandCenterProjectionRoot } from './path.mjs';
@@ -8,6 +9,7 @@ export const projectionFormatVersion = 1;
 export const projectionPhases = Object.freeze(['validate', 'build', 'publish', 'complete', 'failed']);
 const digestPattern = /^sha256:[0-9a-f]{64}$/u;
 const generationName = 'committed.json';
+const previousName = 'previous.json';
 const sourceKinds = Object.freeze([
   Object.freeze({ field: 'noteFolders', sourceSystem: 'obsidian', sourceKind: 'note_folder' }),
   Object.freeze({ field: 'sessions', sourceSystem: 'openclaw', sourceKind: 'session' }),
@@ -111,17 +113,37 @@ function buildResults(metadata, sources) {
 function validateGeneration(value, expectedResults = undefined) {
   if (!value || typeof value !== 'object' || value.formatVersion !== projectionFormatVersion || value.projectionId !== projectionId || !nonBlank(value.sourceRevision) || !digestPattern.test(value.inputDigest) || !value.results || typeof value.results !== 'object' || Array.isArray(value.results) || JSON.stringify(Object.keys(value.results).sort(compare)) !== JSON.stringify(['cache', 'index', 'summary'])) throw projectionError('generation-invalid', 'The committed projection generation is invalid.');
   if (!Array.isArray(value.results.cache) || !Array.isArray(value.results.index) || !value.results.summary || typeof value.results.summary !== 'object' || Array.isArray(value.results.summary)) throw projectionError('generation-invalid', 'The committed projection generation is invalid.');
-  const generation = Object.freeze({ formatVersion: value.formatVersion, projectionId: value.projectionId, sourceRevision: value.sourceRevision, inputDigest: value.inputDigest, results: Object.freeze({ cache: Object.freeze(value.results.cache.map((row) => Object.freeze({ ...row }))), index: Object.freeze(value.results.index.map((row) => Object.freeze({ ...row }))), summary: Object.freeze({ ...value.results.summary }) }) });
+  if ((value.publishedAt !== undefined || value.resultsDigest !== undefined) && (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{12}Z$/u.test(value.publishedAt) || value.resultsDigest !== resultsDigest(value.results))) throw projectionError('generation-invalid', 'The committed projection generation is invalid.');
+  const generation = Object.freeze({ formatVersion: value.formatVersion, projectionId: value.projectionId, sourceRevision: value.sourceRevision, inputDigest: value.inputDigest, ...(value.publishedAt ? { publishedAt: value.publishedAt, resultsDigest: value.resultsDigest } : {}), results: Object.freeze({ cache: Object.freeze(value.results.cache.map((row) => Object.freeze({ ...row }))), index: Object.freeze(value.results.index.map((row) => Object.freeze({ ...row }))), summary: Object.freeze({ ...value.results.summary }) }) });
   if (expectedResults !== undefined && JSON.stringify(generation.results) !== JSON.stringify(expectedResults)) throw projectionError('generation-invalid', 'The committed projection results do not match current inputs.');
   return generation;
 }
 function sync(file) { const descriptor = openSync(file, 'r'); try { fsyncSync(descriptor); } finally { closeSync(descriptor); } }
 function crash(point, hooks) { if (process.env.COMMAND_CENTER_PROJECTION_CRASH_AT === point) process.kill(process.pid, 'SIGKILL'); if (typeof hooks?.[point] === 'function') hooks[point](); }
+function syncDirectory(root, hooks) {
+  if (process.env.COMMAND_CENTER_PROJECTION_CRASH_AT === 'directorySync') process.kill(process.pid, 'SIGKILL');
+  if (typeof hooks?.directorySync === 'function') hooks.directorySync(root);
+  else sync(root);
+}
 function readGeneration(root, expectedResults = undefined) {
   const filename = path.join(root, generationName);
   const stat = lstatSync(filename);
   if (!stat.isFile() || stat.isSymbolicLink()) throw projectionError('generation-invalid', 'The committed projection generation is not an owned regular file.');
   return validateGeneration(JSON.parse(readFileSync(filename, 'utf8')), expectedResults);
+}
+function matchesCheckpoint(filename, committed) {
+  if (!committed || !existsSync(filename)) return false;
+  try {
+    const stat = lstatSync(filename);
+    if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    const generation = validateGeneration(JSON.parse(readFileSync(filename, 'utf8')));
+    const currentFormat = /\.\d{12}Z$/u.test(committed.updatedAt);
+    return generation.sourceRevision === committed.sourceRevision && generation.inputDigest === committed.inputDigest && (currentFormat ? generation.publishedAt === committed.updatedAt : !generation.publishedAt);
+  } catch { return false; }
+}
+function publicationTime(existing) {
+  const milliseconds = Math.max(Date.now(), (Date.parse(existing?.updatedAt) || 0) + 1);
+  return new Date(milliseconds).toISOString().replace(/Z$/u, '000000000Z');
 }
 
 export function openCommandCenterProjectionService({ stateDir, metadataService, authoritativeSources, hooks = {} } = {}) {
@@ -132,14 +154,33 @@ export function openCommandCenterProjectionService({ stateDir, metadataService, 
   let committedResultsDigest;
   let current = state('idle', validProgress('validate', 0));
   const generationPath = () => path.join(root, generationName);
+  const previousPath = () => path.join(root, previousName);
+  const checkpoint = () => metadataService.getProjectionBookkeeping(projectionId);
+  const reconcile = () => metadataService.withCoreProjectionPublication(({ checkpoint: lockedCheckpoint }) => {
+    const committed = lockedCheckpoint();
+    const previous = previousPath();
+    const published = generationPath();
+    if (matchesCheckpoint(previous, committed)) {
+      const recovery = path.join(root, `.recovery-${randomUUID()}.json`);
+      copyFileSync(previous, recovery, fsConstants.COPYFILE_EXCL); sync(recovery);
+      renameSync(recovery, published); sync(root);
+      unlinkSync(previous); sync(root);
+      return;
+    }
+    if (matchesCheckpoint(published, committed)) {
+      if (existsSync(previous)) { unlinkSync(previous); sync(root); }
+      return;
+    }
+    // No file matches the durable checkpoint; discard an interrupted publication.
+    if (existsSync(published)) { unlinkSync(published); sync(root); }
+  });
   const cleanStaging = () => {
     for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (/^\.generation-[0-9a-f-]{8,}\.json$/u.test(entry.name) && entry.isFile() && !entry.isSymbolicLink()) unlinkSync(path.join(root, entry.name));
+      if (/^\.(?:generation|recovery|previous)-[0-9a-f-]{8,}\.json$/u.test(entry.name) && entry.isFile() && !entry.isSymbolicLink()) unlinkSync(path.join(root, entry.name));
     }
   };
-  cleanStaging();
+  reconcile(); metadataService.withCoreProjectionPublication(() => cleanStaging());
   const emit = (phase, completed, onProgress, observations) => { const observation = validProgress(phase, completed); observations.push(observation); current = state('rebuilding', observation, [], observations); onProgress?.({ ...observation }); };
-  const checkpoint = () => metadataService.getProjectionBookkeeping(projectionId);
   const query = () => {
     if (current.mode !== 'ready') throw new CommandCenterProjectionError('projection-unavailable', 'Projections are unavailable until a committed rebuild succeeds.', { mode: 'recovery-only' });
     let generation;
@@ -148,7 +189,7 @@ export function openCommandCenterProjectionService({ stateDir, metadataService, 
       throw new CommandCenterProjectionError('projection-unavailable', 'The projection generation is not committed.', { mode: 'recovery-only' });
     }
     const committed = checkpoint();
-    if (!committed || committed.sourceRevision !== generation.sourceRevision || committed.inputDigest !== generation.inputDigest || committedResultsDigest !== resultsDigest(generation.results)) {
+    if (!matchesCheckpoint(generationPath(), committed) || committedResultsDigest !== resultsDigest(generation.results)) {
       current = state('recovery-only', current.progress, [diagnostic(projectionError('generation-invalid', 'The projection generation is not committed.'))]);
       throw new CommandCenterProjectionError('projection-unavailable', 'The projection generation is not committed.', { mode: 'recovery-only' });
     }
@@ -164,7 +205,7 @@ export function openCommandCenterProjectionService({ stateDir, metadataService, 
         const observations = [];
         let staging;
         try {
-          root = resolveCommandCenterProjectionRoot(stateDir); cleanStaging();
+          root = resolveCommandCenterProjectionRoot(stateDir); reconcile(); metadataService.withCoreProjectionPublication(() => cleanStaging());
           emit('validate', 0, onProgress, observations); crash('validation', hooks);
           let metadataSnapshot;
           try { metadataSnapshot = metadataService.readProjectionSnapshot(); }
@@ -176,32 +217,48 @@ export function openCommandCenterProjectionService({ stateDir, metadataService, 
           const inputDigest = sha256({ projectionId, metadata, sources: { sourceRevision: sources.sourceRevision, records: sources.records } });
           const existing = checkpoint();
           if (existing?.sourceRevision === sources.sourceRevision && existing.inputDigest === inputDigest) {
-            try { const expectedResults = buildResults(metadata, sources); const generation = readGeneration(root, expectedResults); if (generation.sourceRevision === existing.sourceRevision && generation.inputDigest === existing.inputDigest) { committedResultsDigest = resultsDigest(generation.results); emit('complete', 3, onProgress, observations); current = state('ready', validProgress('complete', 3), [], observations); return existing; } } catch { /* rebuild missing or stale derived material */ }
+            try { const expectedResults = buildResults(metadata, sources); const generation = readGeneration(root, expectedResults); if (matchesCheckpoint(generationPath(), existing)) { committedResultsDigest = resultsDigest(generation.results); emit('complete', 3, onProgress, observations); current = state('ready', validProgress('complete', 3), [], observations); return existing; } } catch { /* rebuild missing or stale derived material */ }
           }
           emit('build', 1, onProgress, observations); crash('write', hooks);
           const results = buildResults(metadata, sources);
-          const generation = validateGeneration({ formatVersion: projectionFormatVersion, projectionId, sourceRevision: sources.sourceRevision, inputDigest, results });
           root = resolveCommandCenterProjectionRoot(stateDir);
-          staging = path.join(root, `.generation-${randomUUID()}.json`);
-          writeFileSync(staging, JSON.stringify(generation)); sync(staging); crash('publication', hooks);
-          emit('publish', 2, onProgress, observations);
-          renameSync(staging, generationPath()); staging = undefined; sync(root); crash('bookkeeping', hooks);
-          const unchangedCheckpoint = existing?.sourceRevision === generation.sourceRevision && existing.inputDigest === generation.inputDigest;
-          const committed = unchangedCheckpoint
-            ? existing
-            : metadataService.setProjectionBookkeeping({ projectionId, sourceRevision: generation.sourceRevision, inputDigest: generation.inputDigest, ...(existing ? { updatedAt: new Date(Math.max(Date.now(), Date.parse(existing.updatedAt) + 1)).toISOString() } : {}) });
-          committedResultsDigest = resultsDigest(generation.results);
+          const committed = metadataService.withCoreProjectionPublication(({ checkpoint: lockedCheckpoint, commit }) => {
+            const prior = lockedCheckpoint();
+            const restoringDeletedMaterial = prior?.sourceRevision === sources.sourceRevision && prior.inputDigest === inputDigest && /\.\d{12}Z$/u.test(prior.updatedAt) && !existsSync(generationPath());
+            const publishedAt = restoringDeletedMaterial ? prior.updatedAt : publicationTime(prior);
+            const generation = validateGeneration({ formatVersion: projectionFormatVersion, projectionId, sourceRevision: sources.sourceRevision, inputDigest, publishedAt, resultsDigest: resultsDigest(results), results });
+            staging = path.join(root, `.generation-${randomUUID()}.json`);
+            writeFileSync(staging, JSON.stringify(generation), { flag: 'wx' }); sync(staging); crash('publication', hooks);
+            emit('publish', 2, onProgress, observations);
+            if (prior && matchesCheckpoint(generationPath(), prior)) {
+              const backup = path.join(root, `.previous-${randomUUID()}.json`);
+              copyFileSync(generationPath(), backup, fsConstants.COPYFILE_EXCL); sync(backup);
+              renameSync(backup, previousPath()); sync(root);
+            }
+            renameSync(staging, generationPath()); staging = undefined;
+            crash('replacement', hooks); syncDirectory(root, hooks);
+            crash('bookkeeping', hooks); crash('bookkeepingCommit', hooks);
+            return commit({ sourceRevision: generation.sourceRevision, inputDigest: generation.inputDigest, updatedAt: publishedAt });
+          });
+          crash('bookkeepingResponse', hooks);
+          committedResultsDigest = resultsDigest(results);
           emit('complete', 3, onProgress, observations); current = state('ready', validProgress('complete', 3), [], observations);
+          try {
+            metadataService.withCoreProjectionPublication(({ checkpoint: lockedCheckpoint }) => {
+              if (lockedCheckpoint()?.updatedAt === committed.updatedAt && existsSync(previousPath())) { unlinkSync(previousPath()); sync(root); }
+            });
+          } catch { /* committed generation remains usable; retry cleanup on restart */ }
           return committed;
         } catch (error) {
           if (staging) try { unlinkSync(staging); } catch { /* staging is disposable */ }
+          try { reconcile(); } catch { /* durable recovery is retried on restart */ }
           const observation = validProgress('failed', Math.min(current.progress.completed, 3)); observations.push(observation); onProgress?.({ ...observation }); current = state('recovery-only', observation, [diagnostic(error)], observations);
           throw error;
         }
       })().finally(() => { active = undefined; });
       return active;
     },
-    delete() { if (closed) throw new CommandCenterProjectionError('service-closed', 'Projection service is closed.'); root = resolveCommandCenterProjectionRoot(stateDir); rmSync(root, { recursive: true, force: true }); committedResultsDigest = undefined; current = state('idle', validProgress('validate', 0)); return true; },
+    delete() { if (closed) throw new CommandCenterProjectionError('service-closed', 'Projection service is closed.'); root = resolveCommandCenterProjectionRoot(stateDir); metadataService.withCoreProjectionPublication(() => rmSync(root, { recursive: true, force: true })); committedResultsDigest = undefined; current = state('idle', validProgress('validate', 0)); return true; },
     discard() { return this.delete(); },
     getStatus() { return { mode: current.mode, progress: { ...current.progress }, diagnostics: current.diagnostics.map((item) => ({ ...item })), observations: current.observations.map((item) => ({ ...item })) }; },
     getProjectionStatus() { return this.getStatus(); },
