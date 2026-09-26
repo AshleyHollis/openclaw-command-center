@@ -12,6 +12,8 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNotificationService } from '../src/notifications/service.mjs';
 import { invokeBridgeMethod } from '../src/bridge/register.mjs';
 import { createHostFileAccessFixture, installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+import { withNoteFilesystemOwner } from '../src/sources/note-filesystem-owner.mjs';
+import { createCommitmentCaptureService } from '../src/open-loops/commitment-capture.mjs';
 import { enrollFixtureFolder } from './support/note-folder-fixture.mjs';
 import { build, distRoot } from '../src/build.mjs';
 
@@ -103,7 +105,7 @@ function fictionalSchedulerGateway() {
   return { jobs, async request(method, params) {
     if (method === 'cron.list') return { jobs: [...jobs.values()].map(job => structuredClone(job)) };
     if (method === 'cron.get') return structuredClone(jobs.get(params.id));
-    if (method === 'cron.add') { const id = `fictional-open-loop-${jobs.size + 1}`; const job = { ...structuredClone(params), id, configRevision: `revision-${++revision}` }; jobs.set(id, job); return { created: true, job: structuredClone(job) }; }
+    if (method === 'cron.add') { const id = params.id ?? `fictional-open-loop-${jobs.size + 1}`; const job = { ...structuredClone(params), id, configRevision: `revision-${++revision}` }; jobs.set(id, job); return { created: true, job: structuredClone(job) }; }
     if (method === 'cron.update') { const current = jobs.get(params.id); if (current.configRevision !== params.expectedConfigRevision) throw Object.assign(new Error('changed'), { code: 'CRON_JOB_CHANGED', actualConfigRevision: current.configRevision }); const job = { ...current, ...structuredClone(params.patch), configRevision: `revision-${++revision}` }; jobs.set(job.id, job); return structuredClone(job); }
     throw new Error(`Unexpected fictional Scheduler method ${method}`);
   } };
@@ -202,6 +204,130 @@ test('registered open-loop bridge applies authenticated lifecycle changes and re
     assert.equal(settled.loop.paymentState, 'paid');
     assert.equal(settled.loop.state, 'resolved');
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('a Note-backed decision waits for the Note owner before its durable user-decision commit', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-note-decision-fence-'));
+  const fileAccess = createHostFileAccessFixture();
+  let service; let metadata; let release; let held;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    metadata.createTopic({ topicId: 'fictional-home', paraCategory: 'area', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'note:fictional-bill', topicId: 'fictional-home',
+      sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: '/fictional/bill.md',
+      observedRevision: 'sha256:fictional-note-revision' });
+    const captured = await createCommitmentCaptureService({ metadata }).capture({ schemaVersion: 1,
+      logicalOperationId: '10000000-0000-4000-8000-000000000091', sourceKind: 'email',
+      sourceExternalId: 'fictional-email', sourceVersion: 'upstream-v1',
+      sourceReferenceId: 'note:fictional-bill', sourcePath: 'bill.md',
+      sourceReferenceVersion: 'sha256:fictional-note-revision', topicId: 'fictional-home',
+      title: 'Pay fictional bill', obligationId: 'fictional-payment', obligationKind: 'payment',
+      provenance: 'explicit', occurredAt: '2026-09-24T01:00:00.000Z',
+      observedAt: '2026-09-24T01:01:00.000Z', historicalBaseline: false });
+    const host = fakePublishedApi(stateDir, { fileAccess });
+    plugin.register(host.api); service = host.services[0]; await service.start();
+    let acquired;
+    const acquiredPromise = new Promise(resolve => { acquired = resolve; });
+    const releasePromise = new Promise(resolve => { release = resolve; });
+    held = withNoteFilesystemOwner(metadata, async () => { acquired(); await releasePromise; },
+      { acquire: fileAccess.tryAcquireExclusiveSqliteCoordinator });
+    await acquiredPromise;
+    let settled = false;
+    const decision = service.openLoopsPaymentStatus({ schemaVersion: 1,
+      logicalOperationId: '20000000-0000-4000-8000-000000000092',
+      loopId: captured.loop.loopId, expectedRevision: captured.loop.revision,
+      paymentState: 'paid', rationale: 'Fictional paid assertion only.',
+      authenticatedOperatorId: 'fictional-operator' }).then(result => { settled = true; return result; });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(settled, false);
+    assert.equal(metadata.getOpenLoop(captured.loop.loopId).revision, captured.loop.revision);
+    release(); await held;
+    assert.equal((await decision).loop.paymentState, 'paid');
+    assert.equal(metadata.getOpenLoop(captured.loop.loopId).revision, captured.loop.revision + 1);
+  } finally {
+    release?.(); await held?.catch(() => {});
+    await service?.stop(); metadata?.close(); await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('authenticated follow-up command resumes a saved decision after restart without replaying an older decision', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-decision-restart-'));
+  const gateway = fictionalSchedulerGateway();
+  const deferOperationId = '10000000-0000-4000-8000-000000000011';
+  const paidOperationId = '10000000-0000-4000-8000-000000000012';
+  let service;
+  try {
+    const metadata = openCommandCenterMetadataService({ stateDir });
+    metadata.createTopic({ topicId: 'fictional-renovation', paraCategory: 'project', lifecycle: 'active' });
+    const created = metadata.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'fictional-invoice-intake', message: {
+      schemaVersion: 1, channel: 'email', source: { system: 'fictional-mail', externalId: 'fictional-invoice-restart', version: 'v1' },
+      occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', historicalBaseline: false,
+      topicId: 'fictional-renovation', disposition: 'confirmed-obligation', requestKind: 'payment', explicitRequest: true,
+      summary: 'Pay fictional renovation invoice', payee: 'Fictional Builder', purpose: 'fictional work', amount: 10000,
+      currency: 'AUD', dueAt: '2026-10-01T00:00:00.000Z', invoiceId: 'FICTIONAL-RESTART',
+      attachmentIds: ['fictional-attachment'], evidenceSelectors: ['attachment:1:invoice-number']
+    } });
+    metadata.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: deferOperationId, loopId: created.loop.loopId,
+      expectedRevision: 1, decision: 'defer', reviewAt: '2026-10-02T00:00:00.000Z', actorId: 'fictional-operator',
+      rationale: 'Wait for the fictional correction.', updatedAt: '2026-09-20T01:00:00.000Z' });
+    metadata.close();
+
+    const host = fakePublishedApi(stateDir, { gateway });
+    plugin.register(host.api);
+    service = host.services[0];
+    await service.start();
+    assert.equal(gateway.jobs.size, 0, 'startup has no authenticated Scheduler request context');
+    const pending = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: created.loop.loopId });
+    assert.equal(pending.followUp.status, 'pending');
+    assert.equal(pending.followUp.logicalOperationId, deferOperationId);
+    await assert.rejects(() => invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: deferOperationId }, 'fictional-no-scheduler-grant', 'fictional-operator'),
+    error => error.code === 'capability-unavailable');
+    await assert.rejects(() => invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: deferOperationId }, 'fictional-wrong-operator', 'another-operator', { gateway }),
+    error => error.code === 'unauthorized');
+    assert.equal(gateway.jobs.size, 0);
+    const resumed = await invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: deferOperationId }, 'fictional-resume-request', 'fictional-operator', { gateway });
+    assert.equal(resumed.reminder.status, 'applied');
+    assert.equal(gateway.jobs.size, 1);
+    const completed = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.get', { schemaVersion: 1, loopId: created.loop.loopId });
+    assert.equal(completed.followUp.status, 'completed');
+    assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T00:00:00.000Z');
+    await service.stop();
+    service = undefined;
+    const restarted = fakePublishedApi(stateDir, { gateway });
+    plugin.register(restarted.api);
+    service = restarted.services[0];
+    await service.start();
+    const replay = await invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: deferOperationId }, 'fictional-resume-replay', 'fictional-operator', { gateway });
+    assert.equal(replay.reminder.status, 'applied');
+    assert.equal(gateway.jobs.size, 1, 'completed follow-up must not create another Reminder on replay');
+    await service.stop();
+    service = undefined;
+    const later = openCommandCenterMetadataService({ stateDir });
+    later.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: paidOperationId, loopId: created.loop.loopId,
+      expectedRevision: 2, paymentState: 'paid', actorId: 'fictional-operator', rationale: 'Fictional settlement confirmed.',
+      updatedAt: '2026-09-20T02:00:00.000Z' });
+    later.close();
+    const afterPayment = fakePublishedApi(stateDir, { gateway });
+    plugin.register(afterPayment.api);
+    service = afterPayment.services[0];
+    await service.start();
+    const obsolete = await invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: deferOperationId }, 'fictional-stale-resume', 'fictional-operator', { gateway });
+    assert.equal(obsolete.disposition, 'superseded');
+    assert.equal([...gateway.jobs.values()][0].enabled, true, 'the stale action does not mutate the native Reminder');
+    const settled = await invokeBridgeMethod(service, 'command-center.v1.open-loops.resume-follow-up',
+      { schemaVersion: 1, logicalOperationId: paidOperationId }, 'fictional-paid-resume', 'fictional-operator', { gateway });
+    assert.equal(settled.reminder.status, 'applied');
+    assert.equal(gateway.jobs.size, 1, 'an obsolete defer must not create another Reminder');
+    assert.equal([...gateway.jobs.values()][0].enabled, false, 'the latest paid assertion cancels the existing Reminder');
+  } finally {
+    await service?.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });
 
 test('bounded document intake reads authoritative content and revision through the existing source owner', async () => {
@@ -446,9 +572,8 @@ test('registered bill actions create, defer, and cancel one native Reminder thro
     const corrected = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 1, decision: 'correct-date', dueDate: '2026-10-05', dueTimeZone: 'Australia/Brisbane', rationale: 'The fictional invoice states a local calendar date without a time.' });
     assert.equal(corrected.loop.dueDate, '2026-10-05'); assert.equal(corrected.loop.dueAt, undefined);
     assert.equal(corrected.reminder.action, 'create'); assert.equal(gateway.jobs.size, 1); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-04T23:00:00.000Z');
-    const externallyChanged = [...gateway.jobs.values()][0]; externallyChanged.configRevision = 'revision-external-change';
     const deferred = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.decide', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 2, decision: 'defer', reviewAt: '2026-10-02T09:00:00.000Z', rationale: 'Review after the fictional pay cycle.' });
-    assert.equal(deferred.reminder.action, 'reschedule'); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T09:00:00.000Z', 'authoritative Cron revision wins over the stale Source Reference revision');
+    assert.equal(deferred.reminder.action, 'reschedule'); assert.equal([...gateway.jobs.values()][0].schedule.at, '2026-10-02T09:00:00.000Z');
     const paid = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.payment-status', { schemaVersion: 1, logicalOperationId: randomUUID(), loopId: created.loop.loopId, expectedRevision: 3, paymentState: 'paid', rationale: 'The fictional settlement was verified.' });
     assert.equal(paid.reminder.action, 'cancel'); assert.equal([...gateway.jobs.values()][0].enabled, false);
   } finally { await service?.stop(); await rm(stateDir, { recursive: true, force: true }); }
@@ -878,16 +1003,16 @@ test('built package processes a mixed email through registered Note-save, captur
     seed.close(); seed = undefined;
     builtPlugin.register(host.api); const service = host.services[0]; await service.start();
     const source = { sourceKind: 'email', sourceExternalId: 'fictional-built-message', sourceVersion: 'change-key-built-19' };
-    const extraction = { schemaVersion: 1, proposedTopic: 'Fictional built home', notePath: 'Inbox/built-message.md', knowledgeMarkdown: '# Fictional built reference\n', knowledgeOutcomeId: 'reference-built', obligations: [{ obligationId: 'pay-built', title: 'Pay fictional built invoice', provenance: 'explicit' }, { obligationId: 'reply-built', title: 'Reply with fictional built reference', provenance: 'explicit' }, { obligationId: 'choose-built', title: 'Choose fictional built window', provenance: 'inferred', classification: 'decision' }] };
+    const extraction = { schemaVersion: 1, proposedTopic: 'Fictional built home', notePath: 'Inbox/built-message.md', knowledgeMarkdown: '# Fictional built reference\n', knowledgeOutcomeId: 'reference-built', obligations: [{ obligationId: 'pay-built', title: 'Pay fictional built invoice', provenance: 'explicit', classification: 'obligation' }, { obligationId: 'reply-built', title: 'Reply with fictional built reference', provenance: 'explicit', classification: 'obligation' }, { obligationId: 'choose-built', title: 'Choose fictional built window', provenance: 'inferred', classification: 'decision' }] };
     const invokeTool = async (name, params) => host.tools.get(name)().execute(randomUUID(), params);
     const resolved = await invokeTool('command_center_resolve_source_topic', { topicName: extraction.proposedTopic });
     await invokeTool('command_center_plan_intake_source', { ...source, checkpoint: 'page-1:fictional-built-message', observedAt: '2026-09-22T01:00:00.000Z', processorVersion: 'fictional-built-processor-v1', acceptedExtraction: extraction, outcomes: [{ outcomeId: 'pay-built', kind: 'obligation' }, { outcomeId: 'reply-built', kind: 'obligation' }, { outcomeId: 'choose-built', kind: 'decision' }, { outcomeId: 'reference-built', kind: 'information' }], enumeration: { scope: 'complete', scannedCount: 1, remainingCount: 0, failedReadCount: 0, scanCapReached: false } });
     const saved = await invokeTool('command_center_save_source_note', { topicId: resolved.details.topicId, noteFolderReferenceId: resolved.details.noteFolderReferenceId, ...source, path: extraction.notePath, markdown: extraction.knowledgeMarkdown });
     const noteRevision = saved.details.note.revision;
     assert.notEqual(noteRevision, source.sourceVersion);
-    const evidence = { topicId: resolved.details.topicId, ...source, sourceReferenceId: saved.details.sourceReference.referenceId, sourcePath: saved.details.note.path };
-    const capture = async (obligationId, title, provenance = 'explicit') => (await invokeTool('command_center_capture_source_commitment', { ...evidence, obligationId, title, provenance })).details.loop;
-    const payment = await capture('pay-built', 'Pay fictional built invoice');
+    const evidence = { topicId: resolved.details.topicId, ...source, sourceReferenceId: saved.details.sourceReference.referenceId, sourcePath: saved.details.note.path, sourceReferenceVersion: noteRevision };
+    const capture = async (obligationId, title, provenance = 'explicit', obligationKind) => (await invokeTool('command_center_capture_source_commitment', { ...evidence, obligationId, title, provenance, ...(obligationKind ? { obligationKind } : {}) })).details.loop;
+    const payment = await capture('pay-built', 'Pay fictional built invoice', 'explicit', 'payment');
     const reply = await capture('reply-built', 'Reply with fictional built reference');
     const decision = await capture('choose-built', 'Choose fictional built window', 'inferred');
     const base = { ...source, recordedAt: '2026-09-22T01:01:00.000Z' };
@@ -906,6 +1031,48 @@ test('built package processes a mixed email through registered Note-save, captur
     assert.deepEqual(email.outcomeCounts, { expected: 4, accounted: 4, pendingDecisions: 1, failed: 0, unresolvedTopics: 0 });
     assert.equal(email.status, 'needs-review');
     assert.deepEqual(email.recentSources[0].outcomes.map(item => item.kind), ['obligation', 'obligation', 'decision', 'information']);
+    const preview = service.getTopicMaintenanceOwners().metadata.previewOpenLoopSupportingNoteTarget(payment.loopId);
+    assert.equal(preview.status, 'ready', JSON.stringify(preview));
+    const paidDecisionId = randomUUID();
+    const paidInput = { schemaVersion: 1, logicalOperationId: paidDecisionId, loopId: payment.loopId,
+      expectedRevision: payment.revision, paymentState: 'paid', rationale: 'Fictional user assertion; no payment occurred.'
+    };
+    const paid = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.payment-status', paidInput);
+    assert.ok(paid.supportingNote, JSON.stringify(paid));
+    assert.equal(paid.supportingNote.status, 'completed', JSON.stringify(paid.supportingNote));
+    const storedNoteIntent = service.getTopicMaintenanceOwners().metadata.getOpenLoopSupportingNoteIntent(paidDecisionId);
+    assert.equal(storedNoteIntent.outcome.status, 'completed');
+    assert.equal(storedNoteIntent.intent.text, undefined, 'the full Note copy is removed after verified completion');
+    assert.match(storedNoteIntent.intent.textDigest, /^sha256:[a-f0-9]{64}$/u);
+    const noteAfter = await service.sourceService.notesRead({ schemaVersion: 1, topicId: evidence.topicId,
+      referenceId: evidence.sourceReferenceId, path: evidence.sourcePath, sourceKind: 'note' });
+    assert.match(noteAfter.text, /Payment status: paid \(your assertion; Command Center made no payment\)/u);
+    assert.match(noteAfter.text, /# Fictional built reference/u);
+    const replay = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.payment-status', paidInput);
+    assert.equal(replay.disposition, 'duplicate');
+    assert.equal(replay.supportingNote.status, 'completed');
+    const afterReplay = await service.sourceService.notesRead({ schemaVersion: 1, topicId: evidence.topicId,
+      referenceId: evidence.sourceReferenceId, path: evidence.sourcePath, sourceKind: 'note' });
+    assert.equal(afterReplay.text, noteAfter.text, 'replay does not duplicate the managed block');
+    const detail = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.get', {
+      schemaVersion: 1, loopId: payment.loopId });
+    assert.equal(detail.supportingNote.status, 'completed');
+    assert.equal(JSON.stringify(detail).includes(noteAfter.text), false, 'the public item must not return stored full Note text');
+    const userEditedText = noteAfter.text.replace('Payment status: paid', 'Payment status: manually checked');
+    assert.notEqual(userEditedText, noteAfter.text);
+    await service.sourceService.notesEdit({ schemaVersion: 1, logicalOperationId: randomUUID(),
+      topicId: evidence.topicId, referenceId: evidence.sourceReferenceId, path: evidence.sourcePath,
+      expectedRevision: noteAfter.revision, text: userEditedText });
+    const uncertain = await qualifyRegisteredOpenLoop(host, 'command-center.v1.open-loops.payment-status', {
+      schemaVersion: 1, logicalOperationId: randomUUID(), loopId: payment.loopId,
+      expectedRevision: paid.loop.revision, paymentState: 'uncertain',
+      rationale: 'Fictional correction after the supporting Note was manually edited.'
+    });
+    assert.equal(uncertain.loop.paymentState, 'uncertain', 'the user decision stays saved');
+    assert.equal(uncertain.supportingNote.status, 'conflict', 'the managed Note edit is not overwritten');
+    const afterConflict = await service.sourceService.notesRead({ schemaVersion: 1, topicId: evidence.topicId,
+      referenceId: evidence.sourceReferenceId, path: evidence.sourcePath, sourceKind: 'note' });
+    assert.equal(afterConflict.text, userEditedText);
   } finally {
     seed?.close(); await host.services[0]?.stop?.();
     await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

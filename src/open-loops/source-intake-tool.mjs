@@ -6,7 +6,7 @@ import { sourceError } from '../sources/errors.mjs';
 import { effectiveSourceLocator } from '../sources/reference.mjs';
 
 const acceptedObligationSchema = Object.freeze({ type: 'object', additionalProperties: false, properties: {
-  obligationId: { type: 'string', minLength: 1 }, title: { type: 'string', minLength: 1 }, classification: { type: 'string', enum: ['obligation', 'decision'] },
+  obligationId: { type: 'string', minLength: 1 }, title: { type: 'string', minLength: 1 }, classification: { type: 'string', enum: ['obligation', 'decision'] }, obligationKind: { type: 'string', enum: ['payment'] },
   provenance: { type: 'string', enum: ['explicit', 'inferred', 'idea', 'quoted'] }, correlationNamespace: { type: 'string', minLength: 1 }, correlationId: { type: 'string', minLength: 1 }, confidence: { type: 'number', minimum: 0, maximum: 1 },
   dueAt: { type: 'string' }, reviewAt: { type: 'string' }, plannedAt: { type: 'string' }, importance: { type: 'string', enum: ['critical', 'high', 'normal', 'low'] }, importanceOrigin: { type: 'string', enum: ['source', 'processing'] },
   effortMinutes: { type: 'integer', minimum: 1, maximum: 10080 }, contexts: { type: 'array', items: { type: 'string' }, maxItems: 8 }, dependencies: { type: 'array', items: { type: 'string' }, maxItems: 16 }
@@ -122,7 +122,7 @@ export function sourceCommitmentCaptureToolFactory({ getOwners } = {}) {
     description: 'Capture one obligation or bounded suggestion from a maintained email or Note producer after it has created an exact Topic Note reference. Do not call for informational knowledge with no unresolved action.',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, properties: {
       topicId: { type: 'string', minLength: 1 }, sourceKind: { type: 'string', enum: ['email', 'note'] }, sourceExternalId: { type: 'string', minLength: 1 }, sourceVersion: { type: 'string', minLength: 1 }, sourceReferenceId: { type: 'string', minLength: 1 }, sourcePath: { type: 'string', minLength: 1 }, sourceReferenceVersion: { type: 'string', minLength: 1 },
-      title: { type: 'string', minLength: 1 }, obligationId: { type: 'string', minLength: 1 }, correlationNamespace: { type: 'string', minLength: 1 }, correlationId: { type: 'string', minLength: 1 }, provenance: { type: 'string', enum: ['explicit', 'inferred', 'idea', 'quoted'] }, confidence: { type: 'number', minimum: 0, maximum: 1 },
+      title: { type: 'string', minLength: 1 }, obligationId: { type: 'string', minLength: 1 }, obligationKind: { type: 'string', enum: ['payment'] }, correlationNamespace: { type: 'string', minLength: 1 }, correlationId: { type: 'string', minLength: 1 }, provenance: { type: 'string', enum: ['explicit', 'inferred', 'idea', 'quoted'] }, confidence: { type: 'number', minimum: 0, maximum: 1 },
       dueAt: { type: 'string' }, reviewAt: { type: 'string' }, plannedAt: { type: 'string' }, importance: { type: 'string', enum: ['critical', 'high', 'normal', 'low'] }, importanceOrigin: { type: 'string', enum: ['source', 'processing'] }, effortMinutes: { type: 'integer', minimum: 1, maximum: 10080 }, contexts: { type: 'array', items: { type: 'string' }, maxItems: 8 }, dependencies: { type: 'array', items: { type: 'string' }, maxItems: 16 }
     }, required: ['topicId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'title', 'obligationId', 'provenance'] }),
     async execute(_toolCallId, params) {

@@ -537,7 +537,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
           if (panel && !showPanelInMain()) return;
           (noteView === 'reading' ? content : source).focus();
         }
-        return;
+        return true;
       }
       let draft = drafts.get(key);
       if (!draft || (!draft.operation && draft.version === version && (discardDraft || draft.text === draft.baseText))) {
@@ -547,6 +547,7 @@ export function mountTopicPage(container, context, state = createNativeState(), 
       showDraft();
       announce(`Note opened · ${result.revision}`);
       if (userInitiated) (noteView === 'reading' ? content : source).focus();
+      return true;
     } catch (error) { if (!readSignal.aborted && current(pending)) report(error); }
   }
   async function load() {
@@ -652,6 +653,17 @@ export function mountTopicPage(container, context, state = createNativeState(), 
         if (matches[0].revision !== requested.evidenceSourceVersion) {
           viewState.selected = undefined;
           status.textContent = `The evidence used source version ${requested.evidenceSourceVersion}; the current original is ${matches[0].revision}. It was not opened as the earlier evidence.`;
+          if (sourceKindFor(matches[0]) === 'note') {
+            const currentNote = matches[0];
+            const openCurrent = element('button', 'Open current Note'); openCurrent.type = 'button';
+            openCurrent.addEventListener('click', () => {
+              if (!currentCatalog(pending)) return;
+              void openNote(currentNote, { userInitiated: true }).then(opened => {
+                if (opened && currentCatalog(pending)) status.textContent = `Opened the current Note at ${currentNote.revision}. The earlier evidence used ${requested.evidenceSourceVersion}; this is a later revision.`;
+              });
+            }, { signal });
+            status.append(' ', openCurrent);
+          }
           return;
         }
         if (sourceKindFor(matches[0]) === 'note') await openNote(matches[0]);

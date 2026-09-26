@@ -160,6 +160,45 @@ export class SchedulerAdapter {
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };
   }
 
+  async createBoundReminder(input = {}, reconcileOnly = false) {
+    assertNoUnexpectedKeys(input, ['schemaVersion', 'requestId', 'referenceId', 'logicalOperationId', 'declaration'], 'Bound Reminder create request');
+    const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
+    const referenceId = nonBlank(input.referenceId, 'referenceId');
+    validateScheduleDeclaration(input.declaration);
+    // Cron rejects an existing explicit ID at the durable add commit. This is
+    // a conditional create, unlike declarationKey's declarative upsert.
+    const declaration = { ...structuredClone(input.declaration), id: logicalOperationId };
+    const reconcile = async ({ applied = false, resultIdentity = null, observedRevision = null } = {}) => {
+      const rows = jobsFrom(await this.request('cron.list', { includeDisabled: true }));
+      const matches = rows.filter(job => job.id === logicalOperationId);
+      if (matches.length === 0) return { outcome: applied ? 'unknown' : 'not-applied' };
+      if (matches.length !== 1) return { outcome: 'conflict' };
+      const job = matches[0];
+      if (job.declarationKey || !reminderDeclarationMatchesJob(job, declaration)) return { outcome: 'conflict' };
+      if (typeof job.configRevision !== 'string' || !job.configRevision.trim()) return { outcome: 'unknown' };
+      if (applied && (resultIdentity !== logicalOperationId || observedRevision !== job.configRevision)) return { outcome: 'unknown' };
+      const existing = this.metadata?.getSourceReference?.(referenceId) ?? this.references().find(item => item.referenceId === referenceId);
+      if (existing && (existing.topicId !== this.topicId || existing.sourceKind !== 'reminder_schedule' || existing.externalSourceId !== logicalOperationId)) return { outcome: 'conflict' };
+      const owners = this.allReferences().filter(item => item.externalSourceId === logicalOperationId);
+      if (owners.some(item => item.referenceId !== referenceId || item.topicId !== this.topicId || item.sourceKind !== 'reminder_schedule')) return { outcome: 'conflict' };
+      const sourceReference = await this.persistReference(logicalOperationId, job.configRevision, 'reminder_schedule', referenceId);
+      return { outcome: 'applied', value: { job, sourceReference } };
+    };
+    const execute = async ({ requestId }) => {
+      if (this.metadata?.getSourceReference?.(referenceId)) throw sourceError('conflict', 'The exact bound Reminder reference already exists.');
+      const job = jobFrom(await this.request('cron.add', declaration, { requestId }));
+      if (job?.id !== logicalOperationId || typeof job.configRevision !== 'string' || !job.configRevision.trim()) {
+        throw sourceError('source-recovery', 'Cron did not confirm the conditional bound Reminder identity and revision.');
+      }
+      const sourceReference = await this.persistReference(logicalOperationId, job.configRevision, 'reminder_schedule', referenceId);
+      return { job, sourceReference };
+    };
+    return this.coordinator[reconcileOnly ? 'reconcile' : 'mutate']({ operationKind: 'reminders.create', requestId: input.requestId ?? logicalOperationId,
+      logicalOperationId, topicId: this.topicId, referenceId, intent: { declaration }, execute, reconcile });
+  }
+
+  async recoverBoundReminder(input = {}) { return this.createBoundReminder(input, true); }
+
   async createDeclared(input, sourceKind, operationKind) {
     const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);
     const referenceId = nonBlank(input.referenceId, 'referenceId');

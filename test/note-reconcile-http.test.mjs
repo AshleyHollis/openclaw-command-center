@@ -10,6 +10,10 @@ import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createAuthoritativeSourceService } from '../src/sources/service.mjs';
 import { createTopicPageActionsHandler } from '../src/topics/page-http.mjs';
 import { enrollNoteFolderIdentity } from '../src/sources/note-folder-identity.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+
+const releaseHostFileAccessFixture = installHostFileAccessFixture();
+test.after(() => releaseHostFileAccessFixture());
 
 // Actual SQLite, filesystem coordinator and TCP body/response seam. Authentication
 // remains the host relay's boundary; this fixture does not claim host activation.
@@ -119,8 +123,10 @@ for (const operation of ['edit', 'create']) test(`reconcile-only finishes an ino
   const source = `
     import { openCommandCenterMetadataService } from './src/metadata/service.mjs';
     import { createAuthoritativeSourceService } from './src/sources/service.mjs';
+    import { installHostFileAccessFixture } from './test/support/host-file-access-fixture.mjs';
     import path from 'node:path';
     const [stateDir, root, inputJson, operation] = process.argv.slice(1);
+    installHostFileAccessFixture();
     const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
     const service = createAuthoritativeSourceService({ metadata, root, capabilities: { notes: true },
       fsSafeRootFactory: async (rootDir) => ({ rootDir, rootReal: rootDir, resolve: async (relative) => path.join(rootDir, relative) }),
@@ -134,11 +140,22 @@ for (const operation of ['edit', 'create']) test(`reconcile-only finishes an ino
   assert.equal(metadata.getOperation(input.logicalOperationId).state, 'pending');
   assert.equal(metadata.getTopicOperation(`notes.fs:${input.logicalOperationId}`).state, 'pending');
   const published = await stat(path.join(root, command.path));
-  const response = await post({ ...command, action: `${command.action}.reconcile` });
-  assert.equal(response.status, 200);
-  assert.equal(response.body.status, 'applied');
+  const productionRecovery = operation === 'edit' ? createAuthoritativeSourceService({ metadata, root,
+    capabilities: { notes: true }, noteRecoveryEffects: false,
+    fsSafeRootFactory: async rootDir => ({ rootDir, rootReal: rootDir, resolve: async relative => path.join(rootDir, relative) }) }) : null;
+  if (productionRecovery) {
+    await assert.rejects(() => productionRecovery.notesEditReconcile({ ...childInput, text: 'changed intent' }),
+      error => error.code === 'intent-mismatch');
+    assert.equal(metadata.getTopicOperation(`notes.fs:${input.logicalOperationId}`).state, 'pending');
+    assert.equal((await stat(path.join(root, command.path))).ino, published.ino);
+  }
+  const recovered = productionRecovery
+    ? await productionRecovery.notesEditReconcile(childInput)
+    : (await post({ ...command, action: `${command.action}.reconcile` })).body;
+  assert.equal(recovered.status, 'applied');
+  for (const topic of productionRecovery?.topicServices.values() ?? []) topic.notes?.close();
   assert.equal((await stat(path.join(root, command.path))).ino, published.ino);
-  if (operation === 'create') assert.notEqual(response.body.result.referenceId, command.referenceId);
+  if (operation === 'create') assert.notEqual(recovered.result.referenceId, command.referenceId);
   assert.equal(metadata.getOperation(input.logicalOperationId).state, 'applied');
   assert.equal(metadata.getTopicOperation(`notes.fs:${input.logicalOperationId}`).state, 'applied');
   assert.equal(await readFile(path.join(root, command.path), 'utf8'), 'submitted');

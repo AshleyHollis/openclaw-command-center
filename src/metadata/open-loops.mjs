@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import { normalizeLoop, normalizeObservation } from '../open-loops/contracts.mjs';
+import { openLoopReminderOperationId, openLoopReminderReferenceId, planOpenLoopReminder } from '../open-loops/reminder-coordinator.mjs';
+import { selectSupportingNoteTarget } from '../open-loops/supporting-note-target.mjs';
+import { supportingNoteOperationId } from '../open-loops/supporting-note-annotation.mjs';
 import { projectQuietInbox } from '../open-loops/quiet-attention.mjs';
 
 const OBSERVE_OPERATION = 'open-loop.observe.v1';
@@ -39,7 +42,12 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     const row = db.prepare('SELECT * FROM open_loop_operations WHERE logical_operation_id = ?').get(id);
     if (!row) return null;
     if (row.operation_kind !== kind || row.intent_digest !== intentDigest) fail('open-loop-intent-mismatch', 'The logical operation ID was already used for another intent.');
-    try { return freeze(JSON.parse(row.result_json)); } catch { fail('open-loop-receipt-invalid'); }
+    try {
+      // Prepared Note bytes are private effect intent, never part of a replayed
+      // user-decision response or a public bridge result.
+      const { supportingNoteIntent: _privateIntent, ...result } = JSON.parse(row.result_json);
+      return freeze(result);
+    } catch { fail('open-loop-receipt-invalid'); }
   }
   function receipt(db, id, kind, intentDigest, result, createdAt) {
     db.prepare("INSERT INTO open_loop_operations (logical_operation_id, operation_kind, intent_digest, state, result_json, created_at) VALUES (?, ?, ?, 'applied', ?, ?)").run(id, kind, intentDigest, JSON.stringify(result), createdAt);
@@ -99,9 +107,29 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(observation.observationId, observation.source.system, observation.source.kind, observation.source.externalId, observation.source.version, observation.type, observation.occurredAt, observation.observedAt, observation.historicalBaseline ? 1 : 0, observation.topicId ?? null, JSON.stringify(observation.entityRefs), JSON.stringify(observation.facts), observation.digest, observation.observedAt);
     return { existing: Boolean(existing), observation: mapObservation(existing ?? db.prepare('SELECT * FROM source_observations WHERE observation_id = ?').get(observation.observationId)) };
   }
-  function storeLoop(db, loop, expectedRevision, roles, updatedAt) {
+  function storeLoop(db, loop, expectedRevision, roles, updatedAt, userDecision = false) {
     const existing = db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(loop.loopId);
     if ((existing?.revision ?? 0) !== expectedRevision) fail('open-loop-stale-revision', 'The open loop revision is stale.');
+    if (existing && !userDecision) {
+      const prior = db.prepare(`SELECT json_extract(op.result_json, '$.followUpIntent.action') AS action,
+          journal.state AS native_state,
+          json_extract(op.result_json, '$.supportingNoteTarget.status') AS note_status,
+          json_extract(op.result_json, '$.supportingNoteOutcome.status') AS note_outcome
+        FROM open_loop_operations op
+        JOIN source_observations observation ON observation.source_system = 'command-center'
+          AND observation.source_kind IN ('user-decision', 'processor-interpretation')
+          AND observation.external_source_id = op.logical_operation_id
+          AND observation.observation_id = json_extract(op.result_json, '$.observation.observationId')
+        LEFT JOIN operation_journal journal ON journal.logical_operation_id = json_extract(op.result_json, '$.followUpIntent.logicalOperationId')
+        WHERE op.operation_kind = ? AND op.state = 'applied'
+          AND json_extract(op.result_json, '$.loop.loopId') = ?
+          AND json_extract(op.result_json, '$.loop.revision') = ?
+        ORDER BY op.created_at DESC, op.logical_operation_id DESC LIMIT 1`).get(CHANGE_OPERATION, loop.loopId, existing.revision);
+      if (prior && (!['none', 'blocked', 'conflict', null].includes(prior.action) && prior.native_state !== 'applied'
+        || prior.note_status === 'ready' && prior.note_outcome !== 'completed')) {
+        fail('open-loop-follow-up-pending', 'The accepted follow-up must settle before this open loop can advance.');
+      }
+    }
     const owner = db.prepare('SELECT loop_id FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(loop.kind, loop.stableSubjectId);
     if (owner && owner.loop_id !== loop.loopId) fail('open-loop-subject-conflict');
     if (loop.topicId && !db.prepare('SELECT 1 FROM topics WHERE topic_id = ?').get(loop.topicId)) fail('open-loop-topic-missing');
@@ -121,6 +149,68 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       ON CONFLICT(loop_id, observation_id) DO UPDATE SET evidence_role=excluded.evidence_role`).run(loop.loopId, observationId, roles[observationId] ?? (existing ? 'update' : 'origin'), updatedAt);
     return { disposition: existing ? 'updated' : 'created', loop: mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(loop.loopId)) };
   }
+  function followUpIntent(db, logicalOperationId, operationKind, loop) {
+    if (!loop || !(operationKind.startsWith('decision-') || operationKind === 'payment-status')) return undefined;
+    const referenceId = openLoopReminderReferenceId(loop.loopId);
+    const row = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(referenceId);
+    const sourceReference = row ? { referenceId: row.reference_id, topicId: row.topic_id, sourceSystem: row.source_system,
+      sourceKind: row.source_kind, externalSourceId: row.external_source_id } : null;
+    const base = { schemaVersion: 1, logicalOperationId: openLoopReminderOperationId(logicalOperationId),
+      loopId: loop.loopId, loopRevision: loop.revision, referenceId,
+      ...(row?.last_observed_revision ? { expectedConfigRevision: row.last_observed_revision } : {}) };
+    try {
+      const plan = planOpenLoopReminder({ loop, sourceReference });
+      if (!row && ['none', 'create'].includes(plan.action)) {
+        const predecessorRow = db.prepare(`SELECT result_json FROM open_loop_operations
+          WHERE state = 'applied' AND json_extract(result_json, '$.loop.loopId') = ?
+            AND json_extract(result_json, '$.followUpIntent.action') = 'create'
+          ORDER BY json_extract(result_json, '$.loop.revision') DESC LIMIT 1`).get(loop.loopId);
+        const predecessor = predecessorRow && JSON.parse(predecessorRow.result_json)?.followUpIntent;
+        if (predecessor) {
+          return { ...base, action: plan.action === 'create' ? 'reschedule-pending-create' : 'cancel-pending-create',
+            topicId: predecessor.topicId, ...(plan.declaration ? { declaration: plan.declaration } : {}),
+            predecessor: { logicalOperationId: predecessor.logicalOperationId,
+              loopRevision: predecessor.loopRevision, declaration: predecessor.declaration } };
+        }
+      }
+      if (row && ['cancel', 'reschedule'].includes(plan.action)) {
+        const predecessorRow = db.prepare(`SELECT json_extract(op.result_json, '$.followUpIntent.logicalOperationId') AS native_operation_id,
+            json_extract(op.result_json, '$.followUpIntent.action') AS native_action, journal.state AS native_state
+          FROM open_loop_operations op
+          JOIN operation_journal journal ON journal.logical_operation_id = json_extract(op.result_json, '$.followUpIntent.logicalOperationId')
+          WHERE op.state = 'applied' AND json_extract(op.result_json, '$.loop.loopId') = ?
+            AND json_extract(op.result_json, '$.loop.revision') = ?
+          ORDER BY op.created_at DESC LIMIT 1`).get(loop.loopId, loop.revision - 1);
+        if (row.last_observed_revision && predecessorRow?.native_action === 'reschedule'
+          && ['pending', 'unknown', 'not-applied'].includes(predecessorRow.native_state)) {
+          return { ...base, action: plan.action === 'cancel' ? 'cancel-after-update' : 'reschedule-after-update',
+            topicId: plan.topicId, ...(plan.declaration ? { declaration: plan.declaration } : {}),
+            predecessor: { logicalOperationId: predecessorRow.native_operation_id,
+              expectedConfigRevision: row.last_observed_revision } };
+        }
+      }
+      if (['cancel', 'reschedule'].includes(plan.action) && !row?.last_observed_revision) {
+        return { ...base, action: 'conflict', reason: 'scheduler-revision-unavailable' };
+      }
+      return { ...base, action: plan.action, ...(plan.topicId ? { topicId: plan.topicId } : {}),
+        ...(plan.declaration ? { declaration: plan.declaration } : {}), ...(plan.reason ? { reason: plan.reason } : {}) };
+    } catch {
+      // A user decision must still commit when its existing native Reminder
+      // binding is inconsistent; follow-up remains a visible conflict.
+      return { ...base, action: 'conflict', reason: 'reminder-binding-conflict' };
+    }
+  }
+  function supportingNoteTarget(db, operationKind, loop) {
+    if (!loop || !(operationKind.startsWith('decision-') || operationKind === 'payment-status')) return undefined;
+    const selected = selectSupportingNoteTarget({ loop,
+      observations: loop.evidenceObservationIds.map(id => mapObservation(db.prepare('SELECT * FROM source_observations WHERE observation_id = ?').get(id))),
+      getSourceReference: id => {
+        const row = db.prepare('SELECT * FROM source_references WHERE reference_id = ?').get(id);
+        return row && { referenceId: row.reference_id, topicId: row.topic_id, sourceSystem: row.source_system,
+          sourceKind: row.source_kind, observedRevision: row.last_observed_revision };
+      } });
+    return selected.status === 'none' ? undefined : selected;
+  }
 
   service.applyOpenLoopChange = input => {
     const value = closed(input, ['schemaVersion', 'logicalOperationId', 'operationKind', 'intent', 'expectedRevision', 'observation', 'loop', 'evidenceRoles', 'updatedAt']);
@@ -139,8 +229,12 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       const replay = operation(db, logicalOperationId, CHANGE_OPERATION, intentDigest);
       if (replay) return replay;
       const stored = storeObservation(db, observation);
-      const changed = loop ? storeLoop(db, loop, value.expectedRevision, roles, updatedAt) : null;
-      return receipt(db, logicalOperationId, CHANGE_OPERATION, intentDigest, { schemaVersion: 1, disposition: stored.existing && !changed ? 'duplicate' : changed?.disposition ?? 'inserted', observation: stored.observation, loop: changed?.loop ?? null }, updatedAt);
+      const changed = loop ? storeLoop(db, loop, value.expectedRevision, roles, updatedAt,
+        operationKind.startsWith('decision-') || operationKind === 'payment-status') : null;
+      const pendingFollowUp = followUpIntent(db, logicalOperationId, operationKind, changed?.loop);
+      const noteTarget = supportingNoteTarget(db, operationKind, changed?.loop);
+      return receipt(db, logicalOperationId, CHANGE_OPERATION, intentDigest, { schemaVersion: 1, disposition: stored.existing && !changed ? 'duplicate' : changed?.disposition ?? 'inserted', observation: stored.observation, loop: changed?.loop ?? null,
+        ...(pendingFollowUp ? { followUpIntent: pendingFollowUp } : {}), ...(noteTarget ? { supportingNoteTarget: noteTarget } : {}) }, updatedAt);
     });
   };
   service.replayOpenLoopChange = input => {
@@ -204,6 +298,173 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
     return rows.map(mapObservation);
   });
   service.getOpenLoop = loopId => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(text(loopId, 'loopId'))));
+  service.previewOpenLoopSupportingNoteTarget = loopId => inspect(db => {
+    const loop = mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(text(loopId, 'loopId')));
+    return loop ? supportingNoteTarget(db, 'payment-status', loop) ?? freeze({ schemaVersion: 1, status: 'none' }) : null;
+  });
+  // The decision owner commits this receipt with its loop revision. Enumerating
+  // those receipts after a restart identifies decisions whose follow-up needs
+  // inspection without accepting a stale earlier decision.
+  service.listOpenLoopUserActionReceiptsPage = (input = {}) => {
+    const value = closed(input, ['cursor', 'limit']);
+    const limit = value.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail('open-loop-intent-invalid');
+    const cursor = value.cursor === undefined ? '' : text(value.cursor, 'cursor');
+    return inspect(db => {
+      const rows = db.prepare(`SELECT op.logical_operation_id, op.result_json, l.revision AS current_revision
+        FROM open_loop_operations op
+        JOIN source_observations o ON o.source_system = 'command-center'
+          AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
+          AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
+        LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
+        WHERE op.operation_kind = ? AND op.state = 'applied' AND op.logical_operation_id > ?
+        ORDER BY op.logical_operation_id LIMIT ?`).all(CHANGE_OPERATION, cursor, limit + 1);
+      const hasMore = rows.length > limit;
+      const actions = rows.slice(0, limit).map(row => {
+        let result;
+        try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
+        if (!result?.loop?.loopId || !Number.isSafeInteger(result.loop.revision)) fail('open-loop-receipt-invalid');
+        return { logicalOperationId: row.logical_operation_id, loop: result.loop,
+          current: row.current_revision === result.loop.revision };
+      });
+      return freeze({ schemaVersion: 1, actions, hasMore, nextCursor: hasMore ? actions.at(-1).logicalOperationId : null });
+    });
+  };
+  service.getOpenLoopUserActionReceipt = logicalOperationId => inspect(db => {
+    const row = db.prepare(`SELECT op.result_json, l.revision AS current_revision
+      FROM open_loop_operations op
+      JOIN source_observations o ON o.source_system = 'command-center'
+        AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
+        AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
+      LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
+      WHERE op.logical_operation_id = ? AND op.operation_kind = ? AND op.state = 'applied'`).get(text(logicalOperationId, 'logicalOperationId'), CHANGE_OPERATION);
+    if (!row) return null;
+    let result;
+    try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
+    if (!result?.loop?.loopId || !Number.isSafeInteger(result.loop.revision) || !result.observation?.facts?.actorId) fail('open-loop-receipt-invalid');
+    return freeze({ schemaVersion: 1, logicalOperationId, loop: result.loop,
+      ...(result.followUpIntent ? { followUpIntent: result.followUpIntent } : {}),
+      ...(result.supportingNoteTarget ? { supportingNoteTarget: result.supportingNoteTarget } : {}),
+      actorId: result.observation.facts.actorId, current: row.current_revision === result.loop.revision });
+  });
+  service.getCurrentOpenLoopUserActionReceipt = loopId => inspect(db => {
+    const row = db.prepare(`SELECT op.logical_operation_id, op.result_json
+      FROM open_loops l
+      JOIN open_loop_operations op ON op.operation_kind = ? AND op.state = 'applied'
+        AND json_extract(op.result_json, '$.loop.loopId') = l.loop_id
+        AND json_extract(op.result_json, '$.loop.revision') = l.revision
+      JOIN source_observations o ON o.source_system = 'command-center'
+        AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
+        AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
+      WHERE l.loop_id = ? ORDER BY op.created_at DESC, op.logical_operation_id DESC LIMIT 1`).get(CHANGE_OPERATION, text(loopId, 'loopId'));
+    if (!row) return null;
+    let result;
+    try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
+    if (!result?.loop?.loopId || !Number.isSafeInteger(result.loop.revision)) fail('open-loop-receipt-invalid');
+    return freeze({ schemaVersion: 1, logicalOperationId: row.logical_operation_id, loop: result.loop,
+      ...(result.followUpIntent ? { followUpIntent: result.followUpIntent } : {}),
+      ...(result.supportingNoteTarget ? { supportingNoteTarget: result.supportingNoteTarget } : {}) });
+  });
+  service.getOpenLoopSupportingNoteIntent = decisionOperationId => inspect(db => {
+    const row = db.prepare(`SELECT op.result_json, l.revision AS current_revision
+      FROM open_loop_operations op
+      JOIN source_observations o ON o.source_system = 'command-center'
+        AND o.source_kind IN ('user-decision', 'processor-interpretation') AND o.external_source_id = op.logical_operation_id
+        AND o.observation_id = json_extract(op.result_json, '$.observation.observationId')
+      LEFT JOIN open_loops l ON l.loop_id = json_extract(op.result_json, '$.loop.loopId')
+      WHERE op.logical_operation_id = ? AND op.operation_kind = ? AND op.state = 'applied'`).get(text(decisionOperationId, 'decisionOperationId'), CHANGE_OPERATION);
+    if (!row) return null;
+    let result;
+    try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
+    if (!result?.loop?.loopId || !Number.isSafeInteger(result.loop.revision)) fail('open-loop-receipt-invalid');
+    if (result.supportingNoteIntent) {
+      const intent = result.supportingNoteIntent;
+      if (intent.logicalOperationId !== supportingNoteOperationId(decisionOperationId)
+        || JSON.stringify(canonical(intent.target)) !== JSON.stringify(canonical(result.supportingNoteTarget?.target))
+        || !/^sha256:[a-f0-9]{64}$/u.test(intent.textDigest)
+        || (typeof intent.text === 'string'
+          ? `sha256:${createHash('sha256').update(intent.text).digest('hex')}` !== intent.textDigest
+          : result.supportingNoteOutcome?.status !== 'completed')) fail('open-loop-receipt-invalid');
+    }
+    return freeze({ schemaVersion: 1, loopId: result.loop.loopId, loopRevision: result.loop.revision,
+      current: row.current_revision === result.loop.revision,
+      target: result.supportingNoteTarget ?? { schemaVersion: 1, status: 'none' },
+      observation: result.observation,
+      ...(result.supportingNoteOutcome ? { outcome: result.supportingNoteOutcome } : {}),
+      ...(result.supportingNoteIntent ? { intent: result.supportingNoteIntent } : {}) });
+  });
+  service.prepareOpenLoopSupportingNoteIntent = input => {
+    const value = closed(input, ['schemaVersion', 'decisionOperationId', 'expectedLoopRevision', 'target', 'text']);
+    if (value.schemaVersion !== 1 || !Number.isSafeInteger(value.expectedLoopRevision) || value.expectedLoopRevision < 1
+      || typeof value.text !== 'string' || !value.text.trim()) fail('open-loop-note-intent-invalid');
+    const decisionOperationId = text(value.decisionOperationId, 'decisionOperationId');
+    return mutate(null, db => {
+      const row = db.prepare(`SELECT result_json FROM open_loop_operations
+        WHERE logical_operation_id = ? AND operation_kind = ? AND state = 'applied'`).get(decisionOperationId, CHANGE_OPERATION);
+      if (!row) fail('open-loop-decision-missing');
+      let result;
+      try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
+      if (!result?.observation?.facts?.actorId || result.observation.source?.externalId !== decisionOperationId
+        || result.loop?.revision !== value.expectedLoopRevision || result.supportingNoteTarget?.status !== 'ready'
+        || JSON.stringify(canonical(result.supportingNoteTarget.target)) !== JSON.stringify(canonical(value.target))) {
+        fail('open-loop-note-intent-mismatch');
+      }
+      const current = db.prepare('SELECT revision FROM open_loops WHERE loop_id = ?').get(result.loop.loopId);
+      if (current?.revision !== value.expectedLoopRevision) fail('open-loop-stale-revision');
+      const prepared = { schemaVersion: 1, logicalOperationId: supportingNoteOperationId(decisionOperationId),
+        target: result.supportingNoteTarget.target, text: value.text,
+        textDigest: `sha256:${createHash('sha256').update(value.text).digest('hex')}` };
+      if (result.supportingNoteIntent) {
+        if (JSON.stringify(canonical(result.supportingNoteIntent)) !== JSON.stringify(canonical(prepared))) fail('open-loop-note-intent-mismatch');
+        return freeze(result.supportingNoteIntent);
+      }
+      const updated = db.prepare('UPDATE open_loop_operations SET result_json = ? WHERE logical_operation_id = ? AND result_json = ?')
+        .run(JSON.stringify({ ...result, supportingNoteIntent: prepared }), decisionOperationId, row.result_json);
+      if (updated.changes !== 1) fail('open-loop-note-intent-conflict');
+      return freeze(prepared);
+    });
+  };
+  service.recordOpenLoopSupportingNoteOutcome = input => {
+    const value = closed(input, ['schemaVersion', 'decisionOperationId', 'expectedLoopRevision', 'status', 'reason', 'observedRevision']);
+    if (value.schemaVersion !== 1 || !Number.isSafeInteger(value.expectedLoopRevision)
+      || !['completed', 'conflict', 'unknown', 'unavailable'].includes(value.status)
+      || value.reason !== undefined && (typeof value.reason !== 'string' || !/^[a-z0-9-]{1,80}$/u.test(value.reason))) {
+      fail('open-loop-note-outcome-invalid');
+    }
+    const decisionOperationId = text(value.decisionOperationId, 'decisionOperationId');
+    return mutate(null, db => {
+      const row = db.prepare(`SELECT result_json FROM open_loop_operations
+        WHERE logical_operation_id = ? AND operation_kind = ? AND state = 'applied'`).get(decisionOperationId, CHANGE_OPERATION);
+      if (!row) fail('open-loop-decision-missing');
+      let result;
+      try { result = JSON.parse(row.result_json); } catch { fail('open-loop-receipt-invalid'); }
+      if (result.loop?.revision !== value.expectedLoopRevision || result.supportingNoteTarget?.status !== 'ready') fail('open-loop-note-outcome-invalid');
+      const current = db.prepare('SELECT revision FROM open_loops WHERE loop_id = ?').get(result.loop.loopId);
+      if (current?.revision !== value.expectedLoopRevision) fail('open-loop-stale-revision');
+      if (value.status === 'completed' && !result.supportingNoteIntent) fail('open-loop-note-outcome-invalid');
+      if (value.status === 'completed') {
+        const effect = db.prepare('SELECT operation_kind, state, observed_revision FROM operation_journal WHERE logical_operation_id = ?')
+          .get(result.supportingNoteIntent.logicalOperationId);
+        if (effect?.operation_kind !== 'notes.edit' || effect.state !== 'applied'
+          || !effect.observed_revision || effect.observed_revision !== value.observedRevision) fail('open-loop-note-outcome-invalid');
+      }
+      const outcome = { schemaVersion: 1, status: value.status,
+        ...(value.reason ? { reason: value.reason } : {}),
+        ...(value.observedRevision ? { observedRevision: text(value.observedRevision, 'observedRevision', 300) } : {}) };
+      if (result.supportingNoteOutcome?.status === 'completed') {
+        if (JSON.stringify(canonical(result.supportingNoteOutcome)) !== JSON.stringify(canonical(outcome))) fail('open-loop-note-outcome-conflict');
+        return freeze(result.supportingNoteOutcome);
+      }
+      if (JSON.stringify(canonical(result.supportingNoteOutcome)) === JSON.stringify(canonical(outcome))) return freeze(outcome);
+      const retainedIntent = value.status === 'completed'
+        ? { ...result.supportingNoteIntent, text: undefined }
+        : result.supportingNoteIntent;
+      const updated = db.prepare('UPDATE open_loop_operations SET result_json = ? WHERE logical_operation_id = ? AND result_json = ?')
+        .run(JSON.stringify({ ...result, supportingNoteIntent: retainedIntent, supportingNoteOutcome: outcome }), decisionOperationId, row.result_json);
+      if (updated.changes !== 1) fail('open-loop-note-outcome-conflict');
+      return freeze(outcome);
+    });
+  };
   service.findOpenLoopBySubject = (kind, stableSubjectId) => inspect(db => mapLoop(db, db.prepare('SELECT * FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(text(kind, 'kind', 80), text(stableSubjectId, 'stableSubjectId', 500))));
   service.findCommitmentLoopsByLegacyObligation = (topicId, obligationId) => inspect(db => {
     const rows = db.prepare(`SELECT DISTINCT l.* FROM source_observations o

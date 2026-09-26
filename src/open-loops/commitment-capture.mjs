@@ -21,10 +21,11 @@ function legacySubject(value) { return `commitment:${stable([value.sourceKind, v
 
 export function normalizeCommitmentCapture(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('capture must be an object');
-  const allowed = ['schemaVersion', 'logicalOperationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'topicId', 'title', 'obligationId', 'correlationNamespace', 'correlationId', 'provenance', 'confidence', 'occurredAt', 'observedAt', 'historicalBaseline', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies'];
+  const allowed = ['schemaVersion', 'logicalOperationId', 'sourceKind', 'sourceExternalId', 'sourceVersion', 'sourceReferenceId', 'sourcePath', 'sourceReferenceVersion', 'topicId', 'title', 'obligationId', 'obligationKind', 'correlationNamespace', 'correlationId', 'provenance', 'confidence', 'occurredAt', 'observedAt', 'historicalBaseline', 'dueAt', 'reviewAt', 'plannedAt', 'importance', 'importanceOrigin', 'effortMinutes', 'contexts', 'dependencies'];
   const extra = Object.keys(input).find(key => !allowed.includes(key));
   if (extra) fail(`capture contains unsupported field ${extra}`);
   if (input.schemaVersion !== 1 || !sourceKinds.has(input.sourceKind) || !provenanceKinds.has(input.provenance)) fail('capture vocabulary is unsupported');
+  if (input.obligationKind !== undefined && input.obligationKind !== 'payment') fail('obligationKind is unsupported');
   if (input.importance !== undefined && !importanceKinds.has(input.importance)) fail('importance is unsupported');
   if (input.importanceOrigin !== undefined && !['source', 'processing'].includes(input.importanceOrigin)) fail('capture cannot claim a user importance decision');
   if ((input.importance === undefined) !== (input.importanceOrigin === undefined)) fail('importance and importanceOrigin must be provided together');
@@ -53,6 +54,7 @@ export function normalizeCommitmentCapture(input) {
     topicId: text(input.topicId, 'topicId', 300),
     title: text(input.title, 'title', 300),
     obligationId: text(input.obligationId, 'obligationId', 300),
+    ...(input.obligationKind === undefined ? {} : { obligationKind: input.obligationKind }),
     ...(input.correlationId === undefined ? {} : { correlationNamespace: text(input.correlationNamespace, 'correlationNamespace', 120), correlationId: text(input.correlationId, 'correlationId', 300) }),
     provenance: input.provenance,
     ...(confidence === undefined ? {} : { confidence }),
@@ -71,19 +73,21 @@ export function normalizeCommitmentCapture(input) {
 
 export function planCommitmentCapture(input, existingLoop = null) {
   const value = normalizeCommitmentCapture(input);
+  const loopKind = value.obligationKind === 'payment' ? 'payment' : 'general';
+  if (existingLoop && existingLoop.kind !== loopKind) fail('capture cannot change an existing obligation kind');
   const observationId = `commitment-observation:${stable([value.sourceKind, value.sourceExternalId, value.sourceVersion, value.obligationId])}`;
   const observationVersion = `commitment:${stable([value.sourceVersion, value.obligationId])}`;
   const normalizedObservation = normalizeObservation({
     schemaVersion: 1,
     observationId,
     source: { system: 'command-center-capture', kind: value.sourceKind, externalId: value.sourceExternalId, version: observationVersion },
-    type: 'general',
+    type: loopKind === 'payment' ? 'payment-request' : 'general',
     occurredAt: value.occurredAt,
     observedAt: value.observedAt,
     historicalBaseline: value.historicalBaseline,
     topicId: value.topicId,
     entityRefs: [{ kind: 'obligation', id: value.obligationId }],
-    facts: { title: value.title, obligationId: value.obligationId, sourceVersion: value.sourceVersion, ...(value.correlationId === undefined ? {} : { correlationNamespace: value.correlationNamespace, correlationId: value.correlationId }), provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath, ...(value.sourceReferenceVersion === undefined ? {} : { sourceReferenceVersion: value.sourceReferenceVersion }) }) }
+    facts: { title: value.title, obligationId: value.obligationId, sourceVersion: value.sourceVersion, ...(loopKind === 'payment' ? { obligationKind: 'payment' } : {}), ...(value.correlationId === undefined ? {} : { correlationNamespace: value.correlationNamespace, correlationId: value.correlationId }), provenance: value.provenance, ...(value.confidence === undefined ? {} : { confidence: value.confidence }), ...(value.sourceReferenceId === undefined ? {} : { sourceReferenceId: value.sourceReferenceId, sourcePath: value.sourcePath, ...(value.sourceReferenceVersion === undefined ? {} : { sourceReferenceVersion: value.sourceReferenceVersion }) }) }
   });
   const { digest: _digest, ...observation } = normalizedObservation;
   const stableSubjectId = subject(value);
@@ -91,7 +95,7 @@ export function planCommitmentCapture(input, existingLoop = null) {
   const priorAttention = existingLoop?.attention ?? {};
   const preserveUserImportance = priorAttention.importanceOrigin === 'user';
   const attention = {
-    actions: suggestion ? ['Review suggestion', 'Accept', 'Move to Someday', 'Drop'] : ['Open source', 'Plan', 'Start', 'Complete'],
+    actions: suggestion ? ['Review suggestion', 'Accept', 'Move to Someday', 'Drop'] : loopKind === 'payment' ? ['Open bill', 'Record payment status'] : ['Open source', 'Plan', 'Start', 'Complete'],
     activated: false,
     currentEvidence: !value.historicalBaseline,
     provenance: value.provenance,
@@ -106,12 +110,13 @@ export function planCommitmentCapture(input, existingLoop = null) {
   };
   const loop = normalizeLoop({
     schemaVersion: 1,
-    loopId: existingLoop?.loopId ?? `open-loop:${stable(['general', stableSubjectId])}`,
-    kind: 'general',
+    loopId: existingLoop?.loopId ?? `open-loop:${stable([loopKind, stableSubjectId])}`,
+    kind: loopKind,
     stableSubjectId,
     title: existingLoop?.title ?? value.title,
     topicId: value.topicId,
     state: existingLoop?.state ?? (suggestion ? 'suggested' : 'confirmed'),
+    ...(loopKind === 'payment' ? { paymentState: existingLoop?.paymentState ?? (suggestion ? 'potential' : 'unpaid') } : {}),
     ...(existingLoop?.dueAt ? { dueAt: existingLoop.dueAt } : value.dueAt ? { dueAt: value.dueAt } : {}),
     ...(existingLoop?.reviewAt ? { reviewAt: existingLoop.reviewAt } : value.reviewAt ? { reviewAt: value.reviewAt } : {}),
     attention,
@@ -132,11 +137,13 @@ export function createCommitmentCaptureService({ metadata, sourceService } = {})
         if (sourceService?.notesRead && reference.sourceKind === 'note') await sourceService.notesRead({ schemaVersion: 1, topicId: value.topicId, referenceId: value.sourceReferenceId, path: value.sourcePath, ...(value.sourceReferenceVersion === undefined ? {} : { observedRevision: value.sourceReferenceVersion }) });
       }
       const stableSubjectId = subject(value);
-      const current = metadata.findOpenLoopBySubject('general', stableSubjectId);
+      const loopKind = value.obligationKind === 'payment' ? 'payment' : 'general';
+      const current = metadata.findOpenLoopBySubject(loopKind, stableSubjectId);
+      const otherKind = metadata.findOpenLoopBySubject(loopKind === 'payment' ? 'general' : 'payment', stableSubjectId);
       const legacy = value.correlationId ? metadata.findCommitmentLoopsByLegacyObligation?.(value.topicId, value.obligationId) ?? [] : [];
       const distinctLegacy = legacy.filter(loop => loop.loopId !== current?.loopId);
       const sameSourceLegacy = value.correlationId ? metadata.findOpenLoopBySubject('general', legacySubject(value)) : null;
-      if (distinctLegacy.length > 1 || current && distinctLegacy.length || !current && distinctLegacy.length && !sameSourceLegacy) throw new TypeError('capture correlation requires explicit duplicate review');
+      if (otherKind || loopKind === 'payment' && sameSourceLegacy || distinctLegacy.length > 1 || current && distinctLegacy.length || !current && distinctLegacy.length && !sameSourceLegacy) throw new TypeError('capture correlation requires explicit duplicate review');
       const existing = current ?? sameSourceLegacy ?? null;
       const planned = planCommitmentCapture(value, existing);
       return metadata.applyOpenLoopChange({

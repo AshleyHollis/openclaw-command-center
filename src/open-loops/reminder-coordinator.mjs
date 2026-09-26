@@ -12,6 +12,14 @@ function reminderReferenceId(loopId) {
   return `open-loop-reminder:${key}`;
 }
 
+export function openLoopReminderOperationId(parentId) {
+  const bytes = createHash('sha256').update(`${nonBlank(parentId, 'parentId')}\u0000open-loop-reminder`).digest();
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function instant(value, field) {
   if (typeof value !== 'string' || Number.isNaN(Date.parse(value)) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value)) {
     throw sourceError('invalid-request', `${field} must be an RFC 3339 instant.`);
@@ -110,6 +118,90 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
       const loop = normalizeLoop(input.loop);
       const referenceId = reminderReferenceId(loop.loopId);
       return planOpenLoopReminder({ ...input, loop, defaultTimeZone: input.defaultTimeZone ?? api?.config?.agents?.defaults?.userTimezone ?? 'UTC', sourceReference: input.sourceReference ?? metadata.getSourceReference(referenceId) });
+    },
+    async reconcileAccepted(input = {}) {
+      const loop = normalizeLoop(input.loop);
+      const intent = input.followUpIntent;
+      if (!intent || intent.schemaVersion !== 1 || intent.loopId !== loop.loopId || intent.loopRevision !== loop.revision
+        || intent.referenceId !== reminderReferenceId(loop.loopId)
+        || intent.logicalOperationId !== assertLogicalOperationId(intent.logicalOperationId)) {
+        throw sourceError('invalid-request', 'Saved Reminder follow-up does not match the accepted decision.');
+      }
+      if (metadata.getOpenLoop?.(loop.loopId)?.revision !== loop.revision) throw sourceError('conflict', 'A newer open-loop decision superseded this Reminder follow-up.');
+      if (['none', 'blocked', 'conflict'].includes(intent.action)) return Object.freeze({ schemaVersion: 1, status: intent.action, logicalOperationId: intent.logicalOperationId, plan: intent });
+      const reminder = adapterFor(nonBlank(intent.topicId, 'topicId'));
+      let receipt;
+      if (intent.action === 'cancel-after-update' || intent.action === 'reschedule-after-update') {
+        const predecessor = intent.predecessor;
+        if (!predecessor || predecessor.logicalOperationId !== assertLogicalOperationId(predecessor.logicalOperationId)
+          || !predecessor.expectedConfigRevision || predecessor.expectedConfigRevision !== intent.expectedConfigRevision) {
+          throw sourceError('invalid-request', 'Pending native update identity is unavailable.');
+        }
+        const prior = metadata.getOperation?.(predecessor.logicalOperationId);
+        if (!prior || ['pending', 'not-applied', 'unknown'].includes(prior.state)) {
+          return Object.freeze({ schemaVersion: 1, status: prior?.state === 'unknown' ? 'unknown' : 'pending',
+            logicalOperationId: intent.logicalOperationId, plan: intent });
+        }
+        if (prior.state !== 'applied' || !prior.observedRevision
+          || prior.resultIdentity !== metadata.getSourceReference(intent.referenceId)?.externalSourceId) {
+          throw sourceError('conflict', 'The predecessor Scheduler update has no exact accepted result.');
+        }
+        receipt = intent.action === 'cancel-after-update'
+          ? await reminder.complete({ schemaVersion: 1, referenceId: intent.referenceId,
+              logicalOperationId: intent.logicalOperationId, expectedConfigRevision: prior.observedRevision })
+          : await reminder.reschedule({ schemaVersion: 1, referenceId: intent.referenceId,
+              logicalOperationId: intent.logicalOperationId, expectedConfigRevision: prior.observedRevision,
+              patch: { schedule: intent.declaration?.schedule } });
+      } else if (intent.action === 'cancel-pending-create' || intent.action === 'reschedule-pending-create') {
+        const predecessor = intent.predecessor;
+        if (!predecessor || predecessor.logicalOperationId !== assertLogicalOperationId(predecessor.logicalOperationId)
+          || !Number.isSafeInteger(predecessor.loopRevision) || predecessor.loopRevision >= intent.loopRevision
+          || !predecessor.declaration) throw sourceError('invalid-request', 'Pending native create identity is unavailable.');
+        let recovered = await reminder.recoverBound({ schemaVersion: 1, referenceId: intent.referenceId,
+          logicalOperationId: predecessor.logicalOperationId, declaration: predecessor.declaration });
+        if (recovered.status === 'not-applied') {
+          // The predecessor was durably accepted but died before dispatch. Its
+          // exact conditional ID must be established before the successor can
+          // cancel or retime it; another in-flight attempt may still own it.
+          recovered = await reminder.createBound({ schemaVersion: 1, referenceId: intent.referenceId,
+            logicalOperationId: predecessor.logicalOperationId, declaration: predecessor.declaration });
+        }
+        if (recovered.status !== 'applied') return Object.freeze({ schemaVersion: 1,
+          status: recovered.status === 'not-applied' ? 'pending' : recovered.status,
+          logicalOperationId: intent.logicalOperationId, plan: intent });
+        const expectedConfigRevision = nonBlank(recovered.value?.job?.configRevision, 'recoveredConfigRevision');
+        receipt = intent.action === 'cancel-pending-create'
+          ? await reminder.complete({ schemaVersion: 1, referenceId: intent.referenceId,
+              logicalOperationId: intent.logicalOperationId, expectedConfigRevision })
+          : await reminder.reschedule({ schemaVersion: 1, referenceId: intent.referenceId,
+              logicalOperationId: intent.logicalOperationId, expectedConfigRevision,
+              patch: { schedule: intent.declaration?.schedule } });
+      } else if (intent.action === 'create') {
+        receipt = await reminder.createBound({ schemaVersion: 1, referenceId: intent.referenceId,
+          logicalOperationId: intent.logicalOperationId, declaration: intent.declaration });
+      } else if (intent.action === 'reschedule') {
+        receipt = await reminder.reschedule({ schemaVersion: 1, referenceId: intent.referenceId,
+          logicalOperationId: intent.logicalOperationId, expectedConfigRevision: nonBlank(intent.expectedConfigRevision, 'expectedConfigRevision'),
+          patch: { schedule: intent.declaration?.schedule } });
+      } else if (intent.action === 'cancel') {
+        receipt = await reminder.complete({ schemaVersion: 1, referenceId: intent.referenceId,
+          logicalOperationId: intent.logicalOperationId, expectedConfigRevision: nonBlank(intent.expectedConfigRevision, 'expectedConfigRevision') });
+      } else throw sourceError('invalid-request', 'Saved Reminder follow-up action is unsupported.');
+      const currentLoop = metadata.getOpenLoop?.(loop.loopId);
+      const latest = metadata.getCurrentOpenLoopUserActionReceipt?.(loop.loopId);
+      if (currentLoop?.revision !== loop.revision) {
+        const successorOwnsPredecessor = latest?.followUpIntent?.predecessor?.logicalOperationId === intent.logicalOperationId;
+        const canHandoff = (intent.action === 'create' && ['cancel-pending-create', 'reschedule-pending-create'].includes(latest?.followUpIntent?.action))
+          || (intent.action === 'reschedule' && ['cancel-after-update', 'reschedule-after-update'].includes(latest?.followUpIntent?.action));
+        if (successorOwnsPredecessor && canHandoff) {
+          const successor = await this.reconcileAccepted({ loop: latest.loop, followUpIntent: latest.followUpIntent });
+          return Object.freeze({ schemaVersion: 1, status: 'superseded', logicalOperationId: intent.logicalOperationId,
+            plan: intent, successorStatus: successor.status });
+        }
+        return Object.freeze({ schemaVersion: 1, status: 'unknown', logicalOperationId: intent.logicalOperationId,
+          plan: intent, reason: 'open-loop-updated-after-dispatch' });
+      }
+      return Object.freeze({ ...receipt, plan: intent });
     },
     async reconcile(input = {}) {
       const logicalOperationId = assertLogicalOperationId(input.logicalOperationId);

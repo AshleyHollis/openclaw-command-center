@@ -9,10 +9,13 @@ import { createAuthoritativeSourceService } from './sources/service.mjs';
 import { createTopicService } from './topics/service.mjs';
 import { inspectTopicDiscoverability } from './topics/discoverability.mjs';
 import { SourceServiceError } from './sources/errors.mjs';
+import { withNoteFilesystemOwner } from './sources/note-filesystem-owner.mjs';
+import { prepareSupportingNoteAnnotation } from './open-loops/supporting-note-annotation.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
-import { createOpenLoopReminderCoordinator } from './open-loops/reminder-coordinator.mjs';
+import { createOpenLoopReminderCoordinator, openLoopReminderOperationId } from './open-loops/reminder-coordinator.mjs';
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
+import { loadIntakeSourceAccount } from './open-loops/intake-accounting.mjs';
 import { createCapacityReviewService } from './open-loops/capacity-review.mjs';
 import { createDailyWorkspaceService } from './daily-workspace/service.mjs';
 
@@ -124,32 +127,143 @@ export function createMetadataService(api) {
     if (!operatorId) throw new SourceServiceError('unauthenticated', `Authenticated operator identity is required for ${action}.`);
     return operatorId;
   };
-  const reminderOperationId = parentId => {
-    const bytes = createHash('sha256').update(`${parentId}\u0000open-loop-reminder`).digest();
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = bytes.subarray(0, 16).toString('hex');
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-  };
   const reminderSummary = (status, plan) => Object.freeze({ status, action: plan.action, referenceId: plan.referenceId, ...(plan.reason ? { reason: plan.reason } : {}) });
+  function commitDecisionWithNoteFence(input, commit) {
+    const loop = metadataService.getOpenLoop(input.loopId);
+    // The owner checks expectedRevision again at the actual SQLite commit.
+    // A Note-backed decision also shares the Note owner's cross-process lock
+    // so an older Note effect cannot publish across a newer user decision.
+    const note = loop?.revision === input.expectedRevision
+      ? metadataService.previewOpenLoopSupportingNoteTarget(loop.loopId) : null;
+    return note && note.status !== 'none' ? withNoteFilesystemOwner(metadataService, commit) : commit();
+  }
+  function reconcileDecisionEffects(committed, logicalOperationId, runtime, requireGateway = false) {
+    const run = result => {
+      const saved = metadataService.getOpenLoopSupportingNoteIntent(logicalOperationId);
+      const reconcileReminder = () => {
+        if (requireGateway && typeof runtime?.gateway?.request !== 'function') {
+          throw new SourceServiceError('capability-unavailable', 'An authenticated Scheduler request is required to resume follow-up.');
+        }
+        return reconcileOpenLoopReminder(result, logicalOperationId, runtime);
+      };
+      if (!saved || saved.target.status === 'none') return reconcileReminder();
+      // Both intents were committed with the decision. An unavailable Scheduler
+      // must not prevent the independent supporting Note from being reconciled.
+      return Promise.allSettled([
+        Promise.resolve().then(reconcileReminder),
+        Promise.resolve().then(() => reconcileOpenLoopSupportingNote(logicalOperationId))
+      ]).then(([reminder, note]) => {
+        if (reminder.status === 'rejected') throw reminder.reason;
+        if (note.status === 'rejected') throw note.reason;
+        return Object.freeze({ ...reminder.value, supportingNote: note.value });
+      });
+    };
+    return committed && typeof committed.then === 'function' ? committed.then(run) : run(committed);
+  }
+  function afterDecisionCommit(committed, logicalOperationId, runtime) {
+    return reconcileDecisionEffects(committed, logicalOperationId, runtime);
+  }
+  async function reconcileOpenLoopSupportingNote(decisionOperationId) {
+    const initial = metadataService.getOpenLoopSupportingNoteIntent(decisionOperationId);
+    if (!initial?.current) return Object.freeze({ status: 'superseded' });
+    if (initial.target.status !== 'ready') return Object.freeze({ status: initial.target.status, ...(initial.target.reason ? { reason: initial.target.reason } : {}) });
+    return withNoteFilesystemOwner(metadataService, async () => {
+      const saved = metadataService.getOpenLoopSupportingNoteIntent(decisionOperationId);
+      if (!saved?.current) return Object.freeze({ status: 'superseded' });
+      if (saved.outcome?.status === 'completed') {
+        if (saved.intent && metadataService.getOperation(saved.intent.logicalOperationId)?.state === 'applied') {
+          return Object.freeze({ status: 'completed', logicalOperationId: saved.intent.logicalOperationId });
+        }
+        return Object.freeze({ status: 'unknown', reason: 'missing-effect-receipt' });
+      }
+      const target = saved.target.target;
+      let prepared = saved.intent;
+      try {
+        // A retained producer Note is also the exact evidence for sibling
+        // outcomes in the accepted source plan. Keep its admitted revision
+        // stable until those effects finish; otherwise a crash retry cannot
+        // verify the original evidence without silently adopting new bytes.
+        const capture = metadataService.getOpenLoopObservation(target.captureObservationId);
+        if (capture?.source?.system === 'command-center-capture' && capture.source.kind === 'email') {
+          if (capture.facts?.sourceVersion !== target.upstreamSourceVersion
+            || capture.facts?.sourceReferenceId !== target.referenceId
+            || capture.facts?.sourcePath !== target.path
+            || capture.facts?.sourceReferenceVersion !== target.retainedNoteRevision) {
+            throw new SourceServiceError('conflict', 'The supporting Note no longer matches its accepted source evidence.');
+          }
+          const admitted = loadIntakeSourceAccount(metadataService, { sourceKind: 'email',
+            sourceExternalId: capture.source.externalId, sourceVersion: capture.facts.sourceVersion });
+          if (admitted?.plan.retainedNoteRevision !== undefined
+            && admitted.plan.retainedNoteRevision !== target.retainedNoteRevision) {
+            throw new SourceServiceError('conflict', 'The retained source Note revision differs from the accepted plan.');
+          }
+          if (admitted && !admitted.account?.accounted) {
+            return Object.freeze({ status: 'pending', reason: 'source-outcomes-pending' });
+          }
+        }
+        if (!prepared) {
+          const current = await sourceService.notesRead({ schemaVersion: 1, topicId: target.topicId,
+            referenceId: target.referenceId, path: target.path, sourceKind: 'note' });
+          if (current.revision !== target.expectedRevision) throw new SourceServiceError('conflict', 'The supporting Note changed before the decision could be recorded there.');
+          let annotation;
+          try { annotation = prepareSupportingNoteAnnotation({ text: current.text,
+            loopId: saved.loopId, observation: saved.observation }); }
+          catch { throw new SourceServiceError('conflict', 'The managed supporting Note block needs review before it can be updated.'); }
+          prepared = metadataService.prepareOpenLoopSupportingNoteIntent({ schemaVersion: 1,
+            decisionOperationId, expectedLoopRevision: saved.loopRevision,
+            target, text: annotation.text });
+        }
+        if (!metadataService.getOpenLoopSupportingNoteIntent(decisionOperationId)?.current) return Object.freeze({ status: 'superseded' });
+        const noteEffect = { schemaVersion: 1, logicalOperationId: prepared.logicalOperationId,
+          topicId: target.topicId, referenceId: target.referenceId, path: target.path,
+          expectedRevision: target.expectedRevision, text: prepared.text };
+        if (saved.intent) {
+          const verified = await sourceService.notesEditReconcile(noteEffect);
+          if (verified.status === 'not-applied') await sourceService.notesEdit(noteEffect);
+          else if (verified.status !== 'applied') throw new SourceServiceError('unknown', 'The supporting Note effect is not yet verified.');
+        } else await sourceService.notesEdit(noteEffect);
+        const sourceOperation = metadataService.getOperation(prepared.logicalOperationId);
+        if (sourceOperation?.state !== 'applied' || !sourceOperation.observedRevision) throw new SourceServiceError('unknown', 'The supporting Note effect lacks an applied operation receipt.');
+        const outcome = metadataService.recordOpenLoopSupportingNoteOutcome({ schemaVersion: 1,
+          decisionOperationId, expectedLoopRevision: saved.loopRevision,
+          status: 'completed', observedRevision: sourceOperation.observedRevision });
+        return Object.freeze({ status: outcome.status, logicalOperationId: prepared.logicalOperationId });
+      } catch (error) {
+        const status = error?.code === 'conflict' || error?.code === 'open-loop-note-intent-mismatch' ? 'conflict'
+          : error?.code === 'unknown' ? 'unknown' : 'unavailable';
+        const reason = typeof error?.code === 'string' && /^[a-z0-9-]{1,80}$/u.test(error.code) ? error.code : 'supporting-note-effect-failed';
+        if (saved.outcome?.status === 'completed') return Object.freeze({ status, reason });
+        try { metadataService.recordOpenLoopSupportingNoteOutcome({ schemaVersion: 1,
+          decisionOperationId, expectedLoopRevision: saved.loopRevision,
+          status, reason }); }
+        catch { return Object.freeze({ status: 'superseded' }); }
+        return Object.freeze({ status, reason });
+      }
+    });
+  }
   function reconcileOpenLoopReminder(result, parentOperationId, runtime = {}) {
     const reminderCoordinator = runtime?.gateway?.request
       ? createOpenLoopReminderCoordinator({ api, gateway: runtime.gateway, metadata: metadataService })
       : openLoopReminders;
-    if (!reminderCoordinator) return result;
+    const { followUpIntent, supportingNoteTarget: _supportingNoteTarget, ...publicResult } = result;
+    if (!reminderCoordinator) return Object.freeze(publicResult);
+    if (result.followUpIntent) {
+      return reminderCoordinator.reconcileAccepted({ loop: result.loop, followUpIntent })
+        .then(receipt => Object.freeze({ ...publicResult, reminder: reminderSummary(receipt.status, receipt.plan) }));
+    }
     const plan = reminderCoordinator.plan({ loop: result.loop });
-    if (['none', 'blocked'].includes(plan.action)) return Object.freeze({ ...result, reminder: reminderSummary(plan.action, plan) });
-    const logicalOperationId = reminderOperationId(parentOperationId);
+    if (['none', 'blocked'].includes(plan.action)) return Object.freeze({ ...publicResult, reminder: reminderSummary(plan.action, plan) });
+    const logicalOperationId = openLoopReminderOperationId(parentOperationId);
     const prior = metadataService.getOperation(logicalOperationId);
     if (prior) {
       if (prior.state === 'unknown') throw new SourceServiceError('unknown', 'The native Reminder outcome is unknown. Retry the unchanged open-loop action to reconcile it.');
       if (prior.state !== 'applied') throw new SourceServiceError('conflict', 'The native Reminder was not changed. Refresh the open loop and retry with a new action.');
-      return Object.freeze({ ...result, reminder: reminderSummary(prior.state, plan) });
+      return Object.freeze({ ...publicResult, reminder: reminderSummary(prior.state, plan) });
     }
     return reminderCoordinator.reconcile({
       loop: result.loop,
       logicalOperationId
-    }).then(receipt => Object.freeze({ ...result, reminder: reminderSummary(receipt.status, receipt.plan) }));
+    }).then(receipt => Object.freeze({ ...publicResult, reminder: reminderSummary(receipt.status, receipt.plan) }));
   }
   return {
     id: 'command-center-metadata',
@@ -350,7 +464,34 @@ export function createMetadataService(api) {
       requireOperational();
       const loop = metadataService.getOpenLoop(input.loopId);
       if (!loop) throw new SourceServiceError('not-found', 'The exact open loop is unavailable.');
-      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id), metadataService))) });
+      const accepted = metadataService.getCurrentOpenLoopUserActionReceipt(loop.loopId);
+      let followUp;
+      let supportingNote;
+      if (accepted) {
+        let plan;
+        let planningConflict = false;
+        try { plan = accepted.followUpIntent ?? openLoopReminders?.plan({ loop: accepted.loop }); }
+        catch { planningConflict = true; }
+        const operation = metadataService.getOperation(openLoopReminderOperationId(accepted.logicalOperationId));
+        const status = operation?.state === 'applied' ? 'completed' : !openLoopReminders ? 'unavailable'
+          : planningConflict || plan?.action === 'conflict' ? 'conflict' : !plan ? 'unavailable'
+          : operation?.state === 'unknown' ? 'unknown' : operation ? 'conflict'
+            : plan.action === 'none' ? 'completed' : plan.action === 'blocked' ? 'blocked' : 'pending';
+        followUp = Object.freeze({ status, logicalOperationId: accepted.logicalOperationId,
+          ...(plan ? { action: plan.action, ...(plan.reason ? { reason: plan.reason } : {}) } : {}) });
+        const note = metadataService.getOpenLoopSupportingNoteIntent(accepted.logicalOperationId);
+        if (note && note.target.status !== 'none') {
+          const operation = note?.intent && metadataService.getOperation(note.intent.logicalOperationId);
+          const noteStatus = note.target.status === 'conflict' ? 'conflict'
+            : note.outcome?.status === 'completed' && operation?.state !== 'applied' ? 'unknown'
+              : note.outcome?.status ?? (operation?.state === 'unknown' ? 'unknown'
+                : operation?.state === 'conflict' ? 'conflict' : 'pending');
+          supportingNote = Object.freeze({ status: noteStatus,
+            ...(note.outcome?.reason ? { reason: note.outcome.reason } : {}),
+            ...(note.intent ? { logicalOperationId: note.intent.logicalOperationId } : {}) });
+        }
+      }
+      return Object.freeze({ schemaVersion: 1, loop, evidence: Object.freeze(loop.evidenceObservationIds.map(id => publicOpenLoopEvidence(metadataService.getOpenLoopObservation(id), metadataService))), ...(followUp ? { followUp } : {}), ...(supportingNote ? { supportingNote } : {}) });
     },
     async openLoopsCapture(input = {}) {
       requireOperational();
@@ -459,14 +600,26 @@ export function createMetadataService(api) {
     openLoopsDecide(input = {}, runtime = {}) {
       requireOperational();
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for open-loop decisions.');
-      const result = metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }), ...(input.amount === undefined ? {} : { amount: input.amount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
-      return reconcileOpenLoopReminder(result, input.logicalOperationId, runtime);
+      const committed = commitDecisionWithNoteFence(input, () => metadataService.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, decision: input.decision, ...(input.reviewAt === undefined ? {} : { reviewAt: input.reviewAt }), ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }), ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate, dueTimeZone: input.dueTimeZone }), ...(input.amount === undefined ? {} : { amount: input.amount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() }));
+      return afterDecisionCommit(committed, input.logicalOperationId, runtime);
+    },
+    openLoopsResumeFollowUp(input = {}, runtime = {}) {
+      requireOperational();
+      const actorId = requireOperator(input, 'open-loop follow-up recovery');
+      const accepted = metadataService.getOpenLoopUserActionReceipt(input.logicalOperationId);
+      if (!accepted) throw new SourceServiceError('not-found', 'The exact saved user decision is unavailable.');
+      if (accepted.actorId !== actorId) throw new SourceServiceError('unauthorized', 'The saved decision belongs to another operator.');
+      if (!accepted.current || metadataService.getOpenLoop(accepted.loop.loopId)?.revision !== accepted.loop.revision) {
+        return Object.freeze({ schemaVersion: 1, disposition: 'superseded', loop: metadataService.getOpenLoop(accepted.loop.loopId) });
+      }
+      return reconcileDecisionEffects({ schemaVersion: 1, disposition: 'duplicate', loop: accepted.loop,
+        ...(accepted.followUpIntent ? { followUpIntent: accepted.followUpIntent } : {}) }, accepted.logicalOperationId, runtime, true);
     },
     openLoopsPaymentStatus(input = {}, runtime = {}) {
       requireOperational();
       if (typeof input.authenticatedOperatorId !== 'string' || input.authenticatedOperatorId.trim() === '') throw new SourceServiceError('unauthenticated', 'Authenticated operator identity is required for payment status records.');
-      const result = metadataService.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, paymentState: input.paymentState, ...(input.paidAmount === undefined ? {} : { paidAmount: input.paidAmount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() });
-      return reconcileOpenLoopReminder(result, input.logicalOperationId, runtime);
+      const committed = commitDecisionWithNoteFence(input, () => metadataService.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: input.logicalOperationId, loopId: input.loopId, expectedRevision: input.expectedRevision, paymentState: input.paymentState, ...(input.paidAmount === undefined ? {} : { paidAmount: input.paidAmount, currency: input.currency }), actorId: input.authenticatedOperatorId, rationale: input.rationale, updatedAt: new Date().toISOString() }));
+      return afterDecisionCommit(committed, input.logicalOperationId, runtime);
     },
     openLoopsOrganize(input = {}, runtime = {}) {
       requireOperational();

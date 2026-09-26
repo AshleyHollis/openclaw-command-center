@@ -104,6 +104,81 @@ test('Reminder creation recovers an exact lost response after metadata reopen wi
   }
 });
 
+test('a bound Reminder create uses one conditional native ID and recovers its exact lost response', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-bound-reminder-reopen-'));
+  const logicalOperationId = randomUUID();
+  const referenceId = 'open-loop-reminder:fictional-bound';
+  const declaration = { name: 'Fictional bound reminder', enabled: true,
+    schedule: { kind: 'at', at: '2099-01-02T03:04:05.000Z' },
+    payload: { kind: 'systemEvent', text: 'Review fictional bill' } };
+  let metadata;
+  let job;
+  let adds = 0;
+  const gateway = { async request(method, params) {
+    if (method === 'cron.list') return { jobs: job ? [structuredClone(job)] : [] };
+    if (method === 'cron.add') {
+      adds += 1;
+      assert.equal(params.id, logicalOperationId, 'native ID must be conditional and known before dispatch');
+      assert.equal(params.declarationKey, undefined, 'declarative upsert is not a conditional create');
+      job = { ...structuredClone(params), configRevision: 'fictional-native-v1' };
+      throw Object.assign(new Error('fictional response lost after durable add'), { code: 'timeout', ambiguous: true });
+    }
+    throw new Error(`unexpected Scheduler method ${method}`);
+  } };
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    metadata.createTopic({ topicId: 'fictional-bound-topic', paraCategory: 'project', lifecycle: 'active' });
+    const adapter = createSchedulerAdapter({ topicId: 'fictional-bound-topic', metadata, gateway });
+    const result = await adapter.createBoundReminder({ schemaVersion: 1, logicalOperationId, referenceId, declaration });
+    assert.equal(result.status, 'applied');
+    assert.equal(result.value.job.id, logicalOperationId);
+    assert.equal(result.value.sourceReference.referenceId, referenceId);
+    assert.equal(adds, 1);
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    const reopened = createSchedulerAdapter({ topicId: 'fictional-bound-topic', metadata, gateway });
+    const replay = await reopened.createBoundReminder({ schemaVersion: 1, logicalOperationId, referenceId, declaration });
+    assert.equal(replay.status, 'applied');
+    assert.equal(adds, 1, 'restart replay must read the exact job instead of adding again');
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('a bound Reminder never adopts a conflicting exact-ID job after an ambiguous native response', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-bound-reminder-conflict-'));
+  const logicalOperationId = randomUUID();
+  const referenceId = 'open-loop-reminder:fictional-conflict';
+  const declaration = { name: 'Expected fictional bill reminder', enabled: true,
+    schedule: { kind: 'at', at: '2099-01-02T03:04:05.000Z' },
+    payload: { kind: 'systemEvent', text: 'Review expected fictional bill' } };
+  let metadata;
+  let adds = 0;
+  const gateway = { async request(method) {
+    if (method === 'cron.add') {
+      adds += 1;
+      throw Object.assign(new Error('fictional ambiguous response'), { code: 'timeout', ambiguous: true });
+    }
+    if (method === 'cron.list') return { jobs: [{ id: logicalOperationId, configRevision: 'foreign-native-r1',
+      name: 'Another fictional job', enabled: true, schedule: declaration.schedule, payload: declaration.payload }] };
+    throw new Error(`unexpected Scheduler method ${method}`);
+  } };
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    metadata.createTopic({ topicId: 'fictional-bound-topic', paraCategory: 'project', lifecycle: 'active' });
+    const adapter = createSchedulerAdapter({ topicId: 'fictional-bound-topic', metadata, gateway });
+    await assert.rejects(() => adapter.createBoundReminder({ schemaVersion: 1, logicalOperationId, referenceId, declaration }),
+      error => error.code === 'conflict');
+    assert.equal(adds, 1);
+    assert.equal(metadata.getSourceReference(referenceId), null);
+    assert.equal(metadata.getOperation(logicalOperationId)?.state, 'conflict');
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('Reminder lost-response recovery rejects a mismatched declaration without taking ownership', async () => {
   const metadata = metadataFixture();
   const logicalOperationId = randomUUID();

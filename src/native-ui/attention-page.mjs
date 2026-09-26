@@ -111,6 +111,43 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   function renderEvidence(disclosure, detail) {
     disclosure.replaceChildren(element('summary', 'Source evidence'));
     const loop = detail?.loop;
+    const followUp = detail?.followUp;
+    const supportingNote = detail?.supportingNote;
+    if (followUp) {
+      const wording = {
+        pending: 'Decision saved. Reminder follow-up is still pending.',
+        completed: 'Decision saved. Reminder follow-up is complete.',
+        unknown: 'Decision saved. The Reminder outcome is uncertain and needs reconciliation.',
+        conflict: 'Decision saved. Reminder follow-up conflicts with the current schedule.',
+        blocked: 'Decision saved. Reminder follow-up needs more information before scheduling.',
+        unavailable: 'Decision saved. Reminder scheduling is currently unavailable.'
+      };
+      disclosure.append(element('p', wording[followUp.status] ?? 'Decision saved. Follow-up status is unavailable.'));
+      if (supportingNote) {
+        const noteWording = {
+          pending: 'Supporting Note update is pending.',
+          completed: 'The supporting Note recorded this decision.',
+          unknown: 'The supporting Note update outcome is uncertain.',
+          conflict: 'The supporting Note changed; review it before recording this decision there.',
+          unavailable: 'The supporting Note update is unavailable; your decision remains saved.'
+        };
+        disclosure.append(element('p', noteWording[supportingNote.status] ?? 'Supporting Note status is unavailable.'));
+      }
+      if ((['pending', 'unknown'].includes(followUp.status) || ['pending', 'unknown', 'unavailable'].includes(supportingNote?.status)) && nonBlank(followUp.logicalOperationId)) {
+        const resume = element('button', 'Resume saved follow-up'); resume.type = 'button';
+        resume.addEventListener('click', async () => {
+          if (!writable() || resume.disabled) return;
+          resume.disabled = true;
+          try {
+            await host.request('command-center.v1.open-loops.resume-follow-up', { schemaVersion: 1, logicalOperationId: followUp.logicalOperationId });
+            const refreshed = unwrap(await host.request('command-center.v1.open-loops.get', { schemaVersion: 1, loopId: loop.loopId }));
+            if (refreshed?.loop?.loopId === loop.loopId) renderEvidence(disclosure, refreshed);
+          } catch (error) { report(error?.message || 'Saved follow-up could not be resumed.'); }
+          finally { resume.disabled = false; }
+        }, { signal });
+        disclosure.append(resume);
+      }
+    }
     if (nonBlank(loop?.expectedEvent)) disclosure.append(element('p', `Expected next event: ${loop.expectedEvent}`));
     if (nonBlank(loop?.reviewAt)) disclosure.append(element('p', `Review after ${formatInstant(loop.reviewAt)}`));
     const evidence = Array.isArray(detail?.evidence) ? detail.evidence : [];
@@ -177,7 +214,15 @@ export function mountAttentionPage(container, context, operations = new Map(), p
   }
 
   async function submitOpenLoopOperation({ key, method, params, card, pending, success, includeLoopId = true }) {
-    const operation = operations.get(key) ?? { method, params: { schemaVersion: 1, logicalOperationId: crypto.randomUUID(), ...(includeLoopId ? { loopId: card.loopId } : {}), expectedRevision: card.revision, ...params } };
+    const proposed = { schemaVersion: 1, ...(includeLoopId ? { loopId: card.loopId } : {}), expectedRevision: card.revision, ...params };
+    const prior = operations.get(key);
+    if (prior && ['command-center.v1.open-loops.decide', 'command-center.v1.open-loops.payment-status'].includes(method)) {
+      const { logicalOperationId: _savedId, ...savedIntent } = prior.params;
+      if (prior.method !== method || JSON.stringify(savedIntent) !== JSON.stringify(proposed)) {
+        throw new Error('An earlier decision has an uncertain outcome. Restore its original choices and retry before making a different decision.');
+      }
+    }
+    const operation = prior ?? { method, params: { logicalOperationId: crypto.randomUUID(), ...proposed } };
     operations.set(key, operation);
     const envelope = await host.request(operation.method, operation.params);
     const response = unwrap(envelope);
