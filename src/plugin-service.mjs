@@ -102,6 +102,7 @@ export function createMetadataService(api) {
   let clarificationWorkerCursor;
   let clarificationFollowUpCursor;
   let clarificationWorkerRun;
+  let enqueueClarificationWorkerRun;
   const processorCapability = Symbol('command-center-clarification-processor');
   let releaseDurableFolderStager;
   let releaseFilesystemIdentityReader;
@@ -115,6 +116,7 @@ export function createMetadataService(api) {
     clarificationWorkerCursor = undefined;
     clarificationFollowUpCursor = undefined;
     clarificationWorkerRun = undefined;
+    enqueueClarificationWorkerRun = undefined;
     releaseDurableFolderStager?.();
     releaseDurableFolderStager = undefined;
     releaseFilesystemIdentityReader?.();
@@ -441,18 +443,27 @@ export function createMetadataService(api) {
             return result;
           },
           assertCurrent, notBefore: admissionTime });
+        const enqueueRun = work => {
+          const previous = clarificationWorkerRun;
+          const run = Promise.resolve(previous).catch(() => {}).then(() => { assertCurrent(); return work(); });
+          clarificationWorkerRun = run;
+          const release = () => { if (clarificationWorkerRun === run) clarificationWorkerRun = undefined; };
+          void run.then(release, release);
+          return run;
+        };
+        enqueueClarificationWorkerRun = enqueueRun;
         const intervalMs = (workerConfig.intervalSeconds ?? 300) * 1000;
         const tick = async () => {
           assertCurrent();
           if (clarificationWorkerRun) return;
-          const run = clarificationWorker.runFollowUpPage({ ...(clarificationFollowUpCursor ? { cursor: clarificationFollowUpCursor } : {}) })
-            .then(page => { assertCurrent(); clarificationFollowUpCursor = page.nextCursor;
-              return clarificationWorker.runPage({ ...(clarificationWorkerCursor ? { cursor: clarificationWorkerCursor } : {}) }); })
-            .then(page => { assertCurrent(); clarificationWorkerCursor = page.nextCursor; })
-            .catch(error => { api.logger?.warn?.(`Command Center clarification worker ${typeof error?.code === 'string' ? error.code : 'failed'}`); })
-            .finally(() => { if (clarificationWorkerRun === run) clarificationWorkerRun = undefined; });
-          clarificationWorkerRun = run;
-          await clarificationWorkerRun;
+          await enqueueRun(async () => {
+            const recovery = await clarificationWorker.runFollowUpPage({ ...(clarificationFollowUpCursor ? { cursor: clarificationFollowUpCursor } : {}) });
+            assertCurrent();
+            clarificationFollowUpCursor = recovery.nextCursor;
+            const pending = await clarificationWorker.runPage({ ...(clarificationWorkerCursor ? { cursor: clarificationWorkerCursor } : {}) });
+            assertCurrent();
+            clarificationWorkerCursor = pending.nextCursor;
+          });
         };
         const schedule = () => {
           clarificationWorkerTimer = setTimeout(async () => {
@@ -493,10 +504,14 @@ export function createMetadataService(api) {
     get capacityReview() { return capacityReview ?? readTopicMaintenanceOwners()?.capacityReview; },
     get dailyWorkspace() { return dailyWorkspace ?? readTopicMaintenanceOwners()?.dailyWorkspace; },
     async runClarificationWorkerOnce(input = {}) {
-      if (!clarificationWorker) throw new SourceServiceError('capability-unavailable', 'The clarification worker is not enabled.');
-      const recovery = await clarificationWorker.runFollowUpPage({ ...(input.recoveryCursor ? { cursor: input.recoveryCursor } : {}) });
-      const pending = await clarificationWorker.runPage(input);
-      return Object.freeze({ ...pending, recovered: recovery.results, nextRecoveryCursor: recovery.nextCursor });
+      const worker = clarificationWorker;
+      const enqueueRun = enqueueClarificationWorkerRun;
+      if (!worker || !enqueueRun) throw new SourceServiceError('capability-unavailable', 'The clarification worker is not enabled.');
+      return enqueueRun(async () => {
+        const recovery = await worker.runFollowUpPage({ ...(input.recoveryCursor ? { cursor: input.recoveryCursor } : {}) });
+        const pending = await worker.runPage(input);
+        return Object.freeze({ ...pending, recovered: recovery.results, nextRecoveryCursor: recovery.nextCursor });
+      });
     },
     get attentionService() { return attentionService; },
     get maintenanceService() { return undefined; },

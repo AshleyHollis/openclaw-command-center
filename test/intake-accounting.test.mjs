@@ -169,11 +169,17 @@ test('clarification worker resumes the accepted proposal after an interrupted ef
 test('configured service worker applies one accepted fictional clarification without borrowing operator identity', async () => {
   const temporary = await temporaryStateDir('command-center-configured-clarification-worker-');
   let modelCalls = 0;
+  let modelStarted;
+  let releaseModel;
+  const started = new Promise(resolve => { modelStarted = resolve; });
+  const modelGate = new Promise(resolve => { releaseModel = resolve; });
   const service = createMetadataService({ runtime: { state: { resolveStateDir: () => temporary.path },
     gateway: { request: async () => { throw new Error('The fictional decision has no native Reminder effect.'); } },
     llm: { complete: async request => {
       modelCalls += 1;
       assert.equal(request.execution.mode, 'isolated-agent-runtime');
+      modelStarted();
+      await modelGate;
       return { model: 'fictional/model', text: JSON.stringify({ outcome: 'clear', decision: 'confirm',
         evidenceQuote: 'Use the morning delivery window for this one.' }) };
     } } }, logger: {}, pluginConfig: { clarificationWorker: { enabled: true,
@@ -205,8 +211,14 @@ test('configured service worker applies one accepted fictional clarification wit
     const renewed = await service.openLoopsClarify({ loopId: decision.loopId, expectedRevision: clarified.loop.revision,
       logicalOperationId: 'configured-worker-renewed-words', authenticatedOperatorId: 'operator-fixture',
       rationale: 'Use the morning delivery window for this one.' });
-    const page = await service.runClarificationWorkerOnce();
+    const firstRun = service.runClarificationWorkerOnce();
+    await started;
+    const overlappingRun = service.runClarificationWorkerOnce();
+    await delay(20);
+    releaseModel();
+    const [page, replay] = await Promise.all([firstRun, overlappingRun]);
     assert.equal(page.results[0].status, 'applied');
+    assert.deepEqual(replay.results, [], 'the overlapping request should observe the accepted proposal without another model call');
     assert.equal(modelCalls, 1);
     const resolved = metadata.getOpenLoop(decision.loopId);
     assert.equal(resolved.state, 'confirmed');
