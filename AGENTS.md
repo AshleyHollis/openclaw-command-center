@@ -20,6 +20,13 @@ reuse still-valid host evidence. A mixed change takes the highest applicable
 class; split independent presentation work from mutations when that lets useful
 work ship sooner.
 
+### Execution efficiency
+
+Follow `docs/agents/execution-efficiency.md`: keep one bounded outcome and a
+compact checkpoint, limit tool output, finish review fixes before final
+qualification, and reuse valid evidence. Observe an explicitly agreed usage
+budget when one exists; never infer a quota percentage from raw token totals.
+
 ## Repository scope
 
 Command Center is an OpenClaw plugin. Keep plugin-specific policy and personal workflows out of OpenClaw core. Any proposed OpenClaw fork change must be generic, narrow, independently tested, and tracked separately.
