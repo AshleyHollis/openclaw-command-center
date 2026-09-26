@@ -16,8 +16,9 @@ export function createNativeTopicNavigation(host) {
     try { return await host.request(method, params); }
     catch (error) { assertCurrent(current); throw error; }
   }
-  async function open({ topicId, referenceId, expectedSessionId }, current = ++generation) {
+  async function open({ topicId, referenceId, expectedSessionId, expectedSessionKey }, current = ++generation) {
       const target = await resolve({ topicId, referenceId, expectedSessionId }, current);
+      if (expectedSessionKey && target.sessionKey !== expectedSessionKey) throw new Error('The authoritative Conversation changed after this result was created.');
       host.sessions.openChat(target);
       return Object.freeze({ referenceId, sessionId: expectedSessionId });
   }
