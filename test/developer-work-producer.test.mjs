@@ -180,6 +180,19 @@ test('authentication refusal pauses durable delivery across restart without retr
     const resumed = await producer.flush({ resumePaused: true });
     assert.deepEqual([resumed.delivered, resumed.pending], [2, 0]);
     assert.equal(calls, 3);
+    const completed = metadata.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: first.logicalOperationId });
+    assert.equal(completed.deliveryState, 'delivered');
+    assert.equal(completed.deliveryDiagnostic.deliveryState, 'delivered');
+    assert.equal(completed.deliveryDiagnostic.paused, false);
+    assert.equal(completed.deliveryDiagnostic.nextAttemptAtMs, null);
+    assert.ok(completed.deliveryDiagnostic.deliveredAtMs > 0);
+    producer.close(); metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+    const afterCompletionRestart = metadata.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: first.logicalOperationId });
+    assert.deepEqual(afterCompletionRestart.deliveryDiagnostic, completed.deliveryDiagnostic);
+    producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => undefined, receiver });
+    assert.equal((await producer.flush()).pending, 0);
+    assert.equal(calls, 3);
   } finally { producer.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

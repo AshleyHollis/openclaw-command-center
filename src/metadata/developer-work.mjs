@@ -327,8 +327,13 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
         if (prior.producerId !== receiverReceipt.producerId || prior.eventId !== receiverReceipt.eventId || prior.eventDigest !== receiverReceipt.eventDigest) fail('developer-receipt-conflict');
         return producerRow(row, db);
       }
-      db.prepare("UPDATE developer_work_outbox SET delivery_state = 'delivered', receiver_receipt_json = ?, delivered_at = ? WHERE producer_id = ? AND event_id = ?").run(JSON.stringify(receiverReceipt), new Date().toISOString(), producerId, eventId);
-      db.prepare("UPDATE operation_journal SET state = 'applied', result_status = 'delivered', updated_at = ? WHERE logical_operation_id = ? AND operation_kind = 'developer-work.delivery.v1'").run(new Date().toISOString(), deliveryDiagnosticId(producerId, eventId));
+      const deliveredAt = new Date().toISOString();
+      db.prepare("UPDATE developer_work_outbox SET delivery_state = 'delivered', receiver_receipt_json = ?, delivered_at = ? WHERE producer_id = ? AND event_id = ?").run(JSON.stringify(receiverReceipt), deliveredAt, producerId, eventId);
+      const priorDiagnostic = deliveryDiagnostic(db, row);
+      if (priorDiagnostic) {
+        const diagnostic = { ...priorDiagnostic, deliveryState: 'delivered', paused: false, nextAttemptAtMs: null, deliveredAtMs: Date.parse(deliveredAt), updatedAtMs: Date.parse(deliveredAt) };
+        db.prepare("UPDATE operation_journal SET state = 'applied', result_status = 'delivered', result_identity = ?, updated_at = ? WHERE logical_operation_id = ? AND operation_kind = 'developer-work.delivery.v1'").run(JSON.stringify(diagnostic), deliveredAt, deliveryDiagnosticId(producerId, eventId));
+      }
       return producerRow(db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND event_id = ?').get(producerId, eventId), db);
     });
   };
