@@ -107,9 +107,25 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(observation.observationId, observation.source.system, observation.source.kind, observation.source.externalId, observation.source.version, observation.type, observation.occurredAt, observation.observedAt, observation.historicalBaseline ? 1 : 0, observation.topicId ?? null, JSON.stringify(observation.entityRefs), JSON.stringify(observation.facts), observation.digest, observation.observedAt);
     return { existing: Boolean(existing), observation: mapObservation(existing ?? db.prepare('SELECT * FROM source_observations WHERE observation_id = ?').get(observation.observationId)) };
   }
-  function storeLoop(db, loop, expectedRevision, roles, updatedAt) {
+  function storeLoop(db, loop, expectedRevision, roles, updatedAt, userDecision = false) {
     const existing = db.prepare('SELECT * FROM open_loops WHERE loop_id = ?').get(loop.loopId);
     if ((existing?.revision ?? 0) !== expectedRevision) fail('open-loop-stale-revision', 'The open loop revision is stale.');
+    if (existing && !userDecision) {
+      const prior = db.prepare(`SELECT json_extract(op.result_json, '$.followUpIntent.action') AS action,
+          journal.state AS native_state
+        FROM open_loop_operations op
+        JOIN source_observations observation ON observation.source_system = 'command-center'
+          AND observation.source_kind = 'user-decision' AND observation.external_source_id = op.logical_operation_id
+          AND observation.observation_id = json_extract(op.result_json, '$.observation.observationId')
+        LEFT JOIN operation_journal journal ON journal.logical_operation_id = json_extract(op.result_json, '$.followUpIntent.logicalOperationId')
+        WHERE op.operation_kind = ? AND op.state = 'applied'
+          AND json_extract(op.result_json, '$.loop.loopId') = ?
+          AND json_extract(op.result_json, '$.loop.revision') = ?
+        ORDER BY op.created_at DESC, op.logical_operation_id DESC LIMIT 1`).get(CHANGE_OPERATION, loop.loopId, existing.revision);
+      if (prior && !['none', 'blocked', 'conflict', null].includes(prior.action) && prior.native_state !== 'applied') {
+        fail('open-loop-follow-up-pending', 'The accepted Reminder follow-up must settle before this open loop can advance.');
+      }
+    }
     const owner = db.prepare('SELECT loop_id FROM open_loops WHERE loop_kind = ? AND stable_subject_id = ?').get(loop.kind, loop.stableSubjectId);
     if (owner && owner.loop_id !== loop.loopId) fail('open-loop-subject-conflict');
     if (loop.topicId && !db.prepare('SELECT 1 FROM topics WHERE topic_id = ?').get(loop.topicId)) fail('open-loop-topic-missing');
@@ -209,7 +225,8 @@ export function installOpenLoopMetadata(service, { mutate, inspect, ErrorType })
       const replay = operation(db, logicalOperationId, CHANGE_OPERATION, intentDigest);
       if (replay) return replay;
       const stored = storeObservation(db, observation);
-      const changed = loop ? storeLoop(db, loop, value.expectedRevision, roles, updatedAt) : null;
+      const changed = loop ? storeLoop(db, loop, value.expectedRevision, roles, updatedAt,
+        operationKind.startsWith('decision-') || operationKind === 'payment-status') : null;
       const pendingFollowUp = followUpIntent(db, logicalOperationId, operationKind, changed?.loop);
       const noteTarget = supportingNoteTarget(db, operationKind, changed?.loop);
       return receipt(db, logicalOperationId, CHANGE_OPERATION, intentDigest, { schemaVersion: 1, disposition: stored.existing && !changed ? 'duplicate' : changed?.disposition ?? 'inserted', observation: stored.observation, loop: changed?.loop ?? null,
