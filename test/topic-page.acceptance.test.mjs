@@ -908,7 +908,7 @@ test('a delayed Conversation Search navigation cannot replace a newer Topic sele
 });
 
 test('desktop panes stay independent and mobile sections are exclusive and recover closed panes', async () => {
-  const page = await setupPage({ width: 1440, height: 1000 });
+  const page = await setupPage({ width: 1440, height: 900 });
   try {
     assert.equal(await page.locator('#conversations-pane').isVisible(), true); assert.equal(await page.locator('#notes-pane').isVisible(), true); assert.equal(await page.locator('#chat-pane').getAttribute('data-focused'), 'true');
     await page.locator('#conversation-refresh').focus(); assert.equal(await page.locator('#conversations-pane').getAttribute('data-focused'), 'true'); assert.equal(await page.locator('#notes-pane').getAttribute('data-focused'), 'false');

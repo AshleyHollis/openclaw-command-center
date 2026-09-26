@@ -5,6 +5,10 @@ import path from 'node:path';
 import test from 'node:test';
 import { conventionalFolderPath, ensureConventionalFolder, findConventionalFolder, validateTopicName } from '../src/topics/conventions.mjs';
 import { readNoteFolderIdentity } from '../src/sources/note-folder-identity.mjs';
+import { installHostFileAccessFixture } from './support/host-file-access-fixture.mjs';
+
+const releaseHostFileAccessFixture = installHostFileAccessFixture();
+test.after(() => releaseHostFileAccessFixture());
 
 test('the PARA convention is exact, plural for active categories, trimmed, and rejects unsafe or guessed names', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-convention-'));
