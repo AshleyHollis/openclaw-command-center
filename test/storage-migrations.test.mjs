@@ -96,7 +96,7 @@ for (const schemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) {
   });
 }
 
-test('schema-5 to schema-9 preserves Topic Search bookkeeping and backfills exact current locators', async () => {
+test('schema-5 to schema-9 preserves Session locators and quarantines unproven legacy Note Folders', async () => {
   await withState(async (stateDir) => {
     const databasePath = resolveCommandCenterDatabasePath(stateDir);
     await mkdir(path.dirname(databasePath), { recursive: true });
@@ -105,6 +105,7 @@ test('schema-5 to schema-9 preserves Topic Search bookkeeping and backfills exac
     const now = '2026-08-27T00:00:00.000Z';
     database.prepare('INSERT INTO topics (topic_id, para_category, lifecycle, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run('topic-schema-five', 'project', 'active', now, now);
     database.prepare('INSERT INTO source_references (reference_id, topic_id, source_system, source_kind, external_source_id, last_observed_revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run('session:schema-five', 'topic-schema-five', 'openclaw', 'session', 'agent:main:fictional-schema-five', 'session-revision-five', now, now);
+    database.prepare('INSERT INTO source_references (reference_id, topic_id, source_system, source_kind, external_source_id, last_observed_revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run('folder:schema-five', 'topic-schema-five', 'obsidian', 'note_folder', '/fictional/legacy-folder', 'unproven-revision', now, now);
     database.prepare('INSERT INTO session_state (reference_id, session_id, status, is_primary, updated_at) VALUES (?, ?, ?, 1, ?)').run('session:schema-five', 'session-id-schema-five', 'open', now);
     database.prepare('INSERT INTO projection_bookkeeping (projection_id, source_revision, input_digest, updated_at) VALUES (?, ?, ?, ?)').run('topic-search-notes', 'source-revision-five', `sha256:${'a'.repeat(64)}`, now);
     database.close();
@@ -114,8 +115,13 @@ test('schema-5 to schema-9 preserves Topic Search bookkeeping and backfills exac
     assert.equal(service.getTopic('topic-schema-five').topicId, 'topic-schema-five');
     assert.equal(service.getSessionState('session:schema-five').sessionId, 'session-id-schema-five');
     assert.equal(service.getSourceLocator('session:schema-five').locator, 'agent:main:fictional-schema-five');
+    assert.equal(service.listSourceRecovery('topic-schema-five')[0].referenceId, 'folder:schema-five');
+    assert.equal(service.listSourceRecovery('topic-schema-five')[0].state, 'required');
     assert.equal(service.getProjectionBookkeeping('topic-search-notes').sourceRevision, 'source-revision-five');
     service.close();
+    const reopened = open({ stateDir });
+    assert.equal(reopened.listSourceRecovery('topic-schema-five')[0].revision, 1);
+    reopened.close();
   });
 });
 

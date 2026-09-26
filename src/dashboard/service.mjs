@@ -1,5 +1,6 @@
 import { sourceError } from '../sources/errors.mjs';
 import { opaqueNotificationId } from '../notifications/preview.mjs';
+import { notificationFocusRecordId } from '../notifications/candidate.mjs';
 import { openLoopReminderReferenceId, zonedDateAtNine } from '../open-loops/reminder-coordinator.mjs';
 import { projectCapacityWorkspace } from '../open-loops/capacity-workspace.mjs';
 import { projectIntakeAccounts } from '../open-loops/intake-accounting.mjs';
@@ -61,14 +62,17 @@ async function listReminderRows({ sourceService, metadata, topics }) {
   return rows;
 }
 
-function compactEpisode(episode) {
+function compactEpisode(episode, metadata, serverTimeMs) {
   const evidence = episode?.evidenceFacts ?? {};
   const dueReminder = episode?.sourceCapabilityId === 'reminders' && evidence.reminderDue === true;
+  const focusEmissions = episode?.state === 'Active' && typeof metadata?.listNotificationFocusEmissions === 'function'
+    ? metadata.listNotificationFocusEmissions(episode.episodeId, serverTimeMs) : [];
   return Object.freeze({
     ...episode,
     ...(dueReminder ? { severity: 'Reminder' } : {}),
     actions: Object.freeze(Array.isArray(episode?.actions) ? episode.actions.slice(0, 3) : []),
-    notificationRecordId: opaqueNotificationId({ version: 1, episodeId: episode?.episodeId }, 'record'),
+    attentionRecordId: opaqueNotificationId({ version: 1, episodeId: episode?.episodeId }, 'record'),
+    notificationRecordIds: Object.freeze(focusEmissions.map(notificationFocusRecordId)),
     context: typeof evidence.context === 'string' ? evidence.context.slice(0, 120) : episode?.sourceKind === 'reminder' ? 'Reminder' : 'Attention item',
     evidenceFacts: undefined,
     evidence: Object.freeze({ ...evidence })
@@ -342,8 +346,8 @@ export async function projectDashboard({ sourceService, attentionService, metada
     || asArray(episode.actions).some((action) => ['approval.approve', 'approval.reject'].includes(action.actionId))
     || episode.sourceCapabilityId === 'topic-review'
     || episode.sourceCapabilityId === 'reminders' && episode.evidenceFacts?.reminderDue === true
-  )).map(compactEpisode);
-  const inProgress = asArray(attentionResult?.inProgress).filter((episode) => episode?.state === 'Action running').map((episode) => Object.freeze({ ...compactEpisode(episode), actions: [] }));
+  )).map((episode) => compactEpisode(episode, metadata, serverTimeMs));
+  const inProgress = asArray(attentionResult?.inProgress).filter((episode) => episode?.state === 'Action running').map((episode) => Object.freeze({ ...compactEpisode(episode, metadata, serverTimeMs), actions: [] }));
   const topicById = new Map(topics.map((topic) => [topic.topicId, topic]));
   const reminders = await listReminderRows({ sourceService, metadata, topics });
   const futureOccurrenceKeys = new Set();

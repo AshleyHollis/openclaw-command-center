@@ -324,7 +324,7 @@ function snoozeControl(episode) {
   return wrapper;
 }
 function renderAttentionCard(episode) {
-  const card = document.createElement('article'); card.className = 'attention-card'; card.dataset.notificationRecord = episode.notificationRecordId ?? '';
+  const card = document.createElement('article'); card.className = 'attention-card'; card.dataset.notificationRecords = (episode.notificationRecordIds ?? []).join(' ');
   card.dataset.episodeId = episode.episodeId;
   card.dataset.sourceCapabilityId = episode.sourceCapabilityId;
   const heading = document.createElement('h4'); heading.textContent = episode.context || 'Attention item';
@@ -386,7 +386,7 @@ function focusNotificationTarget() {
   if (!hasNotificationRequest || notificationFocusHandled) return;
   notificationFocusHandled = true;
   if (notification !== 'plugin-detail' || params.get('destination') !== 'attention-card' || !/^record-[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(record ?? '')) { document.querySelector('#dashboard-feedback').textContent = 'This notification link is unavailable.'; return; }
-  const card = document.querySelector(`[data-notification-record="${CSS.escape(record)}"]`);
+  const card = [...document.querySelectorAll('.attention-card')].find((item) => item.dataset.notificationRecords?.split(' ').includes(record));
   if (card) { card.setAttribute('tabindex', '-1'); card.focus(); document.querySelector('#dashboard-feedback').textContent = 'Notification opened. No changes were made.'; }
   else document.querySelector('#dashboard-feedback').textContent = 'This notification is no longer available.';
 }
@@ -640,7 +640,7 @@ function topicRow(topic, kind) {
     row.append(mutationButton('Retry', () => runAction('provisioning.retry', { topicId: topic.topicId, expectedRevision: topic.revision, logicalOperationId: topic.provisioningOperationId }, 'Provisioning record retried.')));
     row.append(mutationButton('Roll back', () => runAction('provisioning.rollback', { topicId: topic.topicId, expectedRevision: topic.revision, logicalOperationId: topic.provisioningOperationId }, 'Provisioning record rolled back.')));
   } else if (kind === 'archived') {
-    row.append(mutationButton('Restore to project', () => runAction('restore', { topicId: topic.topicId, paraCategory: 'project', expectedRevision: topic.revision }, 'Topic restored.')));
+    row.append(mutationButton('Restore to project', async () => { const preview = await mutate('restore.preview', { topicId: topic.topicId, paraCategory: 'project', expectedRevision: topic.revision }); if (await confirmUser(`Restore Topic to project${preview.result.preview.changes?.some(change => change.aspect === 'note-folder-location' && change.managed === true) ? ' and move managed Note Folder' : ''}?`)) await runAction('restore', { topicId: topic.topicId, paraCategory: 'project', expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic restored.'); }));
     row.append(button('Search archive', () => { document.querySelector('#topic-search-topic-id').value = topic.topicId; document.querySelector('#topic-search-query').focus(); }));
   } else if (kind === 'recovery') {
     const recovery = topic.recovery.find((item) => item.state === 'required'); row.append(diagnostic(topic));
@@ -655,7 +655,7 @@ function topicRow(topic, kind) {
   } else {
     row.append(button('Open Topic', () => openTopicWorkspace(topic, AUTHORITATIVE_LIST_TOPIC)));
     row.append(mutationButton('Rename', async () => { const name = await promptUser('New Topic name', topic.name); if (name !== null) await runAction('rename', { topicId: topic.topicId, name, expectedRevision: topic.revision }, 'Topic renamed.'); }));
-    const target = topic.paraCategory === 'project' ? 'area' : 'project'; row.append(mutationButton(`Move to ${target}`, async () => { const preview = await mutate('recategorize.preview', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision }); if (await confirmUser(`Category: ${topic.paraCategory} → ${target}\n${preview.result.preview.changes?.length ? 'Move managed Note Folder' : 'Note Folder location: unchanged (customized)'}`)) await runAction('recategorize.apply', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic moved.'); }));
+    const target = topic.paraCategory === 'project' ? 'area' : 'project'; row.append(mutationButton(`Move to ${target}`, async () => { const preview = await mutate('recategorize.preview', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision }); if (await confirmUser(`Category: ${topic.paraCategory} → ${target}\n${preview.result.preview.changes?.some(change => change.aspect === 'note-folder-location' && change.managed === true) ? 'Move managed Note Folder' : 'Note Folder location: unchanged (customized)'}`)) await runAction('recategorize.apply', { topicId: topic.topicId, paraCategory: target, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic moved.'); }));
     row.append(mutationButton('Archive', async () => { const preview = await mutate('archive.preview', { topicId: topic.topicId, expectedRevision: topic.revision }); if (await confirmUser(`Disable and retain every active Reminder and scheduled operation (${preview.result.preview.commitments?.filter((item) => item.enabled).length ?? 0} active of ${preview.result.preview.commitments?.length ?? 0} commitment(s))`)) await runAction('archive.apply', { topicId: topic.topicId, expectedRevision: topic.revision, structuralChangeId: preview.result.preview.structuralChangeId, previewDigest: preview.result.preview.digest, expectedRevisions: preview.result.preview.expectedRevisions }, 'Topic archived.'); }));
   }
   return row;

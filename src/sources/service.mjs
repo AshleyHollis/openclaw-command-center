@@ -1,5 +1,6 @@
 import { gzipSync } from 'node:zlib';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { lstat, realpath } from 'node:fs/promises';
 import { createActivityService } from '../activity/service.mjs';
 import { createAnalysisAdapter } from './analysis.mjs';
 import { createAttentionAdapter } from './attention.mjs';
@@ -8,6 +9,7 @@ import { sourceError, assertNoUnexpectedKeys } from './errors.mjs';
 import { effectiveSourceLocator } from './reference.mjs';
 import { createMutationCoordinator } from './mutation-coordinator.mjs';
 import { createNoteAdapter } from './notes.mjs';
+import { readNoteFolderIdentity } from './note-folder-identity.mjs';
 import { createReminderAdapter } from './reminders.mjs';
 import { reconcileReminderAttention } from './reminder-lifecycle.mjs';
 import { createSearchAdapter } from './search.mjs';
@@ -342,6 +344,35 @@ export class AuthoritativeSourceService {
       }
     });
   }
+  async noteMutationWithRecovery(input, operationKind, method, options = {}) {
+    try { return await this.guardedNoteMutation(input, operationKind, method, options); }
+    catch (error) {
+      try {
+        if (['source-recovery', 'unsafe-path', 'not-found', 'ENOENT', 'unknown', 'conflict'].includes(error?.code)) {
+          const folders = this.metadata.listSourceReferences?.(input.topicId)?.filter((reference) => reference.sourceSystem === 'obsidian' && reference.sourceKind === 'note_folder') ?? [];
+          if (folders.length === 1) {
+            const folder = folders[0];
+            const locator = this.metadata.getSourceLocator?.(folder.referenceId);
+            const root = locator?.locator;
+            const stat = root ? await lstat(root).catch(() => null) : null;
+            const canonical = stat?.isDirectory() && !stat.isSymbolicLink() ? await realpath(root).catch(() => null) : null;
+            const identity = canonical === root ? await readNoteFolderIdentity(root).catch(() => null) : null;
+            if (!root || !stat?.isDirectory() || stat.isSymbolicLink() || canonical !== root || !locator?.observedRevision || identity !== locator.observedRevision) {
+              await this.metadata.recordSourceRecovery?.({
+                recoveryId: `recovery:${folder.referenceId}`, topicId: input.topicId, referenceId: folder.referenceId,
+                sourceKind: 'note_folder', state: 'required', lastLocator: root ?? null,
+                lastIdentity: locator?.observedRevision ?? folder.lastObservedRevision ?? null,
+                failure: 'The exact Topic Note Folder is missing or unsafe.',
+                diagnostics: [{ topicId: input.topicId, referenceId: folder.referenceId, sourceKind: 'note_folder', check: 'exact-folder-identity', status: 'recovery-required', routes: ['verify-exact', 'authorized-replacement'] }],
+                updatedAt: new Date().toISOString()
+              });
+            }
+          }
+        }
+      } catch { /* Preserve the original bounded mutation error if diagnostics cannot be persisted. */ }
+      throw error;
+    }
+  }
   async invalidateSearch(input = {}) {
     if (typeof this.searchProvider?.rebuild !== 'function') return;
     try {
@@ -375,12 +406,12 @@ export class AuthoritativeSourceService {
   async settleSearchRefresh() {
     await this.searchRefresh;
   }
-  async notesCreate(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.create', 'create'); await this.refreshSearchAfterMutation(input.topicId); return result; }
-  async notesCreateReconcile(input = {}) { return this.guardedNoteMutation(input, 'notes.create', 'create', { reconcileOnly: true }); }
-  async notesEdit(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.edit', 'edit'); await this.refreshSearchAfterMutation(input.topicId); return result; }
-  async notesEditReconcile(input = {}) { return this.guardedNoteMutation(input, 'notes.edit', 'edit', { reconcileOnly: true }); }
-  async notesRename(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.rename', 'rename'); await this.refreshSearchAfterMutation(input.topicId); return result; }
-  async notesMove(input = {}) { const result = await this.guardedNoteMutation(input, 'notes.move', 'move'); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async notesCreate(input = {}) { const result = await this.noteMutationWithRecovery(input, 'notes.create', 'create'); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async notesCreateReconcile(input = {}) { return this.noteMutationWithRecovery(input, 'notes.create', 'create', { reconcileOnly: true }); }
+  async notesEdit(input = {}) { const result = await this.noteMutationWithRecovery(input, 'notes.edit', 'edit'); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async notesEditReconcile(input = {}) { return this.noteMutationWithRecovery(input, 'notes.edit', 'edit', { reconcileOnly: true }); }
+  async notesRename(input = {}) { const result = await this.noteMutationWithRecovery(input, 'notes.rename', 'rename'); await this.refreshSearchAfterMutation(input.topicId); return result; }
+  async notesMove(input = {}) { const result = await this.noteMutationWithRecovery(input, 'notes.move', 'move'); await this.refreshSearchAfterMutation(input.topicId); return result; }
   async sessionsHistory(input = {}) { const service = this.requireTopicService(input); requireCapability(this.capabilities, 'sessions'); if (!service.sessions) throw sourceError('capability-unavailable', 'The Sessions gateway capability is unavailable.', { capability: 'sessions' }); return service.sessions.history(adapterInput(input)); }
   async sessionsList(input = {}) {
     const service = this.requireTopicService(input);

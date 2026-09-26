@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -16,6 +16,69 @@ const releaseHostFileAccessFixture = installHostFileAccessFixture();
 test.after(() => releaseHostFileAccessFixture());
 
 const fsSafeRootFactory = async (rootDir) => ({ rootDir, rootReal: rootDir, resolve: async (relative) => path.join(rootDir, relative), open: async (relative) => ({ handle: await (await import('node:fs/promises')).open(path.join(rootDir, relative), 'r') }) });
+
+test('guarded Note mutations persist exact missing-folder recovery and preserve bytes', async () => {
+  for (const method of ['notesCreate', 'notesEdit', 'notesRename', 'notesMove', 'notesCreateReconcile', 'notesEditReconcile']) {
+    const parent = await mkdtemp(path.join(os.tmpdir(), 'command-center-mutation-recovery-'));
+    const stateDir = path.join(parent, 'state');
+    const vault = path.join(parent, 'vault');
+    const displaced = path.join(parent, 'displaced');
+    let metadata;
+    try {
+      await (await import('node:fs/promises')).mkdir(vault);
+      metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+      const topicId = `topic-${method}`;
+      const referenceId = `folder-${method}`;
+      metadata.createTopic({ topicId, paraCategory: 'project', lifecycle: 'active' });
+      metadata.createSourceReference({ version: 1, referenceId, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+      await enrollFixtureFolder(metadata, referenceId, vault);
+      const service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
+      const created = await service.notesCreate({ schemaVersion: 1, topicId, path: 'original.md', text: 'untouched', logicalOperationId: randomUUID() });
+      const input = { schemaVersion: 1, topicId, path: method === 'notesCreate' || method === 'notesCreateReconcile' ? 'new.md' : 'original.md', text: 'changed', expectedRevision: created.value.note.revision, newPath: 'renamed.md', destinationPath: 'moved.md', logicalOperationId: randomUUID() };
+      await rename(vault, displaced);
+      await assert.rejects(() => service[method](input));
+      assert.equal(await readFile(path.join(displaced, 'original.md'), 'utf8'), 'untouched');
+      const recovery = metadata.listSourceRecovery(topicId);
+      assert.equal(recovery.length, 1, method);
+      assert.equal(recovery[0].referenceId, referenceId);
+      assert.equal(recovery[0].sourceKind, 'note_folder');
+      assert.equal(recovery[0].state, 'required');
+      await assert.rejects(() => service[method](input));
+      assert.equal(metadata.listSourceRecovery(topicId)[0].revision, recovery[0].revision);
+      metadata.close();
+      metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+      const reopened = metadata.listSourceRecovery(topicId);
+      assert.equal(reopened.length, 1, `${method} recovery survives SQLite reopen`);
+      assert.equal(reopened[0].referenceId, referenceId);
+      assert.equal(reopened[0].revision, recovery[0].revision);
+    } finally { metadata?.close(); await rm(parent, { recursive: true, force: true }); }
+  }
+});
+
+test('unsafe Note Folder records recovery while an unrelated invalid path does not', async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), 'command-center-unsafe-mutation-'));
+  const stateDir = path.join(parent, 'state');
+  const vault = path.join(parent, 'vault');
+  const displaced = path.join(parent, 'displaced');
+  let metadata;
+  try {
+    await (await import('node:fs/promises')).mkdir(vault);
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+    const topicId = 'topic-unsafe-mutation';
+    const referenceId = 'folder-unsafe-mutation';
+    metadata.createTopic({ topicId, paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId, topicId, sourceSystem: 'obsidian', sourceKind: 'note_folder', externalSourceId: vault, observedRevision: null });
+    await enrollFixtureFolder(metadata, referenceId, vault);
+    const service = createAuthoritativeSourceService({ fsSafeRootFactory, metadata, root: vault, capabilities: { notes: true } });
+    await assert.rejects(() => service.notesCreate({ schemaVersion: 1, topicId, path: '../invalid.md', text: 'invalid', logicalOperationId: randomUUID() }));
+    assert.equal(metadata.listSourceRecovery(topicId).length, 0);
+    await rename(vault, displaced);
+    await symlink(displaced, vault, 'dir');
+    await assert.rejects(() => service.notesCreate({ schemaVersion: 1, topicId, path: 'new.md', text: 'blocked', logicalOperationId: randomUUID() }));
+    assert.equal(metadata.listSourceRecovery(topicId)[0].referenceId, referenceId);
+    assert.equal(metadata.listSourceRecovery(topicId)[0].state, 'required');
+  } finally { metadata?.close(); await rm(parent, { recursive: true, force: true }); }
+});
 
 test('normal metadata listings omit an active configured Topic whose authoritative bindings conflict', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-migration-readiness-list-'));

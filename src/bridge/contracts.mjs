@@ -135,6 +135,7 @@ const objectFields = new Set(['patch', 'declaration', 'input', 'value', 'preview
 const arrayFields = new Set(['expectedRevisions', 'selections', 'contexts', 'dependencies']);
 
 function parameterSchema(field, method) {
+  if (field === 'expectedRevisions') return Object.freeze({ type: 'array', items: Object.freeze({ type: 'object', additionalProperties: false, properties: Object.freeze({ source: { enum: ['topic', 'reference'] }, id: { type: 'string', minLength: 1 }, revision: { type: ['string', 'integer'] } }), required: ['source', 'id', 'revision'] }) });
   if (field === 'expectedTopicRevision') return Object.freeze({ type: 'integer', minimum: 0 });
   if (field === 'expectedSessionId') return Object.freeze({ type: 'string', minLength: 1 });
   if (field === 'expectedMembership' && method === 'command-center.v1.sessions.assign-topic') return Object.freeze({ type: 'string', enum: ['unassigned'] });
@@ -415,9 +416,9 @@ const required = Object.freeze({
   'command-center.v1.topics.archive-preview': ['topicId'],
   'command-center.v1.topics.retry': ['topicId'],
   'command-center.v1.topics.rollback': ['topicId'],
-  'command-center.v1.topics.structural-confirm': ['topicId', 'paraCategory', 'structuralChangeId', 'previewDigest'],
-  'command-center.v1.topics.archive-confirm': ['topicId', 'structuralChangeId', 'previewDigest'],
-  'command-center.v1.topics.restore': ['topicId', 'paraCategory', 'structuralChangeId', 'previewDigest'],
+  'command-center.v1.topics.structural-confirm': ['topicId', 'paraCategory', 'structuralChangeId', 'previewDigest', 'expectedRevisions'],
+  'command-center.v1.topics.archive-confirm': ['topicId', 'structuralChangeId', 'previewDigest', 'expectedRevisions'],
+  'command-center.v1.topics.restore': ['topicId', 'paraCategory', 'structuralChangeId', 'previewDigest', 'expectedRevisions'],
   'command-center.v1.topics.recovery-verify': ['topicId', 'referenceId', 'expectedRevision', 'expectedSourceRevision'],
   'command-center.v1.topics.recovery-relink': ['topicId', 'referenceId', 'sessionKey', 'sessionId', 'expectedRevision', 'expectedSourceRevision'],
   'command-center.v1.topics.recovery-replace': ['topicId', 'referenceId', 'expectedRevision', 'expectedSourceRevision'],
@@ -429,11 +430,11 @@ const required = Object.freeze({
   'command-center.v1.topics.provisioning.rollback': ['topicId', 'expectedRevision'],
   'command-center.v1.topics.rename': ['topicId', 'name', 'expectedRevision'],
   'command-center.v1.topics.structural-change.preview': ['topicId', 'paraCategory', 'expectedRevision', 'logicalOperationId'],
-  'command-center.v1.topics.structural-change.confirm': ['topicId', 'structuralChangeId', 'previewDigest', 'expectedRevision'],
+  'command-center.v1.topics.structural-change.confirm': ['topicId', 'structuralChangeId', 'previewDigest', 'expectedRevision', 'expectedRevisions'],
   'command-center.v1.topics.archive.preview': ['topicId', 'expectedRevision', 'logicalOperationId'],
-  'command-center.v1.topics.archive.confirm': ['topicId', 'structuralChangeId', 'previewDigest', 'expectedRevision'],
+  'command-center.v1.topics.archive.confirm': ['topicId', 'structuralChangeId', 'previewDigest', 'expectedRevision', 'expectedRevisions'],
   'command-center.v1.topics.restore.preview': ['topicId', 'paraCategory', 'expectedRevision', 'logicalOperationId'],
-  'command-center.v1.topics.restore.confirm': ['topicId', 'structuralChangeId', 'previewDigest', 'expectedRevision'],
+  'command-center.v1.topics.restore.confirm': ['topicId', 'structuralChangeId', 'previewDigest', 'expectedRevision', 'expectedRevisions'],
   'command-center.v1.topics.recovery.verify': ['topicId', 'referenceId', 'expectedRevision', 'expectedSourceRevision'],
   'command-center.v1.topics.recovery.relink': ['topicId', 'referenceId', 'sessionKey', 'sessionId', 'expectedRevision', 'expectedSourceRevision'],
   'command-center.v1.topics.recovery.replace': ['topicId', 'referenceId', 'expectedRevision', 'expectedSourceRevision'],
@@ -647,6 +648,19 @@ export function validateBridgeRequest(method, params, { mutation = WRITE_METHODS
     const type = contract.paramsSchema.properties[key]?.type;
     const nullable = Array.isArray(type) && type.includes('null');
     if (params[key] === undefined || params[key] === null && !nullable || params[key] === '') throw sourceError('invalid-request', ['referenceId'].includes(key) && method.includes('.sessions.') ? 'Bridge Session request requires an exact Source Reference.' : `Bridge request requires ${key}.`);
+  }
+  if (params.expectedRevisions !== undefined) {
+    const seen = new Set();
+    for (const item of params.expectedRevisions) {
+      if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some((key) => !['source', 'id', 'revision'].includes(key)) ||
+        !['topic', 'reference'].includes(item.source) || typeof item.id !== 'string' || !item.id.trim() ||
+        !Object.hasOwn(item, 'revision') || !(item.source === 'topic' ? Number.isInteger(item.revision) && item.revision >= 0 : typeof item.revision === 'string' && item.revision.trim())) {
+        throw sourceError('invalid-request', 'expectedRevisions requires closed exact source identities and revisions.');
+      }
+      const identity = `${item.source}:${item.id}`;
+      if (seen.has(identity)) throw sourceError('invalid-request', 'expectedRevisions contains a duplicate source identity.');
+      seen.add(identity);
+    }
   }
   if (method === 'command-center.v1.sessions.create' && params.authoritativeSession === undefined && !Number.isInteger(params.expectedRevision)) throw sourceError('invalid-request', 'Native Conversation creation requires the original Topic revision.');
   const requiresPath = method.startsWith('command-center.v1.notes.') && !method.endsWith('.browse');

@@ -2401,6 +2401,10 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   });
 
   service.getTopicOperation = (logicalOperationId) => readOne('SELECT * FROM topic_operations WHERE logical_operation_id = ?', [requiredString(logicalOperationId, 'logicalOperationId')], mapTopicOperation) || null;
+  service.listNotificationFocusEmissions = (episodeId, nowMs) => {
+    if (!Number.isSafeInteger(nowMs)) throw new CommandCenterMetadataError('invalid-value', 'Notification focus time is invalid.');
+    return readMany("SELECT emission_id FROM notification_emissions WHERE episode_id = ? AND expires_at_ms > ? AND status IN ('sent', 'partial', 'ambiguous') ORDER BY emitted_at_ms, emission_id", [requiredString(episodeId, 'episodeId'), nowMs], row => row.emission_id);
+  };
   service.listTopicOperations = (topicId = undefined) => topicId === undefined ? readMany('SELECT * FROM topic_operations ORDER BY created_at, logical_operation_id', [], mapTopicOperation) : readMany('SELECT * FROM topic_operations WHERE topic_id = ? ORDER BY created_at, logical_operation_id', [requiredString(topicId, 'topicId')], mapTopicOperation);
 
   service.recordSourceRecovery = (input = {}) => mutate(null, (db) => {
@@ -2543,6 +2547,28 @@ function createService(stateDir, databasePath, capabilities, migrationHooks, rea
   service.projectActiveRenovationStagePrerequisites = renovation.projectActiveStagePrerequisites;
   service.recordRenovationDecisionConflict = renovation.recordDecisionConflict;
   service.reviseRenovationDecision = renovation.reviseDecision;
+  if (!readOnly && operating.mode !== 'recovery-only') {
+    // Historical upgrades copied source reference revisions into locators without
+    // proving a marker-backed Note Folder. Quarantine those bindings once, in
+    // the same SQLite transaction, before any Topic lifecycle call can use them.
+    const unprovenFolders = readMany(`SELECT reference.reference_id AS referenceId, reference.topic_id AS topicId,
+      reference.external_source_id AS externalSourceId, reference.last_observed_revision AS lastObservedRevision,
+      locator.locator, locator.observed_revision AS observedRevision
+      FROM source_references AS reference JOIN topics AS topic ON topic.topic_id = reference.topic_id
+      LEFT JOIN source_locators AS locator ON locator.reference_id = reference.reference_id
+      WHERE topic.lifecycle = 'active' AND reference.source_system = 'obsidian' AND reference.source_kind = 'note_folder'`, [], row => row)
+      .filter(row => !isNoteFolderIdentity(row.observedRevision));
+    if (unprovenFolders.length) mutate(null, db => {
+      const now = new Date().toISOString();
+      const insert = db.prepare(`INSERT OR IGNORE INTO source_recovery
+        (recovery_id, topic_id, reference_id, source_kind, state, revision, last_locator, last_identity, failure, diagnostics_json, created_at, updated_at)
+        VALUES (?, ?, ?, 'note_folder', 'required', 1, ?, ?, ?, ?, ?, ?)`);
+      for (const folder of unprovenFolders) insert.run(`recovery:${folder.referenceId}`, folder.topicId, folder.referenceId,
+        folder.locator ?? folder.externalSourceId, folder.observedRevision ?? folder.lastObservedRevision ?? null,
+        'The historical Note Folder binding lacks a verified exact identity.',
+        JSON.stringify([{ topicId: folder.topicId, referenceId: folder.referenceId, sourceKind: 'note_folder', check: 'exact-folder-identity', status: 'recovery-required', routes: ['verify-exact', 'authorized-replacement'] }]), now, now);
+    });
+  }
   return Object.freeze(service);
 }
 
