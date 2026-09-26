@@ -8,6 +8,8 @@ import { createMetadataService } from '../src/plugin-service.mjs';
 import { clarificationInterpretationOperationId } from '../src/open-loops/clarification-context.mjs';
 import { isCanonicalUuid } from '../src/sources/operation-journal.mjs';
 import { projectQuietAttention } from '../src/open-loops/quiet-attention.mjs';
+import { createOpenLoopReminderCoordinator } from '../src/open-loops/reminder-coordinator.mjs';
+import { planCommitmentCapture } from '../src/open-loops/commitment-capture.mjs';
 
 const now = '2026-09-24T03:00:00.000Z';
 
@@ -124,5 +126,79 @@ test('clarifying a paid assertion preserves that assertion while superseding its
     assert.equal(settled.loop.paymentState, 'payment-pending');
     assert.equal(settled.loop.attention.pendingClarificationId, undefined);
     assert.equal(projectQuietAttention(settled.loop, { now }).group, 'coming-up');
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('new clarification saves while an earlier native create is in flight and retains its exact recovery', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-clarification-native-overlap-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    metadata.createTopic({ topicId: 'fictional-overlap', paraCategory: 'project', lifecycle: 'active' });
+    const created = metadata.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'overlap-intake',
+      message: { ...message('fictional-overlap-source', 'OVERLAP-1'), topicId: 'fictional-overlap' } });
+    const accepted = metadata.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'overlap-defer',
+      loopId: created.loop.loopId, expectedRevision: created.loop.revision, decision: 'defer',
+      reviewAt: '2026-10-02T00:00:00.000Z', actorId: 'fictional-operator', rationale: 'Wait for a fictional check.', updatedAt: now });
+    assert.equal(accepted.followUpIntent.action, 'create');
+    let enteredAdd; let releaseAdd; let adds = 0;
+    const addEntered = new Promise(resolve => { enteredAdd = resolve; });
+    const addReleased = new Promise(resolve => { releaseAdd = resolve; });
+    const coordinator = createOpenLoopReminderCoordinator({ metadata, gateway: { async request(method, params) {
+      if (method === 'cron.list') return { jobs: [] };
+      if (method === 'cron.add') {
+        adds += 1; enteredAdd(); await addReleased;
+        return { created: true, job: { ...structuredClone(params), configRevision: 'fictional-native-r1' } };
+      }
+      throw new Error(`Unexpected fictional Cron method ${method}`);
+    } } });
+    const inFlight = coordinator.reconcileAccepted({ loop: accepted.loop, followUpIntent: accepted.followUpIntent });
+    await addEntered;
+    const saved = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'overlap-words',
+      loopId: created.loop.loopId, expectedRevision: accepted.loop.revision, actorId: 'fictional-operator',
+      rationale: 'The invoice date may be wrong; please check it.', updatedAt: '2026-09-24T03:01:00.000Z' });
+    assert.equal(saved.loop.attention.priorUserActionOperationId, 'overlap-defer');
+    assert.equal(metadata.getOpenLoopUserActionReceipt('overlap-defer').current, false);
+    assert.equal(metadata.getOpenLoopUserActionReceipt('overlap-defer').recoverable, true);
+    assert.throws(() => metadata.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: 'overlap-source-update',
+      expectedRevision: saved.loop.revision, loop: { ...saved.loop, revision: saved.loop.revision + 1 },
+      evidenceRoles: {}, updatedAt: '2026-09-24T03:02:00.000Z' }),
+    error => error.code === 'open-loop-follow-up-pending');
+    releaseAdd();
+    assert.equal((await inFlight).status, 'applied');
+    assert.equal(metadata.getOperation(accepted.followUpIntent.logicalOperationId).state, 'applied');
+    assert.equal(adds, 1);
+  } finally { metadata?.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('clarification retains old Note follow-up as a visible conflict without writing it', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-clarification-note-handoff-'));
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities: { notes: true } });
+  try {
+    metadata.createTopic({ topicId: 'fictional-note-topic', paraCategory: 'project', lifecycle: 'active' });
+    metadata.createSourceReference({ version: 1, referenceId: 'fictional-retained-note', topicId: 'fictional-note-topic',
+      sourceSystem: 'obsidian', sourceKind: 'note', externalSourceId: 'Inbox/fictional.md', observedRevision: 'note-v1' });
+    const planned = planCommitmentCapture({ schemaVersion: 1, logicalOperationId: 'note-capture',
+      sourceKind: 'email', sourceExternalId: 'fictional-note-source', sourceVersion: 'mail-v1',
+      topicId: 'fictional-note-topic', title: 'Pay fictional bill', obligationId: 'fictional-note-payment',
+      obligationKind: 'payment', provenance: 'explicit', sourceReferenceId: 'fictional-retained-note',
+      sourcePath: 'Inbox/fictional.md', sourceReferenceVersion: 'note-v1',
+      occurredAt: now, observedAt: now, historicalBaseline: false });
+    const captured = metadata.applyOpenLoopChange({ schemaVersion: 1, logicalOperationId: 'note-capture',
+      operationKind: 'commitment.capture.v1', intent: planned.value, expectedRevision: 0,
+      observation: planned.observation, loop: planned.loop,
+      evidenceRoles: { [planned.observation.observationId]: 'origin' }, updatedAt: now });
+    const paid = metadata.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: 'note-paid',
+      loopId: captured.loop.loopId, expectedRevision: captured.loop.revision, paymentState: 'paid',
+      actorId: 'fictional-operator', rationale: 'Fictional assertion.', updatedAt: now });
+    assert.equal(paid.supportingNoteTarget.status, 'ready');
+    const clarified = metadata.recordOpenLoopClarification({ schemaVersion: 1, logicalOperationId: 'note-words',
+      loopId: captured.loop.loopId, expectedRevision: paid.loop.revision, actorId: 'fictional-operator',
+      rationale: 'I might have marked the wrong invoice paid.', updatedAt: '2026-09-24T04:00:00.000Z' });
+    const note = metadata.getOpenLoopSupportingNoteIntent('note-paid');
+    assert.equal(note.current, false);
+    assert.equal(note.outcome.status, 'conflict');
+    assert.equal(note.outcome.reason, 'superseded-by-clarification');
+    assert.equal(metadata.getOpenLoop(clarified.loop.loopId).attention.pendingClarificationId !== undefined, true);
   } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
