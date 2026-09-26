@@ -117,9 +117,11 @@ test('lost receiver reply leaves the same event pending and blocks its successor
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-'));
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
   const sent = [];
+  const watermarks = [];
   let failFirst = true;
-  const receiver = { async send(value) {
+  const receiver = { async send(value, options) {
     sent.push(value);
+    watermarks.push(options.watermark);
     if (failFirst) { failFirst = false; throw new Error('lost reply'); }
     return { schemaVersion: 1, producerId: authority.producerId, eventId: value.eventId, workId: value.workId, workRevision: value.workRevision, eventDigest: metadata.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: operations.get(value.eventId) }).eventDigest, projectionState: 'projected', acceptedAt: '2026-09-26T11:00:00.000Z' };
   } };
@@ -136,7 +138,34 @@ test('lost receiver reply leaves the same event pending and blocks its successor
     const retried = await producer.flush();
     assert.equal(retried.delivered, 2);
     assert.deepEqual(sent.map(row => row.eventId), [first.eventId, first.eventId, second.eventId]);
+    assert.deepEqual(watermarks, [2, 2, 2]);
     assert.equal(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).length, 0);
+  } finally { producer.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test('a delivery pass freezes its per-work watermark before awaiting the receiver', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-'));
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+  const sent = [];
+  let appendResolution = true;
+  const receiver = { async send(event, options) {
+    sent.push({ eventId: event.eventId, watermark: options.watermark });
+    if (appendResolution) {
+      appendResolution = false;
+      metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a', 1, 'request_resolved') });
+    }
+    const row = metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).find(item => item.eventId === event.eventId);
+    return { schemaVersion: 1, producerId: authority.producerId, eventId: event.eventId, workId: event.workId, workRevision: event.workRevision, eventDigest: row.eventDigest, projectionState: 'projected', acceptedAt: '2026-09-26T11:00:00.000Z' };
+  } };
+  const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => undefined, receiver });
+  try {
+    metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
+    const first = await producer.flush();
+    assert.deepEqual({ delivered: first.delivered, pending: first.pending }, { delivered: 1, pending: 1 });
+    assert.deepEqual(sent.map(row => row.watermark), [1]);
+    const second = await producer.flush();
+    assert.deepEqual({ delivered: second.delivered, pending: second.pending }, { delivered: 1, pending: 0 });
+    assert.deepEqual(sent.map(row => row.watermark), [1, 2]);
   } finally { producer.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

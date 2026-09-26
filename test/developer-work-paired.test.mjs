@@ -30,8 +30,9 @@ test('separate DEV and LIVE stores survive a lost response without duplicating A
     sends++;
     assert.equal(url.href, `https://live.example.test/ui${developerEventRoute}`);
     assert.equal(options.method, 'POST');
+    assert.equal(options.headers['x-developer-work-watermark'], '1');
     const response = { statusCode: 200, headers: {}, setHeader(name, value) { this.headers[name.toLowerCase()] = value; }, end(value) { this.body = value; } };
-    await handler({ method: options.method, socket: { encrypted: true }, headers: { authorization: options.headers.authorization, 'content-type': options.headers['content-type'] }, body: options.body }, response);
+    await handler({ method: options.method, socket: { encrypted: true }, headers: { authorization: options.headers.authorization, 'content-type': options.headers['content-type'], 'x-developer-work-watermark': options.headers['x-developer-work-watermark'] }, body: options.body }, response);
     if (loseFirstReply) { loseFirstReply = false; throw new Error('reply lost after LIVE commit'); }
     return new Response(response.body, { status: response.statusCode, headers: response.headers });
   } });

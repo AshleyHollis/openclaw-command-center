@@ -13,12 +13,13 @@ export function createDeveloperEventTransport({ baseUrl, tokenEnv, env = process
   if (typeof tokenEnv !== 'string' || !/^[A-Z][A-Z0-9_]{7,127}$/u.test(tokenEnv)) throw new TypeError('Developer Work credential reference is invalid.');
   const endpoint = new URL(`${base.pathname.replace(/\/$/u, '')}${developerEventRoute}`, base.origin);
   return Object.freeze({
-    async send(event) {
+    async send(event, { watermark } = {}) {
+      if (!Number.isSafeInteger(watermark) || watermark < event.workRevision || watermark > event.workRevision + 500) throw Object.assign(new Error('Developer Work delivery watermark is invalid.'), { code: 'delivery-watermark-invalid' });
       const credential = env[tokenEnv];
       if (typeof credential !== 'string' || credential.length < 32 || credential.length > 512) throw Object.assign(new Error('Developer Work credential is unavailable.'), { code: 'credential-unavailable' });
       const response = await fetchImpl(endpoint, {
         method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
-        headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json', 'x-developer-work-watermark': String(watermark) },
         body: JSON.stringify(event)
       });
       if (![200, 202].includes(response.status) || !/^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? '')) throw Object.assign(new Error('Developer Work receipt was not confirmed.'), { code: `receiver-http-${response.status}` });
@@ -41,26 +42,23 @@ export function createDeveloperWorkProducer({ metadata, sessionReader, authority
       const failedWork = new Set();
       let delivered = 0;
       let attempted = 0;
-      for (;;) {
+      // Freeze each work's highest queued revision for this delivery pass.
+      // Events submitted while sends are awaiting a reply belong to a later pass.
+      const pending = metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId, limit: 500 });
+      const watermarks = new Map();
+      for (const item of pending) watermarks.set(item.workId, Math.max(item.workRevision, watermarks.get(item.workId) ?? 0));
+      for (const item of pending) {
+        if (failedWork.has(item.workId) || attempted >= 10) continue;
         assertOpen();
-        const pending = metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId, limit: 100 });
-        if (!pending.length) return Object.freeze({ delivered, attempted, pending: 0 });
-        let madeProgress = false;
-        for (const item of pending) {
-          if (failedWork.has(item.workId)) continue;
-          if (attempted >= 10) return Object.freeze({ delivered, attempted, pending: metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId, limit: 500 }).length });
+        attempted += 1;
+        try {
+          const receipt = await receiver.send(item.event, { watermark: watermarks.get(item.workId) });
           assertOpen();
-          attempted += 1;
-          try {
-            const receipt = await receiver.send(item.event);
-            assertOpen();
-            metadata.markDeveloperDelivery({ producerId: authority.producerId, eventId: item.eventId, receiverReceipt: receipt });
-            delivered += 1;
-            madeProgress = true;
-          } catch { if (closed) assertOpen(); failedWork.add(item.workId); }
-        }
-        if (!madeProgress || failedWork.size && pending.every(item => failedWork.has(item.workId))) return Object.freeze({ delivered, attempted, pending: metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId, limit: 500 }).length });
+          metadata.markDeveloperDelivery({ producerId: authority.producerId, eventId: item.eventId, receiverReceipt: receipt });
+          delivered += 1;
+        } catch { if (closed) assertOpen(); failedWork.add(item.workId); }
       }
+      return Object.freeze({ delivered, attempted, pending: metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId, limit: 500 }).length });
     });
     flushing = run;
     run.finally(() => { if (flushing === run) flushing = null; }).catch(() => {});

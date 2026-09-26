@@ -63,6 +63,13 @@ test('machine bearer binds producer authority and rejects browser or insecure in
   assert.equal(calls[0].producerId, principal.producerId);
   assert.equal(calls[0].role, 'worker');
   assert.deepEqual(calls[0].allowedProjects, ['sample-project']);
+  const withWatermark = response();
+  await handler(request({ headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json', 'x-developer-work-watermark': '2' } }), withWatermark);
+  assert.equal(withWatermark.statusCode, 200);
+  assert.equal(calls[1].watermark, 2);
+  const malformedWatermark = response();
+  await handler(request({ headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json', 'x-developer-work-watermark': '2x' } }), malformedWatermark);
+  assert.equal(malformedWatermark.statusCode, 400);
   for (const [input, status] of [
     [request({ headers: { authorization: `Bearer ${'b'.repeat(48)}`, 'content-type': 'application/json' } }), 401],
     [request({ headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json', origin: 'https://sample.invalid' } }), 403],
@@ -74,7 +81,7 @@ test('machine bearer binds producer authority and rejects browser or insecure in
     await handler(input, result);
     assert.equal(result.statusCode, status);
   }
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test('the receiver bounds body size and per-principal request rate', async () => {

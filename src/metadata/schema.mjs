@@ -1,4 +1,4 @@
-import { developerWorkTablesSql } from './developer-work.mjs';
+import { developerWorkTablesSql, developerWorkWatermarksSql } from './developer-work.mjs';
 
 export const SOURCE_SCHEMA_VERSION = 1;
 export const LEGACY_METADATA_SCHEMA_VERSION = 2;
@@ -9,7 +9,8 @@ export const SCHEMA_SIX_COMMAND_CENTER_VERSION = 6;
 export const SCHEMA_SEVEN_COMMAND_CENTER_VERSION = 7;
 export const SCHEMA_EIGHT_COMMAND_CENTER_VERSION = 8;
 export const SCHEMA_NINE_COMMAND_CENTER_VERSION = 9;
-export const COMMAND_CENTER_SCHEMA_VERSION = 10;
+export const SCHEMA_TEN_COMMAND_CENTER_VERSION = 10;
+export const COMMAND_CENTER_SCHEMA_VERSION = 11;
 
 export const metadataTableNames = Object.freeze([
   'topics', 'source_references', 'source_convention_state', 'presentation_preferences',
@@ -26,7 +27,8 @@ export const metadataTableNames = Object.freeze([
   'topic_application_plans', 'topic_application_steps',
   'source_observations', 'open_loops', 'open_loop_evidence', 'open_loop_operations',
   'developer_work_cursors', 'developer_work_requests', 'developer_work_receipts',
-  'developer_work_producer_cursors', 'developer_work_producer_requests', 'developer_work_outbox'
+  'developer_work_producer_cursors', 'developer_work_producer_requests', 'developer_work_outbox',
+  'developer_work_watermarks'
 ]);
 export const paraCategories = Object.freeze(['project', 'area', 'resource', 'archive']);
 export const topicLifecycles = Object.freeze(['provisioning', 'active', 'retired']);
@@ -631,7 +633,8 @@ CREATE TABLE notification_developer_settings (
   developer_deployment INTEGER NOT NULL CHECK (developer_deployment IN (0, 1))
 ) STRICT;
 `;
-export const metadataSchemaSql = `${metadataSchemaV9Sql.replaceAll('PRAGMA user_version = 9;', 'PRAGMA user_version = 10;')}${developerWorkTablesSql}${metadataSchemaV10DeveloperNotificationSql}\nPRAGMA user_version = 10;\n`;
+export const metadataSchemaV10Sql = `${metadataSchemaV9Sql.replaceAll('PRAGMA user_version = 9;', 'PRAGMA user_version = 10;')}${developerWorkTablesSql}${metadataSchemaV10DeveloperNotificationSql}\nPRAGMA user_version = 10;\n`;
+export const metadataSchemaSql = `${metadataSchemaV10Sql.replaceAll('PRAGMA user_version = 10;', 'PRAGMA user_version = 11;')}${developerWorkWatermarksSql}\nPRAGMA user_version = 11;\n`;
 
 const baseColumns = Object.freeze({
   topics: [['topic_id', 'TEXT', 1, 1], ['para_category', 'TEXT', 1, 0], ['lifecycle', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['updated_at', 'TEXT', 1, 0], ['revision', 'INTEGER', 1, 0], ['name', 'TEXT', 1, 0], ['activated_at', 'TEXT', 0, 0]],
@@ -681,7 +684,8 @@ const baseColumns = Object.freeze({
   developer_work_receipts: [['producer_id', 'TEXT', 1, 1], ['event_id', 'TEXT', 1, 2], ['work_id', 'TEXT', 1, 0], ['work_revision', 'INTEGER', 1, 0], ['event_digest', 'TEXT', 1, 0], ['event_json', 'TEXT', 1, 0], ['projection_state', 'TEXT', 1, 0], ['accepted_at', 'TEXT', 1, 0], ['projected_at', 'TEXT', 0, 0]],
   developer_work_producer_cursors: [['producer_id', 'TEXT', 1, 1], ['work_id', 'TEXT', 1, 2], ['revision', 'INTEGER', 1, 0]],
   developer_work_producer_requests: [['producer_id', 'TEXT', 1, 1], ['work_id', 'TEXT', 1, 2], ['request_id', 'TEXT', 1, 3], ['kind', 'TEXT', 1, 0], ['deployment_id', 'TEXT', 0, 0], ['revision', 'INTEGER', 1, 0], ['state', 'TEXT', 1, 0], ['last_event_id', 'TEXT', 1, 0]],
-  developer_work_outbox: [['producer_id', 'TEXT', 1, 1], ['logical_operation_id', 'TEXT', 1, 2], ['event_id', 'TEXT', 1, 0], ['work_id', 'TEXT', 1, 0], ['work_revision', 'INTEGER', 1, 0], ['intent_digest', 'TEXT', 1, 0], ['event_digest', 'TEXT', 1, 0], ['event_json', 'TEXT', 1, 0], ['delivery_state', 'TEXT', 1, 0], ['receiver_receipt_json', 'TEXT', 0, 0], ['created_at', 'TEXT', 1, 0], ['delivered_at', 'TEXT', 0, 0]]
+  developer_work_outbox: [['producer_id', 'TEXT', 1, 1], ['logical_operation_id', 'TEXT', 1, 2], ['event_id', 'TEXT', 1, 0], ['work_id', 'TEXT', 1, 0], ['work_revision', 'INTEGER', 1, 0], ['intent_digest', 'TEXT', 1, 0], ['event_digest', 'TEXT', 1, 0], ['event_json', 'TEXT', 1, 0], ['delivery_state', 'TEXT', 1, 0], ['receiver_receipt_json', 'TEXT', 0, 0], ['created_at', 'TEXT', 1, 0], ['delivered_at', 'TEXT', 0, 0]],
+  developer_work_watermarks: [['producer_id', 'TEXT', 1, 1], ['work_id', 'TEXT', 1, 2], ['announced_revision', 'INTEGER', 1, 0]]
 });
 
 const baseForeignKeys = Object.freeze({
@@ -711,6 +715,7 @@ const baseForeignKeys = Object.freeze({
   , developer_work_receipts: ['developer_work_cursors|producer_id|producer_id|RESTRICT', 'developer_work_cursors|work_id|work_id|RESTRICT']
   , developer_work_producer_requests: ['developer_work_producer_cursors|producer_id|producer_id|RESTRICT', 'developer_work_producer_cursors|work_id|work_id|RESTRICT']
   , developer_work_outbox: ['developer_work_producer_cursors|producer_id|producer_id|RESTRICT', 'developer_work_producer_cursors|work_id|work_id|RESTRICT']
+  , developer_work_watermarks: ['developer_work_cursors|producer_id|producer_id|RESTRICT', 'developer_work_cursors|work_id|work_id|RESTRICT']
 });
 const expectedLedgerColumns = Object.freeze([
   ['sequence', 'INTEGER', 0, 1], ['migration_id', 'TEXT', 1, 0], ['migration_digest', 'TEXT', 1, 0],
@@ -724,6 +729,7 @@ function definitions(sql) {
   ));
 }
 const expectedTableDefinitions = definitions(metadataSchemaSql);
+const expectedTableDefinitionsV10 = definitions(metadataSchemaV10Sql);
 const expectedTableDefinitionsV9 = definitions(metadataSchemaV9Sql);
 const expectedTableDefinitionsV8 = definitions(metadataSchemaV8Sql);
 const expectedTableDefinitionsV7 = definitions(metadataSchemaV7Sql);
@@ -832,6 +838,7 @@ PRAGMA user_version = 8;
 `;
 export const metadataSchemaV8ToV9Sql = `${metadataSchemaV9OpenLoopTablesSql}\nPRAGMA user_version = 9;\n`;
 export const metadataSchemaV9ToV10Sql = `${developerWorkTablesSql}${metadataSchemaV10DeveloperNotificationSql}\nPRAGMA user_version = 10;\n`;
+export const metadataSchemaV10ToV11Sql = `${developerWorkWatermarksSql}\nPRAGMA user_version = 11;\n`;
 
 const attentionTables = Object.freeze(['attention_episodes', 'attention_occurrences', 'attention_attempts', 'attention_approvals', 'attention_activity_records']);
 const attentionActivityTriggers = Object.freeze(['attention_activity_records_no_delete', 'attention_activity_records_no_update']);
@@ -840,7 +847,8 @@ const topicLifecycleTables = Object.freeze(['source_locators', 'topic_operations
 const notificationTables = Object.freeze(['notification_settings', 'notification_developer_settings', 'notification_policy_epochs', 'notification_slots', 'notification_emissions', 'notification_clear_operations']);
 const topicAnalysisTables = Object.freeze(['topic_analysis_settings', 'topic_analysis_runs', 'topic_analysis_watermarks', 'topic_analysis_cursors', 'topic_analysis_evidence', 'topic_proposals', 'topic_reviews', 'topic_application_plans', 'topic_application_steps']);
 const openLoopTables = Object.freeze(['source_observations', 'open_loops', 'open_loop_evidence', 'open_loop_operations']);
-const developerWorkTables = Object.freeze(['developer_work_cursors', 'developer_work_requests', 'developer_work_receipts', 'developer_work_producer_cursors', 'developer_work_producer_requests', 'developer_work_outbox']);
+const developerWorkTables = Object.freeze(['developer_work_cursors', 'developer_work_requests', 'developer_work_receipts', 'developer_work_producer_cursors', 'developer_work_producer_requests', 'developer_work_outbox', 'developer_work_watermarks']);
+const v10Tables = Object.freeze(Object.keys(baseColumns).filter((table) => table !== 'developer_work_watermarks'));
 const v9Tables = Object.freeze(Object.keys(baseColumns).filter((table) => !developerWorkTables.includes(table) && table !== 'notification_developer_settings'));
 const v8Tables = Object.freeze(v9Tables.filter((table) => !openLoopTables.includes(table)));
 const v7Tables = Object.freeze(v8Tables.filter((table) => !topicAnalysisTables.includes(table)));
@@ -870,16 +878,17 @@ function sameArray(left, right) { return left.length === right.length && left.ev
 export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VERSION) {
   const problems = [];
   const current = schemaVersion === COMMAND_CENTER_SCHEMA_VERSION;
+  const schemaTen = schemaVersion === SCHEMA_TEN_COMMAND_CENTER_VERSION;
   const schemaNine = schemaVersion === SCHEMA_NINE_COMMAND_CENTER_VERSION;
   const schemaEight = schemaVersion === SCHEMA_EIGHT_COMMAND_CENTER_VERSION;
   const schemaSeven = schemaVersion === SCHEMA_SEVEN_COMMAND_CENTER_VERSION;
   const schemaSix = schemaVersion === SCHEMA_SIX_COMMAND_CENTER_VERSION;
   const prior = schemaVersion === PRIOR_COMMAND_CENTER_SCHEMA_VERSION;
   const schemaFour = schemaVersion === ATTENTION_METADATA_SCHEMA_VERSION;
-  const columnsForVersion = current ? baseColumns : schemaNine ? Object.fromEntries(v9Tables.map((table) => [table, baseColumns[table]])) : schemaEight ? Object.fromEntries(v8Tables.map((table) => [table, baseColumns[table]])) : schemaSeven ? Object.fromEntries(Object.entries(baseColumns).filter(([table]) => v7Tables.includes(table))) : schemaSix ? v6Columns : prior ? v5Columns : schemaFour ? v4Columns : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
-  const definitionsForVersion = current ? expectedTableDefinitions : schemaNine ? expectedTableDefinitionsV9 : schemaEight ? expectedTableDefinitionsV8 : schemaSeven ? expectedTableDefinitionsV7 : schemaSix ? expectedTableDefinitionsV6 : prior ? definitions(metadataSchemaV5Sql) : schemaFour ? expectedTableDefinitionsV4 : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
-  const foreignKeysForVersion = current ? baseForeignKeys : schemaNine ? Object.fromEntries(v9Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaEight ? Object.fromEntries(v8Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaSeven ? Object.fromEntries(v7Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaSix || prior || schemaFour ? Object.fromEntries(v6Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
-  const applicationTables = current ? metadataTableNames : schemaNine ? v9Tables : schemaEight ? v8Tables : schemaSeven ? v7Tables : schemaSix ? v6Tables : prior || schemaFour ? v5Tables : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
+  const columnsForVersion = current ? baseColumns : schemaTen ? Object.fromEntries(v10Tables.map((table) => [table, baseColumns[table]])) : schemaNine ? Object.fromEntries(v9Tables.map((table) => [table, baseColumns[table]])) : schemaEight ? Object.fromEntries(v8Tables.map((table) => [table, baseColumns[table]])) : schemaSeven ? Object.fromEntries(Object.entries(baseColumns).filter(([table]) => v7Tables.includes(table))) : schemaSix ? v6Columns : prior ? v5Columns : schemaFour ? v4Columns : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Columns : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Columns : v1Columns;
+  const definitionsForVersion = current ? expectedTableDefinitions : schemaTen ? expectedTableDefinitionsV10 : schemaNine ? expectedTableDefinitionsV9 : schemaEight ? expectedTableDefinitionsV8 : schemaSeven ? expectedTableDefinitionsV7 : schemaSix ? expectedTableDefinitionsV6 : prior ? definitions(metadataSchemaV5Sql) : schemaFour ? expectedTableDefinitionsV4 : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? expectedTableDefinitionsV3 : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? expectedTableDefinitionsV2 : v1Definitions;
+  const foreignKeysForVersion = current ? baseForeignKeys : schemaTen ? Object.fromEntries(v10Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaNine ? Object.fromEntries(v9Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaEight ? Object.fromEntries(v8Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaSeven ? Object.fromEntries(v7Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaSix || prior || schemaFour ? Object.fromEntries(v6Tables.map((table) => [table, baseForeignKeys[table] ?? []])) : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3ForeignKeys : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2ForeignKeys : v1ForeignKeys;
+  const applicationTables = current ? metadataTableNames : schemaTen ? v10Tables : schemaNine ? v9Tables : schemaEight ? v8Tables : schemaSeven ? v7Tables : schemaSix ? v6Tables : prior || schemaFour ? v5Tables : schemaVersion === LEGACY_MIGRATION_SCHEMA_VERSION ? v3Tables : schemaVersion === LEGACY_METADATA_SCHEMA_VERSION ? v2Tables : v1Tables;
   const expectedTables = schemaVersion >= LEGACY_METADATA_SCHEMA_VERSION ? [...applicationTables, 'schema_migrations'] : [...applicationTables];
   const objects = database.prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
   const tables = objects.filter((row) => row.type === 'table').map((row) => row.name);
@@ -894,7 +903,7 @@ export function inspectSchema(database, schemaVersion = COMMAND_CENTER_SCHEMA_VE
     const tableShape = database.prepare('SELECT strict FROM pragma_table_list WHERE name = ?').get(table);
     if (!tableShape || tableShape.strict !== 1) problems.push(`${table} is not STRICT`);
     const ddl = normalizedSql(database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.sql);
-    const alterCompatible = (current || schemaNine || schemaEight || schemaSeven || schemaSix) && (table === 'topics' || table === 'source_convention_state');
+    const alterCompatible = (current || schemaTen || schemaNine || schemaEight || schemaSeven || schemaSix) && (table === 'topics' || table === 'source_convention_state');
     if (!alterCompatible && ddl !== definitionsForVersion[table]) problems.push(`${table} definition differs`);
     if (current && table === 'topics') {
       for (const requiredConstraint of [

@@ -25,12 +25,12 @@ test('initialization refuses success on directory sync failure and a retry durab
     };
     syncBuiltinESMExports();
     try {
-      assert.throws(() => initializeCommandCenterMetadata({ stateDir, expectedSchemaVersion: 10 }), { code: 'EIO' });
+      assert.throws(() => initializeCommandCenterMetadata({ stateDir, expectedSchemaVersion: 11 }), { code: 'EIO' });
       const databasePath = resolveCommandCenterDatabasePath(stateDir);
       const bytes = await readFile(databasePath); const identity = await stat(databasePath);
       fault = false;
-      assert.deepEqual(initializeCommandCenterMetadata({ stateDir, expectedSchemaVersion: 10 }),
-        { phase: 'verified', schemaVersion: 10, disposition: 'existing' });
+      assert.deepEqual(initializeCommandCenterMetadata({ stateDir, expectedSchemaVersion: 11 }),
+        { phase: 'verified', schemaVersion: 11, disposition: 'existing' });
       assert.deepEqual(syncedDirectories, [path.dirname(databasePath), path.join(stateDir, 'plugins'), stateDir]);
       assert.equal((await stat(databasePath)).ino, identity.ino);
       assert.deepEqual(await readFile(databasePath), bytes);

@@ -67,7 +67,10 @@ export function createDeveloperEventHandler({ service, principals = [], trustedP
     try {
       const { body } = await readBoundedJson(req, DEVELOPER_EVENT_MAX_BYTES);
       if (!principal.families?.includes(eventFamilies[body?.eventType])) return reply(res, 403, { schemaVersion: 1, status: 'error', code: 'event-family-denied' });
-      const receipt = await service.accept({ producerId: principal.producerId, role: principal.role, allowedProjects: principal.allowedProjects, event: body });
+      const watermarkHeader = req.headers?.['x-developer-work-watermark'];
+      if (watermarkHeader !== undefined && (typeof watermarkHeader !== 'string' || !/^[1-9][0-9]{0,15}$/u.test(watermarkHeader) || !Number.isSafeInteger(Number(watermarkHeader)))) throw Object.assign(new Error('Invalid delivery watermark.'), { code: 'delivery-watermark-invalid' });
+      const receipt = await service.accept({ producerId: principal.producerId, role: principal.role, allowedProjects: principal.allowedProjects, event: body,
+        ...(watermarkHeader !== undefined ? { watermark: Number(watermarkHeader) } : {}) });
       return reply(res, receipt.projectionState === 'projected' ? 200 : 202, { schemaVersion: 1, status: 'accepted', receipt });
     } catch (error) {
       const code = typeof error?.code === 'string' ? error.code : 'invalid-request';

@@ -316,9 +316,17 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     }
   }
 
+  function developerCatchupReady(episode) {
+    if (episode?.sourceCapabilityId !== 'developer-work.v1') return true;
+    try {
+      return metadata.isDeveloperWorkNotificationReady?.({ producerId: episode.evidenceFacts?.producerId, workId: episode.evidenceFacts?.workId }) === true;
+    } catch { return false; }
+  }
+
   function deliveryEligible(slot, epoch) {
     const episode = attentionService?.allEpisodes?.().find(item => item.episodeId === slot.episode_id);
     return activeEpisode(episode) && episodeSeverity(episode) === epoch?.severity
+      && developerCatchupReady(episode)
       && categoryEnabled(slot, epoch.severity, getSettings(), episode)
       && (slot.slot_kind !== 'developer-deployment-outcome' || deploymentOutcomeDueAt(episode, epoch) !== null);
   }
@@ -432,6 +440,7 @@ export function createNotificationService({ metadata, attentionService, sourceSe
         const due = rows('notification_slots', "epoch_id = ? AND status IN ('scheduled', 'queued') AND due_at_ms <= ?", [epoch.epoch_id, clock]);
         const queued = [];
         for (const slot of due) {
+          if (!developerCatchupReady(episode)) continue;
           // Settings suppress delivery at the host boundary. Keep the durable
           // slot scheduled so re-enabling a category does not rewrite its
           // fixed policy timing or lose a not-yet-delivered candidate.
@@ -484,7 +493,16 @@ export function createNotificationService({ metadata, attentionService, sourceSe
     return Object.freeze({ settings: getSettings(), epochs: Object.freeze(rows('notification_policy_epochs')), slots: Object.freeze(rows('notification_slots')), emissions: Object.freeze(rows('notification_emissions')), clears: Object.freeze(rows('notification_clear_operations')) });
   }
 
-  return Object.freeze({ getSettings, updateSettings, captureCurrentOperatorBinding, reconcile, inspect, close() { if (!closed) { closed = true; bindingGeneration += 1; db.close(); } } });
+  return Object.freeze({ getSettings, updateSettings, captureCurrentOperatorBinding, reconcile, inspect,
+    async stop() {
+      if (closed) return;
+      closed = true;
+      bindingGeneration += 1;
+      await reconciliation;
+      db.close();
+    },
+    close() { if (!closed) { closed = true; bindingGeneration += 1; db.close(); } }
+  });
 }
 
 export { ONE_DAY_MS, UUID_PATTERN };

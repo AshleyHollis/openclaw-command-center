@@ -11,6 +11,8 @@ import { projectDashboard } from '../src/dashboard/service.mjs';
 async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z', emitterFactory = binding => binding) {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-notification-lifecycle-'));
   const metadata = openCommandCenterMetadataService({ stateDir });
+  const notificationMetadata = Object.create(metadata);
+  Object.defineProperty(notificationMetadata, 'isDeveloperWorkNotificationReady', { value: () => true });
   let clock = Date.parse(initialTime);
   const episode = { episodeId: 'episode-lifecycle', sourceCapabilityId: 'monitor', sourceKind: 'operational', state: 'Active', severity: 'High', attentionSince: new Date(clock).toISOString(), evidenceFacts: {} };
   const episodes = [episode];
@@ -21,7 +23,7 @@ async function fixture(run, initialTime = '2026-08-27T12:00:00.000Z', emitterFac
     async emit(candidate) { candidates.push(candidate); for (const notifications of devices.values()) notifications.add(candidate.logicalOperationId); return { status: 'sent' }; },
     async clear(input) { clears.push(input); for (const notifications of devices.values()) notifications.delete(input.logicalOperationId); return { status: 'cleared', attempted: devices.size, cleared: devices.size, failed: 0, ambiguous: 0 }; }
   };
-  const service = createNotificationService({ metadata, attentionService: attention, emitter: emitterFactory(binding), now: () => clock });
+  const service = createNotificationService({ metadata: notificationMetadata, attentionService: attention, emitter: emitterFactory(binding), now: () => clock });
   try { return await run({ metadata, service, attention, episode, episodes, candidates, clears, devices, binding, advance(ms) { clock += ms; }, now: () => clock }); }
   finally { service.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 }

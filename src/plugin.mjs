@@ -176,10 +176,15 @@ export default definePluginEntry({
       auth: 'plugin',
       match: 'exact',
       handler: createDeveloperEventHandler({
-        service: { accept: input => {
+        service: { accept: async input => {
           const owner = service.developerWorkService;
           if (!owner) throw Object.assign(new Error('Developer Work is unavailable.'), { code: 'capability-unavailable' });
-          return owner.accept(input);
+          const receipt = await owner.accept(input);
+          if (FIRST_LIVE_FEATURES.notifications && receipt.projectionState === 'projected') {
+            try { await service.notificationReconcile(); }
+            catch (error) { api.logger?.warn?.(`Command Center notification reconciliation ${typeof error?.code === 'string' ? error.code : 'failed'}`); }
+          }
+          return receipt;
         } },
         principals: api.pluginConfig?.developerWork?.principals ?? [],
         trustedProxyPeers: api.pluginConfig?.developerWork?.trustedProxyPeers ?? []

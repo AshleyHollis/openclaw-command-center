@@ -93,7 +93,7 @@ test('browser bootstrap matching accepts only the pinned same-origin canonical p
   assert.equal(isControlUiBootstrapUrl('not a URL', { gatewayUrl, bootstrapPath }), false);
 });
 
-test('metadata readiness requires the durable schema-10 service store', async () => {
+test('metadata readiness requires the durable schema-11 service store', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'command-center-readiness-'));
   const databasePath = path.join(root, 'metadata.sqlite');
   try {
@@ -103,7 +103,7 @@ test('metadata readiness requires the durable schema-10 service store', async ()
     database.close();
     assert.equal(isCommandCenterMetadataReady(databasePath), false);
     const upgraded = new DatabaseSync(databasePath);
-    upgraded.exec('PRAGMA user_version = 10');
+    upgraded.exec('PRAGMA user_version = 11');
     upgraded.close();
     assert.equal(isCommandCenterMetadataReady(databasePath), true);
   } finally {
@@ -116,7 +116,7 @@ test('migration readiness requires the exact durable existing-data completion', 
   const databasePath = path.join(root, 'metadata.sqlite');
   try {
     const database = new DatabaseSync(databasePath);
-    database.exec('PRAGMA user_version = 10; CREATE TABLE migration_completion (completion_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL) STRICT;');
+    database.exec('PRAGMA user_version = 11; CREATE TABLE migration_completion (completion_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL) STRICT;');
     assert.equal(isCommandCenterMigrationReady(databasePath), false);
     database.prepare('INSERT INTO migration_completion (completion_id, schema_version) VALUES (?, ?)').run('other-owner', 1);
     assert.equal(isCommandCenterMigrationReady(databasePath), false);

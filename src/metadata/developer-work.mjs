@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { developerEventDigest, normalizeDeveloperEvent } from '../developer-work/contract.mjs';
 
 const MAX_PENDING_RECEIPTS = 500;
+const MAX_WATERMARK_LEAD = 500;
 const terminalTypes = new Set(['request_resolved', 'request_withdrawn']);
 const requestOpeningTypes = new Set(['human_input_required', 'product_decision_required', 'approval_required', 'feature_ready_for_review', 'production_deployment_failed']);
 
@@ -83,6 +84,16 @@ CREATE TABLE developer_work_outbox (
 ) STRICT;
 `;
 
+export const developerWorkWatermarksSql = `
+CREATE TABLE developer_work_watermarks (
+  producer_id TEXT NOT NULL,
+  work_id TEXT NOT NULL,
+  announced_revision INTEGER NOT NULL CHECK (announced_revision >= 1),
+  PRIMARY KEY (producer_id, work_id),
+  FOREIGN KEY (producer_id, work_id) REFERENCES developer_work_cursors(producer_id, work_id) ON DELETE RESTRICT
+) STRICT;
+`;
+
 function receipt(row, duplicate = false) {
   return Object.freeze({
     schemaVersion: 1,
@@ -102,14 +113,23 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
   const fail = (code, message = code) => { throw new ErrorType(code, message); };
   const readReceipt = (db, producerId, eventId) => db.prepare('SELECT * FROM developer_work_receipts WHERE producer_id = ? AND event_id = ?').get(producerId, eventId);
 
-  service.acceptDeveloperEvent = ({ producerId, event, acceptedAt = new Date().toISOString() } = {}) => {
+  service.acceptDeveloperEvent = ({ producerId, event, watermark, acceptedAt = new Date().toISOString() } = {}) => {
     if (typeof producerId !== 'string' || !producerId.trim() || !event || event.schemaVersion !== 1 || typeof event.eventId !== 'string' || typeof event.workId !== 'string' || !Number.isSafeInteger(event.workRevision) || event.workRevision < 1 || typeof acceptedAt !== 'string' || Number.isNaN(Date.parse(acceptedAt))) fail('developer-event-invalid');
+    if (watermark !== undefined && (!Number.isSafeInteger(watermark) || watermark < event.workRevision)) fail('delivery-watermark-invalid');
     const eventDigest = developerEventDigest(event);
     const eventJson = JSON.stringify(event);
     return mutate(null, db => {
+      const announceWatermark = () => {
+        if (watermark === undefined) return;
+        const cursor = db.prepare('SELECT revision FROM developer_work_cursors WHERE producer_id = ? AND work_id = ?').get(producerId, event.workId);
+        if (!cursor || watermark > Math.max(cursor.revision, event.workRevision) + MAX_WATERMARK_LEAD) fail('delivery-watermark-invalid');
+        db.prepare(`INSERT INTO developer_work_watermarks (producer_id, work_id, announced_revision) VALUES (?, ?, ?)
+          ON CONFLICT (producer_id, work_id) DO UPDATE SET announced_revision = MAX(announced_revision, excluded.announced_revision)`).run(producerId, event.workId, watermark);
+      };
       const old = readReceipt(db, producerId, event.eventId);
       if (old) {
         if (old.event_digest !== eventDigest) fail('developer-event-conflict', 'An event ID was replayed with changed evidence.');
+        announceWatermark();
         return receipt(old, true);
       }
       const cursor = db.prepare('SELECT revision FROM developer_work_cursors WHERE producer_id = ? AND work_id = ?').get(producerId, event.workId);
@@ -136,7 +156,20 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       }
       db.prepare(`INSERT INTO developer_work_receipts (producer_id, event_id, work_id, work_revision, event_digest, event_json, projection_state, accepted_at, projected_at)
         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`).run(producerId, event.eventId, event.workId, event.workRevision, eventDigest, eventJson, acceptedAt);
+      announceWatermark();
       return receipt(readReceipt(db, producerId, event.eventId));
+    });
+  };
+
+  service.isDeveloperWorkNotificationReady = ({ producerId, workId } = {}) => {
+    if (typeof producerId !== 'string' || !producerId.trim() || typeof workId !== 'string' || !workId.trim()) fail('developer-event-invalid');
+    return inspect(db => {
+      const state = db.prepare(`SELECT c.revision AS accepted_revision, w.announced_revision,
+        EXISTS (SELECT 1 FROM developer_work_receipts r WHERE r.producer_id = c.producer_id AND r.work_id = c.work_id AND r.projection_state = 'pending') AS projection_pending
+        FROM developer_work_cursors c LEFT JOIN developer_work_watermarks w
+          ON w.producer_id = c.producer_id AND w.work_id = c.work_id
+        WHERE c.producer_id = ? AND c.work_id = ?`).get(producerId, workId);
+      return Boolean(state && state.announced_revision === state.accepted_revision && state.projection_pending === 0);
     });
   };
 

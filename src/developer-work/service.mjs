@@ -40,6 +40,7 @@ function occurrenceFor(producerId, event, devBaseUrl, acceptedAt) {
   const transition = { producerId, workId: event.workId, requestId: request.requestId, eventId: event.eventId, requestKind: request.kind, state: requestState(event) };
   const facts = {
     developerWork: true,
+    producerId,
     eventType: event.eventType,
     projectAlias: event.context.projectAlias,
     workId: event.workId,
@@ -146,10 +147,10 @@ export function createDeveloperWorkService({ metadata, attention, devBaseUrl } =
     return draining;
   }
 
-  async function accept({ producerId, role, allowedProjects, event } = {}) {
+  async function accept({ producerId, role, allowedProjects, event, watermark } = {}) {
     if (closed) throw new Error('Developer Work service is closed.');
     const normalized = normalizeDeveloperEvent(event, { producerId, role, allowedProjects });
-    const receipt = metadata.acceptDeveloperEvent({ producerId, event: normalized });
+    const receipt = metadata.acceptDeveloperEvent({ producerId, event: normalized, watermark });
     // Acknowledgement means durable receipt, even when the separate projection
     // transaction must be retried during the next drain/startup.
     try { await drain(); } catch { /* receipt remains visibly pending */ }

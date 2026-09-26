@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { normalizeDeveloperEvent } from '../src/developer-work/contract.mjs';
-import { developerWorkTablesSql, installDeveloperWorkMetadata } from '../src/metadata/developer-work.mjs';
+import { developerWorkTablesSql, developerWorkWatermarksSql, installDeveloperWorkMetadata } from '../src/metadata/developer-work.mjs';
 
 class MetadataError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -35,7 +35,7 @@ function owner(db) {
 test('durable receipts preserve exact replay, independent requests and terminal state', () => {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON;');
-  db.exec(developerWorkTablesSql);
+  db.exec(developerWorkTablesSql + developerWorkWatermarksSql);
   const first = owner(db);
   const a = event(1, 'a3c429e9-c12f-4301-a799-622852499da1', 'review-a');
   const b = event(2, 'a3c429e9-c12f-4301-a799-622852499da2', 'review-b');
@@ -56,10 +56,37 @@ test('durable receipts preserve exact replay, independent requests and terminal 
   db.close();
 });
 
+test('delivery watermark is monotonic across duplicate receipts and waits for contiguous projection', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec(developerWorkTablesSql + developerWorkWatermarksSql);
+  const metadata = owner(db);
+  const a = event(1, randomUUID(), 'review-a');
+  const b = event(2, randomUUID(), 'review-b');
+  const resolvedA = event(3, randomUUID(), 'review-a', 1, 'request_resolved');
+  const ready = () => owner(db).isDeveloperWorkNotificationReady({ producerId: authority.producerId, workId: a.workId });
+  try {
+    assert.equal(ready(), false);
+    metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: a, watermark: 3 });
+    assert.equal(ready(), false);
+    assert.equal(metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: a, watermark: 3 }).duplicate, true);
+    assert.throws(() => metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: a, watermark: 502 }), { code: 'delivery-watermark-invalid' });
+    metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: b, watermark: 2 });
+    metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: resolvedA, watermark: 3 });
+    assert.equal(db.prepare('SELECT announced_revision FROM developer_work_watermarks').get().announced_revision, 3);
+    for (const item of metadata.listPendingDeveloperEvents({})) {
+      metadata.markDeveloperEventProjected({ producerId: authority.producerId, eventId: item.receipt.eventId, eventDigest: item.receipt.eventDigest });
+      assert.equal(ready(), item.receipt.workRevision === 3);
+    }
+    assert.equal(metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: a, watermark: 2 }).duplicate, true);
+    assert.equal(ready(), true);
+  } finally { db.close(); }
+});
+
 test('a deployment has one durable incident identity across outcome updates', () => {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON;');
-  db.exec(developerWorkTablesSql);
+  db.exec(developerWorkTablesSql + developerWorkWatermarksSql);
   const metadata = owner(db);
   const controller = { producerId: 'fictional-controller', role: 'controller', allowedProjects: ['sample-project'] };
   const incident = (revision, eventType, requestId, deploymentId, expectedRequestRevision, code) => normalizeDeveloperEvent({
