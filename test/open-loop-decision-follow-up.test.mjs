@@ -352,11 +352,12 @@ test('SIGKILL after targeted interpretation commit resumes only its follow-up an
     }
   });
 
-test('SIGKILL after native Cron accepts a bound Reminder lets a newer paid decision recover and cancel that exact job',
+test('SIGKILL after native create and disable effects recovers one exact paid Reminder without redispatch',
   { skip: process.platform !== 'linux' && 'actual SIGKILL/reopen requires the supported Linux runtime', timeout: 30_000 }, async () => {
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-decision-native-kill-'));
     const fixturePath = fileURLToPath(new URL('./fixtures/open-loop-decision-process-death.mjs', import.meta.url));
     const children = [];
+    let paidLoopId;
     const launch = mode => {
       const child = spawn(process.execPath, [fixturePath, stateDir, mode], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       children.push(child);
@@ -388,6 +389,7 @@ test('SIGKILL after native Cron accepts a bound Reminder lets a newer paid decis
       try {
         assert.equal(inspection.getOperation(accepted.id)?.state, 'pending');
         const defer = inspection.getOpenLoopUserActionReceipt('10000000-0000-4000-8000-000000000031');
+        paidLoopId = defer.loop.loopId;
         assert.equal(inspection.getSourceReference(openLoopReminderReferenceId(defer.loop.loopId)), null);
         const paid = inspection.recordOpenLoopPaymentStatus({ schemaVersion: 1,
           logicalOperationId: '10000000-0000-4000-8000-000000000032', loopId: defer.loop.loopId,
@@ -397,7 +399,18 @@ test('SIGKILL after native Cron accepts a bound Reminder lets a newer paid decis
         assert.equal(paid.followUpIntent.predecessor.logicalOperationId, accepted.id);
       } finally { inspection.close(); }
 
-      const recovery = launch('paid-recover');
+      const cancellation = launch('paid-effect');
+      const cancelled = await message(cancellation.child, 'native-update-accepted');
+      assert.equal(cancelled.id, accepted.id);
+      cancellation.child.kill('SIGKILL');
+      assert.equal((await cancellation.exited).signal, 'SIGKILL');
+      const pending = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+      try {
+        const paidAction = pending.getCurrentOpenLoopUserActionReceipt(paidLoopId);
+        assert.equal(pending.getOperation(paidAction.followUpIntent.logicalOperationId)?.state, 'pending');
+      } finally { pending.close(); }
+
+      const recovery = launch('paid-verify');
       const completed = await message(recovery.child, 'completed');
       assert.deepEqual({ status: completed.status, jobCount: completed.jobCount, enabled: completed.enabled, operationState: completed.operationState },
         { status: 'applied', jobCount: 1, enabled: false, operationState: 'applied' });

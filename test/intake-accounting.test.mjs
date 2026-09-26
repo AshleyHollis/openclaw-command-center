@@ -224,8 +224,21 @@ test('configured service worker applies one accepted fictional clarification wit
 test('configured worker commits a due Reminder decision without borrowing Gateway authority', async () => {
   const temporary = await temporaryStateDir('command-center-service-owned-reminder-');
   let gatewayCalls = 0;
+  const gatewayMethods = [];
+  const nativeJobs = new Map();
+  const serviceCron = {
+    list: async () => [...nativeJobs.values()].map(job => ({ ...job })),
+    getWithRevision: async id => nativeJobs.get(id) && { ...nativeJobs.get(id) },
+    add: async declaration => {
+      assert.equal(nativeJobs.has(declaration.id), false);
+      const job = { ...structuredClone(declaration), configRevision: 'fictional-revision-1' };
+      nativeJobs.set(job.id, job);
+      return { ...job };
+    },
+    updateWithRevision: async () => { throw new Error('No update is needed for the first Reminder.'); }
+  };
   const service = createMetadataService({ runtime: { state: { resolveStateDir: () => temporary.path },
-    gateway: { request: async () => { gatewayCalls += 1; throw new Error('Background Gateway authority is unavailable.'); } },
+    gateway: { request: async method => { gatewayCalls += 1; gatewayMethods.push(method); throw new Error('Background Gateway authority is unavailable.'); } },
     llm: { complete: async () => ({ model: 'fictional/model', text: JSON.stringify({ outcome: 'clear', decision: 'defer',
       reviewAt: '2026-09-26T09:00:00.000Z', evidenceQuote: 'Review this choice on Saturday.' }) }) } }, logger: {},
   pluginConfig: { clarificationWorker: { enabled: true, notBefore: '2026-09-22T00:00:00.000Z', intervalSeconds: 300 } } });
@@ -252,6 +265,16 @@ test('configured worker commits a due Reminder decision without borrowing Gatewa
     assert.equal(receipt.followUpIntent.action, 'create');
     assert.equal(metadata.getOperation(receipt.followUpIntent.logicalOperationId), null);
     assert.equal(gatewayCalls, 0, 'the decision commit cannot use request-scoped native Cron authority');
+    await service.stop();
+    await service.start({ getCron: () => serviceCron });
+    const callsBeforeFollowUp = gatewayCalls;
+    const recovered = await service.runClarificationWorkerOnce();
+    assert.deepEqual(recovered.results, []);
+    const reopened = service.getTopicMaintenanceOwners().metadata;
+    assert.equal(reopened.getOperation(receipt.followUpIntent.logicalOperationId)?.state, 'applied');
+    assert.equal(nativeJobs.size, 1);
+    assert.equal(nativeJobs.get(receipt.followUpIntent.logicalOperationId)?.enabled, true);
+    assert.equal(gatewayCalls, callsBeforeFollowUp, `service follow-up cannot fall back to request-scoped Gateway authority: ${gatewayMethods.join(', ')}`);
   } finally { restoreCoordinator?.(); await service.stop(); await temporary.cleanup(); }
 });
 

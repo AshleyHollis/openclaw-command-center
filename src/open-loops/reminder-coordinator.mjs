@@ -157,10 +157,19 @@ export function createOpenLoopReminderCoordinator({ api, gateway, metadata, remi
         if (!predecessor || predecessor.logicalOperationId !== assertLogicalOperationId(predecessor.logicalOperationId)
           || !Number.isSafeInteger(predecessor.loopRevision) || predecessor.loopRevision >= intent.loopRevision
           || !predecessor.declaration) throw sourceError('invalid-request', 'Pending native create identity is unavailable.');
-        const recovered = await reminder.recoverBound({ schemaVersion: 1, referenceId: intent.referenceId,
-          logicalOperationId: predecessor.logicalOperationId, declaration: predecessor.declaration });
-        if (recovered.status === 'not-applied') return Object.freeze({ schemaVersion: 1, status: 'pending', logicalOperationId: intent.logicalOperationId, plan: intent });
-        const expectedConfigRevision = nonBlank(recovered.value?.job?.configRevision, 'recoveredConfigRevision');
+        const prior = metadata.getOperation?.(predecessor.logicalOperationId);
+        const bound = metadata.getSourceReference(intent.referenceId);
+        let expectedConfigRevision;
+        if (prior?.state === 'applied' && prior.resultIdentity === bound?.externalSourceId && prior.observedRevision) {
+          // The successor may already have changed the job before a crash.
+          // Reuse the durable predecessor receipt, not its obsolete final shape.
+          expectedConfigRevision = prior.observedRevision;
+        } else {
+          const recovered = await reminder.recoverBound({ schemaVersion: 1, referenceId: intent.referenceId,
+            logicalOperationId: predecessor.logicalOperationId, declaration: predecessor.declaration });
+          if (recovered.status === 'not-applied') return Object.freeze({ schemaVersion: 1, status: 'pending', logicalOperationId: intent.logicalOperationId, plan: intent });
+          expectedConfigRevision = nonBlank(recovered.value?.job?.configRevision, 'recoveredConfigRevision');
+        }
         receipt = intent.action === 'cancel-pending-create'
           ? await reminder.complete({ schemaVersion: 1, referenceId: intent.referenceId,
               logicalOperationId: intent.logicalOperationId, expectedConfigRevision })

@@ -31,6 +31,15 @@ function reminderDeclarationMatchesJob(job, declaration) {
   return containsDeclaredValue(job, expected);
 }
 
+function reminderOperationMarker(logicalOperationId) {
+  return `[command-center:reminder-operation:${logicalOperationId}]`;
+}
+
+function reminderMutationDescription(description, logicalOperationId) {
+  const original = (description ?? '').replace(/(?:\r?\n)?\[command-center:reminder-operation:[0-9a-f-]{36}\]$/u, '');
+  return `${original}${original ? '\n' : ''}${reminderOperationMarker(logicalOperationId)}`;
+}
+
 function closedSchedulePatch(value, operationKind) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw sourceError('invalid-request', `${operationKind} patch must be an object`);
   const keys = Object.keys(value);
@@ -169,11 +178,9 @@ export class SchedulerAdapter {
     // a conditional create, unlike declarationKey's declarative upsert.
     const declaration = { ...structuredClone(input.declaration), id: logicalOperationId };
     const reconcile = async ({ applied = false, resultIdentity = null, observedRevision = null } = {}) => {
-      const rows = jobsFrom(await this.request('cron.list', { includeDisabled: true }));
-      const matches = rows.filter(job => job.id === logicalOperationId);
-      if (matches.length === 0) return { outcome: applied ? 'unknown' : 'not-applied' };
-      if (matches.length !== 1) return { outcome: 'conflict' };
-      const job = matches[0];
+      const job = jobFrom(await this.request('cron.get', { id: logicalOperationId }));
+      if (!job) return { outcome: applied ? 'unknown' : 'not-applied' };
+      if (job.id !== logicalOperationId) return { outcome: 'conflict' };
       if (job.declarationKey || !reminderDeclarationMatchesJob(job, declaration)) return { outcome: 'conflict' };
       if (typeof job.configRevision !== 'string' || !job.configRevision.trim()) return { outcome: 'unknown' };
       if (applied && (resultIdentity !== logicalOperationId || observedRevision !== job.configRevision)) return { outcome: 'unknown' };
@@ -349,10 +356,12 @@ export class SchedulerAdapter {
     validateScheduleUpdatePatch(input.patch);
     const expectedConfigRevision = nonBlank(input.expectedConfigRevision, 'expectedConfigRevision');
     const patch = structuredClone(input.patch);
-    const requestParams = { id: reference.externalSourceId, expectedConfigRevision, patch };
+    const marker = expectedSourceKind === 'reminder_schedule' ? reminderOperationMarker(logicalOperationId) : null;
     const execute = async ({ requestId }) => {
       const current = await this.read({ referenceId: reference.referenceId });
       if (current.job.configRevision !== expectedConfigRevision) throw sourceError('conflict', 'The scheduler configuration revision is stale.', { currentRevision: current.job.configRevision, expectedRevision: expectedConfigRevision });
+      const requestParams = { id: reference.externalSourceId, expectedConfigRevision,
+        patch: marker ? { ...patch, description: reminderMutationDescription(current.job.description, logicalOperationId) } : patch };
       let response;
       try { response = await this.request('cron.update', requestParams, { requestId }); } catch (error) {
         if (error?.code === 'CRON_JOB_CHANGED' || error?.details?.code === 'CRON_JOB_CHANGED') throw sourceError('conflict', 'The scheduler configuration revision is stale.', { currentRevision: error?.actualConfigRevision ?? error?.details?.actualConfigRevision ?? null, expectedRevision: expectedConfigRevision });
@@ -373,9 +382,14 @@ export class SchedulerAdapter {
       // Only the exact response previously recorded by the owner can qualify.
       const witnessed = applied && resultIdentity === reference.externalSourceId
         && typeof observedRevision === 'string' && after.job.configRevision === observedRevision;
+      const marked = marker && after.job.description?.endsWith(marker)
+        && (patch.enabled === undefined || after.job.enabled === patch.enabled)
+        && (patch.schedule === undefined || containsDeclaredValue(after.job.schedule, patch.schedule));
       // Native Cron owns normalization (for example every.anchorMs). Its exact
       // saved response revision is the witness, not equality with a partial patch.
-      return witnessed ? { outcome: 'applied', value: after } : { outcome: 'unknown' };
+      if (witnessed || (!applied && marked)) return { outcome: 'applied', value: after };
+      return !applied && after.job.configRevision === expectedConfigRevision
+        ? { outcome: 'not-applied' } : { outcome: 'unknown' };
     };
     if (this.coordinator) return this.coordinator.mutate({ operationKind, requestId: input.requestId ?? logicalOperationId, logicalOperationId, intent: { jobId: reference.externalSourceId, expectedConfigRevision, patch }, reconcile, execute });
     return { schemaVersion: 1, status: 'applied', logicalOperationId, value: await execute({ requestId: input.requestId ?? logicalOperationId }) };

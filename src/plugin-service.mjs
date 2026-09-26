@@ -13,6 +13,7 @@ import { withNoteFilesystemOwner } from './sources/note-filesystem-owner.mjs';
 import { prepareSupportingNoteAnnotation } from './open-loops/supporting-note-annotation.mjs';
 import { FIRST_LIVE_FEATURES } from './release-scope.mjs';
 import { createOpenLoopReminderCoordinator, openLoopReminderOperationId } from './open-loops/reminder-coordinator.mjs';
+import { createReminderServiceCronTransport } from './open-loops/service-cron-transport.mjs';
 import { planOrganizationChange } from './open-loops/capacity-workspace.mjs';
 import { createCommitmentCaptureService } from './open-loops/commitment-capture.mjs';
 import { loadIntakeSourceAccount } from './open-loops/intake-accounting.mjs';
@@ -423,6 +424,7 @@ export function createMetadataService(api) {
             || workerConfig.enabled !== true || workerConfig.notBefore !== admissionTime)
             throw new SourceServiceError('capability-unavailable', 'The clarification worker activation has ended.');
         };
+        const reminderCron = createReminderServiceCronTransport({ getCron: () => context.getCron?.(), assertCurrent });
         clarificationWorker = createClarificationWorker({ metadata: activatedMetadata,
           complete: request => api.runtime.llm.complete(request),
           // The interpretation commits one durable decision first. Native
@@ -434,7 +436,7 @@ export function createMetadataService(api) {
             const result = await afterDecisionCommit({ schemaVersion: 1, disposition: 'duplicate', loop: receipt.loop,
               ...(receipt.followUpIntent ? { followUpIntent: receipt.followUpIntent } : {}),
               ...(receipt.supportingNoteTarget ? { supportingNoteTarget: receipt.supportingNoteTarget } : {}) },
-            receipt.logicalOperationId, { gateway: api.runtime.gateway });
+            receipt.logicalOperationId, { gateway: reminderCron });
             assertCurrent();
             return result;
           },
