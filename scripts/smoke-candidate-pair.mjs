@@ -62,7 +62,7 @@ async function main() {
         try {
           read = await requestAuthenticatedGateway({ gatewayUrl: world.gateway.url,
             credential: world.gatewayCredential, method: 'command-center.v1.topics.list',
-            params: { schemaVersion: 1 }, signal });
+            params: { schemaVersion: 1 }, scopes: ['operator.admin'], signal });
           return true;
         } catch (error) {
           signal.throwIfAborted();
