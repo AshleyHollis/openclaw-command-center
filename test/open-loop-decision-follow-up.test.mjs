@@ -255,6 +255,116 @@ test('a newer paid decision conditionally disables an older native reschedule th
   }
 });
 
+test('a successor settles an accepted create that died before native dispatch', async () => {
+  for (const successorKind of ['paid', 'correct-date']) {
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-undispatched-create-'));
+    let metadata;
+    try {
+      metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+      metadata.createTopic({ topicId: 'fictional-undispatched-topic', paraCategory: 'project', lifecycle: 'active' });
+      const created = metadata.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'fictional-undispatched-intake', message: {
+        schemaVersion: 1, channel: 'email', source: { system: 'fictional-mail', externalId: 'fictional-undispatched-invoice', version: 'v1' },
+        occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', historicalBaseline: false,
+        topicId: 'fictional-undispatched-topic', disposition: 'confirmed-obligation', requestKind: 'payment', explicitRequest: true,
+        summary: 'Pay fictional invoice', payee: 'Fictional Builder', purpose: 'fictional work', amount: 10000,
+        currency: 'AUD', dueAt: '2026-10-01T00:00:00.000Z', invoiceId: 'FICTIONAL-UNDISPATCHED',
+        attachmentIds: ['fictional-attachment'], evidenceSelectors: ['attachment:1:invoice-number']
+      } });
+      const defer = metadata.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'fictional-undispatched-defer',
+        loopId: created.loop.loopId, expectedRevision: 1, decision: 'defer', reviewAt: '2026-10-02T00:00:00.000Z',
+        actorId: 'fictional-operator', rationale: 'Wait for fictional review.', updatedAt: '2026-09-20T01:00:00.000Z' });
+      const successor = successorKind === 'paid'
+        ? metadata.recordOpenLoopPaymentStatus({ schemaVersion: 1, logicalOperationId: 'fictional-undispatched-paid',
+          loopId: created.loop.loopId, expectedRevision: 2, paymentState: 'paid', actorId: 'fictional-operator',
+          rationale: 'Fictional payment assertion.', updatedAt: '2026-09-20T02:00:00.000Z' })
+        : metadata.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'fictional-undispatched-corrected',
+          loopId: created.loop.loopId, expectedRevision: 2, decision: 'correct-date', dueAt: '2026-10-06T00:00:00.000Z',
+          actorId: 'fictional-operator', rationale: 'Correct fictional date.', updatedAt: '2026-09-20T02:00:00.000Z' });
+      assert.equal(metadata.getOperation(defer.followUpIntent.logicalOperationId), null, 'the accepted predecessor had no native dispatch');
+      const jobs = new Map();
+      let adds = 0;
+      const gateway = { async request(method, params) {
+        if (method === 'cron.list') return { jobs: [...jobs.values()].map(job => structuredClone(job)) };
+        if (method === 'cron.add') {
+          adds += 1;
+          const job = { ...structuredClone(params), configRevision: 'fictional-native-r1' };
+          jobs.set(job.id, job);
+          return { created: true, job: structuredClone(job) };
+        }
+        if (method === 'cron.get') return structuredClone(jobs.get(params.id));
+        if (method === 'cron.update') {
+          const current = jobs.get(params.id);
+          assert.equal(params.expectedConfigRevision, current.configRevision);
+          const job = { ...current, ...structuredClone(params.patch), configRevision: 'fictional-native-r2' };
+          jobs.set(job.id, job);
+          return structuredClone(job);
+        }
+        throw new Error(`unexpected fictional Cron method ${method}`);
+      } };
+      const coordinator = createOpenLoopReminderCoordinator({ metadata, gateway });
+      const result = await coordinator.reconcileAccepted({ loop: successor.loop, followUpIntent: successor.followUpIntent });
+      assert.equal(result.status, 'applied');
+      assert.equal(adds, 1);
+      assert.equal(jobs.size, 1);
+      const job = [...jobs.values()][0];
+      if (successorKind === 'paid') assert.equal(job.enabled, false);
+      else assert.equal(job.schedule.at, '2026-10-06T00:00:00.000Z');
+      assert.equal(metadata.getOperation(defer.followUpIntent.logicalOperationId)?.state, 'applied');
+      assert.equal(metadata.getOperation(successor.followUpIntent.logicalOperationId)?.state, 'applied');
+    } finally {
+      metadata?.close();
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('source intake cannot advance a loop across an unsettled native create', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-source-overlap-'));
+  let metadata;
+  try {
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities: { scheduler: true } });
+    metadata.createTopic({ topicId: 'fictional-source-overlap', paraCategory: 'project', lifecycle: 'active' });
+    const created = metadata.ingestIncomingMessage({ schemaVersion: 1, logicalOperationId: 'fictional-source-overlap-intake', message: {
+      schemaVersion: 1, channel: 'email', source: { system: 'fictional-mail', externalId: 'fictional-source-overlap', version: 'v1' },
+      occurredAt: '2026-09-20T00:00:00.000Z', observedAt: '2026-09-20T00:01:00.000Z', historicalBaseline: false,
+      topicId: 'fictional-source-overlap', disposition: 'confirmed-obligation', requestKind: 'payment', explicitRequest: true,
+      summary: 'Pay fictional invoice', payee: 'Fictional Builder', purpose: 'fictional work', amount: 10000,
+      currency: 'AUD', dueAt: '2026-10-01T00:00:00.000Z', invoiceId: 'FICTIONAL-SOURCE-OVERLAP',
+      attachmentIds: ['fictional-attachment'], evidenceSelectors: ['attachment:1:invoice-number']
+    } });
+    const defer = metadata.recordOpenLoopDecision({ schemaVersion: 1, logicalOperationId: 'fictional-source-overlap-defer',
+      loopId: created.loop.loopId, expectedRevision: 1, decision: 'defer', reviewAt: '2026-10-02T00:00:00.000Z',
+      actorId: 'fictional-operator', rationale: 'Wait for fictional review.', updatedAt: '2026-09-20T01:00:00.000Z' });
+    const advance = () => metadata.reconcileOpenLoop({ schemaVersion: 1, logicalOperationId: 'fictional-source-overlap-v2',
+      expectedRevision: defer.loop.revision, loop: { ...defer.loop, title: 'Pay fictional revised invoice', revision: defer.loop.revision + 1 },
+      evidenceRoles: {}, updatedAt: '2026-09-20T02:00:00.000Z' });
+    assert.throws(advance, error => error.code === 'open-loop-follow-up-pending', 'even a not-yet-dispatched accepted effect fences source publication');
+    let releaseAdd; let enteredAdd;
+    const addEntered = new Promise(resolve => { enteredAdd = resolve; });
+    const addReleased = new Promise(resolve => { releaseAdd = resolve; });
+    const gateway = { async request(method, params) {
+      if (method === 'cron.list') return { jobs: [] };
+      if (method === 'cron.add') {
+        enteredAdd(); await addReleased;
+        return { created: true, job: { ...structuredClone(params), configRevision: 'fictional-native-r1' } };
+      }
+      throw new Error(`unexpected fictional Cron method ${method}`);
+    } };
+    const coordinator = createOpenLoopReminderCoordinator({ metadata, gateway });
+    const inFlight = coordinator.reconcileAccepted({ loop: defer.loop, followUpIntent: defer.followUpIntent });
+    await addEntered;
+    assert.throws(advance, error => error.code === 'open-loop-follow-up-pending', 'an in-flight native add also fences source publication');
+    releaseAdd();
+    const result = await inFlight;
+    assert.equal(result.status, 'applied');
+    assert.equal(metadata.getOperation(defer.followUpIntent.logicalOperationId)?.state, 'applied');
+    assert.equal(advance().loop.revision, defer.loop.revision + 1);
+  } finally {
+    metadata?.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('SIGKILL after decision commit leaves one resumable Reminder plan for a fresh process',
   { skip: process.platform !== 'linux' && 'actual SIGKILL/reopen requires the supported Linux runtime', timeout: 30_000 }, async () => {
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'command-center-decision-kill-'));
