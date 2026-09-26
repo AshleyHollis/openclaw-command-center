@@ -33,7 +33,7 @@ async function fixture(run) {
 test('Structural Change resumes its own interrupted folder move after reopening SQLite', async () => {
   await fixture(async ({ stateDir, vault, folder, metadata, reopen, lifecycle }) => {
     const preview = lifecycle().recategorizePreview({ topicId: 'fictional-topic', paraCategory: 'area' });
-    const input = { topicId: 'fictional-topic', paraCategory: 'area', logicalOperationId: randomUUID(), previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId };
+    const input = { topicId: 'fictional-topic', paraCategory: 'area', logicalOperationId: randomUUID(), previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId, expectedRevisions: preview.expectedRevisions };
     const child = spawnSync(process.execPath, ['--import', './test/fixtures/note-runtime-loader.mjs', './test/fixtures/structural-interrupted-move.mjs', stateDir, vault, JSON.stringify(input)], { encoding: 'utf8', timeout: 45000 });
     assert.equal(child.signal, 'SIGKILL', child.stderr);
     await assert.rejects(access(folder), { code: 'ENOENT' });
@@ -80,10 +80,10 @@ test('pending Structural Change cannot be replayed through another Topic or muta
   await fixture(async ({ stateDir, vault, metadata, lifecycle }) => {
     const preview = lifecycle().recategorizePreview({ topicId: 'fictional-topic', paraCategory: 'area' });
     const logicalOperationId = randomUUID();
-    const authorized = { topicId: preview.topicId, paraCategory: 'area', logicalOperationId, previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId };
+    const authorized = { topicId: preview.topicId, paraCategory: 'area', logicalOperationId, previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId, expectedRevisions: preview.expectedRevisions };
     const child = spawnSync(process.execPath, ['--import', './test/fixtures/note-runtime-loader.mjs', './test/fixtures/structural-interrupted-move.mjs', stateDir, vault, JSON.stringify(authorized)], { encoding: 'utf8', timeout: 45000 });
     assert.equal(child.signal, 'SIGKILL', child.stderr);
-    const input = { topicId: 'different-topic', paraCategory: 'area', logicalOperationId, previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId };
+    const input = { topicId: 'different-topic', paraCategory: 'area', logicalOperationId, previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId, expectedRevisions: preview.expectedRevisions };
     await assert.rejects(lifecycle().recategorizeConfirm(input), { code: 'intent-mismatch' });
     await assert.rejects(lifecycle().recategorizeConfirm({ ...input, topicId: preview.topicId, paraCategory: 'resource' }), { code: 'intent-mismatch' });
     assert.equal(metadata.getTopic(preview.topicId).paraCategory, 'project');
@@ -104,7 +104,7 @@ for (const kind of ['archive', 'restore']) test(`${kind} resumes its owned move 
   await fixture(async ({ stateDir, vault, metadata, reopen, lifecycle }) => {
     if (kind === 'restore') metadata.updateTopic({ topicId: 'fictional-topic', paraCategory: 'archive', expectedRevision: 0 });
     const preview = await lifecycle()[`${kind}Preview`]({ topicId: 'fictional-topic', paraCategory: 'area' });
-    const input = { topicId: preview.topicId, ...(kind === 'restore' ? { paraCategory: 'area' } : {}), logicalOperationId: randomUUID(), previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId };
+    const input = { topicId: preview.topicId, ...(kind === 'restore' ? { paraCategory: 'area' } : {}), logicalOperationId: randomUUID(), previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId, expectedRevisions: preview.expectedRevisions };
     const child = spawnSync(process.execPath, ['--import', './test/fixtures/note-runtime-loader.mjs', './test/fixtures/structural-interrupted-move.mjs', stateDir, vault, JSON.stringify(input), `${kind}Confirm`], { encoding: 'utf8', timeout: 45000 });
     assert.equal(child.signal, 'SIGKILL', child.stderr);
     const reopened = reopen();
@@ -125,7 +125,7 @@ test('recategorization never replaces its original Topic base with a newer revis
       metadata.setTopicName({ topicId: preview.topicId, name: 'Competing edit', expectedRevision: 0 });
       return [{ sessionKey: 'fixture:session', sessionId: 'fixture-session-id' }];
     } } });
-    await assert.rejects(owner.recategorizeConfirm({ topicId: preview.topicId, paraCategory: 'area', logicalOperationId: randomUUID(), previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId }), { code: 'conflict' });
+    await assert.rejects(owner.recategorizeConfirm({ topicId: preview.topicId, paraCategory: 'area', logicalOperationId: randomUUID(), previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId, expectedRevisions: preview.expectedRevisions }), { code: 'conflict' });
     assert.equal(metadata.getTopic(preview.topicId).name, 'Competing edit');
     assert.equal(metadata.getTopic(preview.topicId).paraCategory, 'project');
     assert.deepEqual(metadata.getSourceLocator('fixture-folder'), current);
@@ -136,7 +136,7 @@ test('process death before Structural completion commit leaves every local field
   await fixture(async ({ stateDir, vault, metadata, reopen, lifecycle }) => {
     const before = lifecycle().snapshot('fictional-topic');
     const preview = lifecycle().recategorizePreview({ topicId: before.topicId, paraCategory: 'area' });
-    const input = { topicId: before.topicId, paraCategory: 'area', logicalOperationId: randomUUID(), previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId };
+    const input = { topicId: before.topicId, paraCategory: 'area', logicalOperationId: randomUUID(), previewDigest: preview.digest, structuralChangeId: preview.structuralChangeId, expectedRevisions: preview.expectedRevisions };
     const child = spawnSync(process.execPath, ['--import', './test/fixtures/note-runtime-loader.mjs', './test/fixtures/structural-interrupted-move.mjs', stateDir, vault, JSON.stringify(input), 'recategorizeConfirm', 'before-metadata-commit'], { encoding: 'utf8', timeout: 45000 });
     assert.equal(child.signal, 'SIGKILL', child.stderr);
     const reopened = reopen();
