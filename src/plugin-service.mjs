@@ -425,7 +425,10 @@ export function createMetadataService(api) {
         };
         clarificationWorker = createClarificationWorker({ metadata: activatedMetadata,
           complete: request => api.runtime.llm.complete(request),
-          interpret: input => service.openLoopsInterpretClarification(input, { processorCapability, assertCurrent, gateway: api.runtime.gateway }),
+          // The interpretation commits one durable decision first. Native
+          // follow-up belongs to this registered service's recovery pass; a
+          // background timer cannot borrow an authenticated Gateway caller.
+          interpret: input => service.openLoopsInterpretClarification(input, { processorCapability, assertCurrent, deferFollowUp: true }),
           followUp: async receipt => {
             assertCurrent();
             const result = await afterDecisionCommit({ schemaVersion: 1, disposition: 'duplicate', loop: receipt.loop,

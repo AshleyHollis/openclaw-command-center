@@ -221,6 +221,40 @@ test('configured service worker applies one accepted fictional clarification wit
   } finally { restoreCoordinator?.(); await service.stop(); await temporary.cleanup(); }
 });
 
+test('configured worker commits a due Reminder decision without borrowing Gateway authority', async () => {
+  const temporary = await temporaryStateDir('command-center-service-owned-reminder-');
+  let gatewayCalls = 0;
+  const service = createMetadataService({ runtime: { state: { resolveStateDir: () => temporary.path },
+    gateway: { request: async () => { gatewayCalls += 1; throw new Error('Background Gateway authority is unavailable.'); } },
+    llm: { complete: async () => ({ model: 'fictional/model', text: JSON.stringify({ outcome: 'clear', decision: 'defer',
+      reviewAt: '2026-09-26T09:00:00.000Z', evidenceQuote: 'Review this choice on Saturday.' }) }) } }, logger: {},
+  pluginConfig: { clarificationWorker: { enabled: true, notBefore: '2026-09-22T00:00:00.000Z', intervalSeconds: 300 } } });
+  let restoreCoordinator;
+  try {
+    await service.start();
+    restoreCoordinator = setHostNoteFilesystemCoordinator(() => ({ release() {} }));
+    const metadata = service.getTopicMaintenanceOwners().metadata;
+    addTopic(metadata);
+    const plan = sourcePlan();
+    plan.acceptedExtraction.obligations = [{ obligationId: 'choose-delivery', title: 'Choose fictional delivery window',
+      provenance: 'inferred', classification: 'decision' }];
+    recordIntakeSourcePlan(metadata, plan);
+    const decision = addDecisionLoop(metadata);
+    recordIntakeOutcome(metadata, { schemaVersion: 1, sourceKind: 'email', sourceExternalId: plan.sourceExternalId,
+      sourceVersion: plan.sourceVersion, outcomeId: 'choose-delivery', kind: 'decision', status: 'pending-decision',
+      summary: 'Choose fictional delivery window', loopId: decision.loopId, recordedAt: '2026-09-22T01:01:00.000Z' });
+    const clarified = await service.openLoopsClarify({ loopId: decision.loopId, expectedRevision: decision.revision,
+      logicalOperationId: 'service-reminder-words', authenticatedOperatorId: 'operator-fixture',
+      rationale: 'Review this choice on Saturday.' });
+    const interpreted = await service.runClarificationWorkerOnce();
+    assert.equal(interpreted.results[0].status, 'follow-up-pending');
+    const receipt = metadata.getOpenLoopUserActionReceipt(clarificationInterpretationOperationId(clarified.loop.attention.pendingClarificationId));
+    assert.equal(receipt.followUpIntent.action, 'create');
+    assert.equal(metadata.getOperation(receipt.followUpIntent.logicalOperationId), null);
+    assert.equal(gatewayCalls, 0, 'the decision commit cannot use request-scoped native Cron authority');
+  } finally { restoreCoordinator?.(); await service.stop(); await temporary.cleanup(); }
+});
+
 test('actual child process death after proposal persistence resumes without a model rerun', async () => {
   const temporary = await temporaryStateDir('command-center-clarification-worker-death-');
   let metadata;
