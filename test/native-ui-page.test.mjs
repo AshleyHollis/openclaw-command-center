@@ -4,14 +4,14 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { chromium } from 'playwright';
 
-for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Note pagination', 'Note selection during pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Evidence deep link', 'Changed evidence deep link', 'Note evidence deep link', 'Changed Note evidence deep link', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
+for (const scenario of ['native Chat handoff', 'initial connection', 'reconnection', 'hidden retained view', 'Topic Notes', 'Topic Search', 'Note pagination', 'Note selection during pagination', 'Note snapshot mismatch', 'Note tree filter', 'Note selection superseded', 'Original attachments', 'Evidence deep link', 'Changed evidence deep link', 'Note evidence deep link', 'Changed Note evidence deep link', 'Topic Conversations', 'Topic histories', 'Malformed Topic Conversations', 'Note cancels Chat', 'Old Chat error', 'Missing panel promotion', 'Unbound panel', 'Late panel context', 'Late panel Note', 'Replaced panel Session', 'Replaced panel document', 'Group setup']) test(`native Topics: ${scenario}`, { timeout: 30000 }, async () => {
   const server = createServer(async (req, res) => {
     if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional native host</title><style>#mount{height:700px;width:900px}</style><main id="mount"></main></html>'); return; }
     // Serve the actual native module directory, including newly added siblings.
     // Keep the fixture boundary to one plain module filename; no traversal.
     const vendor = { '/vendor/markdown-it.mjs': '../node_modules/markdown-it/dist/browser/markdown-it.esm.min.mjs', '/vendor/purify.es.mjs': '../node_modules/dompurify/dist/purify.es.mjs' }[req.url];
     if (!vendor && !/^\/[a-z-]+\.mjs$/u.test(req.url)) { res.writeHead(404); res.end(); return; }
-    try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(vendor ?? `../src/native-ui${req.url}`, import.meta.url))); }
+    try { res.setHeader('content-type', 'text/javascript'); const source = await readFile(new URL(vendor ?? `../src/native-ui${req.url}`, import.meta.url)); res.end(scenario === 'Topic Search' && req.url === '/release-scope.mjs' ? source.toString().replace('search: false', 'search: true') : source); }
     catch { res.writeHead(404); res.end(); }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -68,6 +68,7 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
             return { schemaVersion: 1, status: 'bound', sessionKey: params.sessionKey, sessionId: 'fictional-session', topicId: 'fictional-topic', referenceId: 'fictional-reference' };
           }
           if (method.endsWith('sources.status')) return { result: { schemaVersion: 1, mode: 'ready', unavailableCapabilities: [] } };
+          if (method.endsWith('search.query')) return { result: { notes: { results: [{ heading: 'Shared heading', path: 'brief.md', snippet: 'Fictional search match', navigation: { kind: 'note', topicId: 'fictional-topic', referenceId: 'fictional-note', path: 'brief.md', observedRevision: 'r1' } }] }, conversations: { results: [{ conversationName: 'Primary Conversation', date: '2026-08-27', snippet: 'Fictional conversation match', provenance: { role: 'primary', status: 'open', importedPrimaryHistory: false }, navigation: { kind: 'conversation', topicId: 'fictional-topic', referenceId: 'primary-reference', sessionKey: 'agent:fictional:chat', sessionId: 'fictional-session' } }] } } };
           if (method.endsWith('topics.get')) return { result: { topic: { topicId: 'fictional-topic', name: 'Fictional project', revision: 1, usable: true, lifecycle: 'active' } } };
           if (method.endsWith('histories.list')) return { result: { histories: scenario === 'Topic histories' ? [{ historyId: 'a'.repeat(64), topicId: 'fictional-topic', title: 'Fictional preserved history', totalMessages: 2, readOnly: true }] : [] } };
           if (method.endsWith('histories.read')) return { result: { historyId: 'a'.repeat(64), title: 'Fictional preserved history', readOnly: true, totalMessages: 2, offset: 0, nextOffset: null, hasMore: false, messages: [
@@ -416,6 +417,21 @@ for (const scenario of ['native Chat handoff', 'initial connection', 'reconnecti
       await page.waitForFunction(() => window.opened.length === 1);
       await page.evaluate(() => window.disposeNative());
       assert.equal(await page.evaluate(() => window.registrationCount()), 0);
+      return;
+    }
+    if (scenario === 'Topic Search') {
+      await page.getByRole('button', { name: 'View Notes for Fictional project' }).click();
+      const search = page.getByRole('region', { name: 'Search this Topic' });
+      await search.getByRole('searchbox', { name: 'Search this Topic' }).fill('fictional');
+      await search.getByRole('button', { name: 'Search', exact: true }).click();
+      await search.getByText('1 Notes · 1 Conversations').waitFor();
+      assert.match(await search.innerText(), /Shared heading[\s\S]*brief\.md[\s\S]*Primary Conversation[\s\S]*2026-08-27 · primary · open/u);
+      await search.getByRole('button', { name: 'Open Note' }).click();
+      await page.getByRole('region', { name: 'Note content' }).filter({ hasText: 'Fictional Note' }).waitFor();
+      await search.getByRole('button', { name: 'Open Conversation' }).click();
+      await page.waitForFunction(() => window.opened.length === 1);
+      assert.deepEqual(await page.evaluate(() => window.opened), [{ sessionKey: 'agent:fictional:chat', agentId: 'fictional' }]);
+      await page.evaluate(() => window.disposeNative());
       return;
     }
     const topic = page.getByRole('button', { name: 'Open Fictional project in Chat' });
