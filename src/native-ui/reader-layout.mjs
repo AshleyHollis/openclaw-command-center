@@ -25,19 +25,22 @@ export function readerStyles(document) {
     [data-topic-reader-page] [data-native-topic-files] { display:flex; flex:1 1 auto; min-block-size:0; min-inline-size:0; }
     [data-topic-reader-page] [data-native-topic-files] .control-ui-file-explorer,
     [data-topic-reader-page] [data-native-topic-files] .chat-workspace-rail { display:flex; flex:1 1 auto; min-block-size:0; min-inline-size:0; }
+    [data-topic-reader-page] [data-native-topic-files] .control-ui-file-explorer { flex-direction:column; }
+    [data-topic-reader-page] [data-native-topic-files] input[type="search"] { box-sizing:border-box; inline-size:100%; min-inline-size:44px; min-block-size:44px; flex:none; }
     [data-topic-reader-page] [data-native-topic-files] .chat-workspace-rail__list { list-style:none; margin:0; padding:0; }
     [data-topic-reader-page] [data-native-topic-files] [role="group"] { padding-inline-start:14px; }
-    [data-topic-reader-page] [data-native-topic-files] summary.chat-workspace-rail__file { display:flex; align-items:center; justify-content:flex-start; gap:6px; min-block-size:30px; padding:4px; list-style:none; cursor:pointer; }
+    [data-topic-reader-page] [data-native-topic-files] .chat-workspace-rail__file { box-sizing:border-box; min-inline-size:44px; min-block-size:44px; }
+    [data-topic-reader-page] [data-native-topic-files] summary.chat-workspace-rail__file { display:flex; align-items:center; justify-content:flex-start; gap:6px; padding:4px; list-style:none; cursor:pointer; }
     [data-topic-reader-page] [data-native-topic-files] summary::-webkit-details-marker { display:none; }
     [data-topic-reader-page] [data-native-topic-files] summary::before { content:''; flex:none; inline-size:5px; block-size:5px; border-inline-end:1px solid; border-block-end:1px solid; transform:rotate(-45deg); color:var(--muted,inherit); }
     [data-topic-reader-page] [data-native-topic-files] details[open] > summary::before { transform:rotate(45deg); }
     [data-topic-reader-page] [data-native-topic-files] .chat-workspace-rail__file-main { min-inline-size:0; flex:1; text-align:start; }
     [data-topic-reader-page] [data-native-topic-files] .chat-workspace-rail__file-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    [data-topic-reader-page] .reader-files input { box-sizing:border-box; inline-size:100%; min-inline-size:0; font:inherit; padding:.4rem; }
+    [data-topic-reader-page] .reader-files input { box-sizing:border-box; inline-size:100%; min-block-size:44px; font:inherit; padding:.4rem; }
     [data-topic-reader-page] .reader-files p { font-size:.8rem; margin:.4rem 0; }
     [data-topic-reader-page] [data-topic-notes] { overflow:auto; flex:1; min-block-size:0; overscroll-behavior:contain; }
-    [data-topic-reader-page] [data-topic-notes] summary { cursor:pointer; min-block-size:1.8rem; line-height:1.8; white-space:nowrap; }
-    [data-topic-reader-page] .note-tree-item { display:block; box-sizing:border-box; inline-size:100%; min-block-size:1.8rem; padding:.25rem .4rem; border:0; border-radius:.2rem; background:transparent; color:inherit; font:inherit; font-size:.85rem; text-align:start; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    [data-topic-reader-page] [data-topic-notes] summary { box-sizing:border-box; cursor:pointer; min-inline-size:44px; min-block-size:44px; line-height:1.8; white-space:nowrap; }
+    [data-topic-reader-page] .note-tree-item { display:block; box-sizing:border-box; inline-size:100%; min-inline-size:44px; min-block-size:44px; padding:.25rem .4rem; border:0; border-radius:.2rem; background:transparent; color:inherit; font:inherit; font-size:.85rem; text-align:start; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     [data-topic-reader-page] .note-tree-item:hover { background:color-mix(in srgb,currentColor 8%,transparent); }
     [data-topic-reader-page] .note-tree-item[aria-current] { background:color-mix(in srgb,currentColor 15%,transparent); font-weight:600; border-inline-start:3px solid currentColor; }
     [data-topic-reader-page] :is(button,input,summary,[tabindex]):focus-visible { outline:2px solid currentColor; outline-offset:-2px; }

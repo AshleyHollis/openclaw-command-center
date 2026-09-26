@@ -196,13 +196,23 @@ export function mountTopicPage(container, context, state = createNativeState(), 
     const reading = noteView === 'reading';
     readingMode.setAttribute('aria-pressed', String(reading)); sourceMode.setAttribute('aria-pressed', String(!reading));
     content.hidden = !reading; source.hidden = reading;
-    if (!noteText) { content.replaceChildren(); source.textContent = ''; return; }
+    // Release the inactive representation, including a large textarea's value.
+    // The authoritative read remains in noteText for the next mode switch.
+    const clear = (container) => {
+      for (const viewer of container.querySelectorAll('[data-large-note-viewer]')) viewer.value = '';
+      container.replaceChildren();
+      delete container.dataset.largeNote;
+    };
+    if (!noteText) { clear(content); clear(source); return; }
     if (!reading) {
+      clear(content);
+      clear(source);
       const { renderReadOnlySource } = await import('./note-render.mjs');
       if (signal.aborted || !presented || noteView !== 'source' || pending !== renderGeneration) return;
       renderReadOnlySource(source, noteText);
       return;
     }
+    clear(source);
     content.textContent = 'Rendering Note…';
     try {
       const { renderReadOnlyMarkdown } = await import('./note-render.mjs');

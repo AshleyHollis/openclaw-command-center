@@ -28,7 +28,6 @@ export function renderReadOnlySource(container, text) {
   viewer.style.inlineSize = '100%';
   viewer.style.blockSize = '50vh';
   viewer.style.resize = 'vertical';
-  viewer.textContent = text;
   viewer.value = text;
   container.append(viewer);
 }
