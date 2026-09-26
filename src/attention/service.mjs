@@ -341,9 +341,22 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       if (metadata.getOperatingStatus?.().mode !== 'recovery-only') expireApproval(approval, clock);
       return null;
     }
-    if (approval.episodeRevision === episode.revision) return approval;
+    if (approvalPresentationRevisionCurrent(approval, episode)) return approval;
     if (metadata.getOperatingStatus?.().mode !== 'recovery-only') supersedeApproval(approval);
     return null;
+  }
+  function approvalPresentationRevisionCurrent(approval, episode) {
+    if (approval.episodeRevision === episode.revision) return true;
+    // A presentation snooze changes the episode revision, but cannot change the
+    // source approval's disclosure or expiry. Accept only its exact recorded
+    // transition (and the automatic wakeup); any other revision still fences it.
+    const snoozes = db
+      ? db.prepare("SELECT * FROM attention_attempts WHERE episode_id = ? AND action_id = 'attention.snooze' AND expected_episode_revision = ?").all(episode.episodeId, approval.episodeRevision).map(mapAttempt)
+      : [...memory.attempts.values()].filter((attempt) => attempt.episodeId === episode.episodeId && attempt.actionId === 'attention.snooze' && attempt.expectedEpisodeRevision === approval.episodeRevision);
+    return snoozes.some((attempt) => attempt.state === 'applied'
+      && digest(episode.diagnosis) === digest(approval.diagnosis)
+      && ((episode.revision === approval.episodeRevision + 2 && episode.state === 'Snoozed' && episode.snoozedUntil === attempt.parameters.until)
+        || (episode.revision === approval.episodeRevision + 3 && episode.state === 'Active' && episode.severity !== 'Critical' && episode.snoozedUntil === null && Date.parse(nowIso(now)) >= Date.parse(attempt.parameters.until))));
   }
   async function refreshApprovalForEpisode(episode, authenticatedOperatorId) {
     const approval = projectedApprovalForEpisode(episode);
@@ -360,7 +373,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       assertOpen();
       const refreshedClock = nowIso(now);
       if (Date.parse(refreshedClock) >= Date.parse(approval.expiresAt)) { expireApproval(approval, refreshedClock); return null; }
-      const expectedDigest = digest({ episodeId: episode.episodeId, episodeRevision: episode.revision, diagnosis: approval.diagnosis, actionId: descriptor.actionId, target, parameters: attempt.parameters, planRevision: approval.planRevision, sideEffects: descriptor.sideEffects, host: approval.host, operatorId: approval.operatorId, preconditionRevision: approval.preconditionRevision, policyRevision: approval.policyRevision, expiresAt: approval.expiresAt });
+      const expectedDigest = digest({ episodeId: episode.episodeId, episodeRevision: approval.episodeRevision, diagnosis: approval.diagnosis, actionId: descriptor.actionId, target, parameters: attempt.parameters, planRevision: approval.planRevision, sideEffects: descriptor.sideEffects, host: approval.host, operatorId: approval.operatorId, preconditionRevision: approval.preconditionRevision, policyRevision: approval.policyRevision, expiresAt: approval.expiresAt });
       if (authorization.planRevision === approval.planRevision && authorization.policyRevision === approval.policyRevision && authorization.preconditionRevision === approval.preconditionRevision && approval.disclosureDigest === expectedDigest && attempt.disclosureDigest === approval.disclosureDigest) return approval;
     } catch {}
     supersedeApproval(approval);
@@ -376,11 +389,15 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       const capability = capabilities.get(episode.sourceCapabilityId);
       const isReminder = episode.sourceCapabilityId === 'reminders' || capability?.sourceKind === 'reminder';
       const approval = projectedApprovalForEpisode(episode);
-      let descriptors = approval ? approvalDecisionDescriptors(approval) : isReminder ? defaultReminderDescriptors() : actionIdsForCapability(capability, episode);
+      const canSnooze = eligibleSnoozeChoices({ ...episode, monitoring: capability?.monitoring === true }).length > 0;
+      // Approval decisions take the first two slots. For eligible approvals,
+      // Snooze takes the third and Open Topic is omitted from this projection.
+      const decisions = approval ? approvalDecisionDescriptors(approval) : null;
+      let descriptors = decisions ? [...decisions.slice(0, 2), canSnooze ? presentationSnoozeDescriptor() : decisions[2]] : isReminder ? defaultReminderDescriptors() : actionIdsForCapability(capability, episode);
       if (episode.evidenceFacts?.actionOutcome === 'projection-failure') descriptors = descriptors.filter((descriptor) => descriptor.kind === 'navigation');
-      if (!approval && descriptors.length < 3 && episode.state === 'Active' && episode.severity !== 'Critical' && episode.sourceKind !== 'approval' && !isReminder) descriptors = [...descriptors, presentationSnoozeDescriptor()];
+      if (!approval && descriptors.length < 3 && canSnooze && episode.sourceKind !== 'approval' && !isReminder) descriptors = [...descriptors, presentationSnoozeDescriptor()];
       const actions = descriptors.map((descriptor) => actionProjection(descriptor, episode)).filter(Boolean);
-    return Object.freeze({ ...episode, actions, eligibleSnoozeChoices: eligibleSnoozeChoices({ ...episode, sourceKind: capability?.sourceKind ?? episode.sourceKind, monitoring: capability?.monitoring === true }), notificationEligible: episode.state === 'Active' && episode.severity !== 'Critical' });
+    return Object.freeze({ ...episode, actions, eligibleSnoozeChoices: eligibleSnoozeChoices({ ...episode, sourceKind: approval ? 'approval' : capability?.sourceKind ?? episode.sourceKind, monitoring: capability?.monitoring === true }), notificationEligible: episode.state === 'Active' && episode.severity !== 'Critical' });
     });
   }
   function expireSnoozes(clock) {
@@ -586,10 +603,10 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
   function actionDescriptor(episode, actionId) {
     const capability = capabilities.get(episode.sourceCapabilityId);
     const approval = projectedApprovalForEpisode(episode);
-    if (approval) return approvalDecisionDescriptors(approval).find((item) => item.actionId === actionId) ?? null;
+    if (approval) return [...approvalDecisionDescriptors(approval), ...(eligibleSnoozeChoices({ ...episode, monitoring: capability?.monitoring === true }).length ? [presentationSnoozeDescriptor()] : [])].find((item) => item.actionId === actionId) ?? null;
     const isReminder = capability?.sourceKind === 'reminder' || episode.sourceCapabilityId === 'reminders';
     const sourceKind = capability?.sourceKind ?? episode.sourceKind;
-    let descriptors = isReminder ? defaultReminderDescriptors() : actionIdsForCapability(capability, episode);
+    let descriptors = isReminder ? defaultReminderDescriptors() : capability?.actions ?? [];
     if (episode.evidenceFacts?.actionOutcome === 'projection-failure') descriptors = descriptors.filter((descriptor) => descriptor.kind === 'navigation');
     if (descriptors.length < 3 && episode.state === 'Active' && episode.severity !== 'Critical' && !isReminder) descriptors = [...descriptors, presentationSnoozeDescriptor()];
     return descriptors.find((item) => item.actionId === actionId) ?? null;
@@ -598,7 +615,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
   function sourceActionDescriptor(episode, actionId) {
     const capability = capabilities.get(episode.sourceCapabilityId);
     const isReminder = capability?.sourceKind === 'reminder' || episode.sourceCapabilityId === 'reminders';
-    const descriptors = isReminder ? defaultReminderDescriptors() : actionIdsForCapability(capability, episode);
+    const descriptors = isReminder ? defaultReminderDescriptors() : capability?.actions ?? [];
     return descriptors.find((item) => item.actionId === actionId) ?? null;
   }
 
@@ -828,7 +845,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
         return ownLiveAttempts(owners, () => resumeApprovalDecision(existingAttempt, nowIso(now), authenticatedOperatorId));
       }
       const existingApproval = approvalForAttempt(existingAttempt.attemptId);
-      const replayDescriptor = replayEpisode && (existingApproval ? sourceActionDescriptor(replayEpisode, value.actionId) : actionDescriptor(replayEpisode, value.actionId));
+      const replayDescriptor = replayEpisode && (value.actionId === 'attention.snooze' ? presentationSnoozeDescriptor() : existingApproval ? sourceActionDescriptor(replayEpisode, value.actionId) : actionDescriptor(replayEpisode, value.actionId));
       if (!replayDescriptor) fail('intent-mismatch', 'Logical operation ID was reused with an unavailable action.');
       const replayParameters = validateActionInput(replayDescriptor, value.input ?? {});
       const replayTarget = replayDescriptor.targetResolver(replayEpisode, replayParameters);
@@ -885,6 +902,8 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     const descriptor = actionDescriptor(episode, nonBlank(value.actionId, 'actionId'));
     if (!descriptor) fail('invalid-action', 'The Attention action is not registered for this episode.');
     const parameters = validateActionInput(descriptor, value.input ?? {});
+    const target = descriptor.targetResolver(episode, parameters);
+    if (target === null || target === undefined) fail('invalid-action', 'The Attention action has no target for this episode.');
     const sourceRevision = latestOccurrence(episode.episodeId)?.occurrence_version ?? latestOccurrence(episode.episodeId)?.occurrenceVersion ?? null;
     if (descriptor.kind === 'mutation' && sourceRevision !== null && value.expectedSourceRevision !== sourceRevision) fail(value.expectedSourceRevision === undefined ? 'invalid-request' : 'conflict', 'Attention source revision is stale.', { currentRevision: sourceRevision, expectedRevision: value.expectedSourceRevision ?? null });
     if (['reminder.complete', 'reminder.snooze'].includes(descriptor.actionId)) {
@@ -917,7 +936,6 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       return ownLiveAttempts([{ attemptId: decisionAttempt.attemptId, intentDigest: requestIntentDigest, operatorId: authenticatedOperatorId }], () => resumeApprovalDecision(decisionAttempt, clock, authenticatedOperatorId));
     }
     if (descriptor.approvalMode === 'required') return Object.freeze({ status: 'approval-required', episode, approval: await createApproval({ episodeId: episode.episodeId, expectedEpisodeRevision: episode.revision, actionId: descriptor.actionId, parameters, logicalOperationId, authenticatedOperatorId }) });
-    const target = descriptor.targetResolver(episode, parameters);
     let disclosureDigest = digest({ actionId: descriptor.actionId, target, parameters, sideEffects: descriptor.sideEffects });
     let beforeRetry = async () => {
       const currentEpisode = findById(episode.episodeId);
@@ -1038,7 +1056,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
     if (authenticatedOperatorId !== approval.operatorId) fail('conflict', 'Approval operator does not match.');
     if (host !== approval.host) fail('conflict', 'Approval host does not match.');
     const episode = findById(approval.episodeId);
-    if (!episode || episode.revision !== approval.episodeRevision) {
+    if (!episode || !approvalPresentationRevisionCurrent(approval, episode)) {
       supersedeApproval(approval, executionClock);
       fail('conflict', 'Approved Attention evidence changed.');
     }
@@ -1065,7 +1083,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       supersedeApproval(approval, executionClock);
       fail('conflict', 'Approved action preconditions changed.');
     }
-    const expectedDigest = digest({ episodeId: episode.episodeId, episodeRevision: episode.revision, diagnosis: approval.diagnosis, actionId: descriptor.actionId, target, parameters: attempt.parameters, planRevision: approval.planRevision, sideEffects: descriptor.sideEffects, host: approval.host, operatorId: approval.operatorId, preconditionRevision: approval.preconditionRevision, policyRevision: approval.policyRevision, expiresAt: approval.expiresAt });
+    const expectedDigest = digest({ episodeId: episode.episodeId, episodeRevision: approval.episodeRevision, diagnosis: approval.diagnosis, actionId: descriptor.actionId, target, parameters: attempt.parameters, planRevision: approval.planRevision, sideEffects: descriptor.sideEffects, host: approval.host, operatorId: approval.operatorId, preconditionRevision: approval.preconditionRevision, policyRevision: approval.policyRevision, expiresAt: approval.expiresAt });
     if (approval.disclosureDigest !== expectedDigest || attempt.disclosureDigest !== approval.disclosureDigest) {
       supersedeApproval(approval, executionClock);
       fail('conflict', 'Approved action disclosure changed.');
@@ -1088,7 +1106,7 @@ export function createAttentionService({ metadata, now = () => new Date().toISOS
       failReservedApproval(currentApproval, 'superseded', driftCode, `Approved action host or operator changed before ${phase}.`);
     }
     const currentEpisode = findById(episode.episodeId);
-    if (!currentEpisode || currentEpisode.state !== 'Action running' || currentEpisode.revision !== currentApproval.episodeRevision + 1) {
+    if (!currentEpisode || currentEpisode.state !== 'Action running' || currentEpisode.revision !== episode.revision + 1) {
       failReservedApproval(currentApproval, 'superseded', driftCode, `Approved Attention evidence changed before ${phase}.`);
     }
     const currentDescriptor = sourceActionDescriptor(currentEpisode, currentAttempt.actionId);

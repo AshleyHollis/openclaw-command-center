@@ -216,7 +216,7 @@ test('monitorable approval evidence exposes and performs presentation snooze', a
     const service = createAttentionService({ metadata, now: () => '2026-08-23T00:00:00.000Z' });
     service.registerSourceCapability({ sourceCapabilityId: 'monitorable-approval', sourceKind: 'approval', monitoring: true, actions: [] });
     const created = await service.ingest({ schemaVersion: 1, sourceCapabilityId: 'monitorable-approval', stableSubjectId: 'subject-1', attentionReason: 'approval-monitor', occurrenceId: 'approval-snooze', occurredAt: '2026-08-23T00:00:00.000Z', topicId: 'topic-1', sourceReferenceId: 'source-1', evidenceFacts: {} });
-    assert.deepEqual(service.get(created.episode.episodeId).episode.eligibleSnoozeChoices, ['NEXT_0700', 'PT72H', 'PT168H', 'custom']);
+    assert.deepEqual(service.get(created.episode.episodeId).episode.eligibleSnoozeChoices, ['PT1H', 'P1D', 'NEXT_0700', 'PT72H', 'PT168H', 'custom']);
     const snoozed = await service.act({ schemaVersion: 1, logicalOperationId: '39999999-9999-4999-8999-999999999999', episodeId: created.episode.episodeId, expectedEpisodeRevision: 1, topicId: 'topic-1', sourceReferenceId: 'source-1', actionId: 'attention.snooze', input: { preset: 'PT72H' } });
     assert.equal(snoozed.episode.state, 'Snoozed');
   });
