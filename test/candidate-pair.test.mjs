@@ -11,7 +11,6 @@ import { stageCandidateInputs } from '../src/candidate-inputs.mjs';
 import { parseCandidateHostDescriptor, parseHostDescriptor, pinnedHost, verifyCandidateHost } from '../src/host-harness.mjs';
 import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
 import { assertCandidateRepositoryMetadata, assertReleasedHostMetadata } from '../scripts/repository-checks.mjs';
-import { compatibilityTuple } from '../src/compatibility.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const digest = value => `sha256:${hash(value)}`;
@@ -63,7 +62,11 @@ test('candidate descriptor binds both exact artifacts and cannot enter the relea
     openclaw: { compat: { pluginApi: '=2026.9.5' } }, commandCenter: { compatibilityTuple: tuple } };
   const packageLock = { packages: { '': { commandCenter: packageJson.commandCenter } } };
   assert.equal(assertCandidateRepositoryMetadata(pair, inputTreeReceipt, tuple, packageJson, packageLock).seal, pair.seal);
-  assert.doesNotThrow(() => assertReleasedHostMetadata(compatibilityTuple));
+  // Candidate staging intentionally overlays the imported compatibility tuple.
+  // Exercise the ordinary release guard with its explicit released-host fixture.
+  assert.doesNotThrow(() => assertReleasedHostMetadata({
+    host: { range: `=${pinnedHost.packageVersion}`, commit: pinnedHost.commit }
+  }));
   assert.throws(() => assertReleasedHostMetadata(tuple), /released host identity/u);
   assert.throws(() => assertCandidateRepositoryMetadata(pair, inputTreeReceipt,
     { ...tuple, host: { ...tuple.host, commit: pinnedHost.commit } }, packageJson, packageLock), /host, plugin API/u);
