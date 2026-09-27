@@ -253,7 +253,11 @@ export async function invokeBridgeMethod(service, method, params, requestId = nu
   validateBridgeRequest(method, params, { mutation: WRITE_METHODS.includes(method) });
   const handler = handlerMap[method];
   if (!handler) throw new SourceServiceError('invalid-request', 'Unsupported Command Center method.');
-  return sanitizeBridgeResult(method, await handler(service, { ...params, ...(requestId === null ? {} : { requestId }), ...(authenticatedOperatorId === null ? {} : { authenticatedOperatorId }) }, runtime));
+  // Developer Work owns requestId as its exact domain target. The Gateway RPC
+  // envelope has a different request ID and must not shadow that target (or
+  // turn a current-work listing into an exact lookup).
+  const correlation = requestId === null || method === 'command-center.v1.developer-work.resolve' ? {} : { requestId };
+  return sanitizeBridgeResult(method, await handler(service, { ...params, ...correlation, ...(authenticatedOperatorId === null ? {} : { authenticatedOperatorId }) }, runtime));
 }
 
 export function registerBridgeMethods(api, service, { mutationsAllowed = true } = {}) {

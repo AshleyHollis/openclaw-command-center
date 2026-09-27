@@ -20,8 +20,9 @@ test('DEV resolver is a closed operator.read bridge command', async () => {
   assert.equal(BRIDGE_CONTRACTS[method].scope, 'operator.read');
   validateBridgeRequest(method, params);
   assert.throws(() => validateBridgeRequest(method, { ...params, sessionKey: session.sessionKey }), /unsupported|additional|invalid/iu);
-  const result = await invokeBridgeMethod({ developerWorkResolve: input => ({ schemaVersion: 1, status: 'stale', workId: input.workId, requestId: input.requestId, reason: 'request-ended' }) }, method, params);
+  const result = await invokeBridgeMethod({ developerWorkResolve: input => ({ schemaVersion: 1, status: 'stale', workId: input.workId, requestId: input.requestId, reason: 'request-ended' }) }, method, params, 'rpc-correlation');
   assert.equal(result.status, 'stale');
+  assert.equal(result.requestId, params.requestId, 'The RPC envelope ID must not replace the DEV request ID');
 });
 
 function draft(requestId, expectedRequestRevision = 0, eventType = 'feature_ready_for_review') {
