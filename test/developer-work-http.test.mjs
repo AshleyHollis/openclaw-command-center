@@ -30,7 +30,7 @@ test('the registered machine endpoint uses exact plugin-owned routing', () => {
   plugin.register({
     pluginConfig: { developerWork: { principals: [principal] } },
     runtime: {},
-    notifications: { registerEmitter: () => ({ emit() {}, clear() {} }) },
+    notifications: { registerEmitter: () => ({ bindCurrentOperator: async () => ({ emit() {}, clear() {} }) }) },
     registerHttpRoute: route => routes.push(route),
     registerGatewayMethod() {}, registerTool() {}, registerService() {},
     registerSessionCatalog() {}
@@ -46,7 +46,7 @@ test('DEV tool registration is explicit and cannot share one activation with LIV
   const register = pluginConfig => {
     const tools = [];
     plugin.register({
-      pluginConfig, runtime: {}, notifications: { registerEmitter: () => ({ emit() {}, clear() {} }) },
+      pluginConfig, runtime: {}, notifications: { registerEmitter: () => ({ bindCurrentOperator: async () => ({ emit() {}, clear() {} }) }) },
       registerHttpRoute() {}, registerGatewayMethod() {}, registerTool: (_factory, options) => tools.push(options.name), registerService() {}, registerSessionCatalog() {}
     });
     return tools;
