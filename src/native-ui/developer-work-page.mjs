@@ -1,4 +1,9 @@
 const unwrap = response => response?.result ?? response;
+const nonBlank = value => typeof value === 'string' && value.trim().length > 0;
+const boundReady = result => result?.status === 'ready' && Number.isInteger(result.requestRevision) && result.requestRevision > 0 &&
+  nonBlank(result.requestId) && nonBlank(result.agentId) && nonBlank(result.sessionKey) &&
+  nonBlank(result.sessionId) && nonBlank(result.lifecycleRevision) && !result.agentId.includes(':') &&
+  result.sessionKey.startsWith(`agent:${result.agentId}:`) && result.sessionKey.length > `agent:${result.agentId}:`.length;
 const staleReasons = Object.freeze({
   'request-missing': 'That waiting request is no longer available.',
   'request-ended': 'That waiting request has ended.',
@@ -35,7 +40,7 @@ export function mountDeveloperWorkPage(container, context) {
 
   function render(result, pending) {
     content.replaceChildren();
-    if (result.status === 'ready' && result.workId === props.workId && result.requestId === props.requestId) {
+    if (boundReady(result) && result.workId === props.workId && result.requestId === props.requestId) {
       content.append(element('h2', result.summary), element('p', 'This waiting request is attached to one exact DEV session. Opening Chat does not answer or resolve it.'));
       const open = element('button', 'Open exact DEV session'); open.type = 'button';
       open.addEventListener('click', async () => {
@@ -44,8 +49,8 @@ export function mountDeveloperWorkPage(container, context) {
         try {
           const checked = unwrap(await host.request('command-center.v1.developer-work.resolve', target()));
           if (!current(pending)) return;
-          if (checked?.status !== 'ready' || checked.workId !== result.workId || checked.requestId !== result.requestId || checked.requestRevision !== result.requestRevision || checked.agentId !== result.agentId || checked.sessionKey !== result.sessionKey || checked.sessionId !== result.sessionId || checked.lifecycleRevision !== result.lifecycleRevision) {
-            render({ schemaVersion: 1, status: 'stale', reason: 'request-changed', workId: result.workId, requestId: result.requestId }, pending);
+          if (!boundReady(checked) || checked.workId !== result.workId || checked.requestId !== result.requestId || checked.requestRevision !== result.requestRevision || checked.agentId !== result.agentId || checked.sessionKey !== result.sessionKey || checked.sessionId !== result.sessionId || checked.lifecycleRevision !== result.lifecycleRevision) {
+            render({ schemaVersion: 1, status: 'stale', reason: checked?.status === 'ready' && !boundReady(checked) ? 'session-binding-missing' : 'request-changed', workId: result.workId, requestId: result.requestId }, pending);
             report('The exact DEV context changed. Choose a current request separately.');
             return;
           }
@@ -87,8 +92,11 @@ export function mountDeveloperWorkPage(container, context) {
       const result = unwrap(await host.request('command-center.v1.developer-work.resolve', target()));
       if (!current(pending)) return;
       if (result?.schemaVersion !== 1 || result.workId !== props.workId || !['ready', 'stale', 'unavailable', 'current-work'].includes(result.status)) throw new Error('The DEV resolver returned an invalid result.');
-      render(result, pending);
-      report(result.status === 'ready' ? 'The exact waiting session is current.' : result.status === 'current-work' ? 'Current waiting requests are shown.' : staleReasons[result.reason] ?? 'The exact DEV context is unavailable.');
+      const displayed = result.status === 'ready' && !boundReady(result)
+        ? { schemaVersion: 1, status: 'stale', reason: 'session-binding-missing', workId: result.workId, requestId: result.requestId }
+        : result;
+      render(displayed, pending);
+      report(displayed.status === 'ready' ? 'The exact waiting session is current.' : displayed.status === 'current-work' ? 'Current waiting requests are shown.' : staleReasons[displayed.reason] ?? 'The exact DEV context is unavailable.');
     } catch (error) { if (current(pending)) report(error?.message || 'DEV work is unavailable.'); }
   }
 
