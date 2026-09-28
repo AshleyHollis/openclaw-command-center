@@ -985,6 +985,16 @@ test('candidate notification gate mounts the registered owner and clears a resol
     const service = host.services[0];
     await service.start();
     assert.ok(service.notificationService);
+    const defaults = service.notificationService.getSettings();
+    assert.equal(defaults.quietHoursEnabled, true);
+    assert.equal(defaults.developerInput, true);
+    // This delivery fixture opts out of quiet hours through the owning settings
+    // command, rather than depending on the test runner wall-clock hour.
+    const settings = await service.dashboardUpdateSettings({
+      schemaVersion: 1, logicalOperationId: randomUUID(), expectedRevision: defaults.revision,
+      settings: { quietHoursEnabled: false }
+    });
+    assert.equal(settings.quietHoursEnabled, false);
     const send = async (event, watermark) => {
       const response = { statusCode: 200, setHeader() {}, end(body) { this.body = JSON.parse(body); } };
       await route.handler({ method: 'POST', socket: { encrypted: true },
