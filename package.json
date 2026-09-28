@@ -3,6 +3,9 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./native-developer-work-companion": "./dist/developer-work/native-library.mjs"
+  },
   "description": "The Command Center external Control UI plugin for OpenClaw.",
   "scripts": {
     "build": "node scripts/build.mjs",

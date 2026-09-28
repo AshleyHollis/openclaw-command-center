@@ -6,6 +6,9 @@ import path from 'node:path';
 import test from 'node:test';
 import { openCommandCenterMetadataService } from '../src/metadata/service.mjs';
 import { createNativeDeveloperSessionReader, createNativeDeveloperWorkCompanion } from '../src/developer-work/native-companion.mjs';
+import { openInstalledNativeDeveloperWorkCompanion } from '../src/developer-work/native-library.mjs';
+import { resolveCommandCenterDatabasePath } from '../src/metadata/path.mjs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const authority = { producerId: 'fictional-code', role: 'worker', allowedProjects: ['fictional-project'] };
 const session = { agentId: 'fictional-agent', sessionKey: 'agent:fictional-agent:main', sessionId: 'fictional-incarnation', lifecycleRevision: 'revision-one' };
@@ -114,4 +117,43 @@ test('companion issues a credential-free native Chat target only after durable e
     companion?.close(); metadata?.close();
     await rm(stateDir, { recursive: true, force: true });
   }
+});
+
+
+test('companion export names a fixed built library, not the runtime plugin', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.deepEqual(pkg.exports, { './native-developer-work-companion': './dist/developer-work/native-library.mjs' });
+  assert.notEqual(pkg.exports['./native-developer-work-companion'], pkg.openclaw.extensions[0]);
+});
+
+test('sealed library prepares the fixed ledger before admission and exposes no standalone submission', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-installed-companion-'));
+  const installation = { stateDir, sourceEnvironment: 'fictional-code', producerId: authority.producerId,
+    role: authority.role, allowedProjects: authority.allowedProjects };
+  const gatewayRequest = async () => ({ session: { key: session.sessionKey, agentId: session.agentId, sessionId: session.sessionId }, lifecycleRevision: session.lifecycleRevision });
+  const make = () => openInstalledNativeDeveloperWorkCompanion({ installation, gatewayRequest, chatBaseUrl: 'https://code.invalid/ui/' });
+  let companion;
+  try {
+    assert.throws(() => openInstalledNativeDeveloperWorkCompanion({ installation: { ...installation, modulePath: 'caller-chosen.mjs' }, gatewayRequest, chatBaseUrl: 'https://code.invalid/ui/' }), /fixed installation-owned/);
+    companion = make();
+    assert.equal(existsSync(resolveCommandCenterDatabasePath(stateDir)), true, 'ledger is opened before any held callback');
+    assert.equal(companion.sourceEnvironment, 'fictional-code');
+    assert.equal(companion.submit, undefined);
+    assert.equal(companion.commit, undefined);
+    assert.equal((await companion.chatTarget(target)).reason, 'request-missing');
+    const logicalOperationId = randomUUID();
+    const evidence = draft('2030-01-01T00:00:00Z');
+    assert.equal(companion.reconcile({ logicalOperationId, draft: evidence }), null, 'absence does not execute');
+    const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+    let committed;
+    try { committed = metadata.submitDeveloperWork({ authority, logicalOperationId, draft: evidence }); }
+    finally { metadata.close(); }
+    assert.deepEqual(companion.reconcile({ logicalOperationId, draft: evidence }), committed);
+    assert.throws(() => companion.reconcile({ logicalOperationId, draft: { ...evidence, workId: 'different' } }), { code: 'developer-producer-conflict' });
+    assert.equal((await companion.chatTarget(target)).status, 'ready');
+    companion.close();
+    assert.throws(() => companion.reconcile({ logicalOperationId, draft: evidence }), { code: 'producer-closed' });
+    companion = make();
+    assert.deepEqual(companion.reconcile({ logicalOperationId, draft: evidence }), committed);
+  } finally { companion?.close(); await rm(stateDir, { recursive: true, force: true }); }
 });

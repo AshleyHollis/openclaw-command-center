@@ -230,10 +230,18 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
     deliveryDiagnostic: db ? deliveryDiagnostic(db, row) : null
   });
 
+  const producerIntent = (producerId, logicalOperationId, draft) => {
+    if (typeof producerId !== 'string' || !producerId.trim() ||
+        typeof logicalOperationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(logicalOperationId) ||
+        !draft || typeof draft !== 'object' || Array.isArray(draft) ||
+        Object.keys(draft).some(key => !['schemaVersion', 'workId', 'eventType', 'occurredAt', 'context', 'session', 'request', 'outcome'].includes(key)) ||
+        draft.schemaVersion !== 1 || typeof draft.workId !== 'string' || !draft.workId.trim()) fail('developer-producer-invalid');
+    return developerEventDigest({ producerId, draft });
+  };
+
   service.submitDeveloperWork = ({ authority, logicalOperationId, draft, assertSourceCurrent } = {}) => {
-    if (!authority || typeof authority.producerId !== 'string' || !['worker', 'controller'].includes(authority.role) || !Array.isArray(authority.allowedProjects) || typeof logicalOperationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(logicalOperationId)) fail('developer-producer-invalid');
-    if (!draft || typeof draft !== 'object' || Array.isArray(draft) || Object.keys(draft).some(key => !['schemaVersion', 'workId', 'eventType', 'occurredAt', 'context', 'session', 'request', 'outcome'].includes(key)) || draft.schemaVersion !== 1 || typeof draft.workId !== 'string' || !draft.workId.trim()) fail('developer-producer-invalid');
-    const intentDigest = developerEventDigest({ producerId: authority.producerId, draft });
+    if (!authority || !['worker', 'controller'].includes(authority.role) || !Array.isArray(authority.allowedProjects)) fail('developer-producer-invalid');
+    const intentDigest = producerIntent(authority.producerId, logicalOperationId, draft);
     return mutate(null, db => {
       const old = db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND logical_operation_id = ?').get(authority.producerId, logicalOperationId);
       if (old) {
@@ -283,6 +291,18 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
   service.getDeveloperProducerEvent = ({ producerId, logicalOperationId } = {}) => {
     if (typeof producerId !== 'string' || typeof logicalOperationId !== 'string') fail('developer-producer-invalid');
     return inspect(db => producerRow(db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND logical_operation_id = ?').get(producerId, logicalOperationId), db));
+  };
+
+  // A lost result is not permission to execute again. This is a read-only
+  // exact-intent query; absence never falls through to a write.
+  service.reconcileDeveloperProducerEvent = ({ producerId, logicalOperationId, draft } = {}) => {
+    const intentDigest = producerIntent(producerId, logicalOperationId, draft);
+    return inspect(db => {
+      const row = db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND logical_operation_id = ?').get(producerId, logicalOperationId);
+      if (!row) return null;
+      if (row.intent_digest !== intentDigest) fail('developer-producer-conflict', 'Logical operation ID was reused with changed intent.');
+      return producerRow(row, db);
+    });
   };
 
   service.recordDeveloperDeliveryFailure = ({ producerId, eventId, code, paused = false, observedAtMs = Date.now() } = {}) => {

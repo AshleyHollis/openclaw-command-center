@@ -94,7 +94,9 @@ async function validateManifests(root, buildDigest) {
   const pkg = await parse('package.json'); const plugin = await parse('openclaw.plugin.json');
   const tuple = await parse('dist/compatibility-tuple.json');
   const built = await parse(`dist/${digestFileName}`);
-  if (pkg.name !== 'openclaw-command-center' || pkg.type !== 'module' || plugin.id !== 'command-center' ||
+  if (pkg.name !== 'openclaw-command-center' || pkg.type !== 'module' ||
+      !isDeepStrictEqual(pkg.exports, { './native-developer-work-companion': './dist/developer-work/native-library.mjs' }) ||
+      plugin.id !== 'command-center' ||
       plugin.entry !== 'dist/plugin.mjs' || plugin.version !== pkg.version || tuple.package?.version !== pkg.version ||
       !isDeepStrictEqual(pkg.openclaw?.extensions, ['./dist/plugin.mjs']) ||
       pkg.openclaw?.compat?.pluginApi !== tuple.pluginApi?.range ||
@@ -145,7 +147,7 @@ function assertReceipt(receipt) {
     seen.add(key); total += member.sizeBytes;
     if (total > MAX_BYTES) fail('artifact-size-limit');
   }
-  for (const name of [...rootFiles, `dist/${digestFileName}`, 'dist/plugin.mjs', 'dist/plugin-manifest.json', 'dist/plugin-config.mjs', 'dist/compatibility-tuple.json']) {
+  for (const name of [...rootFiles, `dist/${digestFileName}`, 'dist/plugin.mjs', 'dist/plugin-manifest.json', 'dist/plugin-config.mjs', 'dist/compatibility-tuple.json', 'dist/developer-work/native-library.mjs']) {
     if (!seen.has(name.toLowerCase())) fail('artifact-receipt-invalid');
   }
 }
