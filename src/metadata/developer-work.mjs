@@ -246,7 +246,9 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       const event = normalizeDeveloperEvent({ ...draft, occurredAt: draft.occurredAt ?? new Date().toISOString(), eventId: randomUUID(), workRevision: revision }, authority);
       if (event.session && assertSourceCurrent) {
         if (typeof assertSourceCurrent !== 'function') fail('developer-producer-invalid');
-        assertSourceCurrent(event.session);
+        const sourceCheck = assertSourceCurrent(event.session);
+        // SQLite mutate is synchronous: a Promise cannot certify the source at commit.
+        if (sourceCheck !== null && (typeof sourceCheck === 'object' || typeof sourceCheck === 'function') && typeof sourceCheck.then === 'function') fail('developer-producer-invalid', 'Source check must complete synchronously before commit.');
       }
       if (event.request) {
         const request = db.prepare('SELECT * FROM developer_work_producer_requests WHERE producer_id = ? AND work_id = ? AND request_id = ?').get(authority.producerId, event.workId, event.request.requestId);

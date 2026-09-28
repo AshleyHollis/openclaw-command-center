@@ -69,6 +69,30 @@ test('DEV owner assigns one durable event per operation and preserves request in
   }
 });
 
+test('producer rejects asynchronous source checks before any durable event, request or cursor', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-'));
+  let metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+  try {
+    const evidence = draft('review-a');
+    for (const assertSourceCurrent of [async () => {}, () => ({ then() {} })]) {
+      const logicalOperationId = randomUUID();
+      assert.throws(() => metadata.submitDeveloperWork({ authority, logicalOperationId, draft: evidence, assertSourceCurrent }), { code: 'developer-producer-invalid' });
+      assert.equal(metadata.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId }) ?? null, null);
+      assert.equal(metadata.getDeveloperProducerRequest({ producerId: authority.producerId, workId: evidence.workId, requestId: evidence.request.requestId }), null);
+      assert.deepEqual(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }), []);
+    }
+    metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+    let checked = 0;
+    const accepted = metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: evidence,
+      assertSourceCurrent(expected) { assert.deepEqual(expected, session); checked++; } });
+    assert.equal(checked, 1);
+    assert.equal(accepted.workRevision, 1, 'rejected source checks must not advance the durable cursor');
+    assert.equal(metadata.getDeveloperProducerRequest({ producerId: authority.producerId, workId: evidence.workId, requestId: evidence.request.requestId }).lastEventId, accepted.eventId);
+    assert.deepEqual(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).map(item => item.eventId), [accepted.eventId]);
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('controller producer keeps one incident per deployment and rejects changed identity', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-'));
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
