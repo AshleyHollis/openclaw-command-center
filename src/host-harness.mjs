@@ -16,10 +16,10 @@ if (diagnosticHostProfile && (diagnosticHostProfile !== 'conditional-cron-id-pr5
   throw new Error('The conditional Cron ID host profile is limited to the clarification-worker diagnostic.');
 }
 export const pinnedHost = Object.freeze({
-  // The evaluator checkout is the exact authenticated first-live host receipt.
+  // Normal qualification requires the exact authenticated current host package receipt.
   packageVersion: diagnosticHostProfile ? '2026.9.5' : '2026.9.6',
-  commit: diagnosticHostProfile ? 'e603f08382dfb3cbe8245b673fcbd793bad9ce9d' : '5b4bbbf8f583ff7c1a64b55670a206fdda2251ed',
-  packageDigest: diagnosticHostProfile ? 'sha256:675cea09c7800caf9084c6c700024232d54c5b940c8d8d3887f148f6894963cb' : 'sha256:624cc9063a8ff71b84022d4b56a56134b295412abd3529f13eb36f6660e998b1',
+  commit: diagnosticHostProfile ? 'e603f08382dfb3cbe8245b673fcbd793bad9ce9d' : '047e689bd7b4ea63cb1b5080a35ced8132a65092',
+  packageDigest: diagnosticHostProfile ? 'sha256:675cea09c7800caf9084c6c700024232d54c5b940c8d8d3887f148f6894963cb' : 'sha256:55f9ad35c4cc4933543133a0d594f43d0910a405fe3ca13cf692fe290cc5b3b8',
   executable: 'openclaw.mjs',
   args: Object.freeze(['gateway', 'run', '--allow-unconfigured'])
 });
