@@ -436,9 +436,11 @@ test('controller rollback and recovery refresh sanitized Attention and retain or
     const [rollbackEpisode] = attention.list().episodes;
     assert.equal(rollbackEpisode.episodeId, initialEpisode.episodeId, 'the existing incident episode advances despite marker failure');
     assert.equal(rollbackEpisode.sourceRevision, '2');
+    assert.equal(rollbackEpisode.severity, 'High');
     assert.equal(rollbackEpisode.state, 'Active', 'the source request remains active until an explicit resolution');
     assert.equal(rollbackEpisode.evidenceFacts.eventType, 'production_rollback');
     assert.equal(rollbackEpisode.evidenceFacts.outcome, 'rolled-back');
+    assert.equal(rollbackEpisode.evidenceFacts.outcomeObservedAt, pendingReceipt.acceptedAt, 'incident outcome is observed at its durable receipt time');
     for (const field of ['summary', 'question', 'choices', 'requestExpiresAt']) assert.equal(Object.hasOwn(rollbackEpisode.evidenceFacts, field), false, field + ' must be sanitized');
     assert.equal(attention.listActivity({ limit: 30 }).records.filter(row => row.operationKind === 'developer-work.production_rollback').length, 1, 'Activity is durable even if its projection marker fails');
     assert.equal(httpCalls.at(-1)[1], 503);
@@ -451,6 +453,7 @@ test('controller rollback and recovery refresh sanitized Attention and retain or
     assert.deepEqual(httpCalls.at(-1).slice(0, 2), ['normal', 503]);
     assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: controller.producerId, eventId: rollback.eventId }).projectionState, 'pending');
     assert.equal(attention.list().episodes[0].revision, rollbackEpisode.revision, 'duplicate projection does not create another occurrence');
+    assert.equal(attention.list().episodes[0].evidenceFacts.outcomeObservedAt, pendingReceipt.acceptedAt, 'retry keeps the original incident observation time');
     assert.equal(attention.listActivity({ limit: 30 }).records.filter(row => row.operationKind === 'developer-work.production_rollback').length, 1, 'retry must not duplicate recorded Activity');
     producer.close(); receiver.close(); attention.close(); receiverMetadata.close();
     receiverMetadata = openCommandCenterMetadataService({ stateDir: receiverDir, capabilities });
@@ -478,8 +481,10 @@ test('controller rollback and recovery refresh sanitized Attention and retain or
     assert.equal(recoveredEpisode.episodeId, initialEpisode.episodeId);
     assert.equal(recoveredEpisode.state, 'Active', 'only a separate source resolution closes the incident');
     assert.equal(recoveredEpisode.sourceRevision, '3');
+    assert.equal(recoveredEpisode.severity, 'High');
     assert.equal(recoveredEpisode.evidenceFacts.eventType, 'production_recovered');
     assert.equal(recoveredEpisode.evidenceFacts.outcome, 'recovered');
+    assert.equal(recoveredEpisode.evidenceFacts.outcomeObservedAt, recovery.receiverReceipt.acceptedAt, 'recovery observation is the receipt time after receiver restart');
     assert.equal(recoveredEpisode.evidenceFacts['failed-operation'], true, 'the incident remains an active historical failure until a source terminal event');
     for (const field of ['summary', 'question', 'choices', 'requestExpiresAt']) assert.equal(Object.hasOwn(recoveredEpisode.evidenceFacts, field), false, field + ' must be sanitized');
     assert.equal(JSON.stringify(attention.list().episodes).includes('Expired rollback text'), false);
