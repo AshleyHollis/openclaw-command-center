@@ -27,48 +27,14 @@ function nativeChatUrl(baseUrl, sessionKey) {
   return target.href;
 }
 
-function localSourceGuard({ getSessionEntry, binding } = {}) {
-  const prefix = binding && 'agent:' + binding.agentId + ':';
-  if (typeof getSessionEntry !== 'function' || !binding ||
-      typeof binding.agentId !== 'string' || !binding.agentId || binding.agentId.includes(':') ||
-      typeof binding.sessionKey !== 'string' || !binding.sessionKey.startsWith(prefix) ||
-      binding.sessionKey === prefix ||
-      typeof binding.sessionId !== 'string' || !binding.sessionId.trim() ||
-      typeof binding.lifecycleRevision !== 'string' || !binding.lifecycleRevision.trim()) {
-    throw new TypeError('A fixed exact local DEV source binding is required.');
-  }
-  const expected = Object.freeze(Object.fromEntries(
-    ['agentId', 'sessionKey', 'sessionId', 'lifecycleRevision'].map(key => [key, binding[key]])
-  ));
-  return { expected, assertCurrent(claimed) {
-    if (!claimed || ['agentId', 'sessionKey', 'sessionId', 'lifecycleRevision'].some(key => claimed[key] !== expected[key])) {
-      throw Object.assign(new Error('DEV source binding changed.'), { code: 'session-stale' });
-    }
-    // The installed-host SDK reads the same machine's canonical SQLite store
-    // synchronously. Never pass a caller-supplied storePath or accept a Promise.
-    const entry = getSessionEntry({ agentId: expected.agentId, sessionKey: expected.sessionKey, readConsistency: 'latest' });
-    if (!entry || typeof entry.then === 'function' || entry.sessionId !== expected.sessionId ||
-        entry.lifecycleRevision !== expected.lifecycleRevision) {
-      throw Object.assign(new Error('DEV session incarnation changed.'), { code: 'session-stale' });
-    }
-  } };
-}
-
-// Caller must separately qualify invocation, authentication and receiver transport.
-// Local SDK reads require the same machine/state directory as the DEV Gateway.
+// Source-bound submission is unavailable until a host-owned lifecycle admission
+// can remain held through the separate Developer Work ledger commit.
 export function createNativeDeveloperWorkCompanion({ metadata, authority, gatewayRequest, chatBaseUrl, localSource, now } = {}) {
+  if (localSource !== undefined) throw new TypeError('Local session reads cannot authorize Developer Work submission without host lifecycle admission.');
   const sessionReader = createNativeDeveloperSessionReader({ request: gatewayRequest });
   nativeChatUrl(chatBaseUrl, 'agent:sample:main');
   const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader, now });
-  const guard = localSource === undefined ? null : localSourceGuard(localSource);
   return Object.freeze({
-    ...(guard ? { async submit({ logicalOperationId, draft } = {}) {
-      if (!draft?.session || ['agentId', 'sessionKey', 'sessionId', 'lifecycleRevision'].some(key => draft.session[key] !== guard.expected[key])) {
-        throw Object.assign(new Error('DEV source binding changed.'), { code: 'session-stale' });
-      }
-      guard.assertCurrent(guard.expected);
-      return producer.submit({ logicalOperationId, draft, assertSourceCurrent: guard.assertCurrent });
-    } } : {}),
     async check(input) { return producer.resolve(input); },
     async chatTarget({ schemaVersion, workId, requestId } = {}) {
       if (requestId === undefined) throw new TypeError('An exact request is required.');
