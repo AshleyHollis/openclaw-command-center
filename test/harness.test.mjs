@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,7 +8,7 @@ import { createServer } from 'node:net';
 import * as hostHarness from '../src/host-harness.mjs';
 import { build } from '../src/build.mjs';
 import { createIsolatedWorld, disposeIsolatedWorld } from '../src/fixtures.mjs';
-import { assertNoFatalHostOutput, assertRecordedChildTraffic, closedCandidateSmokeFailure, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
+import { assertNoFatalHostOutput, assertRecordedChildTraffic, candidateRuntimeDiff, closedCandidateSmokeFailure, summarizePackagedRuntimeDiff, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
 import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
 import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
@@ -94,6 +94,31 @@ test('candidate smoke failure report has only closed, non-interpolated fields', 
   });
 });
 
+test('runtime diff caps entries and redacts hostile names and getters without disclosing targets', () => {
+  const fingerprint = { type: 'file', executable: false, contentHash: 'a'.repeat(64) };
+  const before = { entries: new Map(), truncated: false };
+  const after = { entries: new Map([
+    ['/absolute/private/secret', fingerprint],
+    ['node_modules/openclaw/secret-token.txt', fingerprint],
+    ['node_modules/openclaw/evil\nname', fingerprint],
+    ...Array.from({ length: 20 }, (_, index) => [`node_modules/openclaw/fixture-${index}`, fingerprint])
+  ]), truncated: false };
+  const diff = summarizePackagedRuntimeDiff(before, after);
+  assert.equal(diff.counts.added, 23);
+  assert.equal(diff.entries.length, 6);
+  assert.equal(diff.truncated, true);
+  assert.deepEqual(diff.entries.slice(0, 3).map(entry => entry.path), ['[redacted]', '[redacted]', '[redacted]']);
+  assert.doesNotMatch(JSON.stringify(diff), /absolute|secret-token|evil\nname|private/iu);
+  assert.ok(JSON.stringify(diff).length < 4096);
+  const removed = summarizePackagedRuntimeDiff({ entries: new Map([['node_modules/openclaw/fixture.js', fingerprint]]) }, before);
+  assert.deepEqual(removed.counts, { added: 0, removed: 1, changed: 0 });
+  assert.equal(removed.entries[0].after, null);
+  assert.deepEqual(summarizePackagedRuntimeDiff(before, { entries: new Map([[
+    'node_modules/openclaw/hostile', { get type() { throw new Error('private detail'); } }
+  ]]) }), { kind: 'candidate-runtime-diff', counts: { added: 0, removed: 0, changed: 0 }, truncated: true, entries: [] });
+  assert.equal(candidateRuntimeDiff(new HarnessFailure('host-integrity', 'forged', 'runtime-digest-mismatch')), undefined);
+});
+
 test('candidate launch refuses injected host verification options before any host work', async () => {
   await assert.rejects(hostHarness.launchCandidateHost({ hostVerificationOptions: {} }), integrityReason('verification-bypass'));
 });
@@ -133,6 +158,36 @@ test('packaged host binds installed build and dependencies independently of clea
     await writeFile(path.join(installed, 'dist/build-info.json'), JSON.stringify({ commit: pinnedHost.commit, version: pinnedHost.packageVersion }));
     await symlink('../outside-runtime', path.join(runtimeRoot, 'unsafe-link'));
     await assert.rejects(verifyHost(descriptor, options), integrityReason('runtime-inventory-unsafe'));
+    await rm(path.join(runtimeRoot, 'unsafe-link'));
+    const link = path.join(installed, 'fixture-link');
+    await symlink('../dependency.js', link);
+    const updatedIntegrity = { ...integrity, runtimeDigest: await packagedHostDigest(runtimeRoot) };
+    await writeFile(path.join(fixture.parent, 'receipt.json'), JSON.stringify({ schemaVersion: 2, commit: pinnedHost.commit, ...updatedIntegrity }));
+    const currentDescriptor = parseHostDescriptor(hostDescriptor({ schemaVersion: 2, checkout: fixture.root, runtimeRoot,
+      executable: 'node_modules/openclaw/openclaw.mjs', integrity: updatedIntegrity }));
+    assert.equal((await verifyHost(currentDescriptor, options)).checkout, installed);
+    const before = { entries: new Map(), truncated: false };
+    await packagedHostDigest(runtimeRoot, { onEntry: entry => before.entries.set(entry.relative, entry) });
+    await writeFile(path.join(installed, 'extra.json'), '{}');
+    await writeFile(dependency, 'export const dependency = false;');
+    await chmod(path.join(installed, 'dist/build-info.json'), 0o755);
+    await rm(link);
+    await symlink('dist/build-info.json', link);
+    const after = { entries: new Map(), truncated: false };
+    await packagedHostDigest(runtimeRoot, { onEntry: entry => after.entries.set(entry.relative, entry) });
+    await assert.rejects(verifyHost(currentDescriptor, options), integrityReason('runtime-digest-mismatch'));
+    const diff = summarizePackagedRuntimeDiff(before, after);
+    assert.deepEqual(diff.counts, { added: 1, removed: 0, changed: 3 });
+    assert.equal(diff.truncated, false);
+    assert.deepEqual(diff.entries.map(entry => [entry.kind, entry.path]), [
+      ['changed', 'node_modules/dependency.js'], ['changed', 'node_modules/openclaw/dist/build-info.json'],
+      ['changed', 'node_modules/openclaw/fixture-link'], ['added', 'node_modules/openclaw/extra.json']
+    ]);
+    assert.equal(diff.entries.find(entry => entry.path.endsWith('fixture-link')).before.type, 'symlink');
+    assert.notEqual(diff.entries.find(entry => entry.path.endsWith('fixture-link')).before.contentHash,
+      diff.entries.find(entry => entry.path.endsWith('fixture-link')).after.contentHash);
+    assert.equal(diff.entries.find(entry => entry.path.endsWith('build-info.json')).before.executable, false);
+    assert.equal(diff.entries.find(entry => entry.path.endsWith('build-info.json')).after.executable, true);
   } finally {
     await rm(fixture.parent, { recursive: true, force: true });
   }

@@ -10,7 +10,7 @@ import { fetchWithRuntimeDispatcher } from 'openclaw/plugin-sdk/runtime-fetch';
 import { assertBuiltDigest, readBuiltReceipt } from '../src/build.mjs';
 import { assertCandidateArchiveBytes, assertCandidatePairEvidence, parseCandidatePair } from '../src/candidate-pair.mjs';
 import { withIsolatedWorld } from '../src/fixtures.mjs';
-import { assertNoFatalHostOutput, assertRecordedChildTraffic, closedCandidateSmokeFailure, launchCandidateHost,
+import { assertNoFatalHostOutput, assertRecordedChildTraffic, candidateRuntimeDiff, closedCandidateSmokeFailure, launchCandidateHost,
   parseCandidateHostDescriptor, restartPinnedHost, stopPinnedHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { runtimeCapability } from '../src/runtime-capability.mjs';
 import { developerEventRoute } from '../src/developer-work/http-route.mjs';
@@ -248,7 +248,10 @@ async function main() {
 }
 
 main().catch((error) => {
-  // Never copy host output, fixture credentials or local paths into a report.
+  // The worker's private smoke.log may retain one bounded diagnostic record.
+  // The final failure report remains the closed three-field record below.
+  const diagnostic = executionPhase === 'host-restart' ? candidateRuntimeDiff(error) : undefined;
+  if (diagnostic) process.stderr.write(`${JSON.stringify(diagnostic)}\n`);
   process.stderr.write(`${JSON.stringify(closedCandidateSmokeFailure(error, executionPhase))}\n`);
   process.exitCode = 1;
 });
