@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { lstat, readFile, readdir } from 'node:fs/promises';
-import { promisify } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { pinnedHost } from '../../src/host-harness.mjs';
@@ -91,4 +91,28 @@ export async function assertCandidatePluginPermissions(candidateRoot, { stat = l
   };
   await walk(dist);
   return Object.freeze({ candidatePermissions: 'safe', inspectedPaths: inspected });
+}
+
+/** Run only after host identity and candidate path admission; read staged package metadata. */
+export async function assertCandidatePluginCompatibility(candidateRoot, host, { read = readFile } = {}) {
+  const root = path.resolve(candidateRoot);
+  const [pkg, plugin, tuple] = await Promise.all([
+    json(path.join(root, 'package.json'), read),
+    json(path.join(root, 'openclaw.plugin.json'), read),
+    json(path.join(root, 'dist/compatibility-tuple.json'), read)
+  ]);
+  const version = host?.packageVersion;
+  const commit = host?.hostCommit;
+  if (typeof version !== 'string' || !version || typeof commit !== 'string' || !commit ||
+    pkg.name !== 'openclaw-command-center' || plugin.id !== 'command-center' ||
+    plugin.version !== pkg.version || tuple.package?.name !== pkg.name ||
+    tuple.package?.version !== pkg.version ||
+    pkg.openclaw?.compat?.pluginApi !== '=' + version ||
+    pkg.peerDependencies?.openclaw !== version || pkg.devDependencies?.openclaw !== version ||
+    tuple.pluginApi?.package !== 'openclaw' || tuple.pluginApi?.range !== '=' + version ||
+    tuple.host?.range !== '=' + version || tuple.host?.commit !== commit ||
+    !isDeepStrictEqual(pkg.commandCenter?.compatibilityTuple, tuple)) {
+    fail('preflight-plugin-compatibility', 'Staged plugin compatibility and installed host identity do not match.');
+  }
+  return Object.freeze({ pluginApi: '=' + version, hostCommit: commit });
 }

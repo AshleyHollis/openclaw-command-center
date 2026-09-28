@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { pinnedHost } from '../src/host-harness.mjs';
-import { assertBoundCronSchema, assertCandidatePluginPermissions, assertFastHostAdmission, assertSafePluginMode } from './support/isolated-acceptance-preflight.mjs';
+import { assertBoundCronSchema, assertCandidatePluginCompatibility, assertCandidatePluginPermissions, assertFastHostAdmission, assertSafePluginMode } from './support/isolated-acceptance-preflight.mjs';
 
 const digest = char => `sha256:${char.repeat(64)}`;
 const integrity = { sourceDigest: digest('a'), executableDigest: digest('b'), contractDigest: digest('c'),
@@ -58,5 +58,55 @@ test('preflight identifies unsafe plugin modes before host startup', async () =>
     assert.equal((await assertCandidatePluginPermissions(root)).candidatePermissions, 'safe');
     await chmod(path.join(root, 'dist/plugin.mjs'), 0o666);
     await assert.rejects(assertCandidatePluginPermissions(root), error => error.code === 'preflight-unsafe-path');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('prelaunch rejects a staged 2026.9.5 plugin against an admitted 2026.9.6/5b4bbbf host', async () => {
+  const root = await mkdtemp(path.join(homedir(), 'command-center-compatibility-'));
+  const host = { packageVersion: '2026.9.6', hostCommit: '5b4bbbf' };
+  const tuple = { package: { name: 'openclaw-command-center', version: '0.4.0' },
+    pluginApi: { package: 'openclaw', range: '=2026.9.5' },
+    host: { range: '=2026.9.5', commit: 'fictional-prior-host' } };
+  const pkg = { name: 'openclaw-command-center', version: '0.4.0',
+    openclaw: { compat: { pluginApi: '=2026.9.5' } },
+    peerDependencies: { openclaw: '2026.9.5' }, devDependencies: { openclaw: '2026.9.5' },
+    commandCenter: { compatibilityTuple: tuple } };
+  const save = async () => {
+    await writeFile(path.join(root, 'package.json'), JSON.stringify(pkg));
+    await writeFile(path.join(root, 'openclaw.plugin.json'), JSON.stringify({ id: 'command-center', version: pkg.version }));
+    await writeFile(path.join(root, 'dist/compatibility-tuple.json'), JSON.stringify(tuple));
+  };
+  const rejected = () => assert.rejects(assertCandidatePluginCompatibility(root, host),
+    error => error.code === 'preflight-plugin-compatibility');
+  try {
+    await mkdir(path.join(root, 'dist'));
+    await writeFile(path.join(root, 'dist/plugin.mjs'), 'export default {}');
+    await save();
+    await assertCandidatePluginPermissions(root);
+    await rejected(); // No Gateway launch is needed to reject the old staged package.
+    pkg.openclaw.compat.pluginApi = '=2026.9.6';
+    pkg.peerDependencies.openclaw = '2026.9.6';
+    pkg.devDependencies.openclaw = '2026.9.6';
+    tuple.pluginApi.range = '=2026.9.6';
+    tuple.host = { range: '=2026.9.6', commit: host.hostCommit };
+    await save();
+    assert.deepEqual(await assertCandidatePluginCompatibility(root, host),
+      { pluginApi: '=2026.9.6', hostCommit: '5b4bbbf' });
+    for (const change of [
+      () => { pkg.openclaw.compat.pluginApi = '=2026.9.5'; },
+      () => { pkg.peerDependencies.openclaw = '2026.9.5'; },
+      () => { pkg.devDependencies.openclaw = '2026.9.5'; },
+      () => { tuple.pluginApi.range = '=2026.9.5'; },
+      () => { tuple.host.range = '=2026.9.5'; },
+      () => { tuple.host.commit = 'fictional-prior-host'; },
+      () => { pkg.commandCenter.compatibilityTuple = {}; }
+    ]) {
+      const original = structuredClone(pkg);
+      const originalTuple = structuredClone(tuple);
+      change(); await save(); await rejected();
+      Object.assign(tuple, originalTuple);
+      Object.assign(pkg, original);
+      pkg.commandCenter.compatibilityTuple = tuple;
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
