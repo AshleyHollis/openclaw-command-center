@@ -372,10 +372,10 @@ test('restart finishes an interrupted quiet-summary cohort without a second oper
     // persisted its emission, but only the first cohort slot receipt survived.
     const db = new DatabaseSync(metadata.databasePath);
     try {
-      db.prepare("UPDATE notification_slots SET status = 'queued', logical_operation_id = NULL, emission_id = NULL, emitted_at_ms = NULL WHERE emission_id = ? AND slot_id != ?")
+      db.prepare("UPDATE notification_slots SET status = 'queued', emitted_at_ms = NULL WHERE emission_id = ? AND slot_id != ?")
         .run(candidates[0].emissionId, cohort[0].slot_id);
       assert.equal(db.prepare("SELECT COUNT(*) AS count FROM notification_slots WHERE status = 'emitted' AND logical_operation_id = ?").get(originalId).count, 1);
-      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM notification_slots WHERE status = 'queued'").get().count, 1);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM notification_slots WHERE status = 'queued' AND emission_id = ? AND logical_operation_id = ?").get(candidates[0].emissionId, originalId).count, 1);
       assert.equal(db.prepare("SELECT status FROM notification_emissions WHERE logical_operation_id = ?").get(originalId).status, 'sent');
     } finally { db.close(); }
 
