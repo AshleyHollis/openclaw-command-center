@@ -47,13 +47,15 @@ export class HarnessFailure extends Error {
   }
 }
 
-export function closedCandidateSmokeFailure(error) {
+const smokePhases = new Set(['initial-host-launch', 'host-restart']);
+
+export function closedCandidateSmokeFailure(error, executionPhase) {
   try {
     const category = error instanceof HarnessFailure && reportCategories.has(error.category) ? error.category : 'unclassified';
     const reason = category === 'host-integrity' && hostIntegrityReasons.has(error.reason) ? error.reason : 'unspecified';
-    return Object.freeze({ category, reason, phase: reason === 'unspecified' ? 'candidate-smoke' : 'host-verification' });
+    return Object.freeze({ category, reason, phase: smokePhases.has(executionPhase) ? executionPhase : 'unknown' });
   } catch {
-    return Object.freeze({ category: 'unclassified', reason: 'unspecified', phase: 'candidate-smoke' });
+    return Object.freeze({ category: 'unclassified', reason: 'unspecified', phase: 'unknown' });
   }
 }
 

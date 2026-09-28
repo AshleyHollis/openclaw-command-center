@@ -61,6 +61,9 @@ function notificationStatus(world, status) {
   finally { db.close(); }
 }
 
+// Set only at the two host lifecycle boundaries; other failures remain unknown.
+let executionPhase = 'unknown';
+
 async function main() {
   assert.equal(process.platform, 'linux', 'Candidate Gateway smoke requires Linux isolation');
   assert.equal(process.argv.length, 3, 'Usage: node scripts/smoke-candidate-pair.mjs ABSOLUTE_INPUT_JSON');
@@ -94,9 +97,11 @@ async function main() {
       }
     }, currentRun.earlyExit, { required: 2, deadlineMs: 120_000, delayMs: 250 });
     try {
+      executionPhase = 'initial-host-launch';
       run = await launchCandidateHost({ descriptor, candidatePair: pair, inputTreeReceipt,
         artifactReceipt, buildReceipt, pluginArchivePath: input.pluginArchivePath,
         hostArchivePath: input.hostArchivePath, world, notificationCaPath: receiver.certificatePath });
+      executionPhase = 'unknown';
       await awaitBootstrap(run);
       let read;
       await waitForConsecutiveReadiness(async (signal) => {
@@ -186,7 +191,9 @@ async function main() {
       assert.ok(notificationStatus(world, 'sent') > 0, 'Installed host did not record a sent notification');
       assert.deepEqual(receiver.deliveries.map(delivery => delivery.path).sort(), ['/push/first', '/push/second'],
         'Fictional devices did not each get one activation');
+      executionPhase = 'host-restart';
       run = await restartPinnedHost(run);
+      executionPhase = 'unknown';
       await awaitBootstrap(run);
       await waitForConsecutiveReadiness(async (signal) => {
         try {
@@ -229,7 +236,12 @@ async function main() {
           await assertRecordedChildTraffic(world);
           assertNoFatalHostOutput(run.diagnostics);
         }
-      } finally { await receiver.close(); }
+      } catch (error) {
+        executionPhase = 'unknown';
+        throw error;
+      } finally {
+        try { await receiver.close(); } catch (error) { executionPhase = 'unknown'; throw error; }
+      }
     }
   }, { candidateRoot: root, machineIngress: true });
   process.stdout.write(`${JSON.stringify(result)}\n`);
@@ -237,6 +249,6 @@ async function main() {
 
 main().catch((error) => {
   // Never copy host output, fixture credentials or local paths into a report.
-  process.stderr.write(`${JSON.stringify(closedCandidateSmokeFailure(error))}\n`);
+  process.stderr.write(`${JSON.stringify(closedCandidateSmokeFailure(error, executionPhase))}\n`);
   process.exitCode = 1;
 });

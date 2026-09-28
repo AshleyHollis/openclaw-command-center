@@ -68,9 +68,18 @@ test('candidate smoke failure report has only closed, non-interpolated fields', 
   const failure = new HarnessFailure('host-integrity', privateText, 'runtime-inventory-unsafe');
   failure.code = privateText;
   failure.stack = privateText;
-  assert.deepEqual(closedCandidateSmokeFailure(failure), {
-    category: 'host-integrity', reason: 'runtime-inventory-unsafe', phase: 'host-verification'
+  failure.phase = privateText;
+  assert.deepEqual(closedCandidateSmokeFailure(failure, 'initial-host-launch'), {
+    category: 'host-integrity', reason: 'runtime-inventory-unsafe', phase: 'initial-host-launch'
   });
+  assert.deepEqual(closedCandidateSmokeFailure(failure, 'host-restart'), {
+    category: 'host-integrity', reason: 'runtime-inventory-unsafe', phase: 'host-restart'
+  });
+  for (const phase of [undefined, privateText, { toString() { throw new Error(privateText); } }]) {
+    assert.deepEqual(closedCandidateSmokeFailure(failure, phase), {
+      category: 'host-integrity', reason: 'runtime-inventory-unsafe', phase: 'unknown'
+    });
+  }
   for (const untrusted of [new Error(privateText), { category: 'host-integrity', reason: 'runtime-inventory-unsafe', code: privateText },
     new HarnessFailure(privateText, privateText, privateText), new HarnessFailure('host-integrity', privateText, privateText),
     Object.defineProperty(new HarnessFailure('host-integrity', privateText), 'category', { get() { throw new Error(privateText); } }), null]) {
@@ -78,10 +87,10 @@ test('candidate smoke failure report has only closed, non-interpolated fields', 
     assert.deepEqual(Object.keys(report), ['category', 'reason', 'phase']);
     assert.doesNotMatch(JSON.stringify(report), /fictional-private-host|path-and-token/u);
     assert.equal(report.reason, 'unspecified');
-    assert.equal(report.phase, 'candidate-smoke');
+    assert.equal(report.phase, 'unknown');
   }
   assert.deepEqual(closedCandidateSmokeFailure(new HarnessFailure('host-launch', privateText)), {
-    category: 'host-launch', reason: 'unspecified', phase: 'candidate-smoke'
+    category: 'host-launch', reason: 'unspecified', phase: 'unknown'
   });
 });
 
