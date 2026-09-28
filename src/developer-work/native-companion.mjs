@@ -9,10 +9,12 @@ export function createNativeDeveloperSessionReader({ request } = {}) {
         sessionKey === `agent:${agentId}:`) throw new TypeError('An exact DEV session is required.');
     const result = await request('sessions.describe', { key: sessionKey, agentId });
     // A null or legacy response without a lifecycle read is not a usable proof.
-    if (result?.session?.key !== sessionKey || typeof result.session.sessionId !== 'string' ||
-        !result.session.sessionId.trim() || typeof result.lifecycleRevision !== 'string' ||
+    if (result?.session?.key !== sessionKey || typeof result.session.agentId !== 'string' ||
+        !result.session.agentId.trim() || result.session.agentId !== agentId ||
+        typeof result.session.sessionId !== 'string' || !result.session.sessionId.trim() ||
+        typeof result.lifecycleRevision !== 'string' ||
         !result.lifecycleRevision.trim()) return null;
-    return Object.freeze({ agentId, sessionKey, sessionId: result.session.sessionId, lifecycleRevision: result.lifecycleRevision });
+    return Object.freeze({ agentId: result.session.agentId, sessionKey, sessionId: result.session.sessionId, lifecycleRevision: result.lifecycleRevision });
   };
 }
 

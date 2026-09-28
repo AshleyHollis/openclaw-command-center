@@ -20,13 +20,16 @@ function draft(expiresAt) {
 }
 
 test('injected authorized sessions.describe rejects missing lifecycle, ambiguous shape and errors', async () => {
-  let response = { session: { key: session.sessionKey, sessionId: session.sessionId }, lifecycleRevision: session.lifecycleRevision };
+  let response = { session: { key: session.sessionKey, agentId: session.agentId, sessionId: session.sessionId }, lifecycleRevision: session.lifecycleRevision };
   const calls = [];
   const reader = createNativeDeveloperSessionReader({ request: async (...args) => { calls.push(args); return response; } });
   const input = { agentId: session.agentId, sessionKey: session.sessionKey, readConsistency: 'latest' };
   assert.deepEqual(await reader(input), session);
   assert.deepEqual(calls[0], ['sessions.describe', { key: session.sessionKey, agentId: session.agentId }]);
   for (const bad of [null, { session: response.session }, { ...response, lifecycleRevision: '' },
+    { ...response, session: { key: session.sessionKey, sessionId: session.sessionId } },
+    { ...response, session: { ...response.session, agentId: '' } },
+    { ...response, session: { ...response.session, agentId: 'other-agent' } },
     { ...response, session: { ...response.session, key: 'agent:fictional-agent:other' } },
     { ...response, session: { ...response.session, sessionId: '' } }]) {
     response = bad;
@@ -40,7 +43,7 @@ test('companion issues a credential-free native Chat target only after durable e
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-native-companion-'));
   let metadata;
   let companion;
-  let current = { session: { key: session.sessionKey, sessionId: session.sessionId }, lifecycleRevision: session.lifecycleRevision };
+  let current = { session: { key: session.sessionKey, agentId: session.agentId, sessionId: session.sessionId }, lifecycleRevision: session.lifecycleRevision };
   let clock = Date.parse('2026-09-28T10:00:00Z');
   const calls = [];
   const gatewayRequest = async (method, params) => { calls.push([method, params]); return current; };
@@ -58,11 +61,13 @@ test('companion issues a credential-free native Chat target only after durable e
     assert.equal(ready.requestRevision, 1);
     assert.equal(ready.url, 'https://code.invalid/ui/chat?session=agent%3Afictional-agent%3Amain');
     assert.equal(calls.length, 1);
-    current = { ...current, lifecycleRevision: 'revision-two' };
+    current = { ...current, session: { ...current.session, agentId: 'other-agent' } };
     assert.equal((await companion.chatTarget(target)).reason, 'session-replaced');
-    current = { session: { key: session.sessionKey, sessionId: 'different' }, lifecycleRevision: session.lifecycleRevision };
+    current = { ...current, session: { ...current.session, agentId: session.agentId }, lifecycleRevision: 'revision-two' };
     assert.equal((await companion.chatTarget(target)).reason, 'session-replaced');
-    current = { session: { key: session.sessionKey, sessionId: session.sessionId }, lifecycleRevision: session.lifecycleRevision };
+    current = { session: { key: session.sessionKey, agentId: session.agentId, sessionId: 'different' }, lifecycleRevision: session.lifecycleRevision };
+    assert.equal((await companion.chatTarget(target)).reason, 'session-replaced');
+    current = { session: { key: session.sessionKey, agentId: session.agentId, sessionId: session.sessionId }, lifecycleRevision: session.lifecycleRevision };
     clock = Date.parse('2026-09-28T11:00:00Z');
     assert.equal((await companion.chatTarget(target)).reason, 'request-expired');
     clock--;
