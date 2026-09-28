@@ -4,9 +4,9 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { chromium } from 'playwright';
 
-for (const scenario of ['ready', 'stale-on-open', 'expired-on-load', 'expired-on-open', 'missing-on-load', 'request-missing-on-load', 'missing-on-open', 'wrong-agent-on-open', 'reset-on-open']) test(`native DEV handoff ${scenario}`, { timeout: 30_000 }, async () => {
+for (const scenario of ['ready', 'stale-on-open', 'expired-on-load', 'expired-on-open', 'missing-on-load', 'request-missing-on-load', 'missing-on-open', 'wrong-agent-on-open', 'reset-on-open']) test(`native Code handoff ${scenario}`, { timeout: 30_000 }, async () => {
   const server = createServer(async (req, res) => {
-    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional DEV host</title><main id="mount"></main></html>'); return; }
+    if (req.url === '/') { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html lang="en"><title>Fictional Code host</title><main id="mount"></main></html>'); return; }
     if (!/^\/[a-z-]+\.mjs$/u.test(req.url)) { res.writeHead(404); res.end(); return; }
     try { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(new URL(`../src/native-ui${req.url}`, import.meta.url))); }
     catch { res.writeHead(404); res.end(); }
@@ -42,12 +42,12 @@ for (const scenario of ['ready', 'stale-on-open', 'expired-on-load', 'expired-on
       window.view = mountDeveloperWorkPage(document.getElementById('mount'), { host, signal: controller.signal, presented: true, props: { workId: 'feature-1', requestId: 'review-a' } });
     }, scenario);
     if (!['missing-on-load', 'request-missing-on-load', 'expired-on-load'].includes(scenario)) {
-      await page.getByRole('button', { name: 'Open exact DEV session' }).click();
-      if (scenario === 'ready') await page.getByRole('status').getByText('Opened the exact DEV session. The request remains open.').waitFor();
+      await page.getByRole('button', { name: 'Open exact Code session' }).click();
+      if (scenario === 'ready') await page.getByRole('status').getByText('Opened the exact Code session. The request remains open.').waitFor();
       else await page.getByRole('heading', { name: 'This handoff is stale' }).waitFor();
     } else await page.getByRole('heading', { name: 'This handoff is stale' }).waitFor();
-    if (scenario === 'stale-on-open') await page.getByRole('button', { name: 'Open current DEV work' }).click();
-    const state = await page.evaluate(() => ({ opened: window.opened, navigated: window.navigated, requests: window.requests, status: document.querySelector('[role="status"]').textContent }));
+    if (scenario === 'stale-on-open') await page.getByRole('button', { name: 'Open current Code work' }).click();
+    const state = await page.evaluate(() => ({ opened: window.opened, navigated: window.navigated, requests: window.requests, status: document.querySelector('[role="status"]').textContent, content: document.querySelector('[aria-label="Code work handoff"]').textContent }));
     assert.equal(state.requests.length, scenario.endsWith('-on-load') ? 1 : 2);
     assert.deepEqual(state.requests.map(row => row.params), Array.from({ length: state.requests.length }, () =>
       ({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })));
@@ -58,8 +58,11 @@ for (const scenario of ['ready', 'stale-on-open', 'expired-on-load', 'expired-on
     } else {
       assert.deepEqual(state.opened, []);
       assert.deepEqual(state.navigated, scenario === 'stale-on-open' ? [{ id: 'developer-work', params: { workId: 'feature-1' } }] : []);
-      assert.match(state.status, /exact DEV context changed|exact DEV session binding|waiting request is no longer available|waiting request expired/iu);
-      if (scenario.startsWith('expired-')) assert.match(state.status, /waiting request expired/iu);
+      assert.match(state.status, /exact Code context changed|exact Code session binding|waiting request is no longer available|waiting request expired/iu);
+      if (scenario.startsWith('expired-')) {
+        assert.match(state.status, /waiting request expired/iu);
+        assert.match(state.content, /waiting request expired/iu);
+      }
     }
   } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }
 });
