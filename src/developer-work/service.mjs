@@ -125,8 +125,15 @@ export function createDeveloperWorkService({ metadata, attention, devBaseUrl, no
     const { receipt, event } = item;
     const producerId = receipt.producerId;
     if (incidentUpdateTypes.has(event.eventType) && event.request?.expiresAt && Date.parse(event.request.expiresAt) <= Date.parse(receipt.acceptedAt)) {
-      // An expired controller update is an ordered Activity-only projection.
-      // Never reissue its expired request text or choices to Attention.
+      // Retain the incident's latest source outcome in the same Attention
+      // subject, but never publish expired text, choices or deadline. The
+      // exact source transition is checked before Attention can publish it.
+      if (isCurrent(producerId, event)) {
+        const sanitized = { ...event, request: { requestId: event.request.requestId, kind: event.request.kind, expectedRequestRevision: event.request.expectedRequestRevision } };
+        await attention.ingest(occurrenceFor(producerId, sanitized, devBaseUrl, receipt.acceptedAt));
+      }
+      // This Activity is independently idempotent if the projection marker
+      // fails after Attention and Activity have committed.
       recordActivity(metadata, producerId, event);
       metadata.markDeveloperEventProjected({ producerId, eventId: event.eventId, eventDigest: receipt.eventDigest });
       return;

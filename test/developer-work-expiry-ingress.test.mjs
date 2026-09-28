@@ -383,7 +383,7 @@ test('authenticated HTTP disposition survives receiver SIGKILL before producer a
   }
 });
 
-test('controller rollback and recovery retain ordered Activity through authenticated expiry disposition and projection replay', async () => {
+test('controller rollback and recovery refresh sanitized Attention and retain ordered Activity through projection replay', async () => {
   const senderDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-controller-sender-'));
   const receiverDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-controller-receiver-'));
   const capabilities = { activity: true, attention: true };
@@ -409,7 +409,7 @@ test('controller rollback and recovery retain ordered Activity through authentic
   let producer = createDeveloperWorkProducer({ metadata: sender, authority: controller, sessionReader: () => undefined, receiver: transport, now: () => Date.parse('2026-09-26T10:02:00Z') });
   const base = { schemaVersion: 1, workId: 'incident-work', occurredAt: '2026-09-26T10:00:00Z', context: { projectAlias: 'sample-project', deploymentId: 'deployment-1' } };
   const incident = (eventType, revision, summary, expiresAt, code) => ({ ...base, eventType,
-    request: { requestId: 'incident-1', kind: 'deployment-incident', expectedRequestRevision: revision, summary, ...(expiresAt ? { expiresAt } : {}) },
+    request: { requestId: 'incident-1', kind: 'deployment-incident', expectedRequestRevision: revision, summary, ...(expiresAt ? { question: 'Expired private question', choices: ['expired-choice'], expiresAt } : {}) },
     outcome: { code, deploymentId: 'deployment-1' }
   });
   const openingId = randomUUID(), rollbackId = randomUUID(), recoveryId = randomUUID();
@@ -417,6 +417,10 @@ test('controller rollback and recovery retain ordered Activity through authentic
     producer.commit({ logicalOperationId: openingId, draft: incident('production_deployment_failed', 0, 'Initial incident', undefined, 'failed') });
     assert.equal((await producer.flush()).delivered, 1);
     assert.equal(receiverMetadata.isDeveloperWorkNotificationReady({ producerId: controller.producerId, workId: base.workId }), true);
+    const [initialEpisode] = attention.list().episodes;
+    assert.equal(initialEpisode.state, 'Active');
+    assert.equal(initialEpisode.sourceRevision, '1');
+    assert.equal(initialEpisode.evidenceFacts.summary, 'Initial incident');
     producer.commit({ logicalOperationId: rollbackId, draft: incident('production_rollback', 1, 'Expired rollback text', '2026-09-26T10:01:00Z', 'rolled-back') });
     producer.commit({ logicalOperationId: recoveryId, draft: incident('production_recovered', 2, 'Expired recovery text', '2026-09-26T10:01:00Z', 'recovered') });
     failRollbackProjection = true;
@@ -429,6 +433,13 @@ test('controller rollback and recovery retain ordered Activity through authentic
     assert.equal(receiverMetadata.getDeveloperRequest({ producerId: controller.producerId, workId: base.workId, requestId: 'incident-1' }).revision, 2);
     assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: controller.producerId, eventId: sender.getDeveloperProducerEvent({ producerId: controller.producerId, logicalOperationId: recoveryId }).eventId }), null);
     assert.equal(receiverMetadata.isDeveloperWorkNotificationReady({ producerId: controller.producerId, workId: base.workId }), false);
+    const [rollbackEpisode] = attention.list().episodes;
+    assert.equal(rollbackEpisode.episodeId, initialEpisode.episodeId, 'the existing incident episode advances despite marker failure');
+    assert.equal(rollbackEpisode.sourceRevision, '2');
+    assert.equal(rollbackEpisode.state, 'Active', 'the source request remains active until an explicit resolution');
+    assert.equal(rollbackEpisode.evidenceFacts.eventType, 'production_rollback');
+    assert.equal(rollbackEpisode.evidenceFacts.outcome, 'rolled-back');
+    for (const field of ['summary', 'question', 'choices', 'requestExpiresAt']) assert.equal(Object.hasOwn(rollbackEpisode.evidenceFacts, field), false, field + ' must be sanitized');
     assert.equal(attention.listActivity({ limit: 30 }).records.filter(row => row.operationKind === 'developer-work.production_rollback').length, 1, 'Activity is durable even if its projection marker fails');
     assert.equal(httpCalls.at(-1)[1], 503);
     producer.close();
@@ -439,6 +450,7 @@ test('controller rollback and recovery retain ordered Activity through authentic
     assert.equal(repeated.deliveryDiagnostic.attemptCount, 2);
     assert.deepEqual(httpCalls.at(-1).slice(0, 2), ['normal', 503]);
     assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: controller.producerId, eventId: rollback.eventId }).projectionState, 'pending');
+    assert.equal(attention.list().episodes[0].revision, rollbackEpisode.revision, 'duplicate projection does not create another occurrence');
     assert.equal(attention.listActivity({ limit: 30 }).records.filter(row => row.operationKind === 'developer-work.production_rollback').length, 1, 'retry must not duplicate recorded Activity');
     producer.close(); receiver.close(); attention.close(); receiverMetadata.close();
     receiverMetadata = openCommandCenterMetadataService({ stateDir: receiverDir, capabilities });
@@ -462,9 +474,29 @@ test('controller rollback and recovery retain ordered Activity through authentic
     assert.deepEqual(attention.listActivity({ limit: 30 }).records.filter(row => row.operationKind.startsWith('developer-work.production_')).map(row => row.operationKind).sort(), ['developer-work.production_deployment_failed', 'developer-work.production_recovered', 'developer-work.production_rollback']);
     assert.equal(receiverMetadata.getDeveloperRequest({ producerId: controller.producerId, workId: base.workId, requestId: 'incident-1' }).revision, 3);
     assert.equal(receiverMetadata.isDeveloperWorkNotificationReady({ producerId: controller.producerId, workId: base.workId }), true);
+    const [recoveredEpisode] = attention.list().episodes;
+    assert.equal(recoveredEpisode.episodeId, initialEpisode.episodeId);
+    assert.equal(recoveredEpisode.state, 'Active', 'only a separate source resolution closes the incident');
+    assert.equal(recoveredEpisode.sourceRevision, '3');
+    assert.equal(recoveredEpisode.evidenceFacts.eventType, 'production_recovered');
+    assert.equal(recoveredEpisode.evidenceFacts.outcome, 'recovered');
+    assert.equal(recoveredEpisode.evidenceFacts['failed-operation'], true, 'the incident remains an active historical failure until a source terminal event');
+    for (const field of ['summary', 'question', 'choices', 'requestExpiresAt']) assert.equal(Object.hasOwn(recoveredEpisode.evidenceFacts, field), false, field + ' must be sanitized');
     assert.equal(JSON.stringify(attention.list().episodes).includes('Expired rollback text'), false);
     assert.equal(JSON.stringify(attention.list().episodes).includes('Expired recovery text'), false);
+    assert.equal(JSON.stringify(attention.list().episodes).includes('expired-choice'), false);
+    assert.equal(JSON.stringify(attention.list().episodes).includes('Expired private question'), false);
     assert.equal(receiverMetadata.listPendingDeveloperEvents({}).length, 0);
+    const resolutionId = randomUUID();
+    producer.commit({ logicalOperationId: resolutionId, draft: { ...base, eventType: 'request_resolved',
+      request: { requestId: 'incident-1', kind: 'deployment-incident', expectedRequestRevision: 3 },
+      outcome: { code: 'recovered', requestId: 'incident-1', deploymentId: 'deployment-1' }
+    } });
+    assert.equal((await producer.flush()).delivered, 1);
+    assert.equal(attention.list().episodes.length, 0, 'a distinct source terminal event closes the incident');
+    assert.equal(attention.get(initialEpisode.episodeId).episode.state, 'Resolved');
+    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: controller.producerId, workId: base.workId, requestId: 'incident-1' }).state, 'resolved');
+    assert.equal(receiverMetadata.isDeveloperWorkNotificationReady({ producerId: controller.producerId, workId: base.workId }), true);
   } finally {
     producer.close(); receiver.close(); attention.close(); sender.close(); receiverMetadata.close();
     await rm(senderDir, { recursive: true, force: true }); await rm(receiverDir, { recursive: true, force: true });
