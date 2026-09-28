@@ -10,9 +10,9 @@ const supportedOpenClaw = Object.freeze({
   version: '2026.8.1-beta.3',
   commit: ['30f2924e437857935f03', '4ac349bae8cc22ef9fb0'].join('')
 });
-const controllerIntegrationCommit = '21f1ca697532a9bd9e9cc46322a598a31435de15';
+const controllerIntegrationCommit = '5b4bbbf8f583ff7c1a64b55670a206fdda2251ed';
 const upstreamCompatibilityCommit = controllerIntegrationCommit;
-const controllerPackageVersion = '2026.9.5';
+const controllerPackageVersion = '2026.9.6';
 const publishedSdkVersion = controllerPackageVersion;
 
 test('release admission refuses unsupported or missing bridge declarations before activation', () => {
@@ -45,7 +45,8 @@ test('pins product compatibility and the controller to the exact stable source b
   assert.equal(packageLock.packages['node_modules/openclaw'].dependencies['@openclaw/ai'], publishedSdkVersion);
   assert.equal(packageLock.packages['node_modules/@openclaw/ai'].version, publishedSdkVersion);
   for (const [name, version] of Object.entries(packageLock.packages['node_modules/openclaw'].dependencies)) {
-    assert.equal(packageLock.packages[`node_modules/${name}`]?.version, version, `${name} must match the stable package dependency graph`);
+    const resolved = packageLock.packages[`node_modules/openclaw/node_modules/${name}`] ?? packageLock.packages[`node_modules/${name}`];
+    assert.equal(resolved?.version, version, `${name} must match the stable package dependency graph`);
   }
   assert.equal(pinnedHost.packageVersion, controllerPackageVersion);
   assert.equal(pinnedHost.commit, controllerIntegrationCommit);

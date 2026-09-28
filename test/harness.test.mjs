@@ -11,12 +11,19 @@ import { createIsolatedWorld, disposeIsolatedWorld } from '../src/fixtures.mjs';
 import { assertNoFatalHostOutput, assertRecordedChildTraffic, createHostOutputClassifier, fetchJsonWithDeadline, HarnessFailure, classifyHostOutput, parseHostDescriptor, pinnedHost, redact, verifyHost, waitForConsecutiveReadiness } from '../src/host-harness.mjs';
 import { packagedHostDigest } from '../src/packaged-host-integrity.mjs';
 import { releasePerformanceIdentity } from '../src/performance-baseline.mjs';
+import canonical from '../src/compatibility-tuple.json' with { type: 'json' };
+import { assertReleasedHostMetadata } from '../scripts/repository-checks.mjs';
 
-test('current reader accepts the authenticated performance-capture host identity', () => {
-  const { schemaVersion, commit, ...integrity } = releasePerformanceIdentity.hostReceipt;
-  const descriptor = parseHostDescriptor(JSON.stringify({ schemaVersion, commit, integrity,
-    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args }));
-  assert.equal(descriptor.commit, pinnedHost.commit);
+test('released-host admission accepts only the exact 2026.9.6 package, not the historical performance host', () => {
+  assert.equal(pinnedHost.packageVersion, '2026.9.6');
+  assert.equal(pinnedHost.commit, '5b4bbbf8f583ff7c1a64b55670a206fdda2251ed');
+  assert.equal(pinnedHost.packageDigest, 'sha256:624cc9063a8ff71b84022d4b56a56134b295412abd3529f13eb36f6660e998b1');
+  const { schemaVersion, commit, ...historicalIntegrity } = releasePerformanceIdentity.hostReceipt;
+  const candidate = { schemaVersion, commit: pinnedHost.commit, integrity: { ...historicalIntegrity, packageDigest: pinnedHost.packageDigest },
+    checkout: '/fixture/source', runtimeRoot: '/fixture/runtime', executable: 'node_modules/openclaw/openclaw.mjs', args: pinnedHost.args };
+  assert.equal(parseHostDescriptor(JSON.stringify(candidate)).commit, pinnedHost.commit);
+  assert.throws(() => parseHostDescriptor(JSON.stringify({ ...candidate, commit })), error => error.category === 'invalid-commit');
+  assert.throws(() => parseHostDescriptor(JSON.stringify({ ...candidate, integrity: historicalIntegrity })), error => error.category === 'host-integrity');
 });
 
 const sourceDigest = `sha256:${'a'.repeat(64)}`;
@@ -51,6 +58,14 @@ function hostGit({ commit = pinnedHost.commit, status = '', blob } = {}) {
     throw new Error(`Unexpected fixture git command: ${args.join(' ')}`);
   };
 }
+
+test('ordinary repository check accepts only the released 2026.9.6 host tuple', () => {
+  assert.doesNotThrow(() => assertReleasedHostMetadata(canonical));
+  const historical = structuredClone(canonical);
+  historical.host.range = '=2026.9.5';
+  historical.host.commit = releasePerformanceIdentity.hostReceipt.commit;
+  assert.throws(() => assertReleasedHostMetadata(historical), /released host identity/u);
+});
 
 test('packaged host binds installed build and dependencies independently of clean source', async () => {
   const fixture = await temporaryHost();
@@ -101,7 +116,7 @@ test('categorizes absent and malformed host descriptors', () => {
 });
 
 test('runtime checkout identity remains distinct from the compatibility and performance receipt identities', () => {
-  assert.equal(pinnedHost.commit, '21f1ca697532a9bd9e9cc46322a598a31435de15');
+  assert.equal(pinnedHost.commit, '5b4bbbf8f583ff7c1a64b55670a206fdda2251ed');
   assert.doesNotThrow(() => parseHostDescriptor(hostDescriptor()));
   assert.throws(() => parseHostDescriptor(hostDescriptor({ commit: '19686a23834910173df0fd1f77bd762ffcda2afd' })), (error) => error.category === 'invalid-commit');
 });
