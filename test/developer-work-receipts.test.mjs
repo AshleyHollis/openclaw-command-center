@@ -64,6 +64,42 @@ test('durable receipts preserve exact replay, independent requests and terminal 
   db.close();
 });
 
+test('expired active update disposition is exact and atomic across authority, predecessor and watermark failures', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec(developerWorkTablesSql + developerWorkWatermarksSql);
+  const metadata = owner(db);
+  const opening = event(1, randomUUID(), 'review-a');
+  const update = normalizeDeveloperEvent({ ...event(2, randomUUID(), 'review-a', 1), request: { ...opening.request, expectedRequestRevision: 1, expiresAt: '2026-09-26T10:01:00Z' } }, authority);
+  const args = { producerId: authority.producerId, event: update, watermark: 2, assertAuthorityCurrent() {}, now: () => Date.parse('2026-09-26T10:02:00Z') };
+  const snapshot = () => Object.fromEntries(['developer_work_cursors', 'developer_work_requests', 'developer_work_receipts', 'developer_work_watermarks', 'operation_journal'].map(table => [table, db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all()]));
+  try {
+    metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: opening, watermark: 1, now: () => Date.parse('2026-09-26T10:00:00Z') });
+    const baseline = snapshot();
+    const wrongRevision = normalizeDeveloperEvent({ ...update, eventId: randomUUID(), request: { ...update.request, expectedRequestRevision: 0 } }, authority);
+    const forgedPredecessor = normalizeDeveloperEvent({ ...update, eventId: randomUUID(), request: { ...update.request, requestId: 'missing-review' } }, authority);
+    for (const [input, code] of [
+      [{ ...args, event: wrongRevision }, 'developer-request-conflict'],
+      [{ ...args, event: forgedPredecessor }, 'developer-request-disposition-invalid'],
+      [{ ...args, watermark: 1000 }, 'delivery-watermark-invalid'],
+      [{ ...args, assertAuthorityCurrent() { throw Object.assign(new Error('revoked'), { code: 'unauthorized' }); } }, 'unauthorized']
+    ]) {
+      assert.throws(() => metadata.disposeExpiredDeveloperEvent(input), { code });
+      assert.deepEqual(snapshot(), baseline, 'failed disposition cannot change cursor, request, receipt, journal or watermark');
+    }
+    const disposed = metadata.disposeExpiredDeveloperEvent(args);
+    assert.equal(disposed.dispositionReason, 'expired-active-update');
+    assert.equal(metadata.getDeveloperRequest({ producerId: authority.producerId, workId: update.workId, requestId: 'review-a' }).state, 'active');
+    assert.equal(metadata.getDeveloperRequest({ producerId: authority.producerId, workId: update.workId, requestId: 'review-a' }).revision, 2);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM operation_journal').get().count, 1);
+    assert.equal(owner(db).disposeExpiredDeveloperEvent(args).duplicate, true);
+    assert.equal(owner(db).acceptDeveloperEvent({ producerId: authority.producerId, event: update }).dispositionReason, 'expired-active-update');
+    const committed = snapshot();
+    assert.throws(() => owner(db).disposeExpiredDeveloperEvent({ ...args, watermark: 1000 }), { code: 'delivery-watermark-invalid' });
+    assert.deepEqual(snapshot(), committed, 'forged replay watermark cannot mutate committed disposition');
+  } finally { db.close(); }
+});
+
 test('delivery watermark is monotonic across duplicate receipts and waits for contiguous projection', () => {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON;');

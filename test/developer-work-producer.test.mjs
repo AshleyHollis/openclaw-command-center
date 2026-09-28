@@ -141,6 +141,30 @@ test('producer refuses tampered terminal disposition receipt without releasing a
   } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test('producer rejects forged active-update disposition reason and predecessor', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-'));
+  const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+  try {
+    const opening = admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-active') });
+    const updateDraft = draft('review-active', 1);
+    const update = admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: { ...updateDraft, request: { ...updateDraft.request, expiresAt: '2026-09-26T10:01:00Z' } } });
+    const terminal = admittedSubmit(metadata, { authority, logicalOperationId: randomUUID(), draft: draft('review-active', 2, 'request_resolved') });
+    const receipt = row => ({ schemaVersion: 1, producerId: authority.producerId, eventId: row.eventId, workId: row.workId, workRevision: row.workRevision, eventDigest: row.eventDigest, projectionState: 'projected', acceptedAt: '2026-09-26T10:02:00Z', projectedAt: '2026-09-26T10:02:00Z' });
+    const disposition = { ...receipt(update), disposition: 'expired', dispositionReason: 'expired-active-update' };
+    assert.throws(() => metadata.markDeveloperDelivery({ producerId: authority.producerId, eventId: update.eventId, receiverReceipt: disposition }), { code: 'developer-receipt-conflict' }, 'undelivered predecessor does not authorize a disposition');
+    metadata.markDeveloperDelivery({ producerId: authority.producerId, eventId: opening.eventId, receiverReceipt: receipt(opening) });
+    for (const forged of [
+      { ...disposition, dispositionReason: 'request-expired' },
+      { ...disposition, dispositionReason: 'expired-dependency' },
+      { ...disposition, acceptedAt: '2026-09-26T09:00:00Z', projectedAt: '2026-09-26T09:00:00Z' },
+      { ...disposition, workRevision: 3 }
+    ]) assert.throws(() => metadata.markDeveloperDelivery({ producerId: authority.producerId, eventId: update.eventId, receiverReceipt: forged }), { code: 'developer-receipt-conflict' });
+    assert.deepEqual(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).map(row => row.eventId), [update.eventId, terminal.eventId]);
+    assert.equal(metadata.markDeveloperDelivery({ producerId: authority.producerId, eventId: update.eventId, receiverReceipt: disposition }).receiverReceipt.dispositionReason, 'expired-active-update');
+    assert.equal(metadata.markDeveloperDelivery({ producerId: authority.producerId, eventId: terminal.eventId, receiverReceipt: receipt(terminal) }).deliveryState, 'delivered');
+  } finally { metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test('controller producer keeps one incident per deployment and rejects changed identity', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-'));
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities });

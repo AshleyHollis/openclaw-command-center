@@ -6,6 +6,7 @@ const MAX_WATERMARK_LEAD = 500;
 const expiryDispositionId = (producerId, eventId) => 'developer-expiry:' + createHash('sha256').update(producerId + '\u0000' + eventId).digest('hex');
 const terminalTypes = new Set(['request_resolved', 'request_withdrawn']);
 const requestOpeningTypes = new Set(['human_input_required', 'product_decision_required', 'approval_required', 'feature_ready_for_review', 'production_deployment_failed']);
+const activeUpdateTypes = new Set(['human_input_required', 'product_decision_required', 'approval_required', 'feature_ready_for_review', 'production_rollback', 'production_recovered']);
 const deliveryDiagnosticId = (producerId, eventId) => `developer-delivery:${createHash('sha256').update(`${producerId}\u0000${eventId}`).digest('hex')}`;
 const deliveryDiagnostic = (db, row) => {
   const entry = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(deliveryDiagnosticId(row.producer_id, row.event_id));
@@ -126,7 +127,7 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
     if (!row) return null;
     if (row.operation_kind !== 'developer-work.expiry-disposition.v1' || row.transport_request_id !== eventId || row.intent_digest !== digest || row.state !== 'applied' || row.result_status !== 'expired') fail('developer-event-conflict');
     const result = JSON.parse(row.result_identity);
-    if (result.producerId !== producerId || result.eventId !== eventId || result.eventDigest !== digest || !['request-expired', 'expired-dependency'].includes(result.reason)) fail('developer-event-conflict');
+    if (result.producerId !== producerId || result.eventId !== eventId || result.eventDigest !== digest || !['request-expired', 'expired-dependency', 'expired-active-update'].includes(result.reason)) fail('developer-event-conflict');
     const eventRow = readReceipt(db, producerId, eventId);
     if (!eventRow || eventRow.event_digest !== digest || eventRow.work_id !== result.workId || eventRow.work_revision !== result.workRevision || eventRow.accepted_at !== result.acceptedAt || eventRow.projection_state !== 'projected' || eventRow.projected_at !== result.acceptedAt || row.observed_revision !== String(result.workRevision)) fail('developer-event-conflict');
     return result;
@@ -136,7 +137,7 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
     const previous = db.prepare('SELECT * FROM developer_work_receipts WHERE producer_id = ? AND work_id = ? AND work_revision = ?').get(producerId, event.workId, event.request.expectedRequestRevision);
     if (!previous) return false;
     const prior = disposition(db, producerId, previous.event_id, previous.event_digest);
-    if (!prior || prior.workId !== previous.work_id || prior.workRevision !== previous.work_revision) return false;
+    if (!prior || prior.reason === 'expired-active-update' || prior.workId !== previous.work_id || prior.workRevision !== previous.work_revision) return false;
     const request = JSON.parse(previous.event_json).request;
     return request?.requestId === event.request.requestId && request.kind === event.request.kind;
   };
@@ -209,8 +210,8 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
     });
   };
 
-  // Explicit terminal disposition is a separate machine-authenticated command.
-  // The ordinary ingress keeps refusing expired content without any write.
+  // Explicit expiry disposition is a separate machine-authenticated command.
+  // The ordinary ingress keeps refusing expired active request content.
   service.disposeExpiredDeveloperEvent = ({ producerId, event, watermark, assertAuthorityCurrent, now = () => Date.now() } = {}) => {
     if (typeof producerId !== 'string' || !producerId.trim() || !event || event.schemaVersion !== 1 || typeof event.eventId !== 'string' || typeof event.workId !== 'string' || !Number.isSafeInteger(event.workRevision) || event.workRevision < 1 || !event.request || typeof now !== 'function') fail('developer-event-invalid');
     if (watermark !== undefined && (!Number.isSafeInteger(watermark) || watermark < event.workRevision)) fail('delivery-watermark-invalid');
@@ -237,13 +238,22 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       const expected = (cursor?.revision ?? 0) + 1;
       if (event.workRevision !== expected) fail(event.workRevision < expected ? 'developer-event-stale' : 'developer-event-gap');
       const current = db.prepare('SELECT * FROM developer_work_requests WHERE producer_id = ? AND work_id = ? AND request_id = ?').get(producerId, event.workId, event.request.requestId);
-      if (current) fail('developer-request-conflict', 'An existing request cannot be suppressed by disposition.');
       const expiresAt = event.request.expiresAt === undefined ? NaN : Date.parse(event.request.expiresAt);
       const predecessor = disposedPredecessor(db, producerId, event);
       const expired = Number.isFinite(expiresAt) && expiresAt <= Date.parse(clock);
-      if (expired && event.request.expectedRequestRevision > 0 && !predecessor || !expired && !predecessor) fail('developer-request-disposition-invalid');
-      const reason = expired ? 'request-expired' : 'expired-dependency';
+      // No Attention content is projected. The exact active request retains
+      // its identity and active state, but tracks the producer's new revision
+      // so a later source-owned transition can close or refresh it normally.
+      const deploymentId = event.request.kind === 'deployment-incident' ? event.context?.deploymentId : null;
+      const activeUpdate = Boolean(current && expired && activeUpdateTypes.has(event.eventType) && current.state === 'active' && current.revision === event.request.expectedRequestRevision && current.kind === event.request.kind && current.deployment_id === deploymentId && (event.request.kind !== 'deployment-incident' || event.outcome?.deploymentId === deploymentId));
+      if (current && !activeUpdate) fail('developer-request-conflict', 'An existing request cannot be suppressed by disposition.');
+      if (!current && (expired && event.request.expectedRequestRevision > 0 && !predecessor || !expired && !predecessor)) fail('developer-request-disposition-invalid');
+      const reason = activeUpdate ? 'expired-active-update' : expired ? 'request-expired' : 'expired-dependency';
       db.prepare('INSERT INTO developer_work_cursors (producer_id, work_id, revision) VALUES (?, ?, ?) ON CONFLICT (producer_id, work_id) DO UPDATE SET revision = excluded.revision').run(producerId, event.workId, event.workRevision);
+      if (activeUpdate) {
+        const updated = db.prepare("UPDATE developer_work_requests SET revision = ?, last_event_id = ? WHERE producer_id = ? AND work_id = ? AND request_id = ? AND revision = ? AND state = 'active'").run(event.workRevision, event.eventId, producerId, event.workId, event.request.requestId, event.request.expectedRequestRevision);
+        if (updated.changes !== 1) fail('developer-request-stale');
+      }
       db.prepare(`INSERT INTO developer_work_receipts (producer_id, event_id, work_id, work_revision, event_digest, event_json, projection_state, accepted_at, projected_at)
         VALUES (?, ?, ?, ?, ?, ?, 'projected', ?, ?)`).run(producerId, event.eventId, event.workId, event.workRevision, digest, JSON.stringify(event), clock, clock);
       const identity = { producerId, eventId: event.eventId, workId: event.workId, workRevision: event.workRevision, eventDigest: digest, reason, acceptedAt: clock };
@@ -427,14 +437,20 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       const row = db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND event_id = ?').get(producerId, eventId);
       if (!row) fail('developer-event-missing');
       if (receiverReceipt.schemaVersion !== 1 || receiverReceipt.producerId !== producerId || receiverReceipt.eventId !== eventId || receiverReceipt.workId !== row.work_id || receiverReceipt.workRevision !== row.work_revision || receiverReceipt.eventDigest !== row.event_digest || !['pending', 'projected'].includes(receiverReceipt.projectionState) || typeof receiverReceipt.acceptedAt !== 'string' || Number.isNaN(Date.parse(receiverReceipt.acceptedAt))) fail('developer-receipt-conflict');
-      if (receiverReceipt.disposition !== undefined && (receiverReceipt.disposition !== 'expired' || !['request-expired', 'expired-dependency'].includes(receiverReceipt.dispositionReason) || receiverReceipt.projectionState !== 'projected' || receiverReceipt.projectedAt !== receiverReceipt.acceptedAt || !JSON.parse(row.event_json).request)) fail('developer-receipt-conflict');
+      if (receiverReceipt.disposition !== undefined && (receiverReceipt.disposition !== 'expired' || !['request-expired', 'expired-dependency', 'expired-active-update'].includes(receiverReceipt.dispositionReason) || receiverReceipt.projectionState !== 'projected' || receiverReceipt.projectedAt !== receiverReceipt.acceptedAt || !JSON.parse(row.event_json).request)) fail('developer-receipt-conflict');
       if (receiverReceipt.disposition === undefined && receiverReceipt.dispositionReason !== undefined) fail('developer-receipt-conflict');
-      const request = JSON.parse(row.event_json).request;
-      if (receiverReceipt.dispositionReason === 'request-expired' && !(Date.parse(request.expiresAt) <= Date.parse(receiverReceipt.acceptedAt))) fail('developer-receipt-conflict');
+      const event = JSON.parse(row.event_json);
+      const request = event.request;
+      if (['request-expired', 'expired-active-update'].includes(receiverReceipt.dispositionReason) && !(Date.parse(request.expiresAt) <= Date.parse(receiverReceipt.acceptedAt))) fail('developer-receipt-conflict');
+      if (receiverReceipt.dispositionReason === 'expired-active-update' && (!activeUpdateTypes.has(event.eventType) || request.expectedRequestRevision < 1)) fail('developer-receipt-conflict');
       if (receiverReceipt.disposition === 'expired' && request.expectedRequestRevision > 0) {
         const previous = db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND work_id = ? AND work_revision = ?').get(producerId, row.work_id, request.expectedRequestRevision);
         const priorRequest = previous && JSON.parse(previous.event_json).request;
-        if (previous?.delivery_state !== 'delivered' || JSON.parse(previous.receiver_receipt_json).disposition !== 'expired' || priorRequest?.requestId !== request.requestId || priorRequest.kind !== request.kind) fail('developer-receipt-conflict');
+        const previousReceipt = previous?.receiver_receipt_json ? JSON.parse(previous.receiver_receipt_json) : null;
+        const validPredecessor = receiverReceipt.dispositionReason === 'expired-active-update'
+          ? previousReceipt && (previousReceipt.disposition === undefined || previousReceipt.dispositionReason === 'expired-active-update')
+          : previousReceipt?.disposition === 'expired' && previousReceipt.dispositionReason !== 'expired-active-update';
+        if (previous?.delivery_state !== 'delivered' || !validPredecessor || priorRequest?.requestId !== request.requestId || priorRequest.kind !== request.kind) fail('developer-receipt-conflict');
       }
       if (receiverReceipt.dispositionReason === 'expired-dependency' && request.expectedRequestRevision === 0) fail('developer-receipt-conflict');
       if (row.delivery_state === 'delivered') {

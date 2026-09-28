@@ -53,7 +53,7 @@ test('an older receiver lacking disposition authority refuses the mode explicitl
   await assert.rejects(() => transport.disposeExpired(event, { watermark: 1 }), { code: 'receiver-disposition-unavailable' });
 });
 
-test('separate SQLite stores carry ordered expired disposition, dependent terminal and later request through authenticated HTTP', async () => {
+test('separate SQLite stores carry ordered expired openings, active updates, terminals and successors through authenticated HTTP', async () => {
   const senderDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-sender-expiry-'));
   const receiverDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-receiver-expiry-'));
   const capabilities = { activity: true, attention: true };
@@ -64,12 +64,14 @@ test('separate SQLite stores carry ordered expired disposition, dependent termin
   let handler = createDeveloperEventHandler({ service: receiver, principals: [principal], env: { SAMPLE_DEV_BEARER: credential } });
   let loseDispositionReply = true;
   let loseTerminalReply = true;
+  let loseUpdateReply = true;
   const calls = [];
   const transport = createDeveloperEventTransport({ baseUrl: 'https://receiver.example.test/', tokenEnv: 'SAMPLE_DEV_BEARER', env: { SAMPLE_DEV_BEARER: credential }, fetchImpl: async (_url, options) => {
     const res = response();
     await handler({ method: options.method, socket: { encrypted: true }, headers: options.headers, body: options.body }, res);
     calls.push({ status: res.statusCode, mode: options.headers['x-developer-work-disposition'] ?? 'normal', code: res.body.code });
     if (options.headers['x-developer-work-disposition'] === 'expired' && loseDispositionReply) { loseDispositionReply = false; throw new Error('fictional reply lost after durable disposition'); }
+    if (options.headers['x-developer-work-disposition'] === 'expired' && JSON.parse(options.body).request?.requestId === 'review-after-resolution' && loseUpdateReply) { loseUpdateReply = false; throw new Error('fictional reply lost after active update disposition'); }
     if (!options.headers['x-developer-work-disposition'] && JSON.parse(options.body).request?.requestId === 'review-current' && JSON.parse(options.body).eventType === 'request_withdrawn' && loseTerminalReply) { loseTerminalReply = false; throw new Error('fictional reply lost after accepted terminal'); }
     return new Response(JSON.stringify(res.body), { status: res.statusCode, headers: res.headers });
   } });
@@ -199,6 +201,51 @@ test('separate SQLite stores carry ordered expired disposition, dependent termin
     assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-after-withdrawal' }).state, 'resolved');
     assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-after-resolution' }).state, 'active');
     assert.deepEqual(attention.list().episodes.map(episode => episode.evidenceFacts.requestId), ['review-after-resolution']);
+    const activeUpdate = { ...next, occurredAt: '2026-09-26T10:02:00Z', request: { ...next.request, requestId: 'review-after-resolution', expectedRequestRevision: 7, summary: 'Expired update must never reach Attention', expiresAt: '2026-09-26T10:01:00Z' } };
+    const badUpdate = { ...activeUpdate, eventId: randomUUID(), workRevision: 8, request: { ...activeUpdate.request, expectedRequestRevision: 6 } };
+    const badResponse = response();
+    await handler({ ...request(badUpdate), headers: { ...request(badUpdate).headers, 'x-developer-work-disposition': 'expired' } }, badResponse);
+    assert.equal(badResponse.statusCode, 409);
+    assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: badUpdate.eventId }), null);
+    const deniedHandler = createDeveloperEventHandler({ service: receiver, principals: [{ ...principal, families: ['request-terminal'] }], env: { SAMPLE_DEV_BEARER: credential } });
+    const denied = response();
+    await deniedHandler({ ...request(badUpdate), headers: { ...request(badUpdate).headers, 'x-developer-work-disposition': 'expired' } }, denied);
+    assert.equal(denied.statusCode, 403);
+    const revokedEnv2 = { SAMPLE_DEV_BEARER: credential };
+    const revokedHandler2 = createDeveloperEventHandler({ service: receiver, principals: [principal], env: revokedEnv2 });
+    const revoked2 = response();
+    await revokedHandler2({ ...request(badUpdate), body: undefined, headers: { ...request(badUpdate).headers, 'x-developer-work-disposition': 'expired' }, readBody: async () => { revokedEnv2.SAMPLE_DEV_BEARER = 'b'.repeat(48); return JSON.stringify(badUpdate); } }, revoked2);
+    assert.equal(revoked2.statusCode, 401);
+    const changedPrincipal = { ...principal, allowedProjects: [...principal.allowedProjects] };
+    const changedHandler = createDeveloperEventHandler({ service: receiver, principals: [changedPrincipal], env: { SAMPLE_DEV_BEARER: credential } });
+    const changedResult = response();
+    await changedHandler({ ...request(badUpdate), body: undefined, headers: { ...request(badUpdate).headers, 'x-developer-work-disposition': 'expired' }, readBody: async () => { changedPrincipal.allowedProjects = [...changedPrincipal.allowedProjects, 'another-project']; return JSON.stringify(badUpdate); } }, changedResult);
+    assert.equal(changedResult.statusCode, 401);
+    assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: badUpdate.eventId }), null);
+    const updateId = randomUUID();
+    senderOwner.commit({ logicalOperationId: updateId, draft: activeUpdate, assertSourceCurrent() {} });
+    const resolvedId = randomUUID();
+    senderOwner.commit({ logicalOperationId: resolvedId, draft: { ...base, occurredAt: '2026-09-26T10:02:00Z', eventType: 'request_resolved', request: { requestId: 'review-after-resolution', kind: 'review', expectedRequestRevision: 8 }, outcome: { code: 'reviewed', requestId: 'review-after-resolution' } }, assertSourceCurrent() {} });
+    const afterUpdateId = randomUUID();
+    senderOwner.commit({ logicalOperationId: afterUpdateId, draft: { ...next, occurredAt: '2026-09-26T10:02:00Z', request: { ...next.request, requestId: 'review-after-update' } }, assertSourceCurrent() {} });
+    assert.equal((await senderOwner.flush()).delivered, 0, 'lost update disposition reply blocks terminal and successor');
+    const pendingUpdate = sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: updateId });
+    assert.equal(pendingUpdate.deliveryState, 'pending');
+    assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: pendingUpdate.eventId }).dispositionReason, 'expired-active-update');
+    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-after-resolution' }).state, 'active');
+    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-after-resolution' }).revision, 8);
+    assert.deepEqual(attention.list().episodes.map(episode => episode.evidenceFacts.requestId), ['review-after-resolution']);
+    assert.equal(attention.list().episodes.some(episode => JSON.stringify(episode).includes('Expired update must never reach Attention')), false);
+    senderOwner.close(); receiver.close(); attention.close(); receiverMetadata.close();
+    receiverMetadata = openCommandCenterMetadataService({ stateDir: receiverDir, capabilities });
+    attention = createAttentionService({ metadata: receiverMetadata, now: () => '2026-09-26T10:02:00Z' });
+    receiver = createDeveloperWorkService({ metadata: receiverMetadata, attention, now: () => Date.parse('2026-09-26T10:02:00Z') });
+    handler = createDeveloperEventHandler({ service: receiver, principals: [principal], env: { SAMPLE_DEV_BEARER: credential } });
+    senderOwner = createDeveloperWorkProducer({ metadata: sender, authority, sessionReader: () => bound, receiver: transport, now: () => pendingUpdate.deliveryDiagnostic.nextAttemptAtMs });
+    assert.equal((await senderOwner.flush()).delivered, 3);
+    assert.equal(sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: updateId }).receiverReceipt.dispositionReason, 'expired-active-update');
+    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-after-resolution' }).state, 'resolved');
+    assert.deepEqual(attention.list().episodes.map(episode => episode.evidenceFacts.requestId), ['review-after-update']);
   } finally {
     senderOwner.close(); receiver.close(); attention.close(); sender.close(); receiverMetadata.close();
     await rm(senderDir, { recursive: true, force: true }); await rm(receiverDir, { recursive: true, force: true });
