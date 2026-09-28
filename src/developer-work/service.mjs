@@ -151,7 +151,8 @@ export function createDeveloperWorkService({ metadata, attention, devBaseUrl, no
   async function accept({ producerId, role, allowedProjects, event, watermark, assertAuthorityCurrent } = {}) {
     if (closed) throw new Error('Developer Work service is closed.');
     const normalized = normalizeDeveloperEvent(event, { producerId, role, allowedProjects });
-    const receipt = metadata.acceptDeveloperEvent({ producerId, event: normalized, watermark, assertAuthorityCurrent, acceptedAt: new Date(now()).toISOString() });
+    // The metadata owner samples this clock only after BEGIN IMMEDIATE succeeds.
+    const receipt = metadata.acceptDeveloperEvent({ producerId, event: normalized, watermark, assertAuthorityCurrent, now });
     // Acknowledgement means durable receipt, even when the separate projection
     // transaction must be retried during the next drain/startup.
     try { await drain(); } catch { /* receipt remains visibly pending */ }

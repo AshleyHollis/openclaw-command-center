@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { normalizeDeveloperEvent } from '../src/developer-work/contract.mjs';
+import { createDeveloperWorkService } from '../src/developer-work/service.mjs';
 import { developerWorkTablesSql, developerWorkWatermarksSql, installDeveloperWorkMetadata } from '../src/metadata/developer-work.mjs';
 
 class MetadataError extends Error {
@@ -18,14 +19,15 @@ function event(revision, eventId, requestId, expectedRequestRevision = 0, eventT
     ...(eventType === 'request_resolved' ? { outcome: { code: 'reviewed', requestId } } : {})
   }, authority);
 }
-function owner(db) {
+function owner(db, { beforeBegin = () => {}, afterBegin = () => {} } = {}) {
   const service = {};
   installDeveloperWorkMetadata(service, {
     ErrorType: MetadataError,
     inspect: operation => operation(db),
     mutate: (_capability, operation) => {
+      beforeBegin();
       db.exec('BEGIN IMMEDIATE');
-      try { const result = operation(db); db.exec('COMMIT'); return result; }
+      try { afterBegin(); const result = operation(db); db.exec('COMMIT'); return result; }
       catch (error) { db.exec('ROLLBACK'); throw error; }
     }
   });
@@ -92,15 +94,41 @@ test('receiver refuses an already expired request atomically, but preserves exac
   const expiring = normalizeDeveloperEvent({ ...original, request: { ...original.request, expiresAt: '2026-09-26T10:01:00Z' } }, authority);
   try {
     for (const acceptedAt of ['2026-09-26T10:01:00Z', '2026-09-26T10:01:01Z']) {
-      assert.throws(() => metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: expiring, watermark: 1, acceptedAt }), { code: 'developer-request-expired' });
+      assert.throws(() => metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: expiring, watermark: 1, now: () => Date.parse(acceptedAt) }), { code: 'developer-request-expired' });
       for (const table of ['developer_work_cursors', 'developer_work_requests', 'developer_work_receipts', 'developer_work_watermarks']) assert.equal(db.prepare('SELECT count(*) AS count FROM ' + table).get().count, 0, table);
     }
-    const accepted = metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: expiring, watermark: 1, acceptedAt: '2026-09-26T10:00:59Z' });
+    const accepted = metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: expiring, watermark: 1, now: () => Date.parse('2026-09-26T10:00:59Z') });
     assert.equal(accepted.workRevision, 1);
-    assert.equal(metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: expiring, acceptedAt: '2026-09-26T10:01:01Z' }).duplicate, true, 'already accepted evidence remains replayable');
-    assert.throws(() => metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: { ...expiring, occurredAt: '2026-09-26T10:00:01Z' }, acceptedAt: '2026-09-26T10:01:01Z' }), { code: 'developer-event-conflict' });
+    assert.equal(metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: expiring, now: () => Date.parse('2026-09-26T10:01:01Z') }).duplicate, true, 'already accepted evidence remains replayable');
+    assert.throws(() => metadata.acceptDeveloperEvent({ producerId: authority.producerId, event: { ...expiring, occurredAt: '2026-09-26T10:00:01Z' }, now: () => Date.parse('2026-09-26T10:01:01Z') }), { code: 'developer-event-conflict' });
     assert.equal(db.prepare('SELECT count(*) AS count FROM developer_work_receipts').get().count, 1);
   } finally { db.close(); }
+});
+
+test('queued acceptance crossing the expiry deadline samples the clock only after the write lock', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec(developerWorkTablesSql + developerWorkWatermarksSql);
+  const deadline = Date.parse('2026-09-26T10:01:00Z');
+  let clock = deadline - 1;
+  let lockHeld = false;
+  let entered = 0;
+  // Model a contended BEGIN IMMEDIATE: time advances while waiting for the
+  // lock, and the clock callback must not run until the transaction owns it.
+  const metadata = owner(db, { beforeBegin() { clock = deadline; lockHeld = false; }, afterBegin() { entered++; lockHeld = true; } });
+  const developer = createDeveloperWorkService({ metadata, attention: { registerSourceCapability() {}, async ingest() { throw new Error('Expired request must not project.'); } }, now: () => { assert.equal(lockHeld, true); return clock; } });
+  const original = event(1, randomUUID(), 'review-contended');
+  const expiring = { ...original, request: { ...original.request, expiresAt: new Date(deadline).toISOString() } };
+  try {
+    await assert.rejects(() => developer.accept({ ...authority, event: expiring }), { code: 'developer-request-expired' });
+    assert.equal(entered, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM developer_work_cursors').get().count, 0);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM developer_work_receipts').get().count, 0);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM developer_work_requests').get().count, 0);
+    clock = deadline - 1;
+    const accepted = await developer.accept({ ...authority, event: { ...original, request: { ...original.request, expiresAt: new Date(deadline + 1000).toISOString() } } });
+    assert.equal(accepted.acceptedAt, new Date(deadline).toISOString(), 'receipt and expiry use one post-lock instant');
+  } finally { developer.close(); db.close(); }
 });
 
 test('a deployment has one durable incident identity across outcome updates', () => {

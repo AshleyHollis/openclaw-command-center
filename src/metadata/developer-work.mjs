@@ -120,8 +120,8 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
   const fail = (code, message = code) => { throw new ErrorType(code, message); };
   const readReceipt = (db, producerId, eventId) => db.prepare('SELECT * FROM developer_work_receipts WHERE producer_id = ? AND event_id = ?').get(producerId, eventId);
 
-  service.acceptDeveloperEvent = ({ producerId, event, watermark, assertAuthorityCurrent, acceptedAt = new Date().toISOString() } = {}) => {
-    if (typeof producerId !== 'string' || !producerId.trim() || !event || event.schemaVersion !== 1 || typeof event.eventId !== 'string' || typeof event.workId !== 'string' || !Number.isSafeInteger(event.workRevision) || event.workRevision < 1 || typeof acceptedAt !== 'string' || Number.isNaN(Date.parse(acceptedAt))) fail('developer-event-invalid');
+  service.acceptDeveloperEvent = ({ producerId, event, watermark, assertAuthorityCurrent, now = () => Date.now() } = {}) => {
+    if (typeof producerId !== 'string' || !producerId.trim() || !event || event.schemaVersion !== 1 || typeof event.eventId !== 'string' || typeof event.workId !== 'string' || !Number.isSafeInteger(event.workRevision) || event.workRevision < 1 || typeof now !== 'function') fail('developer-event-invalid');
     if (watermark !== undefined && (!Number.isSafeInteger(watermark) || watermark < event.workRevision)) fail('delivery-watermark-invalid');
     const eventDigest = developerEventDigest(event);
     const eventJson = JSON.stringify(event);
@@ -143,12 +143,15 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
         announceWatermark();
         return receipt(old, true);
       }
+      // Snapshot acceptance time after SQLite obtains the write lock. An
+      // admission waiting for another writer cannot carry a pre-lock clock.
+      const clock = new Date(now()).toISOString();
       // A previously accepted receipt remains replayable after its deadline;
       // a new expired request must not advance the cursor or create a receipt.
       if (event.request?.expiresAt !== undefined) {
         const expiresAtMs = typeof event.request.expiresAt === 'string' ? Date.parse(event.request.expiresAt) : NaN;
         if (!Number.isFinite(expiresAtMs)) fail('developer-event-invalid');
-        if (expiresAtMs <= Date.parse(acceptedAt)) fail('developer-request-expired', 'The request expired before acceptance.');
+        if (expiresAtMs <= Date.parse(clock)) fail('developer-request-expired', 'The request expired before acceptance.');
       }
       const cursor = db.prepare('SELECT revision FROM developer_work_cursors WHERE producer_id = ? AND work_id = ?').get(producerId, event.workId);
       const expected = (cursor?.revision ?? 0) + 1;
@@ -173,7 +176,7 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
           ON CONFLICT (producer_id, work_id, request_id) DO UPDATE SET revision = excluded.revision, state = excluded.state, last_event_id = excluded.last_event_id`).run(producerId, event.workId, event.request.requestId, event.request.kind, deploymentId, event.workRevision, state, event.eventId);
       }
       db.prepare(`INSERT INTO developer_work_receipts (producer_id, event_id, work_id, work_revision, event_digest, event_json, projection_state, accepted_at, projected_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`).run(producerId, event.eventId, event.workId, event.workRevision, eventDigest, eventJson, acceptedAt);
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`).run(producerId, event.eventId, event.workId, event.workRevision, eventDigest, eventJson, clock);
       announceWatermark();
       return receipt(readReceipt(db, producerId, event.eventId));
     });
