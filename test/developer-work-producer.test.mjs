@@ -117,17 +117,28 @@ test('controller producer keeps one incident per deployment and rejects changed 
 test('DEV resolver checks exact session incarnation and request state at readback', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-'));
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
-  let entry = { ...session };
+  // api.runtime.agent.session.getSessionEntry returns raw SessionEntry, not agent/key.
+  let entry = { sessionId: session.sessionId, lifecycleRevision: session.lifecycleRevision };
+  let clock = Date.parse('2026-09-26T10:00:00Z');
+  let duringRead = () => {};
   const calls = [];
-  const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: async input => { calls.push(input); return entry; }, receiver: { send: async () => { throw new Error('receiver unavailable'); } } });
+  const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: async input => { calls.push(input); duringRead(); return entry; }, now: () => clock, receiver: { send: async () => { throw new Error('receiver unavailable'); } } });
   try {
     metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a') });
     const ready = await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' });
     assert.equal(ready.status, 'ready');
     assert.equal(ready.sessionKey, session.sessionKey);
     assert.deepEqual(calls[0], { agentId: session.agentId, sessionKey: session.sessionKey, readConsistency: 'latest' });
-    entry = { ...session, lifecycleRevision: 'lifecycle-2' };
-    assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).status, 'stale');
+    entry = { sessionId: session.sessionId, lifecycleRevision: session.lifecycleRevision, agentId: 'wrong-agent' };
+    assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).reason, 'session-replaced');
+    entry = { sessionId: session.sessionId, lifecycleRevision: session.lifecycleRevision, agentId: undefined };
+    assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).reason, 'session-replaced');
+    entry = { sessionId: session.sessionId, lifecycleRevision: session.lifecycleRevision, sessionKey: 'agent:sample-agent:other' };
+    assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).reason, 'session-replaced');
+    entry = { sessionId: session.sessionId, lifecycleRevision: 'lifecycle-2' };
+    assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).reason, 'session-replaced');
+    entry = { sessionId: 'replacement', lifecycleRevision: session.lifecycleRevision };
+    assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).reason, 'session-replaced');
     entry = undefined;
     assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).reason, 'session-replaced');
     const currentWork = await producer.resolve({ schemaVersion: 1, workId: 'feature-1' });
@@ -135,6 +146,17 @@ test('DEV resolver checks exact session incarnation and request state at readbac
     metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: draft('review-a', 1, 'request_resolved') });
     assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).reason, 'request-ended');
     assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1' })).requests, []);
+    entry = { sessionId: session.sessionId, lifecycleRevision: session.lifecycleRevision };
+    const expiresAt = '2026-09-26T10:01:00Z';
+    const expiring = draft('review-expiring');
+    metadata.submitDeveloperWork({ authority, logicalOperationId: randomUUID(), draft: { ...expiring, request: { ...expiring.request, expiresAt } } });
+    const target = { schemaVersion: 1, workId: 'feature-1', requestId: 'review-expiring' };
+    assert.equal((await producer.resolve(target)).status, 'ready');
+    duringRead = () => { clock = Date.parse(expiresAt); };
+    assert.equal((await producer.resolve(target)).reason, 'request-expired', 'expiry while the source read is in flight refuses ready');
+    const callCount = calls.length;
+    assert.equal((await producer.resolve(target)).reason, 'request-expired');
+    assert.equal(calls.length, callCount, 'already-expired requests need no session read');
   } finally { producer.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
 

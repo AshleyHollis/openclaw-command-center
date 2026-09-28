@@ -119,7 +119,14 @@ export function createDeveloperWorkProducer({ metadata, sessionReader, authority
     const current = metadata.getDeveloperProducerRequest({ producerId: authority.producerId, workId, requestId });
     if (!current || current.revision !== row.revision || current.lastEventId !== row.lastEventId || current.state !== 'active') return Object.freeze({ schemaVersion: 1, status: 'stale', reason: 'request-changed', workId, requestId });
     if (expired(current.event)) return Object.freeze({ schemaVersion: 1, status: 'stale', reason: 'request-expired', workId, requestId });
-    if (!entry || entry.agentId !== expected.agentId || entry.sessionKey !== expected.sessionKey || !entry.lifecycleRevision || entry.sessionId !== expected.sessionId || entry.lifecycleRevision !== expected.lifecycleRevision) return Object.freeze({ schemaVersion: 1, status: 'stale', reason: 'session-replaced', workId, requestId });
+    // The plugin runtime reader is scoped by the exact agent/key but returns a
+    // raw SessionEntry (no identity fields). Adapters that do return identity
+    // must agree; the native Gateway reader separately verifies both fields.
+    if (!entry || typeof entry !== 'object' ||
+        'agentId' in entry && entry.agentId !== expected.agentId ||
+        'sessionKey' in entry && entry.sessionKey !== expected.sessionKey ||
+        !entry.lifecycleRevision || entry.sessionId !== expected.sessionId ||
+        entry.lifecycleRevision !== expected.lifecycleRevision) return Object.freeze({ schemaVersion: 1, status: 'stale', reason: 'session-replaced', workId, requestId });
     return Object.freeze({ schemaVersion: 1, status: 'ready', workId, requestId, requestRevision: row.revision, agentId: expected.agentId, sessionKey: expected.sessionKey, sessionId: expected.sessionId, lifecycleRevision: expected.lifecycleRevision, summary: row.event.request.summary ?? 'Development request' });
   }
 
