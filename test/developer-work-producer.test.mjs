@@ -306,3 +306,37 @@ test('the DEV agent tool derives session identity and preserves one operation ac
     await assert.rejects(() => tool.execute('tool-call-1', params), { code: 'developer-producer-conflict' });
   } finally { producer.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
 });
+
+
+test('synchronous commit has no delivery side effect; exact-intent lost-reply recovery never executes', async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-sync-'));
+  const evidence = draft('review-a');
+  const logicalOperationId = randomUUID();
+  let metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+  let sends = 0;
+  let producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => session,
+    receiver: { async send() { sends++; throw new Error('offline'); } } });
+  try {
+    assert.equal(producer.reconcile({ logicalOperationId, draft: evidence }), null);
+    assert.throws(() => producer.commit({ logicalOperationId, draft: evidence }), { code: 'source-admission-required' });
+    assert.throws(() => producer.commit({ logicalOperationId, draft: evidence, assertSourceCurrent() { throw Object.assign(new Error('changed'), { code: 'session-stale' }); } }), { code: 'session-stale' });
+    assert.equal(producer.reconcile({ logicalOperationId, draft: evidence }), null);
+    assert.deepEqual(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }), []);
+    const applied = producer.commit({ logicalOperationId, draft: evidence, assertSourceCurrent(expected) { assert.deepEqual(expected, session); } });
+    assert.equal(typeof applied?.then, 'undefined', 'the owning commit must not return a Promise');
+    assert.equal(applied.workRevision, 1);
+    assert.equal(sends, 0, 'commit must not start async delivery');
+    // Simulate loss of the successful commit reply, and reopen the real ledger.
+    producer.close(); metadata.close();
+    metadata = openCommandCenterMetadataService({ stateDir, capabilities });
+    producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: () => session });
+    assert.deepEqual(producer.reconcile({ logicalOperationId, draft: evidence }), applied);
+    assert.throws(() => producer.reconcile({ logicalOperationId, draft: { ...evidence, occurredAt: '2026-09-26T10:00:01.000Z' } }), { code: 'developer-producer-conflict' });
+    assert.equal(producer.reconcile({ logicalOperationId: randomUUID(), draft: evidence }), null);
+    assert.deepEqual(producer.commit({ logicalOperationId, draft: evidence, assertSourceCurrent: () => {} }), applied);
+    assert.deepEqual(metadata.listPendingDeveloperDeliveries({ producerId: authority.producerId }).map(row => row.eventId), [applied.eventId]);
+    assert.equal(metadata.getDeveloperProducerRequest({ producerId: authority.producerId, workId: evidence.workId, requestId: evidence.request.requestId }).revision, 1);
+    const next = producer.commit({ logicalOperationId: randomUUID(), draft: draft('review-b'), assertSourceCurrent: () => {} });
+    assert.equal(next.workRevision, 2, 'replay must not advance the cursor');
+  } finally { producer.close(); metadata.close(); await rm(stateDir, { recursive: true, force: true }); }
+});

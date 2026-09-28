@@ -41,7 +41,7 @@ function deliveryFailure(error) {
 }
 
 export function createDeveloperWorkProducer({ metadata, sessionReader, authority, receiver, now = () => Date.now() } = {}) {
-  if (!metadata?.submitDeveloperWork || !metadata?.listPendingDeveloperDeliveries || !metadata?.recordDeveloperDeliveryFailure || !metadata?.resumeDeveloperDelivery || !metadata?.getDeveloperProducerRequest || typeof sessionReader !== 'function' || !authority || typeof authority.producerId !== 'string') throw new TypeError('Developer Work producer requires metadata, session read, and fixed authority.');
+  if (!metadata?.submitDeveloperWork || !metadata?.reconcileDeveloperProducerEvent || !metadata?.listPendingDeveloperDeliveries || !metadata?.recordDeveloperDeliveryFailure || !metadata?.resumeDeveloperDelivery || !metadata?.getDeveloperProducerRequest || typeof sessionReader !== 'function' || !authority || typeof authority.producerId !== 'string') throw new TypeError('Developer Work producer requires metadata, session read, and fixed authority.');
   let closed = false;
   let flushing = null;
   const assertOpen = () => { if (closed) throw Object.assign(new Error('Developer Work producer is closed.'), { code: 'producer-closed' }); };
@@ -93,11 +93,23 @@ export function createDeveloperWorkProducer({ metadata, sessionReader, authority
     return run;
   }
 
-  async function submit({ logicalOperationId, draft, assertSourceCurrent } = {}) {
+  // The owning synchronous SQLite commit is the only work allowed inside a
+  // held host admission. Network delivery remains a separate async operation.
+  function commit({ logicalOperationId, draft, assertSourceCurrent } = {}) {
     assertOpen();
-    const row = metadata.submitDeveloperWork({ authority, logicalOperationId, draft, assertSourceCurrent });
+    if (draft?.session && typeof assertSourceCurrent !== 'function') throw Object.assign(new Error('Bound work requires synchronous source admission.'), { code: 'source-admission-required' });
+    return metadata.submitDeveloperWork({ authority, logicalOperationId, draft, assertSourceCurrent });
+  }
+
+  function reconcile({ logicalOperationId, draft } = {}) {
+    assertOpen();
+    return metadata.reconcileDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId, draft });
+  }
+
+  async function submit(input = {}) {
+    const row = commit(input);
     if (receiver) await flush();
-    return metadata.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId }) ?? row;
+    return metadata.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: input.logicalOperationId }) ?? row;
   }
 
   async function resolve({ schemaVersion, workId, requestId } = {}) {
@@ -130,5 +142,5 @@ export function createDeveloperWorkProducer({ metadata, sessionReader, authority
     return Object.freeze({ schemaVersion: 1, status: 'ready', workId, requestId, requestRevision: row.revision, agentId: expected.agentId, sessionKey: expected.sessionKey, sessionId: expected.sessionId, lifecycleRevision: expected.lifecycleRevision, summary: row.event.request.summary ?? 'Development request' });
   }
 
-  return Object.freeze({ submit, flush, resolve, close() { closed = true; } });
+  return Object.freeze({ commit, reconcile, submit, flush, resolve, close() { closed = true; } });
 }
