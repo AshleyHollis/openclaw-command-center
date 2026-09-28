@@ -63,15 +63,14 @@ test('separate SQLite stores carry ordered expired disposition, dependent termin
   let receiver = createDeveloperWorkService({ metadata: receiverMetadata, attention, now: () => Date.parse('2026-09-26T10:02:00Z') });
   let handler = createDeveloperEventHandler({ service: receiver, principals: [principal], env: { SAMPLE_DEV_BEARER: credential } });
   let loseDispositionReply = true;
-  let loseClosureReply = true;
-  let failClosureProjection = false;
+  let loseTerminalReply = true;
   const calls = [];
   const transport = createDeveloperEventTransport({ baseUrl: 'https://receiver.example.test/', tokenEnv: 'SAMPLE_DEV_BEARER', env: { SAMPLE_DEV_BEARER: credential }, fetchImpl: async (_url, options) => {
     const res = response();
     await handler({ method: options.method, socket: { encrypted: true }, headers: options.headers, body: options.body }, res);
     calls.push({ status: res.statusCode, mode: options.headers['x-developer-work-disposition'] ?? 'normal', code: res.body.code });
     if (options.headers['x-developer-work-disposition'] === 'expired' && loseDispositionReply) { loseDispositionReply = false; throw new Error('fictional reply lost after durable disposition'); }
-    if (options.headers['x-developer-work-disposition'] === 'expired' && JSON.parse(options.body).request?.requestId === 'review-current' && loseClosureReply) { loseClosureReply = false; throw new Error('fictional reply lost after durable terminal closure'); }
+    if (!options.headers['x-developer-work-disposition'] && JSON.parse(options.body).request?.requestId === 'review-current' && JSON.parse(options.body).eventType === 'request_withdrawn' && loseTerminalReply) { loseTerminalReply = false; throw new Error('fictional reply lost after accepted terminal'); }
     return new Response(JSON.stringify(res.body), { status: res.statusCode, headers: res.headers });
   } });
   const bound = { agentId: 'sample-agent', sessionKey: 'agent:sample-agent:main', sessionId: 'sample-session', lifecycleRevision: 'sample-lifecycle' };
@@ -94,10 +93,7 @@ test('separate SQLite stores carry ordered expired disposition, dependent termin
     senderOwner.close(); receiver.close(); attention.close(); receiverMetadata.close();
     receiverMetadata = openCommandCenterMetadataService({ stateDir: receiverDir, capabilities });
     attention = createAttentionService({ metadata: receiverMetadata, now: () => '2026-09-26T10:02:00Z' });
-    receiver = createDeveloperWorkService({ metadata: receiverMetadata, attention: {
-      registerSourceCapability: value => attention.registerSourceCapability(value),
-      ingest: occurrence => failClosureProjection && occurrence.transitionEvidence?.state === 'withdrawn' ? Promise.reject(new Error('fictional Attention outage')) : attention.ingest(occurrence)
-    }, now: () => Date.parse('2026-09-26T10:02:00Z') });
+    receiver = createDeveloperWorkService({ metadata: receiverMetadata, attention, now: () => Date.parse('2026-09-26T10:02:00Z') });
     handler = createDeveloperEventHandler({ service: receiver, principals: [principal], env: { SAMPLE_DEV_BEARER: credential } });
     senderOwner = createDeveloperWorkProducer({ metadata: sender, authority, sessionReader: () => bound, receiver: transport, now: () => initial.deliveryDiagnostic.nextAttemptAtMs });
     const retried = await senderOwner.flush();
@@ -137,51 +133,72 @@ test('separate SQLite stores carry ordered expired disposition, dependent termin
     assert.equal(prematureResult.statusCode, 400);
     assert.equal(prematureResult.body.code, 'developer-request-disposition-invalid');
     assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: premature.eventId }), null);
+    // Neither a stale transition nor a disposition may close an active request.
+    const activeTerminal = { ...acceptedEvent.event, eventId: randomUUID(), workRevision: 4, eventType: 'request_withdrawn', request: { requestId: 'review-current', kind: 'review', expectedRequestRevision: 3, expiresAt: '2026-09-26T10:01:00Z' }, outcome: { code: 'withdrawn', requestId: 'review-current' } };
+    const expiredRefresh = { ...acceptedEvent.event, eventId: randomUUID(), workRevision: 4, request: { ...acceptedEvent.event.request, expectedRequestRevision: 3, expiresAt: '2026-09-26T10:01:00Z' } };
+    const refreshResult = response();
+    await handler(request(expiredRefresh), refreshResult);
+    assert.equal(refreshResult.body.code, 'developer-request-expired');
+    assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: expiredRefresh.eventId }), null);
+    for (const changed of [
+      { ...activeTerminal, eventId: randomUUID(), request: { ...activeTerminal.request, expectedRequestRevision: 2 } },
+      { ...activeTerminal, eventId: randomUUID(), request: { ...activeTerminal.request, requestId: 'missing-review' }, outcome: { code: 'withdrawn', requestId: 'missing-review' } },
+      { ...activeTerminal, eventId: randomUUID(), request: { ...activeTerminal.request, kind: 'input' } }
+    ]) {
+      const rejected = response();
+      await handler(request(changed), rejected);
+      assert.equal(rejected.statusCode, 400);
+      assert.equal(rejected.body.code, 'developer-request-expired');
+      assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: changed.eventId }), null);
+    }
+    const terminalDisposition = response();
+    await handler({ ...request(activeTerminal), headers: { ...request(activeTerminal).headers, 'x-developer-work-disposition': 'expired' } }, terminalDisposition);
+    assert.equal(terminalDisposition.statusCode, 409);
+    assert.equal(terminalDisposition.body.code, 'developer-request-conflict');
+    const revokedEnv = { SAMPLE_DEV_BEARER: credential };
+    const revokedHandler = createDeveloperEventHandler({ service: receiver, principals: [principal], env: revokedEnv });
+    const revokedResult = response();
+    await revokedHandler({ ...request(activeTerminal), body: undefined, readBody: async () => { revokedEnv.SAMPLE_DEV_BEARER = 'b'.repeat(48); return JSON.stringify(activeTerminal); } }, revokedResult);
+    assert.equal(revokedResult.statusCode, 401);
+    assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: activeTerminal.eventId }), null);
+    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-current' }).state, 'active');
+    const activeEpisodeId = attention.list().episodes[0].episodeId;
     const terminalId = randomUUID();
-    senderOwner.commit({ logicalOperationId: terminalId, draft: { ...base, occurredAt: '2026-09-26T10:02:00Z', eventType: 'request_withdrawn', request: { requestId: 'review-current', kind: 'review', expectedRequestRevision: 3, expiresAt: '2026-09-26T10:01:00Z' }, outcome: { code: 'withdrawn', requestId: 'review-current' } }, assertSourceCurrent() {} });
+    senderOwner.commit({ logicalOperationId: terminalId, draft: { ...base, occurredAt: '2026-09-26T10:02:00Z', eventType: 'request_withdrawn', request: { ...activeTerminal.request, summary: 'Expired content must not reappear' }, outcome: activeTerminal.outcome }, assertSourceCurrent() {} });
     const laterId = randomUUID();
-    senderOwner.commit({ logicalOperationId: laterId, draft: { ...next, occurredAt: '2026-09-26T10:02:00Z', request: { ...next.request, requestId: 'review-after-closure' } }, assertSourceCurrent() {} });
-    const activeTerminal = sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: terminalId }).event;
-    const refusedTerminal = response();
-    await handler(request(activeTerminal), refusedTerminal);
-    assert.equal(refusedTerminal.body.code, 'developer-request-expired');
-    failClosureProjection = true;
-    assert.equal((await senderOwner.flush()).delivered, 0, 'lost closure receipt blocks its successor');
-    let closedReceipt = receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: activeTerminal.eventId });
-    assert.equal(closedReceipt.dispositionReason, 'expired-terminal-closure');
-    assert.equal(closedReceipt.projectionState, 'pending', 'an Attention outage does not pretend terminal projection succeeded');
-    const closurePending = sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: terminalId });
-    assert.equal(closurePending.deliveryState, 'pending');
-    senderOwner.close();
-    senderOwner = createDeveloperWorkProducer({ metadata: sender, authority, sessionReader: () => bound, receiver: transport, now: () => closurePending.deliveryDiagnostic.nextAttemptAtMs });
-    assert.equal((await senderOwner.flush()).delivered, 2);
-    assert.equal(sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: terminalId }).receiverReceipt.dispositionReason, 'expired-terminal-closure');
+    senderOwner.commit({ logicalOperationId: laterId, draft: { ...next, occurredAt: '2026-09-26T10:02:00Z', request: { ...next.request, requestId: 'review-after-withdrawal' } }, assertSourceCurrent() {} });
+    assert.equal((await senderOwner.flush()).delivered, 0, 'lost accepted terminal reply blocks its successor');
+    const pendingTerminal = sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: terminalId });
+    assert.equal(pendingTerminal.deliveryState, 'pending');
+    assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: pendingTerminal.eventId }).disposition, undefined);
     assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-current' }).state, 'withdrawn');
-    assert.equal(receiverMetadata.isDeveloperWorkNotificationReady({ producerId: authority.producerId, workId: 'sample-work' }), false);
-    failClosureProjection = false;
-    await receiver.drain();
-    closedReceipt = receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: activeTerminal.eventId });
-    assert.equal(closedReceipt.projectionState, 'projected');
-    assert.equal(receiverMetadata.isDeveloperWorkNotificationReady({ producerId: authority.producerId, workId: 'sample-work' }), true);
-    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-after-closure' }).state, 'active');
-    assert.equal(attention.list().episodes.filter(episode => episode.evidenceFacts?.requestId === 'review-current').every(episode => !JSON.stringify(episode).includes('2026-09-26T10:01:00Z')), true, 'closure projects no expired request content');
-    const duplicateClosure = response();
-    await handler(request(activeTerminal), duplicateClosure);
-    assert.equal(duplicateClosure.body.receipt.duplicate, true);
-    assert.equal(duplicateClosure.body.receipt.dispositionReason, 'expired-terminal-closure');
-    const wrongRevision = { ...activeTerminal, eventId: randomUUID(), workRevision: 6, eventType: 'request_resolved', request: { requestId: 'review-after-closure', kind: 'review', expectedRequestRevision: 4, expiresAt: '2026-09-26T10:01:00Z' }, outcome: { code: 'reviewed', requestId: 'review-after-closure' } };
-    const wrongRevisionResult = response();
-    await handler({ ...request(wrongRevision), headers: { ...request(wrongRevision).headers, 'x-developer-work-disposition': 'expired' } }, wrongRevisionResult);
-    assert.equal(wrongRevisionResult.statusCode, 409);
-    assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: authority.producerId, eventId: wrongRevision.eventId }), null);
-    const resolutionId = randomUUID();
-    senderOwner.commit({ logicalOperationId: resolutionId, draft: { ...base, occurredAt: '2026-09-26T10:02:00Z', eventType: 'request_resolved', request: { requestId: 'review-after-closure', kind: 'review', expectedRequestRevision: 5, expiresAt: '2026-09-26T10:01:00Z' }, outcome: { code: 'reviewed', requestId: 'review-after-closure' } }, assertSourceCurrent() {} });
-    const afterResolutionId = randomUUID();
-    senderOwner.commit({ logicalOperationId: afterResolutionId, draft: { ...next, occurredAt: '2026-09-26T10:02:00Z', request: { ...next.request, requestId: 'review-after-resolution' } }, assertSourceCurrent() {} });
+    assert.equal(attention.list().episodes.length, 0, 'late closure leaves no active human request');
+    assert.equal(attention.get(activeEpisodeId).episode.state, 'Withdrawn');
+    assert.equal(attention.get(activeEpisodeId).episode.evidenceFacts.summary, undefined);
+    assert.equal(attention.get(activeEpisodeId).episode.evidenceFacts.requestExpiresAt, undefined);
+    senderOwner.close(); receiver.close(); attention.close(); receiverMetadata.close();
+    receiverMetadata = openCommandCenterMetadataService({ stateDir: receiverDir, capabilities });
+    attention = createAttentionService({ metadata: receiverMetadata, now: () => '2026-09-26T10:02:00Z' });
+    receiver = createDeveloperWorkService({ metadata: receiverMetadata, attention, now: () => Date.parse('2026-09-26T10:02:00Z') });
+    handler = createDeveloperEventHandler({ service: receiver, principals: [principal], env: { SAMPLE_DEV_BEARER: credential } });
+    senderOwner = createDeveloperWorkProducer({ metadata: sender, authority, sessionReader: () => bound, receiver: transport, now: () => pendingTerminal.deliveryDiagnostic.nextAttemptAtMs });
     assert.equal((await senderOwner.flush()).delivered, 2);
-    assert.equal(sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: resolutionId }).receiverReceipt.dispositionReason, 'expired-terminal-closure');
-    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-after-closure' }).state, 'resolved');
+    assert.equal(sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: terminalId }).receiverReceipt.disposition, undefined);
+    assert.equal(calls.filter(call => call.mode === 'expired').length, 2, 'an active terminal uses ordinary acceptance, not disposition');
+    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-after-withdrawal' }).state, 'active');
+    assert.deepEqual(attention.list().episodes.map(episode => episode.evidenceFacts.requestId), ['review-after-withdrawal']);
+    const duplicateTerminal = response();
+    await handler(request(pendingTerminal.event), duplicateTerminal);
+    assert.equal(duplicateTerminal.body.receipt.duplicate, true);
+    const resolutionId = randomUUID();
+    senderOwner.commit({ logicalOperationId: resolutionId, draft: { ...base, occurredAt: '2026-09-26T10:02:00Z', eventType: 'request_resolved', request: { requestId: 'review-after-withdrawal', kind: 'review', expectedRequestRevision: 5, expiresAt: '2026-09-26T10:01:00Z' }, outcome: { code: 'reviewed', requestId: 'review-after-withdrawal' } }, assertSourceCurrent() {} });
+    const finalId = randomUUID();
+    senderOwner.commit({ logicalOperationId: finalId, draft: { ...next, occurredAt: '2026-09-26T10:02:00Z', request: { ...next.request, requestId: 'review-after-resolution' } }, assertSourceCurrent() {} });
+    assert.equal((await senderOwner.flush()).delivered, 2);
+    assert.equal(sender.getDeveloperProducerEvent({ producerId: authority.producerId, logicalOperationId: resolutionId }).receiverReceipt.disposition, undefined);
+    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-after-withdrawal' }).state, 'resolved');
     assert.equal(receiverMetadata.getDeveloperRequest({ producerId: authority.producerId, workId: 'sample-work', requestId: 'review-after-resolution' }).state, 'active');
+    assert.deepEqual(attention.list().episodes.map(episode => episode.evidenceFacts.requestId), ['review-after-resolution']);
   } finally {
     senderOwner.close(); receiver.close(); attention.close(); sender.close(); receiverMetadata.close();
     await rm(senderDir, { recursive: true, force: true }); await rm(receiverDir, { recursive: true, force: true });
@@ -213,21 +230,11 @@ test('disposition survives actual receiver process death before producer acknowl
       const receipt = metadata.getDeveloperReceipt({ producerId, eventId });
       assert.equal(receipt.disposition, 'expired');
       assert.equal(metadata.getDeveloperRequest({ producerId, workId: 'crash-feature', requestId: 'crash-expired' }), null);
-      const pendingClosure = metadata.getDeveloperReceipt({ producerId, eventId: 'a3c429e9-c12f-4301-a799-622852499df3' });
-      assert.equal(pendingClosure.dispositionReason, 'expired-terminal-closure');
-      assert.equal(pendingClosure.projectionState, 'pending');
-      assert.equal(metadata.getDeveloperRequest({ producerId, workId: 'crash-active', requestId: 'crash-active-review' }).state, 'resolved');
-      assert.equal(metadata.listPendingDeveloperEvents({}).length, 2);
+      assert.deepEqual(metadata.listPendingDeveloperEvents({}), []);
       assert.equal(attention.list().episodes.length, 0);
-      await work.drain();
-      assert.equal(metadata.getDeveloperReceipt({ producerId, eventId: 'a3c429e9-c12f-4301-a799-622852499df3' }).projectionState, 'projected');
-      assert.equal(metadata.listPendingDeveloperEvents({}).length, 0);
-      assert.equal(attention.list().episodes.every(episode => !JSON.stringify(episode).includes('2026-09-26T10:01:00Z')), true);
       const event = { schemaVersion: 1, eventId: randomUUID(), workId: 'crash-feature', workRevision: 2, eventType: 'feature_ready_for_review', occurredAt: '2026-09-26T10:02:00Z', context: { projectAlias: 'sample-project' }, session: { agentId: 'sample-agent', sessionKey: 'agent:sample-agent:main', sessionId: 'fictional-session', lifecycleRevision: 'fictional-lifecycle' }, request: { requestId: 'crash-current', kind: 'review', expectedRequestRevision: 0, summary: 'Review current fictional feature', question: 'Is it ready?' } };
       assert.equal((await work.accept({ producerId, role: 'worker', allowedProjects: ['sample-project'], event, assertAuthorityCurrent() {} })).workRevision, 2);
-      const afterClosure = { ...event, eventId: randomUUID(), workId: 'crash-active', workRevision: 3, request: { ...event.request, requestId: 'crash-active-next' } };
-      assert.equal((await work.accept({ producerId, role: 'worker', allowedProjects: ['sample-project'], event: afterClosure, assertAuthorityCurrent() {} })).workRevision, 3);
-      assert.equal(attention.list().episodes.filter(episode => ['crash-current', 'crash-active-next'].includes(episode.evidenceFacts?.requestId)).length, 2);
+      assert.equal(attention.list().episodes.length, 1);
     } finally { work.close(); attention.close(); metadata.close(); }
   } finally {
     if (!closed) { child.kill('SIGKILL'); await exit; }
