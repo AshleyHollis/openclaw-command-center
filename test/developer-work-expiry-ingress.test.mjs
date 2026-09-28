@@ -382,3 +382,91 @@ test('authenticated HTTP disposition survives receiver SIGKILL before producer a
     await rm(receiverDir, { recursive: true, force: true });
   }
 });
+
+test('controller rollback and recovery retain ordered Activity through authenticated expiry disposition and projection replay', async () => {
+  const senderDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-controller-sender-'));
+  const receiverDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-controller-receiver-'));
+  const capabilities = { activity: true, attention: true };
+  const sender = openCommandCenterMetadataService({ stateDir: senderDir, capabilities });
+  let receiverMetadata = openCommandCenterMetadataService({ stateDir: receiverDir, capabilities });
+  let attention = createAttentionService({ metadata: receiverMetadata, now: () => '2026-09-26T10:02:00Z' });
+  let failRollbackProjection = false;
+  const recordingMetadata = { ...receiverMetadata, markDeveloperEventProjected(input) {
+    if (failRollbackProjection) throw new Error('fictional Activity projection marker unavailable');
+    return receiverMetadata.markDeveloperEventProjected(input);
+  } };
+  let receiver = createDeveloperWorkService({ metadata: recordingMetadata, attention, now: () => Date.parse('2026-09-26T10:02:00Z') });
+  const controller = { producerId: 'sample-controller', role: 'controller', allowedProjects: ['sample-project'] };
+  const controllerPrincipal = { ...controller, tokenEnv: 'SAMPLE_DEV_BEARER', families: ['deployment-control', 'request-terminal'] };
+  let handler = createDeveloperEventHandler({ service: receiver, principals: [controllerPrincipal], env: { SAMPLE_DEV_BEARER: credential } });
+  const httpCalls = [];
+  const transport = createDeveloperEventTransport({ baseUrl: 'https://receiver.example.test/', tokenEnv: 'SAMPLE_DEV_BEARER', env: { SAMPLE_DEV_BEARER: credential }, fetchImpl: async (_url, options) => {
+    const res = response();
+    await handler({ method: options.method, socket: { encrypted: true }, headers: options.headers, body: options.body }, res);
+    httpCalls.push([options.headers['x-developer-work-disposition'] ?? 'normal', res.statusCode, res.body.code ?? res.body.receipt?.projectionState]);
+    return new Response(JSON.stringify(res.body), { status: res.statusCode, headers: res.headers });
+  } });
+  let producer = createDeveloperWorkProducer({ metadata: sender, authority: controller, sessionReader: () => undefined, receiver: transport, now: () => Date.parse('2026-09-26T10:02:00Z') });
+  const base = { schemaVersion: 1, workId: 'incident-work', occurredAt: '2026-09-26T10:00:00Z', context: { projectAlias: 'sample-project', deploymentId: 'deployment-1' } };
+  const incident = (eventType, revision, summary, expiresAt, code) => ({ ...base, eventType,
+    request: { requestId: 'incident-1', kind: 'deployment-incident', expectedRequestRevision: revision, summary, ...(expiresAt ? { expiresAt } : {}) },
+    outcome: { code, deploymentId: 'deployment-1' }
+  });
+  const openingId = randomUUID(), rollbackId = randomUUID(), recoveryId = randomUUID();
+  try {
+    producer.commit({ logicalOperationId: openingId, draft: incident('production_deployment_failed', 0, 'Initial incident', undefined, 'failed') });
+    assert.equal((await producer.flush()).delivered, 1);
+    assert.equal(receiverMetadata.isDeveloperWorkNotificationReady({ producerId: controller.producerId, workId: base.workId }), true);
+    producer.commit({ logicalOperationId: rollbackId, draft: incident('production_rollback', 1, 'Expired rollback text', '2026-09-26T10:01:00Z', 'rolled-back') });
+    producer.commit({ logicalOperationId: recoveryId, draft: incident('production_recovered', 2, 'Expired recovery text', '2026-09-26T10:01:00Z', 'recovered') });
+    failRollbackProjection = true;
+    assert.deepEqual({ delivered: (await producer.flush()).delivered, pending: sender.listPendingDeveloperDeliveries({ producerId: controller.producerId }).length }, { delivered: 0, pending: 2 });
+    const rollback = sender.getDeveloperProducerEvent({ producerId: controller.producerId, logicalOperationId: rollbackId });
+    assert.equal(rollback.deliveryState, 'pending');
+    const pendingReceipt = receiverMetadata.getDeveloperReceipt({ producerId: controller.producerId, eventId: rollback.eventId });
+    assert.equal(pendingReceipt.dispositionReason, 'expired-active-update');
+    assert.equal(pendingReceipt.projectionState, 'pending');
+    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: controller.producerId, workId: base.workId, requestId: 'incident-1' }).revision, 2);
+    assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: controller.producerId, eventId: sender.getDeveloperProducerEvent({ producerId: controller.producerId, logicalOperationId: recoveryId }).eventId }), null);
+    assert.equal(receiverMetadata.isDeveloperWorkNotificationReady({ producerId: controller.producerId, workId: base.workId }), false);
+    assert.equal(attention.listActivity({ limit: 30 }).records.filter(row => row.operationKind === 'developer-work.production_rollback').length, 1, 'Activity is durable even if its projection marker fails');
+    assert.equal(httpCalls.at(-1)[1], 503);
+    producer.close();
+    producer = createDeveloperWorkProducer({ metadata: sender, authority: controller, sessionReader: () => undefined, receiver: transport, now: () => rollback.deliveryDiagnostic.nextAttemptAtMs });
+    assert.deepEqual({ delivered: (await producer.flush()).delivered, pending: sender.listPendingDeveloperDeliveries({ producerId: controller.producerId }).length }, { delivered: 0, pending: 2 }, 'duplicate pending disposition must remain retryable');
+    const repeated = sender.getDeveloperProducerEvent({ producerId: controller.producerId, logicalOperationId: rollbackId });
+    assert.equal(repeated.deliveryDiagnostic.paused, false);
+    assert.equal(repeated.deliveryDiagnostic.attemptCount, 2);
+    assert.deepEqual(httpCalls.at(-1).slice(0, 2), ['normal', 503]);
+    assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: controller.producerId, eventId: rollback.eventId }).projectionState, 'pending');
+    assert.equal(attention.listActivity({ limit: 30 }).records.filter(row => row.operationKind === 'developer-work.production_rollback').length, 1, 'retry must not duplicate recorded Activity');
+    producer.close(); receiver.close(); attention.close(); receiverMetadata.close();
+    receiverMetadata = openCommandCenterMetadataService({ stateDir: receiverDir, capabilities });
+    attention = createAttentionService({ metadata: receiverMetadata, now: () => '2026-09-26T10:02:00Z' });
+    receiver = createDeveloperWorkService({ metadata: receiverMetadata, attention, now: () => Date.parse('2026-09-26T10:02:00Z') });
+    handler = createDeveloperEventHandler({ service: receiver, principals: [controllerPrincipal], env: { SAMPLE_DEV_BEARER: credential } });
+    producer = createDeveloperWorkProducer({ metadata: sender, authority: controller, sessionReader: () => undefined, receiver: transport, now: () => repeated.deliveryDiagnostic.nextAttemptAtMs });
+    assert.deepEqual({ delivered: (await producer.flush()).delivered, pending: sender.listPendingDeveloperDeliveries({ producerId: controller.producerId }).length }, { delivered: 2, pending: 0 });
+    for (const id of [rollbackId, recoveryId]) {
+      const row = sender.getDeveloperProducerEvent({ producerId: controller.producerId, logicalOperationId: id });
+      assert.equal(row.receiverReceipt.dispositionReason, 'expired-active-update');
+      assert.equal(row.receiverReceipt.projectionState, 'projected');
+    }
+    assert.equal(receiverMetadata.getDeveloperReceipt({ producerId: controller.producerId, eventId: rollback.eventId }).acceptedAt, pendingReceipt.acceptedAt, 'Activity replay did not change the durable admission');
+    const recovery = sender.getDeveloperProducerEvent({ producerId: controller.producerId, logicalOperationId: recoveryId });
+    const incidentActivity = receiverMetadata.listActivity().filter(row => ['developer-work.production_rollback', 'developer-work.production_recovered'].includes(row.operationKind));
+    assert.deepEqual(incidentActivity.map(row => [row.operationKind, row.transportRequestId, row.observedRevision, row.outcome]).sort((a, b) => a[0].localeCompare(b[0])), [
+      ['developer-work.production_recovered', recovery.eventId, '3', 'applied'],
+      ['developer-work.production_rollback', rollback.eventId, '2', 'applied']
+    ]);
+    assert.deepEqual(attention.listActivity({ limit: 30 }).records.filter(row => row.operationKind.startsWith('developer-work.production_')).map(row => row.operationKind).sort(), ['developer-work.production_deployment_failed', 'developer-work.production_recovered', 'developer-work.production_rollback']);
+    assert.equal(receiverMetadata.getDeveloperRequest({ producerId: controller.producerId, workId: base.workId, requestId: 'incident-1' }).revision, 3);
+    assert.equal(receiverMetadata.isDeveloperWorkNotificationReady({ producerId: controller.producerId, workId: base.workId }), true);
+    assert.equal(JSON.stringify(attention.list().episodes).includes('Expired rollback text'), false);
+    assert.equal(JSON.stringify(attention.list().episodes).includes('Expired recovery text'), false);
+    assert.equal(receiverMetadata.listPendingDeveloperEvents({}).length, 0);
+  } finally {
+    producer.close(); receiver.close(); attention.close(); sender.close(); receiverMetadata.close();
+    await rm(senderDir, { recursive: true, force: true }); await rm(receiverDir, { recursive: true, force: true });
+  }
+});

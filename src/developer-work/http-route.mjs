@@ -86,7 +86,7 @@ export function createDeveloperEventHandler({ service, principals = [], trustedP
       return reply(res, receipt.disposition === 'expired' ? 200 : receipt.projectionState === 'projected' ? 200 : 202, { schemaVersion: 1, status: receipt.disposition === 'expired' ? 'disposed' : 'accepted', receipt });
     } catch (error) {
       const code = typeof error?.code === 'string' ? error.code : 'invalid-request';
-      const status = code === 'unauthorized' ? 401 : code === 'body-too-large' ? 413 : code === 'developer-event-backpressure' ? 429 : code === 'capability-unavailable' || code === 'recovery-only' ? 503 : /(?:stale|gap|conflict|terminal|order|missing|expired-dependency)$/u.test(code) ? 409 : 400;
+      const status = code === 'unauthorized' ? 401 : code === 'body-too-large' ? 413 : code === 'developer-event-backpressure' ? 429 : code === 'capability-unavailable' || code === 'recovery-only' || code === 'developer-projection-pending' ? 503 : /(?:stale|gap|conflict|terminal|order|missing|expired-dependency)$/u.test(code) ? 409 : 400;
       return reply(res, status, { schemaVersion: 1, status: 'error', code }, status === 429 ? { 'retry-after': '60' } : {});
     }
   };

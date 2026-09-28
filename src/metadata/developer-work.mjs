@@ -7,6 +7,7 @@ const expiryDispositionId = (producerId, eventId) => 'developer-expiry:' + creat
 const terminalTypes = new Set(['request_resolved', 'request_withdrawn']);
 const requestOpeningTypes = new Set(['human_input_required', 'product_decision_required', 'approval_required', 'feature_ready_for_review', 'production_deployment_failed']);
 const activeUpdateTypes = new Set(['human_input_required', 'product_decision_required', 'approval_required', 'feature_ready_for_review', 'production_rollback', 'production_recovered']);
+const incidentUpdateTypes = new Set(['production_rollback', 'production_recovered']);
 const deliveryDiagnosticId = (producerId, eventId) => `developer-delivery:${createHash('sha256').update(`${producerId}\u0000${eventId}`).digest('hex')}`;
 const deliveryDiagnostic = (db, row) => {
   const entry = db.prepare('SELECT * FROM operation_journal WHERE logical_operation_id = ?').get(deliveryDiagnosticId(row.producer_id, row.event_id));
@@ -129,7 +130,11 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
     const result = JSON.parse(row.result_identity);
     if (result.producerId !== producerId || result.eventId !== eventId || result.eventDigest !== digest || !['request-expired', 'expired-dependency', 'expired-active-update'].includes(result.reason)) fail('developer-event-conflict');
     const eventRow = readReceipt(db, producerId, eventId);
-    if (!eventRow || eventRow.event_digest !== digest || eventRow.work_id !== result.workId || eventRow.work_revision !== result.workRevision || eventRow.accepted_at !== result.acceptedAt || eventRow.projection_state !== 'projected' || eventRow.projected_at !== result.acceptedAt || row.observed_revision !== String(result.workRevision)) fail('developer-event-conflict');
+    const event = eventRow && JSON.parse(eventRow.event_json);
+    const incidentProjection = result.reason === 'expired-active-update' && incidentUpdateTypes.has(event?.eventType);
+    const projected = eventRow?.projection_state === 'projected' && typeof eventRow.projected_at === 'string' && !Number.isNaN(Date.parse(eventRow.projected_at)) && (incidentProjection || eventRow.projected_at === result.acceptedAt);
+    const pending = incidentProjection && eventRow?.projection_state === 'pending' && eventRow.projected_at === null;
+    if (!eventRow || eventRow.event_digest !== digest || eventRow.work_id !== result.workId || eventRow.work_revision !== result.workRevision || eventRow.accepted_at !== result.acceptedAt || !(projected || pending) || row.observed_revision !== String(result.workRevision)) fail('developer-event-conflict');
     return result;
   };
   const disposedPredecessor = (db, producerId, event) => {
@@ -249,13 +254,14 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       if (current && !activeUpdate) fail('developer-request-conflict', 'An existing request cannot be suppressed by disposition.');
       if (!current && (expired && event.request.expectedRequestRevision > 0 && !predecessor || !expired && !predecessor)) fail('developer-request-disposition-invalid');
       const reason = activeUpdate ? 'expired-active-update' : expired ? 'request-expired' : 'expired-dependency';
+      const activityPending = activeUpdate && incidentUpdateTypes.has(event.eventType);
       db.prepare('INSERT INTO developer_work_cursors (producer_id, work_id, revision) VALUES (?, ?, ?) ON CONFLICT (producer_id, work_id) DO UPDATE SET revision = excluded.revision').run(producerId, event.workId, event.workRevision);
       if (activeUpdate) {
         const updated = db.prepare("UPDATE developer_work_requests SET revision = ?, last_event_id = ? WHERE producer_id = ? AND work_id = ? AND request_id = ? AND revision = ? AND state = 'active'").run(event.workRevision, event.eventId, producerId, event.workId, event.request.requestId, event.request.expectedRequestRevision);
         if (updated.changes !== 1) fail('developer-request-stale');
       }
       db.prepare(`INSERT INTO developer_work_receipts (producer_id, event_id, work_id, work_revision, event_digest, event_json, projection_state, accepted_at, projected_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'projected', ?, ?)`).run(producerId, event.eventId, event.workId, event.workRevision, digest, JSON.stringify(event), clock, clock);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(producerId, event.eventId, event.workId, event.workRevision, digest, JSON.stringify(event), activityPending ? 'pending' : 'projected', clock, activityPending ? null : clock);
       const identity = { producerId, eventId: event.eventId, workId: event.workId, workRevision: event.workRevision, eventDigest: digest, reason, acceptedAt: clock };
       db.prepare(`INSERT INTO operation_journal (logical_operation_id, transport_request_id, intent_digest, operation_kind, state, result_status, result_identity, observed_revision, created_at, updated_at)
         VALUES (?, ?, ?, 'developer-work.expiry-disposition.v1', 'applied', 'expired', ?, ?, ?, ?)`).run(expiryDispositionId(producerId, event.eventId), event.eventId, digest, JSON.stringify(identity), String(event.workRevision), clock, clock);
@@ -437,7 +443,9 @@ export function installDeveloperWorkMetadata(service, { mutate, inspect, ErrorTy
       const row = db.prepare('SELECT * FROM developer_work_outbox WHERE producer_id = ? AND event_id = ?').get(producerId, eventId);
       if (!row) fail('developer-event-missing');
       if (receiverReceipt.schemaVersion !== 1 || receiverReceipt.producerId !== producerId || receiverReceipt.eventId !== eventId || receiverReceipt.workId !== row.work_id || receiverReceipt.workRevision !== row.work_revision || receiverReceipt.eventDigest !== row.event_digest || !['pending', 'projected'].includes(receiverReceipt.projectionState) || typeof receiverReceipt.acceptedAt !== 'string' || Number.isNaN(Date.parse(receiverReceipt.acceptedAt))) fail('developer-receipt-conflict');
-      if (receiverReceipt.disposition !== undefined && (receiverReceipt.disposition !== 'expired' || !['request-expired', 'expired-dependency', 'expired-active-update'].includes(receiverReceipt.dispositionReason) || receiverReceipt.projectionState !== 'projected' || receiverReceipt.projectedAt !== receiverReceipt.acceptedAt || !JSON.parse(row.event_json).request)) fail('developer-receipt-conflict');
+      const incidentProjection = receiverReceipt.dispositionReason === 'expired-active-update' && incidentUpdateTypes.has(JSON.parse(row.event_json).eventType);
+      const projectedTimeValid = incidentProjection ? typeof receiverReceipt.projectedAt === 'string' && !Number.isNaN(Date.parse(receiverReceipt.projectedAt)) : receiverReceipt.projectedAt === receiverReceipt.acceptedAt;
+      if (receiverReceipt.disposition !== undefined && (receiverReceipt.disposition !== 'expired' || !['request-expired', 'expired-dependency', 'expired-active-update'].includes(receiverReceipt.dispositionReason) || receiverReceipt.projectionState !== 'projected' || !projectedTimeValid || !JSON.parse(row.event_json).request)) fail('developer-receipt-conflict');
       if (receiverReceipt.disposition === undefined && receiverReceipt.dispositionReason !== undefined) fail('developer-receipt-conflict');
       const event = JSON.parse(row.event_json);
       const request = event.request;

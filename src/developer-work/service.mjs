@@ -13,6 +13,7 @@ const reasonByKind = Object.freeze({
 const terminalTypes = new Set(['request_resolved', 'request_withdrawn']);
 const activityOnlyTypes = new Set(['feature_completed', 'deployment_succeeded', 'validation_completed']);
 const incidentTypes = new Set(['production_deployment_failed', 'production_rollback', 'production_recovered']);
+const incidentUpdateTypes = new Set(['production_rollback', 'production_recovered']);
 
 function identity(...parts) {
   return createHash('sha256').update(parts.join('\u0000')).digest('hex');
@@ -123,6 +124,13 @@ export function createDeveloperWorkService({ metadata, attention, devBaseUrl, no
   async function project(item) {
     const { receipt, event } = item;
     const producerId = receipt.producerId;
+    if (incidentUpdateTypes.has(event.eventType) && event.request?.expiresAt && Date.parse(event.request.expiresAt) <= Date.parse(receipt.acceptedAt)) {
+      // An expired controller update is an ordered Activity-only projection.
+      // Never reissue its expired request text or choices to Attention.
+      recordActivity(metadata, producerId, event);
+      metadata.markDeveloperEventProjected({ producerId, eventId: event.eventId, eventDigest: receipt.eventDigest });
+      return;
+    }
     if (event.request && isCurrent(producerId, event)) {
       // A late terminal event closes its existing Attention subject without
       // projecting expired request text, choices or deadline as new content.
@@ -160,13 +168,24 @@ export function createDeveloperWorkService({ metadata, attention, devBaseUrl, no
     // Acknowledgement means durable receipt, even when the separate projection
     // transaction must be retried during the next drain/startup.
     try { await drain(); } catch { /* receipt remains visibly pending */ }
-    return Object.freeze({ ...(metadata.getDeveloperReceipt({ producerId, eventId: normalized.eventId }) ?? receipt), duplicate: receipt.duplicate });
+    const current = metadata.getDeveloperReceipt({ producerId, eventId: normalized.eventId }) ?? receipt;
+    // A duplicate of an incident disposition must not turn its pending
+    // Activity into a successful ordinary acknowledgement and pause the sender.
+    if (current.disposition === 'expired' && current.projectionState === 'pending') throw Object.assign(new Error('Incident Activity projection remains pending.'), { code: 'developer-projection-pending' });
+    return Object.freeze({ ...current, duplicate: receipt.duplicate });
   }
 
-  function disposeExpired({ producerId, role, allowedProjects, event, watermark, assertAuthorityCurrent } = {}) {
+  async function disposeExpired({ producerId, role, allowedProjects, event, watermark, assertAuthorityCurrent } = {}) {
     if (closed) throw new Error('Developer Work service is closed.');
     const normalized = normalizeDeveloperEvent(event, { producerId, role, allowedProjects });
-    return metadata.disposeExpiredDeveloperEvent({ producerId, event: normalized, watermark, assertAuthorityCurrent, now });
+    const receipt = metadata.disposeExpiredDeveloperEvent({ producerId, event: normalized, watermark, assertAuthorityCurrent, now });
+    if (receipt.projectionState === 'pending') {
+      try { await drain(); } catch { /* durable Activity projection remains pending */ }
+      const current = metadata.getDeveloperReceipt({ producerId, eventId: normalized.eventId });
+      if (current.projectionState !== 'projected') throw Object.assign(new Error('Incident Activity projection remains pending.'), { code: 'developer-projection-pending' });
+      return Object.freeze({ ...current, duplicate: receipt.duplicate });
+    }
+    return receipt;
   }
 
   return Object.freeze({ accept, disposeExpired, drain, close() { closed = true; } });
