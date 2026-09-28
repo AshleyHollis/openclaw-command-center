@@ -93,7 +93,7 @@ test('controller producer keeps one incident per deployment and rejects changed 
 test('DEV resolver checks exact session incarnation and request state at readback', async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), 'cc-developer-producer-'));
   const metadata = openCommandCenterMetadataService({ stateDir, capabilities });
-  let entry = { sessionId: 'session-1', lifecycleRevision: 'lifecycle-1' };
+  let entry = { ...session };
   const calls = [];
   const producer = createDeveloperWorkProducer({ metadata, authority, sessionReader: async input => { calls.push(input); return entry; }, receiver: { send: async () => { throw new Error('receiver unavailable'); } } });
   try {
@@ -102,7 +102,7 @@ test('DEV resolver checks exact session incarnation and request state at readbac
     assert.equal(ready.status, 'ready');
     assert.equal(ready.sessionKey, session.sessionKey);
     assert.deepEqual(calls[0], { agentId: session.agentId, sessionKey: session.sessionKey, readConsistency: 'latest' });
-    entry = { sessionId: 'session-1', lifecycleRevision: 'lifecycle-2' };
+    entry = { ...session, lifecycleRevision: 'lifecycle-2' };
     assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).status, 'stale');
     entry = undefined;
     assert.deepEqual((await producer.resolve({ schemaVersion: 1, workId: 'feature-1', requestId: 'review-a' })).reason, 'session-replaced');

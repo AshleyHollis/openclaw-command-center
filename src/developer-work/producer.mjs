@@ -110,13 +110,16 @@ export function createDeveloperWorkProducer({ metadata, sessionReader, authority
     const row = metadata.getDeveloperProducerRequest({ producerId: authority.producerId, workId, requestId });
     if (!row || row.state !== 'active' || !row.event.session) return Object.freeze({ schemaVersion: 1, status: 'stale', reason: !row ? 'request-missing' : row.state !== 'active' ? 'request-ended' : 'session-binding-missing', workId, requestId });
     const expected = row.event.session;
+    const expired = event => event.request?.expiresAt !== undefined && !(Date.parse(event.request.expiresAt) > now());
+    if (expired(row.event)) return Object.freeze({ schemaVersion: 1, status: 'stale', reason: 'request-expired', workId, requestId });
     let entry;
     try { entry = await sessionReader({ agentId: expected.agentId, sessionKey: expected.sessionKey, readConsistency: 'latest' }); }
     catch { return Object.freeze({ schemaVersion: 1, status: 'unavailable', reason: 'session-read-unavailable', workId, requestId }); }
     assertOpen();
     const current = metadata.getDeveloperProducerRequest({ producerId: authority.producerId, workId, requestId });
     if (!current || current.revision !== row.revision || current.lastEventId !== row.lastEventId || current.state !== 'active') return Object.freeze({ schemaVersion: 1, status: 'stale', reason: 'request-changed', workId, requestId });
-    if (!entry || entry.sessionId !== expected.sessionId || entry.lifecycleRevision !== expected.lifecycleRevision) return Object.freeze({ schemaVersion: 1, status: 'stale', reason: 'session-replaced', workId, requestId });
+    if (expired(current.event)) return Object.freeze({ schemaVersion: 1, status: 'stale', reason: 'request-expired', workId, requestId });
+    if (!entry || entry.agentId !== expected.agentId || entry.sessionKey !== expected.sessionKey || !entry.lifecycleRevision || entry.sessionId !== expected.sessionId || entry.lifecycleRevision !== expected.lifecycleRevision) return Object.freeze({ schemaVersion: 1, status: 'stale', reason: 'session-replaced', workId, requestId });
     return Object.freeze({ schemaVersion: 1, status: 'ready', workId, requestId, requestRevision: row.revision, agentId: expected.agentId, sessionKey: expected.sessionKey, sessionId: expected.sessionId, lifecycleRevision: expected.lifecycleRevision, summary: row.event.request.summary ?? 'Development request' });
   }
 
